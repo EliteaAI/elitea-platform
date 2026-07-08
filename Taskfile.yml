@@ -1,0 +1,46 @@
+version: "3"
+
+vars:
+  SERVICE: services/elitea-main
+
+tasks:
+  build:
+    desc: Build elitea-main binary
+    dir: "{{.SERVICE}}"
+    cmds:
+      - go build -o bin/elitea-main ./cmd/elitea-main
+
+  test:
+    desc: Run all tests across the workspace
+    cmds:
+      - go test -race -count=1 ./services/...
+      - go test -race -count=1 ./libs/...
+
+  lint:
+    desc: Run golangci-lint
+    dir: "{{.SERVICE}}"
+    cmds:
+      - golangci-lint run ./...
+
+  vet:
+    desc: Run go vet across the workspace
+    cmds:
+      - go vet ./services/...
+      - go vet ./libs/...
+
+  run:
+    desc: Run elitea-main locally
+    dir: "{{.SERVICE}}"
+    cmds:
+      - go run ./cmd/elitea-main
+
+  docker:
+    desc: Build Docker image via BuildKit Bake
+    cmds:
+      - docker buildx bake --file docker-bake.hcl elitea-main
+
+  sqlc:
+    desc: Regenerate sqlc query bindings
+    dir: "{{.SERVICE}}"
+    cmds:
+      - sqlc generate

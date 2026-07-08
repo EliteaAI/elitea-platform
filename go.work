@@ -1,0 +1,9 @@
+go 1.25.0
+
+use (
+	./services/elitea-main
+	./libs/go/authlib
+	./libs/go/eventslib
+	./libs/go/rpclib
+	./libs/go/observability
+)
