@@ -1,38 +1,79 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
 
-// Status represents the health check response body.
 type Status struct {
-	Status string `json:"status"`
+	Status string            `json:"status"`
+	Checks map[string]string `json:"checks,omitempty"`
 }
 
-// Routes returns a chi.Router with the three health probe endpoints.
+type Checker interface {
+	Ping(ctx context.Context) error
+}
+
+type Deps struct {
+	DB    Checker
+	Redis Checker
+}
+
 func Routes() chi.Router {
+	return RoutesWithDeps(Deps{})
+}
+
+func RoutesWithDeps(deps Deps) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/healthz", livenessHandler)
-	r.Get("/readyz", readinessHandler)
+	r.Get("/readyz", readinessHandler(deps))
 	r.Get("/startupz", startupHandler)
 	return r
 }
 
-// livenessHandler signals that the process is alive.
 func livenessHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Status{Status: "ok"})
 }
 
-// readinessHandler signals that the service is ready to accept traffic.
-// TODO: add DB/Redis connectivity checks.
-func readinessHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Status{Status: "ready"})
+func readinessHandler(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		checks := make(map[string]string)
+		allOK := true
+
+		if deps.DB != nil {
+			if err := deps.DB.Ping(ctx); err != nil {
+				checks["db"] = err.Error()
+				allOK = false
+			} else {
+				checks["db"] = "ok"
+			}
+		}
+
+		if deps.Redis != nil {
+			if err := deps.Redis.Ping(ctx); err != nil {
+				checks["redis"] = err.Error()
+				allOK = false
+			} else {
+				checks["redis"] = "ok"
+			}
+		}
+
+		if !allOK {
+			writeJSON(w, http.StatusServiceUnavailable, Status{Status: "not_ready", Checks: checks})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, Status{Status: "ready", Checks: checks})
+	}
 }
 
-// startupHandler signals that the service has completed startup.
 func startupHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Status{Status: "started"})
 }

@@ -1,0 +1,59 @@
+name: CI — Pylon Indexer
+
+on:
+  pull_request:
+    paths:
+      - "services/pylon-indexer/**"
+      - ".github/workflows/ci-python.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/pylon-indexer/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Configs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/pylon-indexer
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install validators
+        run: pip install pyyaml yamllint
+
+      - name: YAML lint
+        run: |
+          yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}}}" \
+            pylon.yml configs/
+
+      - name: Validate YAML structure
+        run: |
+          python -c "
+          import yaml, sys, pathlib
+          errors = []
+          for f in pathlib.Path('.').rglob('*.yml'):
+              try:
+                  yaml.safe_load(f.read_text())
+              except yaml.YAMLError as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              print('\n'.join(errors))
+              sys.exit(1)
+          print('All YAML configs valid.')
+          "
+
+      - name: Verify Containerfile
+        run: |
+          grep -q "FROM ghcr.io/eliteaai/pylon" Containerfile
+          echo "Containerfile base image OK."

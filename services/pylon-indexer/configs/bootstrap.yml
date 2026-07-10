@@ -1,0 +1,17 @@
+debug: false
+
+plugin_repo:
+  - type: elitea_github
+    release: ${ELITEA_RELEASE:-main}
+    add_source_data: true
+    add_head_data: true
+
+preordered_plugins:
+  - shared
+  - auth
+  - worker_core
+  - sdk_plugin
+  - indexer_worker
+  - provider_worker
+  - runtime_engine_litellm
+  - tracing

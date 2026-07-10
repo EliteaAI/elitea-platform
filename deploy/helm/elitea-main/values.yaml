@@ -1,0 +1,61 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/eliteaai/elitea-main
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+env:
+  DATABASE_URL: ""
+  REDIS_URL: ""
+  SHADOW_ENABLED: "false"
+  SHADOW_LEGACY_URL: ""
+  SHADOW_WEIGHT: "0.1"
+  LEGACY_URL: ""
+  CANARY_WEIGHT: "0.1"
+
+probes:
+  startup:
+    path: /startupz
+    initialDelaySeconds: 2
+    periodSeconds: 3
+    failureThreshold: 10
+  liveness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    periodSeconds: 5
+    failureThreshold: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

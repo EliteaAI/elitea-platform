@@ -7,15 +7,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Config holds PostgreSQL connection settings.
 type Config struct {
-	DSN         string
-	MaxConns    int32
-	MinConns    int32
+	DSN      string
+	MaxConns int32
+	MinConns int32
 }
 
-// NewPool creates a pgxpool connection pool from the provided config.
-func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
+type Pool struct {
+	*pgxpool.Pool
+}
+
+func NewPool(ctx context.Context, cfg Config) (*Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("db: parse config: %w", err)
@@ -35,5 +37,9 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("db: ping: %w", err)
 	}
-	return pool, nil
+	return &Pool{Pool: pool}, nil
+}
+
+func (p *Pool) Ping(ctx context.Context) error {
+	return p.Pool.Ping(ctx)
 }

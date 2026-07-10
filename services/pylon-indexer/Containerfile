@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1.7
+#
+# pylon-indexer: agent runtime & SDK execution
+# Uses the shared pylon base image; plugins are loaded at startup from git (bootstrap).
+#
+
+ARG PYLON_VERSION=1.2.25
+FROM ghcr.io/eliteaai/pylon:${PYLON_VERSION}
+
+WORKDIR /data
+
+# Copy default configs (overridable via volume mount / ConfigMap)
+COPY configs/ /data/configs/
+
+# Copy pylon seed config
+COPY pylon.yml /data/pylon.yml
+
+ENV NAME=pylon-indexer \
+    PYLON_WEB_RUNTIME=waitress \
+    PYLON_CONFIG_SEED=file:/data/pylon.yml
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1

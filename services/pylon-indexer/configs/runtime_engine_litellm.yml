@@ -1,0 +1,15 @@
+database_url: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/litellm
+litellm_master_key: ${LITELLM_MASTER_KEY:-sk-elitea-litellm}
+enabled: true
+
+server_root_path: /api/v1/admin/litellm
+prisma_home: /data/cache/prisma
+litellm_database_mode: elitea
+litellm_db_name: litellm
+proxy_litellm: true
+
+venv:
+  enabled: true
+  path: /data/cache/venv/runtime_engine_litellm
+  packages:
+    - litellm[proxy]==1.72.4

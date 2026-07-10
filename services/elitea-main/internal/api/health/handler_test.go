@@ -1,0 +1,119 @@
+package health_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
+)
+
+type mockChecker struct {
+	err error
+}
+
+func (m *mockChecker) Ping(_ context.Context) error {
+	return m.err
+}
+
+func TestLiveness(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{})
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var s health.Status
+	json.NewDecoder(rec.Body).Decode(&s)
+	if s.Status != "ok" {
+		t.Errorf("expected status ok, got %q", s.Status)
+	}
+}
+
+func TestReadiness_NoDeps(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{})
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestReadiness_AllHealthy(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{
+		DB:    &mockChecker{},
+		Redis: &mockChecker{},
+	})
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var s health.Status
+	json.NewDecoder(rec.Body).Decode(&s)
+	if s.Status != "ready" {
+		t.Errorf("expected status ready, got %q", s.Status)
+	}
+	if s.Checks["db"] != "ok" {
+		t.Errorf("expected db ok, got %q", s.Checks["db"])
+	}
+	if s.Checks["redis"] != "ok" {
+		t.Errorf("expected redis ok, got %q", s.Checks["redis"])
+	}
+}
+
+func TestReadiness_DBDown(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{
+		DB:    &mockChecker{err: errors.New("connection refused")},
+		Redis: &mockChecker{},
+	})
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+	var s health.Status
+	json.NewDecoder(rec.Body).Decode(&s)
+	if s.Status != "not_ready" {
+		t.Errorf("expected status not_ready, got %q", s.Status)
+	}
+	if s.Checks["db"] != "connection refused" {
+		t.Errorf("expected db error, got %q", s.Checks["db"])
+	}
+}
+
+func TestReadiness_RedisDown(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{
+		DB:    &mockChecker{},
+		Redis: &mockChecker{err: errors.New("redis timeout")},
+	})
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestStartup(t *testing.T) {
+	r := health.RoutesWithDeps(health.Deps{})
+	req := httptest.NewRequest("GET", "/startupz", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}

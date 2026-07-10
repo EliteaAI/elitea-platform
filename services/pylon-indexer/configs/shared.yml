@@ -1,0 +1,23 @@
+settings:
+  app_ip: localhost
+  app_host: http://localhost:3000
+  app_scheme: http
+  arbiter_runtime: redis
+  redis_host: ${REDIS_HOST:-redis}
+  redis_port: ${REDIS_PORT:-6379}
+  redis_password: ${REDIS_PASSWORD:-}
+  redis_use_ssl: ${REDIS_SSL:-false}
+  force_inject_db: true
+  database_vendor: postgres
+  database_engine_options:
+    pool_pre_ping: true
+    pool_size: 5
+    max_overflow: 10
+    pool_recycle: 3600
+  postgres_host: ${POSTGRES_HOST:-postgres}
+  postgres_port: ${POSTGRES_PORT:-5432}
+  postgres_user: ${POSTGRES_USER:-elitea}
+  postgres_password: ${POSTGRES_PASSWORD:-elitea}
+  postgres_db: ${POSTGRES_DB:-elitea}
+  secrets_engine: database
+  secrets_master_key: ${SECRETS_MASTER_KEY:-INw4szNnkFENciD_DpAhrBxkuNdS0Ogfk7eUPUnwkPE=}

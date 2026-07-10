@@ -2,22 +2,25 @@ version: "3"
 
 vars:
   SERVICE: services/elitea-main
+  PY_SERVICE: services/pylon-indexer
 
 tasks:
+  # ── Go ────────────────────────────────────────────────────────────────────────
   build:
     desc: Build elitea-main binary
     dir: "{{.SERVICE}}"
     cmds:
       - go build -o bin/elitea-main ./cmd/elitea-main
+      - go build -o bin/cutover-ctl ./cmd/cutover-ctl
 
   test:
-    desc: Run all tests across the workspace
+    desc: Run all Go tests across the workspace
     cmds:
       - go test -race -count=1 ./services/...
       - go test -race -count=1 ./libs/...
 
   lint:
-    desc: Run golangci-lint
+    desc: Run golangci-lint on Go code
     dir: "{{.SERVICE}}"
     cmds:
       - golangci-lint run ./...
@@ -34,13 +37,102 @@ tasks:
     cmds:
       - go run ./cmd/elitea-main
 
-  docker:
-    desc: Build Docker image via BuildKit Bake
-    cmds:
-      - docker buildx bake --file docker-bake.hcl elitea-main
-
   sqlc:
     desc: Regenerate sqlc query bindings
     dir: "{{.SERVICE}}"
     cmds:
       - sqlc generate
+
+  # ── UI ────────────────────────────────────────────────────────────────────────
+  ui:build:
+    desc: Build EliteaUI SPA
+    cmds:
+      - cd apps/elitea-ui && npm ci && npm run build
+
+  ui:lint:
+    desc: Lint EliteaUI
+    cmds:
+      - cd apps/elitea-ui && npm run lint
+
+  # ── Pylon Indexer ─────────────────────────────────────────────────────────────
+  pylon:validate:
+    desc: Validate pylon-indexer YAML configs
+    dir: "{{.PY_SERVICE}}"
+    cmds:
+      - python -c "import yaml, pathlib; [yaml.safe_load(f.read_text()) for f in pathlib.Path('.').rglob('*.yml')]"
+
+  # ── Local Environment ─────────────────────────────────────────────────────────
+  up:
+    desc: Start full local environment (postgres, redis, all services)
+    cmds:
+      - git submodule update --init --recursive
+      - podman compose -f deploy/docker-compose.yml up --build
+
+  up:detach:
+    desc: Start local environment in background
+    cmds:
+      - git submodule update --init --recursive
+      - podman compose -f deploy/docker-compose.yml up --build -d
+
+  up:full:
+    desc: Start with model cache pre-download (requires S3 access)
+    cmds:
+      - git submodule update --init --recursive
+      - podman compose -f deploy/docker-compose.yml --profile full up --build
+
+  down:
+    desc: Stop local environment
+    cmds:
+      - podman compose -f deploy/docker-compose.yml down
+
+  down:clean:
+    desc: Stop local environment and remove volumes
+    cmds:
+      - podman compose -f deploy/docker-compose.yml down -v
+
+  logs:
+    desc: Tail logs from all services
+    cmds:
+      - podman compose -f deploy/docker-compose.yml logs -f --tail=50
+
+  # ── Container Images ──────────────────────────────────────────────────────────
+  images:
+    desc: Build all container images
+    cmds:
+      - task: images:go
+      - task: images:ui
+      - task: images:pylon
+
+  images:go:
+    desc: Build Go service image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile services/elitea-main
+
+  images:ui:
+    desc: Build UI image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/elitea-ui:dev -f deploy/docker/Containerfile.elitea-ui .
+
+  images:pylon:
+    desc: Build pylon-indexer image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/pylon-indexer:dev -f services/pylon-indexer/Containerfile services/pylon-indexer
+
+  # ── Helm ──────────────────────────────────────────────────────────────────────
+  helm:lint:
+    desc: Lint all Helm charts
+    cmds:
+      - |
+        for chart in deploy/helm/*/Chart.yaml; do
+          helm lint "$(dirname "$chart")"
+        done
+
+  # ── All ───────────────────────────────────────────────────────────────────────
+  all:
+    desc: Run all checks (Go + UI + Pylon + Helm)
+    cmds:
+      - task: vet
+      - task: lint
+      - task: test
+      - task: pylon:validate
+      - task: helm:lint

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "elitea-main.fullname" . }}-config
+  labels:
+    {{- include "elitea-main.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: {{ .Values.env.DATABASE_URL | quote }}
+  REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
+  SHADOW_ENABLED: {{ .Values.env.SHADOW_ENABLED | quote }}
+  SHADOW_LEGACY_URL: {{ .Values.env.SHADOW_LEGACY_URL | quote }}
+  SHADOW_WEIGHT: {{ .Values.env.SHADOW_WEIGHT | quote }}
+  LEGACY_URL: {{ .Values.env.LEGACY_URL | quote }}
+  CANARY_WEIGHT: {{ .Values.env.CANARY_WEIGHT | quote }}

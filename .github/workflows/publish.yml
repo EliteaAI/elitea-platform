@@ -1,0 +1,258 @@
+name: Release & Publish
+
+on:
+  push:
+    branches:
+      - main
+      - next
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/eliteaai
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # ── Job 1: Semantic Release — determine version, create tag & GitHub release ─
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+      new_release_git_tag: ${{ steps.semantic.outputs.new_release_git_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Semantic Release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Job 2: Build each image on its native runner ────────────────────────────
+  build:
+    name: Build ${{ matrix.image.name }} / ${{ matrix.platform.suffix }}
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - name: elitea-main
+            context: ./services/elitea-main
+            dockerfile: ./services/elitea-main/Containerfile
+          - name: elitea-ui
+            context: .
+            dockerfile: ./deploy/docker/Containerfile.elitea-ui
+          - name: pylon-indexer
+            context: ./services/pylon-indexer
+            dockerfile: ./services/pylon-indexer/Containerfile
+        platform:
+          - runner: ubuntu-latest
+            arch: linux/amd64
+            suffix: linux-amd64
+          - runner: [self-hosted, arm64]
+            arch: linux/arm64
+            suffix: linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.new_release_git_tag }}
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform-specific image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.image.name }}:${{ needs.release.outputs.new_release_version }}-${{ matrix.platform.suffix }}
+          build-args: |
+            VERSION=${{ needs.release.outputs.new_release_version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.release.outputs.new_release_version }}
+          platforms: ${{ matrix.platform.arch }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
+
+  # ── Job 3: Merge platform digests into a single multi-arch manifest ──────────
+  manifest:
+    name: Manifest ${{ matrix.image.name }}
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        image:
+          - name: elitea-main
+          - name: elitea-ui
+          - name: pylon-indexer
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ matrix.image.name }}"
+
+          TAGS="--tag ${IMAGE}:${VERSION}"
+          if [[ "$VERSION" != *"-"* ]]; then
+            MAJOR_MINOR="${VERSION%.*}"
+            TAGS="$TAGS --tag ${IMAGE}:latest --tag ${IMAGE}:${MAJOR_MINOR}"
+          fi
+
+          docker buildx imagetools create $TAGS \
+            "${IMAGE}:${VERSION}-linux-amd64" \
+            "${IMAGE}:${VERSION}-linux-arm64"
+
+  # ── Job 4: Keyless cosign signing ───────────────────────────────────────────
+  sign:
+    name: Sign ${{ matrix.image.name }}
+    needs: [release, manifest]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: elitea-main
+          - name: elitea-ui
+          - name: pylon-indexer
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign multi-arch manifest
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          IMAGE="${{ env.REGISTRY }}/${{ matrix.image.name }}"
+
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  # ── Job 5: Rollback — delete release, tag, and images on failure ────────────
+  rollback:
+    name: Rollback
+    needs: [release, build, manifest, sign]
+    if: failure() && needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete GitHub release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.release.outputs.new_release_git_tag }}"
+          REPO="${{ github.repository }}"
+
+          echo "Deleting release for tag ${TAG}..."
+          RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true)
+          if [ -n "$RELEASE_ID" ]; then
+            gh api -X DELETE "repos/${REPO}/releases/${RELEASE_ID}"
+            echo "Release deleted."
+          fi
+
+          echo "Deleting tag ${TAG}..."
+          gh api -X DELETE "repos/${REPO}/git/refs/tags/${TAG#v}" 2>/dev/null || \
+          gh api -X DELETE "repos/${REPO}/git/refs/tags/${TAG}" 2>/dev/null || true
+          echo "Tag deleted."
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete pushed images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.release.outputs.new_release_version }}"
+          IMAGES=("elitea-main" "elitea-ui" "pylon-indexer")
+          SUFFIXES=("linux-amd64" "linux-arm64")
+          ORG="eliteaai"
+
+          for img in "${IMAGES[@]}"; do
+            # Delete platform-specific tags
+            for suffix in "${SUFFIXES[@]}"; do
+              TAG="${VERSION}-${suffix}"
+              echo "Deleting ${img}:${TAG}..."
+              # Get version ID by tag and delete
+              VERSION_ID=$(gh api "orgs/${ORG}/packages/container/${img}/versions" \
+                --jq ".[] | select(.metadata.container.tags[] == \"${TAG}\") | .id" 2>/dev/null || true)
+              if [ -n "$VERSION_ID" ]; then
+                gh api -X DELETE "orgs/${ORG}/packages/container/${img}/versions/${VERSION_ID}" 2>/dev/null || true
+              fi
+            done
+
+            # Delete multi-arch manifest tag
+            echo "Deleting ${img}:${VERSION} manifest..."
+            VERSION_ID=$(gh api "orgs/${ORG}/packages/container/${img}/versions" \
+              --jq ".[] | select(.metadata.container.tags[] == \"${VERSION}\") | .id" 2>/dev/null || true)
+            if [ -n "$VERSION_ID" ]; then
+              gh api -X DELETE "orgs/${ORG}/packages/container/${img}/versions/${VERSION_ID}" 2>/dev/null || true
+            fi
+          done
+
+          echo "Rollback complete."

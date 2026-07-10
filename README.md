@@ -1,0 +1,197 @@
+# elitea-platform
+
+Monorepo for the EliteA AI platform — Go API, React SPA, and Pylon agent runtime.
+
+## Architecture
+
+```
+elitea-platform/
+├── services/
+│   ├── elitea-main/       # Go API server (chi/v5, pgx/v5, go-redis/v9)
+│   └── pylon-indexer/     # Agent runtime (pylon-based, plugin-driven)
+├── apps/
+│   └── elitea-ui/         # React SPA (git submodule)
+├── libs/go/               # Shared Go libraries
+├── deploy/
+│   ├── docker/            # Containerfiles for UI
+│   ├── docker-compose.yml # Local dev environment
+│   └── helm/              # Kubernetes Helm charts
+└── .github/workflows/     # CI/CD pipelines
+```
+
+## Prerequisites
+
+- [Go 1.25+](https://go.dev/dl/)
+- [Podman](https://podman.io/docs/installation) with podman-compose
+- [Task](https://taskfile.dev/installation/) (task runner)
+- [Node.js 24+](https://nodejs.org/) (for UI development)
+- [Helm 3.16+](https://helm.sh/docs/intro/install/) (for chart linting)
+
+## Quick Start
+
+```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/EliteaAI/elitea-platform.git
+cd elitea-platform
+
+# Start everything (postgres, redis, elitea-main, elitea-ui, pylon-indexer)
+task up
+
+# Or manually:
+podman compose -f deploy/docker-compose.yml up --build
+```
+
+Services will be available at:
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| elitea-main | http://localhost:8080 | Go API |
+| elitea-ui | http://localhost:3000 | React SPA |
+| pylon-indexer | http://localhost:8081 | Agent runtime |
+| postgres | localhost:5432 | PostgreSQL 16 |
+| redis | localhost:6379 | Redis 7 |
+
+## Common Tasks
+
+```bash
+task up              # Start full local environment (foreground)
+task up:detach       # Start in background
+task down            # Stop all services
+task down:clean      # Stop and remove volumes
+task logs            # Tail logs from all services
+
+task build           # Build Go binaries
+task test            # Run all Go tests
+task lint            # Run golangci-lint
+task vet             # Run go vet
+
+task ui:build        # Build EliteaUI SPA
+task ui:lint         # Lint EliteaUI
+
+task pylon:validate  # Validate pylon-indexer YAML configs
+
+task images          # Build all container images
+task images:go       # Build Go image only
+task images:ui       # Build UI image only
+task images:pylon    # Build pylon image only
+
+task helm:lint       # Lint all Helm charts
+task all             # Run all checks
+```
+
+## Services
+
+### elitea-main (Go)
+
+The core platform API. Handles authentication, project management, prompt library, and orchestrates communication between frontend and agent runtime.
+
+```bash
+cd services/elitea-main
+go run ./cmd/elitea-main     # Run directly
+go run ./cmd/cutover-ctl     # Migration cutover CLI
+```
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `REDIS_URL` | — | Redis host:port |
+| `LEGACY_URL` | (empty) | Legacy pylon_main URL (enables cutover routing) |
+| `CANARY_WEIGHT` | `0` | Canary traffic percentage (0-100) |
+
+### pylon-indexer (Python/Pylon)
+
+Agent runtime and SDK execution engine. Uses the shared pylon base image and loads plugins dynamically from the [bootstrap](https://github.com/EliteaAI/bootstrap) repository at startup.
+
+**Plugins loaded:** worker_core, sdk_plugin, indexer_worker, provider_worker, runtime_engine_litellm, tracing
+
+**Key environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ELITEA_RELEASE` | `main` | Bootstrap branch / release tag for plugins |
+| `PYLON_VERSION` | `1.2.25` | Base pylon image version (build arg) |
+| `REDIS_HOST` | `redis` | Redis hostname |
+| `POSTGRES_HOST` | `postgres` | PostgreSQL hostname |
+
+First startup takes 1-2 minutes while plugins are cloned and requirements installed. Subsequent starts use the cache volume.
+
+### elitea-ui (React)
+
+React SPA served by nginx. Connected as a git submodule from [EliteaUI](https://github.com/EliteaAI/EliteaUI).
+
+```bash
+cd apps/elitea-ui
+npm ci
+npm run dev          # Local dev server
+npm run build        # Production build
+```
+
+## CI/CD
+
+All workflows are in `.github/workflows/`:
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `ci-go.yml` | PR/push to Go paths | Lint, test, build validation |
+| `ci-ui.yml` | PR/push to UI paths | Lint, build SPA |
+| `ci-python.yml` | PR/push to pylon-indexer | Validate YAML configs |
+| `helm-lint.yml` | PR/push to helm paths | Lint charts, template dry-run |
+| `publish.yml` | Push to main/next | Semantic release → build → sign |
+
+### Release Flow
+
+```
+commit → main     → semantic-release → v1.2.0 → build images → sign with cosign
+commit → next     → semantic-release → v1.3.0-rc.1 → build RC images
+```
+
+- **Versioning:** [Conventional Commits](https://www.conventionalcommits.org/) via semantic-release
+- **Images:** Multi-arch (amd64 + arm64), native builds on platform-specific runners (Docker in CI, Podman locally)
+- **Signing:** Keyless cosign via Sigstore OIDC
+- **Rollback:** On any build/sign failure, the release, tag, and images are automatically deleted
+- **Registry:** `ghcr.io/eliteaai`
+
+### Commit Convention
+
+```
+feat: add new endpoint        → minor bump (1.x.0)
+fix: correct validation       → patch bump (1.0.x)
+feat!: breaking change        → major bump (x.0.0)
+chore: update deps            → no release
+```
+
+## Development
+
+### Go Workspace
+
+The repo uses `go.work` to manage multiple modules:
+
+```bash
+go work sync         # Sync workspace
+go test ./...        # Test everything
+```
+
+### Adding a New Service
+
+1. Create directory under `services/<name>/`
+2. Add Containerfile
+3. Add to `docker-bake.hcl` and `deploy/docker-compose.yml`
+4. Add CI workflow in `.github/workflows/`
+5. Add to `publish.yml` image matrix
+
+### Helm Deployment
+
+```bash
+helm template my-release deploy/helm/elitea-main/ \
+  -f deploy/helm/elitea-main/values-staging.yaml
+
+helm upgrade --install elitea-main deploy/helm/elitea-main/ \
+  -f deploy/helm/elitea-main/values-staging.yaml \
+  -n elitea --create-namespace
+```
+
+## License
+
+Proprietary — EliteaAI

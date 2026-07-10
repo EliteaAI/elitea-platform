@@ -1,0 +1,56 @@
+name: CI — UI
+
+on:
+  pull_request:
+    paths:
+      - "apps/elitea-ui/**"
+      - ".github/workflows/ci-ui.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/elitea-ui/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.app.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: elitea-ui
+            path: apps/elitea-ui
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ${{ matrix.app.path }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.app.path }}
+        run: npm ci
+
+      - name: Lint
+        working-directory: ${{ matrix.app.path }}
+        run: npm run lint
+
+      - name: Build
+        working-directory: ${{ matrix.app.path }}
+        run: npm run build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.app.name }}-dist
+          path: ${{ matrix.app.path }}/dist/
+          retention-days: 7

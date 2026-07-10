@@ -1,0 +1,37 @@
+http:
+  routers:
+    api:
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/internal/`) || PathPrefix(`/admin/app`)"
+      service: elitea-main
+      entryPoints:
+        - web
+    app:
+      rule: "PathPrefix(`/app`)"
+      service: elitea-ui
+      entryPoints:
+        - web
+    root-redirect:
+      rule: "Path(`/`)"
+      service: elitea-ui
+      entryPoints:
+        - web
+      middlewares:
+        - redirect-to-app
+      priority: 1
+
+  middlewares:
+    redirect-to-app:
+      redirectRegex:
+        regex: "^(https?://[^/]*)/$"
+        replacement: "${1}/app/"
+        permanent: false
+
+  services:
+    elitea-main:
+      loadBalancer:
+        servers:
+          - url: "http://elitea-main:8080"
+    elitea-ui:
+      loadBalancer:
+        servers:
+          - url: "http://elitea-ui:80"
