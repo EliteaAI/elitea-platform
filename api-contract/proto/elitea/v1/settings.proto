@@ -1,0 +1,233 @@
+syntax = "proto3";
+
+package elitea.v1.settings;
+
+option go_package = "github.com/EliteaAI/elitea-platform/services/elitea-main/gen/proto/settings/v1;settingsv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+// SettingsService exposes project-level settings operations: project info,
+// project icons, and AI-assisted context-draft generation.
+service SettingsService {
+  // GenerateProjectContextDraft generates a draft for the project AI context
+  // using an LLM/predict backend. The request body is forwarded as-is.
+  rpc GenerateProjectContextDraft(GenerateProjectContextDraftRequest) returns (GenerateProjectContextDraftResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/generate_project_context_draft/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+
+  // ProjectInfo returns basic project metadata (name, icon_meta).
+  rpc ProjectInfo(ProjectInfoRequest) returns (ProjectInfoResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/project_info/prompt_lib/{project_id}/project-info"
+    };
+  }
+
+  // UpdateProjectIcon updates the project icon metadata (icon_meta field).
+  rpc UpdateProjectIcon(UpdateProjectIconRequest) returns (UpdateProjectIconResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/project_info/prompt_lib/{project_id}/project-info"
+      body: "*"
+    };
+  }
+
+  // UploadProjectIcon uploads a new project icon image (multipart/form-data).
+  // Note: grpc-gateway renders multipart bodies as google.protobuf.Struct;
+  // the actual file bytes are handled by an HTTP middleware layer before
+  // reaching the generated handler.
+  rpc UploadProjectIcon(UploadProjectIconRequest) returns (UploadProjectIconResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/project_icon/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // GetProjectIcons returns a paginated list of icons uploaded for a project.
+  rpc GetProjectIcons(GetProjectIconsRequest) returns (GetProjectIconsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/project_icon/prompt_lib/{project_id}"
+    };
+  }
+
+  // DeleteProjectIcon deletes a named project icon.
+  rpc DeleteProjectIcon(DeleteProjectIconRequest) returns (DeleteProjectIconResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/project_icon/prompt_lib/{project_id}/{name}"
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GenerateProjectContextDraft
+// ---------------------------------------------------------------------------
+
+// GenerateProjectContextDraftRequest is the request message for
+// GenerateProjectContextDraft.
+message GenerateProjectContextDraftRequest {
+  // project_id identifies the project to generate a context draft for.
+  string project_id = 1;
+
+  // body is the arbitrary JSON payload forwarded to the predict/indexer
+  // backend. The schema is defined by the underlying LLM service contract.
+  google.protobuf.Struct body = 2;
+}
+
+// GenerateProjectContextDraftResponse carries the generated draft content
+// returned by the predict backend.
+message GenerateProjectContextDraftResponse {
+  // result contains the raw response from the predict/indexer backend.
+  google.protobuf.Struct result = 1;
+}
+
+// ---------------------------------------------------------------------------
+// ProjectInfo
+// ---------------------------------------------------------------------------
+
+// ProjectInfoRequest is the request message for ProjectInfo.
+message ProjectInfoRequest {
+  // project_id identifies the target project.
+  string project_id = 1;
+}
+
+// IconMeta holds the metadata for a project icon.
+message IconMeta {
+  // url is the URL path at which the icon is served.
+  string url = 1;
+
+  // width is the icon width in pixels.
+  int32 width = 2;
+
+  // height is the icon height in pixels.
+  int32 height = 3;
+}
+
+// ProjectInfoResponse is the response message for ProjectInfo.
+message ProjectInfoResponse {
+  // name is the human-readable project name.
+  string name = 1;
+
+  // icon_meta holds the project icon metadata. Absent when no icon is set.
+  IconMeta icon_meta = 2;
+}
+
+// ---------------------------------------------------------------------------
+// UpdateProjectIcon
+// ---------------------------------------------------------------------------
+
+// UpdateProjectIconRequest is the request message for UpdateProjectIcon.
+// Despite the RPC name, this endpoint updates the project-info record
+// (name and/or icon_meta) via a PUT on the project-info path.
+message UpdateProjectIconRequest {
+  // project_id identifies the target project.
+  string project_id = 1;
+
+  // icon_meta contains the updated icon metadata to persist.
+  IconMeta icon_meta = 2;
+
+  // name is an optional updated display name for the project.
+  string name = 3;
+}
+
+// UpdateProjectIconResponse is the response message for UpdateProjectIcon.
+message UpdateProjectIconResponse {
+  // ok indicates whether the update succeeded.
+  bool ok = 1;
+}
+
+// ---------------------------------------------------------------------------
+// UploadProjectIcon
+// ---------------------------------------------------------------------------
+
+// UploadProjectIconRequest is the request message for UploadProjectIcon.
+// The file bytes are delivered as multipart/form-data; grpc-gateway maps the
+// non-file fields to this message. A middleware layer extracts the raw file
+// and injects the resulting URL before the RPC handler is invoked.
+message UploadProjectIconRequest {
+  // project_id identifies the project that will own the uploaded icon.
+  string project_id = 1;
+
+  // width is the intended display width of the icon in pixels.
+  int32 width = 2;
+
+  // height is the intended display height of the icon in pixels.
+  int32 height = 3;
+
+  // file_name carries the original filename of the uploaded file.
+  // Populated by the multipart middleware from the form-file header.
+  string file_name = 4;
+}
+
+// UploadProjectIconResponse is the response message for UploadProjectIcon.
+message UploadProjectIconResponse {
+  // ok indicates whether the upload succeeded.
+  bool ok = 1;
+
+  // url is the path at which the uploaded icon is now served.
+  string url = 2;
+
+  // icon_meta holds the full metadata record created for the new icon.
+  IconMeta icon_meta = 3;
+
+  // name is the stored filename (without path prefix) of the uploaded icon.
+  string name = 4;
+}
+
+// ---------------------------------------------------------------------------
+// GetProjectIcons
+// ---------------------------------------------------------------------------
+
+// GetProjectIconsRequest is the request message for GetProjectIcons.
+message GetProjectIconsRequest {
+  // project_id identifies the project whose icons are listed.
+  string project_id = 1;
+
+  // limit caps the number of icons returned. Defaults to 20, maximum 100.
+  int32 limit = 2;
+
+  // skip is the zero-based offset for pagination (number of rows to skip).
+  int32 skip = 3;
+}
+
+// ProjectIcon represents a single project icon entry.
+message ProjectIcon {
+  // name is the stored filename of the icon.
+  string name = 1;
+
+  // url is the path at which the icon is served.
+  string url = 2;
+
+  // icon_meta holds additional metadata such as dimensions.
+  IconMeta icon_meta = 3;
+}
+
+// GetProjectIconsResponse is the response message for GetProjectIcons.
+message GetProjectIconsResponse {
+  // rows contains the page of icon records.
+  repeated ProjectIcon rows = 1;
+
+  // total is the total number of icons available for this project.
+  int32 total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// DeleteProjectIcon
+// ---------------------------------------------------------------------------
+
+// DeleteProjectIconRequest is the request message for DeleteProjectIcon.
+message DeleteProjectIconRequest {
+  // project_id identifies the project that owns the icon.
+  string project_id = 1;
+
+  // name is the filename of the icon to delete.
+  string name = 2;
+}
+
+// DeleteProjectIconResponse is the response message for DeleteProjectIcon.
+// The underlying HTTP handler returns 204 No Content on success.
+message DeleteProjectIconResponse {
+  // ok indicates whether the deletion succeeded.
+  bool ok = 1;
+}

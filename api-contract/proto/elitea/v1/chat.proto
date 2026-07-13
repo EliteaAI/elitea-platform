@@ -1,0 +1,1032 @@
+syntax = "proto3";
+
+package elitea.v1.chat;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/eliteaai/elitea-main/gen/go/elitea/v1/chat;chatv1";
+
+// ChatService exposes all chat, conversation, message, canvas, folder,
+// context-management, and attachment operations for the Elitea chat domain.
+//
+// URL base for elitea_core endpoints:  /api/v2/elitea_core
+// URL base for context_manager endpoints: /api/v2/context_manager
+//
+// All project-scoped routes use the prompt_lib mode segment:
+//   /api/v2/elitea_core/{resource}/prompt_lib/{project_id}[/{id}...]
+//
+// URL conflicts resolved by merging:
+//   - GET  /conversation/{project_id}/{id}        → GetConversation
+//     (was: getRunHistoryDetails + conversationDetails — same URL, same method)
+//   - PUT  /conversation/{project_id}/{id}        → UpdateConversation (oneof body/is_hidden)
+//     (was: conversationEdit + deleteRunHistoryItem — same URL, same method)
+//   - DELETE /task/{project_id}/{task_id}         → StopTask
+//     (was: stopLlmTask + stopChatTask — same URL template, parameter name differed)
+//   - GET  /folder/{project_id}                   → ListFolders
+//     (was: foldersList + folderConversations + dateGroupConversations — same URL, query params selected behaviour)
+//
+// POST /predict_llm/{project_id} is intentionally kept as two separate RPCs
+// (streaming vs unary); the gateway must route by inspecting whether `sid` is
+// present in the request body.
+service ChatService {
+
+  // -------------------------------------------------------------------------
+  // Chat Config
+  // -------------------------------------------------------------------------
+
+  // GetChatConfig returns model defaults and chat configuration for a project.
+  // GET /api/v2/elitea_core/chat_config/prompt_lib/{project_id}
+  rpc GetChatConfig(GetChatConfigRequest) returns (GetChatConfigResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/chat_config/prompt_lib/{project_id}"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // LLM Prediction
+  // -------------------------------------------------------------------------
+
+  // GenerateContentStreaming sends a prompt to the LLM and streams back the
+  // response as server-sent events.  Identified by the presence of `sid` in
+  // the request body.
+  // POST /api/v2/elitea_core/predict_llm/prompt_lib/{project_id}
+  // Note: the gateway route uses a /stream suffix to disambiguate from the
+  // blocking variant; both originally shared the same Python URL and are
+  // differentiated at the backend by the `sid` field in the request body.
+  rpc GenerateContentStreaming(GenerateContentStreamingRequest)
+      returns (stream GenerateContentStreamingResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/predict_llm/prompt_lib/{project_id}/stream"
+      body: "*"
+      additional_bindings {
+        post: "/api/v2/elitea_core/predict_llm/prompt_lib/{project_id}"
+        body: "*"
+      }
+    };
+  }
+
+  // GenerateContentBlocking sends a prompt to the LLM and waits for the full
+  // response before returning.  Used when `sid` is absent.
+  // POST /api/v2/elitea_core/predict_llm/prompt_lib/{project_id}
+  rpc GenerateContentBlocking(GenerateContentBlockingRequest)
+      returns (GenerateContentBlockingResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/predict_llm/prompt_lib/{project_id}/blocking"
+      body: "*"
+    };
+  }
+
+  // StopTask cancels an in-flight prediction or chat task.
+  // Merges stopLlmTask (task_id) and stopChatTask (message_group_uuid) —
+  // both map to the same DELETE URL template.
+  // DELETE /api/v2/elitea_core/task/prompt_lib/{project_id}/{task_id}
+  rpc StopTask(StopTaskRequest) returns (StopTaskResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/task/prompt_lib/{project_id}/{task_id}"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Conversations
+  // -------------------------------------------------------------------------
+
+  // GetRunHistoryList returns a paginated list of run-history conversations.
+  // GET /api/v2/elitea_core/conversations/prompt_lib/{project_id}
+  rpc GetRunHistoryList(GetRunHistoryListRequest)
+      returns (GetRunHistoryListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/conversations/prompt_lib/{project_id}"
+    };
+  }
+
+  // ConversationCreate creates a new conversation thread.
+  // POST /api/v2/elitea_core/conversations/prompt_lib/{project_id}
+  rpc ConversationCreate(ConversationCreateRequest)
+      returns (ConversationCreateResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/conversations/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // GetConversation returns details for a single conversation.
+  // Merges getRunHistoryDetails and conversationDetails (same URL).
+  // Optional query parameters (messages_offset, messages_limit, sort_order)
+  // are used when called as conversationDetails.
+  // GET /api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}
+  rpc GetConversation(GetConversationRequest) returns (GetConversationResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // UpdateConversation updates an existing conversation.
+  // Merges conversationEdit (body field) and deleteRunHistoryItem (is_hidden
+  // field) — both are PUT to the same URL.  The `update` oneof selects which
+  // operation the caller intends.
+  // PUT /api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}
+  rpc UpdateConversation(UpdateConversationRequest)
+      returns (UpdateConversationResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteConversation permanently removes a conversation.
+  // DELETE /api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}
+  rpc DeleteConversation(DeleteConversationRequest)
+      returns (DeleteConversationResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/conversation/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // SelectConversation marks a conversation as the active selection.
+  // POST /api/v2/elitea_core/select_conversation/prompt_lib/{project_id}/{conversation_id}
+  rpc SelectConversation(SelectConversationRequest)
+      returns (SelectConversationResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/select_conversation/prompt_lib/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // UnselectConversation clears the active conversation selection for a project.
+  // DELETE /api/v2/elitea_core/select_conversation/prompt_lib/{project_id}
+  rpc UnselectConversation(UnselectConversationRequest)
+      returns (UnselectConversationResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/select_conversation/prompt_lib/{project_id}"
+    };
+  }
+
+  // Regenerate re-runs the LLM for a specific conversation turn.
+  // POST /api/v2/elitea_core/regenerate/prompt_lib/{project_id}/{id}
+  rpc Regenerate(RegenerateRequest) returns (RegenerateResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/regenerate/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Messages
+  // -------------------------------------------------------------------------
+
+  // MessageList returns a paginated list of messages within a conversation.
+  // GET /api/v2/elitea_core/messages/prompt_lib/{project_id}/{conversation_id}
+  rpc MessageList(MessageListRequest) returns (MessageListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/messages/prompt_lib/{project_id}/{conversation_id}"
+    };
+  }
+
+  // DeleteMessage removes a single message from a conversation.
+  // DELETE /api/v2/elitea_core/message/prompt_lib/{project_id}/{id}
+  rpc DeleteMessage(DeleteMessageRequest) returns (DeleteMessageResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/message/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // DeleteAllMessages removes all messages from a conversation.
+  // DELETE /api/v2/elitea_core/messages/prompt_lib/{project_id}/{conversation_id}
+  rpc DeleteAllMessages(DeleteAllMessagesRequest)
+      returns (DeleteAllMessagesResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/messages/prompt_lib/{project_id}/{conversation_id}"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Participants
+  // -------------------------------------------------------------------------
+
+  // AddParticipant adds one or more participants to a conversation.
+  // POST /api/v2/elitea_core/participants/prompt_lib/{project_id}/{id}
+  rpc AddParticipant(AddParticipantRequest) returns (AddParticipantResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/participants/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteParticipant removes a participant from a conversation.
+  // DELETE /api/v2/elitea_core/participant/prompt_lib/{project_id}/{conversation_id}/{id}
+  rpc DeleteParticipant(DeleteParticipantRequest)
+      returns (DeleteParticipantResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/participant/prompt_lib/{project_id}/{conversation_id}/{id}"
+    };
+  }
+
+  // UpdateParticipantSettings updates the settings for a specific participant.
+  // PUT /api/v2/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}
+  rpc UpdateParticipantSettings(UpdateParticipantSettingsRequest)
+      returns (UpdateParticipantSettingsResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}"
+      body: "*"
+    };
+  }
+
+  // UpdateParticipantLlmSettings patches LLM model settings for all
+  // participants in a conversation.
+  // PATCH /api/v2/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}
+  rpc UpdateParticipantLlmSettings(UpdateParticipantLlmSettingsRequest)
+      returns (UpdateParticipantLlmSettingsResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Canvas
+  // -------------------------------------------------------------------------
+
+  // CreateCanvas creates a new canvas with associated conversation threads.
+  // POST /api/v2/elitea_core/canvases/prompt_lib/{project_id}
+  rpc CreateCanvas(CreateCanvasRequest) returns (CreateCanvasResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/canvases/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // GetCanvas returns details for a single canvas.
+  // GET /api/v2/elitea_core/canvas/prompt_lib/{project_id}/{id}
+  rpc GetCanvas(GetCanvasRequest) returns (GetCanvasResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/canvas/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // UpdateCanvas updates an existing canvas.
+  // PUT /api/v2/elitea_core/canvas/prompt_lib/{project_id}/{canvas_uuid}
+  rpc UpdateCanvas(UpdateCanvasRequest) returns (UpdateCanvasResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/canvas/prompt_lib/{project_id}/{canvas_uuid}"
+      body: "*"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Context Management (elitea_core routes)
+  // -------------------------------------------------------------------------
+
+  // GetContextStatus returns context-window analytics for a conversation.
+  // GET /api/v2/elitea_core/context_analytics/prompt_lib/{project_id}/{conversation_id}
+  rpc GetContextStatus(GetContextStatusRequest)
+      returns (GetContextStatusResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/context_analytics/prompt_lib/{project_id}/{conversation_id}"
+    };
+  }
+
+  // UpdateContextStrategy sets the context management strategy for a
+  // conversation (e.g. summarise, truncate, sliding window).
+  // PUT /api/v2/elitea_core/context_strategy/prompt_lib/{project_id}/{conversation_id}
+  rpc UpdateContextStrategy(UpdateContextStrategyRequest)
+      returns (UpdateContextStrategyResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/context_strategy/prompt_lib/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Context Manager (context_manager routes)
+  // -------------------------------------------------------------------------
+
+  // OptimizeContext triggers an immediate context optimisation pass.
+  // POST /api/v2/context_manager/optimize_context/{project_id}/{conversation_id}
+  rpc OptimizeContext(OptimizeContextRequest) returns (OptimizeContextResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/context_manager/optimize_context/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // GetContextAnalytics returns token-budget utilisation analytics.
+  // GET /api/v2/context_manager/analytics/{project_id}/{conversation_id}
+  rpc GetContextAnalytics(GetContextAnalyticsRequest)
+      returns (GetContextAnalyticsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/context_manager/analytics/{project_id}/{conversation_id}"
+    };
+  }
+
+  // GenerateSummary creates a new summary for a conversation.
+  // POST /api/v2/context_manager/summaries/{project_id}/{conversation_id}
+  rpc GenerateSummary(GenerateSummaryRequest) returns (GenerateSummaryResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/context_manager/summaries/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // ListSummaries returns a paginated list of summaries for a conversation.
+  // GET /api/v2/context_manager/summaries/{project_id}/{conversation_id}
+  rpc ListSummaries(ListSummariesRequest) returns (ListSummariesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/context_manager/summaries/{project_id}/{conversation_id}"
+    };
+  }
+
+  // UpdateSummary updates the text or metadata of an existing summary.
+  // PUT /api/v2/context_manager/summary/{project_id}/{conversation_id}/{summary_id}
+  rpc UpdateSummary(UpdateSummaryRequest) returns (UpdateSummaryResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/context_manager/summary/{project_id}/{conversation_id}/{summary_id}"
+      body: "*"
+    };
+  }
+
+  // DeleteSummary removes a summary from a conversation.
+  // DELETE /api/v2/context_manager/summary/{project_id}/{conversation_id}/{summary_id}
+  rpc DeleteSummary(DeleteSummaryRequest) returns (DeleteSummaryResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/context_manager/summary/{project_id}/{conversation_id}/{summary_id}"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Attachments
+  // -------------------------------------------------------------------------
+
+  // SetAttachmentStorage configures the storage toolkit for a conversation.
+  // PUT /api/v2/elitea_core/attachment_storage/prompt_lib/{project_id}/{conversation_id}
+  rpc SetAttachmentStorage(SetAttachmentStorageRequest)
+      returns (SetAttachmentStorageResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/attachment_storage/prompt_lib/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // UploadAttachments uploads files to a conversation.
+  // The REST endpoint accepts multipart/form-data; the gRPC representation
+  // uses repeated FileUpload messages carrying raw bytes.
+  // POST /api/v2/elitea_core/attachments/prompt_lib/{project_id}/{conversation_id}
+  rpc UploadAttachments(UploadAttachmentsRequest)
+      returns (UploadAttachmentsResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/attachments/prompt_lib/{project_id}/{conversation_id}"
+      body: "*"
+    };
+  }
+
+  // RemoveAttachments deletes one or all attachments from a conversation.
+  // DELETE /api/v2/elitea_core/attachments/prompt_lib/{project_id}/{conversation_id}
+  rpc RemoveAttachments(RemoveAttachmentsRequest)
+      returns (RemoveAttachmentsResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/attachments/prompt_lib/{project_id}/{conversation_id}"
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Folders
+  // -------------------------------------------------------------------------
+
+  // FolderCreate creates a new conversation folder.
+  // POST /api/v2/elitea_core/folder/prompt_lib/{project_id}
+  rpc FolderCreate(FolderCreateRequest) returns (FolderCreateResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/folder/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // ListFolders covers three GET /folder/{project_id} call variants:
+  //   - foldersList:             grouped=true, no folder_id/date_group
+  //   - folderConversations:     grouped=true, folder_id set
+  //   - dateGroupConversations:  grouped=true, date_group set
+  // The handler inspects which optional fields are present to select behaviour.
+  // GET /api/v2/elitea_core/folder/prompt_lib/{project_id}
+  rpc ListFolders(ListFoldersRequest) returns (ListFoldersResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/folder/prompt_lib/{project_id}"
+    };
+  }
+
+  // FolderUpdate updates a folder's name or other metadata.
+  // PUT /api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}
+  rpc FolderUpdate(FolderUpdateRequest) returns (FolderUpdateResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // FolderPinUpdate toggles the pinned state of a folder.
+  // PATCH /api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}
+  rpc FolderPinUpdate(FolderPinUpdateRequest) returns (FolderPinUpdateResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // DeleteFolder permanently removes a folder.
+  // DELETE /api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}
+  rpc DeleteFolder(DeleteFolderRequest) returns (DeleteFolderResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/folder/prompt_lib/{project_id}/{id}"
+    };
+  }
+}
+
+// =============================================================================
+// Request / Response messages
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// GetChatConfig
+// -----------------------------------------------------------------------------
+
+message GetChatConfigRequest {
+  // Project whose chat configuration is requested.
+  int32 project_id = 1;
+}
+
+message GetChatConfigResponse {
+  // Opaque configuration object (model defaults, prompt library settings, etc.)
+  google.protobuf.Struct config = 1;
+}
+
+// -----------------------------------------------------------------------------
+// GenerateContentStreaming
+// -----------------------------------------------------------------------------
+
+message GenerateContentStreamingRequest {
+  int32  project_id           = 1;
+  // Session / stream identifier. Its presence signals streaming mode to the
+  // gateway; required for this RPC.
+  string sid                  = 2;
+  // Optional: seconds before the server returns a task_id instead of waiting.
+  double await_task_timeout   = 3;
+}
+
+// Each server-streaming message carries one chunk of the LLM output, matching
+// the SSE event payload shape emitted by the Python service.
+message GenerateContentStreamingResponse {
+  google.protobuf.Struct chunk = 1;
+}
+
+// -----------------------------------------------------------------------------
+// GenerateContentBlocking
+// -----------------------------------------------------------------------------
+
+message GenerateContentBlockingRequest {
+  int32  project_id           = 1;
+  // Optional: seconds before the server returns a task_id instead of blocking.
+  double await_task_timeout   = 2;
+}
+
+message GenerateContentBlockingResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// StopTask — merges stopLlmTask + stopChatTask
+// -----------------------------------------------------------------------------
+
+message StopTaskRequest {
+  int32  project_id = 1;
+  // Accepts either a numeric task identifier (stopLlmTask) or a
+  // message-group UUID (stopChatTask); both arrive as the same path segment.
+  string task_id    = 2;
+}
+
+message StopTaskResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// GetRunHistoryList
+// -----------------------------------------------------------------------------
+
+message GetRunHistoryListRequest {
+  int32  project_id             = 1;
+  string source                 = 2;
+  string entity_name            = 3;
+  // entity_meta_id and entity_meta_project_id are typed string|number in the
+  // REST API; string covers both numeric and UUID values.
+  string entity_meta_id         = 4;
+  string entity_meta_project_id = 5;
+  int32  limit                  = 6;
+  int32  offset                 = 7;
+}
+
+message GetRunHistoryListResponse {
+  repeated google.protobuf.Struct rows  = 1;
+  int32                           total = 2;
+}
+
+// -----------------------------------------------------------------------------
+// GetConversation — merges getRunHistoryDetails + conversationDetails
+// -----------------------------------------------------------------------------
+
+message GetConversationRequest {
+  int32  project_id      = 1;
+  string id              = 2;
+  // Optional query params used by the conversationDetails caller only.
+  int32  messages_offset = 3;
+  int32  messages_limit  = 4;
+  string sort_order      = 5; // "asc" | "desc"
+}
+
+message GetConversationResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateConversation — merges conversationEdit + deleteRunHistoryItem
+// -----------------------------------------------------------------------------
+
+message UpdateConversationRequest {
+  int32  project_id = 1;
+  string id         = 2;
+
+  // Callers set exactly one of these two alternatives:
+  //   body      — full conversation update (conversationEdit semantics)
+  //   is_hidden — soft-delete flag (deleteRunHistoryItem semantics)
+  oneof update {
+    google.protobuf.Struct body      = 3;
+    bool                   is_hidden = 4;
+  }
+}
+
+message UpdateConversationResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// -----------------------------------------------------------------------------
+// ConversationCreate
+// -----------------------------------------------------------------------------
+
+message ConversationCreateRequest {
+  int32                  project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+message ConversationCreateResponse {
+  string id = 1;
+}
+
+// -----------------------------------------------------------------------------
+// DeleteConversation
+// -----------------------------------------------------------------------------
+
+message DeleteConversationRequest {
+  int32  project_id = 1;
+  string id         = 2;
+}
+
+message DeleteConversationResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// SelectConversation / UnselectConversation
+// -----------------------------------------------------------------------------
+
+message SelectConversationRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+}
+
+message SelectConversationResponse {
+  google.protobuf.Struct result = 1;
+}
+
+message UnselectConversationRequest {
+  int32 project_id = 1;
+}
+
+message UnselectConversationResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Regenerate
+// -----------------------------------------------------------------------------
+
+message RegenerateRequest {
+  int32                  project_id = 1;
+  string                 id         = 2; // conversation ID
+  google.protobuf.Struct body       = 3;
+}
+
+message RegenerateResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// MessageList
+// -----------------------------------------------------------------------------
+
+message MessageListRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  int32  limit           = 3;
+  int32  offset          = 4;
+}
+
+message MessageListResponse {
+  repeated google.protobuf.Struct rows         = 1;
+  int32                           total        = 2;
+  bool                            is_load_more = 3;
+}
+
+// -----------------------------------------------------------------------------
+// DeleteMessage / DeleteAllMessages
+// -----------------------------------------------------------------------------
+
+message DeleteMessageRequest {
+  int32  project_id = 1;
+  string id         = 2; // message ID
+}
+
+message DeleteMessageResponse {
+  google.protobuf.Struct result = 1;
+}
+
+message DeleteAllMessagesRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+}
+
+message DeleteAllMessagesResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// AddParticipant
+// -----------------------------------------------------------------------------
+
+message AddParticipantRequest {
+  int32                           project_id   = 1;
+  string                          id           = 2; // conversation ID
+  repeated google.protobuf.Struct participants = 3;
+}
+
+message AddParticipantResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// DeleteParticipant
+// -----------------------------------------------------------------------------
+
+message DeleteParticipantRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  string id              = 3; // participant ID
+}
+
+message DeleteParticipantResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateParticipantSettings
+// -----------------------------------------------------------------------------
+
+message UpdateParticipantSettingsRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  string                 participant_id  = 3;
+  google.protobuf.Struct body            = 4;
+}
+
+message UpdateParticipantSettingsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateParticipantLlmSettings
+// -----------------------------------------------------------------------------
+
+message UpdateParticipantLlmSettingsRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  google.protobuf.Struct llm_settings    = 3;
+}
+
+message UpdateParticipantLlmSettingsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// CreateCanvas
+// -----------------------------------------------------------------------------
+
+message CreateCanvasRequest {
+  int32                  project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+message CreateCanvasResponse {
+  // Conversations created together with the canvas.
+  repeated google.protobuf.Struct conversations = 1;
+  // Full canvas object returned by the server.
+  google.protobuf.Struct          data          = 2;
+}
+
+// -----------------------------------------------------------------------------
+// GetCanvas
+// -----------------------------------------------------------------------------
+
+message GetCanvasRequest {
+  int32  project_id = 1;
+  string id         = 2; // canvas UUID
+}
+
+message GetCanvasResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateCanvas
+// -----------------------------------------------------------------------------
+
+message UpdateCanvasRequest {
+  int32                  project_id  = 1;
+  string                 canvas_uuid = 2;
+  google.protobuf.Struct body        = 3;
+}
+
+message UpdateCanvasResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// -----------------------------------------------------------------------------
+// GetContextStatus
+// -----------------------------------------------------------------------------
+
+message GetContextStatusRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+}
+
+message GetContextStatusResponse {
+  google.protobuf.Struct status = 1;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateContextStrategy
+// -----------------------------------------------------------------------------
+
+message UpdateContextStrategyRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  google.protobuf.Struct body            = 3;
+}
+
+message UpdateContextStrategyResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// OptimizeContext
+// -----------------------------------------------------------------------------
+
+message OptimizeContextRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  google.protobuf.Struct body            = 3;
+}
+
+message OptimizeContextResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// GetContextAnalytics
+// -----------------------------------------------------------------------------
+
+message GetContextAnalyticsRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+}
+
+message GetContextAnalyticsResponse {
+  google.protobuf.Struct analytics = 1;
+}
+
+// -----------------------------------------------------------------------------
+// GenerateSummary
+// -----------------------------------------------------------------------------
+
+message GenerateSummaryRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  google.protobuf.Struct body            = 3;
+}
+
+message GenerateSummaryResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// ListSummaries
+// -----------------------------------------------------------------------------
+
+message ListSummariesRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  int32  limit           = 3;
+  int32  offset          = 4;
+}
+
+message ListSummariesResponse {
+  repeated google.protobuf.Struct summaries = 1;
+  int32                           total     = 2;
+}
+
+// -----------------------------------------------------------------------------
+// UpdateSummary
+// -----------------------------------------------------------------------------
+
+message UpdateSummaryRequest {
+  int32                  project_id      = 1;
+  string                 conversation_id = 2;
+  string                 summary_id      = 3;
+  google.protobuf.Struct body            = 4;
+}
+
+message UpdateSummaryResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// DeleteSummary
+// -----------------------------------------------------------------------------
+
+message DeleteSummaryRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  string summary_id      = 3;
+}
+
+message DeleteSummaryResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// SetAttachmentStorage
+// -----------------------------------------------------------------------------
+
+message SetAttachmentStorageRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  // ID of the toolkit that provides the storage backend (e.g. S3/RustFS).
+  string toolkit_id      = 3;
+}
+
+message SetAttachmentStorageResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// UploadAttachments
+// -----------------------------------------------------------------------------
+
+// FileUpload represents a single file in a multipart upload.
+// The REST endpoint uses multipart/form-data; the gRPC equivalent carries each
+// file's raw bytes inline.  Large files should be split across streaming calls
+// or handled via a pre-signed URL obtained out-of-band.
+message FileUpload {
+  string filename     = 1;
+  string content_type = 2;
+  bytes  data         = 3;
+}
+
+message UploadAttachmentsRequest {
+  int32               project_id            = 1;
+  string              conversation_id       = 2;
+  repeated FileUpload files                 = 3;
+  // 0 = keep existing attachments, 1 = overwrite attachments with the same name.
+  int32               overwrite_attachments = 4;
+}
+
+message UploadAttachmentsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// RemoveAttachments
+// -----------------------------------------------------------------------------
+
+message RemoveAttachmentsRequest {
+  int32  project_id      = 1;
+  string conversation_id = 2;
+  // Optional: filename to remove.  When omitted, all attachments are removed.
+  string filename        = 3;
+  // 0 = delete from underlying storage, 1 = keep in storage (detach only).
+  int32  keep_in_storage = 4;
+}
+
+message RemoveAttachmentsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// FolderCreate
+// -----------------------------------------------------------------------------
+
+message FolderCreateRequest {
+  int32                  project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+message FolderCreateResponse {
+  string                          id            = 1;
+  repeated google.protobuf.Struct conversations = 2;
+}
+
+// -----------------------------------------------------------------------------
+// ListFolders — merges foldersList + folderConversations + dateGroupConversations
+// -----------------------------------------------------------------------------
+
+// All three GET /folder/{project_id} call variants map to this single RPC.
+// The handler selects behaviour based on which optional fields are populated:
+//   - neither folder_id nor date_group:  return flat folder list (foldersList)
+//   - folder_id set:                     return paginated conversations in folder
+//   - date_group set:                    return paginated conversations in date bucket
+message ListFoldersRequest {
+  int32  project_id = 1;
+  // When true, the server groups results; mirrors the `grouped` query param.
+  bool   grouped    = 2;
+  // Set to retrieve conversations within a specific folder.
+  string folder_id  = 3;
+  // Set to retrieve conversations in a named date bucket (e.g. "today", "last_week").
+  string date_group = 4;
+  // Pagination.
+  int32  limit      = 5;
+  int32  offset     = 6;
+  // Sorting.
+  string sort_by    = 7;
+  string sort_order = 8; // "asc" | "desc"
+  // Full-text search (foldersList only).
+  string search     = 9;
+}
+
+// ListFoldersResponse is a superset that covers all three response shapes.
+// When returning folder objects, rows contains folders and total is the folder count.
+// When returning paginated conversations, rows contains conversations.
+message ListFoldersResponse {
+  repeated google.protobuf.Struct rows  = 1;
+  int32                           total = 2;
+}
+
+// -----------------------------------------------------------------------------
+// FolderUpdate
+// -----------------------------------------------------------------------------
+
+message FolderUpdateRequest {
+  int32                  project_id = 1;
+  string                 id         = 2;
+  google.protobuf.Struct body       = 3;
+}
+
+message FolderUpdateResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// -----------------------------------------------------------------------------
+// FolderPinUpdate
+// -----------------------------------------------------------------------------
+
+message FolderPinUpdateRequest {
+  int32  project_id = 1;
+  string id         = 2;
+  bool   is_pinned  = 3;
+}
+
+message FolderPinUpdateResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// -----------------------------------------------------------------------------
+// DeleteFolder
+// -----------------------------------------------------------------------------
+
+message DeleteFolderRequest {
+  int32  project_id = 1;
+  string id         = 2;
+}
+
+message DeleteFolderResponse {
+  google.protobuf.Struct result = 1;
+}

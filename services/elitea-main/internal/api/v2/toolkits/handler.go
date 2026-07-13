@@ -98,6 +98,139 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"toolkit_types": merged, "total": len(merged)})
 }
 
+// toolkitTypeSchemas defines the JSON Schema for each toolkit type's settings.
+// This matches what pylon_indexer returns at /toolkits/ endpoint.
+var toolkitTypeSchemas = map[string]map[string]any{
+	"artifact": {
+		"type": "object",
+		"properties": map[string]any{
+			"bucket":                   map[string]any{"type": "string"},
+			"pgvector_configuration":   map[string]any{"type": "object"},
+			"embedding_model":          map[string]any{"type": "string"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"index_data":      map[string]any{"type": "object"},
+					"search_data":     map[string]any{"type": "object"},
+					"list_buckets":    map[string]any{"type": "object"},
+					"list_artifacts":  map[string]any{"type": "object"},
+					"read_artifact":   map[string]any{"type": "object"},
+					"upload_artifact": map[string]any{"type": "object"},
+					"delete_artifact": map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+	"github": {
+		"type": "object",
+		"properties": map[string]any{
+			"repository":    map[string]any{"type": "string"},
+			"access_token":  map[string]any{"type": "string"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"get_issue":           map[string]any{"type": "object"},
+					"list_issues":         map[string]any{"type": "object"},
+					"create_issue":        map[string]any{"type": "object"},
+					"update_issue":        map[string]any{"type": "object"},
+					"comment_on_issue":    map[string]any{"type": "object"},
+					"get_pull_request":    map[string]any{"type": "object"},
+					"list_pull_requests":  map[string]any{"type": "object"},
+					"create_pull_request": map[string]any{"type": "object"},
+					"get_file_content":    map[string]any{"type": "object"},
+					"list_files":          map[string]any{"type": "object"},
+					"search_code":         map[string]any{"type": "object"},
+					"create_file":         map[string]any{"type": "object"},
+					"update_file":         map[string]any{"type": "object"},
+					"delete_file":         map[string]any{"type": "object"},
+					"list_branches":       map[string]any{"type": "object"},
+					"create_branch":       map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+	"jira": {
+		"type": "object",
+		"properties": map[string]any{
+			"url":           map[string]any{"type": "string"},
+			"username":      map[string]any{"type": "string"},
+			"password":      map[string]any{"type": "string"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"get_issue":    map[string]any{"type": "object"},
+					"search_jql":   map[string]any{"type": "object"},
+					"create_issue": map[string]any{"type": "object"},
+					"update_issue": map[string]any{"type": "object"},
+					"add_comment":  map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+	"openapi": {
+		"type": "object",
+		"properties": map[string]any{
+			"spec_url":      map[string]any{"type": "string"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{},
+			},
+		},
+	},
+	"database": {
+		"type": "object",
+		"properties": map[string]any{
+			"connection_string": map[string]any{"type": "string"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"query":          map[string]any{"type": "object"},
+					"list_tables":    map[string]any{"type": "object"},
+					"describe_table": map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+	"custom": {
+		"type": "object",
+		"properties": map[string]any{
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{},
+			},
+		},
+	},
+	"datasource": {
+		"type": "object",
+		"properties": map[string]any{
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"search_data": map[string]any{"type": "object"},
+					"index_data":  map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+	"application": {
+		"type": "object",
+		"properties": map[string]any{
+			"application_id":         map[string]any{"type": "integer"},
+			"application_version_id": map[string]any{"type": "integer"},
+			"selected_tools": map[string]any{
+				"type": "object",
+				"args_schemas": map[string]any{
+					"ask_agent": map[string]any{"type": "object"},
+				},
+			},
+		},
+	},
+}
+
+func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, toolkitTypeSchemas)
+}
+
 func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
@@ -125,10 +258,19 @@ func (h *Handler) ValidateToolkit(w http.ResponseWriter, r *http.Request) {
 	toolkitID := chi.URLParam(r, "toolkitID")
 	valid, err := h.repo.ValidateToolkit(r.Context(), projectID, toolkitID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"valid": false})
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"valid": false,
+			"settings_errors": []map[string]any{
+				{"loc": []string{"embedding_model"}, "msg": err.Error(), "type": "value_error"},
+			},
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"valid": valid})
+	if !valid {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"valid": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"valid": true})
 }
 
 func (h *Handler) ForkToolkit(w http.ResponseWriter, r *http.Request) {
@@ -358,39 +500,75 @@ func (h *Handler) IndexTypes(w http.ResponseWriter, _ *http.Request) {
 // List returns all toolkit instances for a project.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
-	if page < 1 {
-		page = 1
+
+	// UI sends limit/offset
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit < 1 || limit > 100 {
+		limit = 20
 	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20
+	if offset < 0 {
+		offset = 0
 	}
-	items, total, err := h.repo.ListToolkits(r.Context(), projectID, page, pageSize)
+	page := (offset / limit) + 1
+
+	items, total, err := h.repo.ListToolkits(r.Context(), projectID, page, limit)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
 		return
 	}
 	if items == nil {
 		items = []map[string]any{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": total})
 }
 
 // Create creates a new toolkit instance.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
+	user, _ := auth.UserFromContext(r.Context())
+	userID := user.ID
+	if userID == "" {
+		userID = "1"
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
+
+	if err := validateToolkitCreate(body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	body["_author_id"] = userID
 	item, err := h.repo.CreateToolkit(r.Context(), projectID, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func validateToolkitCreate(body map[string]any) error {
+	toolType, _ := body["type"].(string)
+	settings, _ := body["settings"].(map[string]any)
+
+	switch toolType {
+	case "github":
+		if settings == nil {
+			return fmt.Errorf("settings is required for github toolkit")
+		}
+		repo, _ := settings["repository"].(string)
+		if repo == "" {
+			return fmt.Errorf("settings.repository is required for github toolkit")
+		}
+		if settings["github_configuration"] == nil {
+			return fmt.Errorf("settings.github_configuration is required for github toolkit")
+		}
+	}
+	return nil
 }
 
 // Get returns a single toolkit instance.
@@ -406,6 +584,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update updates a toolkit instance (handles PUT and PATCH).
+// Also handles tool-entity relation changes when body contains has_relation.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
@@ -414,12 +593,69 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
+
+	// Detect tool-entity relation operation (add_tool_to / remove_tool_from)
+	if _, hasRelation := body["has_relation"]; hasRelation {
+		h.updateToolRelation(w, r, projectID, toolkitID, body)
+		return
+	}
+
 	item, err := h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, projectID, toolID string, body map[string]any) {
+	ctx := r.Context()
+	s := fmt.Sprintf("p_%s", projectID)
+	entityVersionID, _ := body["entity_version_id"].(string)
+	if entityVersionID == "" {
+		if f, ok := body["entity_version_id"].(float64); ok {
+			entityVersionID = strconv.Itoa(int(f))
+		}
+	}
+	entityID, _ := body["entity_id"].(string)
+	if entityID == "" {
+		if f, ok := body["entity_id"].(float64); ok {
+			entityID = strconv.Itoa(int(f))
+		}
+	}
+	entityType, _ := body["entity_type"].(string)
+	if entityType == "" {
+		entityType = "agent"
+	}
+	hasRelation, _ := body["has_relation"].(bool)
+
+	// Guard: block changes to published/embedded versions
+	var verStatus string
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT status FROM %q.application_versions WHERE id = $1`, s), entityVersionID).Scan(&verStatus)
+	if err == nil && (verStatus == "published" || verStatus == "embedded") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "Cannot change tools on a published version. Unpublish first.",
+		})
+		return
+	}
+
+	if hasRelation {
+		q := fmt.Sprintf(`INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id) VALUES ($1, $2, $3, $4) ON CONFLICT (entity_version_id, tool_id, entity_type) DO NOTHING`, s)
+		_, err := h.pool.Exec(ctx, q, entityVersionID, entityID, entityType, toolID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	} else {
+		q := fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1 AND tool_id = $2`, s)
+		_, err := h.pool.Exec(ctx, q, entityVersionID, toolID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"message": "ok"})
 }
 
 // Delete removes a toolkit instance.
@@ -503,13 +739,37 @@ func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType strin
 
 func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID string) (bool, error) {
 	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.elitea_tools WHERE id = $1)`, s)
-	var exists bool
-	err := r.pool.QueryRow(ctx, q, toolkitID).Scan(&exists)
+
+	var settingsStr *string
+	q := fmt.Sprintf(`SELECT settings::text FROM %q.elitea_tools WHERE id = $1`, s)
+	err := r.pool.QueryRow(ctx, q, toolkitID).Scan(&settingsStr)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("toolkit not found")
 	}
-	return exists, nil
+	if settingsStr == nil {
+		return true, nil
+	}
+
+	var settings map[string]any
+	json.Unmarshal([]byte(*settingsStr), &settings)
+
+	// Check if referenced embedding_model config still exists
+	if embModel, ok := settings["embedding_model"]; ok && embModel != nil {
+		embName := fmt.Sprintf("%v", embModel)
+		if embName != "" {
+			var configExists bool
+			cq := fmt.Sprintf(`SELECT EXISTS(
+				SELECT 1 FROM %q.configuration
+				WHERE type = 'embedding_model' AND data->>'name' = $1
+			)`, s)
+			r.pool.QueryRow(ctx, cq, embName).Scan(&configExists)
+			if !configExists {
+				return false, fmt.Errorf("embedding model '%s' not found", embName)
+			}
+		}
+	}
+
+	return true, nil
 }
 
 func (r *pgRepo) ForkToolkit(ctx context.Context, projectID string, body map[string]any) (Tool, error) {
@@ -583,11 +843,22 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 	name, _ := body["name"].(string)
 	typ, _ := body["type"].(string)
 	desc, _ := body["description"].(string)
+	authorIDStr, _ := body["_author_id"].(string)
+	if authorIDStr == "" {
+		authorIDStr = "1"
+	}
 
 	settingsJSON, _ := json.Marshal(body["settings"])
+	if settingsJSON == nil || string(settingsJSON) == "null" {
+		settingsJSON = []byte("{}")
+	}
+	metaJSON, _ := json.Marshal(body["meta"])
+	if metaJSON == nil || string(metaJSON) == "null" {
+		metaJSON = []byte("{}")
+	}
 	q := fmt.Sprintf(`
-		INSERT INTO %q.elitea_tools (name, type, description, settings)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO %q.elitea_tools (name, type, description, settings, meta, author_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, type, name, COALESCE(description,''),
 		          COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
 		          created_at, updated_at, author_id, shared_id`, s)
@@ -595,7 +866,7 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 	var settingsRaw, metaRaw []byte
 	var createdAt, updatedAt any
 	var authorID, sharedID any
-	err := r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON)).Scan(
+	err := r.pool.QueryRow(ctx, q, name, typ, desc, string(settingsJSON), string(metaJSON), authorIDStr).Scan(
 		&id, &retType, &retName, &retDesc, &settingsRaw, &metaRaw,
 		&createdAt, &updatedAt, &authorID, &sharedID)
 	if err != nil {
@@ -621,34 +892,51 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (map[string]any, error) {
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`
-		SELECT id, type, name, COALESCE(description,''),
-		       COALESCE(settings::text,'{}'), COALESCE(meta::text,'{}'),
-		       created_at, updated_at, author_id, shared_id
-		FROM %q.elitea_tools WHERE id = $1`, s)
+		SELECT t.id, t.type, t.name, COALESCE(t.description,''),
+		       COALESCE(t.settings::text,'{}'), COALESCE(t.meta::text,'{}'),
+		       t.created_at, t.updated_at, t.author_id, t.shared_id,
+		       COALESCE(u.id, 0), COALESCE(u.email, ''), COALESCE(u.name, '')
+		FROM %q.elitea_tools t
+		LEFT JOIN public.auth_core__user u ON u.id = t.author_id
+		WHERE t.id = $1`, s)
 	var id, typ, name, desc string
 	var settingsRaw, metaRaw []byte
 	var createdAt, updatedAt any
 	var authorID, sharedID any
+	var uID int
+	var uEmail, uName string
 	if err := r.pool.QueryRow(ctx, q, toolkitID).Scan(
 		&id, &typ, &name, &desc, &settingsRaw, &metaRaw,
-		&createdAt, &updatedAt, &authorID, &sharedID); err != nil {
+		&createdAt, &updatedAt, &authorID, &sharedID,
+		&uID, &uEmail, &uName); err != nil {
 		return nil, fmt.Errorf("get toolkit: %w", err)
 	}
 	var settings, meta any
 	json.Unmarshal(settingsRaw, &settings)
 	json.Unmarshal(metaRaw, &meta)
-	return map[string]any{
-		"id":          id,
-		"type":        typ,
-		"name":        name,
-		"description": desc,
-		"settings":    settings,
-		"meta":        meta,
-		"created_at":  createdAt,
-		"updated_at":  updatedAt,
-		"author_id":   authorID,
-		"shared_id":   sharedID,
-	}, nil
+
+	author := map[string]any{"id": strconv.Itoa(uID), "email": uEmail, "name": uName}
+
+	// toolkit_name is a sanitized version: only alphanumeric chars kept
+	sanitizedName := sanitizeToolkitName(name)
+
+	result := map[string]any{
+		"id":           id,
+		"type":         typ,
+		"name":         name,
+		"toolkit_name": sanitizedName,
+		"description":  desc,
+		"settings":     settings,
+		"meta":         meta,
+		"created_at":   createdAt,
+		"updated_at":   updatedAt,
+		"author_id":    authorID,
+		"author":       author,
+		"shared_id":    sharedID,
+		"agent_type":   nil,
+		"online":       nil,
+	}
+	return result, nil
 }
 
 func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string, body map[string]any) (map[string]any, error) {
@@ -725,6 +1013,16 @@ func (r *pgRepo) DeleteToolkit(ctx context.Context, projectID, toolkitID string)
 	q := fmt.Sprintf(`DELETE FROM %q.elitea_tools WHERE id = $1`, s)
 	_, err := r.pool.Exec(ctx, q, toolkitID)
 	return err
+}
+
+func sanitizeToolkitName(name string) string {
+	var b strings.Builder
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

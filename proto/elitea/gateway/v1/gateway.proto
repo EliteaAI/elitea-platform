@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package elitea.gateway.v1;
+
+option go_package = "elitea/gateway/v1;gatewayv1";
+
+// GatewayService is the gRPC interface exposed by elitea-gateway-python
+// (LiteLLM proxy). elitea-main (Go) is the primary caller for LLM inference.
+//
+// All RPCs in this service are internal (Go → Python). The SPA never calls
+// GatewayService directly; it reaches the LLM proxy via the REST API on
+// elitea-main, which forwards to GatewayService under the hood.
+service GatewayService {
+  // ChatCompletions is a server-streaming RPC that relays a multi-model chat
+  // request to the underlying LLM provider and streams token chunks back to
+  // the caller until the response is complete.
+  rpc ChatCompletions(ChatCompletionsRequest) returns (stream ChatCompletionsChunk);
+
+  // ListModels returns the set of LLM models available to the calling project.
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // Health returns the liveness status of the gateway service.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// ChatCompletionsRequest mirrors the OpenAI Chat Completions API request body,
+// augmented with Elitea-specific multi-tenant fields.
+message ChatCompletionsRequest {
+  // project_id scopes model access rules to the calling tenant project.
+  string project_id = 1;
+
+  // model is the identifier of the LLM model to use (e.g., "gpt-4o").
+  string model = 2;
+
+  // messages is the ordered conversation history.
+  repeated ChatMessage messages = 3;
+
+  // stream is always true for this RPC (kept for spec alignment).
+  bool stream = 4;
+
+  // temperature controls response randomness (0.0–2.0).
+  float temperature = 5;
+
+  // max_tokens caps the number of output tokens.
+  int32 max_tokens = 6;
+
+  // top_p is the nucleus sampling parameter.
+  float top_p = 7;
+
+  // extra_params_json holds provider-specific parameters as a JSON object.
+  string extra_params_json = 8;
+
+  // request_id is a UUID for trace correlation propagated to the LLM provider.
+  string request_id = 9;
+}
+
+// ChatMessage is a single turn in the conversation history.
+message ChatMessage {
+  // role is "system", "user", "assistant", or "tool".
+  string role = 1;
+
+  // content is the message text. For tool messages this is the tool output.
+  string content = 2;
+
+  // name is the tool name (only for role="tool").
+  string name = 3;
+
+  // tool_call_id correlates a tool result to its originating tool call.
+  string tool_call_id = 4;
+}
+
+// ChatCompletionsChunk is a single server-streaming chunk from the LLM.
+// The stream terminates with a chunk where finish_reason is non-empty.
+message ChatCompletionsChunk {
+  // id is the provider-assigned completion ID (same across all chunks).
+  string id = 1;
+
+  // delta_content is the incremental text fragment for this chunk.
+  string delta_content = 2;
+
+  // finish_reason is non-empty on the last chunk: "stop", "length",
+  // "tool_calls", or "content_filter".
+  string finish_reason = 3;
+
+  // usage is populated on the final chunk (when finish_reason is set).
+  TokenUsage usage = 4;
+
+  // model is the model that actually served the request (may differ from
+  // the requested model due to fallback routing).
+  string model = 5;
+}
+
+// TokenUsage reports token consumption for billing and analytics.
+message TokenUsage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message ListModelsRequest {
+  // project_id scopes the model list to access rules for this tenant.
+  string project_id = 1;
+}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+// ModelInfo describes a single LLM model available via the gateway.
+message ModelInfo {
+  // model_id is the canonical identifier (e.g., "gpt-4o").
+  string model_id = 1;
+
+  // display_name is the human-readable label.
+  string display_name = 2;
+
+  // provider is the upstream LLM provider (e.g., "openai", "anthropic").
+  string provider = 3;
+
+  // context_window_tokens is the model's maximum context length.
+  int32 context_window_tokens = 4;
+
+  // supports_streaming indicates whether streaming is available.
+  bool supports_streaming = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}

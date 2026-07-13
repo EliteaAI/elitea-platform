@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,7 +24,6 @@ func TenantFromContext(ctx context.Context) (string, bool) {
 }
 
 // Router routes database connections to the correct tenant schema.
-// TODO: implement schema-per-tenant search_path switching.
 type Router struct {
 	pool *pgxpool.Pool
 }
@@ -35,9 +33,10 @@ func New(pool *pgxpool.Pool) *Router {
 	return &Router{pool: pool}
 }
 
-// ConnForTenant acquires a connection from the pool and sets the search_path
-// to the tenant's schema.
-func (r *Router) ConnForTenant(ctx context.Context) (*pgx.Conn, error) {
+// ConnForTenant acquires a connection from the pool, sets the search_path
+// to the tenant's schema, and returns the pool connection. The caller MUST
+// call Release() on the returned *pgxpool.Conn when done.
+func (r *Router) ConnForTenant(ctx context.Context) (*pgxpool.Conn, error) {
 	tenantID, ok := TenantFromContext(ctx)
 	if !ok {
 		return nil, fmt.Errorf("tenant: no tenant in context")
@@ -47,12 +46,11 @@ func (r *Router) ConnForTenant(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tenant: acquire conn: %w", err)
 	}
-	defer conn.Release()
 
-	// Set search_path to the tenant schema.
 	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %q, public", tenantID)); err != nil {
+		conn.Release()
 		return nil, fmt.Errorf("tenant: set search_path: %w", err)
 	}
 
-	return conn.Conn(), nil
+	return conn, nil
 }

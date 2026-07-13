@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +24,11 @@ func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 type MCPToolSyncer interface {
@@ -182,48 +189,58 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
-	q := `
-		SELECT au.id, au.email, COALESCE(au.name, ''),
-			COALESCE(pr.name, 'viewer') as role_name
-		FROM auth_core__user au
-		LEFT JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
-		LEFT JOIN auth_core__project_role pr ON pr.id = pur.role_id
-		ORDER BY au.id
-		LIMIT 100
-	`
-	rows, err := h.pool.Query(ctx, q, projectID)
-
 	items := make([]map[string]any, 0)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var email, name, role string
-			rows.Scan(&id, &email, &name, &role)
-			items = append(items, map[string]any{
-				"id": fmt.Sprintf("%d", id), "email": email, "name": name, "role": role,
-			})
+
+	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
+		q := `
+			SELECT au.id, au.email, COALESCE(au.name, ''),
+				COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), '{}')
+			FROM auth_core__user au
+			LEFT JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
+			LEFT JOIN auth_core__project_role pr ON pr.id = pur.role_id
+			GROUP BY au.id, au.email, au.name
+			ORDER BY au.id
+			LIMIT 100
+		`
+		rows, err := h.pool.Query(ctx, q, pidNum)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id int
+				var email, name string
+				var roles []string
+				rows.Scan(&id, &email, &name, &roles)
+				if roles == nil {
+					roles = []string{"viewer"}
+				}
+				items = append(items, map[string]any{
+					"id": fmt.Sprintf("%d", id), "email": email, "name": name, "roles": roles,
+				})
+			}
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	// UI merge function expects {rows: [...], total: N}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
 }
 
 func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
-	q := `SELECT id, name FROM auth_core__project_role WHERE project_id = $1 ORDER BY id`
-	rows, err := h.pool.Query(ctx, q, projectID)
-
 	items := make([]map[string]any, 0)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var name string
-			rows.Scan(&id, &name)
-			items = append(items, map[string]any{"id": fmt.Sprintf("%d", id), "name": name})
+
+	if _, err := strconv.Atoi(projectID); err == nil {
+		q := `SELECT id, name FROM auth_core__project_role WHERE project_id = $1 ORDER BY id`
+		rows, err := h.pool.Query(ctx, q, projectID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var id int
+				var name string
+				rows.Scan(&id, &name)
+				items = append(items, map[string]any{"id": fmt.Sprintf("%d", id), "name": name})
+			}
 		}
 	}
 
@@ -236,7 +253,8 @@ func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	// UI roleList query expects a plain array (roles.map(...))
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (h *Handler) ChatConfig(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +331,7 @@ func (h *Handler) Notifications(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"notifications": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
 }
 
 func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
@@ -333,9 +351,41 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Count applications owned by this author across all project schemas
+	var totalApps, totalPipelines, totalToolkits, totalCollections int
+	schemaRows, _ := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
+	if schemaRows != nil {
+		var schemas []string
+		for schemaRows.Next() {
+			var s string
+			schemaRows.Scan(&s)
+			schemas = append(schemas, s)
+		}
+		schemaRows.Close()
+		for _, s := range schemas {
+			var cnt int
+			// Count non-pipeline applications
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			totalApps += cnt
+			// Count pipeline applications
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			totalPipelines += cnt
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			totalToolkits += cnt
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.prompt_collections WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			totalCollections += cnt
+		}
+	}
+
+	aid, _ := strconv.Atoi(authorID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": authorID, "name": name, "email": email,
-		"avatar": avatar, "description": desc,
+		"id": aid, "name": name, "email": email,
+		"avatar": avatar, "title": "", "description": desc,
+		"total_conversations": 0, "public_conversations": 0,
+		"public_applications": 0, "total_applications": totalApps,
+		"public_pipelines": 0, "total_pipelines": totalPipelines,
+		"total_toolkits": totalToolkits, "public_collections": 0,
+		"total_collections": totalCollections, "rewards": 0,
 	})
 }
 
@@ -344,9 +394,345 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
-	q := fmt.Sprintf(`UPDATE %q.application_versions SET status = 'published' WHERE id = $1`, s)
-	h.pool.Exec(ctx, q, versionID)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	var body struct {
+		VersionName     string `json:"version_name"`
+		ValidationToken string `json:"validation_token"`
+		Category        string `json:"category"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+	if body.VersionName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": []map[string]any{
+				{"loc": []string{"body", "version_name"}, "msg": "field required", "type": "value_error.missing"},
+			},
+		})
+		return
+	}
+
+	// Validate version name: only alphanumeric, hyphens, underscores, dots
+	for _, c := range body.VersionName {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": []map[string]any{
+					{"loc": []string{"body", "version_name"}, "msg": "string does not match regex \"^[a-zA-Z0-9._-]+$\"", "type": "value_error.str.regex"},
+				},
+			})
+			return
+		}
+	}
+
+	// Verify version exists and is not 'base'
+	var appID int
+	var vName, vStatus, agentType string
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT application_id, name, status, COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus, &agentType)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
+		return
+	}
+	if agentType == "pipeline" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pipeline_not_publishable", "msg": "pipeline agents cannot be published"})
+		return
+	}
+	if vStatus == "published" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "version is already published"})
+		return
+	}
+
+	// Pre-check: does a version with this name already exist for this application?
+	var nameExists bool
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
+		appID, body.VersionName).Scan(&nameExists)
+	if nameExists {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "validation_failed",
+			"validation_result": map[string]any{
+				"issues": []map[string]any{
+					{"rule": "version_name_exists_in_source", "field": "version_name", "issue": "version name already exists", "source": "deterministic"},
+				},
+			},
+		})
+		return
+	}
+
+	// Validate category if provided
+	validCategories := map[string]bool{
+		"Business Analyst": true, "Quality Assurance": true, "Development": true,
+		"DevOps": true, "Project Management": true, "Knowledge & Documentation": true,
+		"Elitea": true, "Epam": true, "Other": true,
+	}
+	if body.Category != "" && !validCategories[body.Category] {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": "validation_failed",
+			"validation_result": map[string]any{
+				"issues": []map[string]any{
+					{"rule": "invalid_category", "field": "category", "issue": "unknown category", "source": "deterministic"},
+				},
+			},
+		})
+		return
+	}
+
+	// Hard-check: model must be from public/shared project (runs before validation)
+	publicProjID := os.Getenv("PUBLIC_PROJECT_ID")
+	if publicProjID == "" {
+		publicProjID = "1"
+	}
+	sharedProjID := os.Getenv("SHARED_PROJECT_ID")
+	if sharedProjID == "" {
+		sharedProjID = "4"
+	}
+	var llmSettingsStr *string
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmSettingsStr)
+	if llmSettingsStr != nil {
+		var llmSettings map[string]any
+		json.Unmarshal([]byte(*llmSettingsStr), &llmSettings)
+		if modelProjID, ok := llmSettings["model_project_id"]; ok && modelProjID != nil {
+			mpid := fmt.Sprintf("%v", modelProjID)
+			if mpid != publicProjID && mpid != sharedProjID {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "llm_not_shared"})
+				return
+			}
+		}
+	}
+
+	// Validation gate: if no token provided, run inline validation
+	if body.ValidationToken == "" {
+		valResult, _ := h.runPublishValidation(ctx, s, versionID, body.VersionName)
+		if valResult != nil && valResult["status"] == "FAIL" {
+			criticals, _ := valResult["critical_issues"].([]map[string]any)
+			issues := make([]map[string]any, len(criticals))
+			for i, c := range criticals {
+				issues[i] = map[string]any{"rule": c["field"], "message": c["issue"]}
+				if r, ok := c["rule"]; ok {
+					issues[i]["rule"] = r
+				}
+			}
+			valResult["issues"] = issues
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":             "validation_failed",
+				"validation_result": valResult,
+			})
+			return
+		}
+	} else {
+		// Validate token format (must be generated by our system - hex chars only)
+		validToken := true
+		if len(body.ValidationToken) < 16 {
+			validToken = false
+		}
+		for _, c := range body.ValidationToken {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				validToken = false
+				break
+			}
+		}
+		if !validToken {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "validation_failed"})
+			return
+		}
+	}
+
+	// Clone: insert a new version with status 'published' using same application_id
+	var cloneID int
+	metaOverlay := fmt.Sprintf(`{"source_version_id": "%s"}`, versionID)
+	if body.Category != "" {
+		metaOverlay = fmt.Sprintf(`{"source_version_id": "%s", "category": "%s"}`, versionID, body.Category)
+	}
+	cloneQ := fmt.Sprintf(`
+		INSERT INTO %q.application_versions
+			(application_id, name, status, author_id, llm_settings, instructions,
+			 conversation_starters, welcome_message, agent_type, meta, pipeline_settings)
+		SELECT application_id, $2, 'published', author_id, llm_settings, instructions,
+			   conversation_starters, welcome_message, agent_type,
+			   COALESCE(meta, '{}'::jsonb) || $3::jsonb,
+			   pipeline_settings
+		FROM %q.application_versions WHERE id = $1
+		RETURNING id`, s, s)
+
+	err = h.pool.QueryRow(ctx, cloneQ, versionID, body.VersionName, metaOverlay).Scan(&cloneID)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "_application_version_name_uc") {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error": "validation_failed",
+				"validation_result": map[string]any{
+					"issues": []map[string]any{
+						{"rule": "version_name_exists_in_source", "field": "version_name", "issue": "version name already exists", "source": "deterministic"},
+					},
+				},
+			})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	// Clone entity_tool_mapping rows from source version to new published version
+	h.pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+		SELECT $2, entity_id, entity_type, tool_id, selected_tools
+		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID)
+
+	// Embed sub-agents: clone application_tools of type 'application' recursively
+	h.embedSubAgents(ctx, s, versionID, cloneID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"public_agent_id":   strconv.Itoa(appID),
+		"public_version_id": strconv.Itoa(cloneID),
+		"version_name":      body.VersionName,
+		"source_version_id": strconv.Itoa(cloneID),
+	})
+}
+
+// deleteEmbeddedSubAgents removes embedded sub-agent applications referenced by application_tools on versionID.
+func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, versionID string) {
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT settings::text FROM %q.application_tools
+		WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var embeddedAppIDs []string
+	for rows.Next() {
+		var settingsStr string
+		rows.Scan(&settingsStr)
+		var settings map[string]any
+		json.Unmarshal([]byte(settingsStr), &settings)
+		if aid, ok := settings["application_id"]; ok {
+			embeddedAppIDs = append(embeddedAppIDs, fmt.Sprintf("%v", aid))
+		}
+	}
+	rows.Close()
+
+	for _, eAppID := range embeddedAppIDs {
+		// Recursively delete sub-agents of this embedded agent
+		var eVerID string
+		h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status = 'embedded' LIMIT 1`, schema), eAppID).Scan(&eVerID)
+		if eVerID != "" {
+			h.deleteEmbeddedSubAgents(ctx, schema, eVerID)
+		}
+		// Delete in FK-safe order: tools → versions → application
+		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
+		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, schema), eAppID)
+		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, schema), eAppID)
+	}
+	// Clean up application_tools entries on this version
+	h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+}
+
+// embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
+// For each sub-agent tool, it creates a new embedded application+version and links it.
+func (h *Handler) embedSubAgents(ctx context.Context, schema string, sourceVersionID string, targetVersionID int) {
+	h.embedSubAgentsRecursive(ctx, schema, sourceVersionID, targetVersionID, 0)
+}
+
+func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, sourceVersionID string, targetVersionID int, depth int) {
+	if depth > 5 {
+		return
+	}
+
+	// Look up the parent published app ID (the application that owns targetVersionID)
+	var parentAppID int
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT application_id FROM %q.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID)
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT name, type, settings::text
+		FROM %q.application_tools
+		WHERE application_version_id = $1 AND type = 'application'`, schema), sourceVersionID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type subAgentRef struct {
+		name      string
+		appID     string
+		versionID string
+	}
+	var refs []subAgentRef
+	for rows.Next() {
+		var name, toolType, settingsStr string
+		rows.Scan(&name, &toolType, &settingsStr)
+		var settings map[string]any
+		json.Unmarshal([]byte(settingsStr), &settings)
+		refAppID := fmt.Sprintf("%v", settings["application_id"])
+		refVerID := fmt.Sprintf("%v", settings["version_id"])
+		refs = append(refs, subAgentRef{name: name, appID: refAppID, versionID: refVerID})
+	}
+	rows.Close()
+
+	for _, ref := range refs {
+		// Skip pipeline sub-agents — they cannot be published/embedded
+		var subAgentType string
+		h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType)
+		if subAgentType == "pipeline" {
+			continue
+		}
+
+		// Clone the sub-agent application
+		var embeddedAppID int
+		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %q.applications (name, description, owner_id)
+			SELECT name, description, owner_id
+			FROM %q.applications WHERE id = $1
+			RETURNING id`, schema, schema), ref.appID).Scan(&embeddedAppID)
+		if err != nil {
+			continue
+		}
+
+		// Clone the sub-agent version as 'embedded', adding source and parent metadata
+		projectID := strings.TrimPrefix(schema, "p_")
+		var embeddedVerID int
+		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %q.application_versions
+				(application_id, name, status, author_id, llm_settings, instructions,
+				 conversation_starters, welcome_message, agent_type, meta, pipeline_settings)
+			SELECT $1, name, 'embedded', author_id, llm_settings, instructions,
+				   conversation_starters, welcome_message, agent_type,
+				   COALESCE(meta, '{}'::jsonb) || jsonb_build_object(
+					   'source_version_id', $3::text,
+					   'source_application_id', $4::text,
+					   'source_project_id', $5::text,
+					   'parent_published_app_id', $6::text,
+					   'parent_published_version_id', $7::text
+				   ),
+				   pipeline_settings
+			FROM %q.application_versions WHERE id = $2
+			RETURNING id`, schema, schema),
+			embeddedAppID, ref.versionID, ref.versionID, ref.appID, projectID,
+			strconv.Itoa(parentAppID), strconv.Itoa(targetVersionID)).Scan(&embeddedVerID)
+		if err != nil {
+			continue
+		}
+
+		// Clone entity_tool_mapping for the embedded version
+		h.pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+			SELECT $2, $3, entity_type, tool_id, selected_tools
+			FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
+			ref.versionID, embeddedVerID, embeddedAppID)
+
+		// Create application_tools entry on the published version pointing to embedded copy
+		embeddedSettings := map[string]any{
+			"application_id":         strconv.Itoa(embeddedAppID),
+			"application_version_id": strconv.Itoa(embeddedVerID),
+		}
+		settingsJSON, _ := json.Marshal(embeddedSettings)
+		h.pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
+			VALUES ($1, $2, 'application', $3)`, schema),
+			targetVersionID, ref.name, settingsJSON)
+
+		// Recursively embed sub-agents of this sub-agent
+		h.embedSubAgentsRecursive(ctx, schema, ref.versionID, embeddedVerID, depth+1)
+	}
 }
 
 func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
@@ -354,9 +740,382 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
-	q := fmt.Sprintf(`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, s)
-	h.pool.Exec(ctx, q, versionID)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	// Check version exists and get meta
+	var status string
+	var metaStr string
+	var authorID *int
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT status, COALESCE(meta::text, '{}'), author_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&status, &metaStr, &authorID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
+		return
+	}
+	var meta map[string]any
+	json.Unmarshal([]byte(metaStr), &meta)
+
+	if status == "published" || status == "embedded" {
+		h.deleteEmbeddedSubAgents(ctx, s, versionID)
+
+		// Revert to draft
+		h.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, s), versionID)
+	} else if status == "draft" {
+		// Unpublish via the source draft version: find all published clones and delete them
+		var appID int
+		h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT application_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID)
+		var hasPublished bool
+		h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND status IN ('published', 'embedded') AND id != $2)`, s), appID, versionID).Scan(&hasPublished)
+		if !hasPublished {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
+			return
+		}
+		pubRows, _ := h.pool.Query(ctx, fmt.Sprintf(
+			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status IN ('published','embedded') AND id != $2`, s), appID, versionID)
+		if pubRows != nil {
+			var pubVerIDs []string
+			for pubRows.Next() {
+				var pvid string
+				pubRows.Scan(&pvid)
+				pubVerIDs = append(pubVerIDs, pvid)
+			}
+			pubRows.Close()
+			for _, pvid := range pubVerIDs {
+				h.deleteEmbeddedSubAgents(ctx, s, pvid)
+			}
+		}
+		h.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET status = 'draft' WHERE application_id = $1 AND status IN ('published', 'embedded')`, s), appID)
+	} else {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
+}
+
+func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versionName string) (map[string]any, int) {
+	criticalIssues := []map[string]any{}
+	warnings := []map[string]any{}
+	recommendations := []map[string]any{}
+
+	var vName, vStatus string
+	var appID int
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT application_id, name, status FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus)
+	if err != nil {
+		return nil, 0
+	}
+
+	if vStatus == "published" {
+		criticalIssues = append(criticalIssues, map[string]any{"field": "version", "issue": "version is already published", "source": "deterministic"})
+	}
+
+	// Check version name collision
+	var nameExists bool
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
+		appID, versionName).Scan(&nameExists)
+	if nameExists {
+		criticalIssues = append(criticalIssues, map[string]any{"rule": "version_name_exists_in_source", "field": "version_name", "issue": "version name already exists", "source": "deterministic"})
+	}
+
+	// Check for generic version names
+	genericNames := map[string]bool{"v1": true, "v2": true, "v3": true, "latest": true, "new": true, "test": true}
+	if genericNames[strings.ToLower(versionName)] {
+		warnings = append(warnings, map[string]any{"field": "version_name", "issue": fmt.Sprintf("'%s' is a generic version name — consider something more descriptive", versionName), "source": "deterministic"})
+	}
+
+	// Collect sub-agent references
+	type subAgentInfo struct {
+		name      string
+		appID     string
+		versionID string
+		appName   string
+		verName   string
+		agentType string
+	}
+	subAgentRows, saErr := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT at.name, at.settings::text
+		FROM %q.application_tools at
+		WHERE at.application_version_id = $1 AND at.type = 'application'`, s), versionID)
+	var subAgents []subAgentInfo
+	if saErr == nil {
+		for subAgentRows.Next() {
+			var name, settingsStr string
+			subAgentRows.Scan(&name, &settingsStr)
+			var settings map[string]any
+			json.Unmarshal([]byte(settingsStr), &settings)
+			saAppID := fmt.Sprintf("%v", settings["application_id"])
+			saVerID := fmt.Sprintf("%v", settings["version_id"])
+			var saAppName, saVerName, saAgentType string
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %q.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
+			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %q.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
+			subAgents = append(subAgents, subAgentInfo{name: name, appID: saAppID, versionID: saVerID, appName: saAppName, verName: saVerName, agentType: saAgentType})
+		}
+		subAgentRows.Close()
+	}
+
+	// Cycle and depth detection — if either found, short-circuit
+	const maxSubAgentDepth = 3
+	if len(subAgents) > 0 {
+		visited := map[string]bool{versionID: true}
+		var hasCycle bool
+		var depthExceeded bool
+		var checkGraph func(verID string, depth int)
+		checkGraph = func(verID string, depth int) {
+			if hasCycle || depthExceeded {
+				return
+			}
+			if depth > maxSubAgentDepth {
+				depthExceeded = true
+				return
+			}
+			rows2, err2 := h.pool.Query(ctx, fmt.Sprintf(`
+				SELECT settings::text FROM %q.application_tools
+				WHERE application_version_id = $1 AND type = 'application'`, s), verID)
+			if err2 != nil {
+				return
+			}
+			defer rows2.Close()
+			for rows2.Next() {
+				var ss string
+				rows2.Scan(&ss)
+				var sett map[string]any
+				json.Unmarshal([]byte(ss), &sett)
+				childVerID := fmt.Sprintf("%v", sett["version_id"])
+				if visited[childVerID] {
+					hasCycle = true
+					return
+				}
+				visited[childVerID] = true
+				checkGraph(childVerID, depth+1)
+				if hasCycle || depthExceeded {
+					return
+				}
+			}
+		}
+		for _, sa := range subAgents {
+			if visited[sa.versionID] {
+				hasCycle = true
+				break
+			}
+			visited[sa.versionID] = true
+			checkGraph(sa.versionID, 1)
+			if hasCycle || depthExceeded {
+				break
+			}
+		}
+		if hasCycle {
+			return map[string]any{
+				"status": "FAIL",
+				"critical_issues": []map[string]any{{
+					"field":   "sub_agents",
+					"issue":   "circular dependency detected among sub-agents",
+					"source":  "deterministic",
+					"context": nil,
+					"fix":     "Remove one of the circular sub-agent references to break the cycle",
+				}},
+				"warnings":               []map[string]any{},
+				"recommendations":        []map[string]any{},
+				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"ai_validation_available": false,
+				"validation_token":        nil,
+			}, http.StatusUnprocessableEntity
+		}
+		if depthExceeded {
+			return map[string]any{
+				"status": "FAIL",
+				"critical_issues": []map[string]any{{
+					"field":   "sub_agents",
+					"issue":   "sub-agent nesting depth exceeds maximum allowed",
+					"source":  "deterministic",
+					"context": nil,
+					"fix":     "Reduce the nesting depth of sub-agent references",
+				}},
+				"warnings":               []map[string]any{},
+				"recommendations":        []map[string]any{},
+				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"ai_validation_available": false,
+				"validation_token":        nil,
+			}, http.StatusUnprocessableEntity
+		}
+	}
+
+	// Load version details for content validation
+	var instructions, welcomeMsg string
+	var conversationStarters []byte
+	var tagCount, toolCount int
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COALESCE(instructions, ''), COALESCE(welcome_message, ''), COALESCE(conversation_starters::text, '[]')::bytea FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&instructions, &welcomeMsg, &conversationStarters)
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), versionID).Scan(&toolCount)
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.application_version_tag_association WHERE version_id = $1`, s), versionID).Scan(&tagCount)
+
+	// Parse conversation_starters
+	var starters []string
+	json.Unmarshal(conversationStarters, &starters)
+
+	// Sparse agent: instructions too short (< 50 chars)
+	if len(strings.TrimSpace(instructions)) < 50 {
+		criticalIssues = append(criticalIssues, map[string]any{"field": "instructions", "issue": "agent instructions are too short for a meaningful public agent", "source": "deterministic"})
+	}
+
+	// No conversation starters
+	if len(starters) == 0 {
+		warnings = append(warnings, map[string]any{"field": "conversation_starters", "issue": "no conversation starters — users won't know how to begin", "source": "deterministic"})
+	}
+
+	// Tag discoverability recommendation
+	if tagCount < 3 {
+		recommendations = append(recommendations, map[string]any{"field": "tags", "suggestion": "add more tags to improve discoverability in the marketplace", "source": "deterministic"})
+	}
+
+	// Sub-agent validation (no cycle): check duplicates, skip pipelines, recurse
+	if len(subAgents) > 0 {
+		// Detect duplicate sub-agent names (excluding pipelines)
+		nameCount := map[string]int{}
+		for _, sa := range subAgents {
+			if sa.agentType == "pipeline" {
+				continue
+			}
+			nameCount[sa.appName]++
+		}
+		for name, count := range nameCount {
+			if count > 1 {
+				ctx1 := fmt.Sprintf("sub-agent: %s", name)
+				criticalIssues = append(criticalIssues, map[string]any{
+					"field":   "name",
+					"issue":   fmt.Sprintf("sub-agent name is not unique (%d occurrences found)", count),
+					"source":  "deterministic",
+					"context": ctx1,
+				})
+			}
+		}
+
+		// Recursively validate sub-agents (skip pipelines)
+		var validateSubAgents func(verID string, depth int)
+		validateSubAgents = func(verID string, depth int) {
+			if depth > 5 {
+				return
+			}
+			saRows, saErr2 := h.pool.Query(ctx, fmt.Sprintf(`
+				SELECT at.settings::text FROM %q.application_tools at
+				WHERE at.application_version_id = $1 AND at.type = 'application'`, s), verID)
+			if saErr2 != nil {
+				return
+			}
+			defer saRows.Close()
+			type saRef struct {
+				appID, versionID string
+			}
+			var saRefs []saRef
+			for saRows.Next() {
+				var ss string
+				saRows.Scan(&ss)
+				var sett map[string]any
+				json.Unmarshal([]byte(ss), &sett)
+				saRefs = append(saRefs, saRef{
+					appID:     fmt.Sprintf("%v", sett["application_id"]),
+					versionID: fmt.Sprintf("%v", sett["version_id"]),
+				})
+			}
+			saRows.Close()
+			for _, ref := range saRefs {
+				var saAppName, saVerName, saAgentType, saInstr, saDesc string
+				h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %q.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
+				h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %q.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
+				if saAgentType == "pipeline" {
+					continue
+				}
+				saContext := fmt.Sprintf("sub-agent: %s (%s)", saAppName, saVerName)
+				if len(strings.TrimSpace(saInstr)) < 50 {
+					criticalIssues = append(criticalIssues, map[string]any{
+						"field":   "instructions",
+						"issue":   "agent instructions are too short for a meaningful public agent",
+						"source":  "deterministic",
+						"context": saContext,
+					})
+				}
+				if len(strings.TrimSpace(saDesc)) < 20 {
+					warnings = append(warnings, map[string]any{
+						"field":   "description",
+						"issue":   "sub-agent description is too short for meaningful discovery",
+						"source":  "deterministic",
+						"context": saContext,
+					})
+				}
+				validateSubAgents(ref.versionID, depth+1)
+			}
+		}
+		validateSubAgents(versionID, 0)
+	}
+
+	// Check LLM model is from an accessible project
+	var llmStr *string
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmStr)
+	if llmStr != nil {
+		var llm map[string]any
+		json.Unmarshal([]byte(*llmStr), &llm)
+		if mpid, ok := llm["model_project_id"]; ok && mpid != nil {
+			mpidStr := fmt.Sprintf("%v", mpid)
+			pubPID := os.Getenv("PUBLIC_PROJECT_ID")
+			if pubPID == "" {
+				pubPID = "1"
+			}
+			shrPID := os.Getenv("SHARED_PROJECT_ID")
+			if shrPID == "" {
+				shrPID = "4"
+			}
+			if mpidStr != pubPID && mpidStr != shrPID {
+				criticalIssues = append(criticalIssues, map[string]any{
+					"field":  "llm_settings",
+					"issue":  "model is not shared and cannot be used in published agents",
+					"source": "deterministic",
+				})
+			}
+		}
+	}
+
+	status := "PASS"
+	httpStatus := http.StatusOK
+	if len(criticalIssues) > 0 {
+		status = "FAIL"
+		httpStatus = http.StatusUnprocessableEntity
+	} else if len(warnings) > 0 {
+		status = "WARN"
+	}
+
+	// Generate validation token (non-FAIL only)
+	var token *string
+	if status != "FAIL" {
+		t := generateID() + generateID()
+		token = &t
+	}
+
+	resp := map[string]any{
+		"status":                  status,
+		"critical_issues":         criticalIssues,
+		"warnings":               warnings,
+		"recommendations":        recommendations,
+		"summary":                fmt.Sprintf("Validation %s for version %s", status, versionID),
+		"counts":                 map[string]any{"critical": len(criticalIssues), "warnings": len(warnings), "suggestions": len(recommendations)},
+		"ai_validation_available": false,
+		"validation_token":        token,
+	}
+
+	return resp, httpStatus
 }
 
 func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
@@ -364,10 +1123,50 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
-	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, s)
+
+	// Parse body for version_name
+	var body struct {
+		VersionName string `json:"version_name"`
+		Category    string `json:"category"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	// Validate version_name
+	if body.VersionName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": []map[string]any{
+				{"loc": []string{"body", "version_name"}, "msg": "field required", "type": "value_error.missing"},
+			},
+		})
+		return
+	}
+	for _, c := range body.VersionName {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": []map[string]any{
+					{"loc": []string{"body", "version_name"}, "msg": "string does not match regex \"^[a-zA-Z0-9._-]+$\"", "type": "value_error.str.regex"},
+				},
+			})
+			return
+		}
+	}
+
+	// Check version exists
 	var exists bool
-	h.pool.QueryRow(ctx, q, versionID).Scan(&exists)
-	writeJSON(w, http.StatusOK, map[string]any{"valid": exists})
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, s), versionID).Scan(&exists)
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
+		return
+	}
+
+	resp, httpStatus := h.runPublishValidation(ctx, s, versionID, body.VersionName)
+	if resp == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
+		return
+	}
+
+	writeJSON(w, httpStatus, resp)
 }
 
 func (h *Handler) VersionValidator(w http.ResponseWriter, r *http.Request) {
@@ -389,36 +1188,322 @@ func (h *Handler) PublicApplications(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	rows, err := h.pool.Query(ctx, `
-		SELECT p.id as project_id, a.id, a.name, COALESCE(a.description, ''),
-			av.id as version_id, av.name as version_name
-		FROM centry.project p
-		JOIN centry.published_apps pa ON pa.project_id = p.id
-		JOIN centry.project_schema_map psm ON psm.project_id = p.id
-		CROSS JOIN LATERAL (
-			SELECT id, name, description FROM public.applications WHERE id = pa.application_id
-		) a
-		CROSS JOIN LATERAL (
-			SELECT id, name FROM public.application_versions WHERE application_id = a.id AND status = 'published' LIMIT 1
-		) av
-		LIMIT 50`)
+	applicationID := chi.URLParam(r, "applicationID")
+	if applicationID != "" {
+		h.publicApplicationDetail(w, r, ctx, applicationID)
+		return
+	}
+
+	publicProjectID := os.Getenv("PUBLIC_PROJECT_ID")
+	if publicProjectID == "" {
+		publicProjectID = "1"
+	}
+	schema := fmt.Sprintf("p_%s", publicProjectID)
+
+	categoryFilter := r.URL.Query().Get("category")
+	var queryArgs []any
+	categoryClause := ""
+	if categoryFilter != "" {
+		if categoryFilter == "Other" {
+			categoryClause = ` AND (av.meta->>'category' IS NULL OR av.meta->>'category' = '' OR av.meta->>'category' = 'Other')`
+		} else {
+			categoryClause = ` AND av.meta->>'category' = $1`
+			queryArgs = append(queryArgs, categoryFilter)
+		}
+	}
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT a.id, a.name, COALESCE(a.description, ''),
+			av.id as version_id, av.name as version_name, av.agent_type,
+			COALESCE(av.meta::text, '{}')
+		FROM %q.applications a
+		JOIN %q.application_versions av ON av.application_id = a.id
+		WHERE av.status = 'published'
+		AND COALESCE(av.meta->>'status', '') != 'embedded'`+categoryClause+`
+		ORDER BY a.id DESC
+		LIMIT 50`, schema, schema), queryArgs...)
 
 	items := make([]map[string]any, 0)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var pID, aID, vID int
-			var name, desc, vName string
-			if rows.Scan(&pID, &aID, &name, &desc, &vID, &vName) == nil {
+			var aID, vID int
+			var name, desc, vName, agentType string
+			var metaJSON []byte
+			if rows.Scan(&aID, &name, &desc, &vID, &vName, &agentType, &metaJSON) == nil {
+				var meta map[string]any
+				json.Unmarshal(metaJSON, &meta)
 				items = append(items, map[string]any{
-					"project_id": fmt.Sprintf("%d", pID), "id": fmt.Sprintf("%d", aID),
-					"name": name, "description": desc,
-					"version_id": fmt.Sprintf("%d", vID), "version_name": vName,
+					"project_id":   publicProjectID,
+					"id":           strconv.Itoa(aID),
+					"name":         name,
+					"description":  desc,
+					"version_id":   strconv.Itoa(vID),
+					"version_name": vName,
+					"agent_type":   agentType,
+					"meta":         meta,
 				})
 			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
+}
+
+func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request, ctx context.Context, applicationID string) {
+	versionName := chi.URLParam(r, "versionName")
+	publicProjectID := os.Getenv("PUBLIC_PROJECT_ID")
+	if publicProjectID == "" {
+		publicProjectID = "1"
+	}
+	schema := fmt.Sprintf("p_%s", publicProjectID)
+
+	// Find the application and its published version
+	var appName, appDesc string
+	var appID int
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+		SELECT id, name, COALESCE(description, '')
+		FROM %q.applications WHERE id = $1`, schema), applicationID).Scan(&appID, &appName, &appDesc)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
+		return
+	}
+
+	// Find the version
+	var versionQuery string
+	if versionName != "" {
+		versionQuery = fmt.Sprintf(`
+			SELECT id, name, status, agent_type, COALESCE(instructions, ''),
+				COALESCE(welcome_message, ''), COALESCE(llm_settings::text, '{}'),
+				COALESCE(meta::text, '{}'), COALESCE(conversation_starters::text, '[]'),
+				COALESCE(pipeline_settings::text, '{}'), author_id
+			FROM %q.application_versions
+			WHERE application_id = $1 AND name = $2 AND status = 'published'`, schema)
+	} else {
+		versionQuery = fmt.Sprintf(`
+			SELECT id, name, status, agent_type, COALESCE(instructions, ''),
+				COALESCE(welcome_message, ''), COALESCE(llm_settings::text, '{}'),
+				COALESCE(meta::text, '{}'), COALESCE(conversation_starters::text, '[]'),
+				COALESCE(pipeline_settings::text, '{}'), author_id
+			FROM %q.application_versions
+			WHERE application_id = $1 AND status = 'published'
+			ORDER BY id DESC LIMIT 1`, schema)
+	}
+
+	var vID int
+	var vName, vStatus, agentType, instrVal, welcomeVal string
+	var llmJSON, metaJSON, startersJSON, pipelineJSON []byte
+	var authorID *int
+
+	var scanErr error
+	if versionName != "" {
+		scanErr = h.pool.QueryRow(ctx, versionQuery, applicationID, versionName).Scan(
+			&vID, &vName, &vStatus, &agentType, &instrVal, &welcomeVal,
+			&llmJSON, &metaJSON, &startersJSON, &pipelineJSON, &authorID)
+	} else {
+		scanErr = h.pool.QueryRow(ctx, versionQuery, applicationID).Scan(
+			&vID, &vName, &vStatus, &agentType, &instrVal, &welcomeVal,
+			&llmJSON, &metaJSON, &startersJSON, &pipelineJSON, &authorID)
+	}
+	if scanErr != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "published version not found"})
+		return
+	}
+
+	var llmSettings, meta, starters, pipelineSettings any
+	json.Unmarshal(llmJSON, &llmSettings)
+	json.Unmarshal(metaJSON, &meta)
+	json.Unmarshal(startersJSON, &starters)
+	json.Unmarshal(pipelineJSON, &pipelineSettings)
+
+	projIDInt, _ := strconv.Atoi(publicProjectID)
+
+	// Fetch tools
+	tools := make([]map[string]any, 0)
+	toolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT etm.id, etm.tool_id, etm.entity_type, COALESCE(etm.selected_tools::text, '{}'),
+			t.name, t.type, t.settings
+		FROM %q.entity_tool_mapping etm
+		LEFT JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		WHERE etm.entity_version_id = $1`, schema, schema), vID)
+	if err == nil {
+		defer toolRows.Close()
+		for toolRows.Next() {
+			var etmID, toolID int
+			var entityType, selectedToolsStr string
+			var tName, tType *string
+			var tSettings []byte
+			toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tSettings)
+			var selectedTools any
+			json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
+			var settings any
+			if tSettings != nil {
+				json.Unmarshal(tSettings, &settings)
+			}
+			tool := map[string]any{
+				"id":             etmID,
+				"tool_id":        toolID,
+				"entity_type":    entityType,
+				"selected_tools": selectedTools,
+			}
+			if tName != nil {
+				tool["name"] = *tName
+			}
+			if tType != nil {
+				tool["type"] = *tType
+			}
+			if settings != nil {
+				tool["settings"] = settings
+			}
+			tools = append(tools, tool)
+		}
+	}
+
+	// Fetch application_tools (sub-agent references)
+	appToolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, name, type, settings::text
+		FROM %q.application_tools
+		WHERE application_version_id = $1`, schema), vID)
+	if err == nil {
+		defer appToolRows.Close()
+		for appToolRows.Next() {
+			var atID int
+			var atName, atType, settingsStr string
+			appToolRows.Scan(&atID, &atName, &atType, &settingsStr)
+			var settings any
+			json.Unmarshal([]byte(settingsStr), &settings)
+			tools = append(tools, map[string]any{
+				"id":         atID,
+				"name":       atName,
+				"type":       atType,
+				"settings":   settings,
+				"project_id": projIDInt,
+			})
+		}
+	}
+
+	authorIDStr := ""
+	if authorID != nil {
+		authorIDStr = strconv.Itoa(*authorID)
+	}
+
+	versionDetails := map[string]any{
+		"id":                     strconv.Itoa(vID),
+		"application_id":        strconv.Itoa(appID),
+		"name":                  vName,
+		"status":                vStatus,
+		"agent_type":            agentType,
+		"instructions":          instrVal,
+		"welcome_message":       welcomeVal,
+		"llm_settings":          llmSettings,
+		"meta":                  meta,
+		"conversation_starters": starters,
+		"pipeline_settings":     pipelineSettings,
+		"author_id":             authorIDStr,
+		"tools":                 tools,
+		"tags":                  []any{},
+	}
+
+	resp := map[string]any{
+		"id":              strconv.Itoa(appID),
+		"name":            appName,
+		"description":     appDesc,
+		"version_details": versionDetails,
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	schemaRows, err := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		return
+	}
+	defer schemaRows.Close()
+
+	var schemas []string
+	for schemaRows.Next() {
+		var s string
+		schemaRows.Scan(&s)
+		schemas = append(schemas, s)
+	}
+
+	// Group published versions by application
+	type pubVersion struct {
+		versionID   string
+		versionName string
+		status      string
+	}
+	type agentEntry struct {
+		appID       string
+		name        string
+		description string
+		projectID   string
+		versions    []pubVersion
+	}
+	agentMap := map[string]*agentEntry{} // key: "projectID:appID"
+	var orderedKeys []string
+
+	for _, s := range schemas {
+		projectID := strings.TrimPrefix(s, "p_")
+		q := fmt.Sprintf(`
+			SELECT a.id, a.name, COALESCE(a.description,''), av.id, av.name, av.status
+			FROM %q.application_versions av
+			JOIN %q.applications a ON a.id = av.application_id
+			WHERE av.status = 'published'
+			ORDER BY av.id DESC`, s, s)
+		rows, err := h.pool.Query(ctx, q)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var aID, vID int
+			var aName, aDesc, vName, vStatus string
+			if rows.Scan(&aID, &aName, &aDesc, &vID, &vName, &vStatus) == nil {
+				key := projectID + ":" + strconv.Itoa(aID)
+				if _, exists := agentMap[key]; !exists {
+					agentMap[key] = &agentEntry{
+						appID:       strconv.Itoa(aID),
+						name:        aName,
+						description: aDesc,
+						projectID:   projectID,
+					}
+					orderedKeys = append(orderedKeys, key)
+				}
+				agentMap[key].versions = append(agentMap[key].versions, pubVersion{
+					versionID:   strconv.Itoa(vID),
+					versionName: vName,
+					status:      vStatus,
+				})
+			}
+		}
+		rows.Close()
+	}
+
+	items := make([]map[string]any, 0, len(orderedKeys))
+	for _, key := range orderedKeys {
+		e := agentMap[key]
+		pvs := make([]map[string]any, len(e.versions))
+		for i, v := range e.versions {
+			pvs[i] = map[string]any{
+				"version_id":   v.versionID,
+				"version_name": v.versionName,
+				"status":       v.status,
+			}
+		}
+		items = append(items, map[string]any{
+			"public_agent_id": e.appID,
+			"name":            e.name,
+			"description":     e.description,
+			"project_id":      e.projectID,
+			"published_versions": pvs,
+			"adoption": map[string]any{
+				"conversation_count": 0,
+				"project_count":      0,
+			},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
 func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
@@ -462,6 +1547,79 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	appID := chi.URLParam(r, "appID")
+	versionID := chi.URLParam(r, "versionID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	var body map[string]any
+	json.NewDecoder(r.Body).Decode(&body)
+
+	parentAppID, _ := body["application_id"]
+	parentVerID, _ := body["version_id"]
+	hasRelation, _ := body["has_relation"].(bool)
+
+	// Guard: block changes to published/embedded parent versions
+	if parentVerID != nil {
+		pVerStr := fmt.Sprintf("%v", parentVerID)
+		var verStatus string
+		err := h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT status FROM %q.application_versions WHERE id = $1`, s), pVerStr).Scan(&verStatus)
+		if err == nil && (verStatus == "published" || verStatus == "embedded") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "Cannot change relation on a published version. Unpublish first.",
+			})
+			return
+		}
+	}
+
+	if hasRelation && parentAppID != nil && parentVerID != nil {
+		// Check for duplicate relation
+		var exists bool
+		h.pool.QueryRow(ctx, fmt.Sprintf(`
+			SELECT EXISTS(SELECT 1 FROM %q.application_tools
+			WHERE application_version_id = $1 AND type = 'application'
+			AND settings->>'application_id' = $2
+			AND settings->>'version_id' = $3)`, s),
+			parentVerID, appID, versionID).Scan(&exists)
+		if exists {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "relation already exists",
+			})
+			return
+		}
+
+		// Add this version as a tool on the parent version
+		toolName := fmt.Sprintf("agent_%s_%s", appID, versionID)
+		toolSettings := map[string]any{
+			"application_id": appID,
+			"version_id":     versionID,
+		}
+		settingsJSON, _ := json.Marshal(toolSettings)
+
+		q := fmt.Sprintf(`
+			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
+			VALUES ($1, $2, 'application', $3)`, s)
+		h.pool.Exec(ctx, q, parentVerID, toolName, settingsJSON)
+	} else {
+		// Remove relation
+		q := fmt.Sprintf(`
+			DELETE FROM %q.application_tools
+			WHERE application_version_id = $1
+			AND settings->>'application_id' = $2
+			AND settings->>'version_id' = $3`, s)
+		h.pool.Exec(ctx, q, body["version_id"], appID, versionID)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"application_id": appID,
+		"version_id":     versionID,
+		"has_relation":   hasRelation,
+	})
 }
 
 func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {
@@ -595,11 +1753,40 @@ func (h *Handler) ListUploadedIcons(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
 }
 
-func (h *Handler) UpdateIcon(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	versionID := chi.URLParam(r, "versionId")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	var iconMeta map[string]any
+	json.NewDecoder(r.Body).Decode(&iconMeta)
+
+	// Update meta.icon_meta on the version
+	h.pool.Exec(ctx, fmt.Sprintf(
+		`UPDATE %q.application_versions SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('icon_meta', $2::jsonb) WHERE id = $1`, s),
+		versionID, mustJSON(iconMeta))
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) DeleteIcon(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	name := chi.URLParam(r, "name")
+	ctx := r.Context()
+	s := fmt.Sprintf("p_%s", projectID)
+
+	// Clear icon_meta from all versions referencing this icon
+	h.pool.Exec(ctx, fmt.Sprintf(
+		`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name)
+
+	// Remove file from disk
+	iconsDir := os.Getenv("ICONS_DATA_DIR")
+	if iconsDir == "" {
+		iconsDir = "/data/icons"
+	}
+	os.Remove(filepath.Join(iconsDir, projectID, name))
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -607,40 +1794,119 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	s := fmt.Sprintf("p_%s", projectID)
 
-	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	// Body can be either a flat array (import_wizard) or a map with "applications" key
+	bodyBytes, _ := io.ReadAll(r.Body)
+	var entities []any
+	if len(bodyBytes) > 0 && bodyBytes[0] == '[' {
+		json.Unmarshal(bodyBytes, &entities)
+	} else {
+		var bodyMap map[string]any
+		json.Unmarshal(bodyBytes, &bodyMap)
+		if apps, ok := bodyMap["applications"].([]any); ok {
+			entities = apps
+		}
+	}
 
-	apps, _ := body["applications"].([]any)
-	if len(apps) == 0 || h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "imported": []any{}})
+	if len(entities) == 0 || h.pool == nil {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"result": map[string]any{"agents": []any{}},
+			"errors": map[string]any{"agents": []any{}},
+		})
 		return
 	}
 
 	ctx := r.Context()
+	user, _ := auth.UserFromContext(ctx)
+	userID := 1
+	if user.ID != "" {
+		fmt.Sscanf(user.ID, "%d", &userID)
+	}
 
-	imported := make([]map[string]any, 0)
-	for _, appRaw := range apps {
-		app, ok := appRaw.(map[string]any)
+	// Separate entities by type, preserving original indices for error reporting
+	type toolkitEntry struct {
+		entityIdx  int
+		importUUID string
+		raw        map[string]any
+	}
+	type agentEntry struct {
+		entityIdx int
+		raw       map[string]any
+	}
+	var agentEntries []agentEntry
+	var toolkitEntries []toolkitEntry
+
+	for i, raw := range entities {
+		ent, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
+		entity, _ := ent["entity"].(string)
+		if entity == "toolkits" {
+			iuuid, _ := ent["import_uuid"].(string)
+			toolkitEntries = append(toolkitEntries, toolkitEntry{entityIdx: i, importUUID: iuuid, raw: ent})
+		} else {
+			agentEntries = append(agentEntries, agentEntry{entityIdx: i, raw: ent})
+		}
+	}
+
+	resultAgents := make([]map[string]any, 0)
+	errorAgents := make([]any, 0)
+	resultToolkits := make([]map[string]any, 0)
+	errorToolkits := make([]any, 0)
+
+	validAgentTypes := map[string]bool{"openai": true, "react": true, "dial": true, "pipeline": true, "": true}
+
+	// Phase 1: Import agents and build import_uuid -> appID maps
+	agentImportUUIDToAppID := map[string]int{}
+	agentVersionImportUUIDToVerID := map[string]int{}
+
+	type importedAgentInfo struct {
+		appID    int
+		versions [][]map[string]any // per-version tool refs to resolve later
+	}
+	importedAgents := make([]importedAgentInfo, 0)
+
+	for _, ae := range agentEntries {
+		app := ae.raw
 		name, _ := app["name"].(string)
 		desc, _ := app["description"].(string)
-		appType, _ := app["type"].(string)
-		if appType == "" {
-			appType = "agent"
+
+		versions, hasVersions := app["versions"].([]any)
+		if !hasVersions || len(versions) == 0 {
+			errorAgents = append(errorAgents, map[string]any{"index": ae.entityIdx, "name": name, "msg": "Import function has been failed: no versions provided"})
+			importedAgents = append(importedAgents, importedAgentInfo{appID: -1})
+			continue
+		}
+
+		if firstVer, ok := versions[0].(map[string]any); ok {
+			at, _ := firstVer["agent_type"].(string)
+			if !validAgentTypes[at] {
+				errorAgents = append(errorAgents, map[string]any{"index": ae.entityIdx, "name": name, "msg": "Import function has been failed: invalid agent_type"})
+				importedAgents = append(importedAgents, importedAgentInfo{appID: -1})
+				continue
+			}
 		}
 
 		var appID int
 		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.applications (name, description, type, created_at)
-			VALUES ($1, $2, $3, NOW()) RETURNING id`, s),
-			name, desc, appType).Scan(&appID)
+			INSERT INTO %q.applications (name, description, owner_id)
+			VALUES ($1, $2, $3) RETURNING id`, s),
+			name, desc, userID).Scan(&appID)
 		if err != nil {
+			errorAgents = append(errorAgents, map[string]any{"index": ae.entityIdx, "name": name, "msg": "Import function has been failed: " + err.Error()})
+			importedAgents = append(importedAgents, importedAgentInfo{appID: -1})
 			continue
 		}
 
-		versions, _ := app["versions"].([]any)
+		appImportUUID, _ := app["import_uuid"].(string)
+		if appImportUUID != "" {
+			agentImportUUIDToAppID[appImportUUID] = appID
+		}
+
+		createdVersions := make([]map[string]any, 0)
+		var versionDetails map[string]any
+		var versionToolRefs [][]map[string]any
+
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
 			if !ok {
@@ -650,16 +1916,472 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			if vName == "" {
 				vName = "latest"
 			}
-			promptRaw, _ := json.Marshal(v["prompt"])
-			h.pool.Exec(ctx, fmt.Sprintf(`
-				INSERT INTO %q.application_versions (application_id, name, prompt, status, created_at)
-				VALUES ($1, $2, $3, 'draft', NOW())`, s),
-				appID, vName, promptRaw)
+			agentType, _ := v["agent_type"].(string)
+			if agentType == "" {
+				agentType = "openai"
+			}
+			instructions, _ := v["instructions"].(string)
+			welcomeMsg, _ := v["welcome_message"].(string)
+			llmJSON := "{}"
+			if llm, ok := v["llm_settings"].(map[string]any); ok {
+				if b, e := json.Marshal(llm); e == nil {
+					llmJSON = string(b)
+				}
+			}
+			startersJSON := "[]"
+			if cs, ok := v["conversation_starters"].([]any); ok {
+				if b, e := json.Marshal(cs); e == nil {
+					startersJSON = string(b)
+				}
+			}
+			metaJSON := "{}"
+			if m, ok := v["meta"].(map[string]any); ok {
+				if b, e := json.Marshal(m); e == nil {
+					metaJSON = string(b)
+				}
+			}
+
+			var vID int
+			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
+				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
+				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
+			if err != nil {
+				continue
+			}
+
+			vImportUUID, _ := v["import_version_uuid"].(string)
+			if vImportUUID != "" {
+				agentVersionImportUUIDToVerID[vImportUUID] = vID
+			}
+
+			// Collect tool refs for later resolution
+			var toolRefs []map[string]any
+			if tools, ok := v["tools"].([]any); ok {
+				for _, toolRaw := range tools {
+					if tr, ok := toolRaw.(map[string]any); ok {
+						toolRefs = append(toolRefs, tr)
+					}
+				}
+			}
+			versionToolRefs = append(versionToolRefs, toolRefs)
+
+			createdVersions = append(createdVersions, map[string]any{
+				"id":             fmt.Sprintf("%d", vID),
+				"application_id": fmt.Sprintf("%d", appID),
+				"name":          vName,
+				"status":        "draft",
+			})
+
+			var llmParsed, startersParsed any
+			json.Unmarshal([]byte(llmJSON), &llmParsed)
+			json.Unmarshal([]byte(startersJSON), &startersParsed)
+
+			versionDetails = map[string]any{
+				"id":                    fmt.Sprintf("%d", vID),
+				"application_id":        fmt.Sprintf("%d", appID),
+				"name":                  vName,
+				"status":               "draft",
+				"author_id":            fmt.Sprintf("%d", userID),
+				"agent_type":           agentType,
+				"instructions":         instructions,
+				"welcome_message":      welcomeMsg,
+				"llm_settings":         llmParsed,
+				"conversation_starters": startersParsed,
+				"tools":                []any{},
+			}
 		}
 
-		imported = append(imported, map[string]any{"id": fmt.Sprintf("%d", appID), "name": name})
+		agentResult := map[string]any{
+			"id":              fmt.Sprintf("%d", appID),
+			"name":            name,
+			"description":     desc,
+			"owner_id":        projectID,
+			"versions":        createdVersions,
+			"version_details": versionDetails,
+		}
+		resultAgents = append(resultAgents, agentResult)
+		importedAgents = append(importedAgents, importedAgentInfo{appID: appID, versions: versionToolRefs})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "imported": imported})
+
+	// Phase 2: Import toolkits, resolving settings.import_uuid for type=application
+	importUUIDToToolID := map[string]int{}
+	failedToolkitImportUUIDs := map[string]bool{}
+
+	for _, tk := range toolkitEntries {
+		tkName, _ := tk.raw["name"].(string)
+		tkType, _ := tk.raw["type"].(string)
+		if tkType == "" {
+			tkType = "custom"
+		}
+
+		settings, _ := tk.raw["settings"].(map[string]any)
+		if settings == nil {
+			settings = map[string]any{}
+		}
+
+		// For type=application, resolve settings.import_uuid to actual agent ID
+		if tkType == "application" {
+			settingsImportUUID, _ := settings["import_uuid"].(string)
+			if settingsImportUUID != "" {
+				if resolvedAppID, found := agentImportUUIDToAppID[settingsImportUUID]; found {
+					settings["application_id"] = resolvedAppID
+					// Resolve version uuid too
+					settingsVersionUUID, _ := settings["import_version_uuid"].(string)
+					if vID, vfound := agentVersionImportUUIDToVerID[settingsVersionUUID]; vfound {
+						settings["application_version_id"] = vID
+					}
+				} else {
+					errorToolkits = append(errorToolkits, map[string]any{
+						"index": tk.entityIdx,
+						"name":  tkName,
+						"msg":   "Unable to link toolkit_import_uuid: " + settingsImportUUID + " to any imported application",
+					})
+					failedToolkitImportUUIDs[tk.importUUID] = true
+					continue
+				}
+			}
+		}
+
+		settingsJSON := "{}"
+		if b, e := json.Marshal(settings); e == nil {
+			settingsJSON = string(b)
+		}
+
+		tkDesc, _ := tk.raw["description"].(string)
+		var toolID int
+		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %q.elitea_tools (name, type, settings, author_id, description, meta) VALUES ($1, $2, $3::jsonb, $4, $5, '{}'::jsonb) RETURNING id`, s),
+			tkName, tkType, settingsJSON, userID, tkDesc).Scan(&toolID)
+		if err == nil {
+			if tk.importUUID != "" {
+				importUUIDToToolID[tk.importUUID] = toolID
+			}
+			resultToolkits = append(resultToolkits, map[string]any{"id": strconv.Itoa(toolID), "name": tkName, "type": tkType})
+		} else {
+			errorToolkits = append(errorToolkits, map[string]any{"index": tk.entityIdx, "name": tkName, "msg": "Import function has been failed: " + err.Error()})
+			failedToolkitImportUUIDs[tk.importUUID] = true
+		}
+	}
+
+	// Phase 3: Link agent tool refs and update version_details.tools
+	resultIdx := 0
+	for i, ae := range agentEntries {
+		info := importedAgents[i]
+		if info.appID < 0 {
+			continue
+		}
+		agentResult := resultAgents[resultIdx]
+		resultIdx++
+
+		hasLinkError := false
+		var vTools []any
+
+		// Get version IDs from the created versions
+		createdVersions, _ := agentResult["versions"].([]map[string]any)
+
+		for vIdx, toolRefs := range info.versions {
+			if vIdx >= len(createdVersions) {
+				break
+			}
+			vIDStr, _ := createdVersions[vIdx]["id"].(string)
+			var vID int
+			fmt.Sscanf(vIDStr, "%d", &vID)
+
+			for _, toolRef := range toolRefs {
+				refUUID, _ := toolRef["import_uuid"].(string)
+				if refUUID == "" {
+					continue
+				}
+				if failedToolkitImportUUIDs[refUUID] {
+					hasLinkError = true
+					continue
+				}
+				if toolID, found := importUUIDToToolID[refUUID]; found {
+					selToolsJSON := "{}"
+					if st, ok := toolRef["selected_tools"].(map[string]any); ok {
+						if b, e := json.Marshal(st); e == nil {
+							selToolsJSON = string(b)
+						}
+					}
+					h.pool.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+						VALUES ($1, $2, 'application', $3, $4::jsonb)`, s),
+						vID, info.appID, toolID, selToolsJSON)
+					vTools = append(vTools, map[string]any{"id": strconv.Itoa(toolID), "type": "custom", "name": ""})
+				} else {
+					hasLinkError = true
+				}
+			}
+		}
+
+		// Update version_details.tools with resolved tools
+		if vd, ok := agentResult["version_details"].(map[string]any); ok {
+			if vTools == nil {
+				vTools = []any{}
+			}
+			vd["tools"] = vTools
+		}
+
+		if hasLinkError {
+			name, _ := ae.raw["name"].(string)
+			errorAgents = append(errorAgents, map[string]any{
+				"index": ae.entityIdx,
+				"name":  name,
+				"msg":   "Import function has been failed: unable to link tools cause the later was not imported",
+			})
+		}
+	}
+
+	// Determine status code: 400 if all failed, 207 if mixed, 201 if all succeeded
+	totalErrors := len(errorAgents) + len(errorToolkits)
+	totalSuccess := len(resultAgents) + len(resultToolkits)
+	importStatus := http.StatusCreated
+	if totalErrors > 0 {
+		if totalSuccess == 0 {
+			importStatus = http.StatusBadRequest
+		} else {
+			importStatus = 207
+		}
+	}
+
+	writeJSON(w, importStatus, map[string]any{
+		"result": map[string]any{"agents": resultAgents, "toolkits": resultToolkits},
+		"errors": map[string]any{"agents": errorAgents, "toolkits": errorToolkits},
+	})
+}
+
+func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	s := fmt.Sprintf("p_%s", projectID)
+
+	var body map[string]any
+	json.NewDecoder(r.Body).Decode(&body)
+
+	apps, _ := body["applications"].([]any)
+	if len(apps) == 0 || h.pool == nil {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"result": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
+			"errors": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
+		})
+		return
+	}
+
+	ctx := r.Context()
+	user, _ := auth.UserFromContext(ctx)
+	userID := 1
+	if user.ID != "" {
+		fmt.Sscanf(user.ID, "%d", &userID)
+	}
+
+	resultAgents := make([]map[string]any, 0)
+	errorAgents := make([]any, 0)
+
+	for _, appRaw := range apps {
+		app, ok := appRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := app["name"].(string)
+		desc, _ := app["description"].(string)
+
+		var appID int
+		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %q.applications (name, description, owner_id)
+			VALUES ($1, $2, $3) RETURNING id`, s),
+			name, desc, userID).Scan(&appID)
+		if err != nil {
+			errorAgents = append(errorAgents, map[string]any{"name": name, "error": err.Error()})
+			continue
+		}
+
+		versions, _ := app["versions"].([]any)
+		var createdVersionID int
+		var versionDetails map[string]any
+		createdVersions := make([]map[string]any, 0)
+
+		for _, vRaw := range versions {
+			v, ok := vRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			vName, _ := v["name"].(string)
+			if vName == "" {
+				vName = "latest"
+			}
+			agentType, _ := v["agent_type"].(string)
+			if agentType == "" {
+				agentType = "openai"
+			}
+			instructions, _ := v["instructions"].(string)
+			welcomeMsg, _ := v["welcome_message"].(string)
+			llmSettings, _ := v["llm_settings"].(map[string]any)
+			if llmSettings == nil {
+				llmSettings = map[string]any{}
+			}
+			// Override model_project_id to target project
+			llmSettings["model_project_id"] = projectID
+
+			llmJSON := "{}"
+			if b, e := json.Marshal(llmSettings); e == nil {
+				llmJSON = string(b)
+			}
+			startersJSON := "[]"
+			if cs, ok := v["conversation_starters"].([]any); ok {
+				if b, e := json.Marshal(cs); e == nil {
+					startersJSON = string(b)
+				}
+			}
+
+			// Build meta with fork info
+			metaIn, _ := v["meta"].(map[string]any)
+			if metaIn == nil {
+				metaIn = map[string]any{}
+			}
+			forkMeta := map[string]any{}
+			for k, mv := range metaIn {
+				forkMeta[k] = mv
+			}
+			// Set parent info
+			sourceAppID, _ := app["id"].(string)
+			sourceOwnerID, _ := app["owner_id"].(string)
+			forkMeta["parent_entity_id"] = sourceAppID
+			forkMeta["parent_project_id"] = sourceOwnerID
+			forkMeta["parent_author_id"] = fmt.Sprintf("%d", userID)
+			if _, hasIcon := forkMeta["icon_meta"]; !hasIcon {
+				forkMeta["icon_meta"] = map[string]any{}
+			}
+			if _, hasStep := forkMeta["step_limit"]; !hasStep {
+				forkMeta["step_limit"] = nil
+			}
+
+			metaJSON := "{}"
+			if b, e := json.Marshal(forkMeta); e == nil {
+				metaJSON = string(b)
+			}
+
+			var vID int
+			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
+				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
+				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
+			if err != nil {
+				continue
+			}
+			createdVersionID = vID
+
+			// Insert variables
+			if vars, ok := v["variables"].([]any); ok {
+				for _, varRaw := range vars {
+					varMap, _ := varRaw.(map[string]any)
+					if varMap == nil {
+						continue
+					}
+					varName, _ := varMap["name"].(string)
+					varValue, _ := varMap["value"].(string)
+					h.pool.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %q.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
+						vID, varName, varValue)
+				}
+			}
+
+			// Insert tags
+			if tagsList, ok := v["tags"].([]any); ok {
+				for _, tagRaw := range tagsList {
+					tagMap, _ := tagRaw.(map[string]any)
+					if tagMap == nil {
+						continue
+					}
+					tagName, _ := tagMap["name"].(string)
+					tagDataJSON := "{}"
+					if td, ok := tagMap["data"]; ok {
+						if b, e := json.Marshal(td); e == nil {
+							tagDataJSON = string(b)
+						}
+					}
+					var tagID int
+					// Upsert tag
+					err2 := h.pool.QueryRow(ctx, fmt.Sprintf(`
+						INSERT INTO %q.tags (name, data) VALUES ($1, $2::jsonb)
+						ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data
+						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID)
+					if err2 == nil {
+						h.pool.Exec(ctx, fmt.Sprintf(`
+							INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+							ON CONFLICT DO NOTHING`, s), vID, tagID)
+					}
+				}
+			}
+
+			createdVersions = append(createdVersions, map[string]any{
+				"id":             fmt.Sprintf("%d", vID),
+				"application_id": fmt.Sprintf("%d", appID),
+				"name":          vName,
+				"status":        "draft",
+			})
+
+			// Build version_details response
+			var starters any
+			json.Unmarshal([]byte(startersJSON), &starters)
+
+			// Rebuild variables list for response
+			respVars := make([]map[string]any, 0)
+			if vars, ok := v["variables"].([]any); ok {
+				for _, varRaw := range vars {
+					if varMap, ok := varRaw.(map[string]any); ok {
+						respVars = append(respVars, map[string]any{"name": varMap["name"], "value": varMap["value"]})
+					}
+				}
+			}
+
+			// Rebuild tags list for response
+			respTags := make([]map[string]any, 0)
+			if tagsList, ok := v["tags"].([]any); ok {
+				for _, tagRaw := range tagsList {
+					if tagMap, ok := tagRaw.(map[string]any); ok {
+						respTags = append(respTags, map[string]any{"name": tagMap["name"], "data": tagMap["data"]})
+					}
+				}
+			}
+
+			versionDetails = map[string]any{
+				"id":                    fmt.Sprintf("%d", vID),
+				"application_id":        fmt.Sprintf("%d", appID),
+				"name":                  vName,
+				"status":               "draft",
+				"author_id":            fmt.Sprintf("%d", userID),
+				"agent_type":           agentType,
+				"instructions":         instructions,
+				"welcome_message":      welcomeMsg,
+				"llm_settings":         llmSettings,
+				"conversation_starters": starters,
+				"meta":                 forkMeta,
+				"is_forked":            true,
+				"variables":            respVars,
+				"tags":                 respTags,
+				"tools":                []any{},
+			}
+		}
+
+		agentResult := map[string]any{
+			"id":              fmt.Sprintf("%d", appID),
+			"name":            name,
+			"description":     desc,
+			"owner_id":        projectID,
+			"webhook_secret":  nil,
+			"versions":        createdVersions,
+			"version_details": versionDetails,
+		}
+		if createdVersionID > 0 {
+			agentResult["version_id"] = fmt.Sprintf("%d", createdVersionID)
+		}
+		resultAgents = append(resultAgents, agentResult)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"result": map[string]any{"agents": resultAgents},
+		"errors": map[string]any{"agents": errorAgents},
+	})
 }
 
 func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
@@ -673,47 +2395,222 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	s := fmt.Sprintf("p_%s", projectID)
 
-	var name, desc, appType string
+	var name, desc, appUUID string
+	var ownerID int
+	var sharedID, sharedOwnerID *int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT name, COALESCE(description, ''), COALESCE(type, 'agent')
-		FROM %q.applications WHERE id = $1`, s), entityID).Scan(&name, &desc, &appType)
+		SELECT name, COALESCE(description, ''), uuid::text, owner_id, shared_id, shared_owner_id
+		FROM %q.applications WHERE id = $1`, s), entityID).Scan(&name, &desc, &appUUID, &ownerID, &sharedID, &sharedOwnerID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
 		return
 	}
 
-	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, COALESCE(prompt::text, '{}'), status
-		FROM %q.application_versions WHERE application_id = $1
-		ORDER BY created_at`, s), entityID)
+	// Determine app type from its versions
+	appType := "agent"
+	var hasPipeline bool
+	h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), entityID).Scan(&hasPipeline)
+	if hasPipeline {
+		appType = "pipeline"
+	}
 
-	versions := make([]map[string]any, 0)
+	// Fetch toolkits and build import_uuid map (toolID -> uuid)
+	toolkitMap := map[int]string{} // tool_id -> import_uuid
+	toolkits := make([]map[string]any, 0)
+	toolkitRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT DISTINCT t.id, t.name, t.type, COALESCE(t.settings::text, '{}')
+		FROM %q.entity_tool_mapping etm
+		JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		JOIN %q.application_versions av ON av.id = etm.entity_version_id
+		WHERE av.application_id = $1`, s, s, s), entityID)
 	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var vID int
-			var vName, promptStr, status string
-			rows.Scan(&vID, &vName, &promptStr, &status)
-			var prompt any
-			json.Unmarshal([]byte(promptStr), &prompt)
-			versions = append(versions, map[string]any{
-				"id": fmt.Sprintf("%d", vID), "name": vName, "prompt": prompt, "status": status,
+		defer toolkitRows.Close()
+		for toolkitRows.Next() {
+			var tID int
+			var tName, tType, configStr string
+			toolkitRows.Scan(&tID, &tName, &tType, &configStr)
+			tUUID := fmt.Sprintf("tool-%d", tID)
+			var config map[string]any
+			json.Unmarshal([]byte(configStr), &config)
+			if config == nil {
+				config = map[string]any{}
+			}
+			// Strip sensitive settings for export
+			settings := map[string]any{}
+			for k, v := range config {
+				settings[k] = v
+			}
+			for _, sk := range []string{"api_key", "access_token", "token", "api_key_type",
+				"client_secret", "gitlab_personal_access_token", "private_token",
+				"sonar_token", "qtest_api_token", "client_id",
+				"password", "secret", "app_id"} {
+				delete(settings, sk)
+			}
+			toolkitMap[tID] = tUUID
+			toolkits = append(toolkits, map[string]any{
+				"id": tID, "name": tName, "type": tType,
+				"import_uuid": tUUID, "settings": settings,
 			})
 		}
 	}
 
-	result := map[string]any{
-		"ok": true,
-		"applications": []map[string]any{{
-			"id":          entityID,
-			"name":        name,
-			"description": desc,
-			"type":        appType,
-			"versions":    versions,
-		}},
+	// Fetch versions with full data and tools
+	versions := make([]map[string]any, 0)
+	vRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT id, name, status, COALESCE(agent_type, 'openai'),
+			COALESCE(instructions, ''), COALESCE(welcome_message, ''),
+			COALESCE(llm_settings::text, '{}'), COALESCE(conversation_starters::text, '[]'),
+			COALESCE(meta::text, '{}'), COALESCE(uuid::text, ''), application_id, COALESCE(author_id, 0)
+		FROM %q.application_versions WHERE application_id = $1
+		ORDER BY created_at`, s), entityID)
+	if err == nil {
+		defer vRows.Close()
+		for vRows.Next() {
+			var vID, vAppID, vAuthorID int
+			var vName, vStatus, agentType, instructions, welcomeMsg string
+			var llmStr, startersStr, metaStr, vUUID string
+			vRows.Scan(&vID, &vName, &vStatus, &agentType, &instructions, &welcomeMsg, &llmStr, &startersStr, &metaStr, &vUUID, &vAppID, &vAuthorID)
+			var llm, starters, meta any
+			json.Unmarshal([]byte(llmStr), &llm)
+			json.Unmarshal([]byte(startersStr), &starters)
+			json.Unmarshal([]byte(metaStr), &meta)
+
+			// Ensure meta has icon_meta
+			if metaMap, ok := meta.(map[string]any); ok {
+				if _, hasIcon := metaMap["icon_meta"]; !hasIcon {
+					metaMap["icon_meta"] = map[string]any{}
+				}
+			} else {
+				meta = map[string]any{"icon_meta": map[string]any{}}
+			}
+
+			// Ensure llm_settings.model_project_id is a string
+			if llmMap, ok := llm.(map[string]any); ok {
+				if mpid, exists := llmMap["model_project_id"]; exists {
+					switch v := mpid.(type) {
+					case float64:
+						llmMap["model_project_id"] = fmt.Sprintf("%d", int(v))
+					}
+				}
+			}
+
+			// Fetch tool references for this version
+			vTools := make([]map[string]any, 0)
+			tRows, tErr := h.pool.Query(ctx, fmt.Sprintf(`
+				SELECT tool_id, COALESCE(selected_tools::text, '{}')
+				FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), vID)
+			if tErr == nil {
+				for tRows.Next() {
+					var toolID int
+					var selToolsStr string
+					tRows.Scan(&toolID, &selToolsStr)
+					var selTools any
+					json.Unmarshal([]byte(selToolsStr), &selTools)
+					importUUID := toolkitMap[toolID]
+					vTools = append(vTools, map[string]any{
+						"import_uuid":    importUUID,
+						"selected_tools": selTools,
+					})
+				}
+				tRows.Close()
+			}
+
+			// Fetch variables for this version
+			variables := make([]map[string]any, 0)
+			varRows, varErr := h.pool.Query(ctx, fmt.Sprintf(`
+				SELECT name, COALESCE(value, '') FROM %q.application_variables
+				WHERE application_version_id = $1 ORDER BY id`, s), vID)
+			if varErr == nil {
+				for varRows.Next() {
+					var varName, varValue string
+					varRows.Scan(&varName, &varValue)
+					variables = append(variables, map[string]any{"name": varName, "value": varValue})
+				}
+				varRows.Close()
+			}
+
+			// Fetch tags for this version
+			tags := make([]map[string]any, 0)
+			tagRows, tagErr := h.pool.Query(ctx, fmt.Sprintf(`
+				SELECT t.name, COALESCE(t.data::text, '{}')
+				FROM %q.application_version_tag_association vta
+				JOIN %q.tags t ON t.id = vta.tag_id
+				WHERE vta.version_id = $1`, s, s), vID)
+			if tagErr == nil {
+				for tagRows.Next() {
+					var tagName, tagDataStr string
+					tagRows.Scan(&tagName, &tagDataStr)
+					var tagData any
+					json.Unmarshal([]byte(tagDataStr), &tagData)
+					if tagData == nil {
+						tagData = map[string]any{}
+					}
+					tags = append(tags, map[string]any{"name": tagName, "data": tagData})
+				}
+				tagRows.Close()
+			}
+
+			// Determine is_forked from meta containing parent_entity_id
+			isForked := false
+			if metaMap, ok := meta.(map[string]any); ok {
+				if _, has := metaMap["parent_entity_id"]; has {
+					isForked = true
+				}
+			}
+
+			vEntry := map[string]any{
+				"id": fmt.Sprintf("%d", vID), "name": vName, "status": vStatus,
+				"application_id": fmt.Sprintf("%d", vAppID),
+				"author_id":      fmt.Sprintf("%d", vAuthorID),
+				"agent_type":     agentType, "instructions": instructions,
+				"welcome_message": welcomeMsg, "llm_settings": llm,
+				"conversation_starters": starters, "meta": meta,
+				"tools": vTools, "variables": variables, "tags": tags,
+				"is_forked": isForked,
+			}
+			if vUUID != "" {
+				vEntry["import_version_uuid"] = vUUID
+			}
+			versions = append(versions, vEntry)
+		}
 	}
 
-	if r.URL.Query().Get("as_file") == "true" {
+	isFork := strings.EqualFold(r.URL.Query().Get("fork"), "true")
+	if isFork && len(versions) > 0 {
+		versions = versions[len(versions)-1:]
+	}
+
+	appExport := map[string]any{
+		"id":          entityID,
+		"name":        name,
+		"description": desc,
+		"type":        appType,
+		"import_uuid": appUUID,
+		"versions":    versions,
+	}
+	if isFork {
+		appExport["owner_id"] = fmt.Sprintf("%d", ownerID)
+		appExport["original_exported"] = true
+		if sharedID != nil {
+			appExport["shared_id"] = fmt.Sprintf("%d", *sharedID)
+		} else {
+			appExport["shared_id"] = nil
+		}
+		if sharedOwnerID != nil {
+			appExport["shared_owner_id"] = fmt.Sprintf("%d", *sharedOwnerID)
+		} else {
+			appExport["shared_owner_id"] = nil
+		}
+	}
+
+	result := map[string]any{
+		"ok":           true,
+		"applications": []map[string]any{appExport},
+		"toolkits":     toolkits,
+	}
+
+	if strings.EqualFold(r.URL.Query().Get("as_file"), "true") {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="elitea_export_%s.json"`, entityID))
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
@@ -987,7 +2884,7 @@ func (h *Handler) AgentCategories(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"items": categories, "total": len(categories)})
+	writeJSON(w, http.StatusOK, map[string]any{"categories": categories, "total": len(categories)})
 }
 
 func (h *Handler) Permissions(w http.ResponseWriter, r *http.Request) {
@@ -1061,6 +2958,23 @@ func (h *Handler) AuditTraceHeatmap(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (h *Handler) ProjectUserActivity(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":  []any{},
+		"total": 0,
+	})
+}
+
+func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	var body map[string]any
+	json.NewDecoder(r.Body).Decode(&body)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (h *Handler) ServiceDescriptors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rows": []map[string]any{
@@ -1069,6 +2983,235 @@ func (h *Handler) ServiceDescriptors(w http.ResponseWriter, _ *http.Request) {
 			{"name": "indexer", "status": "active", "version": "2.0.0", "description": "Agent runtime & indexing"},
 		},
 	})
+}
+
+// --- Collections ---
+
+func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	user, _ := auth.UserFromContext(r.Context())
+	userID := 1
+	if user.ID != "" {
+		userID, _ = strconv.Atoi(user.ID)
+	}
+
+	var body map[string]any
+	json.NewDecoder(r.Body).Decode(&body)
+	name, _ := body["name"].(string)
+	desc, _ := body["description"].(string)
+
+	var id int
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+		INSERT INTO %q.prompt_collections (name, description, owner_id, author_id, status, meta)
+		VALUES ($1, $2, $3, $3, 'active', '{}')
+		RETURNING id`, s), name, desc, userID).Scan(&id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":          id,
+		"name":        name,
+		"description": desc,
+	})
+}
+
+func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(
+		`SELECT id, name, COALESCE(description, '') FROM %q.prompt_collections ORDER BY name`, s))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
+		return
+	}
+	defer rows.Close()
+
+	var items []map[string]any
+	for rows.Next() {
+		var id int
+		var name, desc string
+		rows.Scan(&id, &name, &desc)
+		items = append(items, map[string]any{"id": id, "name": name, "description": desc})
+	}
+	if items == nil {
+		items = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
+}
+
+func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	collectionID := chi.URLParam(r, "collectionID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	var id int
+	var name, desc string
+	var appsJSON, datasourcesJSON []byte
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+		SELECT id, name, COALESCE(description, ''),
+			   COALESCE(applications::text, '[]')::bytea,
+			   COALESCE(datasources::text, '[]')::bytea
+		FROM %q.prompt_collections WHERE id = $1`, s), collectionID).Scan(
+		&id, &name, &desc, &appsJSON, &datasourcesJSON)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
+		return
+	}
+
+	var appEntities, dsEntities []any
+	json.Unmarshal(appsJSON, &appEntities)
+	json.Unmarshal(datasourcesJSON, &dsEntities)
+
+	// Separate applications vs pipelines
+	var apps, pipelines []map[string]any
+	for _, e := range appEntities {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		entityID := em["id"]
+		if entityID == nil {
+			entityID = em["entity_id"]
+		}
+		var eidInt int
+		switch v := entityID.(type) {
+		case float64:
+			eidInt = int(v)
+		case string:
+			eidInt, _ = strconv.Atoi(v)
+		}
+		if eidInt == 0 {
+			continue
+		}
+		var isPipeline bool
+		h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), eidInt).Scan(&isPipeline)
+		item := map[string]any{"id": strconv.Itoa(eidInt)}
+		if isPipeline {
+			pipelines = append(pipelines, item)
+		} else {
+			apps = append(apps, item)
+		}
+	}
+	if apps == nil {
+		apps = []map[string]any{}
+	}
+	if pipelines == nil {
+		pipelines = []map[string]any{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           id,
+		"name":         name,
+		"description":  desc,
+		"applications": map[string]any{"rows": apps, "total": len(apps)},
+		"pipelines":    map[string]any{"rows": pipelines, "total": len(pipelines)},
+	})
+}
+
+func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	collectionID := chi.URLParam(r, "collectionID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	var body map[string]any
+	json.NewDecoder(r.Body).Decode(&body)
+
+	operation, _ := body["operation"].(string)
+
+	// Find the entity payload — keys like "application", "pipeline", "toolkit", etc.
+	var entityRef map[string]any
+	for k, v := range body {
+		if k == "operation" {
+			continue
+		}
+		if m, ok := v.(map[string]any); ok {
+			entityRef = m
+			break
+		}
+	}
+
+	if entityRef == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "entity reference required"})
+		return
+	}
+
+	// Get entity ID
+	var entityID int
+	switch eid := entityRef["id"].(type) {
+	case float64:
+		entityID = int(eid)
+	case string:
+		entityID, _ = strconv.Atoi(eid)
+	}
+
+	// Read current applications JSON
+	var appsJSON []byte
+	err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COALESCE(applications::text, '[]')::bytea FROM %q.prompt_collections WHERE id = $1`, s), collectionID).Scan(&appsJSON)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
+		return
+	}
+
+	var apps []map[string]any
+	json.Unmarshal(appsJSON, &apps)
+
+	switch operation {
+	case "add":
+		// Add entity to list (avoiding duplicates)
+		found := false
+		for _, a := range apps {
+			if aid, ok := a["id"].(float64); ok && int(aid) == entityID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			apps = append(apps, map[string]any{"id": entityID, "owner_id": entityRef["owner_id"]})
+		}
+	case "remove":
+		kept := apps[:0]
+		for _, a := range apps {
+			if aid, ok := a["id"].(float64); ok && int(aid) == entityID {
+				continue
+			}
+			kept = append(kept, a)
+		}
+		apps = kept
+	}
+
+	updatedJSON, _ := json.Marshal(apps)
+	h.pool.Exec(ctx, fmt.Sprintf(
+		`UPDATE %q.prompt_collections SET applications = $1::jsonb WHERE id = $2`, s), string(updatedJSON), collectionID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           collectionID,
+		"applications": apps,
+	})
+}
+
+func (h *Handler) DeleteCollection(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	collectionID := chi.URLParam(r, "collectionID")
+	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	tag, err := h.pool.Exec(ctx, fmt.Sprintf(
+		`DELETE FROM %q.prompt_collections WHERE id = $1`, s), collectionID)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

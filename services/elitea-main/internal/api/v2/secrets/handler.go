@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -528,6 +530,126 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 		}
 	}
 	return data[:len(data)-pad], nil
+}
+
+// StoreSecret programmatically stores a secret value without going through HTTP.
+func (h *Handler) StoreSecret(ctx context.Context, _ *http.Request, projectID, name, value string) error {
+	vault, err := h.readOrInitVaultCtx(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	vault.Secrets[name] = value
+	return h.writeVaultCtx(ctx, projectID, vault)
+}
+
+func (h *Handler) readVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	key := dbKey(projectID)
+	var keyBytes, dataBytes []byte
+	err := h.pool.QueryRow(ctx,
+		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
+	).Scan(&keyBytes)
+	if err != nil {
+		return vaultData{}, fmt.Errorf("secrets_key not found for project %s", projectID)
+	}
+	err = h.pool.QueryRow(ctx,
+		`SELECT data FROM centry.secrets_data WHERE id = $1`, key,
+	).Scan(&dataBytes)
+	if err != nil {
+		return vaultData{}, fmt.Errorf("secrets_data not found for project %s", projectID)
+	}
+	fernetKey, err := h.decryptKey(keyBytes)
+	if err != nil {
+		return vaultData{}, fmt.Errorf("decrypt project key: %w", err)
+	}
+	plaintext, err := fernetDecrypt(fernetKey, dataBytes)
+	if err != nil {
+		return vaultData{}, fmt.Errorf("decrypt vault data: %w", err)
+	}
+	var v vaultData
+	if err := json.Unmarshal(plaintext, &v); err != nil {
+		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
+	}
+	if v.Secrets == nil {
+		v.Secrets = map[string]string{}
+	}
+	if v.HiddenSecrets == nil {
+		v.HiddenSecrets = map[string]string{}
+	}
+	return v, nil
+}
+
+func (h *Handler) readOrInitVaultCtx(ctx context.Context, projectID string) (vaultData, error) {
+	v, err := h.readVaultCtx(ctx, projectID)
+	if err == nil {
+		return v, nil
+	}
+	v = vaultData{
+		Secrets:       map[string]string{},
+		HiddenSecrets: map[string]string{},
+	}
+	return v, h.writeVaultCtx(ctx, projectID, v)
+}
+
+func (h *Handler) writeVaultCtx(ctx context.Context, projectID string, v vaultData) error {
+	key := dbKey(projectID)
+	var keyBytes []byte
+	err := h.pool.QueryRow(ctx,
+		`SELECT data FROM centry.secrets_key WHERE id = $1`, key,
+	).Scan(&keyBytes)
+	var fernetKey []byte
+	if err != nil {
+		fernetKey = make([]byte, 32)
+		if _, err := rand.Read(fernetKey); err != nil {
+			return fmt.Errorf("generate fernet key: %w", err)
+		}
+		storedKey, err := h.encryptKey(fernetKey)
+		if err != nil {
+			return fmt.Errorf("encrypt project key: %w", err)
+		}
+		_, err = h.pool.Exec(ctx,
+			`INSERT INTO centry.secrets_key (id, data) VALUES ($1, $2)
+			 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
+			key, storedKey,
+		)
+		if err != nil {
+			return fmt.Errorf("write secrets_key: %w", err)
+		}
+	} else {
+		fernetKey, err = h.decryptKey(keyBytes)
+		if err != nil {
+			return fmt.Errorf("decrypt project key: %w", err)
+		}
+	}
+	plaintext, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal vault data: %w", err)
+	}
+	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
+	if err != nil {
+		return fmt.Errorf("encrypt vault data: %w", err)
+	}
+	_, err = h.pool.Exec(ctx,
+		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
+		 ON CONFLICT (id) DO UPDATE SET data = excluded.data`,
+		key, ciphertext,
+	)
+	return err
+}
+
+// ResolveSecretValue resolves a {{secret.name}} reference to its plaintext value.
+func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef string) (string, error) {
+	name := strings.TrimSuffix(strings.TrimPrefix(secretRef, "{{secret."), "}}")
+	vault, err := h.readVaultCtx(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	if val, ok := vault.Secrets[name]; ok {
+		return val, nil
+	}
+	if val, ok := vault.HiddenSecrets[name]; ok {
+		return val, nil
+	}
+	return "", fmt.Errorf("secret %q not found", name)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

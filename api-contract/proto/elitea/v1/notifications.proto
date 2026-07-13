@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package elitea.v1.notifications;
+
+option go_package = "github.com/eliteaai/elitea-platform/gen/go/elitea/v1/notifications;notificationsv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+// NotificationsService exposes REST endpoints for managing per-project
+// notifications in the prompt_lib scope.
+service NotificationsService {
+  // NotificationList returns a paginated list of notifications for a project.
+  rpc NotificationList(NotificationListRequest) returns (NotificationListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/notifications/notifications/prompt_lib/{project_id}"
+    };
+  }
+
+  // NotificationRead marks a single notification as read.
+  rpc NotificationRead(NotificationReadRequest) returns (NotificationReadResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/notifications/notification/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // NotificationDelete removes a single notification.
+  rpc NotificationDelete(NotificationDeleteRequest) returns (NotificationDeleteResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/notifications/notification/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // NotificationBulkDelete removes multiple notifications by ID.
+  // The body carries the list of notification IDs to delete.
+  // Note: uses POST semantics on the gateway layer because HTTP DELETE with
+  // a request body is not universally supported.
+  rpc NotificationBulkDelete(NotificationBulkDeleteRequest) returns (NotificationBulkDeleteResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/notifications/notifications/prompt_lib/{project_id}/bulk_delete"
+      body: "*"
+    };
+  }
+
+  // NotificationBulkMarkSeen sets the seen status on multiple notifications.
+  rpc NotificationBulkMarkSeen(NotificationBulkMarkSeenRequest) returns (NotificationBulkMarkSeenResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/notifications/notifications/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+}
+
+// =============================================================================
+// NotificationList
+// GET /api/v2/notifications/notifications/prompt_lib/{project_id}
+// =============================================================================
+
+message NotificationListRequest {
+  // Path parameter: project identifier.
+  string project_id = 1;
+
+  // Query parameter: maximum number of rows to return.
+  int32 limit = 2;
+
+  // Query parameter: number of rows to skip before returning results.
+  int32 offset = 3;
+
+  // Query parameter: field name to sort by.
+  string sort_by = 4;
+
+  // Query parameter: sort direction, e.g. "asc" or "desc".
+  string sort_order = 5;
+
+  // Query parameter: free-text search filter.
+  string search = 6;
+}
+
+message NotificationListResponse {
+  // Paginated notification records. Each entry is a dynamic JSON object
+  // because the notification schema is not yet strongly typed in the API.
+  repeated google.protobuf.Struct rows = 1;
+
+  // Total number of matching notifications (before pagination).
+  int32 total = 2;
+}
+
+// =============================================================================
+// NotificationRead
+// PUT /api/v2/notifications/notification/prompt_lib/{project_id}/{id}
+// =============================================================================
+
+message NotificationReadRequest {
+  // Path parameter: project identifier.
+  string project_id = 1;
+
+  // Path parameter: notification identifier.
+  string id = 2;
+}
+
+// NotificationReadResponse is returned on a successful read (mark-as-read)
+// operation. The server returns an empty JSON object for this endpoint.
+message NotificationReadResponse {}
+
+// =============================================================================
+// NotificationDelete
+// DELETE /api/v2/notifications/notification/prompt_lib/{project_id}/{id}
+// =============================================================================
+
+message NotificationDeleteRequest {
+  // Path parameter: project identifier.
+  string project_id = 1;
+
+  // Path parameter: notification identifier.
+  string id = 2;
+}
+
+// NotificationDeleteResponse is returned on a successful single-notification
+// deletion. The server returns an empty JSON object for this endpoint.
+message NotificationDeleteResponse {}
+
+// =============================================================================
+// NotificationBulkDelete
+// DELETE /api/v2/notifications/notifications/prompt_lib/{project_id}
+// =============================================================================
+
+message NotificationBulkDeleteRequest {
+  // Path parameter: project identifier.
+  string project_id = 1;
+
+  // Body: list of notification IDs to delete.
+  repeated string ids = 2;
+}
+
+// NotificationBulkDeleteResponse is returned on a successful bulk deletion.
+// The server returns an empty JSON object for this endpoint.
+message NotificationBulkDeleteResponse {}
+
+// =============================================================================
+// NotificationBulkMarkSeen
+// PUT /api/v2/notifications/notifications/prompt_lib/{project_id}
+// =============================================================================
+
+message NotificationBulkMarkSeenRequest {
+  // Path parameter: project identifier.
+  string project_id = 1;
+
+  // Body: list of notification IDs to update.
+  repeated string ids = 2;
+
+  // Body: desired seen state to apply to all listed notifications.
+  bool is_seen = 3;
+}
+
+// NotificationBulkMarkSeenResponse is returned on a successful bulk seen-state
+// update. The server returns an empty JSON object for this endpoint.
+message NotificationBulkMarkSeenResponse {}

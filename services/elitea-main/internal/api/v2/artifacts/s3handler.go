@@ -5,26 +5,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
 
 type S3Handler struct {
-	pool    *pgxpool.Pool
-	dataDir string
+	backend storage.Backend
 }
 
-func NewS3Handler(pool *pgxpool.Pool) *S3Handler {
-	dir := os.Getenv("ARTIFACTS_DATA_DIR")
-	if dir == "" {
-		dir = "/data/artifacts"
-	}
-	return &S3Handler{pool: pool, dataDir: dir}
+func NewS3Handler(backend storage.Backend) *S3Handler {
+	return &S3Handler{backend: backend}
 }
 
 func (h *S3Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
@@ -33,27 +27,21 @@ func (h *S3Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	dir := filepath.Join(h.dataDir, projectID)
-	os.MkdirAll(dir, 0755)
-
-	entries, _ := os.ReadDir(dir)
-	buckets := make([]map[string]any, 0)
-	for _, e := range entries {
-		if e.IsDir() {
-			info, _ := e.Info()
-			buckets = append(buckets, map[string]any{
-				"Name":         e.Name(),
-				"CreationDate": info.ModTime().Format(time.RFC3339),
-			})
-		}
+	infos, _ := h.backend.ListBuckets(r.Context(), projectID)
+	buckets := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		buckets = append(buckets, map[string]any{
+			"name":          info.Name,
+			"creation_date": info.CreatedAt.Format(time.RFC3339),
+		})
 	}
 
 	format := r.URL.Query().Get("format")
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"Buckets": buckets,
-			"Owner":   map[string]string{"DisplayName": "elitea", "ID": projectID},
+			"buckets": buckets,
+			"owner":   map[string]string{"DisplayName": "elitea", "ID": projectID},
 		})
 		return
 	}
@@ -62,7 +50,7 @@ func (h *S3Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult><Buckets>`)
 	for _, b := range buckets {
 		fmt.Fprintf(w, `<Bucket><Name>%s</Name><CreationDate>%s</CreationDate></Bucket>`,
-			b["Name"], b["CreationDate"])
+			b["name"], b["creation_date"])
 	}
 	fmt.Fprintf(w, `</Buckets></ListAllMyBucketsResult>`)
 }
@@ -74,28 +62,22 @@ func (h *S3Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	dir := filepath.Join(h.dataDir, projectID, bucket)
-	os.MkdirAll(dir, 0755)
-
-	entries, _ := os.ReadDir(dir)
-	objects := make([]map[string]any, 0)
-	for _, e := range entries {
-		if !e.IsDir() {
-			info, _ := e.Info()
-			objects = append(objects, map[string]any{
-				"Key":          e.Name(),
-				"Size":         info.Size(),
-				"LastModified": info.ModTime().Format(time.RFC3339),
-			})
-		}
+	infos, _ := h.backend.ListObjects(r.Context(), projectID, bucket, "")
+	objects := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		objects = append(objects, map[string]any{
+			"key":          info.Key,
+			"size":         info.Size,
+			"lastModified": info.LastModified.Format(time.RFC3339),
+		})
 	}
 
 	format := r.URL.Query().Get("format")
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"Contents": objects,
-			"Name":     bucket,
+			"contents": objects,
+			"name":     bucket,
 		})
 		return
 	}
@@ -104,7 +86,7 @@ func (h *S3Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>%s</Name><Contents>`, bucket)
 	for _, obj := range objects {
 		fmt.Fprintf(w, `<Content><Key>%s</Key><Size>%d</Size><LastModified>%s</LastModified></Content>`,
-			obj["Key"], obj["Size"], obj["LastModified"])
+			obj["key"], obj["size"], obj["lastModified"])
 	}
 	fmt.Fprintf(w, `</Contents></ListBucketResult>`)
 }
@@ -117,18 +99,16 @@ func (h *S3Handler) GetObject(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	path := filepath.Join(h.dataDir, projectID, bucket, key)
-	f, err := os.Open(path)
+	reader, info, err := h.backend.GetObject(r.Context(), projectID, bucket, key)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	defer f.Close()
+	defer reader.Close()
 
-	info, _ := f.Stat()
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
-	w.Header().Set("Last-Modified", info.ModTime().UTC().Format(http.TimeFormat))
-	io.Copy(w, f)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
+	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
+	io.Copy(w, reader)
 }
 
 func (h *S3Handler) PutObject(w http.ResponseWriter, r *http.Request) {
@@ -139,19 +119,11 @@ func (h *S3Handler) PutObject(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	dir := filepath.Join(h.dataDir, projectID, bucket)
-	os.MkdirAll(dir, 0755)
-
-	path := filepath.Join(dir, key)
-	os.MkdirAll(filepath.Dir(path), 0755)
-
-	f, err := os.Create(path)
-	if err != nil {
+	h.backend.CreateBucket(r.Context(), projectID, bucket)
+	if err := h.backend.PutObject(r.Context(), projectID, bucket, key, r.Body, r.ContentLength, ""); err != nil {
 		http.Error(w, "Internal Error", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
-	io.Copy(f, r.Body)
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -164,7 +136,6 @@ func (h *S3Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	path := filepath.Join(h.dataDir, projectID, bucket, key)
-	os.Remove(path)
+	h.backend.DeleteObject(r.Context(), projectID, bucket, key)
 	w.WriteHeader(http.StatusNoContent)
 }

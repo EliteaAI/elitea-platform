@@ -1,0 +1,541 @@
+syntax = "proto3";
+
+package elitea.v1.configurations;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/gen/go/elitea/v1/configurations";
+
+// ---------------------------------------------------------------------------
+// Shared / common messages
+// ---------------------------------------------------------------------------
+
+// Configuration is the core entity returned by most endpoints.
+message Configuration {
+  int32  id          = 1;
+  string uuid        = 2;
+  string project_id  = 3;
+  string label       = 4;
+  // elitea_title / name — the unique identifier chosen by the user.
+  string name        = 5;
+  string type        = 6;
+  string section     = 7;
+  // Arbitrary key/value blob stored as JSONB in the DB.
+  google.protobuf.Struct data       = 8;
+  google.protobuf.Struct meta       = 9;
+  bool   shared      = 10;
+  bool   status_ok   = 11;
+  string status_logs = 12;
+  string source      = 13;
+  // nullable in the DB
+  google.protobuf.Int32Value author_id  = 14;
+  google.protobuf.Timestamp  created_at = 15;
+  google.protobuf.Timestamp  updated_at = 16;
+}
+
+// SharedSection carries the shared-configuration page nested inside
+// a ListConfigurations response.
+message SharedSection {
+  repeated Configuration items  = 1;
+  int32                  total  = 2;
+  int32                  offset = 3;
+  int32                  limit  = 4;
+}
+
+// Model represents an LLM / embedding / ASR / TTS / image-generation model
+// entry linked to a Configuration row.
+message Model {
+  int32  id          = 1;
+  string name        = 2;
+  string type        = 3;
+  string project_id  = 4;
+  string section     = 5;
+  bool   is_default  = 6;
+  int32  config_id   = 7;
+  string config_name = 8;
+  google.protobuf.Struct data = 9;
+}
+
+// TypeDescriptor describes a credential / integration type available in the
+// platform (returned by listCredentialTypes).
+message TypeDescriptor {
+  string type         = 1;
+  string display_name = 2;
+  string section      = 3;
+  // Opaque list of field descriptors; shape varies per type.
+  repeated google.protobuf.Struct fields = 4;
+}
+
+// ConfigSchema is the JSON-Schema-like descriptor for a configuration type,
+// returned by getAvailableConfigurationsType.
+message AvailableConfigType {
+  string type    = 1;
+  string section = 2;
+  // Full JSON-Schema object describing the config shape.
+  google.protobuf.Struct config_schema         = 3;
+  bool                   has_test_connection    = 4;
+  string                 check_connection_label = 5;
+}
+
+// ConnectionCheckResult is one item in the batch connection-check response.
+message ConnectionCheckResult {
+  string id          = 1;
+  bool   success     = 2;
+  // Optional message (empty string when absent).
+  string message     = 3;
+  // True when the integration type does not support connection testing.
+  bool   unsupported = 4;
+}
+
+// ConnectionCheckItem is one item in the batch connection-check request.
+message ConnectionCheckItem {
+  string                 id   = 1;
+  string                 type = 2;
+  google.protobuf.Struct data = 3;
+}
+
+// TtsVoice represents a single TTS voice entry.
+message TtsVoice {
+  string id          = 1;
+  string name        = 2;
+  string language    = 3;
+  string gender      = 4;
+  // Arbitrary extra fields returned by the provider.
+  google.protobuf.Struct extra = 5;
+}
+
+// ---------------------------------------------------------------------------
+// getAvailableConfigurationsType
+// ---------------------------------------------------------------------------
+
+message GetAvailableConfigurationsTypeRequest {
+  // Zero or more section filters; when empty all sections are returned.
+  repeated string section = 1;
+}
+
+message GetAvailableConfigurationsTypeResponse {
+  repeated AvailableConfigType items = 1;
+}
+
+// ---------------------------------------------------------------------------
+// getConfigurationsList  (and the sub-variants that share the same URL)
+// ---------------------------------------------------------------------------
+
+message ListConfigurationsRequest {
+  // Path parameter.
+  string project_id    = 1;
+
+  // Pagination for own (non-shared) configurations.
+  int32  limit         = 2;
+  int32  offset        = 3;
+
+  // Pagination for the embedded shared section.
+  bool   include_shared  = 4;
+  int32  shared_offset   = 5;
+  int32  shared_limit    = 6;
+
+  // Optional filters — each accepts multiple values (OR semantics).
+  repeated string type    = 7;
+  repeated string section = 8;
+
+  // Full-text / ilike search over label and elitea_title.
+  string query     = 9;
+  string sort_by   = 10;
+  string sort_order = 11;
+}
+
+message ListConfigurationsResponse {
+  repeated Configuration items  = 1;
+  int32                  total  = 2;
+  int32                  offset = 3;
+  int32                  limit  = 4;
+  SharedSection          shared = 5;
+  // True when the caller should issue a follow-up load-more request.
+  bool                   is_load_more = 6;
+}
+
+// ---------------------------------------------------------------------------
+// getConfigurationsByType  (alias for ListConfigurations filtered by type)
+// ---------------------------------------------------------------------------
+
+message GetConfigurationsByTypeRequest {
+  string project_id = 1;
+  string type       = 2;
+  int32  limit      = 3;
+  int32  offset     = 4;
+}
+
+message GetConfigurationsByTypeResponse {
+  repeated Configuration items = 1;
+  int32                  total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// getConfigurationsBySection  (alias for ListConfigurations filtered by section)
+// ---------------------------------------------------------------------------
+
+message GetConfigurationsBySectionRequest {
+  string          project_id = 1;
+  repeated string section    = 2;
+  int32           limit      = 3;
+  int32           offset     = 4;
+}
+
+message GetConfigurationsBySectionResponse {
+  repeated Configuration items = 1;
+  int32                  total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// createConfiguration
+// ---------------------------------------------------------------------------
+
+message CreateConfigurationRequest {
+  string project_id = 1;
+  // Body fields.
+  string                 name    = 2;
+  string                 label   = 3;
+  string                 type    = 4;
+  string                 section = 5;
+  bool                   shared  = 6;
+  google.protobuf.Struct data    = 7;
+  google.protobuf.Struct meta    = 8;
+}
+
+message CreateConfigurationResponse {
+  Configuration configuration = 1;
+}
+
+// ---------------------------------------------------------------------------
+// getConfigurationDetail
+// ---------------------------------------------------------------------------
+
+message GetConfigurationDetailRequest {
+  string project_id = 1;
+  string config_id  = 2;
+}
+
+message GetConfigurationDetailResponse {
+  Configuration configuration = 1;
+}
+
+// ---------------------------------------------------------------------------
+// getSharedConfigurations
+// ---------------------------------------------------------------------------
+
+message GetSharedConfigurationsRequest {
+  string project_id    = 1;
+  int32  shared_offset = 2;
+  int32  shared_limit  = 3;
+}
+
+message GetSharedConfigurationsResponse {
+  repeated Configuration items  = 1;
+  int32                  total  = 2;
+  int32                  offset = 3;
+  int32                  limit  = 4;
+}
+
+// ---------------------------------------------------------------------------
+// updateConfiguration
+// ---------------------------------------------------------------------------
+
+message UpdateConfigurationRequest {
+  string project_id = 1;
+  string config_id  = 2;
+  // Body fields (all optional — omitted fields are unchanged).
+  string                          name    = 3;
+  string                          label   = 4;
+  string                          type    = 5;
+  string                          section = 6;
+  bool                            shared  = 7;
+  google.protobuf.Struct          data    = 8;
+  google.protobuf.Struct          meta    = 9;
+}
+
+message UpdateConfigurationResponse {
+  Configuration configuration = 1;
+}
+
+// ---------------------------------------------------------------------------
+// deleteConfiguration
+// ---------------------------------------------------------------------------
+
+message DeleteConfigurationRequest {
+  string project_id = 1;
+  string config_id  = 2;
+}
+
+message DeleteConfigurationResponse {
+  // HTTP 204 on success; body is empty.  This message is a placeholder.
+  bool success = 1;
+}
+
+// ---------------------------------------------------------------------------
+// testConfigurationConnection
+// ---------------------------------------------------------------------------
+
+message TestConfigurationConnectionRequest {
+  string                 project_id   = 1;
+  string                 config_type  = 2;
+  // Full body forwarded to the integration adapter.
+  google.protobuf.Struct body         = 3;
+}
+
+message TestConfigurationConnectionResponse {
+  bool   success     = 1;
+  string message     = 2;
+  bool   unsupported = 3;
+}
+
+// ---------------------------------------------------------------------------
+// batchTestConfigurationConnection
+// ---------------------------------------------------------------------------
+
+message BatchTestConfigurationConnectionRequest {
+  string                      project_id = 1;
+  repeated ConnectionCheckItem items      = 2;
+}
+
+message BatchTestConfigurationConnectionResponse {
+  repeated ConnectionCheckResult results = 1;
+}
+
+// ---------------------------------------------------------------------------
+// toggleConfigurationSharing
+// ---------------------------------------------------------------------------
+
+message ToggleConfigurationSharingRequest {
+  string project_id = 1;
+  string config_id  = 2;
+  bool   shared     = 3;
+}
+
+message ToggleConfigurationSharingResponse {
+  Configuration configuration = 1;
+}
+
+// ---------------------------------------------------------------------------
+// listModels
+// ---------------------------------------------------------------------------
+
+message ListModelsRequest {
+  string project_id     = 1;
+  bool   include_shared = 2;
+  // Optional section filter (e.g. "llm", "embedding").
+  string section        = 3;
+}
+
+message ListModelsResponse {
+  repeated Model items = 1;
+  int32          total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// listCredentialTypes
+// ---------------------------------------------------------------------------
+
+message ListCredentialTypesRequest {
+  string project_id = 1;
+}
+
+message ListCredentialTypesResponse {
+  repeated TypeDescriptor types = 1;
+}
+
+// ---------------------------------------------------------------------------
+// setProjectDefaultModel
+// ---------------------------------------------------------------------------
+
+message SetProjectDefaultModelRequest {
+  string project_id        = 1;
+  // The elitea_title (name) of the model configuration to set as default.
+  string name              = 2;
+  string target_project_id = 3;
+  // Defaults to "llm" when not specified.
+  string section           = 4;
+}
+
+message SetProjectDefaultModelResponse {
+  repeated Model items = 1;
+  int32          total = 2;
+}
+
+// ---------------------------------------------------------------------------
+// getTtsVoices
+// ---------------------------------------------------------------------------
+
+message GetTtsVoicesRequest {
+  string project_id  = 1;
+  // Filter voices to those belonging to this model.
+  string model_name  = 2;
+}
+
+message GetTtsVoicesResponse {
+  repeated TtsVoice voices = 1;
+}
+
+// ---------------------------------------------------------------------------
+// ConfigurationsService
+// ---------------------------------------------------------------------------
+
+service ConfigurationsService {
+
+  // Returns the list of available configuration / integration types, optionally
+  // filtered by section.  Corresponds to GET /api/v2/configurations/available/
+  rpc GetAvailableConfigurationsType(GetAvailableConfigurationsTypeRequest)
+      returns (GetAvailableConfigurationsTypeResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/available"
+    };
+  }
+
+  // Returns a paginated list of configurations for a project.  The response
+  // embeds a "shared" sub-section when include_shared=true.
+  // Corresponds to GET /api/v2/configurations/configurations/{project_id}
+  rpc ListConfigurations(ListConfigurationsRequest)
+      returns (ListConfigurationsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/configurations/{project_id}"
+    };
+  }
+
+  // Convenience variant — filters by a single type value.
+  // Originally shared the same URL as ListConfigurations; routed here by
+  // a canonical /by_type suffix. The base URL is handled by ListConfigurations.
+  rpc GetConfigurationsByType(GetConfigurationsByTypeRequest)
+      returns (GetConfigurationsByTypeResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/configurations/{project_id}/by_type"
+    };
+  }
+
+  // Convenience variant — filters by one or more section values.
+  // Originally shared the same URL as ListConfigurations.
+  rpc GetConfigurationsBySection(GetConfigurationsBySectionRequest)
+      returns (GetConfigurationsBySectionResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/configurations/{project_id}/by_section"
+    };
+  }
+
+  // Returns configurations for which shared=true for a given project.
+  // Originally GET /api/v2/configurations/configurations/{project_id}
+  // with include_shared=true query parameter.
+  rpc GetSharedConfigurations(GetSharedConfigurationsRequest)
+      returns (GetSharedConfigurationsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/configurations/{project_id}/shared"
+    };
+  }
+
+  // Creates a new configuration in the project.
+  // Corresponds to POST /api/v2/configurations/configurations/{project_id}
+  rpc CreateConfiguration(CreateConfigurationRequest)
+      returns (CreateConfigurationResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/configurations/configurations/{project_id}"
+      body: "*"
+    };
+  }
+
+  // Returns a single configuration by ID.
+  // Corresponds to GET /api/v2/configurations/configuration/{project_id}/{config_id}
+  rpc GetConfigurationDetail(GetConfigurationDetailRequest)
+      returns (GetConfigurationDetailResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/configuration/{project_id}/{config_id}"
+    };
+  }
+
+  // Replaces a configuration.
+  // Corresponds to PUT /api/v2/configurations/configuration/{project_id}/{config_id}
+  rpc UpdateConfiguration(UpdateConfigurationRequest)
+      returns (UpdateConfigurationResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/configurations/configuration/{project_id}/{config_id}"
+      body: "*"
+    };
+  }
+
+  // Deletes a configuration.
+  // Corresponds to DELETE /api/v2/configurations/configuration/{project_id}/{config_id}
+  rpc DeleteConfiguration(DeleteConfigurationRequest)
+      returns (DeleteConfigurationResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/configurations/configuration/{project_id}/{config_id}"
+    };
+  }
+
+  // Toggles the shared flag on a configuration.  Originally shared the same
+  // PUT URL as UpdateConfiguration; routed here via PATCH for clean separation.
+  rpc ToggleConfigurationSharing(ToggleConfigurationSharingRequest)
+      returns (ToggleConfigurationSharingResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/configurations/configuration/{project_id}/{config_id}"
+      body: "*"
+    };
+  }
+
+  // Tests connectivity for a single integration type.
+  // Corresponds to POST /api/v2/configurations/check_connection/{project_id}/{config_type}
+  rpc TestConfigurationConnection(TestConfigurationConnectionRequest)
+      returns (TestConfigurationConnectionResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/configurations/check_connection/{project_id}/{config_type}"
+      body: "*"
+    };
+  }
+
+  // Tests connectivity for a batch of integration configurations.
+  // Corresponds to POST /api/v2/configurations/check_connections/{project_id}
+  rpc BatchTestConfigurationConnection(BatchTestConfigurationConnectionRequest)
+      returns (BatchTestConfigurationConnectionResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/configurations/check_connections/{project_id}"
+      body: "*"
+    };
+  }
+
+  // Returns all model configurations (LLM, embedding, ASR, TTS, image-gen)
+  // visible to the project, optionally including shared models.
+  // Corresponds to GET /api/v2/configurations/models/{project_id}
+  rpc ListModels(ListModelsRequest)
+      returns (ListModelsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/models/{project_id}"
+    };
+  }
+
+  // Sets the default model for a project / section.
+  // Corresponds to POST /api/v2/configurations/models/{project_id}
+  rpc SetProjectDefaultModel(SetProjectDefaultModelRequest)
+      returns (SetProjectDefaultModelResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/configurations/models/{project_id}"
+      body: "*"
+    };
+  }
+
+  // Returns the list of all configuration / credential types available for a
+  // project (distinct type+section pairs from the configuration table).
+  // Corresponds to GET /api/v2/configurations/types/{project_id}
+  rpc ListCredentialTypes(ListCredentialTypesRequest)
+      returns (ListCredentialTypesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/types/{project_id}"
+    };
+  }
+
+  // Returns TTS voices for a given project and optional model.
+  // Corresponds to GET /api/v2/configurations/tts_voices/{project_id}
+  rpc GetTtsVoices(GetTtsVoicesRequest)
+      returns (GetTtsVoicesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/configurations/tts_voices/{project_id}"
+    };
+  }
+}

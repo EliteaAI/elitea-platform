@@ -151,8 +151,8 @@ func TestList_Success(t *testing.T) {
 
 	var resp applications.ListResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.Items) != 2 {
-		t.Errorf("expected 2 items, got %d", len(resp.Items))
+	if len(resp.Rows) != 2 {
+		t.Errorf("expected 2 items, got %d", len(resp.Rows))
 	}
 	if resp.Total != 2 {
 		t.Errorf("expected total 2, got %d", resp.Total)

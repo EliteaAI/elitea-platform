@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +20,7 @@ func NewTagsRepo(pool *pgxpool.Pool) *TagsRepo {
 
 func (r *TagsRepo) List(ctx context.Context, projectID string) ([]tags.Tag, error) {
 	s := schema(projectID)
-	q := fmt.Sprintf(`SELECT id, name FROM %q.tags ORDER BY name`, s)
+	q := fmt.Sprintf(`SELECT id, name, COALESCE(data::text, 'null') FROM %q.tags ORDER BY name`, s)
 
 	rows, err := r.pool.Query(ctx, q)
 	if err != nil {
@@ -30,8 +31,11 @@ func (r *TagsRepo) List(ctx context.Context, projectID string) ([]tags.Tag, erro
 	var items []tags.Tag
 	for rows.Next() {
 		var t tags.Tag
-		var id int
-		rows.Scan(&id, &t.Name)
+		var dataStr string
+		rows.Scan(&t.ID, &t.Name, &dataStr)
+		if dataStr != "" && dataStr != "null" {
+			json.Unmarshal([]byte(dataStr), &t.Data)
+		}
 		items = append(items, t)
 	}
 	if items == nil {

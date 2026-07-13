@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package elitea.v1.resources;
+
+option go_package = "github.com/eliteaai/elitea-platform/gen/go/elitea/v1/resources";
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+// ResourcesService exposes admin-level endpoints for inspecting system
+// information and plugin resource configuration under the prompt_lib scope.
+service ResourcesService {
+  // GetSystemInfo returns system-level metadata for the prompt_lib plugin.
+  // Maps to GET /api/v2/admin/system_info/prompt_lib
+  rpc GetSystemInfo(GetSystemInfoRequest) returns (GetSystemInfoResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/admin/system_info/prompt_lib"
+    };
+  }
+
+  // GetResourcesConfig returns the plugin configuration values for the
+  // prompt_lib resources scope.
+  // Maps to GET /api/v2/admin/plugin_config_values/prompt_lib/resources
+  rpc GetResourcesConfig(GetResourcesConfigRequest) returns (GetResourcesConfigResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/admin/plugin_config_values/prompt_lib/resources"
+    };
+  }
+}
+
+// GetSystemInfoRequest is the request message for GetSystemInfo.
+// No parameters are required.
+message GetSystemInfoRequest {}
+
+// GetSystemInfoResponse wraps the dynamic JSON object returned by the
+// system_info endpoint. The structure may vary across deployments, so
+// the payload is represented as a google.protobuf.Struct.
+message GetSystemInfoResponse {
+  // data holds the full dynamic system-info payload.
+  google.protobuf.Struct data = 1;
+}
+
+// GetResourcesConfigRequest is the request message for GetResourcesConfig.
+// No parameters are required.
+message GetResourcesConfigRequest {}
+
+// GetResourcesConfigResponse wraps the dynamic JSON object returned by the
+// plugin config values endpoint. The structure may vary across plugin
+// versions, so the payload is represented as a google.protobuf.Struct.
+message GetResourcesConfigResponse {
+  // data holds the full dynamic plugin configuration payload.
+  google.protobuf.Struct data = 1;
+}

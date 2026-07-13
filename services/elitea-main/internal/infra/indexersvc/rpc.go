@@ -19,7 +19,7 @@ import (
 const (
 	DefaultRPCTimeout = 30 * time.Second
 	StreamRPCTimeout  = 120 * time.Second
-	requestChannel    = "pylon_indexer:rpc:request"
+	requestChannel    = "elitea_rpc"
 )
 
 type Client struct {

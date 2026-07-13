@@ -1,4 +1,4 @@
-.PHONY: build test lint run docker-build sqlc
+.PHONY: build test lint run docker-build sqlc generate openapi
 
 MODULE := github.com/EliteaAI/elitea-platform/services/elitea-main
 BINARY := elitea-main
@@ -24,3 +24,9 @@ sqlc:
 
 vet:
 	go vet ./...
+
+openapi:
+	@mkdir -p internal/api/generated
+	oapi-codegen --config api/openapi/oapi-codegen.yaml api/openapi/v2.yaml
+
+generate: sqlc openapi

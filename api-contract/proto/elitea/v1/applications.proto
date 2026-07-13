@@ -1,0 +1,922 @@
+// proto/elitea/v1/applications/applications.proto
+//
+// REST-mapped API contract for the "applications" domain of the Elitea platform.
+// HTTP bindings use grpc-gateway annotations; no gRPC transport is implied for
+// client-facing traffic — the generated gateway translates HTTP/JSON to gRPC
+// internally.
+//
+// URL compatibility note: the legacy REST API uses camelCase path parameters
+// (e.g. {projectId}).  Proto field names are snake_case per the style guide
+// (e.g. project_id).  grpc-gateway path variable names must match proto field
+// names, so the annotations below use snake_case.  The chi router in
+// elitea-main registers camelCase aliases via withModes() to preserve wire
+// compatibility with existing clients.
+//
+// Generated stubs land in:
+//   gen/go/elitea/v1/applications/   (Go)
+
+syntax = "proto3";
+
+package elitea.v1.applications;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/gen/go/elitea/v1/applications;applicationspb";
+
+// =============================================================================
+// Shared / common messages
+// =============================================================================
+
+// GenericResponse wraps arbitrary JSON returned by endpoints whose schema is
+// not yet strongly typed.  Callers should switch on known fields as the
+// migration hardens individual response shapes.
+message GenericResponse {
+  google.protobuf.Struct data = 1;
+}
+
+// PaginatedApplicationsResponse is the standard envelope for paginated lists.
+message PaginatedApplicationsResponse {
+  repeated google.protobuf.Struct rows     = 1;
+  int32                           total    = 2;
+  bool                            is_load_more = 3;
+}
+
+// ArrayResponse wraps endpoints that return a top-level JSON array.
+message ArrayResponse {
+  repeated google.protobuf.Struct items = 1;
+}
+
+// =============================================================================
+// Application CRUD — request / response messages
+// =============================================================================
+
+// ListApplicationsRequest is shared by applicationList and totalApplications;
+// both hit the same URL and differ only in the limit/offset values supplied by
+// the caller.
+message ListApplicationsRequest {
+  // Path parameter.
+  string project_id = 1;
+  // Query parameters.
+  int32 limit  = 2;
+  int32 offset = 3;
+}
+
+// CreateApplicationRequest — applicationCreate
+message CreateApplicationRequest {
+  // Path parameter.
+  string project_id = 1;
+  // Request body: full application creation payload.
+  google.protobuf.Struct body = 2;
+}
+
+message CreateApplicationResponse {
+  string id = 1;
+}
+
+// EditApplicationRequest — applicationEdit
+message EditApplicationRequest {
+  // Path parameters.
+  string project_id = 1;
+  string id         = 2;
+  // Request body.
+  google.protobuf.Struct body = 3;
+}
+
+// DeleteApplicationRequest — deleteApplication
+message DeleteApplicationRequest {
+  string project_id    = 1;
+  string application_id = 2;
+}
+
+// DeleteApplicationToolRequest — deleteApplicationTool
+message DeleteApplicationToolRequest {
+  string project_id = 1;
+  string tool_id    = 2;
+}
+
+// GetApplicationRequest — applicationDetails, forkedFromApplicationDetails,
+// applicationSelectItemDetails.  All three callers hit the identical URL; the
+// proto merges them into one RPC.  Response fields not needed by a given caller
+// are ignored at the use-site.
+message GetApplicationRequest {
+  string project_id    = 1;
+  string application_id = 2;
+}
+
+message GetApplicationResponse {
+  string                 id              = 1;
+  google.protobuf.Struct version_details = 2;
+  // Additional top-level fields returned by the server are surfaced here.
+  google.protobuf.Struct extra           = 3;
+}
+
+// =============================================================================
+// Public applications
+// =============================================================================
+
+// ListPublicApplicationsRequest is shared by publicApplicationsList,
+// totalPublicApplications, totalMyLikedPublicApplications, and
+// totalTrendingPublicApplications.  All four callers hit the same URL with
+// varying limit/offset/filter query parameters.
+message ListPublicApplicationsRequest {
+  int32 limit  = 1;
+  int32 offset = 2;
+}
+
+// GetPublicApplicationRequest — publicApplicationDetails
+message GetPublicApplicationRequest {
+  string application_id = 1;
+  string version_name   = 2;
+}
+
+message GetPublicApplicationResponse {
+  string                 id   = 1;
+  google.protobuf.Struct data = 2;
+}
+
+// =============================================================================
+// Publish / unpublish / validate-for-publish
+// =============================================================================
+
+message PublishApplicationRequest {
+  string                 project_id = 1;
+  string                 version_id = 2;
+  // Optional body; may be empty for a bare publish.
+  google.protobuf.Struct body       = 3;
+}
+
+message UnpublishApplicationRequest {
+  string                 project_id = 1;
+  string                 version_id = 2;
+  google.protobuf.Struct body       = 3;
+}
+
+message ValidateForPublishRequest {
+  string                 project_id = 1;
+  string                 version_id = 2;
+  google.protobuf.Struct body       = 3;
+}
+
+// =============================================================================
+// Application tasks
+// =============================================================================
+
+message StopApplicationTaskRequest {
+  string project_id = 1;
+  string task_id    = 2;
+}
+
+// =============================================================================
+// Versions
+// =============================================================================
+
+message GetApplicationVersionDetailRequest {
+  string project_id    = 1;
+  string application_id = 2;
+  string version_id    = 3;
+}
+
+message SaveApplicationNewVersionRequest {
+  string                 project_id    = 1;
+  string                 application_id = 2;
+  google.protobuf.Struct body          = 3;
+}
+
+message UpdateApplicationVersionRequest {
+  string                 project_id    = 1;
+  string                 application_id = 2;
+  string                 version_id    = 3;
+  google.protobuf.Struct body          = 4;
+}
+
+// SetApplicationDefaultVersionRequest — setApplicationDefaultVersion (PATCH)
+message SetApplicationDefaultVersionRequest {
+  // Path parameters.
+  string project_id    = 1;
+  string application_id = 2;
+  // Body field: the version to designate as default.
+  string version_id = 3;
+}
+
+// DeleteApplicationVersionRequest — deleteApplicationVersion
+message DeleteApplicationVersionRequest {
+  // Path parameters.
+  string project_id    = 1;
+  string application_id = 2;
+  string version_id    = 3;
+  // Optional query parameter: redirect existing references to this version
+  // before deleting.
+  string replacement_version_id = 4;
+}
+
+message CheckVersionInUseRequest {
+  string project_id    = 1;
+  string application_id = 2;
+  string version_id    = 3;
+}
+
+// BatchReplaceVersionReferencesRequest — batchReplaceVersionReferences
+message BatchReplaceVersionReferencesRequest {
+  // Path parameters.
+  string project_id     = 1;
+  string old_version_id = 2;
+  string new_version_id = 3;
+  // Query parameter: if true, old version is deleted after references are moved.
+  bool delete_old = 4;
+}
+
+message ValidateApplicationVersionRequest {
+  string project_id    = 1;
+  string application_id = 2;
+  string version_id    = 3;
+}
+
+// =============================================================================
+// Export / Import
+// =============================================================================
+
+// ExportApplicationRequest — applicationExport and applicationExportMd.
+// Both callers hit the same URL; the format query parameter selects the output
+// type ("json" or "md").
+message ExportApplicationRequest {
+  // Path parameters.
+  string project_id = 1;
+  string id         = 2;
+  // Query parameters.
+  bool   fork               = 3; // optional; include fork metadata
+  string follow_version_ids = 4; // optional; comma-joined version IDs
+  string format             = 5; // optional; "json" (default) or "md"
+}
+
+message ExportApplicationResponse {
+  oneof result {
+    // JSON export: the full structured export object.
+    google.protobuf.Struct json_data    = 1;
+    // Markdown / binary export: file bytes with associated metadata.
+    BlobResult             blob_result  = 2;
+  }
+}
+
+// BlobResult carries a binary file download together with its filename and
+// MIME type (used for Markdown and future binary export formats).
+message BlobResult {
+  bytes  blob         = 1;
+  string filename     = 2;
+  string content_type = 3;
+}
+
+// ConvertLegacyApplicationRequest — convertLegacyApplication
+message ConvertLegacyApplicationRequest {
+  google.protobuf.Struct body = 1;
+}
+
+// ImportWizardRequest — importWizard
+message ImportWizardRequest {
+  string                 project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+// =============================================================================
+// Icons
+// =============================================================================
+
+// UploadApplicationIconRequest — uploadApplicationIcon
+//
+// The legacy REST endpoint accepts multipart/form-data.  grpc-gateway does not
+// natively parse multipart; the chi handler in elitea-main must register a
+// custom HTTP handler that decodes the multipart fields and populates this
+// message before forwarding to the domain service.  The proto definition
+// captures the contract for internal use.
+message UploadApplicationIconRequest {
+  // Path parameters.
+  string project_id = 1;
+  string version_id = 2;
+  // Multipart field "file": raw file bytes.
+  bytes  file_content = 3;
+  // Original filename; used to infer MIME type on the server.
+  string file_name  = 4;
+  // Desired icon dimensions after server-side resize.
+  int32  width      = 5;
+  int32  height     = 6;
+}
+
+// ReplaceApplicationIconRequest — replaceApplicationIcon (PUT)
+message ReplaceApplicationIconRequest {
+  string                 project_id = 1;
+  string                 version_id = 2;
+  google.protobuf.Struct icon_meta  = 3;
+}
+
+// DeleteApplicationIconRequest — deleteApplicationIcon
+message DeleteApplicationIconRequest {
+  string project_id = 1;
+  // Icon name / storage key to remove.
+  string name       = 2;
+}
+
+// GetApplicationIconsRequest — getApplicationIcons
+message GetApplicationIconsRequest {
+  string project_id = 1;
+  // Pagination uses "skip" instead of "offset" for this endpoint.
+  int32  limit = 2;
+  int32  skip  = 3;
+}
+
+message GetApplicationIconsResponse {
+  repeated google.protobuf.Struct rows         = 1;
+  int32                           total        = 2;
+  bool                            is_load_more = 3;
+}
+
+// GetApplicationDefaultIconsRequest — getApplicationDefaultIcons
+message GetApplicationDefaultIconsRequest {
+  string project_id = 1;
+}
+
+// =============================================================================
+// Application relations and attachment storage
+// =============================================================================
+
+// UpdateApplicationRelationRequest — updateApplicationRelation (PATCH)
+message UpdateApplicationRelationRequest {
+  string                 project_id              = 1;
+  string                 selected_application_id = 2;
+  string                 selected_version_id     = 3;
+  google.protobuf.Struct body                    = 4;
+}
+
+// SetAgentAttachmentStorageRequest — setAgentAttachmentStorage (PUT)
+message SetAgentAttachmentStorageRequest {
+  // Path parameters.
+  string project_id    = 1;
+  string application_id = 2;
+  string version_id    = 3;
+  // Body field: the toolkit to designate as the attachment storage backend.
+  string toolkit_id = 4;
+}
+
+// =============================================================================
+// Recommendations
+// =============================================================================
+
+message GetRecommendationsRequest {
+  string project_id = 1;
+  int32  limit      = 2;
+  // Lookback window in days used by the scoring algorithm.
+  int32  days       = 3;
+}
+
+// =============================================================================
+// Document loaders / index types
+// =============================================================================
+
+message GetDocumentLoadersRequest {
+  string project_id = 1;
+}
+
+// =============================================================================
+// Pipeline triggers
+// =============================================================================
+
+message GetPipelineTriggerRequest {
+  string project_id = 1;
+  string version_id = 2;
+}
+
+message UpdatePipelineTriggerRequest {
+  string                 project_id = 1;
+  string                 version_id = 2;
+  google.protobuf.Struct body       = 3;
+}
+
+// =============================================================================
+// Trending authors
+// =============================================================================
+
+message GetTrendingAuthorsRequest {
+  string project_id = 1;
+}
+
+message GetTrendingAuthorsResponse {
+  repeated google.protobuf.Struct authors = 1;
+}
+
+// =============================================================================
+// Fork
+// =============================================================================
+
+message ForkAgentRequest {
+  string                 project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+// =============================================================================
+// Agent categories
+// =============================================================================
+
+message GetAgentCategoriesRequest {
+  string project_id = 1;
+}
+
+message GetAgentCategoriesResponse {
+  repeated google.protobuf.Struct categories = 1;
+}
+
+// =============================================================================
+// Generate agent draft
+// =============================================================================
+
+message GenerateAgentDraftRequest {
+  string                 project_id = 1;
+  // Optional body; callers may omit or supply partial context.
+  google.protobuf.Struct body       = 2;
+}
+
+// =============================================================================
+// Projects — request / response messages
+// =============================================================================
+
+message ListProjectsRequest {
+  // Path parameter: the public project sentinel ID.
+  string public_project_id = 1;
+  // Query parameter.
+  bool check_public_role = 2;
+}
+
+message ProjectListResponse {
+  repeated ProjectItem projects = 1;
+}
+
+message ProjectItem {
+  int32  id          = 1;
+  string name        = 2;
+  string description = 3;
+}
+
+// ListGroupsRequest — listGroups (no parameters)
+message ListGroupsRequest {}
+
+message GroupListResponse {
+  repeated GroupItem groups = 1;
+}
+
+message GroupItem {
+  int32  id   = 1;
+  string name = 2;
+}
+
+// PutProjectGroupsRequest — putProjectGroups (PUT)
+message PutProjectGroupsRequest {
+  string                 project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+// GetProjectContextRequest — getProjectContext (GET)
+message GetProjectContextRequest {
+  string project_id = 1;
+}
+
+// UpdateProjectContextRequest — updateProjectContext (PUT)
+message UpdateProjectContextRequest {
+  string                 project_id = 1;
+  google.protobuf.Struct body       = 2;
+}
+
+// =============================================================================
+// ApplicationsService
+//
+// Handles CRUD for agents, pipelines, and skills; versioning; publish /
+// unpublish lifecycle; export / import; icon management; recommendations;
+// pipeline triggers; forking; and draft generation.
+// =============================================================================
+service ApplicationsService {
+
+  // ---------------------------------------------------------------------------
+  // Application CRUD
+  // ---------------------------------------------------------------------------
+
+  // ListApplications returns a paginated list of applications for a project.
+  // Covers: applicationList (general browse) and totalApplications (count-only
+  // probe with limit=1, offset=0) — same URL, query-param-driven.
+  rpc ListApplications(ListApplicationsRequest) returns (PaginatedApplicationsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/applications/prompt_lib/{project_id}"
+    };
+  }
+
+  // ListPublicApplications returns published applications visible without
+  // project membership.
+  // Covers: publicApplicationsList, totalPublicApplications,
+  //         totalMyLikedPublicApplications, totalTrendingPublicApplications.
+  // The trailing-slash variant is registered as an additional binding for
+  // backward compatibility.
+  rpc ListPublicApplications(ListPublicApplicationsRequest) returns (PaginatedApplicationsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/public_applications/prompt_lib"
+    };
+  }
+
+  // CreateApplication creates a new application (agent / pipeline / skill) shell.
+  rpc CreateApplication(CreateApplicationRequest) returns (CreateApplicationResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/applications/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+
+  // EditApplication updates top-level application metadata in-place.
+  rpc EditApplication(EditApplicationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/application/prompt_lib/{project_id}/{id}"
+      body: "body"
+    };
+  }
+
+  // GetApplication retrieves full application details.
+  // Covers: applicationDetails, forkedFromApplicationDetails, and
+  // applicationSelectItemDetails — all three hit the same URL.
+  rpc GetApplication(GetApplicationRequest) returns (GetApplicationResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/application/prompt_lib/{project_id}/{application_id}"
+    };
+  }
+
+  // DeleteApplication removes an application and all associated versions.
+  rpc DeleteApplication(DeleteApplicationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/application/prompt_lib/{project_id}/{application_id}"
+    };
+  }
+
+  // DeleteApplicationTool removes a tool (skill entity).
+  rpc DeleteApplicationTool(DeleteApplicationToolRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/tool/prompt_lib/{project_id}/{tool_id}"
+    };
+  }
+
+  // GetPublicApplication retrieves a published application by its public name
+  // and version label.
+  rpc GetPublicApplication(GetPublicApplicationRequest) returns (GetPublicApplicationResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/public_application/prompt_lib/{application_id}/{version_name}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Publish / unpublish lifecycle
+  // ---------------------------------------------------------------------------
+
+  // PublishApplication transitions a version to the published (marketplace) state.
+  rpc PublishApplication(PublishApplicationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/publish/prompt_lib/{project_id}/{version_id}"
+      body: "body"
+    };
+  }
+
+  // UnpublishApplication retracts a published version from the marketplace.
+  rpc UnpublishApplication(UnpublishApplicationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/unpublish/prompt_lib/{project_id}/{version_id}"
+      body: "body"
+    };
+  }
+
+  // ValidateForPublish runs pre-publish validation checks without committing.
+  rpc ValidateForPublish(ValidateForPublishRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/publish_validate/prompt_lib/{project_id}/{version_id}"
+      body: "body"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Application tasks
+  // ---------------------------------------------------------------------------
+
+  // StopApplicationTask cancels a running asynchronous application task.
+  rpc StopApplicationTask(StopApplicationTaskRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/application_task/prompt_lib/{project_id}/{task_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Versions
+  // ---------------------------------------------------------------------------
+
+  // GetApplicationVersionDetail retrieves a specific application version.
+  rpc GetApplicationVersionDetail(GetApplicationVersionDetailRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}"
+    };
+  }
+
+  // SaveApplicationNewVersion creates a new version for an existing application.
+  rpc SaveApplicationNewVersion(SaveApplicationNewVersionRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/versions/prompt_lib/{project_id}/{application_id}"
+      body: "body"
+    };
+  }
+
+  // UpdateApplicationVersion updates mutable fields of a specific version.
+  rpc UpdateApplicationVersion(UpdateApplicationVersionRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}"
+      body: "body"
+    };
+  }
+
+  // SetApplicationDefaultVersion marks a version as the default for its parent
+  // application.  The version_id is supplied in the request body.
+  rpc SetApplicationDefaultVersion(SetApplicationDefaultVersionRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/default_version/prompt_lib/{project_id}/{application_id}"
+      body: "*"
+    };
+  }
+
+  // DeleteApplicationVersion removes a version.  The optional
+  // replacement_version_id query parameter causes existing references to be
+  // repointed before deletion.
+  rpc DeleteApplicationVersion(DeleteApplicationVersionRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}"
+    };
+  }
+
+  // CheckVersionInUse reports whether a version is referenced by other entities
+  // (e.g. toolkits, other application versions).
+  rpc CheckVersionInUse(CheckVersionInUseRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id}"
+    };
+  }
+
+  // BatchReplaceVersionReferences atomically repoints all references from
+  // old_version_id to new_version_id.  The delete_old query parameter removes
+  // the old version after replacement.
+  rpc BatchReplaceVersionReferences(BatchReplaceVersionReferencesRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/batch_replace_version/prompt_lib/{project_id}/{old_version_id}/{new_version_id}"
+    };
+  }
+
+  // ValidateApplicationVersion validates a version's configuration against
+  // current platform constraints.
+  rpc ValidateApplicationVersion(ValidateApplicationVersionRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/version_validator/prompt_lib/{project_id}/{application_id}/{version_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Export / Import
+  // ---------------------------------------------------------------------------
+
+  // ExportApplication exports an application as JSON or Markdown.
+  // Covers: applicationExport (format=json, default) and applicationExportMd
+  // (format=md).  Both callers hit the same URL; the format query parameter
+  // selects the response shape.  When format=md, the response contains a
+  // BlobResult; otherwise a json_data Struct is returned.
+  rpc ExportApplication(ExportApplicationRequest) returns (ExportApplicationResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/export_import/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // ConvertLegacyApplication converts a legacy-format application payload into
+  // the current schema.
+  rpc ConvertLegacyApplication(ConvertLegacyApplicationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/export_converter/prompt_lib"
+      body: "body"
+    };
+  }
+
+  // ImportWizard runs the guided multi-step import flow for an application
+  // payload into a target project.
+  rpc ImportWizard(ImportWizardRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/import_wizard/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Icons
+  // ---------------------------------------------------------------------------
+
+  // UploadApplicationIcon uploads a new icon for a specific application version.
+  // The legacy endpoint uses multipart/form-data.  The chi handler in
+  // elitea-main decodes the multipart body and populates this message; the
+  // grpc-gateway HTTP rule maps the non-path fields from the JSON body as a
+  // fallback for API clients that send JSON.
+  rpc UploadApplicationIcon(UploadApplicationIconRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/upload_icon/prompt_lib/{project_id}/{version_id}"
+      body: "*"
+    };
+  }
+
+  // ReplaceApplicationIcon replaces an existing icon's metadata / file for a
+  // version.
+  rpc ReplaceApplicationIcon(ReplaceApplicationIconRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/upload_icon/prompt_lib/{project_id}/{version_id}"
+      body: "icon_meta"
+    };
+  }
+
+  // DeleteApplicationIcon removes an icon by its storage name/key.
+  rpc DeleteApplicationIcon(DeleteApplicationIconRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/upload_icon/prompt_lib/{project_id}/{name}"
+    };
+  }
+
+  // GetApplicationIcons lists uploaded icons for a project with pagination.
+  // Note: this endpoint uses "skip" (not "offset") as the pagination cursor.
+  rpc GetApplicationIcons(GetApplicationIconsRequest) returns (GetApplicationIconsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/upload_icon/prompt_lib/{project_id}"
+    };
+  }
+
+  // GetApplicationDefaultIcons returns the platform-level default icon set.
+  rpc GetApplicationDefaultIcons(GetApplicationDefaultIconsRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/default_icons/prompt_lib/{project_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Application relations and attachment storage
+  // ---------------------------------------------------------------------------
+
+  // UpdateApplicationRelation updates the typed relationship between two
+  // application versions (e.g. parent-child, dependency).
+  rpc UpdateApplicationRelation(UpdateApplicationRelationRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/application_relation/prompt_lib/{project_id}/{selected_application_id}/{selected_version_id}"
+      body: "body"
+    };
+  }
+
+  // SetAgentAttachmentStorage configures which toolkit handles file-attachment
+  // storage for a specific agent version.
+  rpc SetAgentAttachmentStorage(SetAgentAttachmentStorageRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/application_attachment_storage/prompt_lib/{project_id}/{application_id}/{version_id}"
+      body: "*"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recommendations
+  // ---------------------------------------------------------------------------
+
+  // GetRecommendations returns applications recommended for a project based on
+  // platform-wide usage trends within the given day window.
+  rpc GetRecommendations(GetRecommendationsRequest) returns (ArrayResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/recommendations/prompt_lib/{project_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Document loaders / index types
+  // ---------------------------------------------------------------------------
+
+  // GetDocumentLoaders returns the available document loader / index type
+  // configurations for a project (used when setting up datasource indexing).
+  rpc GetDocumentLoaders(GetDocumentLoadersRequest) returns (ArrayResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/index_types/prompt_lib/{project_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pipeline triggers
+  // ---------------------------------------------------------------------------
+
+  // GetPipelineTrigger retrieves the scheduled/event trigger for a pipeline
+  // version.
+  rpc GetPipelineTrigger(GetPipelineTriggerRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger"
+    };
+  }
+
+  // UpdatePipelineTrigger sets or replaces the trigger configuration.
+  rpc UpdatePipelineTrigger(UpdatePipelineTriggerRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger"
+      body: "body"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trending authors
+  // ---------------------------------------------------------------------------
+
+  // GetTrendingAuthors returns the list of authors with trending published agents
+  // for a project context.
+  rpc GetTrendingAuthors(GetTrendingAuthorsRequest) returns (GetTrendingAuthorsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/trending_authors/prompt_lib/{project_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fork
+  // ---------------------------------------------------------------------------
+
+  // ForkAgent copies a published application into the caller's project,
+  // creating a new independently editable application.
+  rpc ForkAgent(ForkAgentRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/fork/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agent categories
+  // ---------------------------------------------------------------------------
+
+  // GetAgentCategories returns the taxonomy used to classify published agents
+  // in the marketplace.
+  rpc GetAgentCategories(GetAgentCategoriesRequest) returns (GetAgentCategoriesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/agent_categories/prompt_lib/{project_id}"
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Generate agent draft
+  // ---------------------------------------------------------------------------
+
+  // GenerateAgentDraft invokes the AI-assisted agent scaffolding service,
+  // returning a pre-populated draft agent configuration.
+  rpc GenerateAgentDraft(GenerateAgentDraftRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/generate_application_draft/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+}
+
+// =============================================================================
+// ProjectsService
+//
+// Manages project discovery, group membership, and the per-project shared
+// context that agents can read at runtime.
+// =============================================================================
+service ProjectsService {
+
+  // ListProjects returns projects accessible to the caller, scoped to a public
+  // project sentinel.  The check_public_role query parameter filters results to
+  // projects where the caller has a public role.
+  rpc ListProjects(ListProjectsRequest) returns (ProjectListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/projects/project/default/{public_project_id}"
+    };
+  }
+
+  // ListGroups returns all prompt-lib groups (org-level units used to
+  // organise projects in the UI).
+  rpc ListGroups(ListGroupsRequest) returns (GroupListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/projects/groups/prompt_lib"
+    };
+  }
+
+  // PutProjectGroups sets the group membership for a project, replacing any
+  // existing assignments.
+  rpc PutProjectGroups(PutProjectGroupsRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/projects/groups/prompt_lib/{project_id}"
+      body: "body"
+    };
+  }
+
+  // GetProjectContext retrieves the shared context blob for a project.  Agents
+  // running in this project can access this context at inference time.
+  rpc GetProjectContext(GetProjectContextRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/project_context/prompt_lib/{project_id}/project-context"
+    };
+  }
+
+  // UpdateProjectContext replaces the shared context blob for a project.
+  rpc UpdateProjectContext(UpdateProjectContextRequest) returns (GenericResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/project_context/prompt_lib/{project_id}/project-context"
+      body: "body"
+    };
+  }
+}

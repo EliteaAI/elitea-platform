@@ -13,6 +13,14 @@ import (
 var migrations embed.FS
 
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
+	// Skip migrations if the database already has tenant schemas (loaded from a dump).
+	var schemaCount int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`).Scan(&schemaCount)
+	if schemaCount > 0 {
+		slog.Info("skipping migrations — existing tenant schemas detected", "count", schemaCount)
+		return nil
+	}
+
 	entries, err := migrations.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("migrate: read dir: %w", err)

@@ -32,7 +32,7 @@ func (h *Handler) Schedules(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if h.pool == nil || projectID == "" {
+	if h.pool == nil || projectID == "" || projectID == "0" {
 		json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		return
 	}

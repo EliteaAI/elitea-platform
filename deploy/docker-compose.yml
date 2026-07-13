@@ -1,6 +1,15 @@
-version: "3.9"
-
 services:
+  traefik:
+    image: traefik:v3.4
+    ports:
+      - "80:80"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      - elitea-main
+      - elitea-ui
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -29,29 +38,117 @@ services:
       timeout: 5s
       retries: 5
 
+  model-cache-init:
+    profiles: ["full"]
+    build:
+      context: ../docker/model-cache-init
+      dockerfile: Dockerfile
+    volumes:
+      - pylon_cache:/cache
+      - ../docker/model-cache-init/manifest.json:/config/manifest.json:ro
+    environment:
+      CACHE_DIR: /cache
+      MANIFEST_PATH: /config/manifest.json
+      MAX_RETRIES: "3"
+      AWS_DEFAULT_REGION: eu-north-1
+
   elitea-main:
     build:
       context: ../services/elitea-main
-      dockerfile: Dockerfile
+      dockerfile: Containerfile
       target: final
-    image: eliteaai/elitea-main:dev
-    ports:
-      - "8080:8080"
+    image: ghcr.io/eliteaai/elitea-main:dev
     environment:
-      DB_DSN: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
-      LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      SHADOW_ENABLED: "false"
+      LEGACY_URL: ""
+      ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
+    volumes:
+      - ../apps/admin-ui/static/dist:/data/admin_ui/static/dist:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 10s
+
+  elitea-ui:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Containerfile.elitea-ui
+    image: ghcr.io/eliteaai/elitea-ui:dev
+    environment:
+      VITE_SERVER_URL: "/api/v2"
+      VITE_BASE_URI: "/app/"
+      VITE_SOCKET_SERVER: ""
+      VITE_SOCKET_PATH: "/socket.io"
+      VITE_PUBLIC_PROJECT_ID: "1"
+      DEV: ""
+    depends_on:
+      - elitea-main
+
+  pylon-indexer:
+    build:
+      context: ../services/pylon-indexer
+      dockerfile: Containerfile
+      args:
+        PYLON_VERSION: "1.2.25"
+    image: ghcr.io/eliteaai/pylon-indexer:dev
+    environment:
+      NAME: pylon-indexer
+      NAME_PREFIX: elitea
+      ELITEA_RELEASE: main
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      REDIS_SSL: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: elitea
+      POSTGRES_PASSWORD: elitea
+      POSTGRES_DB: elitea
+      INDEXER_HMAC_KEY: ""
+      EVENT_HMAC_KEY: ""
+      RPC_HMAC_KEY: ""
+      LITELLM_MASTER_KEY: sk-elitea-litellm-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - pylon_cache:/data/cache
+
+  elitea-scheduler:
+    build:
+      context: ../services/elitea-scheduler
+      dockerfile: Containerfile
+    image: ghcr.io/eliteaai/elitea-scheduler:dev
+    environment:
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      PIPELINE_SCHEDULING_ENABLED: "true"
+      HTTP_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+  pylon_cache:
