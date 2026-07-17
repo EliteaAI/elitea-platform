@@ -291,6 +291,24 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		}
 	}
 
+	variables := make([]map[string]any, 0)
+	varRows, err := h.pool.Query(ctx, fmt.Sprintf(`
+		SELECT name, COALESCE(value, '')
+		FROM %q.application_variables
+		WHERE application_version_id = $1
+		ORDER BY id`, s), versionID)
+	if err == nil {
+		defer varRows.Close()
+		for varRows.Next() {
+			var vName, vValue string
+			varRows.Scan(&vName, &vValue)
+			variables = append(variables, map[string]any{
+				"name":  vName,
+				"value": vValue,
+			})
+		}
+	}
+
 	return map[string]any{
 		"id":                    strconv.Itoa(id),
 		"application_id":       strconv.Itoa(appID),
@@ -307,6 +325,7 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		"author_id":            authorIDStr,
 		"tools":                tools,
 		"tags":                 []any{},
+		"variables":            variables,
 	}
 }
 

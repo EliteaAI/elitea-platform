@@ -165,7 +165,7 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
 	ctx := r.Context()
@@ -176,12 +176,12 @@ func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 		LIMIT 50
 	`)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
 	defer rows.Close()
 
-	var items []map[string]any
+	items := make([]map[string]any, 0)
 	for rows.Next() {
 		var id int
 		var name, email, avatar, desc string
@@ -191,16 +191,13 @@ func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 			"avatar": avatar, "description": desc,
 		})
 	}
-	if items == nil {
-		items = []map[string]any{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
 	ctx := r.Context()
@@ -229,7 +226,7 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (h *Handler) Like(w http.ResponseWriter, r *http.Request) {

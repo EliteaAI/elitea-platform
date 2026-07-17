@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -13,7 +14,20 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/rpc"
 )
 
-// Scheduler is the core scheduling daemon.
+// Schedule mirrors the centry.schedule table row.
+type Schedule struct {
+	ID        int
+	Name      string
+	ProjectID *int
+	Cron      string
+	Active    bool
+	RPCFunc   string
+	RPCKwargs map[string]any
+	LastRun   *time.Time
+}
+
+// Scheduler is the core scheduling daemon that reads centry.schedule
+// and dispatches RPC calls to pylon services.
 type Scheduler struct {
 	pool      *pgxpool.Pool
 	rdb       *redis.Client
@@ -78,18 +92,88 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) tick(ctx context.Context) {
-	if s.cfg.PipelineSchedulingEnabled {
-		lock := newLock(s.rdb, "pipeline_scheduling", s.cfg.InstanceID)
-		ok, err := lock.TryAcquire(ctx)
-		if err != nil {
-			slog.Error("scheduler: lock acquire error", "err", err)
-			return
-		}
-		if !ok {
-			slog.Debug("scheduler: lock held by another instance, skipping")
-			return
-		}
-		defer lock.Release(ctx)
-		runPipelineScheduling(ctx, s.pool, s.rpcClient, s.parser)
+	lock := newLock(s.rdb, "scheduler_tick", s.cfg.InstanceID)
+	ok, err := lock.TryAcquire(ctx)
+	if err != nil {
+		slog.Error("scheduler: lock acquire error", "err", err)
+		return
 	}
+	if !ok {
+		slog.Debug("scheduler: lock held by another instance, skipping")
+		return
+	}
+	defer lock.Release(ctx)
+
+	s.runSchedules(ctx)
+}
+
+func (s *Scheduler) runSchedules(ctx context.Context) {
+	// Use FOR UPDATE SKIP LOCKED to prevent concurrent execution (matches pylon behavior)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, project_id, cron, rpc_func, rpc_kwargs, last_run
+		FROM centry.schedule
+		WHERE active = true
+		FOR UPDATE SKIP LOCKED`)
+	if err != nil {
+		slog.Error("scheduler: query schedules", "err", err)
+		return
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	var dispatched, skipped int
+
+	for rows.Next() {
+		var sc Schedule
+		var kwargsRaw []byte
+		err := rows.Scan(&sc.ID, &sc.Name, &sc.ProjectID, &sc.Cron, &sc.RPCFunc, &kwargsRaw, &sc.LastRun)
+		if err != nil {
+			slog.Error("scheduler: scan row", "err", err)
+			continue
+		}
+
+		if kwargsRaw != nil {
+			json.Unmarshal(kwargsRaw, &sc.RPCKwargs)
+		}
+
+		if !s.timeToRun(sc, now) {
+			skipped++
+			continue
+		}
+
+		// Dispatch RPC
+		slog.Info("scheduler: dispatching", "id", sc.ID, "name", sc.Name, "rpc_func", sc.RPCFunc)
+		if err := s.rpcClient.Call(ctx, sc.RPCFunc, sc.RPCKwargs); err != nil {
+			slog.Error("scheduler: dispatch failed", "id", sc.ID, "name", sc.Name, "err", err)
+			continue
+		}
+
+		// Update last_run
+		_, err = s.pool.Exec(ctx, `UPDATE centry.schedule SET last_run = $1 WHERE id = $2`, now, sc.ID)
+		if err != nil {
+			slog.Error("scheduler: update last_run", "id", sc.ID, "err", err)
+		}
+		dispatched++
+	}
+
+	if dispatched > 0 || slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Info("scheduler: tick complete", "dispatched", dispatched, "skipped", skipped)
+	}
+}
+
+// timeToRun checks if a schedule is due, matching pylon's croniter logic:
+// if last_run is nil, it's always due; otherwise next(last_run) <= now.
+func (s *Scheduler) timeToRun(sc Schedule, now time.Time) bool {
+	if sc.LastRun == nil {
+		return true
+	}
+
+	sched, err := s.parser.Parse(sc.Cron)
+	if err != nil {
+		slog.Debug("scheduler: invalid cron", "id", sc.ID, "name", sc.Name, "cron", sc.Cron, "err", err)
+		return false
+	}
+
+	nextRun := sched.Next(*sc.LastRun)
+	return !nextRun.After(now)
 }

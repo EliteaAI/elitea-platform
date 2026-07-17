@@ -15,3 +15,5 @@ deploy/data/production/
 
 # Go binaries
 /services/*/cmd/*/__debug_bin*
+/services/elitea-main/elitea-main
+/services/elitea-scheduler/elitea-scheduler

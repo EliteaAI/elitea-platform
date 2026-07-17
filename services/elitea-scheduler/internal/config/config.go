@@ -6,20 +6,21 @@ import "os"
 type Config struct {
 	DatabaseURL string
 	RedisURL    string
-
-	PipelineSchedulingEnabled bool
-	HTTPAddr                  string
-	InstanceID                string
+	RPCChannel  string
+	RPCHMACKey  string
+	HTTPAddr    string
+	InstanceID  string
 }
 
 // FromEnv reads configuration from environment variables.
 func FromEnv() Config {
 	return Config{
-		DatabaseURL:               envOr("DATABASE_URL", "postgres://elitea:elitea@localhost:5432/elitea?sslmode=disable"),
-		RedisURL:                  envOr("REDIS_URL", "localhost:6379"),
-		PipelineSchedulingEnabled: envOr("PIPELINE_SCHEDULING_ENABLED", "true") == "true",
-		HTTPAddr:                  envOr("HTTP_ADDR", ":8081"),
-		InstanceID:                envOr("SCHEDULER_INSTANCE_ID", hostname()),
+		DatabaseURL: envOr("DATABASE_URL", "postgres://elitea:elitea@localhost:5432/elitea?sslmode=disable"),
+		RedisURL:    envOr("REDIS_URL", "localhost:6379"),
+		RPCChannel:  envOr("RPC_CHANNEL", "elitea_rpc"),
+		RPCHMACKey:  os.Getenv("RPC_HMAC_KEY"),
+		HTTPAddr:    envOr("HTTP_ADDR", ":8081"),
+		InstanceID:  envOr("SCHEDULER_INSTANCE_ID", hostname()),
 	}
 }
 

@@ -45,7 +45,7 @@ type ProjectListResponse struct {
 }
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
-	_, ok := auth.UserFromContext(r.Context())
+	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
@@ -55,8 +55,13 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	projectIDNum, _ := strconv.Atoi(projectID)
 	ctx := r.Context()
 
-	// Return all projects as a plain array (UI Redux expects numeric IDs)
-	rows, err := h.pool.Query(ctx, `SELECT id, name, suspended FROM centry.project ORDER BY id`)
+	// Return only projects the user has access to
+	rows, err := h.pool.Query(ctx, `
+		SELECT p.id, p.name, COALESCE(p.suspended, false)
+		FROM centry.project p
+		JOIN auth_core__project_user_role pur ON pur.project_id = p.id
+		WHERE pur.user_id = $1
+		ORDER BY p.id`, user.ID)
 	if err != nil {
 		writeJSON(w, http.StatusOK, []Project{{
 			ID:     projectIDNum,

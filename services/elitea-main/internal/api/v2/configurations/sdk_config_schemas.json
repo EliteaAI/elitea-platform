@@ -1,0 +1,1783 @@
+{
+  "pgvector": {
+    "metadata": {
+      "icon_url": null,
+      "label": "PgVector",
+      "section": "vectorstorage",
+      "type": "pgvector"
+    },
+    "properties": {
+      "connection_string": {
+        "default": null,
+        "description": "Connection string for PgVector database",
+        "format": "password",
+        "title": "Connection String",
+        "type": "string",
+        "writeOnly": true
+      }
+    },
+    "title": "PgVectorConfiguration",
+    "type": "object"
+  },
+  "postman": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "postman",
+        "api",
+        "testing",
+        "collection"
+      ],
+      "icon_url": "postman.svg",
+      "label": "Postman",
+      "section": "credentials",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "fields": [
+                "api_key"
+              ],
+              "name": "API Key"
+            }
+          ]
+        }
+      },
+      "type": "postman"
+    },
+    "properties": {
+      "base_url": {
+        "description": "Postman API base URL",
+        "title": "Base Url",
+        "type": "string"
+      },
+      "workspace_id": {
+        "description": "Default workspace ID",
+        "title": "Workspace Id",
+        "type": "string"
+      },
+      "api_key": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Postman API Key",
+        "title": "Api Key"
+      }
+    },
+    "required": [
+      "base_url",
+      "workspace_id"
+    ],
+    "title": "PostmanConfiguration",
+    "type": "object"
+  },
+  "service_now": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "servicenow",
+        "itsm",
+        "service management",
+        "incident"
+      ],
+      "icon_url": "servicenow.svg",
+      "label": "ServiceNow",
+      "section": "credentials",
+      "type": "service_now"
+    },
+    "properties": {
+      "base_url": {
+        "description": "ServiceNow URL",
+        "title": "Base Url",
+        "type": "string"
+      },
+      "username": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "ServiceNow Username",
+        "title": "Username"
+      },
+      "password": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "ServiceNow Password",
+        "title": "Password"
+      }
+    },
+    "required": [
+      "base_url"
+    ],
+    "title": "ServiceNowConfiguration",
+    "type": "object"
+  },
+  "slack": {
+    "metadata": {
+      "categories": [
+        "communication"
+      ],
+      "extra_categories": [
+        "slack",
+        "chat",
+        "messaging",
+        "collaboration"
+      ],
+      "icon_url": "slack.svg",
+      "label": "Slack",
+      "section": "credentials",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "fields": [
+                "slack_token"
+              ],
+              "name": "Slack Token"
+            }
+          ]
+        }
+      },
+      "type": "slack"
+    },
+    "properties": {
+      "name": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Slack name",
+        "title": "Name"
+      },
+      "slack_token": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Slack Token like XOXB-*****-*****-*****-*****",
+        "title": "Slack Token"
+      },
+      "channel_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Channel ID",
+        "title": "Channel Id"
+      }
+    },
+    "required": [
+      "name",
+      "slack_token",
+      "channel_id"
+    ],
+    "title": "SlackConfiguration",
+    "type": "object"
+  },
+  "azure_search": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "azure",
+        "cognitive search",
+        "vector database",
+        "knowledge base"
+      ],
+      "hidden": true,
+      "icon_url": "azure-search.svg",
+      "label": "Azure Search",
+      "section": "credentials",
+      "type": "azure_search"
+    },
+    "properties": {
+      "endpoint": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Azure Search endpoint",
+        "title": "Endpoint"
+      },
+      "api_base": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Azure Search API base",
+        "title": "Api Base"
+      },
+      "api_key": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "API key",
+        "title": "Api Key"
+      }
+    },
+    "required": [
+      "endpoint",
+      "api_base",
+      "api_key"
+    ],
+    "title": "AzureSearchConfiguration",
+    "type": "object"
+  },
+  "delta_lake": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "aws",
+        "data lake",
+        "analytics",
+        "storage"
+      ],
+      "hidden": true,
+      "icon_url": "delta-lake.svg",
+      "label": "AWS Delta Lake",
+      "section": "credentials",
+      "type": "delta_lake"
+    },
+    "properties": {
+      "aws_access_key_id": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "AWS access key ID",
+        "title": "Aws Access Key Id"
+      },
+      "aws_secret_access_key": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "AWS secret access key",
+        "title": "Aws Secret Access Key"
+      },
+      "aws_session_token": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "AWS session token (optional)",
+        "title": "Aws Session Token"
+      },
+      "aws_region": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "AWS region for Delta Lake storage",
+        "title": "Aws Region"
+      },
+      "s3_path": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "S3 path to Delta Lake data (e.g., s3://bucket/path)",
+        "title": "S3 Path"
+      },
+      "table_path": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Delta Lake table path (if not using s3_path)",
+        "title": "Table Path"
+      }
+    },
+    "required": [
+      "aws_access_key_id",
+      "aws_secret_access_key",
+      "aws_session_token",
+      "aws_region",
+      "s3_path",
+      "table_path"
+    ],
+    "title": "DeltaLakeConfiguration",
+    "type": "object"
+  },
+  "bigquery": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "google",
+        "gcp",
+        "data warehouse",
+        "analytics"
+      ],
+      "hidden": true,
+      "icon_url": "google.svg",
+      "label": "Google BigQuery",
+      "section": "credentials",
+      "type": "bigquery"
+    },
+    "properties": {
+      "api_key": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "GCP API key",
+        "title": "Api Key"
+      },
+      "project": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "BigQuery project ID",
+        "title": "Project"
+      },
+      "location": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "BigQuery location",
+        "title": "Location"
+      },
+      "dataset": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "BigQuery dataset name",
+        "title": "Dataset"
+      },
+      "table": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "BigQuery table name",
+        "title": "Table"
+      }
+    },
+    "required": [
+      "api_key",
+      "project",
+      "location",
+      "dataset",
+      "table"
+    ],
+    "title": "BigQueryConfiguration",
+    "type": "object"
+  },
+  "zephyr": {
+    "metadata": {
+      "categories": [
+        "test management"
+      ],
+      "extra_categories": [
+        "zephyr",
+        "test automation",
+        "test case management",
+        "test planning"
+      ],
+      "icon_url": "zephyr.svg",
+      "label": "Zephyr Scale",
+      "section": "credentials",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "fields": [
+                "token"
+              ],
+              "name": "Token"
+            },
+            {
+              "fields": [
+                "username",
+                "password"
+              ],
+              "name": "Username & Password"
+            },
+            {
+              "fields": [
+                "cookies"
+              ],
+              "name": "Cookies"
+            }
+          ]
+        }
+      },
+      "type": "zephyr"
+    },
+    "properties": {
+      "base_url": {
+        "description": "Zephyr base URL",
+        "title": "Base Url",
+        "type": "string"
+      },
+      "token": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "API token",
+        "title": "Token"
+      },
+      "username": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Username",
+        "title": "Username"
+      },
+      "password": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Password",
+        "title": "Password"
+      },
+      "cookies": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Cookies",
+        "title": "Cookies"
+      }
+    },
+    "required": [
+      "base_url"
+    ],
+    "title": "ZephyrConfiguration",
+    "type": "object"
+  },
+  "rally": {
+    "metadata": {
+      "categories": [
+        "project management"
+      ],
+      "extra_categories": [
+        "agile management",
+        "test management",
+        "scrum",
+        "kanban"
+      ],
+      "icon_url": "rally.svg",
+      "label": "Rally",
+      "section": "credentials",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "fields": [
+                "username",
+                "password"
+              ],
+              "name": "Password"
+            },
+            {
+              "fields": [
+                "api_key"
+              ],
+              "name": "API Key"
+            }
+          ]
+        }
+      },
+      "type": "rally"
+    },
+    "properties": {
+      "server": {
+        "description": "Rally server url",
+        "title": "Server",
+        "type": "string"
+      },
+      "api_key": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "User's API key",
+        "secret": true,
+        "title": "Api Key"
+      },
+      "username": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Username",
+        "title": "Username"
+      },
+      "password": {
+        "anyOf": [
+          {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "User's password",
+        "secret": true,
+        "title": "Password"
+      }
+    },
+    "required": [
+      "server"
+    ],
+    "title": "RallyConfiguration",
+    "type": "object"
+  },
+  "sonar": {
+    "metadata": {
+      "categories": [
+        "development"
+      ],
+      "extra_categories": [
+        "code quality",
+        "code security",
+        "code coverage",
+        "quality",
+        "sonarqube"
+      ],
+      "icon_url": "sonar-icon.svg",
+      "label": "Sonar",
+      "section": "credentials",
+      "type": "sonar"
+    },
+    "properties": {
+      "url": {
+        "description": "SonarQube Server URL",
+        "title": "Url",
+        "type": "string"
+      },
+      "sonar_token": {
+        "description": "SonarQube user token for authentication",
+        "format": "password",
+        "title": "Sonar Token",
+        "type": "string",
+        "writeOnly": true
+      }
+    },
+    "required": [
+      "url",
+      "sonar_token"
+    ],
+    "title": "SonarConfiguration",
+    "type": "object"
+  },
+  "sql": {
+    "metadata": {
+      "categories": [
+        "development"
+      ],
+      "extra_categories": [
+        "sql",
+        "database",
+        "data",
+        "query"
+      ],
+      "icon_url": "sql.svg",
+      "label": "SQL",
+      "section": "credentials",
+      "type": "sql"
+    },
+    "properties": {
+      "host": {
+        "description": "Database host",
+        "title": "Host",
+        "type": "string"
+      },
+      "port": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Database port",
+        "title": "Port"
+      },
+      "username": {
+        "description": "Database username",
+        "title": "Username",
+        "type": "string"
+      },
+      "password": {
+        "description": "Database password",
+        "format": "password",
+        "secret": true,
+        "title": "Password",
+        "type": "string",
+        "writeOnly": true
+      }
+    },
+    "required": [
+      "host",
+      "username",
+      "password"
+    ],
+    "title": "SqlConfiguration",
+    "type": "object"
+  },
+  "google_places": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "google",
+        "places",
+        "maps",
+        "location",
+        "geocoding"
+      ],
+      "icon_url": "google.svg",
+      "label": "Google Places",
+      "section": "credentials",
+      "type": "google_places"
+    },
+    "properties": {
+      "api_key": {
+        "description": "Google Places API Key",
+        "format": "password",
+        "title": "Api Key",
+        "type": "string",
+        "writeOnly": true
+      }
+    },
+    "required": [
+      "api_key"
+    ],
+    "title": "GooglePlacesConfiguration",
+    "type": "object"
+  },
+  "salesforce": {
+    "metadata": {
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "salesforce",
+        "crm",
+        "sales",
+        "customer"
+      ],
+      "icon_url": "salesforce.svg",
+      "label": "Salesforce",
+      "section": "credentials",
+      "type": "salesforce"
+    },
+    "properties": {
+      "client_id": {
+        "description": "Salesforce Client ID",
+        "title": "Client Id",
+        "type": "string"
+      },
+      "client_secret": {
+        "description": "Salesforce Client Secret",
+        "format": "password",
+        "title": "Client Secret",
+        "type": "string",
+        "writeOnly": true
+      },
+      "base_url": {
+        "description": "Salesforce Base URL",
+        "title": "Base Url",
+        "type": "string"
+      }
+    },
+    "required": [
+      "client_id",
+      "client_secret",
+      "base_url"
+    ],
+    "title": "SalesforceConfiguration",
+    "type": "object"
+  },
+  "carrier": {
+    "metadata": {
+      "categories": [
+        "testing"
+      ],
+      "extra_categories": [
+        "carrier",
+        "security",
+        "testing",
+        "vulnerability"
+      ],
+      "icon_url": "carrier.svg",
+      "label": "Carrier",
+      "section": "credentials",
+      "type": "carrier"
+    },
+    "properties": {
+      "organization": {
+        "description": "Carrier Organization",
+        "title": "Organization",
+        "type": "string"
+      },
+      "url": {
+        "description": "Carrier URL",
+        "title": "Url",
+        "type": "string"
+      },
+      "private_token": {
+        "description": "Carrier Private Token",
+        "format": "password",
+        "title": "Private Token",
+        "type": "string",
+        "writeOnly": true
+      }
+    },
+    "required": [
+      "organization",
+      "url",
+      "private_token"
+    ],
+    "title": "CarrierConfiguration",
+    "type": "object"
+  },
+  "ado": {
+    "title": "AdoConfiguration",
+    "type": "object",
+    "properties": {
+      "organization_url": {
+        "type": "string",
+        "title": "Organization Url",
+        "description": "Base API URL"
+      },
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "description": "ADO Token",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Ado",
+      "icon_url": null,
+      "section": "credentials",
+      "type": "ado",
+      "categories": [
+        "project management"
+      ]
+    }
+  },
+  "bitbucket": {
+    "title": "BitbucketConfiguration",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "title": "Url",
+        "description": "Bitbucket URL"
+      },
+      "username": {
+        "type": "string",
+        "title": "Username",
+        "description": "Bitbucket Username"
+      },
+      "password": {
+        "type": "string",
+        "title": "Password",
+        "description": "Bitbucket Password/App Password",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Bitbucket",
+      "icon_url": "bitbucket-icon.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "Username & Password",
+              "fields": [
+                "username",
+                "password"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "bitbucket",
+      "categories": [
+        "code repositories"
+      ],
+      "extra_categories": [
+        "bitbucket",
+        "git",
+        "repository",
+        "code",
+        "version control"
+      ]
+    }
+  },
+  "confluence": {
+    "title": "ConfluenceConfiguration",
+    "type": "object",
+    "properties": {
+      "hosting": {
+        "type": "string",
+        "title": "Hosting",
+        "default": "Auto"
+      },
+      "base_url": {
+        "type": "string",
+        "title": "Base Url"
+      },
+      "username": {
+        "type": "string",
+        "title": "Username",
+        "default": ""
+      },
+      "api_key": {
+        "type": "string",
+        "title": "Api Key",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      },
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Confluence",
+      "icon_url": "confluence.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "Basic",
+              "fields": [
+                "username",
+                "api_key"
+              ]
+            },
+            {
+              "name": "Bearer",
+              "fields": [
+                "token"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "confluence",
+      "categories": [
+        "documentation"
+      ],
+      "extra_categories": [
+        "confluence",
+        "wiki",
+        "documentation",
+        "knowledge base"
+      ]
+    }
+  },
+  "figma": {
+    "title": "FigmaConfiguration",
+    "type": "object",
+    "properties": {
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "description": "Figma Token",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Figma",
+      "icon_url": "figma-icon.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "Token",
+              "fields": [
+                "token"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "figma",
+      "categories": [
+        "other"
+      ],
+      "extra_categories": [
+        "figma",
+        "design",
+        "ui/ux",
+        "prototyping",
+        "collaboration"
+      ]
+    }
+  },
+  "github": {
+    "title": "GithubConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "Base API URL"
+      },
+      "app_id": {
+        "type": "string",
+        "title": "App Id",
+        "description": "Github APP ID",
+        "default": null
+      },
+      "app_private_key": {
+        "type": "string",
+        "title": "App Private Key",
+        "description": "Github APP private key",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      },
+      "access_token": {
+        "type": "string",
+        "title": "Access Token",
+        "description": "Github Access Token",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      },
+      "username": {
+        "type": "string",
+        "title": "Username",
+        "description": "Github Username",
+        "default": null
+      },
+      "password": {
+        "type": "string",
+        "title": "Password",
+        "description": "Github Password",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "GitHub",
+      "icon_url": null,
+      "sections": {
+        "auth": {
+          "required": false,
+          "subsections": [
+            {
+              "name": "Token",
+              "fields": [
+                "access_token"
+              ]
+            },
+            {
+              "name": "Password",
+              "fields": [
+                "username",
+                "password"
+              ]
+            },
+            {
+              "name": "App private key",
+              "fields": [
+                "app_id",
+                "app_private_key"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "github",
+      "categories": [
+        "code repositories"
+      ],
+      "extra_categories": [
+        "github",
+        "git",
+        "repository",
+        "code",
+        "version control"
+      ]
+    }
+  },
+  "gitlab": {
+    "title": "GitlabConfiguration",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "title": "Url",
+        "description": "GitLab URL"
+      },
+      "private_token": {
+        "type": "string",
+        "title": "Private Token",
+        "description": "GitLab private token",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "GitLab",
+      "icon_url": null,
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "GitLab private token",
+              "fields": [
+                "private_token"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "gitlab",
+      "categories": [
+        "code repositories"
+      ],
+      "extra_categories": [
+        "gitlab",
+        "git",
+        "repository",
+        "code",
+        "version control"
+      ]
+    }
+  },
+  "jira": {
+    "title": "JiraConfiguration",
+    "type": "object",
+    "properties": {
+      "hosting": {
+        "type": "string",
+        "title": "Hosting",
+        "default": "Auto"
+      },
+      "base_url": {
+        "type": "string",
+        "title": "Base Url"
+      },
+      "username": {
+        "type": "string",
+        "title": "Username",
+        "default": ""
+      },
+      "api_key": {
+        "type": "string",
+        "title": "Api Key",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      },
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "default": null,
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Jira",
+      "icon_url": "jira.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "Basic",
+              "fields": [
+                "username",
+                "api_key"
+              ]
+            },
+            {
+              "name": "Bearer",
+              "fields": [
+                "token"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "jira",
+      "categories": [
+        "project management"
+      ],
+      "extra_categories": [
+        "jira",
+        "issue tracking",
+        "project management",
+        "agile"
+      ]
+    }
+  },
+  "langfuse": {
+    "title": "LangfuseConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "Langfuse base URL (e.g., https://cloud.langfuse.com)"
+      },
+      "public_key": {
+        "type": "string",
+        "title": "Public Key",
+        "description": "Langfuse public API key"
+      },
+      "secret_key": {
+        "type": "string",
+        "title": "Secret Key",
+        "description": "Langfuse secret API key",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Langfuse",
+      "icon_url": null,
+      "section": "credentials",
+      "type": "langfuse",
+      "categories": [
+        "tracing"
+      ],
+      "extra_categories": [
+        "langfuse",
+        "observability",
+        "llm tracing",
+        "monitoring"
+      ]
+    }
+  },
+  "openapi": {
+    "title": "OpenApiConfiguration",
+    "type": "object",
+    "properties": {
+      "api_key": {
+        "type": "string",
+        "title": "Api Key",
+        "default": null,
+        "description": "API key value (stored as a secret). Used when selecting 'API Key' authentication subsection.",
+        "format": "password",
+        "writeOnly": true
+      },
+      "auth_type": {
+        "type": "string",
+        "title": "Auth Type",
+        "default": null,
+        "description": "How to apply the API key. - 'Bearer': sets 'Authorization: Bearer <api_key>' - 'Basic': sets 'Authorization: Basic <api_key>' - 'custom': sets '<custom_header_name>: <api_key>'"
+      },
+      "custom_header_name": {
+        "type": "string",
+        "title": "Custom Header Name",
+        "default": null,
+        "description": "Custom header name to use when auth_type='custom' (e.g. 'X-Api-Key')."
+      },
+      "client_id": {
+        "type": "string",
+        "title": "Client Id",
+        "default": null,
+        "description": "OAuth2 client ID (also known as Application ID or App ID)"
+      },
+      "client_secret": {
+        "type": "string",
+        "title": "Client Secret",
+        "default": null,
+        "description": "OAuth2 client secret (stored securely)",
+        "format": "password",
+        "writeOnly": true
+      },
+      "token_url": {
+        "type": "string",
+        "title": "Token Url",
+        "default": null,
+        "description": "OAuth2 token endpoint URL for obtaining access tokens. Examples: Azure AD: https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token, Google: https://oauth2.googleapis.com/token, Auth0: https://{domain}/oauth/token, Spotify: https://accounts.spotify.com/api/token",
+        "format": "password",
+        "writeOnly": true
+      },
+      "scope": {
+        "type": "string",
+        "title": "Scope",
+        "default": null,
+        "description": "OAuth2 scope(s), space-separated if multiple (per OAuth2 RFC 6749). Examples: \"user-read-private user-read-email\" (Spotify), \"api://app-id/.default\" (Azure), \"https://www.googleapis.com/auth/cloud-platform\" (Google)"
+      },
+      "method": {
+        "type": "string",
+        "title": "Method",
+        "default": null,
+        "description": "Token exchange method for client credentials flow. 'default': Sends client_id and client_secret in POST body (Azure AD, Auth0, most providers). 'Basic': Sends credentials via HTTP Basic auth header - required by Spotify, some AWS services, and certain OAuth providers."
+      }
+    },
+    "metadata": {
+      "label": "OpenAPI",
+      "icon_url": "openapi.svg",
+      "categories": [
+        "integrations"
+      ],
+      "type": "openapi",
+      "extra_categories": [
+        "api",
+        "openapi",
+        "swagger"
+      ],
+      "check_connection": {
+        "enabled_when": {
+          "all_fields_set": [
+            "client_id",
+            "client_secret",
+            "method",
+            "token_url"
+          ]
+        },
+        "disabled_tooltip": "Available only for OAuth (Client Credentials). Please setup client_id, client_secret, method and token_url to activate it on setup."
+      },
+      "sections": {
+        "auth": {
+          "required": false,
+          "subsections": [
+            {
+              "name": "API Key",
+              "fields": [
+                "api_key",
+                "auth_type",
+                "custom_header_name"
+              ]
+            },
+            {
+              "name": "OAuth",
+              "fields": [
+                "client_id",
+                "client_secret",
+                "token_url",
+                "scope",
+                "method"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials"
+    }
+  },
+  "qtest": {
+    "title": "QtestConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "QTest base URL"
+      },
+      "qtest_api_token": {
+        "type": "string",
+        "title": "Qtest Api Token",
+        "description": "QTest API token",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "QTest",
+      "icon_url": "qtest.svg",
+      "categories": [
+        "test management"
+      ],
+      "section": "credentials",
+      "type": "qtest",
+      "extra_categories": [
+        "quality assurance",
+        "test case management",
+        "test planning"
+      ]
+    }
+  },
+  "report_portal": {
+    "title": "ReportPortalConfiguration",
+    "type": "object",
+    "properties": {
+      "project": {
+        "type": "string",
+        "title": "Project",
+        "description": "Report Portal Project Name"
+      },
+      "endpoint": {
+        "type": "string",
+        "title": "Endpoint",
+        "description": "Report Portal Endpoint URL"
+      },
+      "api_key": {
+        "type": "string",
+        "title": "Api Key",
+        "description": "Report Portal API Key",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Report Portal",
+      "icon_url": "report_portal.svg",
+      "section": "credentials",
+      "type": "report_portal",
+      "categories": [
+        "testing"
+      ],
+      "extra_categories": [
+        "report portal",
+        "testing",
+        "automation",
+        "reports"
+      ]
+    }
+  },
+  "sharepoint": {
+    "title": "SharepointConfiguration",
+    "type": "object",
+    "properties": {
+      "client_id": {
+        "type": "string",
+        "title": "Client Id",
+        "description": "SharePoint Client ID"
+      },
+      "client_secret": {
+        "type": "string",
+        "title": "Client Secret",
+        "description": "SharePoint Client Secret",
+        "format": "password",
+        "writeOnly": true
+      },
+      "site_url": {
+        "type": "string",
+        "title": "Site Url",
+        "description": "SharePoint Site URL"
+      },
+      "oauth_discovery_endpoint": {
+        "type": "string",
+        "title": "Oauth Discovery Endpoint",
+        "default": null,
+        "description": "OAuth Discovery Endpoint. Usually in format: https://login.microsoftonline.com/{tenant_id}"
+      },
+      "scopes": {
+        "type": "array",
+        "title": "Scopes",
+        "default": null,
+        "description": "OAuth Scopes"
+      },
+      "auto_refresh_token": {
+        "type": "boolean",
+        "title": "Auto Refresh Token",
+        "default": false,
+        "description": "Automatically refresh the access token using the offline_access scope. When enabled, the OAuth authorization request will include offline_access, allowing the system to silently renew the access token without user interaction.",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "SharePoint",
+      "icon_url": "sharepoint.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "App-only",
+              "fields": []
+            },
+            {
+              "name": "Delegated",
+              "fields": [
+                "oauth_discovery_endpoint",
+                "scopes",
+                "auto_refresh_token"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "sharepoint",
+      "categories": [
+        "office"
+      ],
+      "extra_categories": [
+        "sharepoint",
+        "microsoft",
+        "documents",
+        "collaboration"
+      ]
+    }
+  },
+  "testio": {
+    "title": "TestIOConfiguration",
+    "type": "object",
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "title": "Endpoint",
+        "description": "TestIO endpoint"
+      },
+      "api_key": {
+        "type": "string",
+        "title": "Api Key",
+        "description": "TestIO API Key",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "TestIO",
+      "icon_url": "testio.svg",
+      "section": "credentials",
+      "type": "testio",
+      "categories": [
+        "testing"
+      ],
+      "extra_categories": [
+        "testio",
+        "testing",
+        "crowd testing",
+        "qa"
+      ]
+    }
+  },
+  "testrail": {
+    "title": "TestRailConfiguration",
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "title": "Url",
+        "description": "Testrail URL"
+      },
+      "email": {
+        "type": "string",
+        "title": "Email",
+        "description": "TestRail Email"
+      },
+      "password": {
+        "type": "string",
+        "title": "Password",
+        "description": "TestRail Password",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "TestRail",
+      "icon_url": "testrail.svg",
+      "section": "credentials",
+      "type": "testrail",
+      "categories": [
+        "test management"
+      ],
+      "extra_categories": [
+        "testrail",
+        "test management",
+        "quality assurance",
+        "testing"
+      ]
+    }
+  },
+  "xray": {
+    "title": "XrayConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "Xray URL"
+      },
+      "client_id": {
+        "type": "string",
+        "title": "Client Id",
+        "description": "Client ID"
+      },
+      "client_secret": {
+        "type": "string",
+        "title": "Client Secret",
+        "description": "Client secret",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Xray Cloud",
+      "icon_url": "xray.svg",
+      "sections": {
+        "auth": {
+          "required": true,
+          "subsections": [
+            {
+              "name": "Client Credentials",
+              "fields": [
+                "client_id",
+                "client_secret"
+              ]
+            }
+          ]
+        }
+      },
+      "section": "credentials",
+      "type": "xray",
+      "categories": [
+        "test management"
+      ],
+      "extra_categories": [
+        "xray",
+        "test automation",
+        "test case management",
+        "test planning"
+      ]
+    }
+  },
+  "zephyr_enterprise": {
+    "title": "ZephyrEnterpriseConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "Zephyr base URL"
+      },
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "description": "API token",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Zephyr Enterprise",
+      "icon_url": "zephyr.svg",
+      "section": "credentials",
+      "type": "zephyr_enterprise",
+      "categories": [
+        "test management"
+      ],
+      "extra_categories": [
+        "zephyr",
+        "test automation",
+        "test case management",
+        "test planning"
+      ]
+    }
+  },
+  "zephyr_essential": {
+    "title": "ZephyrEssentialConfiguration",
+    "type": "object",
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "Base Url",
+        "description": "Zephyr Essential API Base URL"
+      },
+      "token": {
+        "type": "string",
+        "title": "Token",
+        "description": "Zephyr Essential API Token",
+        "format": "password",
+        "writeOnly": true
+      }
+    },
+    "metadata": {
+      "label": "Zephyr Essential",
+      "icon_url": "zephyr.svg",
+      "section": "credentials",
+      "type": "zephyr_essential",
+      "categories": [
+        "test management"
+      ],
+      "extra_categories": [
+        "zephyr",
+        "test automation",
+        "test case management",
+        "test planning"
+      ]
+    }
+  }
+}

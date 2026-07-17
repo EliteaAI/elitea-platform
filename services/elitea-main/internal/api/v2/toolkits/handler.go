@@ -95,7 +95,7 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"toolkit_types": merged, "total": len(merged)})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": merged, "total": len(merged)})
 }
 
 // toolkitTypeSchemas defines the JSON Schema for each toolkit type's settings.
@@ -419,7 +419,7 @@ func (h *Handler) IndexMeta(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []map[string]any{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (h *Handler) IndexMetaGet(w http.ResponseWriter, r *http.Request) {

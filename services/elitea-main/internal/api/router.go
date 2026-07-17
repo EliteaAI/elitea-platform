@@ -435,6 +435,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
 				r.Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
 				r.Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				r.Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
 
 				// Admin published agents
 				r.Get("/admin_published_agents/administration", coreHandler.AdminPublishedAgents)

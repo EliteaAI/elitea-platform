@@ -1,6 +1,7 @@
 package configurations
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,16 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+//go:embed sdk_config_schemas.json
+var sdkConfigSchemasRaw []byte
+
+var sdkConfigSchemas map[string]any
+
+func init() {
+	sdkConfigSchemas = make(map[string]any)
+	json.Unmarshal(sdkConfigSchemasRaw, &sdkConfigSchemas)
+}
 
 type Handler struct {
 	pool *pgxpool.Pool
@@ -50,61 +61,89 @@ func (h *Handler) Routes() chi.Router {
 
 
 func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// Query all rows and merge data keys per type to get the full schema
-	dbQ := `SELECT type, section, data
-		FROM "p_1".configuration
-		WHERE type IS NOT NULL AND data IS NOT NULL
-		ORDER BY type`
-	rows, err := h.pool.Query(ctx, dbQ)
-
-	// Merge all data samples per type
-	typeData := make(map[string]map[string]any) // type -> merged data
-	typeSections := make(map[string]string)      // type -> section
-	typeOrder := make([]string, 0)
-
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var typeName, section string
-			var dataRaw []byte
-			if err := rows.Scan(&typeName, &section, &dataRaw); err != nil {
-				continue
-			}
-			var rowData map[string]any
-			if err := json.Unmarshal(dataRaw, &rowData); err != nil {
-				continue
-			}
-			if _, exists := typeData[typeName]; !exists {
-				typeData[typeName] = make(map[string]any)
-				typeSections[typeName] = section
-				typeOrder = append(typeOrder, typeName)
-			}
-			// Merge keys: keep the first non-nil value per key
-			for k, v := range rowData {
-				if _, has := typeData[typeName][k]; !has {
-					typeData[typeName][k] = v
-				}
-			}
-		}
-	}
-
-	result := make([]map[string]any, 0, len(typeOrder))
-	for _, typeName := range typeOrder {
-		result = append(result, buildConfigTypeFromSample(typeName, typeSections[typeName], typeData[typeName]))
-	}
-
-	// Ensure we have at least these types even if DB is empty
+	result := make([]map[string]any, 0, len(sdkConfigSchemas)+len(fallbackConfigTypes()))
 	known := make(map[string]bool)
-	for _, t := range result {
-		tp, _ := t["type"].(string)
-		known[tp] = true
+
+	// Primary source: SDK-defined schemas (embedded from elitea-sdk)
+	for typeName, schema := range sdkConfigSchemas {
+		schemaMap, ok := schema.(map[string]any)
+		if !ok {
+			continue
+		}
+		metadata, _ := schemaMap["metadata"].(map[string]any)
+		section := ""
+		if metadata != nil {
+			section, _ = metadata["section"].(string)
+		}
+
+		entry := buildConfigTypeFromSDKSchema(typeName, section, schemaMap)
+		result = append(result, entry)
+		known[typeName] = true
 	}
+
+	// Secondary: fallback types (llm_model, embedding_model, etc.) not covered by SDK
 	for _, fallback := range fallbackConfigTypes() {
 		tp, _ := fallback["type"].(string)
 		if !known[tp] {
 			result = append(result, fallback)
+			known[tp] = true
+		}
+	}
+
+	// Tertiary: discover any types from DB not covered by SDK or fallbacks
+	ctx := r.Context()
+	schemaRows, err := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
+	if err == nil {
+		defer schemaRows.Close()
+		var schemas []string
+		for schemaRows.Next() {
+			var s string
+			if err := schemaRows.Scan(&s); err == nil {
+				schemas = append(schemas, s)
+			}
+		}
+		schemaRows.Close()
+
+		typeData := make(map[string]map[string]any)
+		typeSections := make(map[string]string)
+		for _, schema := range schemas {
+			dbQ := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration WHERE type IS NOT NULL`, schema)
+			rows, err := h.pool.Query(ctx, dbQ)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var typeName, section string
+				if err := rows.Scan(&typeName, &section); err != nil {
+					continue
+				}
+				if known[typeName] {
+					continue
+				}
+				if _, exists := typeData[typeName]; !exists {
+					typeData[typeName] = make(map[string]any)
+					typeSections[typeName] = section
+				}
+			}
+			rows.Close()
+		}
+		// For undiscovered types, fetch a sample row to infer schema
+		for typeName, section := range typeSections {
+			for _, schema := range schemas {
+				dbQ := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE type = $1 AND data IS NOT NULL LIMIT 1`, schema)
+				var dataRaw []byte
+				if err := h.pool.QueryRow(ctx, dbQ, typeName).Scan(&dataRaw); err != nil {
+					continue
+				}
+				var rowData map[string]any
+				if err := json.Unmarshal(dataRaw, &rowData); err != nil {
+					continue
+				}
+				typeData[typeName] = rowData
+				break
+			}
+			result = append(result, buildConfigTypeFromSample(typeName, section, typeData[typeName]))
+			known[typeName] = true
 		}
 	}
 
@@ -126,6 +165,50 @@ func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// buildConfigTypeFromSDKSchema wraps an SDK-provided schema into the config_schema format expected by the SPA.
+func buildConfigTypeFromSDKSchema(typeName, section string, sdkSchema map[string]any) map[string]any {
+	metadata, _ := sdkSchema["metadata"].(map[string]any)
+	displayName := typeName
+	if metadata != nil {
+		if l, ok := metadata["label"].(string); ok && l != "" {
+			displayName = l
+		}
+	}
+
+	hasTestConnection := false
+	if metadata != nil {
+		if _, ok := metadata["check_connection_supported"]; ok {
+			hasTestConnection = true
+		}
+	}
+
+	checkConnectionLabel := "Test Connection"
+	if metadata != nil {
+		if l, ok := metadata["check_connection_label"].(string); ok && l != "" {
+			checkConnectionLabel = l
+		}
+	}
+
+	return map[string]any{
+		"type":    typeName,
+		"section": section,
+		"config_schema": map[string]any{
+			"title": displayName,
+			"type":  "object",
+			"properties": map[string]any{
+				"elitea_title": map[string]any{"type": "string", "title": "ID", "description": "Unique identifier"},
+				"label":        map[string]any{"type": "string", "title": "Display Name"},
+				"type":         map[string]any{"type": "string", "const": typeName},
+				"shared":       map[string]any{"type": "boolean", "title": "Shared", "default": false},
+				"data":         sdkSchema,
+			},
+			"required": []string{"elitea_title", "type", "data"},
+		},
+		"has_test_connection":    hasTestConnection,
+		"check_connection_label": checkConnectionLabel,
+	}
 }
 
 // buildConfigTypeFromSample derives a JSON Schema for a config type from a sample data row.

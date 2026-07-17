@@ -118,12 +118,13 @@ func (h *Handler) listGrouped(w http.ResponseWriter, r *http.Request, projectID 
 		orderDir = "ASC"
 	}
 
-	// Query conversations
+	// Query conversations (indexes on conversation_id ensure fast joins elsewhere)
 	q := fmt.Sprintf(`
 		SELECT c.id, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.folder_id,
 		       COALESCE((c.meta->>'is_pinned')::boolean, false) as is_pinned,
 		       c.created_at, c.updated_at
 		FROM %q.chat_conversations c
+		WHERE (c.meta->>'is_hidden' IS NULL OR c.meta->>'is_hidden' = 'false')
 		ORDER BY %s %s`, schema, orderCol, orderDir)
 
 	conversations := make([]conversationItem, 0)

@@ -189,20 +189,56 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+
 	items := make([]map[string]any, 0)
+	total := 0
 
 	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
-		q := `
-			SELECT au.id, au.email, COALESCE(au.name, ''),
-				COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), '{}')
-			FROM auth_core__user au
-			LEFT JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
-			LEFT JOIN auth_core__project_role pr ON pr.id = pur.role_id
-			GROUP BY au.id, au.email, au.name
-			ORDER BY au.id
-			LIMIT 100
+		// Count total: project members UNION super_admins (excluding system users)
+		countQ := `
+			SELECT COUNT(*) FROM (
+				SELECT au.id FROM auth_core__user au
+				JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
+				WHERE au.email NOT LIKE '%@centry.user'
+			UNION
+				SELECT au.id FROM auth_core__user au
+				JOIN auth_core__user_role ur ON ur.user_id = au.id
+				JOIN auth_core__role r ON r.id = ur.role_id
+				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+			) combined
 		`
-		rows, err := h.pool.Query(ctx, q, pidNum)
+		h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total)
+
+		// Fetch paginated: project-specific roles for members, 'super_admin' for global admins
+		q := `
+			SELECT id, email, name, roles FROM (
+				SELECT au.id, au.email, COALESCE(au.name, '') as name,
+					COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), ARRAY['viewer']) as roles
+				FROM auth_core__user au
+				JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
+				LEFT JOIN auth_core__project_role pr ON pr.id = pur.role_id
+				WHERE au.email NOT LIKE '%@centry.user'
+				GROUP BY au.id, au.email, au.name
+			UNION
+				SELECT au.id, au.email, COALESCE(au.name, '') as name,
+					ARRAY['super_admin'] as roles
+				FROM auth_core__user au
+				JOIN auth_core__user_role ur ON ur.user_id = au.id
+				JOIN auth_core__role r ON r.id = ur.role_id
+				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+					AND au.id NOT IN (
+						SELECT pur2.user_id FROM auth_core__project_user_role pur2 WHERE pur2.project_id = $1
+					)
+			) combined
+			ORDER BY name, id
+			LIMIT $2 OFFSET $3
+		`
+		rows, err := h.pool.Query(ctx, q, pidNum, limit, offset)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -220,8 +256,7 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// UI merge function expects {rows: [...], total: N}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": total})
 }
 
 func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
@@ -351,9 +386,10 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Count applications owned by this author across all project schemas
+	// Count applications owned by this author — only in projects they belong to
 	var totalApps, totalPipelines, totalToolkits, totalCollections int
-	schemaRows, _ := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
+	schemaRows, _ := h.pool.Query(ctx,
+		`SELECT DISTINCT 'p_' || project_id FROM auth_core__project_user_role WHERE user_id = $1`, authorID)
 	if schemaRows != nil {
 		var schemas []string
 		for schemaRows.Next() {
@@ -364,10 +400,8 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 		schemaRows.Close()
 		for _, s := range schemas {
 			var cnt int
-			// Count non-pipeline applications
 			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalApps += cnt
-			// Count pipeline applications
 			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalPipelines += cnt
 			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
@@ -1507,7 +1541,7 @@ func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+	writeJSON(w, http.StatusOK, []any{})
 }
 
 func (h *Handler) ModerationStatus(w http.ResponseWriter, _ *http.Request) {
@@ -1649,7 +1683,7 @@ func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	writeJSON(w, http.StatusOK, map[string]any{"applications": items, "total": len(items)})
 }
 
 func (h *Handler) Feedbacks(w http.ResponseWriter, r *http.Request) {
@@ -1704,7 +1738,7 @@ func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
 		{"name": "code", "url": "/icons/code.svg"},
 		{"name": "data", "url": "/icons/data.svg"},
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": icons, "total": len(icons)})
+	writeJSON(w, http.StatusOK, icons)
 }
 
 func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
@@ -1750,7 +1784,7 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ListUploadedIcons(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+	writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
 }
 
 func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {

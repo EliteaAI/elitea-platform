@@ -48,7 +48,7 @@ func main() {
 	}
 	defer rdb.Close()
 
-	rpcClient := rpc.New(rdb)
+	rpcClient := rpc.New(rdb, cfg.RPCChannel, cfg.RPCHMACKey)
 	sched := scheduler.New(pool, rdb, rpcClient, cfg)
 
 	// Health server
@@ -68,7 +68,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("starting scheduler", "instance", cfg.InstanceID, "pipeline_scheduling", cfg.PipelineSchedulingEnabled)
+	slog.Info("starting scheduler", "instance", cfg.InstanceID, "rpc_channel", cfg.RPCChannel)
 	go sched.Run(ctx)
 
 	<-ctx.Done()
