@@ -17,14 +17,22 @@ var ErrStrictProto = errors.New("strict protobuf contract violation")
 // parsing and rejects unknown fields, duplicate singular tags and conflicting
 // oneof tags that the default last-value-wins decoder would otherwise erase.
 type StrictProtoCodec struct {
-	maxMessageBytes int
+	maxReceiveMessageBytes int
+	maxSendMessageBytes    int
 }
 
 func NewStrictProtoCodec(maxMessageBytes int) (*StrictProtoCodec, error) {
-	if maxMessageBytes <= 0 {
-		return nil, errors.New("strict protobuf message limit must be positive")
+	return NewDirectionalStrictProtoCodec(maxMessageBytes, maxMessageBytes)
+}
+
+func NewDirectionalStrictProtoCodec(maxReceiveMessageBytes, maxSendMessageBytes int) (*StrictProtoCodec, error) {
+	if maxReceiveMessageBytes <= 0 || maxSendMessageBytes <= 0 {
+		return nil, errors.New("strict protobuf receive and send limits must be positive")
 	}
-	return &StrictProtoCodec{maxMessageBytes: maxMessageBytes}, nil
+	return &StrictProtoCodec{
+		maxReceiveMessageBytes: maxReceiveMessageBytes,
+		maxSendMessageBytes:    maxSendMessageBytes,
+	}, nil
 }
 
 func (c *StrictProtoCodec) Name() string { return "proto" }
@@ -38,14 +46,14 @@ func (c *StrictProtoCodec) Marshal(value any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(encoded) > c.maxMessageBytes {
+	if len(encoded) > c.maxSendMessageBytes {
 		return nil, fmt.Errorf("%w: encoded message exceeds limit", ErrStrictProto)
 	}
 	return encoded, nil
 }
 
 func (c *StrictProtoCodec) Unmarshal(encoded []byte, value any) error {
-	if len(encoded) == 0 || len(encoded) > c.maxMessageBytes {
+	if len(encoded) == 0 || len(encoded) > c.maxReceiveMessageBytes {
 		return fmt.Errorf("%w: encoded message exceeds limit", ErrStrictProto)
 	}
 	message, ok := value.(proto.Message)
@@ -63,8 +71,8 @@ func (c *StrictProtoCodec) Unmarshal(encoded []byte, value any) error {
 
 func StrictServerOptions(codec *StrictProtoCodec) []grpc.ServerOption {
 	return []grpc.ServerOption{
-		grpc.MaxRecvMsgSize(codec.maxMessageBytes),
-		grpc.MaxSendMsgSize(codec.maxMessageBytes),
+		grpc.MaxRecvMsgSize(codec.maxReceiveMessageBytes),
+		grpc.MaxSendMsgSize(codec.maxSendMessageBytes),
 		grpc.ForceServerCodec(codec),
 	}
 }

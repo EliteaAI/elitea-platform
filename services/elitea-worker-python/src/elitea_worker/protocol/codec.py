@@ -1,4 +1,4 @@
-"""Strict protobuf framing, test-signature verification and safe output mapping."""
+"""Strict protobuf framing, production/test signatures and safe output mapping."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor
 from google.protobuf.message import DecodeError, Message
@@ -87,6 +90,60 @@ class TestOnlyConformanceHmacAuthenticator:
             signed.signature,
         ):
             raise AuthorizationFailure("The worker command signature is invalid.")
+
+
+class Ed25519PublicKeyResolver(Protocol):
+    """Resolves one exact production key ID without default-key fallback."""
+
+    def resolve_ed25519_public_key(self, key_id: str) -> Ed25519PublicKey: ...
+
+
+class Ed25519CommandAuthenticator:
+    """Production verifier for domain-separated pure Ed25519 signatures.
+
+    A rotated verification key must remain resolvable by its exact key ID until
+    every immutable prepared command using it has settled or expired.
+    """
+
+    def __init__(self, resolver: Ed25519PublicKeyResolver) -> None:
+        if resolver is None:
+            raise ValueError("an Ed25519 public-key resolver is required")
+        self._resolver = resolver
+
+    def authenticate(
+        self,
+        signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+    ) -> None:
+        key_id = signed.key_id
+        if (
+            signed.signature_profile != envelope_pb2.SIGNATURE_PROFILE_V1_ED25519
+            or not key_id
+            or len(key_id.encode("utf-8")) > MAX_SAFE_STRING_BYTES
+            or any(character in key_id for character in ("\r", "\n", "\x00"))
+            or len(signed.signature) != 64
+        ):
+            raise AuthorizationFailure(
+                "The production command signature profile is not accepted."
+            )
+        try:
+            public_key = self._resolver.resolve_ed25519_public_key(key_id)
+            if not isinstance(public_key, Ed25519PublicKey):
+                raise TypeError("resolver returned the wrong key type")
+            public_key.verify(
+                signed.signature,
+                _ed25519_worker_command_signing_input(signed.worker_command_bytes),
+            )
+        except (InvalidSignature, TypeError, ValueError, KeyError) as exc:
+            raise AuthorizationFailure(
+                "The worker command signature is invalid."
+            ) from exc
+
+
+def _ed25519_worker_command_signing_input(exact_command_bytes: bytes) -> bytes:
+    if not exact_command_bytes:
+        raise ValueError("worker command bytes are required")
+    domain = b"elitea.runtime.worker-command.ed25519.v1\x00"
+    return domain + len(exact_command_bytes).to_bytes(8, "big") + exact_command_bytes
 
 
 def read_and_verify_envelope(

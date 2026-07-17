@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,7 @@ func TestAuth_BasicAuthExtractsUsername(t *testing.T) {
 
 func TestAuth_TraefikHeaders(t *testing.T) {
 	var gotUser auth.User
+	var gotSource auth.AuthenticationSource
 	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient()})(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u, ok := auth.UserFromContext(r.Context())
@@ -103,6 +105,11 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 				t.Fatal("expected user in context")
 			}
 			gotUser = u
+			var sourceOK bool
+			gotSource, sourceOK = auth.AuthenticationSourceFromContext(r.Context())
+			if !sourceOK {
+				t.Fatal("expected authentication source in context")
+			}
 			w.WriteHeader(http.StatusOK)
 		}),
 	)
@@ -126,6 +133,12 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	}
 	if gotUser.AuthType != "jwt" {
 		t.Errorf("expected AuthType jwt, got %q", gotUser.AuthType)
+	}
+	if gotSource != auth.AuthenticationSourceForwarded {
+		t.Errorf("expected forwarded source, got %d", gotSource)
+	}
+	if _, ok := auth.RuntimePrincipalFromContext(auth.ContextWithAuthenticatedUser(context.Background(), gotUser, gotSource)); ok {
+		t.Fatal("forwarded principal was accepted for runtime authorization")
 	}
 }
 

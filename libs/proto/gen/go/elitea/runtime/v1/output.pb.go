@@ -27,6 +27,7 @@ const (
 	ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED                     ExecutionOutputEventTypeV1 = 0
 	ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT ExecutionOutputEventTypeV1 = 1
 	ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR                   ExecutionOutputEventTypeV1 = 2
+	ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT  ExecutionOutputEventTypeV1 = 3
 )
 
 // Enum value maps for ExecutionOutputEventTypeV1.
@@ -35,11 +36,13 @@ var (
 		0: "EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED",
 		1: "EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT",
 		2: "EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR",
+		3: "EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT",
 	}
 	ExecutionOutputEventTypeV1_value = map[string]int32{
 		"EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED":                     0,
 		"EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT": 1,
 		"EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR":                   2,
+		"EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT":  3,
 	}
 )
 
@@ -184,6 +187,7 @@ type ExecutionOutputFrameV1 struct {
 	//
 	//	*ExecutionOutputFrameV1_ConfigurationValidation
 	//	*ExecutionOutputFrameV1_RuntimeError
+	//	*ExecutionOutputFrameV1_ToolkitAvailableTools
 	Payload       isExecutionOutputFrameV1_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -335,6 +339,15 @@ func (x *ExecutionOutputFrameV1) GetRuntimeError() *RuntimeErrorV1 {
 	return nil
 }
 
+func (x *ExecutionOutputFrameV1) GetToolkitAvailableTools() *ToolkitAvailableToolsResultV1 {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecutionOutputFrameV1_ToolkitAvailableTools); ok {
+			return x.ToolkitAvailableTools
+		}
+	}
+	return nil
+}
+
 type isExecutionOutputFrameV1_Payload interface {
 	isExecutionOutputFrameV1_Payload()
 }
@@ -347,9 +360,15 @@ type ExecutionOutputFrameV1_RuntimeError struct {
 	RuntimeError *RuntimeErrorV1 `protobuf:"bytes,21,opt,name=runtime_error,json=runtimeError,proto3,oneof"`
 }
 
+type ExecutionOutputFrameV1_ToolkitAvailableTools struct {
+	ToolkitAvailableTools *ToolkitAvailableToolsResultV1 `protobuf:"bytes,22,opt,name=toolkit_available_tools,json=toolkitAvailableTools,proto3,oneof"`
+}
+
 func (*ExecutionOutputFrameV1_ConfigurationValidation) isExecutionOutputFrameV1_Payload() {}
 
 func (*ExecutionOutputFrameV1_RuntimeError) isExecutionOutputFrameV1_Payload() {}
+
+func (*ExecutionOutputFrameV1_ToolkitAvailableTools) isExecutionOutputFrameV1_Payload() {}
 
 type ExecutionOutputAckV1 struct {
 	state                       protoimpl.MessageState  `protogen:"open.v1"`
@@ -463,7 +482,7 @@ var File_elitea_runtime_v1_output_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_output_proto_rawDesc = "" +
 	"\n" +
-	"\x1eelitea/runtime/v1/output.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\x1a\x1eelitea/runtime/v1/errors.proto\x1a\"elitea/runtime/v1/validation.proto\"\xb4\x03\n" +
+	"\x1eelitea/runtime/v1/output.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\x1a\x1eelitea/runtime/v1/errors.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\xb4\x03\n" +
 	"\x14SettlementProposalV1\x12\x1f\n" +
 	"\vproposal_id\x18\x01 \x01(\tR\n" +
 	"proposalId\x12R\n" +
@@ -472,7 +491,7 @@ const file_elitea_runtime_v1_output_proto_rawDesc = "" +
 	"\x11terminal_event_id\x18\x04 \x01(\tR\x0fterminalEventId\x12+\n" +
 	"\x11terminal_sequence\x18\x05 \x01(\x04R\x10terminalSequence\x12S\n" +
 	"\x17terminal_payload_digest\x18\x06 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x15terminalPayloadDigest\x126\n" +
-	"\x17prepare_idempotency_key\x18\a \x01(\tR\x15prepareIdempotencyKeyJ\x04\b\b\x10\x10\"\x96\a\n" +
+	"\x17prepare_idempotency_key\x18\a \x01(\tR\x15prepareIdempotencyKeyJ\x04\b\b\x10\x10\"\x82\b\n" +
 	"\x16ExecutionOutputFrameV1\x124\n" +
 	"\x16output_schema_revision\x18\x01 \x01(\tR\x14outputSchemaRevision\x12\x1b\n" +
 	"\tstream_id\x18\x02 \x01(\tR\bstreamId\x12B\n" +
@@ -490,8 +509,9 @@ const file_elitea_runtime_v1_output_proto_rawDesc = "" +
 	"\bterminal\x18\f \x01(\bR\bterminal\x12X\n" +
 	"\x13settlement_proposal\x18\r \x01(\v2'.elitea.runtime.v1.SettlementProposalV1R\x12settlementProposal\x12o\n" +
 	"\x18configuration_validation\x18\x14 \x01(\v22.elitea.runtime.v1.ConfigurationValidationResultV1H\x00R\x17configurationValidation\x12H\n" +
-	"\rruntime_error\x18\x15 \x01(\v2!.elitea.runtime.v1.RuntimeErrorV1H\x00R\fruntimeErrorB\t\n" +
-	"\apayloadJ\x04\b\x0e\x10\x14J\x04\b\x16\x10 \"\x8e\x04\n" +
+	"\rruntime_error\x18\x15 \x01(\v2!.elitea.runtime.v1.RuntimeErrorV1H\x00R\fruntimeError\x12j\n" +
+	"\x17toolkit_available_tools\x18\x16 \x01(\v20.elitea.runtime.v1.ToolkitAvailableToolsResultV1H\x00R\x15toolkitAvailableToolsB\t\n" +
+	"\apayloadJ\x04\b\x0e\x10\x14J\x04\b\x17\x10 \"\x8e\x04\n" +
 	"\x14ExecutionOutputAckV1\x12\x1b\n" +
 	"\tstream_id\x18\x01 \x01(\tR\bstreamId\x12B\n" +
 	"\bidentity\x18\x02 \x01(\v2&.elitea.runtime.v1.ExecutionIdentityV1R\bidentity\x129\n" +
@@ -502,11 +522,12 @@ const file_elitea_runtime_v1_output_proto_rawDesc = "" +
 	"\fcredit_bytes\x18\a \x01(\x04R\vcreditBytes\x12O\n" +
 	"\rdesired_state\x18\b \x01(\x0e2*.elitea.runtime.v1.DesiredExecutionStateV1R\fdesiredState\x12?\n" +
 	"\trejection\x18\t \x01(\v2!.elitea.runtime.v1.RuntimeErrorV1R\trejectionJ\x04\b\n" +
-	"\x10\x10*\xc2\x01\n" +
+	"\x10\x10*\x85\x02\n" +
 	"\x1aExecutionOutputEventTypeV1\x12.\n" +
 	"*EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED\x10\x00\x12B\n" +
 	">EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT\x10\x01\x120\n" +
-	",EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR\x10\x022{\n" +
+	",EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR\x10\x02\x12A\n" +
+	"=EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT\x10\x032{\n" +
 	"\x16ExecutionOutputService\x12a\n" +
 	"\aPublish\x12).elitea.runtime.v1.ExecutionOutputFrameV1\x1a'.elitea.runtime.v1.ExecutionOutputAckV1(\x010\x01BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
@@ -535,7 +556,8 @@ var file_elitea_runtime_v1_output_proto_goTypes = []any{
 	(*ExecutionFenceV1)(nil),                // 7: elitea.runtime.v1.ExecutionFenceV1
 	(*ConfigurationValidationResultV1)(nil), // 8: elitea.runtime.v1.ConfigurationValidationResultV1
 	(*RuntimeErrorV1)(nil),                  // 9: elitea.runtime.v1.RuntimeErrorV1
-	(DesiredExecutionStateV1)(0),            // 10: elitea.runtime.v1.DesiredExecutionStateV1
+	(*ToolkitAvailableToolsResultV1)(nil),   // 10: elitea.runtime.v1.ToolkitAvailableToolsResultV1
+	(DesiredExecutionStateV1)(0),            // 11: elitea.runtime.v1.DesiredExecutionStateV1
 }
 var file_elitea_runtime_v1_output_proto_depIdxs = []int32{
 	4,  // 0: elitea.runtime.v1.SettlementProposalV1.requested_outcome:type_name -> elitea.runtime.v1.ExecutionOutcomeV1
@@ -547,17 +569,18 @@ var file_elitea_runtime_v1_output_proto_depIdxs = []int32{
 	1,  // 6: elitea.runtime.v1.ExecutionOutputFrameV1.settlement_proposal:type_name -> elitea.runtime.v1.SettlementProposalV1
 	8,  // 7: elitea.runtime.v1.ExecutionOutputFrameV1.configuration_validation:type_name -> elitea.runtime.v1.ConfigurationValidationResultV1
 	9,  // 8: elitea.runtime.v1.ExecutionOutputFrameV1.runtime_error:type_name -> elitea.runtime.v1.RuntimeErrorV1
-	6,  // 9: elitea.runtime.v1.ExecutionOutputAckV1.identity:type_name -> elitea.runtime.v1.ExecutionIdentityV1
-	7,  // 10: elitea.runtime.v1.ExecutionOutputAckV1.fence:type_name -> elitea.runtime.v1.ExecutionFenceV1
-	10, // 11: elitea.runtime.v1.ExecutionOutputAckV1.desired_state:type_name -> elitea.runtime.v1.DesiredExecutionStateV1
-	9,  // 12: elitea.runtime.v1.ExecutionOutputAckV1.rejection:type_name -> elitea.runtime.v1.RuntimeErrorV1
-	2,  // 13: elitea.runtime.v1.ExecutionOutputService.Publish:input_type -> elitea.runtime.v1.ExecutionOutputFrameV1
-	3,  // 14: elitea.runtime.v1.ExecutionOutputService.Publish:output_type -> elitea.runtime.v1.ExecutionOutputAckV1
-	14, // [14:15] is the sub-list for method output_type
-	13, // [13:14] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	10, // 9: elitea.runtime.v1.ExecutionOutputFrameV1.toolkit_available_tools:type_name -> elitea.runtime.v1.ToolkitAvailableToolsResultV1
+	6,  // 10: elitea.runtime.v1.ExecutionOutputAckV1.identity:type_name -> elitea.runtime.v1.ExecutionIdentityV1
+	7,  // 11: elitea.runtime.v1.ExecutionOutputAckV1.fence:type_name -> elitea.runtime.v1.ExecutionFenceV1
+	11, // 12: elitea.runtime.v1.ExecutionOutputAckV1.desired_state:type_name -> elitea.runtime.v1.DesiredExecutionStateV1
+	9,  // 13: elitea.runtime.v1.ExecutionOutputAckV1.rejection:type_name -> elitea.runtime.v1.RuntimeErrorV1
+	2,  // 14: elitea.runtime.v1.ExecutionOutputService.Publish:input_type -> elitea.runtime.v1.ExecutionOutputFrameV1
+	3,  // 15: elitea.runtime.v1.ExecutionOutputService.Publish:output_type -> elitea.runtime.v1.ExecutionOutputAckV1
+	15, // [15:16] is the sub-list for method output_type
+	14, // [14:15] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_output_proto_init() }
@@ -567,10 +590,12 @@ func file_elitea_runtime_v1_output_proto_init() {
 	}
 	file_elitea_runtime_v1_common_proto_init()
 	file_elitea_runtime_v1_errors_proto_init()
+	file_elitea_runtime_v1_toolkit_proto_init()
 	file_elitea_runtime_v1_validation_proto_init()
 	file_elitea_runtime_v1_output_proto_msgTypes[1].OneofWrappers = []any{
 		(*ExecutionOutputFrameV1_ConfigurationValidation)(nil),
 		(*ExecutionOutputFrameV1_RuntimeError)(nil),
+		(*ExecutionOutputFrameV1_ToolkitAvailableTools)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

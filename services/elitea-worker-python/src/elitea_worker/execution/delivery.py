@@ -114,7 +114,11 @@ class ControlPlane(Protocol):
     ) -> control_pb2.ObserveDesiredStateResponseV1: ...
 
 class CommandSettlementAcker(Protocol):
-    async def ack_after_settlement(self, delivery: RedisCommandDelivery) -> None: ...
+    async def ack_after_settlement(
+        self,
+        delivery: RedisCommandDelivery,
+        stable_delivery_id: str,
+    ) -> None: ...
 
 
 class OutputSession(Protocol):
@@ -381,15 +385,21 @@ class ConfigurationValidationDeliveryProcessor:
             )
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RETIRED_ACK:
             _validate_retired_receipt(receipt)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(DeliveryDisposition.TERMINAL_REDELIVERY_ACKED)
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_OBSOLETE_ACK:
             _validate_obsolete_receipt(receipt)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(DeliveryDisposition.TERMINAL_REDELIVERY_ACKED)
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_SETTLED_ACK:
             _require_no_recovery(receipt)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(DeliveryDisposition.TERMINAL_REDELIVERY_ACKED)
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK:
             _require_no_recovery(receipt)
@@ -438,7 +448,9 @@ class ConfigurationValidationDeliveryProcessor:
                 settlement,
                 expected_outcome=int(recovery.proposal.requested_outcome),
             )
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(
                 DeliveryDisposition.RECOVERED_TERMINAL_SETTLED_ACKED,
                 settlement_receipt_id=receipt_id,
@@ -451,7 +463,9 @@ class ConfigurationValidationDeliveryProcessor:
                 now_unix_millis=_runtime_now(self._clock),
             )
             recovery = _prepared_settlement_recovery(receipt)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(
                 DeliveryDisposition.RECOVERED_SETTLEMENT_ACKED,
                 settlement_receipt_id=recovery.settlement_receipt_id,
@@ -595,7 +609,9 @@ class ConfigurationValidationDeliveryProcessor:
             # later wall-clock deadline here: settlement must preserve and finish
             # that immutable output rather than synthesize a replacement.
             receipt_id = await self._prepare_frame_settlement(frame)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, command.idempotency_key
+            )
             return DeliveryResult(
                 DeliveryDisposition.EXECUTED_SETTLED_ACKED,
                 output_frame=frame,
@@ -631,7 +647,9 @@ class ConfigurationValidationDeliveryProcessor:
                 initial_output=output,
             )
             receipt_id = await self._prepare_frame_settlement(frame)
-            await self._command_acker.ack_after_settlement(delivery)
+            await self._command_acker.ack_after_settlement(
+                delivery, verified.command.idempotency_key
+            )
             return DeliveryResult(
                 DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED,
                 output_frame=frame,

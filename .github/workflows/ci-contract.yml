@@ -6,7 +6,7 @@ on:
       - "libs/proto/**"
       - "libs/jsonschema/**"
       - "scripts/contract/**"
-      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
   push:
     branches:
@@ -15,7 +15,7 @@ on:
       - "libs/proto/**"
       - "libs/jsonschema/**"
       - "scripts/contract/**"
-      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
 
 concurrency:

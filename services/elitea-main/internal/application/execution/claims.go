@@ -86,6 +86,11 @@ type SettlementRecovery struct {
 
 type ClaimDecision struct {
 	Lease runtimedomain.ActiveLease
+	// LeaseObservedAt is the state-owner clock instant used to decide whether
+	// Lease was live. PostgreSQL repositories must author it in the same
+	// statement that creates, loads, or renews the lease; application-host time
+	// is not authority.
+	LeaseObservedAt time.Time
 	// DesiredState is populated only for a no-lease disposition. A retry may
 	// expose any valid desired state; OBSOLETE_ACK is limited to a durably
 	// cancelled execution that never received worker authority. RETIRED_ACK is
@@ -97,12 +102,12 @@ type ClaimDecision struct {
 	SettlementRecovery    *SettlementRecovery
 }
 
-func (d ClaimDecision) validate(now time.Time, request ClaimRequest) error {
+func (d ClaimDecision) validate(request ClaimRequest, leaseTTL ClaimLeaseTTLMillis) error {
 	if !d.Disposition.valid() {
 		return ErrInvalidClaim
 	}
 	if d.Lease == (runtimedomain.ActiveLease{}) {
-		if d.ClaimHandoffWatermark != 0 || d.SettlementRecovery != nil {
+		if !d.LeaseObservedAt.IsZero() || d.ClaimHandoffWatermark != 0 || d.SettlementRecovery != nil {
 			return ErrInvalidClaim
 		}
 		switch d.Disposition {
@@ -125,11 +130,17 @@ func (d ClaimDecision) validate(now time.Time, request ClaimRequest) error {
 		return ErrInvalidClaim
 	}
 	lease := d.Lease
+	if d.LeaseObservedAt.IsZero() {
+		return ErrInvalidClaim
+	}
 	if lease.Fence.CommandID != request.CommandID || lease.Fence.ExecutionID != request.ExecutionID || lease.Fence.Generation != request.Generation || lease.Fence.WorkloadIdentity != request.WorkloadIdentity || lease.Fence.WorkloadSessionID != request.WorkloadSessionID || lease.Fence.ProducerID != request.ProducerID {
 		return fmt.Errorf("%w: repository returned mismatched lease", ErrInvalidClaim)
 	}
-	if err := lease.Verify(now, lease.Fence); err != nil {
+	if err := lease.Verify(d.LeaseObservedAt.UTC(), lease.Fence); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidClaim, err)
+	}
+	if d.Disposition == ClaimAccepted && lease.ExpiresAt.Sub(d.LeaseObservedAt) != leaseTTL.Duration() {
+		return fmt.Errorf("%w: repository returned a lease outside the selected TTL", ErrInvalidClaim)
 	}
 	switch d.Disposition {
 	case ClaimRecoverTerminalACK:
@@ -152,43 +163,60 @@ func (d ClaimDecision) validate(now time.Time, request ClaimRequest) error {
 }
 
 type ClaimRepository interface {
-	ClaimValidation(ctx context.Context, request ClaimRequest, leaseUntil time.Time) (ClaimDecision, error)
-	CurrentLease(ctx context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, error)
-	RenewLease(ctx context.Context, fence runtimedomain.Fence, leaseUntil time.Time) (runtimedomain.ActiveLease, error)
+	ClaimValidation(ctx context.Context, request ClaimRequest, leaseTTL ClaimLeaseTTLMillis) (ClaimDecision, error)
+	CurrentLease(ctx context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, time.Time, error)
+	RenewLease(ctx context.Context, fence runtimedomain.Fence, leaseTTL ClaimLeaseTTLMillis) (runtimedomain.ActiveLease, time.Time, error)
 	ReleaseClaim(ctx context.Context, fence runtimedomain.Fence) error
 	AbortClaim(ctx context.Context, fence runtimedomain.Fence, disposition ClaimAbortDisposition) error
 	DesiredState(ctx context.Context, executionID string, generation uint64) (runtimedomain.DesiredState, error)
 }
 
-type ClaimService struct {
-	repository ClaimRepository
-	now        func() time.Time
-	leaseTTL   time.Duration
+// ClaimLeaseTTLMillis is the bounded, whole-millisecond lease policy passed to
+// the state owner. It deliberately cannot represent an application-authored
+// absolute expiry.
+type ClaimLeaseTTLMillis uint32
+
+const MaxClaimLeaseTTLMillis ClaimLeaseTTLMillis = 30_000
+
+func (ttl ClaimLeaseTTLMillis) Valid() bool {
+	return ttl > 0 && ttl <= MaxClaimLeaseTTLMillis
 }
 
-func NewClaimService(repository ClaimRepository, now func() time.Time, leaseTTL time.Duration) (*ClaimService, error) {
+func (ttl ClaimLeaseTTLMillis) Duration() time.Duration {
+	return time.Duration(ttl) * time.Millisecond
+}
+
+type ClaimService struct {
+	repository ClaimRepository
+	leaseTTL   ClaimLeaseTTLMillis
+}
+
+func NewClaimService(repository ClaimRepository, applicationNow func() time.Time, leaseTTL time.Duration) (*ClaimService, error) {
 	if repository == nil {
 		return nil, errors.New("claim repository is required")
 	}
-	if now == nil {
-		now = time.Now
+	// Retain the clock parameter while existing callers migrate, but never use
+	// it for lease authority. PostgreSQL is the authoritative clock.
+	_ = applicationNow
+	if leaseTTL <= 0 || leaseTTL%time.Millisecond != 0 {
+		return nil, errors.New("lease TTL must be a positive whole number of milliseconds")
 	}
-	if leaseTTL <= 0 {
-		return nil, errors.New("lease TTL must be positive")
+	leaseMillis := ClaimLeaseTTLMillis(leaseTTL / time.Millisecond)
+	if !leaseMillis.Valid() || leaseMillis.Duration() != leaseTTL {
+		return nil, fmt.Errorf("lease TTL must not exceed %d milliseconds", MaxClaimLeaseTTLMillis)
 	}
-	return &ClaimService{repository: repository, now: now, leaseTTL: leaseTTL}, nil
+	return &ClaimService{repository: repository, leaseTTL: leaseMillis}, nil
 }
 
 func (s *ClaimService) Claim(ctx context.Context, request ClaimRequest) (ClaimDecision, error) {
 	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" {
 		return ClaimDecision{}, ErrInvalidClaim
 	}
-	now := s.now().UTC()
-	decision, err := s.repository.ClaimValidation(ctx, request, now.Add(s.leaseTTL))
+	decision, err := s.repository.ClaimValidation(ctx, request, s.leaseTTL)
 	if err != nil {
 		return ClaimDecision{}, fmt.Errorf("claim validation command: %w", err)
 	}
-	if err := decision.validate(now, request); err != nil {
+	if err := decision.validate(request, s.leaseTTL); err != nil {
 		return ClaimDecision{}, err
 	}
 	return decision, nil
@@ -198,11 +226,14 @@ func (s *ClaimService) VerifyActive(ctx context.Context, fence runtimedomain.Fen
 	if err := fence.Validate(); err != nil {
 		return err
 	}
-	lease, err := s.repository.CurrentLease(ctx, fence.ExecutionID, fence.Generation)
+	lease, observedAt, err := s.repository.CurrentLease(ctx, fence.ExecutionID, fence.Generation)
 	if err != nil {
 		return fmt.Errorf("load current execution lease: %w", err)
 	}
-	if err := lease.Verify(s.now().UTC(), fence); err != nil {
+	if observedAt.IsZero() {
+		return ErrInvalidClaim
+	}
+	if err := lease.Verify(observedAt.UTC(), fence); err != nil {
 		return err
 	}
 	return nil
@@ -212,13 +243,18 @@ func (s *ClaimService) Renew(ctx context.Context, fence runtimedomain.Fence) (ru
 	if err := s.VerifyActive(ctx, fence); err != nil {
 		return runtimedomain.ActiveLease{}, err
 	}
-	now := s.now().UTC()
-	renewed, err := s.repository.RenewLease(ctx, fence, now.Add(s.leaseTTL))
+	renewed, observedAt, err := s.repository.RenewLease(ctx, fence, s.leaseTTL)
 	if err != nil {
 		return runtimedomain.ActiveLease{}, fmt.Errorf("renew execution lease: %w", err)
 	}
-	if err := renewed.Verify(now, fence); err != nil {
+	if observedAt.IsZero() {
+		return runtimedomain.ActiveLease{}, ErrInvalidClaim
+	}
+	if err := renewed.Verify(observedAt.UTC(), fence); err != nil {
 		return runtimedomain.ActiveLease{}, fmt.Errorf("%w: repository changed renewed fence", ErrInvalidClaim)
+	}
+	if renewed.ExpiresAt.Sub(observedAt) != s.leaseTTL.Duration() {
+		return runtimedomain.ActiveLease{}, fmt.Errorf("%w: repository returned a renewal outside the selected TTL", ErrInvalidClaim)
 	}
 	return renewed, nil
 }

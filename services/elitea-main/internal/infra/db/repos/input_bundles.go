@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -100,18 +101,18 @@ WHERE c.execution_id = $1
 	return &decoded, nil
 }
 
-func insertInputBundle(ctx context.Context, tx sqlExecutor, resourceProjectID int64, actorID string, bundle executiondomain.InputBundle) error {
+func insertInputBundle(ctx context.Context, tx sqlExecutor, resourceProjectID int64, actorID string, bundle executiondomain.InputBundle, createdAt time.Time) error {
 	if err := bundle.Validate(); err != nil {
 		return err
 	}
-	if resourceProjectID <= 0 || actorID == "" {
+	if resourceProjectID <= 0 || actorID == "" || createdAt.IsZero() {
 		return errors.New("input bundle owner is invalid")
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO elitea_runtime.input_bundles (
     input_bundle_id, immutable_version, media_type, resource_project_id,
-    manifest_digest, manifest_size, manifest_bytes, created_by
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    manifest_digest, manifest_size, manifest_bytes, created_by, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		bundle.ID,
 		bundle.Version,
 		bundle.MediaType,
@@ -120,6 +121,7 @@ INSERT INTO elitea_runtime.input_bundles (
 		int64(len(bundle.Manifest)),
 		bundle.Manifest,
 		actorID,
+		createdAt,
 	); err != nil {
 		return fmt.Errorf("insert input bundle: %w", err)
 	}

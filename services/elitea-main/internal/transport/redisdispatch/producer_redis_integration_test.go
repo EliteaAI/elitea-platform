@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/redis/go-redis/v9"
 )
@@ -49,7 +52,7 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanupCancel()
-		if err := client.Del(cleanupCtx, stream).Err(); err != nil {
+		if err := client.Del(cleanupCtx, stream, deliveryIndexKey(stream)).Err(); err != nil {
 			t.Errorf("delete Redis test stream: %v", err)
 		}
 	}()
@@ -57,10 +60,6 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 		t.Fatalf("create Redis consumer group: %v", err)
 	}
 
-	appender, err := NewRedisStreamAppender(client)
-	if err != nil {
-		t.Fatal(err)
-	}
 	limits, err := LimitsFromProto(&runtimev1.ProtocolLimitsV1{
 		LimitsRevision:         "elitea.runtime.limits.conformance.v1",
 		MaxWorkerCommandBytes:  32 * 1024,
@@ -68,6 +67,13 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 		MaxRedisFieldBytes:     48 * 1024,
 		MaxRedisEntryBytes:     64 * 1024,
 		MaxSafeStringBytes:     256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appender, err := NewRedisStreamAppender(client, RedisStreamAppenderConfig{
+		MaxEntries:    2,
+		MaxEntryBytes: limits.MaxRedisEntryBytes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,8 +112,19 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := producer.AppendPrepared(ctx, prepared); err != nil {
+	if err := producer.AppendPrepared(ctx, dispatch.OutboxID, prepared); err != nil {
 		t.Fatal(err)
+	}
+	// A second publisher/retry for the same stable delivery and exact durable
+	// bytes must observe the existing entry instead of consuming capacity.
+	if err := producer.AppendPrepared(ctx, dispatch.OutboxID, prepared.Clone()); err != nil {
+		t.Fatalf("deduplicate exact prepared delivery: %v", err)
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 1 {
+		t.Fatalf("exact delivery retry produced length=%d err=%v, want 1", length, err)
+	}
+	if mappings, err := client.HLen(ctx, deliveryIndexKey(stream)).Result(); err != nil || mappings != 1 {
+		t.Fatalf("exact delivery retry produced mappings=%d err=%v, want 1", mappings, err)
 	}
 	first := readNewRedisMessage(t, ctx, client, stream, group, "consumer-primary")
 	firstValue := assertReferenceOnlyRedisMessage(t, first, config.Limits, forbidden)
@@ -115,20 +132,6 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 		t.Fatal("producer digest does not bind the exact Redis field bytes")
 	}
 	assertPendingCount(t, ctx, client, stream, group, 1)
-	if acknowledged, err := client.XAck(ctx, stream, group, first.ID).Result(); err != nil {
-		t.Fatalf("ack first Redis delivery: %v", err)
-	} else if acknowledged != 1 {
-		t.Fatalf("acknowledged %d first Redis deliveries, want 1", acknowledged)
-	}
-	assertPendingCount(t, ctx, client, stream, group, 0)
-
-	if err := producer.AppendPrepared(ctx, prepared); err != nil {
-		t.Fatal(err)
-	}
-	unacknowledged := readNewRedisMessage(t, ctx, client, stream, group, "consumer-primary")
-	assertReferenceOnlyRedisMessage(t, unacknowledged, config.Limits, forbidden)
-	assertPendingCount(t, ctx, client, stream, group, 1)
-
 	claimed, _, err := client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   stream,
 		Group:    group,
@@ -140,7 +143,7 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reclaim pending Redis delivery: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].ID != unacknowledged.ID {
+	if len(claimed) != 1 || claimed[0].ID != first.ID {
 		t.Fatalf("unexpected reclaimed Redis deliveries: %+v", claimed)
 	}
 	assertReferenceOnlyRedisMessage(t, claimed[0], config.Limits, forbidden)
@@ -155,15 +158,160 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect reclaimed Redis delivery: %v", err)
 	}
-	if len(pending) != 1 || pending[0].ID != unacknowledged.ID || pending[0].Consumer != "consumer-recovery" {
+	if len(pending) != 1 || pending[0].ID != first.ID || pending[0].Consumer != "consumer-recovery" {
 		t.Fatalf("pending Redis delivery was not transferred to the recovery consumer: %+v", pending)
 	}
-	if acknowledged, err := client.XAck(ctx, stream, group, unacknowledged.ID).Result(); err != nil {
+	if acknowledged, err := client.XAck(ctx, stream, group, first.ID).Result(); err != nil {
 		t.Fatalf("ack reclaimed Redis delivery: %v", err)
 	} else if acknowledged != 1 {
 		t.Fatalf("acknowledged %d reclaimed Redis deliveries, want 1", acknowledged)
 	}
+	if deleted, err := client.XDel(ctx, stream, first.ID).Result(); err != nil || deleted != 1 {
+		t.Fatalf("delete reclaimed Redis delivery: deleted=%d err=%v", deleted, err)
+	}
+	if deleted, err := client.HDel(ctx, deliveryIndexKey(stream), dispatch.OutboxID).Result(); err != nil || deleted != 1 {
+		t.Fatalf("delete reclaimed delivery mapping: deleted=%d err=%v", deleted, err)
+	}
 	assertPendingCount(t, ctx, client, stream, group, 0)
+
+	prepareDelivery := func(suffix string) (executionapp.ValidationDispatch, executionapp.PreparedCommandEnvelope) {
+		t.Helper()
+		candidate := validTransportDispatch()
+		candidate.OutboxID = "outbox-" + suffix
+		candidate.CommandID = "command-" + suffix
+		candidate.ExecutionID = "execution-" + suffix
+		candidate.InputBundleID = "bundle-" + suffix
+		candidate.Command.ConfigurationRevisionID = "revision-" + suffix
+		candidate.CapabilityVersion = "1"
+		candidate.LimitsRevision = limits.Revision
+		encoded, err := producer.PrepareValidation(ctx, candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return candidate, encoded
+	}
+	secondDispatch, secondPrepared := prepareDelivery("second")
+	thirdDispatch, thirdPrepared := prepareDelivery("third")
+	if err := producer.AppendPrepared(ctx, dispatch.OutboxID, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := producer.AppendPrepared(ctx, secondDispatch.OutboxID, secondPrepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := producer.AppendPrepared(ctx, thirdDispatch.OutboxID, thirdPrepared); !errors.Is(err, ErrControlStreamSaturated) {
+		t.Fatalf("expected Redis stream saturation after two live entries, got %v", err)
+	} else {
+		var saturation *ControlStreamSaturatedError
+		if !errors.As(err, &saturation) || saturation.CurrentEntries != 2 || saturation.CurrentMappings != 2 || saturation.MaxEntries != 2 {
+			t.Fatalf("unexpected Redis saturation details: %#v", saturation)
+		}
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 2 {
+		t.Fatalf("saturated append changed Redis stream length: length=%d err=%v", length, err)
+	}
+	entries, err := client.XRangeN(ctx, stream, "-", "+", 1).Result()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("select first live Redis entry: entries=%v err=%v", entries, err)
+	}
+	if deleted, err := client.XDel(ctx, stream, entries[0].ID).Result(); err != nil || deleted != 1 {
+		t.Fatalf("delete settled Redis entry: deleted=%d err=%v", deleted, err)
+	}
+	if deleted, err := client.HDel(ctx, deliveryIndexKey(stream), dispatch.OutboxID).Result(); err != nil || deleted != 1 {
+		t.Fatalf("delete settled Redis delivery mapping: deleted=%d err=%v", deleted, err)
+	}
+	if err := producer.AppendPrepared(ctx, thirdDispatch.OutboxID, thirdPrepared); err != nil {
+		t.Fatalf("append after XDEL released capacity: %v", err)
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 2 {
+		t.Fatalf("Redis capacity recovery produced length=%d err=%v, want 2", length, err)
+	}
+
+	secondClient := redis.NewClient(&redis.Options{
+		Addr:         address,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		MaxRetries:   0,
+	})
+	defer func() {
+		if err := secondClient.Close(); err != nil {
+			t.Errorf("close second Redis client: %v", err)
+		}
+	}()
+	secondAppender, err := NewRedisStreamAppender(secondClient, RedisStreamAppenderConfig{
+		MaxEntries:    2,
+		MaxEntryBytes: limits.MaxRedisEntryBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProducer, err := NewProducer(config, redisServiceHMACSigner{}, secondAppender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Del(ctx, stream, deliveryIndexKey(stream)).Err(); err != nil {
+		t.Fatalf("reset Redis stream before concurrent publishers: %v", err)
+	}
+
+	const concurrentAttempts = 32
+	start := make(chan struct{})
+	results := make(chan error, concurrentAttempts)
+	producers := []*Producer{producer, secondProducer}
+	var publishers sync.WaitGroup
+	publishers.Add(concurrentAttempts)
+	for index := range concurrentAttempts {
+		go func() {
+			defer publishers.Done()
+			<-start
+			results <- producers[index%len(producers)].AppendPrepared(ctx, dispatch.OutboxID, prepared.Clone())
+		}()
+	}
+	close(start)
+	publishers.Wait()
+	close(results)
+
+	succeeded := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		default:
+			t.Fatalf("unexpected concurrent Redis append result: %v", err)
+		}
+	}
+	if succeeded != concurrentAttempts {
+		t.Fatalf("cross-publisher dedupe successes=%d, want %d", succeeded, concurrentAttempts)
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 1 {
+		t.Fatalf("concurrent Redis publishers duplicated stable delivery: length=%d err=%v", length, err)
+	}
+	if mappings, err := client.HLen(ctx, deliveryIndexKey(stream)).Result(); err != nil || mappings != 1 {
+		t.Fatalf("concurrent Redis publishers produced mappings=%d err=%v", mappings, err)
+	}
+	if _, err := appender.Append(ctx, stream, redisEnvelopeField, dispatch.OutboxID, []byte("different-exact-envelope")); !errors.Is(err, ErrControlDeliveryConflict) {
+		t.Fatalf("stable delivery accepted conflicting exact bytes: %v", err)
+	}
+	if err := client.Del(ctx, stream).Err(); err != nil {
+		t.Fatalf("inject hash-only Redis state: %v", err)
+	}
+	if err := producer.AppendPrepared(ctx, dispatch.OutboxID, prepared.Clone()); !errors.Is(err, ErrControlDeliveryIndexInconsistent) {
+		t.Fatalf("hash-only Redis state did not fail closed: %v", err)
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 0 {
+		t.Fatalf("hash-only rejection mutated stream: length=%d err=%v", length, err)
+	}
+	if mappings, err := client.HLen(ctx, deliveryIndexKey(stream)).Result(); err != nil || mappings != 1 {
+		t.Fatalf("hash-only rejection mutated mappings=%d err=%v", mappings, err)
+	}
+	if err := client.Del(ctx, stream, deliveryIndexKey(stream)).Err(); err != nil {
+		t.Fatalf("clear coordinated Redis key pair: %v", err)
+	}
+	if err := producer.AppendPrepared(ctx, dispatch.OutboxID, prepared.Clone()); err != nil {
+		t.Fatalf("rebuild coordinated Redis key loss: %v", err)
+	}
+	if length, err := client.XLen(ctx, stream).Result(); err != nil || length != 1 {
+		t.Fatalf("coordinated key loss was not rebuilt: length=%d err=%v", length, err)
+	}
 }
 
 type redisServiceHMACSigner struct{}

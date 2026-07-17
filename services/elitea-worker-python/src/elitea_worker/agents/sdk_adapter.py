@@ -2,6 +2,8 @@
 
 The first slice deliberately calls the existing Pydantic model directly. It
 does not reload the SDK, call ``check_connection`` or return ``model_dump``.
+The toolkit slice delegates to the SDK's public dynamic-enumeration entrypoint;
+toolkit-specific parsing remains entirely inside the pinned SDK.
 """
 
 from __future__ import annotations
@@ -92,6 +94,46 @@ class EliteaSdkAdapter:
             )
             return SdkValidationOutcome(errors)
         return SdkValidationOutcome(())
+
+
+class EliteaSdkToolkitAdapter:
+    """Pinned adapter for the legacy ``toolkit.available_tools`` algorithm.
+
+    Evidence boundary:
+    - ``centry/pylon_indexer/plugins/indexer_worker/methods/``
+      ``indexer_toolkit_available_tools.py:32-39`` delegates to this SDK API
+      and maps an escaping ``Exception`` to the legacy response shape.
+    - ``elitea_sdk/tools/__init__.py:367-400`` owns type normalization,
+      enumerator lookup, result values and toolkit error strings.
+
+    This adapter deliberately performs one keyword call and no normalization,
+    filtering, retry, caching or result rewrite.
+    """
+
+    def __init__(self) -> None:
+        # Loading elitea_sdk.tools discovers optional toolkit modules and may
+        # print import diagnostics. Keep command/result stdout free of those
+        # diagnostics without changing the SDK's discovery semantics.
+        with redirect_stdout(sys.stderr):
+            module = importlib.import_module("elitea_sdk.tools")
+        package_root = Path(module.__file__).resolve().parents[1]
+        if _package_tree_digest(package_root) != SDK_PACKAGE_TREE_SHA256:
+            raise DependencyUnavailable(
+                "The installed Elitea SDK artifact does not match the admitted package tree."
+            )
+        self._tools_module = module
+
+    def get_toolkit_available_tools(
+        self,
+        toolkit_type: str,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        # Business-compatibility boundary: this is exactly the call performed
+        # by the legacy indexer wrapper, exactly once per admitted execution.
+        return self._tools_module.get_toolkit_available_tools(
+            toolkit_type=toolkit_type,
+            settings=settings,
+        )
 
 
 def _package_tree_digest(root: Path) -> str:

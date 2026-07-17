@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-CAPABILITY_ID = "configuration.validate.v1"
+CONFIGURATION_VALIDATION_CAPABILITY_ID = "configuration.validate.v1"
+TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID = "toolkit.available_tools.v1"
+# Backward-compatible name used by the first validation slice.
+CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 CONFIGURATION_TYPE = "openapi"
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
@@ -32,6 +35,8 @@ MAX_ENVELOPE_BYTES = 64 * 1024
 MAX_WORKER_COMMAND_BYTES = 32 * 1024
 MAX_SIGNED_ENVELOPE_BYTES = 48 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
+MAX_GRPC_REQUEST_BYTES = 64 * 1024
+MAX_GRPC_RESPONSE_BYTES = 80 * 1024
 MAX_SETTINGS_BYTES = 256 * 1024
 MAX_BUNDLE_ENTRIES = 16
 MAX_ISSUES = 64
@@ -43,6 +48,8 @@ ENVELOPE_SCHEMA_REVISION = "elitea.runtime.signed-worker-command.v1"
 PROTOCOL_REVISION = "elitea.runtime.v1"
 CAPABILITY_VERSION = "1"
 LIMITS_REVISION = "elitea.runtime.limits.conformance.v1"
+CLAIM_LEASE_TTL_MILLIS = 30_000
+MAX_LEASE_POLL_INTERVAL_MILLIS = 10_000
 OUTPUT_SCHEMA_REVISION = "elitea.runtime.execution-output.v1"
 CONFORMANCE_HMAC_KEY_ID = "elitea-runtime-v1-conformance-hmac"
 CONFORMANCE_HMAC_KEY = b"ELITEA_RUNTIME_V1_TEST_ONLY_NOT_A_SECRET"

@@ -13,10 +13,30 @@ type memoryClaimRepository struct {
 	lease            runtimedomain.ActiveLease
 	abortDisposition ClaimAbortDisposition
 	changeRenewEpoch bool
+	now              func() time.Time
+}
+
+func TestClaimServiceRequiresBoundedWholeMillisecondTTL(t *testing.T) {
+	repository := &memoryClaimRepository{now: time.Now}
+	for _, leaseTTL := range []time.Duration{
+		-time.Millisecond,
+		0,
+		time.Nanosecond,
+		30*time.Second + time.Millisecond,
+	} {
+		if _, err := NewClaimService(repository, time.Now, leaseTTL); err == nil {
+			t.Fatalf("unsafe lease TTL was accepted: %s", leaseTTL)
+		}
+	}
+	for _, leaseTTL := range []time.Duration{time.Millisecond, 30 * time.Second} {
+		service, err := NewClaimService(repository, time.Now, leaseTTL)
+		if err != nil || service.leaseTTL.Duration() != leaseTTL {
+			t.Fatalf("bounded whole-millisecond TTL was rejected: ttl=%s service=%+v err=%v", leaseTTL, service, err)
+		}
+	}
 }
 
 func TestNoLeaseObsoleteDecisionIsLimitedToDurableCancellation(t *testing.T) {
-	now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
 	request := ClaimRequest{
 		CommandID:            "command-1",
 		OutboxID:             "outbox-1",
@@ -30,7 +50,7 @@ func TestNoLeaseObsoleteDecisionIsLimitedToDurableCancellation(t *testing.T) {
 	if err := (ClaimDecision{
 		Disposition:  ClaimObsoleteACK,
 		DesiredState: runtimedomain.DesiredCancelled,
-	}).validate(now, request); err != nil {
+	}).validate(request, MaxClaimLeaseTTLMillis); err != nil {
 		t.Fatalf("durable no-lease cancellation was rejected: %v", err)
 	}
 
@@ -42,7 +62,7 @@ func TestNoLeaseObsoleteDecisionIsLimitedToDurableCancellation(t *testing.T) {
 		{Disposition: ClaimObsoleteACK, DesiredState: runtimedomain.DesiredCancelled, SettlementRecovery: &SettlementRecovery{}},
 	}
 	for _, decision := range invalid {
-		if err := decision.validate(now, request); !errors.Is(err, ErrInvalidClaim) {
+		if err := decision.validate(request, MaxClaimLeaseTTLMillis); !errors.Is(err, ErrInvalidClaim) {
 			t.Fatalf("unsafe no-lease obsolete decision was accepted: %+v err=%v", decision, err)
 		}
 	}
@@ -65,7 +85,7 @@ func TestNoLeaseRetiredDecisionRequiresDeadlineReason(t *testing.T) {
 		DesiredState:     runtimedomain.DesiredRunning,
 		RetirementReason: RetirementDeadlineExceeded,
 	}
-	if err := valid.validate(now, request); err != nil {
+	if err := valid.validate(request, MaxClaimLeaseTTLMillis); err != nil {
 		t.Fatalf("durable deadline retirement was rejected: %v", err)
 	}
 
@@ -96,15 +116,16 @@ func TestNoLeaseRetiredDecisionRequiresDeadlineReason(t *testing.T) {
 		{Disposition: ClaimObsoleteACK, DesiredState: runtimedomain.DesiredCancelled, RetirementReason: RetirementDeadlineExceeded},
 	}
 	for _, decision := range invalid {
-		if err := decision.validate(now, request); !errors.Is(err, ErrInvalidClaim) {
+		if err := decision.validate(request, MaxClaimLeaseTTLMillis); !errors.Is(err, ErrInvalidClaim) {
 			t.Fatalf("unsafe retirement decision was accepted: %+v err=%v", decision, err)
 		}
 	}
 }
 
-func (r *memoryClaimRepository) ClaimValidation(_ context.Context, request ClaimRequest, leaseUntil time.Time) (ClaimDecision, error) {
+func (r *memoryClaimRepository) ClaimValidation(_ context.Context, request ClaimRequest, leaseTTL ClaimLeaseTTLMillis) (ClaimDecision, error) {
+	observedAt := r.now().UTC()
 	if r.lease.Fence.ExecutionID == request.ExecutionID && !r.lease.ExpiresAt.IsZero() {
-		return ClaimDecision{Lease: r.lease, Disposition: ClaimAccepted}, nil
+		return ClaimDecision{Lease: r.lease, LeaseObservedAt: observedAt, Disposition: ClaimAccepted}, nil
 	}
 	r.lease = runtimedomain.ActiveLease{
 		ClaimID:      "claim-1",
@@ -120,27 +141,35 @@ func (r *memoryClaimRepository) ClaimValidation(_ context.Context, request Claim
 			LeaseEpoch:        1,
 			Token:             runtimedomain.FenceToken(runtimedomain.SHA256([]byte("unpredictable-test-token"))),
 		},
-		ExpiresAt: leaseUntil,
+		ExpiresAt: observedAt.Add(leaseTTL.Duration()),
 	}
-	return ClaimDecision{Lease: r.lease, Disposition: ClaimAccepted}, nil
+	return ClaimDecision{Lease: r.lease, LeaseObservedAt: observedAt, Disposition: ClaimAccepted}, nil
 }
 
-func (r *memoryClaimRepository) CurrentLease(_ context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, error) {
+func (r *memoryClaimRepository) CurrentLease(_ context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, time.Time, error) {
 	if r.lease.Fence.ExecutionID != executionID || r.lease.Fence.Generation != generation {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
-	return r.lease, nil
+	observedAt := r.now().UTC()
+	if !observedAt.Before(r.lease.ExpiresAt) {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrLeaseExpired
+	}
+	return r.lease, observedAt, nil
 }
 
-func (r *memoryClaimRepository) RenewLease(_ context.Context, fence runtimedomain.Fence, leaseUntil time.Time) (runtimedomain.ActiveLease, error) {
+func (r *memoryClaimRepository) RenewLease(_ context.Context, fence runtimedomain.Fence, leaseTTL ClaimLeaseTTLMillis) (runtimedomain.ActiveLease, time.Time, error) {
 	if r.lease.Fence != fence {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
-	r.lease.ExpiresAt = leaseUntil
+	observedAt := r.now().UTC()
+	if !observedAt.Before(r.lease.ExpiresAt) {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrLeaseExpired
+	}
+	r.lease.ExpiresAt = observedAt.Add(leaseTTL.Duration())
 	if r.changeRenewEpoch {
 		r.lease.Fence.LeaseEpoch++
 	}
-	return r.lease, nil
+	return r.lease, observedAt, nil
 }
 
 func (r *memoryClaimRepository) ReleaseClaim(_ context.Context, fence runtimedomain.Fence) error {
@@ -169,8 +198,8 @@ func (r *memoryClaimRepository) DesiredState(_ context.Context, executionID stri
 
 func TestClaimVerifierRejectsStaleFenceAndExpiredLease(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	repository := &memoryClaimRepository{}
-	service, err := NewClaimService(repository, func() time.Time { return now }, time.Minute)
+	repository := &memoryClaimRepository{now: func() time.Time { return now }}
+	service, err := NewClaimService(repository, func() time.Time { return now }, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +242,7 @@ func TestClaimVerifierRejectsStaleFenceAndExpiredLease(t *testing.T) {
 		t.Fatalf("expected generation mismatch to be stale, got %v", err)
 	}
 
-	now = now.Add(time.Minute)
+	now = now.Add(30 * time.Second)
 	if err := service.VerifyActive(context.Background(), lease.Fence); !errors.Is(err, runtimedomain.ErrLeaseExpired) {
 		t.Fatalf("expected exact-expiry rejection, got %v", err)
 	}
@@ -221,8 +250,8 @@ func TestClaimVerifierRejectsStaleFenceAndExpiredLease(t *testing.T) {
 
 func TestClaimAbortRequiresExactFenceAndRecordsDisposition(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	repository := &memoryClaimRepository{}
-	service, err := NewClaimService(repository, func() time.Time { return now }, time.Minute)
+	repository := &memoryClaimRepository{now: func() time.Time { return now }}
+	service, err := NewClaimService(repository, func() time.Time { return now }, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,8 +283,8 @@ func TestClaimAbortRequiresExactFenceAndRecordsDisposition(t *testing.T) {
 
 func TestClaimRenewRejectsRepositoryFenceRotation(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
-	repository := &memoryClaimRepository{}
-	service, err := NewClaimService(repository, func() time.Time { return now }, time.Minute)
+	repository := &memoryClaimRepository{now: func() time.Time { return now }}
+	service, err := NewClaimService(repository, func() time.Time { return now }, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

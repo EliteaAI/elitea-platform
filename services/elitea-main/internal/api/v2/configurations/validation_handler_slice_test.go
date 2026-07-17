@@ -98,6 +98,30 @@ func TestValidationHandlerAuthorizesBeforeReadingBodyAndMapsCredentialBoundary(t
 	}
 }
 
+func TestValidationHandlerMapsAdmissionCapacityToRetryableServiceUnavailable(t *testing.T) {
+	authorizer := &validationAuthorizerStub{identity: validAdmissionIdentity()}
+	submitter := &validationSubmitterStub{err: &executionapp.AdmissionCapacityError{
+		CapabilityID:   "configuration.validate.v1",
+		MaxOutstanding: 3,
+	}}
+	handler, err := NewValidationHandler(authorizer, submitter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.Submit(response, validationRequest(`{"settings":{}}`, "application/json"))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("capacity rejection mapped to status %d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("capacity rejection Retry-After=%q, want 1", got)
+	}
+	if strings.Contains(response.Body.String(), "configuration.validate.v1") || strings.Contains(response.Body.String(), "3") {
+		t.Fatalf("capacity response exposed internal policy state: %s", response.Body.String())
+	}
+}
+
 func TestDecodeValidationAdmissionBodyRejectsTrailingJSON(t *testing.T) {
 	_, err := decodeValidationAdmissionBody(strings.NewReader(`{"settings":{}} {"settings":{}}`))
 	if err == nil {

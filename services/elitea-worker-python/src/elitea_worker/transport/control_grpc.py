@@ -7,6 +7,10 @@ from typing import Protocol
 
 import grpc
 from elitea.runtime.v1 import control_pb2
+from google.protobuf.message import Message
+
+from elitea_worker.constants import MAX_GRPC_REQUEST_BYTES, MAX_GRPC_RESPONSE_BYTES
+from elitea_worker.execution.errors import ResourceExhausted
 
 
 MetadataProvider = Callable[[], tuple[tuple[str, str], ...]]
@@ -54,12 +58,9 @@ def secure_control_channel(
     root_certificates: bytes,
     certificate_chain: bytes,
     private_key: bytes,
-    max_message_bytes: int = 64 * 1024,
 ) -> grpc.aio.Channel:
     if not target or not all((root_certificates, certificate_chain, private_key)):
         raise ValueError("verified target and workload certificates are required")
-    if max_message_bytes < 1:
-        raise ValueError("max_message_bytes must be positive")
     credentials = grpc.ssl_channel_credentials(
         root_certificates=root_certificates,
         private_key=private_key,
@@ -69,8 +70,8 @@ def secure_control_channel(
         target,
         credentials,
         options=(
-            ("grpc.max_send_message_length", max_message_bytes),
-            ("grpc.max_receive_message_length", max_message_bytes),
+            ("grpc.max_send_message_length", MAX_GRPC_REQUEST_BYTES),
+            ("grpc.max_receive_message_length", MAX_GRPC_RESPONSE_BYTES),
         ),
     )
 
@@ -94,44 +95,61 @@ class ExecutionControlClient:
     async def claim_command(
         self, request: control_pb2.ClaimCommandRequestV1
     ) -> control_pb2.ClaimCommandResponseV1:
-        return await self._stub.ClaimCommand(
+        _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
+        response = await self._stub.ClaimCommand(
             request,
             timeout=self._deadline,
             metadata=_validated_metadata(self._metadata()),
         )
+        _require_wire_size(response, MAX_GRPC_RESPONSE_BYTES, "control response")
+        return response
 
     async def renew_lease(
         self, request: control_pb2.RenewLeaseRequestV1
     ) -> control_pb2.RenewLeaseResponseV1:
-        return await self._stub.RenewLease(
+        _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
+        response = await self._stub.RenewLease(
             request,
             timeout=self._deadline,
             metadata=_validated_metadata(self._metadata()),
         )
+        _require_wire_size(response, MAX_GRPC_RESPONSE_BYTES, "control response")
+        return response
 
     async def observe_desired_state(
         self, request: control_pb2.ObserveDesiredStateRequestV1
     ) -> control_pb2.ObserveDesiredStateResponseV1:
-        return await self._stub.ObserveDesiredState(
+        _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
+        response = await self._stub.ObserveDesiredState(
             request,
             timeout=self._deadline,
             metadata=_validated_metadata(self._metadata()),
         )
+        _require_wire_size(response, MAX_GRPC_RESPONSE_BYTES, "control response")
+        return response
 
     async def prepare_settlement(
         self, request: control_pb2.PrepareSettlementRequestV1
     ) -> control_pb2.PrepareSettlementResponseV1:
-        return await self._stub.PrepareSettlement(
+        _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
+        response = await self._stub.PrepareSettlement(
             request,
             timeout=self._deadline,
             metadata=_validated_metadata(self._metadata()),
         )
+        _require_wire_size(response, MAX_GRPC_RESPONSE_BYTES, "control response")
+        return response
+
+
+def _require_wire_size(message: Message, max_bytes: int, description: str) -> None:
+    if message.ByteSize() > max_bytes:
+        raise ResourceExhausted(f"The {description} exceeds the transport limit.")
 
 
 def _validated_metadata(
     metadata: tuple[tuple[str, str], ...],
 ) -> tuple[tuple[str, str], ...]:
-    allowed = {"x-elitea-workload-session"}
+    allowed = {"x-elitea-workload-session", "x-elitea-producer-id"}
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
     for name, value in metadata:
@@ -147,6 +165,6 @@ def _validated_metadata(
             raise ValueError("control gRPC metadata is not allowlisted")
         seen.add(normalized)
         result.append((normalized, value))
-    if seen != allowed:
+    if "x-elitea-workload-session" not in seen:
         raise ValueError("control gRPC metadata is not allowlisted")
     return tuple(result)

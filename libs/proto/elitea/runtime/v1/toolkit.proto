@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// ToolkitAvailableToolsCommandV1 is the bounded control-plane command for
+// toolkit.available_tools.v1. The potentially large and credential-bearing
+// settings object is an entry in WorkerCommandV1.input_bundle_ref; it is never
+// embedded in this message or published through Redis.
+message ToolkitAvailableToolsCommandV1 {
+  string toolkit_type = 1;
+  string settings_entry_id = 2;
+  reserved 3 to 15;
+}
+
+// ToolkitAvailableToolsArtifactReferenceV1 identifies the immutable canonical
+// JSON result. It contains no URI, bearer token, credential, or inline result
+// body. The caller must fetch it through an independently authorized data-plane
+// endpoint scoped by the execution identity on the enclosing output frame.
+message ToolkitAvailableToolsArtifactReferenceV1 {
+  string artifact_id = 1;
+  string immutable_version = 2;
+  string media_type = 3;
+  uint64 byte_length = 4;
+  DigestV1 digest = 5;
+  string classification = 6;
+  reserved 7 to 15;
+}
+
+// ToolkitAvailableToolsResultV1 binds the off-Redis result artifact to the
+// exact settings content consumed by the legacy-compatible SDK adapter.
+message ToolkitAvailableToolsResultV1 {
+  string toolkit_type = 1;
+  string input_bundle_id = 2;
+  DigestV1 input_bundle_digest = 3;
+  string settings_entry_id = 4;
+  string settings_entry_version = 5;
+  DigestV1 settings_content_digest = 6;
+  ToolkitAvailableToolsArtifactReferenceV1 result_artifact = 7;
+  reserved 8 to 15;
+}

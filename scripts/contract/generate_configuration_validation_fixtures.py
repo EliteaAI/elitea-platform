@@ -61,6 +61,10 @@ CONFORMANCE_LIMITS = {
     "max_output_frame_bytes": 65536,
     "max_validation_issues": 64,
     "max_safe_string_bytes": 256,
+    "claim_lease_ttl_millis": 30000,
+    "max_lease_poll_interval_millis": 10000,
+    "max_grpc_request_bytes": 65536,
+    "max_grpc_response_bytes": 81920,
 }
 OPENAPI_CREDENTIAL_FREE_PROFILE_ID = "OPENAPI_CREDENTIAL_FREE_V1"
 OPENAPI_ALLOWED_NON_SECRET_FIELDS = [

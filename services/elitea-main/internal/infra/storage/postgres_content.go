@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/workloadidentity"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -59,6 +60,10 @@ SELECT j.resource_project_id::text,
 FROM elitea_runtime.execution_claims AS c
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = c.execution_id AND j.generation = c.generation
+JOIN elitea_runtime.workload_sessions AS ws
+  ON ws.workload_session_id = c.workload_session_id
+ AND ws.workload_identity = c.workload_identity
+ AND ws.producer_id = c.producer_id
 JOIN elitea_runtime.input_bundle_entries AS e
   ON e.input_bundle_id = j.input_bundle_id
 WHERE c.claim_id = $1
@@ -68,6 +73,9 @@ WHERE c.claim_id = $1
   AND c.fence_token = $5
   AND c.released_at IS NULL
   AND c.lease_expires_at > clock_timestamp()
+  AND ws.issued_at <= clock_timestamp()
+  AND ws.expires_at > clock_timestamp()
+  AND ws.revoked_at IS NULL
   AND j.desired_state = 'RUNNING'
   AND e.content_reference = $6
   AND e.entry_version = $7
@@ -131,12 +139,9 @@ WHERE b.resource_project_id::text = $1
 }
 
 func workloadIdentity(certificate *x509.Certificate) (string, error) {
-	if certificate == nil || len(certificate.URIs) != 1 {
+	identity, err := workloadidentity.Certificate(certificate)
+	if err != nil {
 		return "", ErrContentUnauthorized
 	}
-	identity := certificate.URIs[0]
-	if identity == nil || identity.Scheme != "spiffe" || identity.Host == "" || identity.Path == "" || identity.User != nil || identity.Fragment != "" || identity.RawQuery != "" {
-		return "", ErrContentUnauthorized
-	}
-	return identity.String(), nil
+	return identity, nil
 }

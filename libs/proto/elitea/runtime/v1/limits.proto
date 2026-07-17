@@ -19,5 +19,15 @@ message ProtocolLimitsV1 {
   uint64 max_output_frame_bytes = 9;
   uint32 max_validation_issues = 10;
   uint32 max_safe_string_bytes = 11;
-  reserved 12 to 31;
+  // Authority timing is part of the selected limits revision. Runtimes may
+  // poll more frequently but must never admit a slower interval.
+  uint64 claim_lease_ttl_millis = 12;
+  uint64 max_lease_poll_interval_millis = 13;
+  // Whole serialized protobuf message limits for worker-to-server requests
+  // and server-to-worker responses. The response bound is deliberately larger
+  // than max_input_manifest_bytes because ClaimCommandResponseV1 nests the
+  // manifest inside an authenticated claim receipt.
+  uint64 max_grpc_request_bytes = 14;
+  uint64 max_grpc_response_bytes = 15;
+  reserved 16 to 31;
 }

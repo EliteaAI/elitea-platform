@@ -25,6 +25,7 @@ from elitea_worker.constants import (
     RUNTIME_VERSION,
     SDK_PACKAGE_TREE_SHA256,
     SDK_SOURCE_REVISION,
+    TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID,
 )
 
 
@@ -102,20 +103,43 @@ def capability_message(
                 schema_id=OPENAPI_SCHEMA_ID,
                 schema_revision=OPENAPI_SCHEMA_REVISION,
                 schema_digest=_digest(bytes.fromhex(OPENAPI_SCHEMA_SHA256)),
-            )
+            ),
+            capability_manifest_pb2.RuntimeCapabilityV1(
+                capability_id=TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID,
+                capability_version="1",
+                accepted_command_types=[
+                    command_pb2.WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS,
+                ],
+                emitted_event_types=[
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT,
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR,
+                ],
+                # The exact SDK adapter and artifact-reference contract are
+                # implemented and parity-tested. Production claim/input/
+                # artifact/output composition is deliberately not advertised
+                # as a runnable durable job in this slice.
+                interaction_model="contract_handler_parity",
+                resource_classes=["toolkit-catalog"],
+                feature_flags=[
+                    "legacy-sdk-delegate",
+                    "reference-only-input",
+                    "artifact-reference-output",
+                    "production-delivery-not-wired",
+                ],
+            ),
         ],
         runtime_constraints=capability_manifest_pb2.RuntimeConstraintsV1(
             isolation_classes=["shared-credential-free"],
             architectures=["amd64", "arm64"],
             child_process_support=False,
             network_egress_classes=["scoped-input-content-only"],
-            artifact_support=False,
+            artifact_support=True,
             realtime_session_support=False,
         ),
         limits_profiles=capability_manifest_pb2.RuntimeLimitsProfileReferenceV1(
             limits_schema_revision="elitea.runtime.limits.v1",
             limits_revisions=[LIMITS_REVISION],
-            resource_profile_classes=["validation-small"],
+            resource_profile_classes=["validation-small", "toolkit-catalog"],
         ),
     )
 

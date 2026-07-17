@@ -5,14 +5,19 @@ client API. It has no output, result, callback or arbitrary publish method.
 
 Runtime v1 assigns exactly one worker consumer group to each command stream.
 Many worker processes may consume within that group. Once durable settlement
-has succeeded, the owning worker retires exactly one entry with atomic
-``XACK`` + ``XDEL``. Adding another group to the same stream requires a new
-retention protocol because deleting an entry after this group's ACK would make
-it unavailable to the other group.
+has succeeded, the owning worker retires exactly one entry with a restricted
+Lua operation. The operation binds the verified stable delivery ID, exact
+signed bytes, stream entry, pending group and current consumer owner before
+atomically applying ``XACK`` + ``XDEL`` + delivery-index ``HDEL``. Adding
+another group to the same stream requires a new retention protocol because
+deleting an entry after this group's ACK would make it unavailable to the
+other group.
 
 The post-decode size checks here do not bound redis-py's RESP allocation before
-decode. Production serve composition remains disabled until its Redis client
-can enforce that separate transport bound.
+decode. Phase one therefore requires a dedicated TLS/ACL-protected control
+Redis plus the producer-side stream capacity and entry-size gates. A custom
+pre-decode parser limit remains defense-in-depth; this module does not pretend
+that redis-py provides one.
 
 Deleting settled entries also does not bound an outage backlog of unpublished,
 unconsumed, or pending work. Runtime activation needs a non-dropping capacity
@@ -33,29 +38,24 @@ from elitea_worker.execution.errors import (
 
 
 _COMMAND_FIELDS = frozenset({"signed_envelope"})
+_MAX_STABLE_DELIVERY_ID_BYTES = 256
 
 
 class RedisStreamsClient(Protocol):
-    @property
-    def max_bulk_reply_bytes(self) -> int: ...
-
     async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any: ...
 
     async def xautoclaim(self, *args: Any, **kwargs: Any) -> Any: ...
 
-    def pipeline(self, *, transaction: bool = True) -> RedisTransaction: ...
-
-
-class RedisTransaction(Protocol):
-    async def __aenter__(self) -> RedisTransaction: ...
-
-    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None: ...
-
-    def xack(self, *args: Any, **kwargs: Any) -> RedisTransaction: ...
-
-    def xdel(self, *args: Any, **kwargs: Any) -> RedisTransaction: ...
-
-    async def execute(self, *, raise_on_error: bool = True) -> Any: ...
+    async def retire_delivery(
+        self,
+        *,
+        stream: str,
+        group: str,
+        consumer: str,
+        entry_id: str,
+        stable_delivery_id: str,
+        signed_envelope: bytes,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,16 +88,6 @@ class RedisCommandConsumer:
             raise ValueError("Redis command limits must be positive")
         if max_field_bytes > max_entry_bytes:
             raise ValueError("Redis field limit cannot exceed the complete entry limit")
-        decoder_limit = getattr(client, "max_bulk_reply_bytes", None)
-        if (
-            isinstance(decoder_limit, bool)
-            or not isinstance(decoder_limit, int)
-            or decoder_limit < 1
-            or decoder_limit > max_field_bytes
-        ):
-            raise ValueError(
-                "Redis client must prove a bounded RESP bulk decoder no larger than max_field_bytes"
-            )
         self._client = client
         self._stream = stream
         self._group = group
@@ -118,6 +108,18 @@ class RedisCommandConsumer:
         return self._decode_read(response)
 
     async def reclaim(self, *, min_idle_ms: int, start_id: str = "0-0") -> tuple[RedisCommandDelivery, ...]:
+        _, deliveries = await self.reclaim_page(
+            min_idle_ms=min_idle_ms,
+            start_id=start_id,
+        )
+        return deliveries
+
+    async def reclaim_page(
+        self,
+        *,
+        min_idle_ms: int,
+        start_id: str = "0-0",
+    ) -> tuple[str, tuple[RedisCommandDelivery, ...]]:
         if min_idle_ms < 1:
             raise ValueError("min_idle_ms must be positive")
         response = await self._client.xautoclaim(
@@ -128,12 +130,18 @@ class RedisCommandConsumer:
             start_id,
             count=self._read_count,
         )
+        next_start_id = _ascii(response[0], "reclaim cursor") if response else "0-0"
         entries = response[1] if response and len(response) > 1 else ()
         if len(entries) > self._read_count:
             raise ResourceExhausted("Redis reclaim response exceeds the bounded read count.")
-        return tuple(self._decode_entry(self._stream, entry) for entry in entries)
+        deliveries = tuple(self._decode_entry(self._stream, entry) for entry in entries)
+        return next_start_id, deliveries
 
-    async def ack_after_settlement(self, delivery: RedisCommandDelivery) -> None:
+    async def ack_after_settlement(
+        self,
+        delivery: RedisCommandDelivery,
+        stable_delivery_id: str,
+    ) -> None:
         """Atomically retire one entry after its settlement is durable.
 
         The caller owns the ordering guarantee: this method must not be called
@@ -141,13 +149,19 @@ class RedisCommandConsumer:
         """
         if delivery.stream != self._stream:
             raise InvalidInput("The delivered command belongs to another stream.")
-        async with self._client.pipeline(transaction=True) as transaction:
-            transaction.xack(self._stream, self._group, delivery.entry_id)
-            transaction.xdel(self._stream, delivery.entry_id)
-            results = await transaction.execute(raise_on_error=False)
-        if not _is_exact_retirement(results):
+        if not _valid_stable_delivery_id(stable_delivery_id):
+            raise InvalidInput("The stable delivery identity is malformed.")
+        results = await self._client.retire_delivery(
+            stream=self._stream,
+            group=self._group,
+            consumer=self._consumer,
+            entry_id=delivery.entry_id,
+            stable_delivery_id=stable_delivery_id,
+            signed_envelope=delivery.signed_envelope,
+        )
+        if not _is_confirmed_retirement(results):
             raise DependencyUnavailable(
-                "Redis did not confirm atomic command acknowledgement and deletion."
+                "Redis did not confirm atomic command acknowledgement, deletion, and unmapping."
             )
 
     def _decode_read(self, response: Any) -> tuple[RedisCommandDelivery, ...]:
@@ -193,12 +207,22 @@ def _ascii(value: bytes | str, description: str) -> str:
         raise InvalidInput(f"Redis {description} is malformed.") from exc
 
 
-def _is_exact_retirement(results: Any) -> bool:
+def _valid_stable_delivery_id(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
     return (
-        isinstance(results, (list, tuple))
-        and len(results) == 2
-        and type(results[0]) is int
-        and results[0] == 1
-        and type(results[1]) is int
-        and results[1] == 1
+        len(encoded) <= _MAX_STABLE_DELIVERY_ID_BYTES
+        and not any(character in value for character in ("\r", "\n", "\x00"))
     )
+
+
+def _is_confirmed_retirement(results: Any) -> bool:
+    if not isinstance(results, (list, tuple)) or len(results) != 3:
+        return False
+    if any(type(value) is not int for value in results):
+        return False
+    return tuple(results) in ((1, 1, 1), (2, 0, 0))

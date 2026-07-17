@@ -15,9 +15,31 @@ import (
 )
 
 var (
-	ErrInvalidAdmission    = errors.New("invalid validation admission")
-	ErrIdempotencyConflict = errors.New("idempotency key already used for a different request")
+	ErrInvalidAdmission           = errors.New("invalid validation admission")
+	ErrIdempotencyConflict        = errors.New("idempotency key already used for a different request")
+	ErrAdmissionCapacityExhausted = errors.New("execution admission capacity is exhausted")
 )
+
+const admissionCapacityRetryAfter = time.Second
+
+// AdmissionCapacityError is a retryable rejection of a new durable execution.
+// Exact idempotent replays do not consume capacity and must not return this
+// error. The fixed retry delay is intentionally small and bounded so public
+// transports can emit a safe Retry-After value without exposing queue state.
+type AdmissionCapacityError struct {
+	CapabilityID   string
+	MaxOutstanding int64
+}
+
+func (e *AdmissionCapacityError) Error() string {
+	return fmt.Sprintf("%s for capability %q at limit %d", ErrAdmissionCapacityExhausted, e.CapabilityID, e.MaxOutstanding)
+}
+
+func (e *AdmissionCapacityError) Unwrap() error { return ErrAdmissionCapacityExhausted }
+
+func (e *AdmissionCapacityError) Retryable() bool { return true }
+
+func (e *AdmissionCapacityError) RetryAfter() time.Duration { return admissionCapacityRetryAfter }
 
 type AdmissionIdentity struct {
 	TenantID            string
@@ -42,12 +64,17 @@ type AdmissionOutcome struct {
 	ExecutionID string
 	CommandID   string
 	Created     bool
+	// AdmittedAt and Deadline are the durable store's authoritative clock
+	// values. Exact idempotent replay must return the original pair.
+	AdmittedAt time.Time
+	Deadline   time.Time
 }
 
 // AtomicAdmissionStore owns the transaction that inserts the immutable input
 // bundle, execution job and command outbox. Implementations must compare the
 // stored request digest when an idempotency key already exists and return
-// ErrIdempotencyConflict on a different request.
+// ErrIdempotencyConflict on a different request. Successful creation and
+// replay must return the durable AdmittedAt and Deadline values.
 type AtomicAdmissionStore interface {
 	AdmitValidation(ctx context.Context, admission ValidationAdmission) (AdmissionOutcome, error)
 }
@@ -137,8 +164,8 @@ func (s *SubmitJobService) SubmitValidation(ctx context.Context, request SubmitV
 	if err != nil {
 		return AdmissionOutcome{}, fmt.Errorf("admit configuration validation: %w", err)
 	}
-	if outcome.ExecutionID == "" || outcome.CommandID == "" {
-		return AdmissionOutcome{}, errors.New("admission store returned empty identity")
+	if outcome.ExecutionID == "" || outcome.CommandID == "" || outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
+		return AdmissionOutcome{}, errors.New("admission store returned invalid durable outcome")
 	}
 	return outcome, nil
 }

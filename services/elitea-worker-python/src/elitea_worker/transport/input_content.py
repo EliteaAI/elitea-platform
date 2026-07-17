@@ -92,6 +92,7 @@ class ScopedInputContentClient:
         allowed_origins: frozenset[str],
         max_content_bytes: int,
         timeout_seconds: float = 15.0,
+        require_http2: bool = False,
         allowed_request_headers: frozenset[str] = frozenset(
             {"x-elitea-claim-id", "x-elitea-fence"}
         ),
@@ -104,6 +105,7 @@ class ScopedInputContentClient:
         )
         self._max_content_bytes = max_content_bytes
         self._timeout = timeout_seconds
+        self._require_http2 = require_http2
         self._allowed_request_headers = frozenset(
             _header_name(name).lower() for name in allowed_request_headers
         )
@@ -157,6 +159,10 @@ class ScopedInputContentClient:
                 timeout=self._timeout,
                 follow_redirects=False,
             ) as response:
+                if self._require_http2 and response.http_version != "HTTP/2":
+                    raise DependencyUnavailable(
+                        "The scoped content service did not negotiate HTTP/2."
+                    )
                 try:
                     response_origin = _canonical_https_origin(
                         f"{response.url.scheme}://{response.url.netloc.decode('ascii')}"

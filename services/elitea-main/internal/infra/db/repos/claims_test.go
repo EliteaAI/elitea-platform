@@ -81,7 +81,7 @@ func TestClaimValidationRequiresExactPublishedEnvelopeBeforeLease(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(test.requestDigest), time.Now().UTC().Add(time.Minute))
+			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(test.requestDigest), executionapp.MaxClaimLeaseTTLMillis)
 			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("unexpected claim error: got %v want %v", err, test.wantErr)
 			}
@@ -171,7 +171,7 @@ func TestRetiredPreparedDeliveryReturnsTypedFenceFreeACK(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(digest), time.Now().UTC().Add(time.Minute))
+			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(digest), executionapp.MaxClaimLeaseTTLMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,7 +205,7 @@ func TestPublishedBeforeDeadlineClaimedAfterDeadlineRetiresWithoutAuthority(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(digest), time.Now().UTC().Add(time.Minute))
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(digest), executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestClaimValidationPreservesDurableLookupFailure(t *testing.T) {
 	_, err = repository.ClaimValidation(
 		context.Background(),
 		testClaimRequest(runtimedomain.SHA256([]byte("published-signed-envelope"))),
-		time.Now().UTC().Add(time.Minute),
+		executionapp.MaxClaimLeaseTTLMillis,
 	)
 	if !errors.Is(err, databaseFailure) || !errors.Is(err, executionapp.ErrClaimDependencyUnavailable) || errors.Is(err, executionapp.ErrInvalidClaim) {
 		t.Fatalf("durable lookup failure was masked as a protocol error: %v", err)
@@ -242,12 +242,13 @@ func TestClaimValidationAllocatesMonotonicAttemptAndLeaseEpoch(t *testing.T) {
 	publishedDigest := runtimedomain.SHA256([]byte("published-signed-envelope"))
 	token := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("first-token")))
 	leaseExpires := time.Date(2030, time.July, 16, 13, 0, 0, 0, time.UTC)
+	leaseObservedAt := leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())
 	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{
 		rowResults: []scriptedRow{
 			claimExecutionRow("RUNNING", "DISPATCHED", true, publishedDigest[:], publishedDigest[:], false),
 			{err: pgx.ErrNoRows},
 			{values: []any{int64(1)}},
-			{values: []any{leaseExpires}},
+			{values: []any{leaseExpires, leaseObservedAt}},
 			{err: pgx.ErrNoRows},
 			{values: []any{false}},
 		},
@@ -264,14 +265,14 @@ func TestClaimValidationAllocatesMonotonicAttemptAndLeaseEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), leaseExpires)
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Disposition != executionapp.ClaimAccepted || decision.Lease.Fence.ClaimAttempt != 1 || decision.Lease.Fence.LeaseEpoch != 1 {
+	if decision.Disposition != executionapp.ClaimAccepted || decision.Lease.Fence.ClaimAttempt != 1 || decision.Lease.Fence.LeaseEpoch != 1 || decision.LeaseObservedAt != leaseObservedAt {
 		t.Fatalf("first claim did not allocate matching monotonic authority: %+v", decision)
 	}
-	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8, $9") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
+	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8,") || !strings.Contains(store.rowCalls[3].sql, "clock_timestamp() AS observed_at") || !strings.Contains(store.rowCalls[3].sql, "$9::bigint * interval '1 millisecond'") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
 		t.Fatal("claim insert does not derive lease_epoch from the monotonic claim attempt")
 	}
 }
@@ -281,6 +282,7 @@ func TestRenewLeasePreservesEpochAndFullFence(t *testing.T) {
 	fence.ClaimAttempt = 2
 	fence.LeaseEpoch = 2
 	expires := time.Date(2030, time.July, 16, 14, 0, 0, 0, time.UTC)
+	observedAt := expires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())
 	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
 		"claim-2",
 		fence.CommandID,
@@ -295,6 +297,7 @@ func TestRenewLeasePreservesEpochAndFullFence(t *testing.T) {
 		expires,
 		"RUNNING",
 		true,
+		observedAt,
 	}}}}}
 	repository, err := newClaimsRepository(
 		store,
@@ -304,15 +307,15 @@ func TestRenewLeasePreservesEpochAndFullFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := repository.RenewLease(context.Background(), fence, expires)
+	lease, gotObservedAt, err := repository.RenewLease(context.Background(), fence, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.Fence != fence || lease.Fence.LeaseEpoch != 2 {
+	if lease.Fence != fence || lease.Fence.LeaseEpoch != 2 || gotObservedAt != observedAt || lease.ExpiresAt.Sub(gotObservedAt) != executionapp.MaxClaimLeaseTTLMillis.Duration() {
 		t.Fatalf("renewal changed the authority-bearing fence: %+v", lease.Fence)
 	}
 	sql := store.rowCalls[0].sql
-	if strings.Contains(sql, "lease_epoch = c.lease_epoch + 1") || !strings.Contains(sql, "SET lease_expires_at = $10") || !strings.Contains(sql, "c.lease_epoch = $8") {
+	if strings.Contains(sql, "lease_epoch = c.lease_epoch + 1") || !strings.Contains(sql, "SET lease_expires_at = authority_clock.observed_at + ($10::bigint * interval '1 millisecond')") || !strings.Contains(sql, "c.lease_epoch = $8") {
 		t.Fatal("renewal must extend time while preserving and verifying the exact epoch")
 	}
 }
@@ -321,11 +324,12 @@ func TestActiveClaimHidesOwnerFenceFromDifferentWorkload(t *testing.T) {
 	publishedDigest := runtimedomain.SHA256([]byte("published-signed-envelope"))
 	token := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("owner-token")))
 	expires := time.Date(2030, time.July, 16, 13, 0, 0, 0, time.UTC)
+	observedAt := expires.Add(-time.Second)
 	ownerLeaseRow := func(identity, session, producer string) scriptedRow {
 		return scriptedRow{values: []any{
 			"owner-claim", "command-1", "execution-1", int64(1),
 			identity, session, producer, int64(1), int64(1), token[:],
-			expires, "RUNNING", true,
+			expires, "RUNNING", true, observedAt,
 		}}
 	}
 
@@ -338,7 +342,7 @@ func TestActiveClaimHidesOwnerFenceFromDifferentWorkload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), expires)
+		decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -361,7 +365,7 @@ func TestActiveClaimHidesOwnerFenceFromDifferentWorkload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decision, err := repository.ClaimValidation(context.Background(), request, expires)
+		decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -396,7 +400,7 @@ func TestNeverStartedCancellationFinalizesWithoutLease(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), time.Now().UTC().Add(time.Minute))
+			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -433,7 +437,7 @@ func TestAlreadyCancelledClaimReturnsObsoleteWithoutLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), time.Now().UTC().Add(time.Minute))
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +484,7 @@ func TestAmbiguousCancellationAndDrainingRemainNoLeaseRetries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), time.Now().UTC().Add(time.Minute))
+			decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -515,10 +519,11 @@ func TestExpiredCancelledClaimRecoversDurableCanonicalCancellationAcrossPod(t *t
 				frame.Fence.WorkloadIdentity, frame.Fence.WorkloadSessionID, frame.Fence.ProducerID,
 				int64(1), int64(1), frame.Fence.Token[:],
 				time.Date(2026, time.July, 17, 11, 0, 0, 0, time.UTC), "CANCELLED", false,
+				time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC),
 			}},
 			{values: []any{true}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
 			{values: []any{
 				cancelled.SettlementProposalID,
 				string(cancelled.SettlementOutcome),
@@ -547,7 +552,7 @@ func TestExpiredCancelledClaimRecoversDurableCanonicalCancellationAcrossPod(t *t
 	request.WorkloadSessionID = "replacement-session"
 	request.ProducerID = "replacement-producer"
 
-	decision, err := repository.ClaimValidation(context.Background(), request, leaseExpires)
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +581,7 @@ func TestCancelledRecoveryAuthorityFailsClosedWhenExactTerminalLoadMisses(t *tes
 			{err: pgx.ErrNoRows},
 			{values: []any{true}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
 			{err: pgx.ErrNoRows},
 		},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
@@ -589,7 +594,7 @@ func TestCancelledRecoveryAuthorityFailsClosedWhenExactTerminalLoadMisses(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), leaseExpires)
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 	if !errors.Is(err, executionapp.ErrClaimDependencyUnavailable) {
 		t.Fatalf("missing exact recovery output did not fail the transaction: %v", err)
 	}
@@ -613,7 +618,7 @@ func TestCancellationFinalizerFailsClosedWhenAtomicTransitionDoesNotMatch(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), time.Now().UTC().Add(time.Minute))
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +637,7 @@ func TestExpiredPriorAuthorityIsReleasedButNotMisclassifiedAsNeverStartedCancell
 				"expired-claim", "command-1", "execution-1", int64(1),
 				"spiffe://elitea.test/workload/old", "old-session", "old-producer",
 				int64(1), int64(1), token[:], time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC),
-				"CANCELLED", false,
+				"CANCELLED", false, time.Date(2026, time.July, 17, 11, 0, 0, 0, time.UTC),
 			}},
 		},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
@@ -646,7 +651,7 @@ func TestExpiredPriorAuthorityIsReleasedButNotMisclassifiedAsNeverStartedCancell
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), time.Now().UTC().Add(time.Minute))
+	decision, err := repository.ClaimValidation(context.Background(), testClaimRequest(publishedDigest), executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +676,7 @@ func TestLiveOwnerRetainsCancellationObservationWithoutACK(t *testing.T) {
 		{values: []any{
 			"owner-claim", "command-1", "execution-1", int64(1),
 			request.WorkloadIdentity, request.WorkloadSessionID, request.ProducerID,
-			int64(1), int64(1), token[:], expires, "CANCELLED", true,
+			int64(1), int64(1), token[:], expires, "CANCELLED", true, expires.Add(-time.Second),
 		}},
 		{err: pgx.ErrNoRows},
 	}}}
@@ -679,7 +684,7 @@ func TestLiveOwnerRetainsCancellationObservationWithoutACK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ClaimValidation(context.Background(), request, expires)
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,9 +819,10 @@ func TestExpiredClaimRecoversTerminalOutputAcrossProducerReplacement(t *testing.
 				oldFence.WorkloadIdentity, oldFence.WorkloadSessionID, oldFence.ProducerID,
 				int64(1), int64(1), oldFence.Token[:],
 				time.Date(2026, time.July, 16, 11, 0, 0, 0, time.UTC), "RUNNING", false,
+				time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC),
 			}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
 			{values: []any{
 				terminalFrame.Settlement.ProposalID,
 				string(terminalFrame.Settlement.Outcome),
@@ -849,7 +855,7 @@ func TestExpiredClaimRecoversTerminalOutputAcrossProducerReplacement(t *testing.
 		WorkloadIdentity:     replacementIdentity,
 		WorkloadSessionID:    "replacement-session",
 		ProducerID:           replacementProducer,
-	}, leaseExpires)
+	}, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}

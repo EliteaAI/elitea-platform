@@ -28,10 +28,10 @@ import (
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
-	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
@@ -69,7 +69,18 @@ type RouterConfig struct {
 	CutoverRouter  *cutover.Router
 	AdminUI        *adminui.Config
 	SessionSecret  string
+	RuntimeRoutes  RuntimeRoutes
 }
+
+type RuntimeRoutes struct {
+	Validation      http.Handler
+	ExecutionEvents http.Handler
+}
+
+const (
+	runtimeValidationPath = "/configurations/validation/{projectID}/{configurationRevisionID}"
+	runtimeEventsPath     = "/executions/{projectID}/{executionID}/events"
+)
 
 func NewRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
@@ -175,6 +186,8 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		}
 
 		r.Route("/api/v2", func(r chi.Router) {
+			mountRuntimeRoutes(r, cfg.RuntimeRoutes)
+
 			coreHandler := v2core.NewHandler(cfg.Pool)
 			if cfg.MCPSyncer != nil {
 				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
@@ -550,4 +563,15 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	return r
+}
+
+func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {
+	// A partial composition is not exposed. Both public runtime paths share the
+	// same authenticated-principal provenance and strict PostgreSQL membership
+	// authorizer, so mounting only one is a startup wiring error and fails closed.
+	if routes.Validation == nil || routes.ExecutionEvents == nil {
+		return
+	}
+	router.Method(http.MethodPost, runtimeValidationPath, routes.Validation)
+	router.Method(http.MethodGet, runtimeEventsPath, routes.ExecutionEvents)
 }

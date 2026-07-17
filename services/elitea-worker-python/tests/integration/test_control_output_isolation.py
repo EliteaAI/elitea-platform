@@ -19,8 +19,6 @@ _FIXTURE = _ROOT / "testdata/proto/runtime/v1/configuration-validation/valid"
 
 
 class RedisSpy:
-    max_bulk_reply_bytes = 48 * 1024
-
     def __init__(self, fields: dict[bytes, bytes]) -> None:
         self.fields = fields
         self.calls: list[tuple[str, object]] = []
@@ -33,32 +31,9 @@ class RedisSpy:
         self.calls.append(("xautoclaim", (args, kwargs)))
         return (b"0-0", [], [])
 
-    def pipeline(self, *, transaction: bool = True):
-        self.calls.append(("pipeline", transaction))
-        return RedisTransactionSpy(self.calls)
-
-
-class RedisTransactionSpy:
-    def __init__(self, calls: list[tuple[str, object]]) -> None:
-        self._calls = calls
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, traceback):
-        return None
-
-    def xack(self, *args: object):
-        self._calls.append(("xack", args))
-        return self
-
-    def xdel(self, *args: object):
-        self._calls.append(("xdel", args))
-        return self
-
-    async def execute(self, *, raise_on_error: bool = True):
-        self._calls.append(("execute", raise_on_error))
-        return [1, 1]
+    async def retire_delivery(self, **kwargs: object):
+        self.calls.append(("retire_delivery", kwargs))
+        return [1, 1, 1]
 
 
 def test_cross_language_redis_entry_is_one_reference_field_and_never_content_or_output() -> None:
@@ -91,14 +66,21 @@ def test_cross_language_redis_entry_is_one_reference_field_and_never_content_or_
         assert not hasattr(consumer, "publish")
         assert not hasattr(consumer, "xadd")
 
-        await consumer.ack_after_settlement(deliveries[0])
+        await consumer.ack_after_settlement(
+            deliveries[0], command.idempotency_key
+        )
         assert [name for name, _ in redis.calls] == [
             "xreadgroup",
-            "pipeline",
-            "xack",
-            "xdel",
-            "execute",
+            "retire_delivery",
         ]
+        assert redis.calls[-1][1] == {
+            "stream": "configuration-validation.v1",
+            "group": "elitea-worker-python",
+            "consumer": "worker-1",
+            "entry_id": "1-0",
+            "stable_delivery_id": command.idempotency_key,
+            "signed_envelope": signed,
+        }
         assert all(settings not in repr(call).encode() for call in redis.calls)
         assert all(expected_output not in repr(call).encode() for call in redis.calls)
 

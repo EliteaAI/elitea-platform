@@ -7,7 +7,7 @@ import hashlib
 import httpx
 import pytest
 
-from elitea_worker.execution.errors import InvalidInput
+from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput
 from elitea_worker.transport.input_content import (
     ClaimBoundInputReference,
     ClaimBoundInputRequestBuilder,
@@ -27,6 +27,7 @@ def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
             return httpx.Response(
                 200,
                 content=content,
+                extensions={"http_version": b"HTTP/2"},
                 headers={
                     "content-length": str(len(content)),
                     "content-digest": f"sha-256=:{content_digest}:",
@@ -40,6 +41,7 @@ def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
                 http,
                 allowed_origins=frozenset({"https://content.internal"}),
                 max_content_bytes=1024,
+                require_http2=True,
             )
             result = await client.fetch(
                 InputReadGrant(
@@ -54,6 +56,44 @@ def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
                 )
             )
             assert result == content
+
+    asyncio.run(run())
+
+
+def test_production_content_client_rejects_http11_negotiation() -> None:
+    async def run() -> None:
+        content = b"{}"
+        digest = base64.b64encode(hashlib.sha256(content).digest()).decode()
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=content,
+                extensions={"http_version": b"HTTP/1.1"},
+                headers={
+                    "content-length": str(len(content)),
+                    "content-digest": f"sha-256=:{digest}:",
+                    "cache-control": "private, no-store",
+                    "content-type": "application/json",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ScopedInputContentClient(
+                http,
+                allowed_origins=frozenset({"https://content.internal"}),
+                max_content_bytes=1024,
+                require_http2=True,
+            )
+            with pytest.raises(DependencyUnavailable, match="HTTP/2"):
+                await client.fetch(
+                    InputReadGrant(
+                        url="https://content.internal/object",
+                        expected_length=len(content),
+                        expected_sha256=hashlib.sha256(content).digest(),
+                        expected_media_type="application/json",
+                    )
+                )
 
     asyncio.run(run())
 

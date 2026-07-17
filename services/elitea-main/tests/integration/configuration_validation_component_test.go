@@ -50,7 +50,7 @@ func TestConfigurationValidationVerticalComponentAgainstCheckedCorpus(t *testing
 			now := time.UnixMilli(1_700_000_000_000).UTC()
 			publishedCommand := admitAndDispatchCorpus(t, command, manifest, settings, envelope.GetSignedCommand(), now)
 			state := newMemoryRuntime(t, command, envelope.GetFence(), manifest, expectedOutput, now)
-			claims, err := executionapp.NewClaimService(state, func() time.Time { return now }, time.Minute)
+			claims, err := executionapp.NewClaimService(state, func() time.Time { return now }, 30*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,7 +161,7 @@ func TestNeverStartedCancellationVerticalComponentReturnsFenceFreeObsoleteACK(t 
 		desired:              runtimedomain.DesiredCancelled,
 		finalizationClockNow: now,
 	}
-	claims, err := executionapp.NewClaimService(state, func() time.Time { return now }, time.Minute)
+	claims, err := executionapp.NewClaimService(state, func() time.Time { return now }, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ type neverStartedCancellationRuntime struct {
 	finalizationCount    int
 }
 
-func (r *neverStartedCancellationRuntime) ClaimValidation(_ context.Context, request executionapp.ClaimRequest, _ time.Time) (executionapp.ClaimDecision, error) {
+func (r *neverStartedCancellationRuntime) ClaimValidation(_ context.Context, request executionapp.ClaimRequest, _ executionapp.ClaimLeaseTTLMillis) (executionapp.ClaimDecision, error) {
 	if request.CommandID != r.commandID || request.OutboxID != r.outboxID || request.ExecutionID != r.executionID || request.Generation != r.generation || request.SignedEnvelopeDigest != r.publishedDigest || request.WorkloadIdentity != r.workloadIdentity || request.WorkloadSessionID != r.workloadSessionID || request.ProducerID != r.producerID {
 		return executionapp.ClaimDecision{}, executionapp.ErrInvalidClaim
 	}
@@ -251,12 +251,12 @@ func (r *neverStartedCancellationRuntime) ClaimValidation(_ context.Context, req
 	return executionapp.ClaimDecision{Disposition: executionapp.ClaimObsoleteACK, DesiredState: runtimedomain.DesiredCancelled}, nil
 }
 
-func (r *neverStartedCancellationRuntime) CurrentLease(context.Context, string, uint64) (runtimedomain.ActiveLease, error) {
-	return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+func (r *neverStartedCancellationRuntime) CurrentLease(context.Context, string, uint64) (runtimedomain.ActiveLease, time.Time, error) {
+	return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 }
 
-func (r *neverStartedCancellationRuntime) RenewLease(context.Context, runtimedomain.Fence, time.Time) (runtimedomain.ActiveLease, error) {
-	return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+func (r *neverStartedCancellationRuntime) RenewLease(context.Context, runtimedomain.Fence, executionapp.ClaimLeaseTTLMillis) (runtimedomain.ActiveLease, time.Time, error) {
+	return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 }
 
 func (r *neverStartedCancellationRuntime) ReleaseClaim(context.Context, runtimedomain.Fence) error {
@@ -329,7 +329,12 @@ func (s *verticalStore) AdmitValidation(_ context.Context, admission executionap
 		if s.admission.Record.RequestDigest != admission.Record.RequestDigest {
 			return executionapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
 		}
-		return executionapp.AdmissionOutcome{ExecutionID: s.admission.Record.Job.ID, CommandID: s.admission.Record.Job.CommandID}, nil
+		return executionapp.AdmissionOutcome{
+			ExecutionID: s.admission.Record.Job.ID,
+			CommandID:   s.admission.Record.Job.CommandID,
+			AdmittedAt:  s.template.Deadline.Add(-time.Minute),
+			Deadline:    s.template.Deadline,
+		}, nil
 	}
 	copy := admission
 	copy.Record.InputBundle = admission.Record.InputBundle.Clone()
@@ -350,7 +355,13 @@ func (s *verticalStore) AdmitValidation(_ context.Context, admission executionap
 	dispatch.InputBundleDigest = admission.Record.InputBundle.Digest
 	dispatch.Command = admission.Command
 	s.dispatch = dispatch
-	return executionapp.AdmissionOutcome{ExecutionID: admission.Record.Job.ID, CommandID: admission.Record.Job.CommandID, Created: true}, nil
+	return executionapp.AdmissionOutcome{
+		ExecutionID: admission.Record.Job.ID,
+		CommandID:   admission.Record.Job.CommandID,
+		Created:     true,
+		AdmittedAt:  s.template.Deadline.Add(-time.Minute),
+		Deadline:    s.template.Deadline,
+	}, nil
 }
 
 func (s *verticalStore) LoadPendingValidation(_ context.Context, outboxID string) (executionapp.ValidationDispatch, error) {
@@ -406,16 +417,18 @@ func (corpusSigner) SignWorkerCommand(_ context.Context, exact []byte) (redisdis
 }
 
 type captureAppender struct {
-	stream string
-	field  string
-	value  []byte
-	count  int
+	stream     string
+	field      string
+	deliveryID string
+	value      []byte
+	count      int
 }
 
-func (a *captureAppender) Append(_ context.Context, stream, field string, value []byte) (string, error) {
+func (a *captureAppender) Append(_ context.Context, stream, field, deliveryID string, value []byte) (string, error) {
 	a.count++
 	a.stream = stream
 	a.field = field
+	a.deliveryID = deliveryID
 	a.value = append([]byte(nil), value...)
 	return "1-0", nil
 }
@@ -552,7 +565,7 @@ func admitAndDispatchCorpus(t *testing.T, command *runtimev1.WorkerCommandV1, ma
 	if err := dispatcher.Dispatch(context.Background(), command.GetIdempotencyKey()); err != nil {
 		t.Fatal(err)
 	}
-	if appender.count != 1 || appender.field != "signed_envelope" || store.publishedDigest != runtimedomain.SHA256(appender.value) {
+	if appender.count != 1 || appender.field != "signed_envelope" || appender.deliveryID != command.GetIdempotencyKey() || store.publishedDigest != runtimedomain.SHA256(appender.value) {
 		t.Fatalf("durable outbox did not publish one bounded Redis reference: count=%d field=%q", appender.count, appender.field)
 	}
 	if !bytes.Equal(appender.value, mustMarshal(t, expectedSigned)) {
@@ -610,6 +623,7 @@ type projectedTerminal struct {
 
 type memoryRuntime struct {
 	lease                 runtimedomain.ActiveLease
+	now                   time.Time
 	desired               runtimedomain.DesiredState
 	outboxID              string
 	expected              outputapp.ExpectedValidation
@@ -668,6 +682,7 @@ func newMemoryRuntime(t *testing.T, command *runtimev1.WorkerCommandV1, wireFenc
 		t.Fatal("corpus output identity does not bind the signed command")
 	}
 	return &memoryRuntime{
+		now: now,
 		lease: runtimedomain.ActiveLease{
 			ClaimID:      "claim-corpus-1",
 			Fence:        fence,
@@ -682,12 +697,12 @@ func newMemoryRuntime(t *testing.T, command *runtimev1.WorkerCommandV1, wireFenc
 	}
 }
 
-func (m *memoryRuntime) ClaimValidation(_ context.Context, request executionapp.ClaimRequest, leaseUntil time.Time) (executionapp.ClaimDecision, error) {
+func (m *memoryRuntime) ClaimValidation(_ context.Context, request executionapp.ClaimRequest, leaseTTL executionapp.ClaimLeaseTTLMillis) (executionapp.ClaimDecision, error) {
 	if request.OutboxID != m.outboxID || request.SignedEnvelopeDigest.IsZero() || request.CommandID != m.lease.Fence.CommandID || request.ExecutionID != m.lease.Fence.ExecutionID || request.Generation != m.lease.Fence.Generation || request.WorkloadIdentity != m.lease.Fence.WorkloadIdentity || request.WorkloadSessionID != m.lease.Fence.WorkloadSessionID || request.ProducerID != m.lease.Fence.ProducerID {
 		return executionapp.ClaimDecision{}, executionapp.ErrInvalidClaim
 	}
-	m.lease.ExpiresAt = leaseUntil
-	return executionapp.ClaimDecision{Lease: m.lease, Disposition: executionapp.ClaimAccepted}, nil
+	m.lease.ExpiresAt = m.now.Add(leaseTTL.Duration())
+	return executionapp.ClaimDecision{Lease: m.lease, LeaseObservedAt: m.now, Disposition: executionapp.ClaimAccepted}, nil
 }
 
 func (m *memoryRuntime) AbortClaim(_ context.Context, fence runtimedomain.Fence, _ executionapp.ClaimAbortDisposition) error {
@@ -697,19 +712,25 @@ func (m *memoryRuntime) AbortClaim(_ context.Context, fence runtimedomain.Fence,
 	return nil
 }
 
-func (m *memoryRuntime) CurrentLease(_ context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, error) {
+func (m *memoryRuntime) CurrentLease(_ context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, time.Time, error) {
 	if executionID != m.lease.Fence.ExecutionID || generation != m.lease.Fence.Generation {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
-	return m.lease, nil
+	if !m.now.Before(m.lease.ExpiresAt) {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrLeaseExpired
+	}
+	return m.lease, m.now, nil
 }
 
-func (m *memoryRuntime) RenewLease(_ context.Context, fence runtimedomain.Fence, leaseUntil time.Time) (runtimedomain.ActiveLease, error) {
+func (m *memoryRuntime) RenewLease(_ context.Context, fence runtimedomain.Fence, leaseTTL executionapp.ClaimLeaseTTLMillis) (runtimedomain.ActiveLease, time.Time, error) {
 	if fence != m.lease.Fence {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
-	m.lease.ExpiresAt = leaseUntil
-	return m.lease, nil
+	if !m.now.Before(m.lease.ExpiresAt) {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrLeaseExpired
+	}
+	m.lease.ExpiresAt = m.now.Add(leaseTTL.Duration())
+	return m.lease, m.now, nil
 }
 
 func (m *memoryRuntime) ReleaseClaim(_ context.Context, fence runtimedomain.Fence) error {
@@ -836,6 +857,18 @@ func (stoppingReplayWaiter) Wait(context.Context, string, string, uint64) (bool,
 	return false, context.Canceled
 }
 
+type deadlineAwareRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func newDeadlineAwareRecorder() *deadlineAwareRecorder {
+	return &deadlineAwareRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (*deadlineAwareRecorder) SetWriteDeadline(time.Time) error { return nil }
+
+func (r *deadlineAwareRecorder) Flush() { r.ResponseRecorder.Flush() }
+
 func assertDurableSSEReplay(t *testing.T, state *memoryRuntime, projectID, executionID string, settings []byte) {
 	t.Helper()
 	handler, err := executionapi.NewEventHandler(
@@ -852,7 +885,7 @@ func assertDurableSSEReplay(t *testing.T, state *memoryRuntime, projectID, execu
 	routeContext.URLParams.Add("executionID", executionID)
 	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
 	request.Header.Set("Last-Event-ID", "0")
-	response := httptest.NewRecorder()
+	response := newDeadlineAwareRecorder()
 	handler.Stream(response, request)
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("id: 1\n")) || !bytes.Contains(response.Body.Bytes(), []byte("data: {")) {
 		t.Fatalf("durable projection was not replayed through SSE: status=%d body=%s", response.Code, response.Body.String())
@@ -866,7 +899,7 @@ func assertDurableSSEReplay(t *testing.T, state *memoryRuntime, projectID, execu
 	resume := httptest.NewRequest(http.MethodGet, "/", nil)
 	resume = resume.WithContext(context.WithValue(resume.Context(), chi.RouteCtxKey, routeContext))
 	resume.Header.Set("Last-Event-ID", "1")
-	resumed := httptest.NewRecorder()
+	resumed := newDeadlineAwareRecorder()
 	handler.Stream(resumed, resume)
 	if resumed.Code != http.StatusOK || bytes.Contains(resumed.Body.Bytes(), []byte("id: 1\n")) {
 		t.Fatalf("Last-Event-ID replay duplicated a durable event: status=%d body=%s", resumed.Code, resumed.Body.String())

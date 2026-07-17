@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -11,7 +12,8 @@ from pathlib import Path
 
 from elitea_worker.app import OfflineValidationWorker
 from elitea_worker.capabilities import capability_json, conformance_identity_fields
-from elitea_worker.execution.errors import DependencyUnavailable, WorkerError
+from elitea_worker.execution.errors import WorkerError
+from elitea_worker.serve import serve_from_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,13 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "serve":
-            # Transport clients are implemented and tested independently, but
-            # target workload identity/registration is not part of these two
-            # slices. Failing closed prevents accidental production use of the
-            # public conformance signature profile.
-            raise DependencyUnavailable(
-                "Production serve activation requires the target workload identity composition."
-            )
+            asyncio.run(serve_from_config(args.config))
+            return 0
         worker = OfflineValidationWorker()
         if args.command == "capabilities":
             print(capability_json())

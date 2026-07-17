@@ -6,17 +6,21 @@ import "elitea/runtime/v1/common.proto";
 
 option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
 
-// SignatureProfileV1 reserves protocol space for production authentication.
-// The only initial profile is a public test-vector HMAC used exclusively by
-// offline conformance. A production server must reject that profile.
+// SignatureProfileV1 identifies the complete signature-input and algorithm
+// contract. TEST_ONLY_HMAC_SHA256 is a public offline vector and must be
+// rejected by production composition. ED25519 signs the domain-separated,
+// length-bound worker_command_bytes defined by runtime protocol v1.
 enum SignatureProfileV1 {
   SIGNATURE_PROFILE_V1_UNSPECIFIED = 0;
   SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256 = 1;
+  SIGNATURE_PROFILE_V1_ED25519 = 2;
 }
 
-// SignedWorkerCommandEnvelopeV1 signs worker_command_bytes exactly as emitted.
-// Receivers verify the digest and signature before parsing those opaque bytes;
-// they never reserialize protobuf data to create verification bytes.
+// SignedWorkerCommandEnvelopeV1 preserves worker_command_bytes exactly as
+// emitted. Signature input is profile-defined: TEST_ONLY_HMAC_SHA256 signs the
+// exact bytes, while ED25519 signs the runtime-v1 domain and uint64 big-endian
+// byte length followed by those exact bytes. Receivers verify the digest and
+// signature before parsing and never reserialize to create verification bytes.
 // Protocol-v1 decoders also reject unknown tags and duplicate singular fields
 // in this envelope and in the signed command's raw wire representation.
 message SignedWorkerCommandEnvelopeV1 {

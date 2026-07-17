@@ -16,6 +16,12 @@ def test_capability_document_is_deterministic_and_pinned() -> None:
     assert document["sdkFrameworkCompatibility"]["eliteaSdkRevision"] == SDK_SOURCE_REVISION
     assert document["capabilities"][0]["capabilityId"] == "configuration.validate.v1"
     assert "credential-free" in document["capabilities"][0]["featureFlags"]
+    toolkit = document["capabilities"][1]
+    assert toolkit["capabilityId"] == "toolkit.available_tools.v1"
+    assert toolkit["interactionModel"] == "contract_handler_parity"
+    assert "artifact-reference-output" in toolkit["featureFlags"]
+    assert "production-delivery-not-wired" in toolkit["featureFlags"]
+    assert document["runtimeConstraints"]["artifactSupport"] is True
     assert document["protocolCompatibility"]["signatureProfiles"] == [
         "SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256"
     ]

@@ -16,6 +16,7 @@ var (
 	ErrInvalidPreparedEnvelope = errors.New("invalid prepared worker-command envelope")
 	ErrDispatchRetired         = errors.New("validation dispatch was durably retired")
 	ErrDispatchDeadlineExpired = errors.New("validation dispatch deadline expired")
+	ErrDispatchBackpressured   = errors.New("validation dispatch is temporarily backpressured")
 )
 
 // ValidationDispatch is deliberately reference-only. The admitted manifest
@@ -97,9 +98,9 @@ func (e PreparedCommandEnvelope) Clone() PreparedCommandEnvelope {
 	return e
 }
 
-// StoredPreparedEnvelope adds publication state to a validated durable
-// envelope. Published is advisory for avoiding an unnecessary duplicate
-// append after another publisher has already completed reconciliation.
+// StoredPreparedEnvelope adds the latest PostgreSQL publication observation to
+// a validated durable envelope. Published is not a permanent worker receipt;
+// a visibility-expired row is intentionally offered to Redis again.
 type StoredPreparedEnvelope struct {
 	Envelope  PreparedCommandEnvelope
 	Published bool
@@ -111,7 +112,7 @@ func (e StoredPreparedEnvelope) Validate() error {
 
 type ReferenceCommandProducer interface {
 	PrepareValidation(ctx context.Context, dispatch ValidationDispatch) (PreparedCommandEnvelope, error)
-	AppendPrepared(ctx context.Context, envelope PreparedCommandEnvelope) error
+	AppendPrepared(ctx context.Context, deliveryID string, envelope PreparedCommandEnvelope) error
 }
 
 type ValidationDispatcher struct {
@@ -168,10 +169,11 @@ func (d *ValidationDispatcher) Dispatch(ctx context.Context, outboxID string) er
 	if err := stored.Validate(); err != nil {
 		return err
 	}
-	if stored.Published {
-		return nil
-	}
-	if err := d.producer.AppendPrepared(ctx, stored.Envelope.Clone()); err != nil {
+	// Published is only the latest PostgreSQL visibility observation, not a
+	// permanent delivery acknowledgement. The publisher may deliberately call
+	// Dispatch again after the bounded visibility interval. Redis suppresses a
+	// duplicate for the same stable outbox identity and exact envelope bytes.
+	if err := d.producer.AppendPrepared(ctx, outboxID, stored.Envelope.Clone()); err != nil {
 		return fmt.Errorf("append prepared validation reference: %w", err)
 	}
 	if err := d.store.MarkValidationPublished(ctx, outboxID, stored.Envelope.Digest); err != nil {

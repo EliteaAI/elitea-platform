@@ -3,6 +3,7 @@ package redisdispatch
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -21,16 +22,18 @@ type Signature struct {
 	Value   []byte
 }
 
-// CommandSigner signs the exact deterministic WorkerCommandV1 bytes. Protocol
-// v1 currently defines only a conformance-only signature profile, so
-// production composition must remain disabled until a production profile and
-// workload key source are added to the contract.
+const maxCommandSigningKeyIDBytes = 256
+
+// CommandSigner receives the exact deterministic WorkerCommandV1 bytes and
+// applies its profile-defined signature input. A production signer must return
+// ED25519; the public HMAC profile is accepted only when the enclosing
+// ProducerConfig explicitly opts into conformance.
 type CommandSigner interface {
 	SignWorkerCommand(ctx context.Context, exactCommandBytes []byte) (Signature, error)
 }
 
 type StreamAppender interface {
-	Append(ctx context.Context, stream, field string, value []byte) (entryID string, err error)
+	Append(ctx context.Context, stream, field, deliveryID string, value []byte) (entryID string, err error)
 }
 
 type ProducerConfig struct {
@@ -39,8 +42,7 @@ type ProducerConfig struct {
 	EnvelopeSchemaRevision string
 	Limits                 Limits
 	// AllowTestOnlyHMAC must be set only by offline conformance composition.
-	// Production leaves it false and fails closed until a production signature
-	// profile is defined by the protocol.
+	// Production leaves it false and accepts only ED25519.
 	AllowTestOnlyHMAC bool
 }
 
@@ -59,9 +61,6 @@ func NewProducer(config ProducerConfig, signer CommandSigner, appender StreamApp
 	}
 	if config.ProtocolRevision == "" || config.EnvelopeSchemaRevision == "" {
 		return nil, errors.New("protocol and envelope revisions are required")
-	}
-	if !config.AllowTestOnlyHMAC {
-		return nil, errors.New("production worker-command signature profile is not available")
 	}
 	if err := config.Limits.validate(); err != nil {
 		return nil, err
@@ -94,7 +93,7 @@ func (p *Producer) PrepareValidation(ctx context.Context, dispatch executionapp.
 	if err != nil {
 		return executionapp.PreparedCommandEnvelope{}, fmt.Errorf("sign worker command: %w", err)
 	}
-	if !p.config.AllowTestOnlyHMAC || signature.Profile != runtimev1.SignatureProfileV1_SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256 || signature.KeyID == "" || len(signature.KeyID) > p.config.Limits.MaxStringBytes || strings.ContainsRune(signature.KeyID, '\x00') || len(signature.Value) == 0 || len(signature.Value) > p.config.Limits.MaxSignatureBytes {
+	if !p.acceptsSignature(signature.Profile, len(signature.Value)) || signature.KeyID == "" || len(signature.KeyID) > p.config.Limits.MaxStringBytes || len(signature.KeyID) > maxCommandSigningKeyIDBytes || strings.ContainsRune(signature.KeyID, '\x00') || len(signature.Value) == 0 || len(signature.Value) > p.config.Limits.MaxSignatureBytes {
 		return executionapp.PreparedCommandEnvelope{}, errors.New("invalid worker command signature")
 	}
 	envelope := &runtimev1.SignedWorkerCommandEnvelopeV1{
@@ -127,14 +126,29 @@ func (p *Producer) PrepareValidation(ctx context.Context, dispatch executionapp.
 // AppendPrepared appends only a previously selected exact envelope. It never
 // signs or re-encodes the command, so an unknown Redis success and every
 // competing publisher retry use byte-identical control-plane data.
-func (p *Producer) AppendPrepared(ctx context.Context, prepared executionapp.PreparedCommandEnvelope) error {
+func (p *Producer) AppendPrepared(ctx context.Context, deliveryID string, prepared executionapp.PreparedCommandEnvelope) error {
 	if err := p.validatePrepared(prepared); err != nil {
 		return err
 	}
-	if _, err := p.appender.Append(ctx, p.config.Stream, redisEnvelopeField, append([]byte(nil), prepared.Bytes...)); err != nil {
+	if !validDeliveryID(deliveryID) {
+		return executionapp.ErrInvalidPreparedEnvelope
+	}
+	envelope := &runtimev1.SignedWorkerCommandEnvelopeV1{}
+	if err := proto.Unmarshal(prepared.Bytes, envelope); err != nil {
+		return executionapp.ErrInvalidPreparedEnvelope
+	}
+	command := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(envelope.GetWorkerCommandBytes(), command); err != nil || command.GetIdempotencyKey() != deliveryID {
+		return executionapp.ErrInvalidPreparedEnvelope
+	}
+	if _, err := p.appender.Append(ctx, p.config.Stream, redisEnvelopeField, deliveryID, append([]byte(nil), prepared.Bytes...)); err != nil {
 		return fmt.Errorf("append worker command reference: %w", err)
 	}
 	return nil
+}
+
+func validDeliveryID(deliveryID string) bool {
+	return deliveryID != "" && len(deliveryID) <= 256 && !strings.ContainsAny(deliveryID, "\r\n\x00")
 }
 
 func (p *Producer) validatePrepared(prepared executionapp.PreparedCommandEnvelope) error {
@@ -153,10 +167,10 @@ func (p *Producer) validatePrepared(prepared executionapp.PreparedCommandEnvelop
 	if err != nil || !bytes.Equal(canonical, prepared.Bytes) {
 		return executionapp.ErrInvalidPreparedEnvelope
 	}
-	if envelope.GetEnvelopeSchemaRevision() != p.config.EnvelopeSchemaRevision || envelope.GetSignatureProfile() != runtimev1.SignatureProfileV1(prepared.SignatureProfile) || envelope.GetSignatureProfile() != runtimev1.SignatureProfileV1_SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256 || envelope.GetKeyId() != prepared.KeyID || strings.ContainsRune(envelope.GetKeyId(), '\x00') {
+	if envelope.GetEnvelopeSchemaRevision() != p.config.EnvelopeSchemaRevision || envelope.GetSignatureProfile() != runtimev1.SignatureProfileV1(prepared.SignatureProfile) || !p.acceptsSignature(envelope.GetSignatureProfile(), len(envelope.GetSignature())) || envelope.GetKeyId() != prepared.KeyID || strings.ContainsRune(envelope.GetKeyId(), '\x00') {
 		return executionapp.ErrInvalidPreparedEnvelope
 	}
-	if len(envelope.GetKeyId()) > p.config.Limits.MaxStringBytes || len(envelope.GetSignature()) == 0 || len(envelope.GetSignature()) > p.config.Limits.MaxSignatureBytes || len(envelope.GetWorkerCommandBytes()) == 0 || len(envelope.GetWorkerCommandBytes()) > p.config.Limits.MaxWorkerCommandBytes {
+	if len(envelope.GetKeyId()) > p.config.Limits.MaxStringBytes || len(envelope.GetKeyId()) > maxCommandSigningKeyIDBytes || len(envelope.GetSignature()) == 0 || len(envelope.GetSignature()) > p.config.Limits.MaxSignatureBytes || len(envelope.GetWorkerCommandBytes()) == 0 || len(envelope.GetWorkerCommandBytes()) > p.config.Limits.MaxWorkerCommandBytes {
 		return executionapp.ErrInvalidPreparedEnvelope
 	}
 	commandDigest := envelope.GetWorkerCommandDigest()
@@ -167,6 +181,17 @@ func (p *Producer) validatePrepared(prepared executionapp.PreparedCommandEnvelop
 	return nil
 }
 
+func (p *Producer) acceptsSignature(profile runtimev1.SignatureProfileV1, size int) bool {
+	switch profile {
+	case runtimev1.SignatureProfileV1_SIGNATURE_PROFILE_V1_ED25519:
+		return size == ed25519.SignatureSize
+	case runtimev1.SignatureProfileV1_SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256:
+		return p.config.AllowTestOnlyHMAC && size == sha256.Size
+	default:
+		return false
+	}
+}
+
 func encodedRedisEntryBytes(field string, value []byte) int {
 	// RESP array/bulk headers and the server-assigned stream ID are bounded by
 	// this fixed conservative overhead for the one-field entry.
@@ -174,25 +199,52 @@ func encodedRedisEntryBytes(field string, value []byte) int {
 	return len(field) + len(value) + protocolOverhead
 }
 
-type RedisXAdder interface {
-	XAdd(ctx context.Context, args *redis.XAddArgs) *redis.StringCmd
-}
-
 type RedisStreamAppender struct {
-	client RedisXAdder
+	client redis.Scripter
+	config RedisStreamAppenderConfig
 }
 
-func NewRedisStreamAppender(client RedisXAdder) (*RedisStreamAppender, error) {
+func NewRedisStreamAppender(client redis.Scripter, config RedisStreamAppenderConfig) (*RedisStreamAppender, error) {
 	if client == nil {
 		return nil, errors.New("dedicated Redis control client is required")
 	}
-	return &RedisStreamAppender{client: client}, nil
+	// Runtime v1 atomically mutates the stream and its delivery-index hash in
+	// one script. Phase one therefore requires one logical Redis primary
+	// (standalone or Sentinel/failover). Cluster and Ring clients are rejected
+	// until the protocol assigns both keys a validated common hash slot and has
+	// real-cluster failover coverage.
+	switch client.(type) {
+	case *redis.ClusterClient, *redis.Ring:
+		return nil, errors.New("Redis control stream requires a single logical primary")
+	}
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+	return &RedisStreamAppender{client: client, config: config}, nil
 }
 
-func (a *RedisStreamAppender) Append(ctx context.Context, stream, field string, value []byte) (string, error) {
-	return a.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: stream,
-		ID:     "*",
-		Values: []any{field, append([]byte(nil), value...)},
-	}).Result()
+func (a *RedisStreamAppender) Append(ctx context.Context, stream, field, deliveryID string, value []byte) (string, error) {
+	if !validDeliveryID(deliveryID) {
+		return "", executionapp.ErrInvalidPreparedEnvelope
+	}
+	if encodedRedisEntryBytes(field, value) > a.config.MaxEntryBytes {
+		return "", ErrControlMessageLimitExceeded
+	}
+	result, err := appendWithinCapacityScript.Run(
+		ctx,
+		a.client,
+		[]string{stream, deliveryIndexKey(stream)},
+		a.config.MaxEntries,
+		field,
+		append([]byte(nil), value...),
+		deliveryID,
+	).Result()
+	if err != nil {
+		return "", err
+	}
+	return parseCapacityAppendResult(result, a.config.MaxEntries)
+}
+
+func deliveryIndexKey(stream string) string {
+	return stream + ":delivery-index.v1"
 }

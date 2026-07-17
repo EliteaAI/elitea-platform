@@ -25,11 +25,15 @@ def test_only_sdk_adapter_imports_elitea_sdk() -> None:
     assert importers == [Path("agents/sdk_adapter.py")]
 
 
-def test_only_command_transport_may_mention_redis_imports() -> None:
+def test_only_command_transport_modules_may_import_redis_client() -> None:
     source_root = Path(__file__).parents[2] / "src" / "elitea_worker"
+    allowed = {
+        Path("transport/redis_asyncio.py"),
+        Path("transport/redis_commands.py"),
+    }
     offenders: list[Path] = []
     for path in source_root.rglob("*.py"):
-        if path.name == "redis_commands.py":
+        if path.relative_to(source_root) in allowed:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

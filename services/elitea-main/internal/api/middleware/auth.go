@@ -42,7 +42,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if user, ok := tryTraefikHeaders(r); ok {
-				ctx := auth.ContextWithUser(r.Context(), user)
+				ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceForwarded)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -51,7 +51,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
 				cacheKey := authCacheKey("apikey:" + apiKey)
 				if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-					ctx := auth.ContextWithUser(r.Context(), *cached)
+					ctx := auth.ContextWithAuthenticatedUser(r.Context(), *cached, auth.AuthenticationSourceAPIKey)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -61,7 +61,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 					return
 				}
 				_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
-				ctx := auth.ContextWithUser(r.Context(), user)
+				ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceAPIKey)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -71,13 +71,13 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				// Try session cookie (set by OIDC/form login)
 				if cookie, err := r.Cookie("elitea_session"); err == nil && cfg.SessionSecret != "" {
 					if user, ok := verifySessionCookie(cookie.Value, cfg.SessionSecret); ok {
-						ctx := auth.ContextWithUser(r.Context(), user)
+						ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceSession)
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
 				}
 				if devMode {
-					ctx := auth.ContextWithUser(r.Context(), devUser())
+					ctx := auth.ContextWithAuthenticatedUser(r.Context(), devUser(), auth.AuthenticationSourceDevelopment)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -86,14 +86,14 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			}
 
 			if devMode {
-				ctx := auth.ContextWithUser(r.Context(), devUser())
+				ctx := auth.ContextWithAuthenticatedUser(r.Context(), devUser(), auth.AuthenticationSourceDevelopment)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
 			cacheKey := authCacheKey(authHeader)
 			if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-				ctx := auth.ContextWithUser(r.Context(), *cached)
+				ctx := auth.ContextWithAuthenticatedUser(r.Context(), *cached, auth.AuthenticationSourceToken)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -122,7 +122,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 			_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
 
-			ctx := auth.ContextWithUser(r.Context(), user)
+			ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceToken)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

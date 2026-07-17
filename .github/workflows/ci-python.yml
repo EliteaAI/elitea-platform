@@ -7,7 +7,7 @@ on:
       - "services/elitea-worker-python/**"
       - "libs/proto/gen/python/**"
       - "libs/proto/pyproject.toml"
-      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
   push:
     branches:
@@ -17,7 +17,7 @@ on:
       - "services/elitea-worker-python/**"
       - "libs/proto/gen/python/**"
       - "libs/proto/pyproject.toml"
-      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
 
 concurrency:

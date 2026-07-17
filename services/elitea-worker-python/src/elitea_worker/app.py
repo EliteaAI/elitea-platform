@@ -18,7 +18,9 @@ from elitea_worker.constants import (
 )
 from elitea_worker.execution.errors import IncompatibleVersion, UnsupportedCapability, WorkerError
 from elitea_worker.execution.delivery import ConfigurationValidationDeliveryProcessor
+from elitea_worker.execution.registry import CapabilityRegistration, CapabilityRegistry
 from elitea_worker.fixtures.bundle import FixtureBundle
+from elitea_worker.handlers.toolkit_available_tools import ToolkitAvailableToolsHandler
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
@@ -28,6 +30,25 @@ from elitea_worker.protocol.codec import (
     validation_request_from,
     write_output_frame,
 )
+
+
+def build_static_handler_registry(
+    *,
+    validation: ConfigurationValidationHandler,
+    toolkit_available_tools: ToolkitAvailableToolsHandler,
+) -> CapabilityRegistry:
+    """Return the compile-time handler set; runtime kwargs cannot add code."""
+
+    return CapabilityRegistry(
+        (
+            CapabilityRegistration("configuration.validate.v1", 1, validation.execute),
+            CapabilityRegistration(
+                "toolkit.available_tools.v1",
+                1,
+                toolkit_available_tools.execute,
+            ),
+        )
+    )
 
 
 class OfflineValidationWorker:
@@ -98,4 +119,8 @@ class OfflineValidationWorker:
         return frame
 
 
-__all__ = ["ConfigurationValidationDeliveryProcessor", "OfflineValidationWorker"]
+__all__ = [
+    "ConfigurationValidationDeliveryProcessor",
+    "OfflineValidationWorker",
+    "build_static_handler_registry",
+]

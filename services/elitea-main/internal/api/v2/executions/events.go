@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -16,6 +17,7 @@ import (
 const (
 	defaultReplayBatchSize = 100
 	maxSSEEventBytes       = 64 * 1024
+	defaultSSEWriteTimeout = 10 * time.Second
 )
 
 var (
@@ -46,21 +48,33 @@ type EventAuthorizer interface {
 }
 
 type EventHandler struct {
-	authorizer EventAuthorizer
-	repository EventRepository
-	waiter     ReplayWaiter
-	batchSize  int
+	authorizer   EventAuthorizer
+	repository   EventRepository
+	waiter       ReplayWaiter
+	batchSize    int
+	writeTimeout time.Duration
+	admission    *sseAdmissionGate
 }
 
 func NewEventHandler(authorizer EventAuthorizer, repository EventRepository, waiter ReplayWaiter) (*EventHandler, error) {
 	if authorizer == nil || repository == nil || waiter == nil {
 		return nil, errors.New("event authorizer, repository and waiter are required")
 	}
+	admission := newSSEAdmissionGate(
+		defaultMaxActiveSSEStreams,
+		defaultMaxActiveSSEStreamsPerPrincipal,
+		defaultMaxActiveSSEStreamsPerProject,
+	)
+	if admission == nil {
+		return nil, errors.New("event stream admission profile is invalid")
+	}
 	return &EventHandler{
-		authorizer: authorizer,
-		repository: repository,
-		waiter:     waiter,
-		batchSize:  defaultReplayBatchSize,
+		authorizer:   authorizer,
+		repository:   repository,
+		waiter:       waiter,
+		batchSize:    defaultReplayBatchSize,
+		writeTimeout: defaultSSEWriteTimeout,
+		admission:    admission,
 	}, nil
 }
 
@@ -79,6 +93,13 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authorization failed", http.StatusInternalServerError)
 		return
 	}
+	release, admitted := h.admission.acquire(ssePrincipalID(r.Context()), projectID)
+	if !admitted {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "too many active event streams", http.StatusTooManyRequests)
+		return
+	}
+	defer release()
 
 	cursor, err := requestedCursor(r)
 	if err != nil {
@@ -95,36 +116,42 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	stream, err := newBoundedSSEWriter(w, h.writeTimeout)
+	if err != nil {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	if len(initial) == 0 {
-		if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
-			return
+	if err := stream.writeAndFlush(func() error {
+		w.WriteHeader(http.StatusOK)
+		if len(initial) == 0 {
+			_, err := fmt.Fprint(w, ": connected\n\n")
+			return err
 		}
-		flusher.Flush()
+		return nil
+	}); err != nil {
+		return
 	}
 
 	events := initial
 	for {
-		for _, event := range events {
-			if event.Cursor <= cursor || validateDurableEvent(event) != nil {
-				return
-			}
-			if err := writeDurableEvent(w, event); err != nil {
-				return
-			}
-			cursor = event.Cursor
-		}
 		if len(events) > 0 {
-			flusher.Flush()
+			if err := stream.writeAndFlush(func() error {
+				for _, event := range events {
+					if event.Cursor <= cursor || validateDurableEvent(event) != nil {
+						return ErrInvalidEventStream
+					}
+					if err := writeDurableEvent(w, event); err != nil {
+						return err
+					}
+					cursor = event.Cursor
+				}
+				return nil
+			}); err != nil {
+				return
+			}
 		}
 
 		if len(events) == h.batchSize {
@@ -139,17 +166,80 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
+		// Project suspension or role revocation must close an already-open stream.
+		// The production waiter bounds this reauthorization window to two seconds.
+		if err := h.authorizer.AuthorizeExecutionEvents(r.Context(), projectID, executionID); err != nil {
+			return
+		}
 		if heartbeat {
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+			if err := stream.writeAndFlush(func() error {
+				_, writeErr := fmt.Fprint(w, ": heartbeat\n\n")
+				return writeErr
+			}); err != nil {
 				return
 			}
-			flusher.Flush()
 		}
 		events, err = h.repository.Replay(r.Context(), projectID, executionID, cursor, h.batchSize)
 		if err != nil {
 			return
 		}
 	}
+}
+
+type boundedSSEWriter struct {
+	controller *http.ResponseController
+	timeout    time.Duration
+}
+
+func newBoundedSSEWriter(response http.ResponseWriter, timeout time.Duration) (*boundedSSEWriter, error) {
+	if response == nil || timeout <= 0 {
+		return nil, errors.New("bounded SSE writer configuration is invalid")
+	}
+	if !supportsResponseFlush(response) {
+		return nil, errors.New("SSE response does not support flushing")
+	}
+	controller := http.NewResponseController(response)
+	// Clear the public server's request-wide WriteTimeout before streaming.
+	// Every actual write below installs its own short deadline and clears it
+	// after the flush, so an idle but healthy SSE connection remains long-lived.
+	if err := controller.SetWriteDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("clear inherited SSE write deadline: %w", err)
+	}
+	return &boundedSSEWriter{controller: controller, timeout: timeout}, nil
+}
+
+func supportsResponseFlush(response http.ResponseWriter) bool {
+	for depth := 0; depth < 16 && response != nil; depth++ {
+		if _, ok := response.(interface{ FlushError() error }); ok {
+			return true
+		}
+		if _, ok := response.(http.Flusher); ok {
+			return true
+		}
+		unwrapper, ok := response.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return false
+		}
+		next := unwrapper.Unwrap()
+		if next == response {
+			return false
+		}
+		response = next
+	}
+	return false
+}
+
+func (w *boundedSSEWriter) writeAndFlush(write func() error) error {
+	if write == nil {
+		return errors.New("SSE write is required")
+	}
+	if err := w.controller.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
+		return err
+	}
+	writeErr := write()
+	flushErr := w.controller.Flush()
+	clearErr := w.controller.SetWriteDeadline(time.Time{})
+	return errors.Join(writeErr, flushErr, clearErr)
 }
 
 func requestedCursor(r *http.Request) (uint64, error) {

@@ -24,12 +24,13 @@ const (
 type WorkerCommandTypeV1 int32
 
 const (
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_UNSPECIFIED            WorkerCommandTypeV1 = 0
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_START                  WorkerCommandTypeV1 = 1
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RESUME                 WorkerCommandTypeV1 = 2
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RETRY                  WorkerCommandTypeV1 = 3
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RECONCILE              WorkerCommandTypeV1 = 4
-	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE WorkerCommandTypeV1 = 5
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_UNSPECIFIED             WorkerCommandTypeV1 = 0
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_START                   WorkerCommandTypeV1 = 1
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RESUME                  WorkerCommandTypeV1 = 2
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RETRY                   WorkerCommandTypeV1 = 3
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RECONCILE               WorkerCommandTypeV1 = 4
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE  WorkerCommandTypeV1 = 5
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS WorkerCommandTypeV1 = 6
 )
 
 // Enum value maps for WorkerCommandTypeV1.
@@ -41,14 +42,16 @@ var (
 		3: "WORKER_COMMAND_TYPE_V1_RETRY",
 		4: "WORKER_COMMAND_TYPE_V1_RECONCILE",
 		5: "WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE",
+		6: "WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS",
 	}
 	WorkerCommandTypeV1_value = map[string]int32{
-		"WORKER_COMMAND_TYPE_V1_UNSPECIFIED":            0,
-		"WORKER_COMMAND_TYPE_V1_START":                  1,
-		"WORKER_COMMAND_TYPE_V1_RESUME":                 2,
-		"WORKER_COMMAND_TYPE_V1_RETRY":                  3,
-		"WORKER_COMMAND_TYPE_V1_RECONCILE":              4,
-		"WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE": 5,
+		"WORKER_COMMAND_TYPE_V1_UNSPECIFIED":             0,
+		"WORKER_COMMAND_TYPE_V1_START":                   1,
+		"WORKER_COMMAND_TYPE_V1_RESUME":                  2,
+		"WORKER_COMMAND_TYPE_V1_RETRY":                   3,
+		"WORKER_COMMAND_TYPE_V1_RECONCILE":               4,
+		"WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE":  5,
+		"WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS": 6,
 	}
 )
 
@@ -115,6 +118,7 @@ type WorkerCommandV1 struct {
 	// Types that are valid to be assigned to CapabilityCommand:
 	//
 	//	*WorkerCommandV1_ConfigurationValidation
+	//	*WorkerCommandV1_ToolkitAvailableTools
 	CapabilityCommand isWorkerCommandV1_CapabilityCommand `protobuf_oneof:"capability_command"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -341,6 +345,15 @@ func (x *WorkerCommandV1) GetConfigurationValidation() *ConfigurationValidationC
 	return nil
 }
 
+func (x *WorkerCommandV1) GetToolkitAvailableTools() *ToolkitAvailableToolsCommandV1 {
+	if x != nil {
+		if x, ok := x.CapabilityCommand.(*WorkerCommandV1_ToolkitAvailableTools); ok {
+			return x.ToolkitAvailableTools
+		}
+	}
+	return nil
+}
+
 type isWorkerCommandV1_CapabilityCommand interface {
 	isWorkerCommandV1_CapabilityCommand()
 }
@@ -349,13 +362,20 @@ type WorkerCommandV1_ConfigurationValidation struct {
 	ConfigurationValidation *ConfigurationValidationCommandV1 `protobuf:"bytes,32,opt,name=configuration_validation,json=configurationValidation,proto3,oneof"`
 }
 
+type WorkerCommandV1_ToolkitAvailableTools struct {
+	ToolkitAvailableTools *ToolkitAvailableToolsCommandV1 `protobuf:"bytes,33,opt,name=toolkit_available_tools,json=toolkitAvailableTools,proto3,oneof"`
+}
+
 func (*WorkerCommandV1_ConfigurationValidation) isWorkerCommandV1_CapabilityCommand() {}
+
+func (*WorkerCommandV1_ToolkitAvailableTools) isWorkerCommandV1_CapabilityCommand() {}
 
 var File_elitea_runtime_v1_command_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\n" +
-	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a\x1delitea/runtime/v1/input.proto\x1a\"elitea/runtime/v1/validation.proto\"\xe2\t\n" +
+	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a\x1delitea/runtime/v1/input.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\xcf\n" +
+	"\n" +
 	"\x0fWorkerCommandV1\x12+\n" +
 	"\x11protocol_revision\x18\x01 \x01(\tR\x10protocolRevision\x12\x1d\n" +
 	"\n" +
@@ -388,15 +408,17 @@ const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"tracestate\x18\x18 \x01(\tR\n" +
 	"tracestate\x12'\n" +
 	"\x0flimits_revision\x18\x19 \x01(\tR\x0elimitsRevision\x12p\n" +
-	"\x18configuration_validation\x18  \x01(\v23.elitea.runtime.v1.ConfigurationValidationCommandV1H\x00R\x17configurationValidationB\x14\n" +
-	"\x12capability_commandJ\x04\b\x1a\x10 J\x04\b!\x10@*\xfd\x01\n" +
+	"\x18configuration_validation\x18  \x01(\v23.elitea.runtime.v1.ConfigurationValidationCommandV1H\x00R\x17configurationValidation\x12k\n" +
+	"\x17toolkit_available_tools\x18! \x01(\v21.elitea.runtime.v1.ToolkitAvailableToolsCommandV1H\x00R\x15toolkitAvailableToolsB\x14\n" +
+	"\x12capability_commandJ\x04\b\x1a\x10 J\x04\b\"\x10@*\xb1\x02\n" +
 	"\x13WorkerCommandTypeV1\x12&\n" +
 	"\"WORKER_COMMAND_TYPE_V1_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cWORKER_COMMAND_TYPE_V1_START\x10\x01\x12!\n" +
 	"\x1dWORKER_COMMAND_TYPE_V1_RESUME\x10\x02\x12 \n" +
 	"\x1cWORKER_COMMAND_TYPE_V1_RETRY\x10\x03\x12$\n" +
 	" WORKER_COMMAND_TYPE_V1_RECONCILE\x10\x04\x121\n" +
-	"-WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE\x10\x05BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
+	"-WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE\x10\x05\x122\n" +
+	".WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS\x10\x06BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
 var (
 	file_elitea_runtime_v1_command_proto_rawDescOnce sync.Once
@@ -417,16 +439,18 @@ var file_elitea_runtime_v1_command_proto_goTypes = []any{
 	(*WorkerCommandV1)(nil),                  // 1: elitea.runtime.v1.WorkerCommandV1
 	(*ExecutionInputBundleReferenceV1)(nil),  // 2: elitea.runtime.v1.ExecutionInputBundleReferenceV1
 	(*ConfigurationValidationCommandV1)(nil), // 3: elitea.runtime.v1.ConfigurationValidationCommandV1
+	(*ToolkitAvailableToolsCommandV1)(nil),   // 4: elitea.runtime.v1.ToolkitAvailableToolsCommandV1
 }
 var file_elitea_runtime_v1_command_proto_depIdxs = []int32{
 	0, // 0: elitea.runtime.v1.WorkerCommandV1.command_type:type_name -> elitea.runtime.v1.WorkerCommandTypeV1
 	2, // 1: elitea.runtime.v1.WorkerCommandV1.input_bundle_ref:type_name -> elitea.runtime.v1.ExecutionInputBundleReferenceV1
 	3, // 2: elitea.runtime.v1.WorkerCommandV1.configuration_validation:type_name -> elitea.runtime.v1.ConfigurationValidationCommandV1
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 3: elitea.runtime.v1.WorkerCommandV1.toolkit_available_tools:type_name -> elitea.runtime.v1.ToolkitAvailableToolsCommandV1
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_command_proto_init() }
@@ -435,9 +459,11 @@ func file_elitea_runtime_v1_command_proto_init() {
 		return
 	}
 	file_elitea_runtime_v1_input_proto_init()
+	file_elitea_runtime_v1_toolkit_proto_init()
 	file_elitea_runtime_v1_validation_proto_init()
 	file_elitea_runtime_v1_command_proto_msgTypes[0].OneofWrappers = []any{
 		(*WorkerCommandV1_ConfigurationValidation)(nil),
+		(*WorkerCommandV1_ToolkitAvailableTools)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

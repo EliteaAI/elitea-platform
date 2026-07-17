@@ -61,6 +61,7 @@ type producerStub struct {
 	prepareCalls int
 	appendCalls  int
 	appended     [][]byte
+	deliveryIDs  []string
 	appendErrors []error
 }
 
@@ -70,8 +71,9 @@ func (p *producerStub) PrepareValidation(_ context.Context, dispatch ValidationD
 	return p.prepared.Clone(), nil
 }
 
-func (p *producerStub) AppendPrepared(_ context.Context, prepared PreparedCommandEnvelope) error {
+func (p *producerStub) AppendPrepared(_ context.Context, deliveryID string, prepared PreparedCommandEnvelope) error {
 	p.appendCalls++
+	p.deliveryIDs = append(p.deliveryIDs, deliveryID)
 	p.appended = append(p.appended, append([]byte(nil), prepared.Bytes...))
 	if len(p.appendErrors) == 0 {
 		return nil
@@ -128,6 +130,35 @@ func TestValidationDispatcherRetriesUnknownAppendWithDurableExactBytes(t *testin
 	}
 	if producer.prepareCalls != 1 || producer.appendCalls != 2 || !bytes.Equal(producer.appended[0], producer.appended[1]) || !store.prepared.Published {
 		t.Fatalf("unknown-success retry changed its durable envelope: prepares=%d appends=%d published=%v", producer.prepareCalls, producer.appendCalls, store.prepared.Published)
+	}
+	if len(producer.deliveryIDs) != 2 || producer.deliveryIDs[0] != dispatch.OutboxID || producer.deliveryIDs[1] != dispatch.OutboxID {
+		t.Fatalf("reconciliation changed stable delivery identity: %v", producer.deliveryIDs)
+	}
+}
+
+func TestValidationDispatcherLeavesBackpressuredOutboxUnpublishedForRetry(t *testing.T) {
+	dispatch := validValidationDispatch()
+	store := &dispatchStoreStub{dispatch: dispatch}
+	producer := &producerStub{
+		prepared:     validPreparedEnvelope("key-a"),
+		appendErrors: []error{ErrDispatchBackpressured},
+	}
+	service, err := NewValidationDispatcher(store, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Dispatch(context.Background(), dispatch.OutboxID); !errors.Is(err, ErrDispatchBackpressured) {
+		t.Fatalf("expected dispatch backpressure, got %v", err)
+	}
+	if store.prepared == nil || store.prepared.Published || store.markCalls != 0 {
+		t.Fatalf("backpressured outbox was lost or marked published: prepared=%v marks=%d", store.prepared != nil, store.markCalls)
+	}
+	if err := service.Dispatch(context.Background(), dispatch.OutboxID); err != nil {
+		t.Fatalf("retry prepared envelope after capacity recovery: %v", err)
+	}
+	if producer.prepareCalls != 1 || producer.appendCalls != 2 || store.markCalls != 1 || !store.prepared.Published || !bytes.Equal(producer.appended[0], producer.appended[1]) {
+		t.Fatalf("capacity recovery did not retry exact durable bytes: prepares=%d appends=%d marks=%d published=%v", producer.prepareCalls, producer.appendCalls, store.markCalls, store.prepared.Published)
 	}
 }
 

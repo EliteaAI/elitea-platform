@@ -162,6 +162,31 @@ func TestContentServerRejectsOverLimitBeforeOpeningContent(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, response.Code)
 }
 
+func TestContentServerRejectsMultiplexedWorkBeyondRequestCapacity(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewContentServerWithLimits(
+		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
+			t.Fatal("saturated content request must not reach PostgreSQL authorization")
+			return ContentAuthorization{}, nil
+		}),
+		contentStoreFunc(func(context.Context, string, string, string, string) (io.ReadCloser, error) {
+			t.Fatal("saturated content request must not open content")
+			return nil, nil
+		}),
+		defaultMaxInputContentBytes,
+		1,
+	)
+	require.NoError(t, err)
+	server.requests <- struct{}{}
+	defer func() { <-server.requests }()
+
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, validContentRequest(t))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Equal(t, "1", response.Header().Get("Retry-After"))
+}
+
 func validContentRequest(t *testing.T) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/executions/execution-1/generations/1/inputs/settings/versions/v1", nil)
@@ -171,7 +196,7 @@ func validContentRequest(t *testing.T) *http.Request {
 	return request
 }
 
-func TestWorkloadIdentityRequiresOneSPIFFEURI(t *testing.T) {
+func TestWorkloadIdentityRequiresOneUnambiguousVerifiedSAN(t *testing.T) {
 	t.Parallel()
 
 	valid, err := url.Parse("spiffe://elitea.internal/runtime/worker-1")
@@ -179,10 +204,15 @@ func TestWorkloadIdentityRequiresOneSPIFFEURI(t *testing.T) {
 	identity, err := workloadIdentity(&x509.Certificate{URIs: []*url.URL{valid}})
 	require.NoError(t, err)
 	require.Equal(t, valid.String(), identity)
+	dnsIdentity, err := workloadIdentity(&x509.Certificate{DNSNames: []string{"Worker.Runtime.Example"}})
+	require.NoError(t, err)
+	require.Equal(t, "dns:worker.runtime.example", dnsIdentity)
 
 	for _, certificate := range []*x509.Certificate{
 		nil,
 		{},
+		{DNSNames: []string{"*.runtime.example"}},
+		{URIs: []*url.URL{valid}, DNSNames: []string{"worker.runtime.example"}},
 		{URIs: []*url.URL{valid, valid}},
 		{URIs: []*url.URL{{Scheme: "https", Host: "elitea.internal", Path: "/runtime/worker-1"}}},
 		{URIs: []*url.URL{{Scheme: "spiffe", Host: "", Path: "/runtime/worker-1"}}},

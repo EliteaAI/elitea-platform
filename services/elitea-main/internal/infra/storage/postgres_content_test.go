@@ -37,6 +37,12 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 
 	store := contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {
 		require.Contains(t, query, "e.required_grant_audience = $8")
+		require.Contains(t, query, "ws.workload_session_id = c.workload_session_id")
+		require.Contains(t, query, "ws.workload_identity = c.workload_identity")
+		require.Contains(t, query, "ws.producer_id = c.producer_id")
+		require.Contains(t, query, "ws.issued_at <= clock_timestamp()")
+		require.Contains(t, query, "ws.expires_at > clock_timestamp()")
+		require.Contains(t, query, "ws.revoked_at IS NULL")
 		require.Len(t, args, 8)
 		require.Equal(t, inputReadGrantAudience, args[7])
 		return contentRowFunc(func(dest ...any) error {

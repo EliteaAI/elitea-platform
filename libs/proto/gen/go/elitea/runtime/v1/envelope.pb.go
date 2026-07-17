@@ -21,14 +21,16 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// SignatureProfileV1 reserves protocol space for production authentication.
-// The only initial profile is a public test-vector HMAC used exclusively by
-// offline conformance. A production server must reject that profile.
+// SignatureProfileV1 identifies the complete signature-input and algorithm
+// contract. TEST_ONLY_HMAC_SHA256 is a public offline vector and must be
+// rejected by production composition. ED25519 signs the domain-separated,
+// length-bound worker_command_bytes defined by runtime protocol v1.
 type SignatureProfileV1 int32
 
 const (
 	SignatureProfileV1_SIGNATURE_PROFILE_V1_UNSPECIFIED           SignatureProfileV1 = 0
 	SignatureProfileV1_SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256 SignatureProfileV1 = 1
+	SignatureProfileV1_SIGNATURE_PROFILE_V1_ED25519               SignatureProfileV1 = 2
 )
 
 // Enum value maps for SignatureProfileV1.
@@ -36,10 +38,12 @@ var (
 	SignatureProfileV1_name = map[int32]string{
 		0: "SIGNATURE_PROFILE_V1_UNSPECIFIED",
 		1: "SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256",
+		2: "SIGNATURE_PROFILE_V1_ED25519",
 	}
 	SignatureProfileV1_value = map[string]int32{
 		"SIGNATURE_PROFILE_V1_UNSPECIFIED":           0,
 		"SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256": 1,
+		"SIGNATURE_PROFILE_V1_ED25519":               2,
 	}
 )
 
@@ -70,9 +74,11 @@ func (SignatureProfileV1) EnumDescriptor() ([]byte, []int) {
 	return file_elitea_runtime_v1_envelope_proto_rawDescGZIP(), []int{0}
 }
 
-// SignedWorkerCommandEnvelopeV1 signs worker_command_bytes exactly as emitted.
-// Receivers verify the digest and signature before parsing those opaque bytes;
-// they never reserialize protobuf data to create verification bytes.
+// SignedWorkerCommandEnvelopeV1 preserves worker_command_bytes exactly as
+// emitted. Signature input is profile-defined: TEST_ONLY_HMAC_SHA256 signs the
+// exact bytes, while ED25519 signs the runtime-v1 domain and uint64 big-endian
+// byte length followed by those exact bytes. Receivers verify the digest and
+// signature before parsing and never reserialize to create verification bytes.
 // Protocol-v1 decoders also reject unknown tags and duplicate singular fields
 // in this envelope and in the signed command's raw wire representation.
 type SignedWorkerCommandEnvelopeV1 struct {
@@ -228,10 +234,11 @@ const file_elitea_runtime_v1_envelope_proto_rawDesc = "" +
 	"\tsignature\x18\x06 \x01(\fR\tsignatureJ\x04\b\a\x10\x10\"\xb5\x01\n" +
 	"\x19WorkerExecutionEnvelopeV1\x12W\n" +
 	"\x0esigned_command\x18\x01 \x01(\v20.elitea.runtime.v1.SignedWorkerCommandEnvelopeV1R\rsignedCommand\x129\n" +
-	"\x05fence\x18\x02 \x01(\v2#.elitea.runtime.v1.ExecutionFenceV1R\x05fenceJ\x04\b\x03\x10\x10*j\n" +
+	"\x05fence\x18\x02 \x01(\v2#.elitea.runtime.v1.ExecutionFenceV1R\x05fenceJ\x04\b\x03\x10\x10*\x8c\x01\n" +
 	"\x12SignatureProfileV1\x12$\n" +
 	" SIGNATURE_PROFILE_V1_UNSPECIFIED\x10\x00\x12.\n" +
-	"*SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256\x10\x01BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
+	"*SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256\x10\x01\x12 \n" +
+	"\x1cSIGNATURE_PROFILE_V1_ED25519\x10\x02BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
 var (
 	file_elitea_runtime_v1_envelope_proto_rawDescOnce sync.Once

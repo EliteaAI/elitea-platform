@@ -39,8 +39,8 @@ func newClaimsRepository(store sharedStore, newClaimID func() (string, error), n
 	return &ClaimsRepository{store: store, newClaimID: newClaimID, newToken: newToken}, nil
 }
 
-func (r *ClaimsRepository) ClaimValidation(ctx context.Context, request executionapp.ClaimRequest, leaseUntil time.Time) (executionapp.ClaimDecision, error) {
-	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" || leaseUntil.IsZero() {
+func (r *ClaimsRepository) ClaimValidation(ctx context.Context, request executionapp.ClaimRequest, leaseTTL executionapp.ClaimLeaseTTLMillis) (executionapp.ClaimDecision, error) {
+	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" || !leaseTTL.Valid() {
 		return executionapp.ClaimDecision{}, executionapp.ErrInvalidClaim
 	}
 	var decision executionapp.ClaimDecision
@@ -183,7 +183,7 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation)).Scan(
 			return nil
 		}
 
-		existing, live, err := loadActiveClaimForUpdate(ctx, tx, request.ExecutionID, request.Generation, commandID, desired)
+		existing, observedAt, live, err := loadActiveClaimForUpdate(ctx, tx, request.ExecutionID, request.Generation, commandID, desired)
 		switch {
 		case err == nil && live:
 			if existing.Fence.WorkloadIdentity != request.WorkloadIdentity || existing.Fence.WorkloadSessionID != request.WorkloadSessionID || existing.Fence.ProducerID != request.ProducerID {
@@ -193,7 +193,7 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation)).Scan(
 				}
 				return nil
 			}
-			decision = executionapp.ClaimDecision{Lease: existing, Disposition: executionapp.ClaimActiveLeaseNoACK}
+			decision = executionapp.ClaimDecision{Lease: existing, LeaseObservedAt: observedAt, Disposition: executionapp.ClaimActiveLeaseNoACK}
 			proposal, watermark, recoveryErr := loadTerminalSettlementRecovery(ctx, tx, existing.Fence)
 			if recoveryErr == nil {
 				decision.Disposition = executionapp.ClaimRecoverTerminalACK
@@ -302,15 +302,20 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 		if err != nil || token.IsZero() {
 			return fmt.Errorf("generate execution fence token: %w", err)
 		}
-		var expiresAt time.Time
+		var expiresAt, claimObservedAt time.Time
 		err = tx.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
 INSERT INTO elitea_runtime.execution_claims (
     claim_id, execution_id, generation, workload_session_id,
     workload_identity, producer_id, claim_attempt, lease_epoch,
-    fence_token, lease_expires_at
-) SELECT $1, $2, $3, $4, $5, $6, $7, $7, $8, $9
-WHERE $9 > clock_timestamp()
-RETURNING lease_expires_at`,
+    fence_token, claimed_at, lease_expires_at
+) SELECT $1, $2, $3, $4, $5, $6, $7, $7, $8,
+         authority_clock.observed_at,
+         authority_clock.observed_at + ($9::bigint * interval '1 millisecond')
+FROM authority_clock
+RETURNING lease_expires_at, (SELECT observed_at FROM authority_clock)`,
 			claimID,
 			request.ExecutionID,
 			int64(request.Generation),
@@ -319,8 +324,8 @@ RETURNING lease_expires_at`,
 			request.ProducerID,
 			claimAttempt,
 			token[:],
-			leaseUntil.UTC(),
-		).Scan(&expiresAt)
+			int64(leaseTTL),
+		).Scan(&expiresAt, &claimObservedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return executionapp.ErrInvalidClaim
 		}
@@ -349,7 +354,7 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 			ExpiresAt:    expiresAt.UTC(),
 			DesiredState: desired,
 		}
-		decision = executionapp.ClaimDecision{Lease: lease, Disposition: executionapp.ClaimAccepted}
+		decision = executionapp.ClaimDecision{Lease: lease, LeaseObservedAt: claimObservedAt.UTC(), Disposition: executionapp.ClaimAccepted}
 		if state == executiondomain.JobSucceeded || state == executiondomain.JobFailed || state == executiondomain.JobCancelled || state == executiondomain.JobSettling {
 			receipt, settlementErr := loadSettlementForExecution(ctx, tx, request.ExecutionID, request.Generation)
 			if settlementErr == nil {
@@ -434,40 +439,51 @@ func retiredClaimDecision(
 	}
 }
 
-func (r *ClaimsRepository) CurrentLease(ctx context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, error) {
+func (r *ClaimsRepository) CurrentLease(ctx context.Context, executionID string, generation uint64) (runtimedomain.ActiveLease, time.Time, error) {
 	if executionID == "" || generation == 0 {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrInvalidFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrInvalidFence
 	}
-	lease, _, err := scanLease(r.store.QueryRow(ctx, `
+	lease, observedAt, live, err := scanLeaseAuthority(r.store.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
 SELECT c.claim_id, j.command_id, c.execution_id, c.generation,
        c.workload_identity, c.workload_session_id, c.producer_id,
        c.claim_attempt, c.lease_epoch,
        c.fence_token, c.lease_expires_at, j.desired_state,
-       c.lease_expires_at > clock_timestamp()
+       c.lease_expires_at > authority_clock.observed_at,
+       authority_clock.observed_at
 FROM elitea_runtime.execution_claims AS c
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = c.execution_id AND j.generation = c.generation
+JOIN authority_clock ON TRUE
 WHERE c.execution_id = $1 AND c.generation = $2 AND c.released_at IS NULL`, executionID, int64(generation)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
 	if err != nil {
-		return runtimedomain.ActiveLease{}, fmt.Errorf("load current execution claim: %w", err)
+		return runtimedomain.ActiveLease{}, time.Time{}, fmt.Errorf("load current execution claim: %w", err)
 	}
-	return lease, nil
+	if !live {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrLeaseExpired
+	}
+	return lease, observedAt, nil
 }
 
-func (r *ClaimsRepository) RenewLease(ctx context.Context, fence runtimedomain.Fence, leaseUntil time.Time) (runtimedomain.ActiveLease, error) {
+func (r *ClaimsRepository) RenewLease(ctx context.Context, fence runtimedomain.Fence, leaseTTL executionapp.ClaimLeaseTTLMillis) (runtimedomain.ActiveLease, time.Time, error) {
 	if err := fence.Validate(); err != nil {
-		return runtimedomain.ActiveLease{}, err
+		return runtimedomain.ActiveLease{}, time.Time{}, err
 	}
-	if leaseUntil.IsZero() {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrInvalidFence
+	if !leaseTTL.Valid() {
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrInvalidFence
 	}
-	lease, _, err := scanLease(r.store.QueryRow(ctx, `
+	lease, observedAt, _, err := scanLeaseAuthority(r.store.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
 UPDATE elitea_runtime.execution_claims AS c
-SET lease_expires_at = $10
-FROM elitea_runtime.execution_jobs AS j
+SET lease_expires_at = authority_clock.observed_at + ($10::bigint * interval '1 millisecond')
+FROM elitea_runtime.execution_jobs AS j, authority_clock
 WHERE c.execution_id = $1
   AND c.generation = $2
   AND j.execution_id = c.execution_id AND j.generation = c.generation
@@ -479,12 +495,12 @@ WHERE c.execution_id = $1
   AND c.lease_epoch = $8
   AND c.fence_token = $9
   AND c.released_at IS NULL
-  AND c.lease_expires_at > clock_timestamp()
-  AND $10 > clock_timestamp()
+  AND c.lease_expires_at > authority_clock.observed_at
 RETURNING c.claim_id, j.command_id, c.execution_id, c.generation,
           c.workload_identity, c.workload_session_id, c.producer_id,
           c.claim_attempt, c.lease_epoch,
-          c.fence_token, c.lease_expires_at, j.desired_state, TRUE`,
+          c.fence_token, c.lease_expires_at, j.desired_state, TRUE,
+          authority_clock.observed_at`,
 		fence.ExecutionID,
 		int64(fence.Generation),
 		fence.CommandID,
@@ -494,15 +510,15 @@ RETURNING c.claim_id, j.command_id, c.execution_id, c.generation,
 		int64(fence.ClaimAttempt),
 		int64(fence.LeaseEpoch),
 		fence.Token[:],
-		leaseUntil.UTC(),
+		int64(leaseTTL),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return runtimedomain.ActiveLease{}, runtimedomain.ErrStaleFence
+		return runtimedomain.ActiveLease{}, time.Time{}, runtimedomain.ErrStaleFence
 	}
 	if err != nil {
-		return runtimedomain.ActiveLease{}, fmt.Errorf("renew execution claim: %w", err)
+		return runtimedomain.ActiveLease{}, time.Time{}, fmt.Errorf("renew execution claim: %w", err)
 	}
-	return lease, nil
+	return lease, observedAt, nil
 }
 
 func (r *ClaimsRepository) ReleaseClaim(ctx context.Context, fence runtimedomain.Fence) error {
@@ -629,16 +645,43 @@ WHERE execution_id = $1 AND generation = $2`, executionID, int64(generation)).Sc
 	return desired, nil
 }
 
-func loadActiveClaimForUpdate(ctx context.Context, tx sqlExecutor, executionID string, generation uint64, commandID string, desired runtimedomain.DesiredState) (runtimedomain.ActiveLease, bool, error) {
-	return scanLease(tx.QueryRow(ctx, `
+func loadActiveClaimForUpdate(ctx context.Context, tx sqlExecutor, executionID string, generation uint64, commandID string, desired runtimedomain.DesiredState) (runtimedomain.ActiveLease, time.Time, bool, error) {
+	return scanLeaseAuthority(tx.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
 SELECT c.claim_id, $3, c.execution_id, c.generation,
        c.workload_identity, c.workload_session_id, c.producer_id,
        c.claim_attempt, c.lease_epoch,
        c.fence_token, c.lease_expires_at, $4,
-       c.lease_expires_at > clock_timestamp()
+       c.lease_expires_at > authority_clock.observed_at,
+       authority_clock.observed_at
 FROM elitea_runtime.execution_claims AS c
+JOIN authority_clock ON TRUE
 WHERE c.execution_id = $1 AND c.generation = $2 AND c.released_at IS NULL
-FOR UPDATE`, executionID, int64(generation), commandID, string(desired)))
+FOR UPDATE OF c`, executionID, int64(generation), commandID, string(desired)))
+}
+
+func scanLeaseAuthority(row sqlRow) (runtimedomain.ActiveLease, time.Time, bool, error) {
+	var observedAt time.Time
+	lease, live, err := scanLease(&leaseAuthorityRow{row: row, observedAt: &observedAt})
+	if err != nil {
+		return runtimedomain.ActiveLease{}, time.Time{}, false, err
+	}
+	if observedAt.IsZero() {
+		return runtimedomain.ActiveLease{}, time.Time{}, false, runtimedomain.ErrInvalidFence
+	}
+	return lease, observedAt.UTC(), live, nil
+}
+
+type leaseAuthorityRow struct {
+	row        sqlRow
+	observedAt *time.Time
+}
+
+func (r *leaseAuthorityRow) Scan(dest ...any) error {
+	dest = append(dest, r.observedAt)
+	return r.row.Scan(dest...)
 }
 
 func scanLease(row sqlRow) (runtimedomain.ActiveLease, bool, error) {

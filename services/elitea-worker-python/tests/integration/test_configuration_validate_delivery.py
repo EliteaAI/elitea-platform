@@ -84,9 +84,22 @@ class BlockingHandler:
 class Acker:
     def __init__(self) -> None:
         self.acked: list[RedisCommandDelivery] = []
+        self.stable_delivery_ids: list[str] = []
 
-    async def ack_after_settlement(self, delivery: RedisCommandDelivery) -> None:
+    async def ack_after_settlement(
+        self,
+        delivery: RedisCommandDelivery,
+        stable_delivery_id: str,
+    ) -> None:
+        signed = envelope_pb2.SignedWorkerCommandEnvelopeV1.FromString(
+            delivery.signed_envelope
+        )
+        command = command_pb2.WorkerCommandV1.FromString(
+            signed.worker_command_bytes
+        )
+        assert stable_delivery_id == command.idempotency_key
         self.acked.append(delivery)
+        self.stable_delivery_ids.append(stable_delivery_id)
 
 
 class Control:

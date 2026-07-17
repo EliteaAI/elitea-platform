@@ -103,7 +103,10 @@ BEGIN
             CONSTRAINT _application_version_name_uc UNIQUE (application_id, name)
         )', schema_name, schema_name);
 
-    CREATE INDEX IF NOT EXISTS idx_app_versions_app_id ON ONLY application_versions(application_id);
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS idx_app_versions_app_id ON ONLY %I.application_versions(application_id)',
+        schema_name
+    );
 
     -- Application variables
     EXECUTE format('
@@ -262,7 +265,7 @@ BEGIN
             author_participant_id INTEGER REFERENCES %I.chat_participants(id),
             conversation_id INTEGER REFERENCES %I.chat_conversations(id) ON DELETE CASCADE,
             sent_to_id INTEGER REFERENCES %I.chat_participants(id),
-            reply_to_id INTEGER REFERENCES %I.chat_message_group(id) ON SET NULL,
+            reply_to_id INTEGER REFERENCES %I.chat_message_group(id) ON DELETE SET NULL,
             meta JSONB NOT NULL DEFAULT ''{}''::jsonb,
             is_streaming BOOLEAN NOT NULL DEFAULT false,
             task_id VARCHAR(64),

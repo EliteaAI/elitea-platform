@@ -4,6 +4,7 @@ package elitea.runtime.v1;
 
 import "elitea/runtime/v1/common.proto";
 import "elitea/runtime/v1/errors.proto";
+import "elitea/runtime/v1/toolkit.proto";
 import "elitea/runtime/v1/validation.proto";
 
 option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
@@ -12,6 +13,7 @@ enum ExecutionOutputEventTypeV1 {
   EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED = 0;
   EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT = 1;
   EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR = 2;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT = 3;
 }
 
 message SettlementProposalV1 {
@@ -46,10 +48,11 @@ message ExecutionOutputFrameV1 {
   oneof payload {
     ConfigurationValidationResultV1 configuration_validation = 20;
     RuntimeErrorV1 runtime_error = 21;
+    ToolkitAvailableToolsResultV1 toolkit_available_tools = 22;
   }
 
   reserved 14 to 19;
-  reserved 22 to 31;
+  reserved 23 to 31;
 }
 
 message ExecutionOutputAckV1 {

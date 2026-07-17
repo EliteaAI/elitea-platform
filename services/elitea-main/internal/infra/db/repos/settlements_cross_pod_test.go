@@ -141,7 +141,7 @@ func TestClaimRecoversPreparedSettlementAcrossProducerReplacementAfterIssuingCla
 			claimExecutionRow("RUNNING", "SUCCEEDED", true, publishedDigest[:], publishedDigest[:], true),
 			{err: pgx.ErrNoRows},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
 			{values: []any{"predecessor-receipt", string(executionapp.SettlementSucceeded)}},
 		},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
@@ -165,7 +165,7 @@ func TestClaimRecoversPreparedSettlementAcrossProducerReplacementAfterIssuingCla
 		WorkloadSessionID:    "replacement-session",
 		ProducerID:           "replacement-producer",
 	}
-	decision, err := repository.ClaimValidation(context.Background(), request, leaseExpires)
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil {
 		t.Fatal(err)
 	}

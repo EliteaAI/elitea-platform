@@ -42,6 +42,10 @@ type statusRecorder struct {
 	status int
 }
 
+// Unwrap preserves optional streaming and deadline interfaces for
+// http.ResponseController (SSE, HTTP/2 flush, and per-write deadlines).
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)

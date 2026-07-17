@@ -37,8 +37,18 @@ type ProtocolLimitsV1 struct {
 	MaxOutputFrameBytes    uint64                 `protobuf:"varint,9,opt,name=max_output_frame_bytes,json=maxOutputFrameBytes,proto3" json:"max_output_frame_bytes,omitempty"`
 	MaxValidationIssues    uint32                 `protobuf:"varint,10,opt,name=max_validation_issues,json=maxValidationIssues,proto3" json:"max_validation_issues,omitempty"`
 	MaxSafeStringBytes     uint32                 `protobuf:"varint,11,opt,name=max_safe_string_bytes,json=maxSafeStringBytes,proto3" json:"max_safe_string_bytes,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Authority timing is part of the selected limits revision. Runtimes may
+	// poll more frequently but must never admit a slower interval.
+	ClaimLeaseTtlMillis        uint64 `protobuf:"varint,12,opt,name=claim_lease_ttl_millis,json=claimLeaseTtlMillis,proto3" json:"claim_lease_ttl_millis,omitempty"`
+	MaxLeasePollIntervalMillis uint64 `protobuf:"varint,13,opt,name=max_lease_poll_interval_millis,json=maxLeasePollIntervalMillis,proto3" json:"max_lease_poll_interval_millis,omitempty"`
+	// Whole serialized protobuf message limits for worker-to-server requests
+	// and server-to-worker responses. The response bound is deliberately larger
+	// than max_input_manifest_bytes because ClaimCommandResponseV1 nests the
+	// manifest inside an authenticated claim receipt.
+	MaxGrpcRequestBytes  uint64 `protobuf:"varint,14,opt,name=max_grpc_request_bytes,json=maxGrpcRequestBytes,proto3" json:"max_grpc_request_bytes,omitempty"`
+	MaxGrpcResponseBytes uint64 `protobuf:"varint,15,opt,name=max_grpc_response_bytes,json=maxGrpcResponseBytes,proto3" json:"max_grpc_response_bytes,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ProtocolLimitsV1) Reset() {
@@ -148,11 +158,39 @@ func (x *ProtocolLimitsV1) GetMaxSafeStringBytes() uint32 {
 	return 0
 }
 
+func (x *ProtocolLimitsV1) GetClaimLeaseTtlMillis() uint64 {
+	if x != nil {
+		return x.ClaimLeaseTtlMillis
+	}
+	return 0
+}
+
+func (x *ProtocolLimitsV1) GetMaxLeasePollIntervalMillis() uint64 {
+	if x != nil {
+		return x.MaxLeasePollIntervalMillis
+	}
+	return 0
+}
+
+func (x *ProtocolLimitsV1) GetMaxGrpcRequestBytes() uint64 {
+	if x != nil {
+		return x.MaxGrpcRequestBytes
+	}
+	return 0
+}
+
+func (x *ProtocolLimitsV1) GetMaxGrpcResponseBytes() uint64 {
+	if x != nil {
+		return x.MaxGrpcResponseBytes
+	}
+	return 0
+}
+
 var File_elitea_runtime_v1_limits_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_limits_proto_rawDesc = "" +
 	"\n" +
-	"\x1eelitea/runtime/v1/limits.proto\x12\x11elitea.runtime.v1\"\xd3\x04\n" +
+	"\x1eelitea/runtime/v1/limits.proto\x12\x11elitea.runtime.v1\"\xb8\x06\n" +
 	"\x10ProtocolLimitsV1\x12'\n" +
 	"\x0flimits_revision\x18\x01 \x01(\tR\x0elimitsRevision\x127\n" +
 	"\x18max_worker_command_bytes\x18\x02 \x01(\x04R\x15maxWorkerCommandBytes\x129\n" +
@@ -165,7 +203,11 @@ const file_elitea_runtime_v1_limits_proto_rawDesc = "" +
 	"\x16max_output_frame_bytes\x18\t \x01(\x04R\x13maxOutputFrameBytes\x122\n" +
 	"\x15max_validation_issues\x18\n" +
 	" \x01(\rR\x13maxValidationIssues\x121\n" +
-	"\x15max_safe_string_bytes\x18\v \x01(\rR\x12maxSafeStringBytesJ\x04\b\f\x10 BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
+	"\x15max_safe_string_bytes\x18\v \x01(\rR\x12maxSafeStringBytes\x123\n" +
+	"\x16claim_lease_ttl_millis\x18\f \x01(\x04R\x13claimLeaseTtlMillis\x12B\n" +
+	"\x1emax_lease_poll_interval_millis\x18\r \x01(\x04R\x1amaxLeasePollIntervalMillis\x123\n" +
+	"\x16max_grpc_request_bytes\x18\x0e \x01(\x04R\x13maxGrpcRequestBytes\x125\n" +
+	"\x17max_grpc_response_bytes\x18\x0f \x01(\x04R\x14maxGrpcResponseBytesJ\x04\b\x10\x10 BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
 var (
 	file_elitea_runtime_v1_limits_proto_rawDescOnce sync.Once

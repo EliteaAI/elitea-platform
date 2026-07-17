@@ -56,7 +56,7 @@ func TestPostgresServiceBackedCancellationControlPlane(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		claimService, err := executionapp.NewClaimService(claimRepository, time.Now, 5*time.Minute)
+		claimService, err := executionapp.NewClaimService(claimRepository, time.Now, 30*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -218,7 +218,7 @@ func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	base := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
+	base := time.Now().UTC()
 	seedPostgresOutboxOrderingFixtures(t, pool, base)
 
 	repository, err := NewCommandOutboxRepository(pool, "elitea:runtime:commands")
@@ -226,7 +226,7 @@ func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := repository.ListPendingValidationIDs(ctx, 10)
+	got, err := repository.ListPendingValidationIDs(ctx, 10, time.Minute)
 	if err != nil {
 		t.Fatalf("list initial pending validation outbox: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
 		t.Fatalf("unexpected initial outbox order: got %v want %v", got, want)
 	}
 
-	got, err = repository.ListPendingValidationIDs(ctx, 1)
+	got, err = repository.ListPendingValidationIDs(ctx, 1, time.Minute)
 	if err != nil {
 		t.Fatalf("list bounded pending validation outbox: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
 		t.Fatalf("reconcile already-published generation: %v", err)
 	}
 
-	got, err = repository.ListPendingValidationIDs(ctx, 10)
+	got, err = repository.ListPendingValidationIDs(ctx, 10, time.Minute)
 	if err != nil {
 		t.Fatalf("list advanced pending validation outbox: %v", err)
 	}
@@ -271,6 +271,20 @@ func TestPostgresServiceBackedOutboxReconciliation(t *testing.T) {
 	want = []string{"outbox-order-b-1"}
 	if !equalPostgresStrings(got, want) {
 		t.Fatalf("unexpected advanced outbox order: got %v want %v", got, want)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.command_outbox
+SET last_visibility_at = clock_timestamp() - interval '2 minutes'
+WHERE outbox_id = 'outbox-order-published'`); err != nil {
+		t.Fatalf("age published visibility fixture: %v", err)
+	}
+	got, err = repository.ListPendingValidationIDs(ctx, 10, time.Minute)
+	if err != nil {
+		t.Fatalf("list stale published validation outbox: %v", err)
+	}
+	want = []string{"outbox-order-published", "outbox-order-b-1"}
+	if !equalPostgresStrings(got, want) {
+		t.Fatalf("stale visibility was not repaired oldest-first: got %v want %v", got, want)
 	}
 }
 
@@ -337,7 +351,7 @@ WHERE j.execution_id = $1 AND j.generation = 1`, fixture.frame.Fence.ExecutionID
 			WorkloadIdentity:     "spiffe://elitea.test/worker/retired",
 			WorkloadSessionID:    "retired-session",
 			ProducerID:           "retired-producer",
-		}, time.Now().UTC().Add(time.Minute))
+		}, executionapp.MaxClaimLeaseTTLMillis)
 		if err != nil || decision.Disposition != executionapp.ClaimRetiredACK || decision.RetirementReason != executionapp.RetirementDeadlineExceeded || decision.Lease != (runtimedomain.ActiveLease{}) {
 			t.Fatalf("leaked retired command did not receive typed ACK: decision=%+v err=%v", decision, err)
 		}
@@ -398,7 +412,7 @@ WHERE j.execution_id = $1`, raceFrame.Fence.ExecutionID).Scan(&raceState, &raceD
 		ExecutionID: authorityFrame.Fence.ExecutionID, Generation: 1,
 		SignedEnvelopeDigest: authoritySeed.envelopeDigest,
 		WorkloadIdentity:     "spiffe://elitea.test/worker/accepted", WorkloadSessionID: "accepted-session", ProducerID: "accepted-producer",
-	}, time.Now().UTC().Add(5*time.Minute))
+	}, executionapp.MaxClaimLeaseTTLMillis)
 	if err != nil || decision.Disposition != executionapp.ClaimAccepted {
 		t.Fatalf("accept claim before deadline: decision=%+v err=%v", decision, err)
 	}
@@ -654,7 +668,7 @@ INSERT INTO elitea_runtime.execution_jobs (
 		var preparedKeyID any
 		var preparedAt any
 		if fixture.published {
-			publishedAt = fixture.createdAt.Add(30 * time.Second)
+			publishedAt = time.Now().UTC()
 			storedBytes := []byte(fixture.outboxID + ":published")
 			storedDigest := runtimedomain.SHA256(storedBytes)
 			publishedDigest = storedDigest[:]
@@ -671,10 +685,10 @@ INSERT INTO elitea_runtime.command_outbox (
     created_at, prepared_signed_envelope_bytes,
     prepared_signed_envelope_digest, prepared_signature_profile,
     prepared_key_id, prepared_at,
-    published_at, published_envelope_digest, publish_attempts
+    published_at, last_visibility_at, published_envelope_digest, publish_attempts
 ) VALUES ($1, $2, $3, $4, 1,
           'validation', 'project', 1, $5, 'limits-v1',
-          $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          $6, $7, $8, $9, $10, $11, $12, NULL, $13, $14)`,
 			fixture.outboxID,
 			fixture.executionID,
 			fixture.generation,
@@ -731,6 +745,26 @@ WHERE schemaname = 'elitea_runtime'
 	} {
 		if !strings.Contains(definition, fragment) {
 			t.Fatalf("PostgreSQL outbox dispatch index is missing %q: %s", fragment, definition)
+		}
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT indexdef
+FROM pg_indexes
+WHERE schemaname = 'elitea_runtime'
+  AND tablename = 'command_outbox'
+  AND indexname = 'command_outbox_visibility_repair_idx'`).Scan(&definition); err != nil {
+		t.Fatalf("load PostgreSQL visibility-repair index: %v", err)
+	}
+	for _, fragment := range []string{
+		"stream_name",
+		"COALESCE(last_visibility_at, published_at)",
+		"outbox_id",
+		"published_at IS NOT NULL",
+		"authority_granted_at IS NULL",
+		"retired_at IS NULL",
+	} {
+		if !strings.Contains(definition, fragment) {
+			t.Fatalf("PostgreSQL visibility-repair index is missing %q: %s", fragment, definition)
 		}
 	}
 }
@@ -997,10 +1031,10 @@ INSERT INTO elitea_runtime.command_outbox (
     isolation_class, priority, deadline, limits_revision,
     prepared_signed_envelope_bytes, prepared_signed_envelope_digest,
     prepared_signature_profile, prepared_key_id, prepared_at,
-    published_at, published_envelope_digest, authority_granted_at, publish_attempts
+    published_at, last_visibility_at, published_envelope_digest, authority_granted_at, publish_attempts
 ) VALUES ($1, $2, $3, 'elitea:runtime:commands', 'validation',
           'project', 1, $4, 'limits-v1', $5, $6, 1,
-          'postgres-cancellation-key', $7, $7, $6, $7, 1)`,
+          'postgres-cancellation-key', $7, $7, $7, $6, $7, 1)`,
 		outboxID,
 		frame.Fence.ExecutionID,
 		int64(frame.Fence.Generation),
@@ -1063,6 +1097,7 @@ WHERE outbox_id = $1`, seed.outboxID, deadline.UTC())
 UPDATE elitea_runtime.command_outbox
 SET deadline = $2, authority_granted_at = NULL,
     published_at = NULL, published_envelope_digest = NULL,
+    last_visibility_at = NULL,
     publish_attempts = 0, retired_at = NULL, retirement_code = NULL
 WHERE outbox_id = $1`, seed.outboxID, deadline.UTC())
 	}
@@ -1091,7 +1126,7 @@ func newPostgresValidationService(t *testing.T, pool *pgxpool.Pool) *outputapp.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimService, err := executionapp.NewClaimService(claimRepository, time.Now, 5*time.Minute)
+	claimService, err := executionapp.NewClaimService(claimRepository, time.Now, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1116,7 +1151,7 @@ func newPostgresRuntimeFailureService(t *testing.T, pool *pgxpool.Pool) *outputa
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimService, err := executionapp.NewClaimService(claims, time.Now, 5*time.Minute)
+	claimService, err := executionapp.NewClaimService(claims, time.Now, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

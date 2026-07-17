@@ -17,7 +17,15 @@ import (
 const (
 	maxStoredInputManifestBytes = 64 * 1024
 	maxStoredInputContentBytes  = 256 * 1024
+	minValidationDeadlineTTL    = time.Millisecond
+	maxValidationDeadlineTTL    = 24 * time.Hour
+	// Phase one deliberately shares the Redis control-stream live-entry ceiling.
+	// This keeps the serialized active-index scan and worst-case durable input
+	// footprint bounded until production measurements justify a forward change.
+	maxSupportedOutstandingJobs = 1_024
 )
+
+var ErrAdmissionPolicyMismatch = errors.New("execution admission policy does not match persisted policy")
 
 type ValidationDispatchPolicy struct {
 	StreamName        string
@@ -28,10 +36,11 @@ type ValidationDispatchPolicy struct {
 	Priority          uint32
 	DeadlineTTL       time.Duration
 	LimitsRevision    string
+	MaxOutstanding    int64
 }
 
 func (p ValidationDispatchPolicy) validate() error {
-	if p.StreamName == "" || p.CapabilityVersion == "" || p.GrantTemplateID == "" || p.ResourceClass == "" || p.IsolationClass == "" || p.Priority == 0 || p.Priority > math.MaxInt32 || p.DeadlineTTL <= 0 || p.LimitsRevision == "" {
+	if p.StreamName == "" || p.CapabilityVersion == "" || p.GrantTemplateID == "" || p.ResourceClass == "" || p.IsolationClass == "" || p.Priority == 0 || p.Priority > math.MaxInt32 || p.DeadlineTTL < minValidationDeadlineTTL || p.DeadlineTTL > maxValidationDeadlineTTL || p.DeadlineTTL%time.Millisecond != 0 || p.LimitsRevision == "" || p.MaxOutstanding <= 0 || p.MaxOutstanding > maxSupportedOutstandingJobs {
 		return errors.New("validation dispatch policy is incomplete")
 	}
 	for _, value := range []string{p.StreamName, p.CapabilityVersion, p.GrantTemplateID, p.ResourceClass, p.IsolationClass, p.LimitsRevision} {
@@ -88,6 +97,7 @@ func (r *ExecutionJobsRepository) AdmitValidation(ctx context.Context, admission
 	}
 
 	var outcome executionapp.AdmissionOutcome
+	var capacityError *executionapp.AdmissionCapacityError
 	err = r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
 		existing, requestDigest, err := loadAdmissionByIdempotency(ctx, tx, admission.Record.IdempotencyScope, admission.Record.IdempotencyKey)
 		switch {
@@ -101,10 +111,49 @@ func (r *ExecutionJobsRepository) AdmitValidation(ctx context.Context, admission
 			return fmt.Errorf("load validation idempotency binding: %w", err)
 		}
 
-		if err := insertInputBundle(ctx, tx, resourceProjectID, admission.Record.Job.ActorID, admission.Record.InputBundle); err != nil {
+		if err := lockAdmissionPolicy(ctx, tx, admission.Record.Job.CapabilityID, r.policy.MaxOutstanding); err != nil {
 			return err
 		}
-		created, err := insertExecutionJob(ctx, tx, resourceProjectID, projectionProjectID, r.policy, admission)
+
+		// A transaction using the same idempotency key may have committed while
+		// this transaction waited for the capability policy row. Recheck under
+		// that lock before evaluating capacity so exact replay remains available
+		// even when the active-job high-water mark has been reached.
+		existing, requestDigest, err = loadAdmissionByIdempotency(ctx, tx, admission.Record.IdempotencyScope, admission.Record.IdempotencyKey)
+		switch {
+		case err == nil:
+			if requestDigest != admission.Record.RequestDigest {
+				return executionapp.ErrIdempotencyConflict
+			}
+			outcome = existing
+			return nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("reload validation idempotency binding: %w", err)
+		}
+
+		active, err := countActiveExecutionsUpTo(ctx, tx, admission.Record.Job.CapabilityID, r.policy.MaxOutstanding)
+		if err != nil {
+			return err
+		}
+		if active >= r.policy.MaxOutstanding {
+			// Commit a newly inserted policy row even when the first request finds
+			// pre-existing work already at capacity. No input/job/outbox rows have
+			// been written, and the caller receives the typed rejection after commit.
+			capacityError = &executionapp.AdmissionCapacityError{
+				CapabilityID:   admission.Record.Job.CapabilityID,
+				MaxOutstanding: r.policy.MaxOutstanding,
+			}
+			return nil
+		}
+
+		timing, err := loadAdmissionTiming(ctx, tx, r.policy.DeadlineTTL)
+		if err != nil {
+			return err
+		}
+		if err := insertInputBundle(ctx, tx, resourceProjectID, admission.Record.Job.ActorID, admission.Record.InputBundle, timing.AdmittedAt); err != nil {
+			return err
+		}
+		created, err := insertExecutionJob(ctx, tx, resourceProjectID, projectionProjectID, r.policy, admission, timing.AdmittedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A concurrent transaction won the unique idempotency key. Returning a
 			// private replay error forces this transaction to roll back its newly
@@ -124,13 +173,15 @@ func (r *ExecutionJobsRepository) AdmitValidation(ctx context.Context, admission
 		if !created {
 			return errors.New("execution job insert did not report creation")
 		}
-		if err := insertCommandOutbox(ctx, tx, r.policy, admission.Record); err != nil {
+		if err := insertCommandOutbox(ctx, tx, r.policy, admission.Record, timing); err != nil {
 			return err
 		}
 		outcome = executionapp.AdmissionOutcome{
 			ExecutionID: admission.Record.Job.ID,
 			CommandID:   admission.Record.Job.CommandID,
 			Created:     true,
+			AdmittedAt:  timing.AdmittedAt,
+			Deadline:    timing.Deadline,
 		}
 		return nil
 	})
@@ -141,7 +192,50 @@ func (r *ExecutionJobsRepository) AdmitValidation(ctx context.Context, admission
 	if err != nil {
 		return executionapp.AdmissionOutcome{}, err
 	}
+	if capacityError != nil {
+		return executionapp.AdmissionOutcome{}, capacityError
+	}
 	return outcome, nil
+}
+
+func lockAdmissionPolicy(ctx context.Context, tx sqlExecutor, capabilityID string, maxOutstanding int64) error {
+	if _, err := tx.Exec(ctx, `
+INSERT INTO elitea_runtime.execution_admission_policies (
+    capability_id, max_outstanding
+) VALUES ($1, $2)
+ON CONFLICT (capability_id) DO NOTHING`, capabilityID, maxOutstanding); err != nil {
+		return fmt.Errorf("ensure execution admission policy: %w", err)
+	}
+
+	var persistedMax int64
+	if err := tx.QueryRow(ctx, `
+SELECT max_outstanding
+FROM elitea_runtime.execution_admission_policies
+WHERE capability_id = $1
+FOR UPDATE`, capabilityID).Scan(&persistedMax); err != nil {
+		return fmt.Errorf("lock execution admission policy: %w", err)
+	}
+	if persistedMax != maxOutstanding {
+		return fmt.Errorf("%w: capability %q configured=%d persisted=%d", ErrAdmissionPolicyMismatch, capabilityID, maxOutstanding, persistedMax)
+	}
+	return nil
+}
+
+func countActiveExecutionsUpTo(ctx context.Context, tx sqlExecutor, capabilityID string, limit int64) (int64, error) {
+	var active int64
+	err := tx.QueryRow(ctx, `
+SELECT count(*)
+FROM (
+    SELECT 1
+    FROM elitea_runtime.execution_jobs
+    WHERE capability_id = $1
+      AND state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
+    LIMIT $2
+) AS bounded_active`, capabilityID, limit).Scan(&active)
+	if err != nil {
+		return 0, fmt.Errorf("count active executions for admission: %w", err)
+	}
+	return active, nil
 }
 
 func boundedAdmissionStrings(admission executionapp.ValidationAdmission) bool {
@@ -175,16 +269,47 @@ type admissionReplay struct {
 
 func (e admissionReplay) Error() string { return "concurrent admission replay" }
 
+type admissionTiming struct {
+	AdmittedAt time.Time
+	Deadline   time.Time
+}
+
+func loadAdmissionTiming(ctx context.Context, db sqlExecutor, deadlineTTL time.Duration) (admissionTiming, error) {
+	var timing admissionTiming
+	err := db.QueryRow(ctx, `
+WITH authority AS MATERIALIZED (
+    SELECT date_trunc('milliseconds', clock_timestamp()) AS admitted_at
+)
+SELECT admitted_at,
+       admitted_at + ($1::bigint * interval '1 millisecond')
+FROM authority`, deadlineTTL.Milliseconds()).Scan(&timing.AdmittedAt, &timing.Deadline)
+	if err != nil {
+		return admissionTiming{}, fmt.Errorf("load database admission timing: %w", err)
+	}
+	if timing.AdmittedAt.IsZero() || !timing.Deadline.After(timing.AdmittedAt) || timing.Deadline.Sub(timing.AdmittedAt) != deadlineTTL {
+		return admissionTiming{}, errors.New("database returned invalid admission timing")
+	}
+	return admissionTiming{
+		AdmittedAt: timing.AdmittedAt.UTC(),
+		Deadline:   timing.Deadline.UTC(),
+	}, nil
+}
+
 func loadAdmissionByIdempotency(ctx context.Context, db sqlExecutor, scope, key string) (executionapp.AdmissionOutcome, runtimedomain.Digest, error) {
 	var outcome executionapp.AdmissionOutcome
 	var digestBytes []byte
 	err := db.QueryRow(ctx, `
-SELECT execution_id, command_id, request_digest
-FROM elitea_runtime.execution_jobs
-WHERE idempotency_scope = $1 AND idempotency_key = $2`, scope, key).Scan(
+SELECT j.execution_id, j.command_id, j.request_digest,
+       j.admitted_at, o.deadline
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id AND o.generation = j.generation
+WHERE j.idempotency_scope = $1 AND j.idempotency_key = $2`, scope, key).Scan(
 		&outcome.ExecutionID,
 		&outcome.CommandID,
 		&digestBytes,
+		&outcome.AdmittedAt,
+		&outcome.Deadline,
 	)
 	if err != nil {
 		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, err
@@ -194,10 +319,15 @@ WHERE idempotency_scope = $1 AND idempotency_key = $2`, scope, key).Scan(
 		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, fmt.Errorf("invalid stored request digest: %w", err)
 	}
 	outcome.Created = false
+	outcome.AdmittedAt = outcome.AdmittedAt.UTC()
+	outcome.Deadline = outcome.Deadline.UTC()
+	if outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
+		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored admission timing is invalid")
+	}
 	return outcome, digest, nil
 }
 
-func insertExecutionJob(ctx context.Context, tx sqlExecutor, resourceProjectID, projectionProjectID int64, policy ValidationDispatchPolicy, admission executionapp.ValidationAdmission) (bool, error) {
+func insertExecutionJob(ctx context.Context, tx sqlExecutor, resourceProjectID, projectionProjectID int64, policy ValidationDispatchPolicy, admission executionapp.ValidationAdmission, admittedAt time.Time) (bool, error) {
 	record := admission.Record
 	command := admission.Command
 	var executionID string
@@ -239,7 +369,7 @@ RETURNING execution_id`,
 		command.SchemaDigest[:],
 		command.SettingsEntryID,
 		string(record.Job.State),
-		record.Job.CreatedAt,
+		admittedAt,
 	).Scan(&executionID)
 	if err != nil {
 		return false, fmt.Errorf("insert execution job: %w", err)

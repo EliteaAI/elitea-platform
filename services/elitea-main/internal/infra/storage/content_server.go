@@ -17,6 +17,7 @@ import (
 
 const (
 	defaultMaxInputContentBytes = 256 * 1024
+	defaultMaxContentRequests   = 16
 	claimIDHeader               = "X-Elitea-Claim-Id"
 	fenceHeader                 = "X-Elitea-Fence"
 )
@@ -62,19 +63,29 @@ type ContentServer struct {
 	authorizer ContentAuthorizer
 	store      ContentStore
 	maxBytes   int64
+	requests   chan struct{}
 }
 
 func NewContentServer(authorizer ContentAuthorizer, store ContentStore, maxBytes int64) (*ContentServer, error) {
+	return NewContentServerWithLimits(authorizer, store, maxBytes, defaultMaxContentRequests)
+}
+
+func NewContentServerWithLimits(authorizer ContentAuthorizer, store ContentStore, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
 	if authorizer == nil || store == nil {
 		return nil, errors.New("content authorizer and store are required")
 	}
 	if maxBytes == 0 {
 		maxBytes = defaultMaxInputContentBytes
 	}
-	if maxBytes < 1 {
-		return nil, errors.New("maximum content size must be positive")
+	if maxBytes < 1 || maxConcurrentRequests < 1 || maxConcurrentRequests > 1024 {
+		return nil, errors.New("content size and concurrency limits must be positive and bounded")
 	}
-	return &ContentServer{authorizer: authorizer, store: store, maxBytes: maxBytes}, nil
+	return &ContentServer{
+		authorizer: authorizer,
+		store:      store,
+		maxBytes:   maxBytes,
+		requests:   make(chan struct{}, maxConcurrentRequests),
+	}, nil
 }
 
 // Routes exposes only the internal, claim-bound input data plane.
@@ -85,6 +96,14 @@ func (s *ContentServer) Routes() http.Handler {
 }
 
 func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
+	select {
+	case s.requests <- struct{}{}:
+		defer func() { <-s.requests }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
 	claim, err := parseContentClaim(r)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)

@@ -33,16 +33,18 @@ func (s *signerStub) SignWorkerCommand(_ context.Context, exact []byte) (Signatu
 }
 
 type appenderStub struct {
-	stream string
-	field  string
-	value  []byte
-	calls  int
+	stream     string
+	field      string
+	deliveryID string
+	value      []byte
+	calls      int
 }
 
-func (a *appenderStub) Append(_ context.Context, stream, field string, value []byte) (string, error) {
+func (a *appenderStub) Append(_ context.Context, stream, field, deliveryID string, value []byte) (string, error) {
 	a.calls++
 	a.stream = stream
 	a.field = field
+	a.deliveryID = deliveryID
 	a.value = append([]byte(nil), value...)
 	return "1-0", nil
 }
@@ -62,10 +64,10 @@ func TestProducerEmitsBoundedReferenceOnlyGeneratedContract(t *testing.T) {
 	if appender.calls != 0 {
 		t.Fatal("preparation reached Redis before durable envelope selection")
 	}
-	if err := producer.AppendPrepared(context.Background(), prepared); err != nil {
+	if err := producer.AppendPrepared(context.Background(), dispatch.OutboxID, prepared); err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Digest != runtimedomain.SHA256(appender.value) || appender.stream != "commands.v1.configuration.validate.cpu-small.credential-free.1.0" || appender.field != redisEnvelopeField {
+	if prepared.Digest != runtimedomain.SHA256(appender.value) || appender.stream != "commands.v1.configuration.validate.cpu-small.credential-free.1.0" || appender.field != redisEnvelopeField || appender.deliveryID != dispatch.OutboxID {
 		t.Fatalf("unexpected append: stream=%q field=%q digest=%s", appender.stream, appender.field, prepared.Digest)
 	}
 
@@ -110,7 +112,7 @@ func TestProducerRejectsCompleteRedisEntryAboveBoundBeforeAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := baseline.AppendPrepared(context.Background(), baselinePrepared); err != nil {
+	if err := baseline.AppendPrepared(context.Background(), validTransportDispatch().OutboxID, baselinePrepared); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +164,7 @@ func TestProducerRejectsCorruptPreparedBytesBeforeRedisAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared.Bytes[0] ^= 0xff
-	if err := producer.AppendPrepared(context.Background(), prepared); !errors.Is(err, executionapp.ErrInvalidPreparedEnvelope) {
+	if err := producer.AppendPrepared(context.Background(), validTransportDispatch().OutboxID, prepared); !errors.Is(err, executionapp.ErrInvalidPreparedEnvelope) {
 		t.Fatalf("expected corrupt prepared envelope rejection, got %v", err)
 	}
 	if appender.calls != 0 {
@@ -170,16 +172,20 @@ func TestProducerRejectsCorruptPreparedBytesBeforeRedisAppend(t *testing.T) {
 	}
 }
 
-func TestProducerFailsClosedWithoutExplicitConformanceSignatureOptIn(t *testing.T) {
+func TestProducerRejectsTestProfileWithoutExplicitConformanceSignatureOptIn(t *testing.T) {
 	config := validProducerConfig()
 	config.AllowTestOnlyHMAC = false
 	signer := &signerStub{}
 	appender := &appenderStub{}
-	if _, err := NewProducer(config, signer, appender); err == nil {
-		t.Fatal("production composition accepted the public test-only HMAC profile")
+	producer, err := NewProducer(config, signer, appender)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if signer.calls != 0 || appender.calls != 0 {
-		t.Fatal("fail-closed construction reached signing or Redis")
+	if _, err := producer.PrepareValidation(context.Background(), validTransportDispatch()); err == nil {
+		t.Fatal("production producer accepted the public test-only HMAC profile")
+	}
+	if signer.calls != 1 || appender.calls != 0 {
+		t.Fatal("rejected test-only signature reached Redis")
 	}
 }
 

@@ -31,7 +31,7 @@ func (s *publisherOutboxStub) RetireNoAuthorityValidation(_ context.Context, lim
 	return s.retireCount, s.retireErr
 }
 
-func (s *publisherOutboxStub) ListPendingValidationIDs(_ context.Context, limit int) ([]string, error) {
+func (s *publisherOutboxStub) ListPendingValidationIDs(_ context.Context, limit int, _ time.Duration) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.limits = append(s.limits, limit)
@@ -97,10 +97,11 @@ func TestOutboxPublisherRunOnceBoundsConcurrencyAndIsolatesItemFailure(t *testin
 		fail:    map[string]error{"outbox-3": dispatchFailure},
 	}
 	publisher := newTestOutboxPublisher(t, outbox, dispatcher, OutboxPublisherConfig{
-		PollInterval:  time.Hour,
-		BatchSize:     len(outboxIDs),
-		MaxConcurrent: 2,
-		ReportFailure: func(error) {},
+		PollInterval:      time.Hour,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         len(outboxIDs),
+		MaxConcurrent:     2,
+		ReportFailure:     func(error) {},
 	})
 
 	done := make(chan error, 1)
@@ -152,10 +153,11 @@ func TestOutboxPublisherFullRetirementBatchDefersLiveDiscovery(t *testing.T) {
 		dispatchCalled = true
 		return nil
 	}), OutboxPublisherConfig{
-		PollInterval:  time.Hour,
-		BatchSize:     4,
-		MaxConcurrent: 1,
-		ReportFailure: func(error) {},
+		PollInterval:      time.Hour,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         4,
+		MaxConcurrent:     1,
+		ReportFailure:     func(error) {},
 	})
 	if err := publisher.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -179,10 +181,11 @@ func TestOutboxPublisherRunCancellationPropagatesAndDrainsActiveWorker(t *testin
 	})
 	reported := make(chan error, 1)
 	publisher := newTestOutboxPublisher(t, outbox, dispatcher, OutboxPublisherConfig{
-		PollInterval:  time.Hour,
-		BatchSize:     1,
-		MaxConcurrent: 1,
-		ReportFailure: func(err error) { reported <- err },
+		PollInterval:      time.Hour,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         1,
+		MaxConcurrent:     1,
+		ReportFailure:     func(err error) { reported <- err },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -230,10 +233,11 @@ func TestOutboxPublisherRunReportsFailedCycleAndContinues(t *testing.T) {
 	})
 	reported := make(chan error, 1)
 	publisher := newTestOutboxPublisher(t, outbox, dispatcher, OutboxPublisherConfig{
-		PollInterval:  time.Millisecond,
-		BatchSize:     1,
-		MaxConcurrent: 1,
-		ReportFailure: func(err error) { reported <- err },
+		PollInterval:      time.Millisecond,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         1,
+		MaxConcurrent:     1,
+		ReportFailure:     func(err error) { reported <- err },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -262,15 +266,18 @@ func TestOutboxPublisherRunReportsFailedCycleAndContinues(t *testing.T) {
 
 func TestOutboxPublisherRejectsInvalidBoundsAndStoreOverflow(t *testing.T) {
 	valid := OutboxPublisherConfig{
-		PollInterval:  time.Second,
-		BatchSize:     2,
-		MaxConcurrent: 1,
-		ReportFailure: func(error) {},
+		PollInterval:      time.Second,
+		VisibilityTimeout: time.Minute,
+		BatchSize:         2,
+		MaxConcurrent:     1,
+		ReportFailure:     func(error) {},
 	}
 	outbox := &publisherOutboxStub{}
 	dispatcher := validationDispatchFunc(func(context.Context, string) error { return nil })
 	tests := []OutboxPublisherConfig{
 		{},
+		withPublisherVisibilityTimeout(valid, MinOutboxVisibilityTimeout-time.Nanosecond),
+		withPublisherVisibilityTimeout(valid, MaxOutboxVisibilityTimeout+time.Nanosecond),
 		withPublisherBatchSize(valid, 0),
 		withPublisherBatchSize(valid, MaxOutboxPublisherBatchSize+1),
 		withPublisherConcurrency(valid, 0),
@@ -314,6 +321,11 @@ func equalStrings(left, right []string) bool {
 
 func withPublisherBatchSize(config OutboxPublisherConfig, value int) OutboxPublisherConfig {
 	config.BatchSize = value
+	return config
+}
+
+func withPublisherVisibilityTimeout(config OutboxPublisherConfig, value time.Duration) OutboxPublisherConfig {
+	config.VisibilityTimeout = value
 	return config
 }
 

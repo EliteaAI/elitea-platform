@@ -36,11 +36,13 @@ class ExecutionSupervisor:
         max_in_flight: int,
         admission_timeout_seconds: float,
         drain_timeout_seconds: float,
+        max_deliveries: int | None = None,
     ) -> None:
         if drain_timeout_seconds <= 0:
             raise ValueError("drain timeout must be positive")
+        delivery_capacity = max_in_flight if max_deliveries is None else max_deliveries
         self._admission = BoundedAdmissionGate(
-            capacity=max_in_flight,
+            capacity=delivery_capacity,
             timeout_seconds=admission_timeout_seconds,
         )
         self._sync = BoundedSyncExecutor(

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -57,8 +58,7 @@ func newCommandOutboxRepository(store sharedStore, expectedStream string) (*Comm
 	return &CommandOutboxRepository{store: store, expectedStream: expectedStream}, nil
 }
 
-func insertCommandOutbox(ctx context.Context, tx sqlExecutor, policy ValidationDispatchPolicy, record executiondomain.Admission) error {
-	deadline := record.Outbox.CreatedAt.Add(policy.DeadlineTTL).UTC()
+func insertCommandOutbox(ctx context.Context, tx sqlExecutor, policy ValidationDispatchPolicy, record executiondomain.Admission, timing admissionTiming) error {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO elitea_runtime.command_outbox (
     outbox_id, execution_id, generation, stream_name, dispatch_ordinal,
@@ -72,9 +72,9 @@ INSERT INTO elitea_runtime.command_outbox (
 		policy.ResourceClass,
 		policy.IsolationClass,
 		int32(policy.Priority),
-		deadline,
+		timing.Deadline,
 		policy.LimitsRevision,
-		record.Outbox.CreatedAt,
+		timing.AdmittedAt,
 	); err != nil {
 		return fmt.Errorf("insert command outbox: %w", err)
 	}
@@ -298,31 +298,60 @@ INSERT INTO elitea_runtime.execution_replay_events (
 	return true, nil
 }
 
-// ListPendingValidationIDs returns the oldest unpublished phase-one validation
-// outbox identities. Phase one admits generation one only; retry generations
-// require a separate terminal/supersession protocol and are deliberately not
-// dispatched speculatively. The query deliberately does not lock or claim rows:
-// multiple publisher instances may discover the same ID, while stable command
-// identity and MarkValidationPublished keep reconciliation idempotent.
-func (r *CommandOutboxRepository) ListPendingValidationIDs(ctx context.Context, limit int) ([]string, error) {
-	if limit <= 0 || limit > executionapp.MaxOutboxPublisherBatchSize {
+// ListPendingValidationIDs returns both new unpublished work and published,
+// unclaimed, nonterminal work whose bounded Redis visibility observation has
+// expired. PostgreSQL publication is therefore a visibility lease rather than
+// a permanent delivery acknowledgement. The query deliberately does not lock
+// rows: scaled-out publishers may discover the same ID, while the Redis adapter
+// atomically deduplicates by stable outbox identity and exact prepared bytes.
+func (r *CommandOutboxRepository) ListPendingValidationIDs(ctx context.Context, limit int, visibilityTimeout time.Duration) ([]string, error) {
+	if limit <= 0 || limit > executionapp.MaxOutboxPublisherBatchSize || visibilityTimeout < executionapp.MinOutboxVisibilityTimeout || visibilityTimeout > executionapp.MaxOutboxVisibilityTimeout {
 		return nil, executionapp.ErrInvalidPendingOutboxLimit
 	}
+	visibilityMillis := visibilityTimeout.Milliseconds()
 
 	rows, err := r.store.Query(ctx, `
-SELECT o.outbox_id
-FROM elitea_runtime.command_outbox AS o
-JOIN elitea_runtime.execution_jobs AS j
-  ON j.execution_id = o.execution_id AND j.generation = o.generation
-WHERE o.stream_name = $1
-  AND o.published_at IS NULL
-  AND o.retired_at IS NULL
-  AND o.deadline > clock_timestamp()
-  AND j.state = 'PENDING'
-  AND j.capability_id = 'configuration.validate.v1'
-  AND j.generation = 1
-ORDER BY o.created_at ASC, o.outbox_id ASC
-LIMIT $2`, r.expectedStream, int32(limit))
+SELECT candidate.outbox_id
+FROM (
+    (
+        SELECT o.outbox_id, o.created_at AS visibility_order
+        FROM elitea_runtime.command_outbox AS o
+        JOIN elitea_runtime.execution_jobs AS j
+          ON j.execution_id = o.execution_id AND j.generation = o.generation
+        WHERE o.stream_name = $1
+          AND o.published_at IS NULL
+          AND o.retired_at IS NULL
+          AND o.authority_granted_at IS NULL
+          AND o.deadline > statement_timestamp()
+          AND j.state = 'PENDING'
+          AND j.capability_id = 'configuration.validate.v1'
+          AND j.generation = 1
+        ORDER BY o.created_at ASC, o.outbox_id ASC
+        LIMIT $2
+    )
+    UNION ALL
+    (
+        SELECT o.outbox_id,
+               COALESCE(o.last_visibility_at, o.published_at) AS visibility_order
+        FROM elitea_runtime.command_outbox AS o
+        JOIN elitea_runtime.execution_jobs AS j
+          ON j.execution_id = o.execution_id AND j.generation = o.generation
+        WHERE o.stream_name = $1
+          AND o.published_at IS NOT NULL
+          AND o.retired_at IS NULL
+          AND o.authority_granted_at IS NULL
+          AND o.deadline > statement_timestamp()
+          AND COALESCE(o.last_visibility_at, o.published_at)
+              <= statement_timestamp() - ($3::bigint * interval '1 millisecond')
+          AND j.state IN ('PENDING', 'DISPATCHED')
+          AND j.capability_id = 'configuration.validate.v1'
+          AND j.generation = 1
+        ORDER BY COALESCE(o.last_visibility_at, o.published_at) ASC, o.outbox_id ASC
+        LIMIT $2
+    )
+) AS candidate
+ORDER BY candidate.visibility_order ASC, candidate.outbox_id ASC
+LIMIT $2`, r.expectedStream, int32(limit), visibilityMillis)
 	if err != nil {
 		return nil, fmt.Errorf("list pending command outbox: %w", err)
 	}
@@ -661,6 +690,27 @@ FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 			if publishedDigest != persisted {
 				return ErrOutboxPublishConflict
 			}
+			if authorityGranted || (jobState != string(executiondomain.JobPending) && jobState != string(executiondomain.JobDispatched)) {
+				return nil
+			}
+			tag, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.command_outbox
+SET last_visibility_at = clock_timestamp(),
+    publish_attempts = publish_attempts + 1,
+    last_error_code = NULL
+WHERE outbox_id = $1
+  AND published_at IS NOT NULL
+  AND retired_at IS NULL
+  AND authority_granted_at IS NULL
+  AND deadline > clock_timestamp()
+  AND prepared_signed_envelope_digest = $2
+  AND published_envelope_digest = $2`, outboxID, encodedDigest[:])
+			if err != nil {
+				return fmt.Errorf("refresh command visibility observation: %w", err)
+			}
+			if tag.RowsAffected() != 1 {
+				return executionapp.ErrDispatchDeadlineExpired
+			}
 			return nil
 		}
 		if authorityGranted {
@@ -675,6 +725,7 @@ FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 		tag, err := tx.Exec(ctx, `
 UPDATE elitea_runtime.command_outbox
 SET published_at = clock_timestamp(),
+    last_visibility_at = clock_timestamp(),
     published_envelope_digest = prepared_signed_envelope_digest,
     publish_attempts = publish_attempts + 1,
     last_error_code = NULL

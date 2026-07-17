@@ -11,8 +11,10 @@ class SignatureProfileV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     SIGNATURE_PROFILE_V1_UNSPECIFIED: _ClassVar[SignatureProfileV1]
     SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256: _ClassVar[SignatureProfileV1]
+    SIGNATURE_PROFILE_V1_ED25519: _ClassVar[SignatureProfileV1]
 SIGNATURE_PROFILE_V1_UNSPECIFIED: SignatureProfileV1
 SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256: SignatureProfileV1
+SIGNATURE_PROFILE_V1_ED25519: SignatureProfileV1
 
 class SignedWorkerCommandEnvelopeV1(_message.Message):
     __slots__ = ("envelope_schema_revision", "signature_profile", "key_id", "worker_command_bytes", "worker_command_digest", "signature")

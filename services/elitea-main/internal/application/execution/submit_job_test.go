@@ -16,6 +16,8 @@ type memoryAdmissionStore struct {
 	byKey map[string]ValidationAdmission
 }
 
+const memoryAdmissionDeadlineTTL = time.Minute
+
 func (s *memoryAdmissionStore) AdmitValidation(_ context.Context, admission ValidationAdmission) (AdmissionOutcome, error) {
 	key := admission.Record.IdempotencyScope + "\x00" + admission.Record.IdempotencyKey
 	if existing, ok := s.byKey[key]; ok {
@@ -26,6 +28,8 @@ func (s *memoryAdmissionStore) AdmitValidation(_ context.Context, admission Vali
 			ExecutionID: existing.Record.Job.ID,
 			CommandID:   existing.Record.Job.CommandID,
 			Created:     false,
+			AdmittedAt:  existing.Record.Job.CreatedAt,
+			Deadline:    existing.Record.Outbox.CreatedAt.Add(memoryAdmissionDeadlineTTL),
 		}, nil
 	}
 	admission.Record.InputBundle = admission.Record.InputBundle.Clone()
@@ -34,6 +38,8 @@ func (s *memoryAdmissionStore) AdmitValidation(_ context.Context, admission Vali
 		ExecutionID: admission.Record.Job.ID,
 		CommandID:   admission.Record.Job.CommandID,
 		Created:     true,
+		AdmittedAt:  admission.Record.Job.CreatedAt,
+		Deadline:    admission.Record.Outbox.CreatedAt.Add(memoryAdmissionDeadlineTTL),
 	}, nil
 }
 

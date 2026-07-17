@@ -78,6 +78,24 @@ func (v *ConformanceCommandVerifier) Verify(ctx context.Context, envelope *runti
 		return nil, ErrCommandAuthentication
 	}
 
+	return decodeAndValidateCommand(commandBytes, commandValidationConfig{
+		ProtocolRevision:      v.config.ProtocolRevision,
+		CapabilityVersion:     v.config.CapabilityVersion,
+		LimitsRevision:        v.config.LimitsRevision,
+		MaxInputManifestBytes: v.config.MaxInputManifestBytes,
+		MaxStringBytes:        v.config.MaxStringBytes,
+	})
+}
+
+type commandValidationConfig struct {
+	ProtocolRevision      string
+	CapabilityVersion     string
+	LimitsRevision        string
+	MaxInputManifestBytes uint64
+	MaxStringBytes        int
+}
+
+func decodeAndValidateCommand(commandBytes []byte, config commandValidationConfig) (*runtimev1.WorkerCommandV1, error) {
 	descriptor := (&runtimev1.WorkerCommandV1{}).ProtoReflect().Descriptor()
 	if err := runtimegrpc.ScanStrictMessage(commandBytes, descriptor); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrMalformedWorkerCommand, err)
@@ -93,17 +111,17 @@ func (v *ConformanceCommandVerifier) Verify(ctx context.Context, envelope *runti
 	if err != nil || !bytes.Equal(canonicalCommandBytes, commandBytes) {
 		return nil, ErrMalformedWorkerCommand
 	}
-	if err := v.validateCommand(command); err != nil {
+	if err := validateCommand(command, config); err != nil {
 		return nil, err
 	}
 	return command, nil
 }
 
-func (v *ConformanceCommandVerifier) validateCommand(command *runtimev1.WorkerCommandV1) error {
-	if command.GetProtocolRevision() != v.config.ProtocolRevision || command.GetLimitsRevision() != v.config.LimitsRevision {
+func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidationConfig) error {
+	if command.GetProtocolRevision() != config.ProtocolRevision || command.GetLimitsRevision() != config.LimitsRevision {
 		return ErrCommandIncompatible
 	}
-	if command.GetCapabilityId() != "configuration.validate.v1" || command.GetCapabilityVersion() != v.config.CapabilityVersion || command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE {
+	if command.GetCapabilityId() != "configuration.validate.v1" || command.GetCapabilityVersion() != config.CapabilityVersion || command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE {
 		return ErrCommandIncompatible
 	}
 	validation := command.GetConfigurationValidation()
@@ -120,14 +138,14 @@ func (v *ConformanceCommandVerifier) validateCommand(command *runtimev1.WorkerCo
 		validation.GetSchemaId(), validation.GetSchemaRevision(), validation.GetSettingsEntryId(),
 	}
 	for _, value := range values {
-		if value == "" || len(value) > v.config.MaxStringBytes {
+		if value == "" || len(value) > config.MaxStringBytes {
 			return ErrMalformedWorkerCommand
 		}
 	}
 	if command.GetGeneration() == 0 || command.GetDispatchOrdinal() == 0 || command.GetPriority() == 0 || command.GetDeadlineUnixMillis() <= 0 {
 		return ErrMalformedWorkerCommand
 	}
-	if input.GetByteLength() == 0 || input.GetByteLength() > v.config.MaxInputManifestBytes {
+	if input.GetByteLength() == 0 || input.GetByteLength() > config.MaxInputManifestBytes {
 		return ErrMalformedWorkerCommand
 	}
 	if !validDigestMessage(input.GetDigest()) || !validDigestMessage(validation.GetCatalogDigest()) || !validDigestMessage(validation.GetSchemaDigest()) {

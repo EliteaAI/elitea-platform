@@ -15,6 +15,8 @@ from typing import Protocol
 import grpc
 from elitea.runtime.v1 import common_pb2, errors_pb2, output_pb2
 
+from elitea_worker.constants import MAX_GRPC_REQUEST_BYTES, MAX_GRPC_RESPONSE_BYTES
+
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
     ExecutionCancelled,
@@ -61,12 +63,9 @@ def secure_output_channel(
     root_certificates: bytes,
     certificate_chain: bytes,
     private_key: bytes,
-    max_message_bytes: int = 64 * 1024,
 ) -> grpc.aio.Channel:
     if not target or not all((root_certificates, certificate_chain, private_key)):
         raise ValueError("verified target and workload certificates are required")
-    if max_message_bytes < 1:
-        raise ValueError("max_message_bytes must be positive")
     credentials = grpc.ssl_channel_credentials(
         root_certificates=root_certificates,
         private_key=private_key,
@@ -76,8 +75,8 @@ def secure_output_channel(
         target,
         credentials,
         options=(
-            ("grpc.max_send_message_length", max_message_bytes),
-            ("grpc.max_receive_message_length", max_message_bytes),
+            ("grpc.max_send_message_length", MAX_GRPC_REQUEST_BYTES),
+            ("grpc.max_receive_message_length", MAX_GRPC_RESPONSE_BYTES),
         ),
     )
 
@@ -541,7 +540,7 @@ class OutputGrpcSession:
 def _validated_metadata(
     metadata: tuple[tuple[str, str], ...],
 ) -> tuple[tuple[str, str], ...]:
-    allowed = {"x-elitea-workload-session"}
+    allowed = {"x-elitea-workload-session", "x-elitea-producer-id"}
     result: list[tuple[str, str]] = []
     seen: set[str] = set()
     for name, value in metadata:
@@ -557,6 +556,6 @@ def _validated_metadata(
             raise ValueError("output gRPC metadata is not allowlisted")
         seen.add(normalized)
         result.append((normalized, value))
-    if seen != allowed:
+    if "x-elitea-workload-session" not in seen:
         raise ValueError("output gRPC metadata is not allowlisted")
     return tuple(result)

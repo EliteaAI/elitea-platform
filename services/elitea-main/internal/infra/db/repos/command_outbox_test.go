@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
@@ -22,7 +23,7 @@ func TestListPendingValidationIDsIsBoundedOldestFirstAndPhaseOneOnly(t *testing.
 		t.Fatal(err)
 	}
 
-	outboxIDs, err := repository.ListPendingValidationIDs(context.Background(), 2)
+	outboxIDs, err := repository.ListPendingValidationIDs(context.Background(), 2, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,12 +35,20 @@ func TestListPendingValidationIDsIsBoundedOldestFirstAndPhaseOneOnly(t *testing.
 	}
 	call := executor.queryCalls[0]
 	for _, fragment := range []string{
-		"SELECT o.outbox_id",
+		"SELECT candidate.outbox_id",
+		"UNION ALL",
 		"o.published_at IS NULL",
+		"o.published_at IS NOT NULL",
+		"COALESCE(o.last_visibility_at, o.published_at)",
+		"<= statement_timestamp()",
+		"o.authority_granted_at IS NULL",
 		"j.state = 'PENDING'",
+		"j.state IN ('PENDING', 'DISPATCHED')",
 		"j.capability_id = 'configuration.validate.v1'",
 		"j.generation = 1",
 		"ORDER BY o.created_at ASC, o.outbox_id ASC",
+		"ORDER BY COALESCE(o.last_visibility_at, o.published_at) ASC, o.outbox_id ASC",
+		"ORDER BY candidate.visibility_order ASC, candidate.outbox_id ASC",
 		"LIMIT $2",
 	} {
 		if !strings.Contains(call.sql, fragment) {
@@ -49,7 +58,7 @@ func TestListPendingValidationIDsIsBoundedOldestFirstAndPhaseOneOnly(t *testing.
 	if strings.Contains(call.sql, "DISTINCT ON") || strings.Contains(call.sql, "FOR UPDATE") || strings.Contains(call.sql, "SKIP LOCKED") {
 		t.Fatal("discovery query unexpectedly took transaction or row-lock ownership")
 	}
-	if !reflect.DeepEqual(call.args, []any{"runtime:commands", int32(2)}) {
+	if !reflect.DeepEqual(call.args, []any{"runtime:commands", int32(2), int64(60_000)}) {
 		t.Fatalf("unexpected query arguments: %#v", call.args)
 	}
 }
@@ -62,13 +71,22 @@ func TestListPendingValidationIDsRejectsInvalidOrViolatedLimit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repository.ListPendingValidationIDs(context.Background(), limit); !errors.Is(err, executionapp.ErrInvalidPendingOutboxLimit) {
+			if _, err := repository.ListPendingValidationIDs(context.Background(), limit, time.Minute); !errors.Is(err, executionapp.ErrInvalidPendingOutboxLimit) {
 				t.Fatalf("expected invalid limit, got %v", err)
 			}
 			if len(executor.queryCalls) != 0 {
 				t.Fatal("invalid limit reached the database")
 			}
 		})
+	}
+	for _, visibilityTimeout := range []time.Duration{0, executionapp.MinOutboxVisibilityTimeout - time.Nanosecond, executionapp.MaxOutboxVisibilityTimeout + time.Nanosecond} {
+		repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: &scriptedExecutor{}}, "runtime:commands")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.ListPendingValidationIDs(context.Background(), 1, visibilityTimeout); !errors.Is(err, executionapp.ErrInvalidPendingOutboxLimit) {
+			t.Fatalf("expected invalid visibility timeout %s, got %v", visibilityTimeout, err)
+		}
 	}
 
 	executor := &scriptedExecutor{rowsResult: &scriptedRows{rows: []scriptedRow{
@@ -79,7 +97,7 @@ func TestListPendingValidationIDsRejectsInvalidOrViolatedLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.ListPendingValidationIDs(context.Background(), 1); !errors.Is(err, executionapp.ErrPendingOutboxBatchLimitExceeded) {
+	if _, err := repository.ListPendingValidationIDs(context.Background(), 1, time.Minute); !errors.Is(err, executionapp.ErrPendingOutboxBatchLimitExceeded) {
 		t.Fatalf("expected violated store limit, got %v", err)
 	}
 }
@@ -99,7 +117,7 @@ func TestListPendingValidationIDsRejectsInvalidStoredIdentityAndIterationFailure
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repository.ListPendingValidationIDs(context.Background(), 1); err == nil {
+			if _, err := repository.ListPendingValidationIDs(context.Background(), 1, time.Minute); err == nil {
 				t.Fatal("expected invalid stored row to fail closed")
 			}
 		})
@@ -250,6 +268,28 @@ func TestRetirementIndexesMatchBoundedScanPredicates(t *testing.T) {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("retirement index contract is missing %q", fragment)
 		}
+	}
+}
+
+func TestVisibilityRepairMigrationIsExpandCompatible(t *testing.T) {
+	migration, err := os.ReadFile("../../../../migrations/shared/0035_command_visibility_repair.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(migration)
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS last_visibility_at TIMESTAMPTZ",
+		"last_visibility_at IS NULL OR published_at IS NOT NULL",
+		") NOT VALID",
+		"COALESCE(last_visibility_at, published_at)",
+		"command_outbox_visibility_repair_idx",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("visibility-repair migration is missing %q", fragment)
+		}
+	}
+	if strings.Contains(sql, "UPDATE elitea_runtime.command_outbox") || strings.Contains(sql, "last_visibility_at TIMESTAMPTZ NOT NULL") {
+		t.Fatal("visibility-repair migration performs an unbounded backfill or rejects N-1 writers")
 	}
 }
 

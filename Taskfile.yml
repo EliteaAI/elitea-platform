@@ -52,7 +52,7 @@ tasks:
       - scripts/contract/generate_proto.sh
 
   contract:check:
-    desc: Validate protocol sources and checked-in configuration-validation vectors
+    desc: Validate protocol sources and checked-in runtime-v1 vectors
     cmds:
       - buf format --diff --exit-code libs/proto
       - buf lint libs/proto

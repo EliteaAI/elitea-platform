@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
@@ -43,9 +44,9 @@ func NewValidationHandler(authorizer ValidationAuthorizer, submitter ValidationS
 }
 
 // Submit admits one immutable configuration revision for asynchronous
-// validation. This handler intentionally remains unmounted until the
-// composition root has a trustworthy peer/session authorizer and the public
-// API route semantics have been approved.
+// validation. The production composition mounts it only when the isolated
+// runtime, trusted public authorizer, durable outbox, and private worker
+// listeners have all been configured successfully.
 func (h *ValidationHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	revisionID := chi.URLParam(r, "configurationRevisionID")
@@ -83,6 +84,7 @@ func (h *ValidationHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		Settings:                settings,
 	})
 	if err != nil {
+		var capacityError *executionapp.AdmissionCapacityError
 		switch {
 		case errors.Is(err, configurationapp.ErrInvalidValidationAdmission), errors.Is(err, configurationapp.ErrCredentialBearingValidationInput), errors.Is(err, executionapp.ErrInvalidAdmission):
 			writeValidationError(w, http.StatusBadRequest, "invalid validation request")
@@ -90,6 +92,10 @@ func (h *ValidationHandler) Submit(w http.ResponseWriter, r *http.Request) {
 			writeValidationError(w, http.StatusRequestEntityTooLarge, "validation input exceeds the approved limit")
 		case errors.Is(err, executionapp.ErrIdempotencyConflict):
 			writeValidationError(w, http.StatusConflict, "idempotency key conflict")
+		case errors.As(err, &capacityError):
+			retryAfterSeconds := int64(capacityError.RetryAfter().Seconds())
+			w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds, 10))
+			writeValidationError(w, http.StatusServiceUnavailable, "validation admission is temporarily at capacity")
 		default:
 			writeValidationError(w, http.StatusInternalServerError, "validation admission failed")
 		}
