@@ -63,7 +63,7 @@ jobs:
       matrix:
         image:
           - name: elitea-main
-            context: ./services/elitea-main
+            context: .
             dockerfile: ./services/elitea-main/Containerfile
           - name: elitea-ui
             context: .

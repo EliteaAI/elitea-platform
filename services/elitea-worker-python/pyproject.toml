@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "elitea-worker-python"
+version = "0.1.0"
+description = "Standalone language-neutral ELITEA runtime reference worker"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "cryptography>=44,<47",
+  "elitea-sdk @ git+https://github.com/EliteaAI/elitea-sdk.git@2cb85480260a92207f3b3d6d3a84149e10de7949",
+  "elitea-runtime-proto==0.1.0",
+  "grpcio>=1.70,<2",
+  "httpx>=0.27,<1",
+  "protobuf>=5.29,<7",
+  "pydantic>=2.10,<3",
+  "redis>=5.2,<7",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.3,<10",
+]
+
+[project.scripts]
+elitea-worker = "elitea_worker.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/elitea_worker"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

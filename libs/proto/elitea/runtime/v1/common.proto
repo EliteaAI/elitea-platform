@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// DigestAlgorithmV1 is deliberately closed to SHA-256 for runtime protocol v1.
+enum DigestAlgorithmV1 {
+  DIGEST_ALGORITHM_V1_UNSPECIFIED = 0;
+  DIGEST_ALGORITHM_V1_SHA256 = 1;
+}
+
+// DigestV1 carries a cryptographic digest. Protocol v1 accepts only SHA-256
+// and requires value to contain exactly 32 bytes.
+message DigestV1 {
+  DigestAlgorithmV1 algorithm = 1;
+  bytes value = 2;
+  reserved 3 to 15;
+}
+
+// ExecutionIdentityV1 contains server-authorized correlation identifiers. It
+// never carries a credential or a caller-selectable authorization scope.
+message ExecutionIdentityV1 {
+  string tenant_id = 1;
+  string resource_project_id = 2;
+  string projection_project_id = 3;
+  string command_id = 4;
+  string execution_id = 5;
+  uint64 generation = 6;
+  reserved 7 to 15;
+}
+
+// ExecutionFenceV1 is issued by the control service after a successful claim.
+message ExecutionFenceV1 {
+  string workload_session_id = 1;
+  uint64 claim_attempt = 2;
+  uint64 lease_epoch = 3;
+  string producer_id = 4;
+  bytes fence_token = 5;
+  reserved 6 to 15;
+}
+
+enum DesiredExecutionStateV1 {
+  DESIRED_EXECUTION_STATE_V1_UNSPECIFIED = 0;
+  DESIRED_EXECUTION_STATE_V1_RUNNING = 1;
+  DESIRED_EXECUTION_STATE_V1_CANCELLED = 2;
+  DESIRED_EXECUTION_STATE_V1_DRAINING = 3;
+}
+
+enum ExecutionOutcomeV1 {
+  EXECUTION_OUTCOME_V1_UNSPECIFIED = 0;
+  EXECUTION_OUTCOME_V1_SUCCEEDED = 1;
+  EXECUTION_OUTCOME_V1_FAILED = 2;
+  EXECUTION_OUTCOME_V1_CANCELLED = 3;
+  EXECUTION_OUTCOME_V1_OUTCOME_UNKNOWN = 4;
+}

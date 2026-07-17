@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+import "elitea/runtime/v1/envelope.proto";
+import "elitea/runtime/v1/errors.proto";
+import "elitea/runtime/v1/input.proto";
+import "elitea/runtime/v1/output.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+enum ClaimDispositionV1 {
+  CLAIM_DISPOSITION_V1_UNSPECIFIED = 0;
+  CLAIM_DISPOSITION_V1_ACCEPTED = 1;
+  CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK = 2;
+  CLAIM_DISPOSITION_V1_RECOVER_SETTLEMENT = 3;
+  CLAIM_DISPOSITION_V1_SETTLED_ACK = 4;
+  CLAIM_DISPOSITION_V1_OBSOLETE_ACK = 5;
+  CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK = 6;
+  CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK = 7;
+  CLAIM_DISPOSITION_V1_RETIRED_ACK = 8;
+}
+
+message ClaimCommandRequestV1 {
+  string workload_session_id = 1;
+  string producer_id = 2;
+  SignedWorkerCommandEnvelopeV1 signed_command = 3;
+  reserved 4 to 15;
+}
+
+// SettlementRecoveryV1 carries only durable recovery material. A worker must
+// never reconstruct these values or rerun business logic after redelivery.
+// RECOVER_TERMINAL_ACK requires proposal, proposal_digest and idempotency_key.
+// RECOVER_SETTLEMENT requires settlement_receipt_id and outcome.
+message SettlementRecoveryV1 {
+  SettlementProposalV1 proposal = 1;
+  DigestV1 proposal_digest = 2;
+  string idempotency_key = 3;
+  string settlement_receipt_id = 4;
+  ExecutionOutcomeV1 outcome = 5;
+  reserved 6 to 15;
+}
+
+message ClaimReceiptV1 {
+  ClaimDispositionV1 disposition = 1;
+  ExecutionIdentityV1 identity = 2;
+  ExecutionFenceV1 fence = 3;
+  int64 lease_expires_at_unix_millis = 4;
+  ExecutionInputBundleReferenceV1 input_bundle_ref = 5;
+  ExecutionInputBundleV1 input_bundle = 6;
+  DesiredExecutionStateV1 desired_state = 7;
+  uint64 claim_handoff_watermark = 8;
+  string claim_id = 9;
+  SettlementRecoveryV1 settlement_recovery = 10;
+  RuntimeErrorV1 retirement = 11;
+  reserved 12 to 15;
+}
+
+message ClaimCommandResponseV1 {
+  ClaimReceiptV1 receipt = 1;
+  RuntimeErrorV1 rejection = 2;
+  reserved 3 to 15;
+}
+
+message RenewLeaseRequestV1 {
+  ExecutionIdentityV1 identity = 1;
+  ExecutionFenceV1 fence = 2;
+  string idempotency_key = 3;
+  reserved 4 to 15;
+}
+
+message RenewLeaseResponseV1 {
+  int64 lease_expires_at_unix_millis = 1;
+  DesiredExecutionStateV1 desired_state = 2;
+  RuntimeErrorV1 rejection = 3;
+  reserved 4 to 15;
+}
+
+message ObserveDesiredStateRequestV1 {
+  ExecutionIdentityV1 identity = 1;
+  ExecutionFenceV1 fence = 2;
+  reserved 3 to 15;
+}
+
+message ObserveDesiredStateResponseV1 {
+  DesiredExecutionStateV1 desired_state = 1;
+  RuntimeErrorV1 rejection = 2;
+  reserved 3 to 15;
+}
+
+message PrepareSettlementRequestV1 {
+  ExecutionIdentityV1 identity = 1;
+  ExecutionFenceV1 fence = 2;
+  SettlementProposalV1 proposal = 3;
+  DigestV1 proposal_digest = 4;
+  string idempotency_key = 5;
+  reserved 6 to 15;
+}
+
+message PrepareSettlementResponseV1 {
+  string settlement_receipt_id = 1;
+  ExecutionOutcomeV1 outcome = 2;
+  RuntimeErrorV1 rejection = 3;
+  reserved 4 to 15;
+}
+
+service RuntimeControlService {
+  rpc ClaimCommand(ClaimCommandRequestV1) returns (ClaimCommandResponseV1);
+  rpc RenewLease(RenewLeaseRequestV1) returns (RenewLeaseResponseV1);
+  rpc ObserveDesiredState(ObserveDesiredStateRequestV1) returns (ObserveDesiredStateResponseV1);
+  rpc PrepareSettlement(PrepareSettlementRequestV1) returns (PrepareSettlementResponseV1);
+}

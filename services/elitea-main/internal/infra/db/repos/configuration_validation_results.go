@@ -1,0 +1,526 @@
+package repos
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
+)
+
+const (
+	replayEventConfigurationValidation = "configuration.validation.completed"
+	replayEventRuntimeFailure          = "execution.runtime_failed"
+)
+
+type ConfigurationValidationResultsRepository struct {
+	projects projectStore
+}
+
+func NewConfigurationValidationResultsRepository(pool *pgxpool.Pool) (*ConfigurationValidationResultsRepository, error) {
+	projects, err := newPostgresProjectStore(pool)
+	if err != nil {
+		return nil, err
+	}
+	return &ConfigurationValidationResultsRepository{projects: projects}, nil
+}
+
+func newConfigurationValidationResultsRepository(projects projectStore) (*ConfigurationValidationResultsRepository, error) {
+	if projects == nil {
+		return nil, errors.New("tenant projection database is required")
+	}
+	return &ConfigurationValidationResultsRepository{projects: projects}, nil
+}
+
+func (r *ConfigurationValidationResultsRepository) ProjectConfigurationValidation(ctx context.Context, projection outputapp.ValidationProjection) (outputapp.ProjectionOutcome, error) {
+	if err := projection.Frame.Validate(); err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+	if len(projection.BrowserData) == 0 || len(projection.BrowserData) > outputapp.MaxConfigurationValidationResultBytes || !json.Valid(projection.BrowserData) {
+		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
+	}
+	record, projectID, err := validationOutputRecord(projection.Frame)
+	if err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+	issuesJSON, err := validationIssuesJSON(projection.Frame.Result.Issues)
+	if err != nil {
+		return outputapp.ProjectionOutcome{}, fmt.Errorf("encode durable validation issues: %w", err)
+	}
+
+	var outcome outputapp.ProjectionOutcome
+	cancellationWon := false
+	err = r.projects.WithinProjectTx(ctx, projectID, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
+		existing, err := loadExistingOutput(ctx, tx, record)
+		if err == nil {
+			if sameDurableOutput(existing, record) {
+				cursor, err := replayCursor(ctx, tx, record.EventID)
+				if err != nil {
+					return fmt.Errorf("load replayed validation cursor: %w", err)
+				}
+				outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
+				return nil
+			}
+			if sameCanonicalCancellation(existing, record) {
+				if _, err := replayCursor(ctx, tx, record.EventID); err != nil {
+					return fmt.Errorf("load materialized cancellation cursor: %w", err)
+				}
+				cancellationWon = true
+				return nil
+			}
+			if !sameDurableOutput(existing, record) {
+				return outputapp.ErrValidationOutputConflict
+			}
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
+		insertResult, err := insertOutputInbox(ctx, tx, record)
+		if err != nil {
+			return err
+		}
+		if !insertResult.Inserted {
+			existing, loadErr := loadExistingOutput(ctx, tx, record)
+			if loadErr == nil {
+				if sameDurableOutput(existing, record) {
+					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
+					if cursorErr != nil {
+						return cursorErr
+					}
+					outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
+					return nil
+				}
+				if sameCanonicalCancellation(existing, record) {
+					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
+						return cursorErr
+					}
+					cancellationWon = true
+					return nil
+				}
+				return outputapp.ErrValidationOutputConflict
+			}
+			if errors.Is(loadErr, pgx.ErrNoRows) {
+				if insertResult.CancellationRejected {
+					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
+						return err
+					}
+					cancellationWon = true
+					return nil
+				}
+				if insertResult.DeadlineRejected {
+					return outputapp.ErrOutputDeadlineExceeded
+				}
+				return runtimedomain.ErrStaleFence
+			}
+			return loadErr
+		}
+
+		binding := projection.Frame.Result.Binding
+		command := binding.Command
+		if _, err := tx.Exec(ctx, `
+INSERT INTO elitea_runtime.configuration_validation_results (
+    logical_output_id, execution_id, generation, configuration_revision_id,
+    configuration_type, catalog_revision, catalog_digest, schema_id,
+    schema_revision, schema_digest, input_bundle_id, input_bundle_digest,
+    settings_entry_id, settings_entry_version, settings_content_digest,
+    valid, issues_json
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    $15, $16, $17
+)`,
+			record.LogicalOutputID,
+			record.ExecutionID,
+			int64(record.Generation),
+			command.ConfigurationRevisionID,
+			command.ConfigurationType,
+			command.CatalogRevision,
+			command.CatalogDigest[:],
+			command.SchemaID,
+			command.SchemaRevision,
+			command.SchemaDigest[:],
+			binding.InputBundleID,
+			binding.InputBundleDigest[:],
+			command.SettingsEntryID,
+			binding.SettingsEntryVersion,
+			binding.SettingsContentDigest[:],
+			projection.Frame.Result.Valid,
+			issuesJSON,
+		); err != nil {
+			return fmt.Errorf("insert configuration validation result: %w", err)
+		}
+
+		var projectedRevision string
+		err = tx.QueryRow(ctx, `
+INSERT INTO configuration_validation_projection (
+    revision_id, execution_id, execution_generation, logical_output_id,
+    valid, issues_json, projected_at
+)
+SELECT revision_id, $2, $3, $4, $5, $6, clock_timestamp()
+FROM configuration_revisions
+WHERE revision_id = $1
+RETURNING revision_id`,
+			command.ConfigurationRevisionID,
+			record.ExecutionID,
+			int64(record.Generation),
+			record.LogicalOutputID,
+			projection.Frame.Result.Valid,
+			issuesJSON,
+		).Scan(&projectedRevision)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errors.New("configuration revision is not present in the authorized projection project")
+		}
+		if err != nil {
+			return fmt.Errorf("insert tenant validation projection: %w", err)
+		}
+		if projectedRevision != command.ConfigurationRevisionID {
+			return errors.New("tenant validation projection returned a mismatched revision")
+		}
+
+		cursor, err := appendReplayEvent(ctx, tx, record, replayEventConfigurationValidation, projection.BrowserData)
+		if err != nil {
+			return err
+		}
+		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
+			return err
+		}
+		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: cursor, CommittedSequence: record.Sequence}
+		return nil
+	})
+	if err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+	if cancellationWon {
+		// The transaction above has committed a canonical terminal cancellation
+		// (or proved its exact replay) before the transport is authorized to tell
+		// the worker to replace its local frame.
+		return outputapp.ProjectionOutcome{}, outputapp.ErrOutputCancelled
+	}
+	return outcome, nil
+}
+
+func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx context.Context, projection outputapp.RuntimeFailureProjection) (outputapp.ProjectionOutcome, error) {
+	if err := projection.Frame.Validate(); err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+	if len(projection.BrowserData) == 0 || len(projection.BrowserData) > outputapp.MaxConfigurationValidationResultBytes || !json.Valid(projection.BrowserData) {
+		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
+	}
+	record, projectID, err := failureOutputRecord(projection.Frame)
+	if err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+
+	var outcome outputapp.ProjectionOutcome
+	cancellationWon := false
+	err = r.projects.WithinProjectTx(ctx, projectID, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
+		existing, err := loadExistingOutput(ctx, tx, record)
+		if err == nil {
+			if sameDurableOutput(existing, record) {
+				cursor, err := replayCursor(ctx, tx, record.EventID)
+				if err != nil {
+					return fmt.Errorf("load replayed failure cursor: %w", err)
+				}
+				outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
+				return nil
+			}
+			if sameCanonicalCancellation(existing, record) {
+				if _, err := replayCursor(ctx, tx, record.EventID); err != nil {
+					return fmt.Errorf("load materialized failure cancellation cursor: %w", err)
+				}
+				cancellationWon = true
+				return nil
+			}
+			return outputapp.ErrValidationOutputConflict
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		insertResult, err := insertOutputInbox(ctx, tx, record)
+		if err != nil {
+			return err
+		}
+		if !insertResult.Inserted {
+			existing, loadErr := loadExistingOutput(ctx, tx, record)
+			if loadErr == nil {
+				if sameDurableOutput(existing, record) {
+					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
+					if cursorErr != nil {
+						return cursorErr
+					}
+					outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
+					return nil
+				}
+				if sameCanonicalCancellation(existing, record) {
+					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
+						return cursorErr
+					}
+					cancellationWon = true
+					return nil
+				}
+				return outputapp.ErrValidationOutputConflict
+			}
+			if errors.Is(loadErr, pgx.ErrNoRows) {
+				if insertResult.CancellationRejected {
+					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
+						return err
+					}
+					cancellationWon = true
+					return nil
+				}
+				if insertResult.DeadlineRejected {
+					return outputapp.ErrOutputDeadlineExceeded
+				}
+				return runtimedomain.ErrStaleFence
+			}
+			return loadErr
+		}
+		cursor, err := appendReplayEvent(ctx, tx, record, replayEventRuntimeFailure, projection.BrowserData)
+		if err != nil {
+			return err
+		}
+		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
+			return err
+		}
+		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: cursor, CommittedSequence: record.Sequence}
+		return nil
+	})
+	if err != nil {
+		return outputapp.ProjectionOutcome{}, err
+	}
+	if cancellationWon {
+		return outputapp.ProjectionOutcome{}, outputapp.ErrOutputCancelled
+	}
+	return outcome, nil
+}
+
+func validationOutputRecord(frame outputapp.ConfigurationValidationFrame) (outputRecord, int64, error) {
+	resourceProjectID, err := parseProjectID(frame.ResourceProjectID)
+	if err != nil {
+		return outputRecord{}, 0, outputapp.ErrInvalidValidationOutput
+	}
+	projectionProjectID, err := parseProjectID(frame.ProjectionProjectID)
+	if err != nil {
+		return outputRecord{}, 0, outputapp.ErrInvalidValidationOutput
+	}
+	return frameOutputRecord(
+		frame.EventID, frame.LogicalOutputID, frame.StreamID, frame.TenantID,
+		resourceProjectID, projectionProjectID, frame.Sequence,
+		frame.ClaimHandoffWatermark, frame.OccurredAt, frame.Fence,
+		payloadTypeConfigurationValidation, frame.PayloadDigest, frame.EncodedResult,
+		frame.Settlement, frame.EncodedSettlement,
+	), projectionProjectID, nil
+}
+
+func failureOutputRecord(frame outputapp.RuntimeFailureFrame) (outputRecord, int64, error) {
+	resourceProjectID, err := parseProjectID(frame.ResourceProjectID)
+	if err != nil {
+		return outputRecord{}, 0, outputapp.ErrInvalidValidationOutput
+	}
+	projectionProjectID, err := parseProjectID(frame.ProjectionProjectID)
+	if err != nil {
+		return outputRecord{}, 0, outputapp.ErrInvalidValidationOutput
+	}
+	return frameOutputRecord(
+		frame.EventID, frame.LogicalOutputID, frame.StreamID, frame.TenantID,
+		resourceProjectID, projectionProjectID, frame.Sequence,
+		frame.ClaimHandoffWatermark, frame.OccurredAt, frame.Fence,
+		payloadTypeRuntimeFailure, frame.PayloadDigest, frame.EncodedFailure,
+		frame.Settlement, frame.EncodedSettlement,
+	), projectionProjectID, nil
+}
+
+func frameOutputRecord(eventID, logicalOutputID, streamID, tenantID string, resourceProjectID, projectionProjectID int64, sequence, watermark uint64, occurredAt time.Time, fence runtimedomain.Fence, payloadType string, payloadDigest runtimedomain.Digest, payload []byte, settlement executionapp.SettlementProposal, encodedSettlement []byte) outputRecord {
+	return outputRecord{
+		EventID:               eventID,
+		LogicalOutputID:       logicalOutputID,
+		ExecutionID:           fence.ExecutionID,
+		Generation:            fence.Generation,
+		TenantID:              tenantID,
+		ResourceProjectID:     resourceProjectID,
+		ProjectionProjectID:   projectionProjectID,
+		CommandID:             fence.CommandID,
+		WorkloadIdentity:      fence.WorkloadIdentity,
+		WorkloadSessionID:     fence.WorkloadSessionID,
+		ProducerID:            fence.ProducerID,
+		ClaimAttempt:          fence.ClaimAttempt,
+		LeaseEpoch:            fence.LeaseEpoch,
+		FenceToken:            fence.Token,
+		StreamID:              streamID,
+		Sequence:              sequence,
+		ClaimHandoffWatermark: watermark,
+		PayloadType:           payloadType,
+		PayloadDigest:         payloadDigest,
+		PayloadBytes:          append([]byte(nil), payload...),
+		SettlementProposalID:  settlement.ProposalID,
+		SettlementOutcome:     settlement.Outcome,
+		SettlementBytes:       append([]byte(nil), encodedSettlement...),
+		SettlementDigest:      settlement.ProposalDigest,
+		SettlementKey:         settlement.IdempotencyKey,
+		OccurredAt:            occurredAt.UTC(),
+	}
+}
+
+func canonicalCancellationOutput(source outputRecord) (outputRecord, []byte, error) {
+	if err := source.validate(); err != nil {
+		return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
+	}
+	switch source.PayloadType {
+	case payloadTypeConfigurationValidation:
+		if source.SettlementOutcome != executionapp.SettlementSucceeded {
+			return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
+		}
+	case payloadTypeRuntimeFailure:
+		if source.SettlementOutcome != executionapp.SettlementFailed {
+			return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
+		}
+	default:
+		return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
+	}
+	failure := &runtimev1.RuntimeErrorV1{
+		Code:        runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_CANCELLED,
+		SafeMessage: "Execution was cancelled.",
+		Retryable:   false,
+	}
+	payloadBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(failure)
+	if err != nil {
+		return outputRecord{}, nil, fmt.Errorf("encode canonical cancellation payload: %w", err)
+	}
+	payloadDigest := runtimedomain.SHA256(payloadBytes)
+	wireProposal := &runtimev1.SettlementProposalV1{
+		ProposalId:              source.SettlementProposalID,
+		RequestedOutcome:        runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_CANCELLED,
+		TerminalLogicalOutputId: source.LogicalOutputID,
+		TerminalEventId:         source.EventID,
+		TerminalSequence:        source.Sequence,
+		TerminalPayloadDigest: &runtimev1.DigestV1{
+			Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
+			Value:     append([]byte(nil), payloadDigest[:]...),
+		},
+		PrepareIdempotencyKey: source.SettlementKey,
+	}
+	settlementBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(wireProposal)
+	if err != nil {
+		return outputRecord{}, nil, fmt.Errorf("encode canonical cancellation settlement: %w", err)
+	}
+	cancelled := source
+	cancelled.PayloadType = payloadTypeRuntimeFailure
+	cancelled.PayloadDigest = payloadDigest
+	cancelled.PayloadBytes = payloadBytes
+	cancelled.SettlementOutcome = executionapp.SettlementCancelled
+	cancelled.SettlementBytes = settlementBytes
+	cancelled.SettlementDigest = runtimedomain.SHA256(settlementBytes)
+	if err := cancelled.validate(); err != nil {
+		return outputRecord{}, nil, err
+	}
+	browserData, err := json.Marshal(struct {
+		Code        string `json:"code"`
+		SafeMessage string `json:"safe_message"`
+		Retryable   bool   `json:"retryable"`
+	}{Code: "CANCELLED", SafeMessage: failure.GetSafeMessage(), Retryable: failure.GetRetryable()})
+	if err != nil {
+		return outputRecord{}, nil, fmt.Errorf("encode canonical cancellation browser event: %w", err)
+	}
+	return cancelled, browserData, nil
+}
+
+func sameCanonicalCancellation(existing, source outputRecord) bool {
+	cancelled, _, err := canonicalCancellationOutput(source)
+	return err == nil && sameDurableOutput(existing, cancelled)
+}
+
+func materializeCanonicalCancellation(ctx context.Context, tx sqlExecutor, source outputRecord) error {
+	cancelled, browserData, err := canonicalCancellationOutput(source)
+	if err != nil {
+		return err
+	}
+	insertResult, err := insertOutputInbox(ctx, tx, cancelled)
+	if err != nil {
+		return err
+	}
+	if !insertResult.Inserted {
+		existing, loadErr := loadExistingOutput(ctx, tx, cancelled)
+		if loadErr != nil {
+			if errors.Is(loadErr, pgx.ErrNoRows) {
+				return runtimedomain.ErrStaleFence
+			}
+			return loadErr
+		}
+		if !sameDurableOutput(existing, cancelled) {
+			return outputapp.ErrValidationOutputConflict
+		}
+		if _, err := replayCursor(ctx, tx, cancelled.EventID); err != nil {
+			return fmt.Errorf("load canonical cancellation cursor: %w", err)
+		}
+		return nil
+	}
+	if _, err := appendReplayEvent(ctx, tx, cancelled, replayEventRuntimeFailure, browserData); err != nil {
+		return err
+	}
+	return markOutputProjected(ctx, tx, cancelled.EventID)
+}
+
+func validationIssuesJSON(issues []configurationdomain.ValidationIssue) ([]byte, error) {
+	type durableIssue struct {
+		Code        string `json:"code"`
+		JSONPointer string `json:"json_pointer"`
+		SafeMessage string `json:"safe_message"`
+	}
+	encoded := make([]durableIssue, len(issues))
+	for i, issue := range issues {
+		encoded[i] = durableIssue{Code: issue.Code, JSONPointer: issue.JSONPointer, SafeMessage: issue.SafeMessage}
+	}
+	return json.Marshal(encoded)
+}
+
+func appendReplayEvent(ctx context.Context, tx sqlExecutor, record outputRecord, eventType string, eventBytes []byte) (uint64, error) {
+	digest := runtimedomain.SHA256(eventBytes)
+	var cursor int64
+	err := tx.QueryRow(ctx, `
+INSERT INTO elitea_runtime.execution_replay_events (
+    event_id, execution_id, generation, projection_project_id,
+    event_type, event_bytes, event_digest
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING cursor`,
+		record.EventID,
+		record.ExecutionID,
+		int64(record.Generation),
+		record.ProjectionProjectID,
+		eventType,
+		eventBytes,
+		digest[:],
+	).Scan(&cursor)
+	if err != nil {
+		return 0, fmt.Errorf("append durable execution replay event: %w", err)
+	}
+	if cursor <= 0 {
+		return 0, errors.New("replay event returned invalid cursor")
+	}
+	return uint64(cursor), nil
+}
+
+func markOutputProjected(ctx context.Context, tx sqlExecutor, eventID string) error {
+	tag, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.output_inbox
+SET projected_at = clock_timestamp()
+WHERE event_id = $1 AND projected_at IS NULL`, eventID)
+	if err != nil {
+		return fmt.Errorf("mark output inbox projected: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("output inbox was not marked projected")
+	}
+	return nil
+}
+
+var _ outputapp.ConfigurationValidationProjector = (*ConfigurationValidationResultsRepository)(nil)
+var _ outputapp.RuntimeFailureProjector = (*ConfigurationValidationResultsRepository)(nil)

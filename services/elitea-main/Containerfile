@@ -5,27 +5,35 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
-# Cache module downloads separately from source.
-COPY go.mod go.sum ./
-RUN go mod download
+# This image uses the repository root as its build context because elitea-main
+# consumes the checked-in runtime protocol module through a local replace.
+COPY services/elitea-main/go.mod services/elitea-main/go.sum ./services/elitea-main/
+COPY libs/proto/gen/go/go.mod libs/proto/gen/go/go.sum ./libs/proto/gen/go/
+RUN cd services/elitea-main && go mod download
 
-COPY . .
+COPY libs/proto/gen/go ./libs/proto/gen/go
+COPY services/elitea-main ./services/elitea-main
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main
+RUN cd services/elitea-main && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags="-s -w" -o /out/elitea-migrate ./cmd/elitea-migrate
 
 # ── Stage 2: vulnerability scan ───────────────────────────────────────────────
 FROM aquasec/trivy:latest AS scanner
-COPY --from=builder /out/elitea-main /elitea-main
+COPY --from=builder /out/elitea-main /scan/elitea-main
+COPY --from=builder /out/elitea-migrate /scan/elitea-migrate
 # Fail the build on HIGH/CRITICAL vulnerabilities in the binary.
-RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
+RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /scan
 
 # ── Stage 3: final runtime image ──────────────────────────────────────────────
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 
-COPY --from=builder /out/elitea-main /elitea-main
+COPY --from=scanner /scan/elitea-main /elitea-main
+COPY --from=scanner /scan/elitea-migrate /elitea-migrate
 
 EXPOSE 8080
 

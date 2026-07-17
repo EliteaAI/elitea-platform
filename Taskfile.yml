@@ -3,14 +3,16 @@ version: "3"
 vars:
   SERVICE: services/elitea-main
   PY_SERVICE: services/pylon-indexer
+  WORKER_SERVICE: services/elitea-worker-python
 
 tasks:
   # ── Go ────────────────────────────────────────────────────────────────────────
   build:
-    desc: Build elitea-main binary
+    desc: Build elitea-main, migration, and cutover binaries
     dir: "{{.SERVICE}}"
     cmds:
       - go build -o bin/elitea-main ./cmd/elitea-main
+      - go build -o bin/elitea-migrate ./cmd/elitea-migrate
       - go build -o bin/cutover-ctl ./cmd/cutover-ctl
 
   test:
@@ -42,6 +44,31 @@ tasks:
     dir: "{{.SERVICE}}"
     cmds:
       - sqlc generate
+
+  # ── Runtime contracts ───────────────────────────────────────────────────────────
+  contract:generate:
+    desc: Regenerate pinned Go and Python runtime protocol bindings
+    cmds:
+      - scripts/contract/generate_proto.sh
+
+  contract:check:
+    desc: Validate protocol sources and checked-in configuration-validation vectors
+    cmds:
+      - buf format --diff --exit-code libs/proto
+      - buf lint libs/proto
+      - buf build libs/proto
+      - python scripts/contract/generate_configuration_validation_fixtures.py --check
+      - python scripts/contract/check_configuration_validation_contract.py
+
+  worker:test:
+    desc: Run the standalone Python worker unit and conformance tests
+    cmds:
+      - python -m pytest "{{.WORKER_SERVICE}}/tests"
+
+  worker:conformance:
+    desc: Execute the Python worker against the checked-in runtime-v1 byte corpus
+    cmds:
+      - elitea-worker conformance --suite runtime-v1
 
   # ── UI ────────────────────────────────────────────────────────────────────────
   ui:build:
@@ -102,11 +129,12 @@ tasks:
       - task: images:go
       - task: images:ui
       - task: images:pylon
+      - task: images:worker
 
   images:go:
     desc: Build Go service image
     cmds:
-      - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile services/elitea-main
+      - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile .
 
   images:ui:
     desc: Build UI image
@@ -117,6 +145,11 @@ tasks:
     desc: Build pylon-indexer image
     cmds:
       - podman build -t ghcr.io/eliteaai/pylon-indexer:dev -f services/pylon-indexer/Containerfile services/pylon-indexer
+
+  images:worker:
+    desc: Build the standalone Python runtime worker image
+    cmds:
+      - podman build -t ghcr.io/eliteaai/elitea-worker-python:dev -f services/elitea-worker-python/Containerfile .
 
   # ── Helm ──────────────────────────────────────────────────────────────────────
   helm:lint:
@@ -129,10 +162,13 @@ tasks:
 
   # ── All ───────────────────────────────────────────────────────────────────────
   all:
-    desc: Run all checks (Go + UI + Pylon + Helm)
+    desc: Run all checks (contracts + Go + Python + UI + Pylon + Helm)
     cmds:
+      - task: contract:check
       - task: vet
       - task: lint
       - task: test
+      - task: worker:test
+      - task: worker:conformance
       - task: pylon:validate
       - task: helm:lint

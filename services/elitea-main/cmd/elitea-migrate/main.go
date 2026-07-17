@@ -1,0 +1,53 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
+)
+
+func main() {
+	var projectID int64
+	flag.Int64Var(&projectID, "tenant-project", 0, "apply tenant history for this project after the shared history")
+	flag.Parse()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		exitError(fmt.Errorf("DATABASE_URL is required"))
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		exitError(fmt.Errorf("open database: %w", err))
+	}
+	defer pool.Close()
+
+	runner := migrate.New(pool, platformmigrations.Files)
+	if err := runner.ApplyShared(ctx); err != nil {
+		exitError(err)
+	}
+	if projectID > 0 {
+		if err := runner.ApplyTenant(ctx, projectID); err != nil {
+			exitError(err)
+		}
+	}
+	slog.Info("migrations applied", "tenant_project", projectID)
+}
+
+func exitError(err error) {
+	slog.Error("migration failed", "err", err)
+	os.Exit(1)
+}

@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/input.proto";
+import "elitea/runtime/v1/validation.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+enum WorkerCommandTypeV1 {
+  WORKER_COMMAND_TYPE_V1_UNSPECIFIED = 0;
+  WORKER_COMMAND_TYPE_V1_START = 1;
+  WORKER_COMMAND_TYPE_V1_RESUME = 2;
+  WORKER_COMMAND_TYPE_V1_RETRY = 3;
+  WORKER_COMMAND_TYPE_V1_RECONCILE = 4;
+  WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE = 5;
+}
+
+// WorkerCommandV1 is the immutable, reference-only command body allowed on a
+// Redis Stream. It must never contain settings, prompts, files, results,
+// credentials, grant material, exceptions, or other bulk/protected content.
+// Protocol-v1 consumers reject unknown tags and duplicate singular/oneof tags
+// at the bounded wire layer; ordinary protobuf last-value-wins parsing is not
+// sufficient for an authenticated command.
+message WorkerCommandV1 {
+  string protocol_revision = 1;
+  string command_id = 2;
+  string idempotency_key = 3;
+  WorkerCommandTypeV1 command_type = 4;
+  string execution_id = 5;
+  uint64 generation = 6;
+  uint64 dispatch_ordinal = 7;
+  string root_execution_id = 8;
+  string parent_execution_id = 9;
+  string parent_call_id = 10;
+  string tenant_id = 11;
+  string resource_project_id = 12;
+  string projection_project_id = 13;
+  string principal_ref = 14;
+  string grant_template_id = 15;
+  ExecutionInputBundleReferenceV1 input_bundle_ref = 16;
+  string capability_id = 17;
+  string capability_version = 18;
+  string resource_class = 19;
+  string isolation_class = 20;
+  uint32 priority = 21;
+  int64 deadline_unix_millis = 22;
+  string traceparent = 23;
+  string tracestate = 24;
+  string limits_revision = 25;
+
+  oneof capability_command {
+    ConfigurationValidationCommandV1 configuration_validation = 32;
+  }
+
+  reserved 26 to 31;
+  reserved 33 to 63;
+}

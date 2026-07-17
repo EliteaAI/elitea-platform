@@ -1,0 +1,19 @@
+version: v2
+
+modules:
+  - path: .
+    name: buf.build/elitea/runtime
+
+lint:
+  use:
+    - STANDARD
+  except:
+    # Runtime protocol messages keep an explicit V1 suffix even though the
+    # package is versioned; this makes persisted/generated type names
+    # unambiguous when several protocol generations coexist.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+
+breaking:
+  use:
+    - FILE

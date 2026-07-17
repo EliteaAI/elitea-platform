@@ -1,0 +1,1 @@
+"""Generated Elitea protocol namespace."""

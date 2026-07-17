@@ -1,0 +1,587 @@
+package control
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"time"
+
+	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"google.golang.org/protobuf/proto"
+)
+
+type WorkloadAuthorizer interface {
+	// AuthorizeWorkload derives the authenticated peer identity from ctx
+	// (mTLS/SPIFFE or an explicitly staged transport credential) and compares
+	// it with the persisted workload session/producer. The two string arguments
+	// are caller-supplied references, not authentication by themselves.
+	AuthorizeWorkload(ctx context.Context, workloadSessionID, producerID string) (workloadIdentity string, err error)
+}
+
+type ClaimController interface {
+	Claim(ctx context.Context, request executionapp.ClaimRequest) (executionapp.ClaimDecision, error)
+	Abort(ctx context.Context, fence runtimedomain.Fence, disposition executionapp.ClaimAbortDisposition) error
+	Renew(ctx context.Context, fence runtimedomain.Fence) (runtimedomain.ActiveLease, error)
+	VerifyActive(ctx context.Context, fence runtimedomain.Fence) error
+	ObserveDesiredState(ctx context.Context, fence runtimedomain.Fence) (runtimedomain.DesiredState, error)
+}
+
+const (
+	maxInputResolutionClaimAttempts = 3
+	claimAbortCleanupTimeout        = 5 * time.Second
+)
+
+type SettlementController interface {
+	PrepareSettlement(ctx context.Context, proposal executionapp.SettlementProposal) (executionapp.SettlementReceipt, error)
+}
+
+// ClaimInputResolver returns only the immutable, bounded manifest after an
+// accepted claim. It never returns settings/content bytes or a bearer grant.
+type ClaimInputResolver interface {
+	ResolveClaimInput(ctx context.Context, fence runtimedomain.Fence, reference *runtimev1.ExecutionInputBundleReferenceV1) (*runtimev1.ExecutionInputBundleV1, error)
+}
+
+type ServerConfig struct {
+	MaxInputManifestBytes int
+	MaxInputEntries       int
+	MaxInputContentBytes  uint64
+	MaxStringBytes        int
+}
+
+type Server struct {
+	runtimev1.UnimplementedRuntimeControlServiceServer
+
+	config      ServerConfig
+	authorizer  WorkloadAuthorizer
+	verifier    CommandVerifier
+	claims      ClaimController
+	inputs      ClaimInputResolver
+	settlements SettlementController
+}
+
+func NewServer(config ServerConfig, authorizer WorkloadAuthorizer, verifier CommandVerifier, claims ClaimController, inputs ClaimInputResolver, settlements SettlementController) (*Server, error) {
+	if authorizer == nil || verifier == nil || claims == nil || inputs == nil || settlements == nil {
+		return nil, errors.New("control authorizer, verifier, claims, input resolver and settlement controller are required")
+	}
+	if config.MaxInputManifestBytes <= 0 || config.MaxInputEntries <= 0 || config.MaxInputContentBytes == 0 || config.MaxStringBytes <= 0 {
+		return nil, errors.New("control input limits must be positive")
+	}
+	return &Server{config: config, authorizer: authorizer, verifier: verifier, claims: claims, inputs: inputs, settlements: settlements}, nil
+}
+
+func (s *Server) ClaimCommand(ctx context.Context, request *runtimev1.ClaimCommandRequestV1) (*runtimev1.ClaimCommandResponseV1, error) {
+	if request == nil || request.GetWorkloadSessionId() == "" || request.GetProducerId() == "" || hasUnknownFields(request.ProtoReflect()) {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The claim request is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetWorkloadSessionId(), request.GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	command, err := s.verifier.Verify(ctx, request.GetSignedCommand())
+	if err != nil {
+		return claimRejectionFor(err), nil
+	}
+	canonicalEnvelope, err := proto.MarshalOptions{Deterministic: true}.Marshal(request.GetSignedCommand())
+	if err != nil {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The signed worker command is malformed.", false), nil
+	}
+
+	decision, err := s.claims.Claim(ctx, executionapp.ClaimRequest{
+		CommandID:            command.GetCommandId(),
+		OutboxID:             command.GetIdempotencyKey(),
+		ExecutionID:          command.GetExecutionId(),
+		Generation:           command.GetGeneration(),
+		SignedEnvelopeDigest: runtimedomain.SHA256(canonicalEnvelope),
+		WorkloadIdentity:     workloadIdentity,
+		WorkloadSessionID:    request.GetWorkloadSessionId(),
+		ProducerID:           request.GetProducerId(),
+	})
+	if err != nil {
+		return claimRejectionFor(err), nil
+	}
+	lease := decision.Lease
+	desired := lease.DesiredState
+	if lease == (runtimedomain.ActiveLease{}) {
+		desired = decision.DesiredState
+	}
+	desiredState, err := desiredStateProto(desired)
+	if err != nil {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The execution desired state is unavailable.", false), nil
+	}
+	identity := identityProto(command)
+	disposition := decision.Disposition
+	if disposition == executionapp.ClaimAccepted && lease.DesiredState != runtimedomain.DesiredRunning {
+		// OBSOLETE_ACK is reserved for an explicit durable cancellation
+		// finalizer. A non-running lease alone never makes Redis ACK safe.
+		disposition = executionapp.ClaimActiveLeaseNoACK
+	}
+	wireDisposition, err := claimDispositionProto(disposition)
+	if err != nil {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The claim disposition is unavailable.", false), nil
+	}
+	recovery, err := settlementRecoveryProto(decision.SettlementRecovery)
+	if err != nil {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The settlement recovery receipt is unavailable.", false), nil
+	}
+	retirement, err := retirementProto(decision.RetirementReason)
+	if err != nil || (disposition == executionapp.ClaimRetiredACK) != (retirement != nil) {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The retirement receipt is unavailable.", false), nil
+	}
+	if disposition == executionapp.ClaimRetiredACK && (lease != (runtimedomain.ActiveLease{}) || decision.ClaimHandoffWatermark != 0 || recovery != nil) {
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The retirement receipt is unavailable.", false), nil
+	}
+	receipt := &runtimev1.ClaimReceiptV1{
+		Disposition:           wireDisposition,
+		Identity:              identity,
+		DesiredState:          desiredState,
+		ClaimHandoffWatermark: decision.ClaimHandoffWatermark,
+		SettlementRecovery:    recovery,
+		Retirement:            retirement,
+	}
+	if lease != (runtimedomain.ActiveLease{}) {
+		receipt.Fence = fenceProto(lease.Fence)
+		receipt.LeaseExpiresAtUnixMillis = lease.ExpiresAt.UTC().UnixMilli()
+		receipt.ClaimId = lease.ClaimID
+	}
+	if disposition != executionapp.ClaimAccepted {
+		return &runtimev1.ClaimCommandResponseV1{Receipt: receipt}, nil
+	}
+
+	manifest, err := s.inputs.ResolveClaimInput(ctx, lease.Fence, command.GetInputBundleRef())
+	if err != nil {
+		return s.abortInputResolution(ctx, lease.Fence, err), nil
+	}
+	if err := s.verifyResolvedManifest(command.GetInputBundleRef(), manifest, command.GetConfigurationValidation().GetSettingsEntryId()); err != nil {
+		if abortErr := s.abortClaim(ctx, lease.Fence, executionapp.ClaimAbortInputManifestInvalid); abortErr != nil {
+			return claimRejectionFor(abortErr), nil
+		}
+		return claimRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The immutable input manifest does not match the admitted command.", false), nil
+	}
+
+	receipt.InputBundleRef = proto.Clone(command.GetInputBundleRef()).(*runtimev1.ExecutionInputBundleReferenceV1)
+	receipt.InputBundle = proto.Clone(manifest).(*runtimev1.ExecutionInputBundleV1)
+	return &runtimev1.ClaimCommandResponseV1{Receipt: receipt}, nil
+}
+
+func (s *Server) abortInputResolution(ctx context.Context, fence runtimedomain.Fence, cause error) *runtimev1.ClaimCommandResponseV1 {
+	if errors.Is(cause, runtimedomain.ErrStaleFence) || errors.Is(cause, runtimedomain.ErrLeaseExpired) {
+		return claimRejectionFor(cause)
+	}
+
+	disposition := executionapp.ClaimAbortInputResolutionRetry
+	code := runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE
+	message := "The immutable input manifest is temporarily unavailable."
+	retryable := true
+	switch {
+	case errors.Is(cause, executiondomain.ErrInvalidInputBundle):
+		disposition = executionapp.ClaimAbortInputManifestInvalid
+		code = runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION
+		message = "The immutable input manifest does not match the admitted command."
+		retryable = false
+	case fence.ClaimAttempt >= maxInputResolutionClaimAttempts:
+		disposition = executionapp.ClaimAbortInputResolutionExhausted
+		message = "The immutable input manifest remains unavailable after bounded retries."
+		retryable = false
+	case errors.Is(cause, context.Canceled), errors.Is(cause, context.DeadlineExceeded):
+		code, message, retryable = safeRuntimeError(cause)
+	}
+	if err := s.abortClaim(ctx, fence, disposition); err != nil {
+		return claimRejectionFor(err)
+	}
+	return claimRejection(code, message, retryable)
+}
+
+func (s *Server) abortClaim(ctx context.Context, fence runtimedomain.Fence, disposition executionapp.ClaimAbortDisposition) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimAbortCleanupTimeout)
+	defer cancel()
+	return s.claims.Abort(cleanupCtx, fence, disposition)
+}
+
+func (s *Server) RenewLease(ctx context.Context, request *runtimev1.RenewLeaseRequestV1) (*runtimev1.RenewLeaseResponseV1, error) {
+	if request == nil || request.GetIdempotencyKey() == "" || hasUnknownFields(request.ProtoReflect()) {
+		return renewRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The lease renewal request is malformed.", false), nil
+	}
+	if request.GetFence() == nil {
+		return renewRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetFence().GetWorkloadSessionId(), request.GetFence().GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return renewRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	fence, err := fenceDomain(request.GetIdentity(), request.GetFence(), workloadIdentity)
+	if err != nil {
+		return renewRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	lease, err := s.claims.Renew(ctx, fence)
+	if err != nil {
+		code, message, retryable := safeRuntimeError(err)
+		return renewRejection(code, message, retryable), nil
+	}
+	desiredState, err := desiredStateProto(lease.DesiredState)
+	if err != nil {
+		return renewRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The execution desired state is unavailable.", false), nil
+	}
+	return &runtimev1.RenewLeaseResponseV1{
+		LeaseExpiresAtUnixMillis: lease.ExpiresAt.UTC().UnixMilli(),
+		DesiredState:             desiredState,
+	}, nil
+}
+
+func (s *Server) ObserveDesiredState(ctx context.Context, request *runtimev1.ObserveDesiredStateRequestV1) (*runtimev1.ObserveDesiredStateResponseV1, error) {
+	if request == nil || hasUnknownFields(request.ProtoReflect()) {
+		return observeRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The desired-state request is malformed.", false), nil
+	}
+	if request.GetFence() == nil {
+		return observeRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetFence().GetWorkloadSessionId(), request.GetFence().GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return observeRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	fence, err := fenceDomain(request.GetIdentity(), request.GetFence(), workloadIdentity)
+	if err != nil {
+		return observeRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	state, err := s.claims.ObserveDesiredState(ctx, fence)
+	if err != nil {
+		code, message, retryable := safeRuntimeError(err)
+		return observeRejection(code, message, retryable), nil
+	}
+	desiredState, err := desiredStateProto(state)
+	if err != nil {
+		return observeRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The execution desired state is unavailable.", false), nil
+	}
+	return &runtimev1.ObserveDesiredStateResponseV1{
+		DesiredState: desiredState,
+	}, nil
+}
+
+func (s *Server) PrepareSettlement(ctx context.Context, request *runtimev1.PrepareSettlementRequestV1) (*runtimev1.PrepareSettlementResponseV1, error) {
+	if request == nil || request.GetProposal() == nil || request.GetIdempotencyKey() == "" || hasUnknownFields(request.ProtoReflect()) {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement request is malformed.", false), nil
+	}
+	if request.GetProposal().GetPrepareIdempotencyKey() == "" || request.GetProposal().GetPrepareIdempotencyKey() != request.GetIdempotencyKey() {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement idempotency binding is malformed.", false), nil
+	}
+	if request.GetFence() == nil {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement fence is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetFence().GetWorkloadSessionId(), request.GetFence().GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	fence, err := fenceDomain(request.GetIdentity(), request.GetFence(), workloadIdentity)
+	if err != nil {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement fence is malformed.", false), nil
+	}
+	proposalBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(request.GetProposal())
+	if err != nil || !validDigestProto(request.GetProposalDigest(), proposalBytes) {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement proposal digest is invalid.", false), nil
+	}
+	payloadDigest, err := digestDomain(request.GetProposal().GetTerminalPayloadDigest())
+	if err != nil {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The terminal output digest is malformed.", false), nil
+	}
+	proposalDigest, _ := digestDomain(request.GetProposalDigest())
+	outcome, err := settlementOutcomeDomain(request.GetProposal().GetRequestedOutcome())
+	if err != nil {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement outcome is malformed.", false), nil
+	}
+	proposal := executionapp.SettlementProposal{
+		Fence:                   fence,
+		ProposalID:              request.GetProposal().GetProposalId(),
+		Outcome:                 outcome,
+		TerminalLogicalOutputID: request.GetProposal().GetTerminalLogicalOutputId(),
+		TerminalEventID:         request.GetProposal().GetTerminalEventId(),
+		TerminalSequence:        request.GetProposal().GetTerminalSequence(),
+		TerminalPayloadDigest:   payloadDigest,
+		ProposalDigest:          proposalDigest,
+		IdempotencyKey:          request.GetIdempotencyKey(),
+	}
+	if err := proposal.Validate(); err != nil {
+		return settlementRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement proposal is malformed.", false), nil
+	}
+	receipt, err := s.settlements.PrepareSettlement(ctx, proposal)
+	if err != nil {
+		code, message, retryable := safeRuntimeError(err)
+		return settlementRejection(code, message, retryable), nil
+	}
+	return &runtimev1.PrepareSettlementResponseV1{
+		SettlementReceiptId: receipt.ID,
+		Outcome:             settlementOutcomeProto(receipt.Outcome),
+	}, nil
+}
+
+func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundleReferenceV1, manifest *runtimev1.ExecutionInputBundleV1, selectedEntryID string) error {
+	if reference == nil || manifest == nil || hasUnknownFields(manifest.ProtoReflect()) || len(manifest.GetEntries()) == 0 || len(manifest.GetEntries()) > s.config.MaxInputEntries {
+		return errors.New("invalid input manifest")
+	}
+	if manifest.GetInputBundleId() != reference.GetInputBundleId() || manifest.GetImmutableVersion() != reference.GetImmutableVersion() {
+		return errors.New("input manifest identity mismatch")
+	}
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	if len(encoded) > s.config.MaxInputManifestBytes || uint64(len(encoded)) != reference.GetByteLength() || !validDigestProto(reference.GetDigest(), encoded) {
+		return errors.New("input manifest digest or length mismatch")
+	}
+	if reference.GetMediaType() != "application/x-protobuf" || selectedEntryID == "" {
+		return errors.New("unsupported input manifest media type or selection")
+	}
+	seen := make(map[string]struct{}, len(manifest.GetEntries()))
+	selected := 0
+	for _, entry := range manifest.GetEntries() {
+		if entry == nil || entry.GetEntryId() == "" || len(entry.GetEntryId()) > s.config.MaxStringBytes || entry.GetImmutableVersion() == "" || len(entry.GetImmutableVersion()) > s.config.MaxStringBytes || entry.GetSemanticRole() == "" || len(entry.GetSemanticRole()) > s.config.MaxStringBytes || entry.GetContent() == nil {
+			return errors.New("input manifest entry is malformed")
+		}
+		if _, duplicate := seen[entry.GetEntryId()]; duplicate {
+			return errors.New("input manifest entry ID is duplicated")
+		}
+		seen[entry.GetEntryId()] = struct{}{}
+		content := entry.GetContent()
+		if content.GetContentId() == "" || len(content.GetContentId()) > s.config.MaxStringBytes || content.GetImmutableVersion() == "" || len(content.GetImmutableVersion()) > s.config.MaxStringBytes || content.GetImmutableVersion() != entry.GetImmutableVersion() || content.GetMediaType() != "application/json" || content.GetClassification() == "" || len(content.GetClassification()) > s.config.MaxStringBytes || content.GetRequiredGrantAudience() == "" || len(content.GetRequiredGrantAudience()) > s.config.MaxStringBytes || content.GetByteLength() == 0 || content.GetByteLength() > s.config.MaxInputContentBytes || !validDigestMessage(content.GetDigest()) {
+			return errors.New("input manifest content reference is malformed")
+		}
+		if entry.GetEntryId() == selectedEntryID {
+			selected++
+			if entry.GetSemanticRole() != "configuration.settings" {
+				return errors.New("selected settings entry has the wrong semantic role")
+			}
+		}
+	}
+	if selected != 1 {
+		return errors.New("selected settings entry is absent or ambiguous")
+	}
+	return nil
+}
+
+func identityProto(command *runtimev1.WorkerCommandV1) *runtimev1.ExecutionIdentityV1 {
+	return &runtimev1.ExecutionIdentityV1{
+		TenantId:            command.GetTenantId(),
+		ResourceProjectId:   command.GetResourceProjectId(),
+		ProjectionProjectId: command.GetProjectionProjectId(),
+		CommandId:           command.GetCommandId(),
+		ExecutionId:         command.GetExecutionId(),
+		Generation:          command.GetGeneration(),
+	}
+}
+
+func fenceDomain(identity *runtimev1.ExecutionIdentityV1, fence *runtimev1.ExecutionFenceV1, workloadIdentity string) (runtimedomain.Fence, error) {
+	var result runtimedomain.Fence
+	if identity == nil || fence == nil || workloadIdentity == "" || len(fence.GetFenceToken()) != sha256.Size {
+		return result, runtimedomain.ErrInvalidFence
+	}
+	result = runtimedomain.Fence{
+		CommandID:         identity.GetCommandId(),
+		ExecutionID:       identity.GetExecutionId(),
+		Generation:        identity.GetGeneration(),
+		WorkloadIdentity:  workloadIdentity,
+		WorkloadSessionID: fence.GetWorkloadSessionId(),
+		ProducerID:        fence.GetProducerId(),
+		ClaimAttempt:      fence.GetClaimAttempt(),
+		LeaseEpoch:        fence.GetLeaseEpoch(),
+	}
+	copy(result.Token[:], fence.GetFenceToken())
+	if err := result.Validate(); err != nil {
+		return runtimedomain.Fence{}, err
+	}
+	return result, nil
+}
+
+func fenceProto(fence runtimedomain.Fence) *runtimev1.ExecutionFenceV1 {
+	return &runtimev1.ExecutionFenceV1{
+		WorkloadSessionId: fence.WorkloadSessionID,
+		ClaimAttempt:      fence.ClaimAttempt,
+		LeaseEpoch:        fence.LeaseEpoch,
+		ProducerId:        fence.ProducerID,
+		FenceToken:        append([]byte(nil), fence.Token[:]...),
+	}
+}
+
+func claimRejectionFor(err error) *runtimev1.ClaimCommandResponseV1 {
+	code, message, retryable := safeRuntimeError(err)
+	return claimRejection(code, message, retryable)
+}
+
+func safeRuntimeError(err error) (runtimev1.RuntimeErrorCodeV1, string, bool) {
+	switch {
+	case errors.Is(err, runtimedomain.ErrStaleFence), errors.Is(err, runtimedomain.ErrLeaseExpired):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_STALE_FENCE, "The execution fence is no longer current.", false
+	case errors.Is(err, ErrCommandAuthentication):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The worker command is not authenticated.", false
+	case errors.Is(err, ErrCommandIncompatible):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The worker command protocol is not compatible.", false
+	case errors.Is(err, ErrMalformedWorkerCommand), errors.Is(err, executionapp.ErrInvalidClaim), errors.Is(err, runtimedomain.ErrInvalidFence):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The runtime control message is malformed.", false
+	case errors.Is(err, executionapp.ErrSettlementConflict):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement idempotency key conflicts with a durable proposal.", false
+	case errors.Is(err, executionapp.ErrTerminalOutputNotReady):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE, "The terminal output is not durably ready for settlement.", true
+	case errors.Is(err, executionapp.ErrClaimDependencyUnavailable):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE, "The durable claim state is temporarily unavailable.", true
+	case errors.Is(err, executionapp.ErrInvalidSettlement):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The settlement proposal is malformed.", false
+	case errors.Is(err, context.Canceled):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_CANCELLED, "The runtime operation was cancelled.", false
+	case errors.Is(err, context.DeadlineExceeded):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE, "The runtime control deadline was exceeded.", true
+	default:
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The runtime control operation failed.", false
+	}
+}
+
+func claimRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.ClaimCommandResponseV1 {
+	return &runtimev1.ClaimCommandResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
+func renewRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.RenewLeaseResponseV1 {
+	return &runtimev1.RenewLeaseResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
+func observeRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.ObserveDesiredStateResponseV1 {
+	return &runtimev1.ObserveDesiredStateResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
+func settlementRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.PrepareSettlementResponseV1 {
+	return &runtimev1.PrepareSettlementResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
+func runtimeError(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.RuntimeErrorV1 {
+	return &runtimev1.RuntimeErrorV1{Code: code, SafeMessage: message, Retryable: retryable}
+}
+
+func desiredStateProto(state runtimedomain.DesiredState) (runtimev1.DesiredExecutionStateV1, error) {
+	switch state {
+	case runtimedomain.DesiredRunning:
+		return runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_RUNNING, nil
+	case runtimedomain.DesiredCancelled:
+		return runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_CANCELLED, nil
+	case runtimedomain.DesiredDraining:
+		return runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_DRAINING, nil
+	default:
+		return runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_UNSPECIFIED, errors.New("invalid desired state")
+	}
+}
+
+func claimDispositionProto(disposition executionapp.ClaimDisposition) (runtimev1.ClaimDispositionV1, error) {
+	switch disposition {
+	case executionapp.ClaimAccepted:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_ACCEPTED, nil
+	case executionapp.ClaimRecoverTerminalACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK, nil
+	case executionapp.ClaimRecoverSettlement:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_SETTLEMENT, nil
+	case executionapp.ClaimSettledACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_SETTLED_ACK, nil
+	case executionapp.ClaimObsoleteACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_OBSOLETE_ACK, nil
+	case executionapp.ClaimActiveLeaseNoACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK, nil
+	case executionapp.ClaimRetryLaterNoACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK, nil
+	case executionapp.ClaimRetiredACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RETIRED_ACK, nil
+	default:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
+	}
+}
+
+func retirementProto(reason executionapp.RetirementReason) (*runtimev1.RuntimeErrorV1, error) {
+	switch reason {
+	case "":
+		return nil, nil
+	case executionapp.RetirementDeadlineExceeded:
+		return runtimeError(
+			runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEADLINE_EXCEEDED,
+			executionapp.DeadlineExceededSafeMessage,
+			true,
+		), nil
+	default:
+		return nil, executionapp.ErrInvalidClaim
+	}
+}
+
+func settlementRecoveryProto(recovery *executionapp.SettlementRecovery) (*runtimev1.SettlementRecoveryV1, error) {
+	if recovery == nil {
+		return nil, nil
+	}
+	wire := &runtimev1.SettlementRecoveryV1{}
+	if recovery.Proposal != nil {
+		proposal := recovery.Proposal
+		wire.Proposal = &runtimev1.SettlementProposalV1{
+			ProposalId:              proposal.ProposalID,
+			RequestedOutcome:        settlementOutcomeProto(proposal.Outcome),
+			TerminalLogicalOutputId: proposal.TerminalLogicalOutputID,
+			TerminalEventId:         proposal.TerminalEventID,
+			TerminalSequence:        proposal.TerminalSequence,
+			TerminalPayloadDigest:   digestProto(proposal.TerminalPayloadDigest),
+			PrepareIdempotencyKey:   proposal.IdempotencyKey,
+		}
+		encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(wire.Proposal)
+		if err != nil || runtimedomain.SHA256(encoded) != proposal.ProposalDigest {
+			return nil, executionapp.ErrInvalidClaim
+		}
+		wire.ProposalDigest = digestProto(proposal.ProposalDigest)
+		wire.IdempotencyKey = proposal.IdempotencyKey
+	}
+	if recovery.Receipt != nil {
+		wire.SettlementReceiptId = recovery.Receipt.ID
+		wire.Outcome = settlementOutcomeProto(recovery.Receipt.Outcome)
+	}
+	if wire.GetProposal() == nil && wire.GetSettlementReceiptId() == "" {
+		return nil, executionapp.ErrInvalidClaim
+	}
+	return wire, nil
+}
+
+func digestProto(digest runtimedomain.Digest) *runtimev1.DigestV1 {
+	return &runtimev1.DigestV1{
+		Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
+		Value:     append([]byte(nil), digest[:]...),
+	}
+}
+
+func digestDomain(digest *runtimev1.DigestV1) (runtimedomain.Digest, error) {
+	var mapped runtimedomain.Digest
+	if !validDigestMessage(digest) {
+		return mapped, runtimedomain.ErrInvalidDigest
+	}
+	copy(mapped[:], digest.GetValue())
+	return mapped, nil
+}
+
+func settlementOutcomeDomain(outcome runtimev1.ExecutionOutcomeV1) (executionapp.SettlementOutcome, error) {
+	switch outcome {
+	case runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED:
+		return executionapp.SettlementSucceeded, nil
+	case runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_FAILED:
+		return executionapp.SettlementFailed, nil
+	case runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_CANCELLED:
+		return executionapp.SettlementCancelled, nil
+	case runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_OUTCOME_UNKNOWN:
+		return executionapp.SettlementOutcomeUnknown, nil
+	default:
+		return "", executionapp.ErrInvalidSettlement
+	}
+}
+
+func settlementOutcomeProto(outcome executionapp.SettlementOutcome) runtimev1.ExecutionOutcomeV1 {
+	switch outcome {
+	case executionapp.SettlementSucceeded:
+		return runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED
+	case executionapp.SettlementFailed:
+		return runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_FAILED
+	case executionapp.SettlementCancelled:
+		return runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_CANCELLED
+	case executionapp.SettlementOutcomeUnknown:
+		return runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_OUTCOME_UNKNOWN
+	default:
+		return runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_UNSPECIFIED
+	}
+}
+
+var _ runtimev1.RuntimeControlServiceServer = (*Server)(nil)

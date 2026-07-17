@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// ConfigurationValidationCommandV1 is the exact business command for
+// configuration.validate.v1. Settings are referenced by entry ID and are never
+// embedded in this message.
+message ConfigurationValidationCommandV1 {
+  string configuration_revision_id = 1;
+  string configuration_type = 2;
+  string catalog_revision = 3;
+  DigestV1 catalog_digest = 4;
+  string schema_id = 5;
+  string schema_revision = 6;
+  DigestV1 schema_digest = 7;
+  string settings_entry_id = 8;
+  reserved 9 to 15;
+}
+
+message ConfigurationValidationIssueV1 {
+  string code = 1;
+  string json_pointer = 2;
+  string safe_message = 3;
+  reserved 4 to 15;
+}
+
+// ConfigurationValidationResultV1 intentionally contains neither normalized
+// settings nor rejected input, raw validator messages, Python details, or
+// secrets. Every digest binds the exact catalog/schema/manifest/content used.
+message ConfigurationValidationResultV1 {
+  string configuration_revision_id = 1;
+  string configuration_type = 2;
+  string catalog_revision = 3;
+  DigestV1 catalog_digest = 4;
+  string schema_id = 5;
+  string schema_revision = 6;
+  DigestV1 schema_digest = 7;
+  string input_bundle_id = 8;
+  DigestV1 input_bundle_digest = 9;
+  string settings_entry_id = 10;
+  string settings_entry_version = 11;
+  DigestV1 settings_content_digest = 12;
+  bool valid = 13;
+  repeated ConfigurationValidationIssueV1 issues = 14;
+  reserved 15 to 31;
+}

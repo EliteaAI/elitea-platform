@@ -5,6 +5,7 @@ on:
     paths:
       - "services/elitea-main/**"
       - "libs/go/**"
+      - "libs/proto/gen/go/**"
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-go.yml"
@@ -14,6 +15,10 @@ on:
     paths:
       - "services/elitea-main/**"
       - "libs/go/**"
+      - "libs/proto/gen/go/**"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/ci-go.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +36,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             libs/go/*/go.sum
+            libs/proto/gen/go/go.sum
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -47,6 +53,7 @@ jobs:
           cache-dependency-path: |
             services/elitea-main/go.sum
             libs/go/*/go.sum
+            libs/proto/gen/go/go.sum
 
       - name: Go vet (workspace)
         run: |
@@ -63,12 +70,76 @@ jobs:
           name: coverage
           path: coverage.out
 
+  redis-integration:
+    name: Real Redis control-plane integration
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            services/elitea-main/go.sum
+            libs/proto/gen/go/go.sum
+
+      - name: Exercise the reference-only Redis Streams adapter
+        env:
+          ELITEA_TEST_REDIS_ADDR: 127.0.0.1:6379
+        run: >-
+          go test -race -count=1
+          ./services/elitea-main/internal/transport/redisdispatch
+          -run '^TestRedisStreamServiceBackedControlPlane$'
+
+  postgres-integration:
+    name: Real PostgreSQL runtime integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: elitea
+          POSTGRES_PASSWORD: elitea
+          POSTGRES_DB: elitea
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U elitea -d elitea"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            services/elitea-main/go.sum
+            libs/proto/gen/go/go.sum
+
+      - name: Exercise cancellation durability and outbox reconciliation
+        env:
+          ELITEA_TEST_DATABASE_URL: postgres://elitea:elitea@127.0.0.1:5432/elitea?sslmode=disable
+        run: >-
+          go test -race -count=1
+          ./services/elitea-main/internal/infra/db/repos
+          -run '^TestPostgresServiceBacked'
+
   build:
     name: Build
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
     # Production images are built via Containerfile in publish.yml, not here.
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, redis-integration, postgres-integration]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -86,3 +157,8 @@ jobs:
         run: |
           cd services/elitea-main
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/cutover-ctl ./cmd/cutover-ctl
+
+      - name: Build elitea-migrate
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-migrate ./cmd/elitea-migrate

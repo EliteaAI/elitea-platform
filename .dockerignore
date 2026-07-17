@@ -1,0 +1,15 @@
+.git
+.gitignore
+**/.git
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/.coverage
+**/htmlcov
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/bin
+**/coverage.out
+apps/elitea-ui/node_modules
+apps/elitea-ui/dist

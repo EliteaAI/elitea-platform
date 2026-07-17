@@ -1,0 +1,18 @@
+# Python runtime and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Go build/test output
+bin/
+coverage.out
+
+# Local editor and operating-system files
+.DS_Store
+.idea/
+.vscode/

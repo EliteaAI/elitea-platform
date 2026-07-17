@@ -1,0 +1,82 @@
+name: CI — Runtime Contracts
+
+on:
+  pull_request:
+    paths:
+      - "libs/proto/**"
+      - "libs/jsonschema/**"
+      - "scripts/contract/**"
+      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - ".github/workflows/ci-contract.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "libs/proto/**"
+      - "libs/jsonschema/**"
+      - "scripts/contract/**"
+      - "testdata/proto/runtime/v1/configuration-validation/**"
+      - ".github/workflows/ci-contract.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generated-contract:
+    name: Generated bindings and byte vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: libs/proto/gen/go/go.sum
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: libs/proto/pyproject.toml
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.71.0"
+
+      - name: Install pinned generators and contract checker
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+          python -m pip install \
+            grpcio-tools==1.76.0 \
+            protobuf==6.33.6 \
+            jsonschema==4.26.0
+
+      - name: Check protocol formatting and schema
+        run: |
+          buf format --diff --exit-code libs/proto
+          buf lint libs/proto
+          buf build libs/proto
+
+      - name: Reproduce checked-in bindings
+        env:
+          ELITEA_PROTO_PYTHON: python
+          ELITEA_PROTO_PYTHON_TOOLS: /tmp/unused-python-tool-root
+        run: |
+          export ELITEA_PROTO_GO_TOOLS="$(go env GOPATH)/bin"
+          scripts/contract/generate_proto.sh
+          git diff --exit-code -- libs/proto/gen
+
+      - name: Check legacy-derived byte corpus and security invariants
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/contract/generate_configuration_validation_fixtures.py --check
+          python scripts/contract/check_configuration_validation_contract.py
+
+      - name: Test generated Go module
+        working-directory: libs/proto/gen/go
+        run: |
+          go test ./...
+          go vet ./...

@@ -1,0 +1,49 @@
+"""Immutable build and first-slice compatibility pins."""
+
+from __future__ import annotations
+
+CAPABILITY_ID = "configuration.validate.v1"
+CONFIGURATION_TYPE = "openapi"
+RUNTIME_IMPLEMENTATION = "elitea-worker-python"
+RUNTIME_VERSION = "0.1.0"
+
+# The business-compatibility oracle for the first slice. The distribution must
+# replace the source checkout with an artifact pinned to this revision.
+SDK_SOURCE_REVISION = "2cb85480260a92207f3b3d6d3a84149e10de7949"
+SDK_DISTRIBUTION_VERSION = "0.8.17"
+SDK_SOURCE_ARCHIVE_SHA256 = (
+    "f3f4d0ddccb2948b13bef1e11a2633c1ec437981014dae35095f7cae54c090c9"
+)
+SDK_PACKAGE_TREE_SHA256 = (
+    "bf20296bd31a909302845d44fe5fa5ca390a0e285b5ce57bc17e11ac806fb11f"
+)
+CONFIGURATION_CATALOG_REVISION = SDK_SOURCE_REVISION
+CONFIGURATION_CATALOG_SHA256 = (
+    "1cfe9846435f68d5ec46d6bc36992679a4fadbbe248a28879c0a312969ca6ef4"
+)
+OPENAPI_SCHEMA_ID = "elitea.configuration.openapi"
+OPENAPI_SCHEMA_REVISION = SDK_SOURCE_REVISION
+OPENAPI_SCHEMA_SHA256 = (
+    "8d72b85e9f389410a56a0dd11b5ed6a031ac5c5c677f5f8b68278bb7be638b4d"
+)
+
+JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})
+MAX_ENVELOPE_BYTES = 64 * 1024
+MAX_WORKER_COMMAND_BYTES = 32 * 1024
+MAX_SIGNED_ENVELOPE_BYTES = 48 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024
+MAX_SETTINGS_BYTES = 256 * 1024
+MAX_BUNDLE_ENTRIES = 16
+MAX_ISSUES = 64
+MAX_JSON_DEPTH = 64
+MAX_STRING_BYTES = 64 * 1024
+MAX_SAFE_STRING_BYTES = 256
+
+ENVELOPE_SCHEMA_REVISION = "elitea.runtime.signed-worker-command.v1"
+PROTOCOL_REVISION = "elitea.runtime.v1"
+CAPABILITY_VERSION = "1"
+LIMITS_REVISION = "elitea.runtime.limits.conformance.v1"
+OUTPUT_SCHEMA_REVISION = "elitea.runtime.execution-output.v1"
+CONFORMANCE_HMAC_KEY_ID = "elitea-runtime-v1-conformance-hmac"
+CONFORMANCE_HMAC_KEY = b"ELITEA_RUNTIME_V1_TEST_ONLY_NOT_A_SECRET"
+CONFORMANCE_OCCURRED_AT_UNIX_MILLIS = 1_700_000_000_000
