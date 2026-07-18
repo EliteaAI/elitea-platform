@@ -1,0 +1,45 @@
+# .dockerignore — shared by elitea-main (root context) and elitea-ui (root context) builds.
+# elitea-main needs: services/elitea-main/**, apps/admin-ui/frontend/** (built in-image), Go files.
+# elitea-ui needs:   apps/elitea-ui/** source, deploy/docker/**.
+# IMPORTANT: apps/admin-ui/frontend SOURCE must NOT be ignored — the image builds it from scratch.
+
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+**/.git
+
+# ── Node dependencies (never needed in image; rebuilt inside) ─────────────────
+**/node_modules
+
+# ── Python caches ─────────────────────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# ── Pre-built admin-ui dist (stale artefact; image always rebuilds from source) ─
+/apps/admin-ui/static/dist
+
+# ── elitea-ui test/story artefacts (not needed at build time) ─────────────────
+/apps/elitea-ui/tests
+**/storybook-static
+
+# ── Compiled Go binaries that may linger in the tree ─────────────────────────
+/services/elitea-main/elitea-main
+/services/elitea-main/cutover-ctl
+/services/elitea-scheduler/elitea-scheduler
+
+# ── Go test / coverage output ─────────────────────────────────────────────────
+coverage.out
+**/*.test
+
+# ── Deploy runtime data (not source) ─────────────────────────────────────────
+/deploy/data
+
+# ── Tooling / IDE / OS artefacts ─────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+.claude
+**/*.log
+**/.env.local
+**/.env.*.local

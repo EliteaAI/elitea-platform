@@ -46,6 +46,7 @@ jobs:
         uses: cycjimmy/semantic-release-action@v6
         with:
           extra_plugins: |
+            conventional-changelog-conventionalcommits@8
             @semantic-release/commit-analyzer
             @semantic-release/release-notes-generator
             @semantic-release/github
@@ -63,8 +64,11 @@ jobs:
       matrix:
         image:
           - name: elitea-main
-            context: ./services/elitea-main
+            context: .
             dockerfile: ./services/elitea-main/Containerfile
+          - name: elitea-scheduler
+            context: ./services/elitea-scheduler
+            dockerfile: ./services/elitea-scheduler/Containerfile
           - name: elitea-ui
             context: .
             dockerfile: ./deploy/docker/Containerfile.elitea-ui
@@ -123,6 +127,7 @@ jobs:
       matrix:
         image:
           - name: elitea-main
+          - name: elitea-scheduler
           - name: elitea-ui
           - name: pylon-indexer
 
@@ -162,12 +167,13 @@ jobs:
       matrix:
         image:
           - name: elitea-main
+          - name: elitea-scheduler
           - name: elitea-ui
           - name: pylon-indexer
 
     steps:
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -229,7 +235,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          IMAGES=("elitea-main" "elitea-ui" "pylon-indexer")
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "pylon-indexer")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 

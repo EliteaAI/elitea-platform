@@ -55,8 +55,8 @@ services:
 
   elitea-main:
     build:
-      context: ../services/elitea-main
-      dockerfile: Containerfile
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
       target: final
     image: ghcr.io/eliteaai/elitea-main:dev
     environment:
@@ -71,8 +71,6 @@ services:
       OIDC_CLIENT_ID: "39818061-ddc6-40f2-89c3-18ba59b28ce9"
       OIDC_CLIENT_SECRET: "8dutMbJP9M8yuoucx31OSg"
       OIDC_REDIRECT_URI: "http://localhost:8080/forward-auth/auth_oidc/callback"
-    volumes:
-      - ../apps/admin-ui/static/dist:/data/admin_ui/static/dist:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,12 +146,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+    # No container healthcheck: the image is distroless (no shell/wget/curl) and the
+    # binary has no -healthcheck flag. Liveness is via /healthz on :8081 — use a k8s
+    # httpGet probe in production (see deploy/helm).
     restart: unless-stopped
 
 volumes:

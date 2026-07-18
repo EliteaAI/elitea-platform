@@ -7,11 +7,15 @@ variable "REGISTRY" {
 }
 
 group "default" {
-  targets = ["elitea-main", "elitea-ui", "pylon-indexer"]
+  targets = ["elitea-main", "elitea-ui", "pylon-indexer", "elitea-scheduler"]
 }
 
 group "go" {
-  targets = ["elitea-main"]
+  targets = ["elitea-main", "elitea-scheduler"]
+}
+
+group "scheduler" {
+  targets = ["elitea-scheduler"]
 }
 
 group "ui" {
@@ -19,8 +23,8 @@ group "ui" {
 }
 
 target "elitea-main" {
-  context    = "./services/elitea-main"
-  dockerfile = "Containerfile"
+  context    = "."
+  dockerfile = "services/elitea-main/Containerfile"
   tags       = ["${REGISTRY}/elitea-main:${TAG}"]
   cache-from = ["type=gha,scope=elitea-main"]
   cache-to   = ["type=gha,mode=max,scope=elitea-main"]
@@ -39,6 +43,15 @@ target "elitea-ui" {
 
 group "pylon" {
   targets = ["pylon-indexer"]
+}
+
+target "elitea-scheduler" {
+  context    = "./services/elitea-scheduler"
+  dockerfile = "Containerfile"
+  tags       = ["${REGISTRY}/elitea-scheduler:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-scheduler"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-scheduler"]
+  platforms  = ["linux/amd64", "linux/arm64"]
 }
 
 target "pylon-indexer" {

@@ -1,32 +1,54 @@
 # syntax=docker/dockerfile:1.7
 
-# ── Stage 1: builder ──────────────────────────────────────────────────────────
+# ── Stage 1: admin UI builder ─────────────────────────────────────────────────
+FROM node:24-alpine AS admin-builder
+
+WORKDIR /admin/frontend
+
+# Cache npm install separately from source.
+COPY apps/admin-ui/frontend/package.json apps/admin-ui/frontend/package-lock.json ./
+RUN npm ci
+
+COPY apps/admin-ui/frontend/ .
+# vite.config.js outDir '../static/dist' relative to WORKDIR /admin/frontend
+# resolves to /admin/static/dist.
+RUN npm run build
+
+# ── Stage 2: Go builder ───────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
+ARG VERSION=dev
+
 # Cache module downloads separately from source.
-COPY go.mod go.sum ./
+COPY services/elitea-main/go.mod services/elitea-main/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY services/elitea-main/ .
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main
 
-# ── Stage 2: vulnerability scan ───────────────────────────────────────────────
+# ── Stage 3: vulnerability scan ───────────────────────────────────────────────
 FROM aquasec/trivy:latest AS scanner
 COPY --from=builder /out/elitea-main /elitea-main
 # Fail the build on HIGH/CRITICAL vulnerabilities in the binary.
 RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
 
-# ── Stage 3: final runtime image ──────────────────────────────────────────────
+# ── Stage 4: final runtime image ──────────────────────────────────────────────
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 
 COPY --from=builder /out/elitea-main /elitea-main
+COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
+
+ENV ADMIN_UI_STATIC_DIR=/data/admin_ui/static/dist
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/elitea-main", "-healthcheck"]
 
 ENTRYPOINT ["/elitea-main"]
