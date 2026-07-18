@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# VERSION is declared for build-time labelling; no version symbol exists in the
+# source tree, so it is NOT injected via -X (only stripped/optimised flags).
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-scheduler ./cmd/elitea-scheduler
+
+FROM gcr.io/distroless/static-debian12:nonroot AS final
+COPY --from=builder /out/elitea-scheduler /elitea-scheduler
+# distroless contains no shell, wget, or curl, so a CMD/CMD-SHELL HEALTHCHECK
+# cannot be used here.  Kubernetes deployments MUST configure an httpGet liveness
+# probe against :8081/healthz instead of relying on Docker's HEALTHCHECK.
+#
+# NOTE FOR COMPOSE OWNER: deploy/docker-compose.yml currently declares
+#   test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz || exit 1"]
+# for the elitea-scheduler service.  This will always fail on distroless because
+# neither wget nor a shell is present in the image.  Replace it with an httpGet
+# probe (docker compose does not support httpGet natively, so the simplest fix is
+# to remove the healthcheck block and rely on k8s/upstream orchestration).
+HEALTHCHECK NONE
+EXPOSE 8081
+ENTRYPOINT ["/elitea-scheduler"]

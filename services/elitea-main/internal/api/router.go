@@ -38,37 +38,52 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
 
-type RouterConfig struct {
-	AuthClient     *authsvc.Client
-	AuthValidator  apimw.TokenValidator
+// AuthDeps groups authentication-related dependencies (future: elitea-auth service).
+type AuthDeps struct {
+	Client         *authsvc.Client
+	Validator      apimw.TokenValidator
 	SessionHandler *v2auth.SessionHandler
 	OIDCHandler    *v2auth.OIDCHandler
-	HealthDeps     health.Deps
-	Pool           *pgxpool.Pool
-	AppsRepo       applications.Repository
-	SkillsRepo     v2skills.Repository
-	FoldersRepo    v2folders.Repository
-	TagsRepo       v2tags.Repository
-	AnalyticsRepo  v2analytics.Repository
-	ConvsRepo      v2convs.Repository
-	WebhookRepo    webhook.Repository
-	RedisClient    *goredis.Client
+	SessionSecret  string
+}
+
+// IndexerDeps groups indexer/predict dependencies (future: gRPC client to elitea-indexer).
+type IndexerDeps struct {
 	Predictor      v2predict.Predictor
 	LLMService     v2predict.LLMService
 	ChatService    v2chat.ChatService
 	PipelineRunner v2pipelines.Runner
 	ToolTester     v2toolkits.ToolTester
 	MCPSyncer      v2core.MCPToolSyncer
+}
+
+// RouterConfig holds all dependencies injected into the HTTP router.
+type RouterConfig struct {
+	Auth    AuthDeps
+	Indexer IndexerDeps
+
+	HealthDeps    health.Deps
+	Pool          *pgxpool.Pool
+	AppsRepo      applications.Repository
+	SkillsRepo    v2skills.Repository
+	FoldersRepo   v2folders.Repository
+	TagsRepo      v2tags.Repository
+	AnalyticsRepo v2analytics.Repository
+	ConvsRepo     v2convs.Repository
+	WebhookRepo   webhook.Repository
+	RedisClient   *goredis.Client
+
 	Shadow         *shadow.Comparator
 	ShadowMetrics  *shadow.Metrics
 	CutoverTracker *cutover.Tracker
 	CutoverRouter  *cutover.Router
 	AdminUI        *adminui.Config
-	SessionSecret  string
+	Storage        storage.Backend
 }
 
 func NewRouter(cfg RouterConfig) chi.Router {
@@ -91,36 +106,36 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	r.Mount("/", health.RoutesWithDeps(cfg.HealthDeps))
 
 	// Traefik forward-auth endpoint (no auth middleware — this IS the auth check)
-	forwardAuth := v2auth.NewForwardAuthHandler(cfg.AuthClient, cfg.AuthValidator)
+	forwardAuth := v2auth.NewForwardAuthHandler(cfg.Auth.Client, cfg.Auth.Validator)
 	r.Get("/auth", forwardAuth.ServeHTTP)
 
 	// Browser-facing login/logout (replaces pylon_auth session flows)
-	if cfg.SessionHandler != nil {
+	if cfg.Auth.SessionHandler != nil {
 		r.Route("/forward-auth", func(r chi.Router) {
-			if cfg.OIDCHandler != nil {
+			if cfg.Auth.OIDCHandler != nil {
 				r.Get("/login", func(w http.ResponseWriter, req *http.Request) {
 					http.Redirect(w, req, "/forward-auth/auth_oidc/login", http.StatusFound)
 				})
 			} else {
-				r.Get("/login", cfg.SessionHandler.Login)
+				r.Get("/login", cfg.Auth.SessionHandler.Login)
 			}
-			r.Get("/logout", cfg.SessionHandler.Logout)
-			r.Get("/info", cfg.SessionHandler.Info)
-			r.Get("/auth_form/login", cfg.SessionHandler.Login)
-			r.Post("/auth_form/authorize", cfg.SessionHandler.Authorize)
-			r.Get("/auth_form/logout", cfg.SessionHandler.Logout)
-			if cfg.OIDCHandler != nil {
-				r.Get("/auth_oidc/login", cfg.OIDCHandler.Login)
-				r.Get("/auth_oidc/callback", cfg.OIDCHandler.Callback)
+			r.Get("/logout", cfg.Auth.SessionHandler.Logout)
+			r.Get("/info", cfg.Auth.SessionHandler.Info)
+			r.Get("/auth_form/login", cfg.Auth.SessionHandler.Login)
+			r.Post("/auth_form/authorize", cfg.Auth.SessionHandler.Authorize)
+			r.Get("/auth_form/logout", cfg.Auth.SessionHandler.Logout)
+			if cfg.Auth.OIDCHandler != nil {
+				r.Get("/auth_oidc/login", cfg.Auth.OIDCHandler.Login)
+				r.Get("/auth_oidc/callback", cfg.Auth.OIDCHandler.Callback)
 			} else {
-				r.Get("/auth_oidc/login", cfg.SessionHandler.Login)
+				r.Get("/auth_oidc/login", cfg.Auth.SessionHandler.Login)
 			}
-			r.Get("/auth_oidc/logout", cfg.SessionHandler.Logout)
+			r.Get("/auth_oidc/logout", cfg.Auth.SessionHandler.Logout)
 		})
 	}
 
 	// S3-compatible artifacts API (root level — UI fetches via raw fetch, not baseQuery)
-	s3Handler := v2artifacts.NewS3Handler(cfg.Pool)
+	s3Handler := v2artifacts.NewS3Handler(cfg.Storage)
 	r.Get("/artifacts/s3/", s3Handler.ListBuckets)
 	r.Get("/artifacts/s3/{bucket}", s3Handler.ListObjects)
 	r.Get("/artifacts/s3/{bucket}/*", s3Handler.GetObject)
@@ -161,7 +176,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.AuthClient, Validator: cfg.AuthValidator, SessionSecret: cfg.SessionSecret}))
+		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret}))
 
 		if cfg.CutoverRouter != nil {
 			r.Use(cfg.CutoverRouter.Middleware)
@@ -176,12 +191,12 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 		r.Route("/api/v2", func(r chi.Router) {
 			coreHandler := v2core.NewHandler(cfg.Pool)
-			if cfg.MCPSyncer != nil {
-				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
+			if cfg.Indexer.MCPSyncer != nil {
+				coreHandler.SetMCPSyncer(cfg.Indexer.MCPSyncer)
 			}
 
 			// === Auth endpoints ===
-			r.Mount("/auth", v2auth.NewHandler(cfg.AuthClient, cfg.RedisClient, cfg.Pool).Routes())
+			r.Mount("/auth", v2auth.NewHandler(cfg.Auth.Client, cfg.RedisClient, cfg.Pool).Routes())
 
 			// === Projects endpoints ===
 			r.Mount("/projects", v2projects.NewHandler(cfg.Pool).Routes())
@@ -213,6 +228,12 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Get("/tasks/{mode}/", adminHandler.Tasks)
 				r.Get("/tasks/{mode}", adminHandler.Tasks)
 				r.Get("/active_tasks/{mode}", adminHandler.ActiveTasks)
+
+				// User/project suspend (admin panel)
+				r.Put("/user_suspend/{mode}/{userID}", adminHandler.UserSuspend)
+				r.Put("/project_suspend/{mode}/{projectID}", adminHandler.ProjectSuspend)
+				r.Get("/moderation_status/{mode}", adminHandler.ModerationStatusSingle)
+				r.Post("/moderation_status/{mode}", adminHandler.ModerationStatusSingle)
 
 				// Regular app admin endpoints (with projectID)
 				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
@@ -247,7 +268,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			r.Route("/elitea_core", func(r chi.Router) {
 				// Applications
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
 					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
 					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
@@ -257,6 +278,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 					r.Post("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.CreateVersion)
 					r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersion)
 					r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
+					r.Patch("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersionExpanded)
 					r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
 					r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", appHandler.GetDefaultVersion)
 					r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.SetDefaultVersion)
@@ -283,7 +305,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				}
 
 				// Toolkits
-				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.ToolTester)
+				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, cfg.Indexer.ToolTester)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills)
 				r.Get("/tools/prompt_lib/{projectID}", toolkitHandler.List)
 				r.Post("/tools/prompt_lib/{projectID}", toolkitHandler.Create)
@@ -291,10 +313,11 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 				r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
 				r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-				r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.List)
+				r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
 				r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
 				r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
 				r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
+				r.Get("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
 				r.Post("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
 				r.Post("/fork_toolkit/prompt_lib/{projectID}", toolkitHandler.ForkToolkit)
 				r.Post("/test_tool/prompt_lib/{projectID}/{toolID}", toolkitHandler.TestTool)
@@ -309,7 +332,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 				// Folders
 				if cfg.FoldersRepo != nil {
-					folderHandler := v2folders.NewHandler(cfg.FoldersRepo)
+					folderHandler := v2folders.NewHandler(cfg.FoldersRepo).WithPool(cfg.Pool)
 					r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
 					r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
 					r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
@@ -328,14 +351,17 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 				// Conversations
 				if cfg.ConvsRepo != nil {
-					convHandler := v2convs.NewHandler(cfg.ConvsRepo)
+					convHandler := v2convs.NewHandler(cfg.ConvsRepo).WithPool(cfg.Pool)
 					r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
 					r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
 					r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
 					r.Put("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Update)
 					r.Delete("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
+					r.Delete("/conversations/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
+					r.Post("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.PostMessage)
 					r.Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
 					r.Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
+					r.Get("/message/prompt_lib/{projectID}/{messageUUID}", convHandler.GetMessage)
 					r.Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
 					r.Post("/participants/prompt_lib/{projectID}/{conversationID}", convHandler.AddParticipant)
 					r.Delete("/participant/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.RemoveParticipant)
@@ -355,23 +381,23 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				}
 
 				// Predict/LLM
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
+				if cfg.Indexer.Predictor != nil {
+					predictHandler := v2predict.NewHandler(cfg.Indexer.Predictor, cfg.Indexer.LLMService)
 					r.Post("/predict_llm/prompt_lib/{projectID}", predictHandler.Predict)
 					r.Delete("/task/prompt_lib/{projectID}/{taskID}", predictHandler.CancelTask)
 					r.Get("/application_task/prompt_lib/{projectID}/{taskID}", predictHandler.GetTask)
 				}
 
 				// Chat
-				if cfg.ChatService != nil {
-					chatHandler := v2chat.NewHandler(cfg.ChatService)
+				if cfg.Indexer.ChatService != nil {
+					chatHandler := v2chat.NewHandler(cfg.Indexer.ChatService)
 					r.Mount("/chat/prompt_lib/{projectID}", chatHandler.Routes())
 					r.Get("/chat_config/prompt_lib/{projectID}", coreHandler.ChatConfig)
 				}
 
 				// Pipelines
-				if cfg.PipelineRunner != nil {
-					pipelineHandler := v2pipelines.NewHandler(cfg.PipelineRunner).WithPool(cfg.Pool)
+				if cfg.Indexer.PipelineRunner != nil {
+					pipelineHandler := v2pipelines.NewHandler(cfg.Indexer.PipelineRunner).WithPool(cfg.Pool)
 					r.Get("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.GetTrigger)
 					r.Post("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.Trigger)
 					r.Put("/pipeline_trigger/prompt_lib/{projectID}/pipeline/{versionID}/trigger", pipelineHandler.UpdateTrigger)
@@ -379,7 +405,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
-					appHandler := v2apps.NewHandler(cfg.AppsRepo)
+					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
 					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 
@@ -387,21 +413,21 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
 
 				// Webchat (predict via version ID)
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
+				if cfg.Indexer.Predictor != nil {
+					predictHandler := v2predict.NewHandler(cfg.Indexer.Predictor, cfg.Indexer.LLMService)
 					r.Post("/webchat/prompt_lib/{projectID}/{versionID}", predictHandler.Predict)
 				}
 
 				// Generate drafts (forward to predict/indexer)
-				if cfg.Predictor != nil {
-					predictHandler := v2predict.NewHandler(cfg.Predictor, cfg.LLMService)
+				if cfg.Indexer.Predictor != nil {
+					predictHandler := v2predict.NewHandler(cfg.Indexer.Predictor, cfg.Indexer.LLMService)
 					r.Post("/generate_application_draft/prompt_lib/{projectID}", predictHandler.Predict)
 					r.Post("/generate_skill_draft/prompt_lib/{projectID}", predictHandler.Predict)
 					r.Post("/generate_project_context_draft/prompt_lib/{projectID}", predictHandler.Predict)
 				}
 
 				// Fork
-				r.Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)
+				r.Post("/fork/prompt_lib/{projectID}", coreHandler.Fork)
 
 				// Publishing
 				r.Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
@@ -409,6 +435,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
 				r.Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
 				r.Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				r.Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+
+				// Admin published agents
+				r.Get("/admin_published_agents/administration", coreHandler.AdminPublishedAgents)
 
 				// Public applications
 				r.Get("/public_applications/prompt_lib", coreHandler.PublicApplications)
@@ -428,6 +458,14 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 				// Application relations
 				r.Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				r.Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.UpdateApplicationRelation)
+
+				// Collections
+				r.Post("/collections/prompt_lib/{projectID}", coreHandler.CreateCollection)
+				r.Get("/collections/prompt_lib/{projectID}", coreHandler.ListCollections)
+				r.Get("/collection/prompt_lib/{projectID}/{collectionID}", coreHandler.GetCollection)
+				r.Patch("/collection/prompt_lib/{projectID}/{collectionID}", coreHandler.PatchCollection)
+				r.Delete("/collection/prompt_lib/{projectID}/{collectionID}", coreHandler.DeleteCollection)
 
 				// Recommendations
 				r.Get("/recommendations/prompt_lib/{projectID}", coreHandler.Recommendations)
@@ -487,6 +525,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 
 				// Import wizard
 				r.Post("/import_wizard/prompt_lib/{projectID}", coreHandler.ExportImportPost)
+				r.Post("/import_wizard/prompt_lib/{projectID}/", coreHandler.ExportImportPost)
 
 				// Users / Roles (served under /admin/ for UI compat, registered here as fallback)
 				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
@@ -496,14 +535,19 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				// Admin panel audit & service descriptors
 				r.Get("/admin/{mode}", coreHandler.ServiceDescriptors)
 				r.Get("/audit_traces/{mode}", coreHandler.AuditTraces)
+				r.Get("/audit/{mode}", coreHandler.AuditTraces)
 				r.Get("/audit_trace_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+				r.Get("/audit_heatmap/{mode}", coreHandler.AuditTraceHeatmap)
+				r.Get("/project_user_activity/{mode}", coreHandler.ProjectUserActivity)
+				r.Post("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
+				r.Delete("/register_descriptor/{projectID}", coreHandler.RegisterDescriptor)
 			})
 
 			// === Social plugin ===
 			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
 
 			// === Artifacts ===
-			artifactHandler := v2artifacts.NewInMemoryHandler()
+			artifactHandler := v2artifacts.NewHandler(v2artifacts.NewPgRepo(cfg.Pool, cfg.Storage), cfg.Storage)
 			r.Route("/artifacts", func(r chi.Router) {
 				// Bucket CRUD
 				r.Get("/buckets/default/{projectID}", artifactHandler.ListBuckets)
@@ -516,6 +560,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Post("/artifacts/default/{projectID}/{bucket}", artifactHandler.UploadArtifact)
 				r.Delete("/artifacts/default/{projectID}/{bucket}", artifactHandler.DeleteArtifacts)
 				r.Get("/artifact/default/{projectID}/{bucket}", artifactHandler.GetArtifact)
+				r.Get("/artifact/default/{projectID}/{bucket}/*", artifactHandler.ServeFile)
 				r.Post("/artifact/default/{projectID}/{bucket}", artifactHandler.CreateArtifact)
 				r.Delete("/artifact/default/{projectID}/{bucket}", artifactHandler.DeleteArtifact)
 			})

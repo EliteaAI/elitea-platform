@@ -1,0 +1,274 @@
+syntax = "proto3";
+
+package elitea.v1.admin;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/eliteaai/elitea-main/gen/go/elitea/v1/admin;adminv1";
+
+// AdminService provides endpoints for user management, role management,
+// content moderation, and platform-level configuration within the Elitea
+// platform.
+service AdminService {
+
+  // UserList returns a paginated list of users for a project.
+  rpc UserList(UserListRequest) returns (UserListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/admin/users/default/{project_id}"
+    };
+  }
+
+  // RoleList returns a paginated list of roles for a project.
+  rpc RoleList(RoleListRequest) returns (RoleListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/admin/roles/default/{project_id}"
+    };
+  }
+
+  // UserCreate creates a new user inside a project.
+  rpc UserCreate(UserCreateRequest) returns (UserCreateResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/admin/users/default/{project_id}"
+      body: "body"
+    };
+  }
+
+  // UserUpdate replaces an existing user record inside a project.
+  rpc UserUpdate(UserUpdateRequest) returns (UserUpdateResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/admin/users/default/{project_id}"
+      body: "body"
+    };
+  }
+
+  // UserDelete removes one or more users from a project.
+  // The id[] query parameter is mapped to the repeated `id` field;
+  // grpc-gateway encodes repeated string fields as id=v1&id=v2.
+  rpc UserDelete(UserDeleteRequest) returns (UserDeleteResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/admin/users/default/{project_id}"
+    };
+  }
+
+  // ModerationStatus retrieves the current moderation status for an entity.
+  rpc ModerationStatus(ModerationStatusRequest) returns (ModerationStatusResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/admin/moderation_status/default/{project_id}/{entity_id}"
+    };
+  }
+
+  // CreateModerationRequest submits a new moderation request for an entity.
+  rpc CreateModerationRequest(CreateModerationRequestRequest) returns (CreateModerationRequestResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/admin/moderation_status/default/{project_id}/{entity_id}"
+      body: "body"
+    };
+  }
+
+  // GetPlatformSettings retrieves platform-wide settings for the prompt library.
+  rpc GetPlatformSettings(GetPlatformSettingsRequest) returns (GetPlatformSettingsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/platform_settings/prompt_lib"
+    };
+  }
+
+  // GetSupportAssistantConfig retrieves the configuration for the support
+  // assistant.
+  rpc GetSupportAssistantConfig(GetSupportAssistantConfigRequest) returns (GetSupportAssistantConfigResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/support_assistant/config"
+    };
+  }
+}
+
+// =============================================================================
+// User management
+// =============================================================================
+
+// UserListRequest is the request message for the UserList RPC.
+message UserListRequest {
+  // project_id identifies the project whose users are listed (path parameter).
+  string project_id = 1;
+
+  // limit is the maximum number of rows to return (query parameter).
+  int32 limit = 2;
+
+  // offset is the zero-based index of the first row to return (query
+  // parameter).
+  int32 offset = 3;
+}
+
+// UserListResponse is the response message for the UserList RPC.
+message UserListResponse {
+  // rows contains the list of user objects returned for the current page.
+  // Each entry is an opaque JSON object whose schema is defined by the
+  // upstream service.
+  repeated google.protobuf.Struct rows = 1;
+
+  // total is the count of all users matching the query, regardless of
+  // pagination.
+  int32 total = 2;
+
+  // is_load_more indicates whether additional pages of results are available
+  // beyond the current page.
+  bool is_load_more = 3;
+}
+
+// UserCreateRequest is the request message for the UserCreate RPC.
+message UserCreateRequest {
+  // project_id identifies the project in which the user is created (path
+  // parameter).
+  string project_id = 1;
+
+  // body is the free-form JSON payload describing the user to create.
+  google.protobuf.Struct body = 2;
+}
+
+// UserCreateResponse is the response message for the UserCreate RPC.
+message UserCreateResponse {
+  // result contains the newly created user record as returned by the upstream
+  // service.
+  google.protobuf.Struct result = 1;
+}
+
+// UserUpdateRequest is the request message for the UserUpdate RPC.
+message UserUpdateRequest {
+  // project_id identifies the project that owns the user (path parameter).
+  string project_id = 1;
+
+  // body is the free-form JSON payload describing the fields to update.
+  google.protobuf.Struct body = 2;
+}
+
+// UserUpdateResponse is the response message for the UserUpdate RPC.
+message UserUpdateResponse {
+  // result contains the updated user record as returned by the upstream
+  // service.
+  google.protobuf.Struct result = 1;
+}
+
+// UserDeleteRequest is the request message for the UserDelete RPC.
+message UserDeleteRequest {
+  // project_id identifies the project from which users are deleted (path
+  // parameter).
+  string project_id = 1;
+
+  // id is the list of user identifiers to delete. This maps to the `id[]`
+  // query parameter in the original REST API. grpc-gateway serialises
+  // repeated string fields as id=v1&id=v2 in the query string.
+  repeated string id = 2;
+}
+
+// UserDeleteResponse is the response message for the UserDelete RPC.
+message UserDeleteResponse {
+  // result contains the outcome of the delete operation as returned by the
+  // upstream service.
+  google.protobuf.Struct result = 1;
+}
+
+// =============================================================================
+// Role management
+// =============================================================================
+
+// RoleListRequest is the request message for the RoleList RPC.
+message RoleListRequest {
+  // project_id identifies the project whose roles are listed (path parameter).
+  string project_id = 1;
+
+  // limit is the maximum number of rows to return (query parameter).
+  int32 limit = 2;
+
+  // offset is the zero-based index of the first row to return (query
+  // parameter).
+  int32 offset = 3;
+}
+
+// RoleListResponse is the response message for the RoleList RPC.
+message RoleListResponse {
+  // rows contains the list of role objects returned for the current page.
+  // Each entry is an opaque JSON object whose schema is defined by the
+  // upstream service.
+  repeated google.protobuf.Struct rows = 1;
+
+  // total is the count of all roles matching the query, regardless of
+  // pagination.
+  int32 total = 2;
+}
+
+// =============================================================================
+// Moderation
+// =============================================================================
+
+// ModerationStatusRequest is the request message for the ModerationStatus RPC.
+message ModerationStatusRequest {
+  // project_id identifies the project that owns the entity (path parameter).
+  string project_id = 1;
+
+  // entity_id identifies the entity whose moderation status is requested
+  // (path parameter).
+  string entity_id = 2;
+}
+
+// ModerationStatusResponse is the response message for the ModerationStatus
+// RPC.
+message ModerationStatusResponse {
+  // result contains the moderation status payload as returned by the upstream
+  // service.
+  google.protobuf.Struct result = 1;
+}
+
+// CreateModerationRequestRequest is the request message for the
+// CreateModerationRequest RPC.
+message CreateModerationRequestRequest {
+  // project_id identifies the project that owns the entity (path parameter).
+  string project_id = 1;
+
+  // entity_id identifies the entity for which the moderation request is
+  // created (path parameter).
+  string entity_id = 2;
+
+  // body is the free-form JSON payload describing the moderation request.
+  google.protobuf.Struct body = 3;
+}
+
+// CreateModerationRequestResponse is the response message for the
+// CreateModerationRequest RPC.
+message CreateModerationRequestResponse {
+  // result contains the newly created moderation request record as returned
+  // by the upstream service.
+  google.protobuf.Struct result = 1;
+}
+
+// =============================================================================
+// Platform settings
+// =============================================================================
+
+// GetPlatformSettingsRequest is the request message for the
+// GetPlatformSettings RPC. It carries no parameters; the endpoint is
+// global (no project scope).
+message GetPlatformSettingsRequest {}
+
+// GetPlatformSettingsResponse is the response message for the
+// GetPlatformSettings RPC.
+message GetPlatformSettingsResponse {
+  // result contains the platform settings payload as returned by the upstream
+  // service.
+  google.protobuf.Struct result = 1;
+}
+
+// =============================================================================
+// Support assistant configuration
+// =============================================================================
+
+// GetSupportAssistantConfigRequest is the request message for the
+// GetSupportAssistantConfig RPC. It carries no parameters.
+message GetSupportAssistantConfigRequest {}
+
+// GetSupportAssistantConfigResponse is the response message for the
+// GetSupportAssistantConfig RPC.
+message GetSupportAssistantConfigResponse {
+  // result contains the support assistant configuration payload as returned
+  // by the upstream service.
+  google.protobuf.Struct result = 1;
+}

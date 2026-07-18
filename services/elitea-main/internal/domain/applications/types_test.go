@@ -45,7 +45,7 @@ func TestApplication_JSONRoundTrip(t *testing.T) {
 
 func TestListResponse_JSONShape(t *testing.T) {
 	resp := applications.ListResponse{
-		Items:      []applications.Application{{ID: "a1", Name: "Agent 1"}},
+		Rows:       []applications.Application{{ID: "a1", Name: "Agent 1"}},
 		Total:      50,
 		Page:       1,
 		PageSize:   20,
@@ -60,7 +60,7 @@ func TestListResponse_JSONShape(t *testing.T) {
 	var raw map[string]json.RawMessage
 	json.Unmarshal(data, &raw)
 
-	requiredFields := []string{"items", "total", "page", "page_size", "total_pages"}
+	requiredFields := []string{"rows", "total", "page", "page_size", "total_pages"}
 	for _, f := range requiredFields {
 		if _, ok := raw[f]; !ok {
 			t.Errorf("missing required field %q in JSON output", f)

@@ -1,15 +1,21 @@
 package artifacts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
 
 type Bucket struct {
@@ -43,11 +49,12 @@ type Repository interface {
 }
 
 type Handler struct {
-	repo Repository
+	repo    Repository
+	backend storage.Backend
 }
 
-func NewHandler(repo Repository) *Handler {
-	return &Handler{repo: repo}
+func NewHandler(repo Repository, backend storage.Backend) *Handler {
+	return &Handler{repo: repo, backend: backend}
 }
 
 func NewInMemoryHandler() *Handler {
@@ -60,10 +67,21 @@ func (h *Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	buckets, err := h.repo.ListBuckets(r.Context(), projectID)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": buckets, "total": len(buckets)})
+	rows := make([]map[string]any, len(buckets))
+	for i, b := range buckets {
+		rows[i] = map[string]any{
+			"id":         b.ID,
+			"name":       b.Name,
+			"is_pinned":  b.IsPinned,
+			"created_at": b.CreatedAt,
+			"size":       0,
+			"tags":       []any{},
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "total": len(rows)})
 }
 
 func (h *Handler) CreateBucket(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +95,11 @@ func (h *Handler) CreateBucket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, bucket)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Created",
+		"id":      bucket.ID,
+		"name":    bucket.Name,
+	})
 }
 
 // UpdateBucket handles PUT /buckets/default/{projectID}?name={bucket}
@@ -130,7 +152,7 @@ func (h *Handler) DeleteBucket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]any{"message": "Deleted"})
 }
 
 // --- Artifact handlers ---
@@ -140,10 +162,19 @@ func (h *Handler) ListArtifacts(w http.ResponseWriter, r *http.Request) {
 	bucket := chi.URLParam(r, "bucket")
 	artifacts, err := h.repo.ListArtifacts(r.Context(), projectID, bucket)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": artifacts, "total": len(artifacts)})
+	rows := make([]map[string]any, len(artifacts))
+	for i, a := range artifacts {
+		rows[i] = map[string]any{
+			"id":       a.ID,
+			"name":     a.Name,
+			"size":     a.Size,
+			"modified": a.CreatedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows, "total": len(rows)})
 }
 
 func (h *Handler) GetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +186,49 @@ func (h *Handler) GetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, artifact)
+}
+
+// ServeFile serves file content from the storage backend.
+// URL: GET /artifact/default/{projectID}/{bucket}/*
+func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	bucket := chi.URLParam(r, "bucket")
+	filePath := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+
+	if decoded, err := url.PathUnescape(filePath); err == nil {
+		filePath = decoded
+	}
+	if decodedBucket, err := url.PathUnescape(bucket); err == nil {
+		bucket = decodedBucket
+	}
+
+	if h.backend == nil || filePath == "" {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	reader, info, err := h.backend.GetObject(r.Context(), projectID, bucket, filePath)
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+	defer reader.Close()
+
+	mimeType := info.ContentType
+	if mimeType == "" {
+		ext := ""
+		if idx := strings.LastIndex(filePath, "."); idx >= 0 {
+			ext = filePath[idx:]
+		}
+		mimeType = mime.TypeByExtension(ext)
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+	}
+
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
+	io.Copy(w, reader)
 }
 
 func (h *Handler) CreateArtifact(w http.ResponseWriter, r *http.Request) {
@@ -173,11 +247,19 @@ func (h *Handler) CreateArtifact(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if err := h.repo.DeleteArtifact(r.Context(), projectID, bucket); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "artifact not found"})
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "filename query param required"})
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	var size int64
+	if h.backend != nil {
+		if info, err := h.backend.StatObject(r.Context(), projectID, bucket, filename); err == nil {
+			size = info.Size
+		}
+		h.backend.DeleteObject(r.Context(), projectID, bucket, filename)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "Deleted", "size": size})
 }
 
 // UploadArtifact handles POST /artifacts/default/{projectID}/{bucket} (multipart/form-data, field "file")
@@ -197,7 +279,6 @@ func (h *Handler) UploadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Read fully to obtain size; in a production impl this would stream to object storage.
 	data, err := io.ReadAll(file)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to read file"})
@@ -214,7 +295,16 @@ func (h *Handler) UploadArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, artifact)
+
+	if h.backend != nil {
+		h.backend.PutObject(r.Context(), projectID, bucket, header.Filename, bytes.NewReader(data), int64(len(data)), mimeType)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Done",
+		"size":    artifact.Size,
+		"name":    artifact.Name,
+	})
 }
 
 // DeleteArtifacts handles DELETE /artifacts/default/{projectID}/{bucket}?fname[]={name}&fname[]={name}

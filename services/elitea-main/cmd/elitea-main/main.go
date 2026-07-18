@@ -26,6 +26,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
 )
 
 func main() {
@@ -166,12 +168,34 @@ func main() {
 		Redis:   rdb,
 	})
 
+	// Storage backend
+	storageCfg := storage.ConfigFromEnv()
+	var storageBackend storage.Backend
+	switch storageCfg.Backend {
+	case "", "filesystem":
+		storageBackend = filesystem.New(storageCfg.DataDir)
+	default:
+		slog.Error("unsupported storage backend", "backend", storageCfg.Backend)
+		os.Exit(1)
+	}
+
 	r := api.NewRouter(api.RouterConfig{
-		AuthClient:     authClient,
-		AuthValidator:  localValidator,
-		SessionHandler: sessionHandler,
-		OIDCHandler:    oidcHandler,
-		Pool:          pool,
+		Auth: api.AuthDeps{
+			Client:         authClient,
+			Validator:      localValidator,
+			SessionHandler: sessionHandler,
+			OIDCHandler:    oidcHandler,
+			SessionSecret:  jwtSecret,
+		},
+		Indexer: api.IndexerDeps{
+			Predictor:      indexerClient,
+			LLMService:     indexerClient,
+			ChatService:    indexerClient,
+			PipelineRunner: indexerClient,
+			ToolTester:     indexerClient,
+			MCPSyncer:      indexerClient,
+		},
+		Pool: pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: eventBus,
@@ -186,16 +210,10 @@ func main() {
 		RedisClient:    rdb,
 		Shadow:         comparator,
 		ShadowMetrics:  shadowMetrics,
-		Predictor:      indexerClient,
-		LLMService:     indexerClient,
-		ChatService:    indexerClient,
-		PipelineRunner: indexerClient,
-		ToolTester:     indexerClient,
-		MCPSyncer:      indexerClient,
 		CutoverTracker: cutoverTracker,
 		CutoverRouter:  cutoverRouter,
 		AdminUI:        adminUIConfig(),
-		SessionSecret:  jwtSecret,
+		Storage:        storageBackend,
 	})
 
 	// Combine chi router + Socket.IO on one port

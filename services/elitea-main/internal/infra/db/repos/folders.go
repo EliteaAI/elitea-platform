@@ -22,7 +22,7 @@ func NewFoldersRepo(pool *pgxpool.Pool) *FoldersRepo {
 func (r *FoldersRepo) List(ctx context.Context, projectID string) ([]folders.Folder, error) {
 	s := schema(projectID)
 	q := fmt.Sprintf(`
-		SELECT id, name, COALESCE(uuid::text, ''), owner_id, position, created_at, updated_at
+		SELECT id::text, name, COALESCE(uuid::text, ''), owner_id, position, created_at, COALESCE(updated_at, created_at)
 		FROM %q.chat_conversation_folders ORDER BY position, name`, s)
 
 	rows, err := r.pool.Query(ctx, q)
@@ -50,9 +50,9 @@ func (r *FoldersRepo) List(ctx context.Context, projectID string) ([]folders.Fol
 func (r *FoldersRepo) Create(ctx context.Context, projectID string, folder folders.Folder) (folders.Folder, error) {
 	s := schema(projectID)
 	q := fmt.Sprintf(`
-		INSERT INTO %q.chat_conversation_folders (name, owner_id, position)
-		VALUES ($1, 1, 0)
-		RETURNING id, name, created_at, updated_at`, s)
+		INSERT INTO %q.chat_conversation_folders (name, owner_id, position, uuid, meta)
+		VALUES ($1, 1, 0, gen_random_uuid(), '{}'::jsonb)
+		RETURNING id::text, name, created_at, COALESCE(updated_at, created_at)`, s)
 
 	var f folders.Folder
 	err := r.pool.QueryRow(ctx, q, folder.Name).Scan(&f.ID, &f.Name, &f.CreatedAt, &f.UpdatedAt)
@@ -68,7 +68,7 @@ func (r *FoldersRepo) Update(ctx context.Context, projectID, folderID string, fo
 	q := fmt.Sprintf(`
 		UPDATE %q.chat_conversation_folders SET name = $1, updated_at = now()
 		WHERE id = $2
-		RETURNING id, name, created_at, updated_at`, s)
+		RETURNING id::text, name, created_at, COALESCE(updated_at, created_at)`, s)
 
 	var f folders.Folder
 	err := r.pool.QueryRow(ctx, q, folder.Name, folderID).Scan(&f.ID, &f.Name, &f.CreatedAt, &f.UpdatedAt)

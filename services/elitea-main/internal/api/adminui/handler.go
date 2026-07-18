@@ -64,7 +64,7 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	// Try to extract user from session cookie
 	if cookie, err := r.Cookie("elitea_session"); err == nil && h.cfg.SecretKey != "" {
 		if claims := h.verifySession(cookie.Value); claims != nil {
-			cfg.UserID = claims["uid"]
+			cfg.UserID = claims["user_id"]
 			if email, ok := claims["email"].(string); ok {
 				cfg.UserEmail = email
 				cfg.UserName = email

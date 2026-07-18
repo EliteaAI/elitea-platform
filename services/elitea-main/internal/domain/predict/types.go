@@ -77,3 +77,12 @@ type PipelineRunResponse struct {
 	Status    string    `json:"status"`
 	StartedAt time.Time `json:"started_at"`
 }
+
+type PipelineStatus struct {
+	TaskID    string `json:"task_id"`
+	Status    string `json:"status"`
+	Result    any    `json:"result,omitempty"`
+	Error     string `json:"error,omitempty"`
+	StartedAt string `json:"started_at,omitempty"`
+	EndedAt   string `json:"ended_at,omitempty"`
+}

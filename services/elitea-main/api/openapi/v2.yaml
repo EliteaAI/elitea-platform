@@ -1,0 +1,2234 @@
+openapi: "3.0.3"
+info:
+  title: Elitea Platform API
+  version: "2.0.0"
+  description: |
+    External REST API for the Elitea Platform (elitea-main Go service).
+    Wire-compatible drop-in replacement for pylon_main (Python/Flask).
+
+    ## Response shape conventions
+    - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
+    - **Paginated lists**: `{"total": N, "rows": [...]}`
+    - **Admin paginated lists**: `{"items": [...], "total": N, "page": N, "page_size": N}`
+    - **General errors (4xx)**: `{"ok": false, "error": "message"}`
+    - **Rate limit (429)**: `{"error": {"message": "...", "type": "rate_limit_error", "code": "rate_limit_exceeded"}}`
+    - All field names are **snake_case**; no envelope wrappers.
+
+servers:
+  - url: /api/v2/elitea_core
+    description: Core platform API server (prompt_lib scope)
+  - url: /api/v2
+    description: Admin and auxiliary APIs
+
+tags:
+  - name: admin
+    description: User, role, and moderation management
+  - name: analytics
+    description: Usage analytics for prompts, tools, and agents
+  - name: applications
+    description: Application (agent/pipeline/skill) lifecycle management
+  - name: artifacts
+    description: Bucket and artifact (file) storage
+  - name: auth
+    description: Permissions
+  - name: chat
+    description: Conversational / webchat endpoints
+  - name: configurations
+    description: Runtime configuration management
+  - name: notifications
+    description: User notifications
+  - name: resources
+    description: Shared resources
+  - name: search
+    description: Search and filter options
+  - name: secrets
+    description: Secret / credential management
+  - name: settings
+    description: Entity and platform settings
+  - name: skills
+    description: Skill management
+  - name: social
+    description: Social features (likes, follows)
+  - name: tags
+    description: Tag management
+  - name: toolkits
+    description: Toolkit (integration) management
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+components:
+  parameters:
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Project identifier (extracted from URL path)
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 1000
+      description: Maximum number of items to return
+    Offset:
+      name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+      description: Number of items to skip before starting to collect results
+    Search:
+      name: search
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Free-text search filter
+    SortBy:
+      name: sort_by
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Field name to sort results by
+    SortOrder:
+      name: sort_order
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+      description: Sort direction
+    DateFrom:
+      name: date_from
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date
+      description: Start of date range (inclusive)
+    DateTo:
+      name: date_to
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date
+      description: End of date range (inclusive)
+
+  schemas:
+    # ---- Generic / utility ------------------------------------------------
+    Struct:
+      type: object
+      additionalProperties: {}
+      description: >
+        Arbitrary JSON object. Used for request/response bodies that are not
+        yet strongly typed (mirrors google.protobuf.Struct semantics).
+
+    GenericResponse:
+      type: object
+      additionalProperties: {}
+      description: >
+        Generic success response. Shape varies by endpoint; see individual
+        endpoint descriptions. No envelope wrapper.
+
+    # ---- Paginated responses -----------------------------------------------
+    PaginatedResponse:
+      type: object
+      required: [total, rows]
+      properties:
+        total:
+          type: integer
+          description: Total number of matching records across all pages
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/Struct'
+          description: Items for the current page
+
+    AdminPaginatedResponse:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Struct'
+          description: Items for the current page
+        total:
+          type: integer
+          description: Total number of matching records
+        page:
+          type: integer
+          description: Current page number (1-based)
+        page_size:
+          type: integer
+          description: Number of items per page
+
+    ArrayResponse:
+      type: array
+      items:
+        $ref: '#/components/schemas/Struct'
+      description: Unpagianted array result
+
+    # ---- Error responses ---------------------------------------------------
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          description: Human-readable error message
+
+    RateLimitErrorDetail:
+      type: object
+      required: [message, type, code]
+      properties:
+        message:
+          type: string
+        type:
+          type: string
+          enum: [rate_limit_error]
+        code:
+          type: string
+          enum: [rate_limit_exceeded]
+
+    RateLimitErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/RateLimitErrorDetail'
+
+    # ---- Domain schemas (generic shells — to be refined per endpoint) ------
+    User:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: User record
+
+    Role:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: Role record
+
+    Application:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: Application (agent / pipeline / skill) record
+
+    ApplicationVersion:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: Application version record
+
+    Bucket:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: Storage bucket record
+
+    Artifact:
+      allOf:
+        - $ref: '#/components/schemas/Struct'
+      description: Stored artifact (file) record
+
+  responses:
+    Generic200:
+      description: Success
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GenericResponse'
+
+    Paginated200:
+      description: Paginated list of results
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PaginatedResponse'
+
+    AdminPaginated200:
+      description: Admin-style paginated list of results
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AdminPaginatedResponse'
+
+    Array200:
+      description: Array of results
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ArrayResponse'
+
+    Object200:
+      description: Single resource object
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Struct'
+
+    400:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    401:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    403:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    404:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    409:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    429:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorResponse'
+
+    500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ==========================================================================
+  # ADMIN — users
+  # ==========================================================================
+  /admin/users/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: userList
+      summary: List users for a project
+      description: UserList returns a paginated list of users for a project.
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminPaginated200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    post:
+      operationId: userCreate
+      summary: Create a user inside a project
+      description: UserCreate creates a new user inside a project.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: userUpdate
+      summary: Replace an existing user record
+      description: UserUpdate replaces an existing user record inside a project.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    delete:
+      operationId: userDelete
+      summary: Remove one or more users from a project
+      description: UserDelete removes one or more users from a project.
+      tags: [admin]
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: ID of the user to delete
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # ADMIN — roles
+  # ==========================================================================
+  /admin/roles/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: roleList
+      summary: List roles for a project
+      description: RoleList returns a paginated list of roles for a project.
+      tags: [admin]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/AdminPaginated200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # ADMIN — moderation
+  # ==========================================================================
+  /admin/moderation_status/default/{project_id}/{entity_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: entity_id
+        in: path
+        required: true
+        schema:
+          type: integer
+
+    get:
+      operationId: moderationStatus
+      summary: Get moderation status for an entity
+      description: ModerationStatus retrieves the current moderation status for an entity.
+      tags: [admin]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    post:
+      operationId: createModerationRequest
+      summary: Submit a moderation request for an entity
+      description: CreateModerationRequest submits a new moderation request for an entity.
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # ADMIN — platform settings & support assistant
+  # ==========================================================================
+  /elitea_core/platform_settings/prompt_lib:
+    get:
+      operationId: getPlatformSettings
+      summary: Retrieve platform-wide settings for the prompt library
+      description: GetPlatformSettings retrieves platform-wide settings for the prompt library.
+      tags: [admin]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /support_assistant/config:
+    get:
+      operationId: getSupportAssistantConfig
+      summary: Retrieve support assistant configuration
+      description: GetSupportAssistantConfig retrieves the configuration for the support assistant.
+      tags: [admin]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # ANALYTICS
+  # ==========================================================================
+  /elitea_core/analytics/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getProjectAnalytics
+      summary: Aggregated analytics for a project's prompt library
+      description: GetProjectAnalytics returns aggregated analytics for a project's prompt library.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_users/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: listAnalyticsUsers
+      summary: Paginated user analytics for a project's prompt library
+      description: ListAnalyticsUsers returns paginated user analytics for a project's prompt library.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortOrder'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_user_detail/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getAnalyticsUserDetail
+      summary: Detailed analytics for a specific user within a project
+      description: GetAnalyticsUserDetail returns detailed analytics for a specific user within a project.
+      tags: [analytics]
+      parameters:
+        - name: user_id_string
+          in: query
+          schema: { type: string }
+        - name: user_id_int
+          in: query
+          schema: { type: integer }
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_tools/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: listAnalyticsTools
+      summary: Paginated tool analytics for a project's prompt library
+      description: ListAnalyticsTools returns paginated tool analytics for a project's prompt library.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortOrder'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_tool_detail/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getAnalyticsToolDetail
+      summary: Detailed analytics for a specific tool within a project
+      description: GetAnalyticsToolDetail returns detailed analytics for a specific tool within a project.
+      tags: [analytics]
+      parameters:
+        - name: tool_name
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_agents/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: listAnalyticsAgents
+      summary: Paginated agent analytics for a project's prompt library
+      description: ListAnalyticsAgents returns paginated agent analytics for a project's prompt library.
+      tags: [analytics]
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/SortBy'
+        - $ref: '#/components/parameters/SortOrder'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/analytics_agent_detail/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      operationId: getAnalyticsAgentDetail
+      summary: Detailed analytics for a specific agent within a project
+      description: GetAnalyticsAgentDetail returns detailed analytics for a specific agent within a project.
+      tags: [analytics]
+      parameters:
+        - name: entity_id_string
+          in: query
+          schema: { type: string }
+        - name: entity_id_int
+          in: query
+          schema: { type: integer }
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # APPLICATIONS — list / create
+  # ==========================================================================
+  /elitea_core/applications/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listApplications
+      summary: List applications for a project
+      description: ListApplications returns a paginated list of applications for a project.
+      tags: [applications]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    post:
+      operationId: createApplication
+      summary: Create a new application shell
+      description: CreateApplication creates a new application (agent / pipeline / skill) shell.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/public_applications/prompt_lib:
+    get:
+      operationId: listPublicApplications
+      summary: List published applications visible without project membership
+      description: ListPublicApplications returns published applications visible without project membership.
+      tags: [applications]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — single resource CRUD
+  /elitea_core/application/prompt_lib/{project_id}/{application_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getApplication
+      summary: Retrieve full application details
+      description: GetApplication retrieves full application details.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    delete:
+      operationId: deleteApplication
+      summary: Remove an application and all associated versions
+      description: DeleteApplication removes an application and all associated versions.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/application/prompt_lib/{project_id}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      operationId: editApplication
+      summary: Update top-level application metadata
+      description: EditApplication updates top-level application metadata in-place.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — tool delete
+  /elitea_core/tool/prompt_lib/{project_id}/{tool_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: tool_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      operationId: deleteApplicationTool
+      summary: Remove a tool (skill entity)
+      description: DeleteApplicationTool removes a tool (skill entity).
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — public access
+  /elitea_core/public_application/prompt_lib/{application_id}/{version_name}:
+    parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_name
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: getPublicApplication
+      summary: Retrieve a published application by public name and version label
+      description: GetPublicApplication retrieves a published application by its public name and version label.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — publish / unpublish / validate
+  /elitea_core/publish/prompt_lib/{project_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: publishApplication
+      summary: Transition a version to published state
+      description: PublishApplication transitions a version to the published (marketplace) state.
+      tags: [applications]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/unpublish/prompt_lib/{project_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: unpublishApplication
+      summary: Retract a published version from the marketplace
+      description: UnpublishApplication retracts a published version from the marketplace.
+      tags: [applications]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/publish_validate/prompt_lib/{project_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: validateForPublish
+      summary: Run pre-publish validation checks without committing
+      description: ValidateForPublish runs pre-publish validation checks without committing.
+      tags: [applications]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — task cancellation
+  /elitea_core/application_task/prompt_lib/{project_id}/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: task_id
+        in: path
+        required: true
+        schema: { type: string }
+
+    delete:
+      operationId: stopApplicationTask
+      summary: Cancel a running asynchronous application task
+      description: StopApplicationTask cancels a running asynchronous application task.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — versions
+  /elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getApplicationVersionDetail
+      summary: Retrieve a specific application version
+      description: GetApplicationVersionDetail retrieves a specific application version.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: updateApplicationVersion
+      summary: Update mutable fields of a specific version
+      description: UpdateApplicationVersion updates mutable fields of a specific version.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    delete:
+      operationId: deleteApplicationVersion
+      summary: Remove a version
+      description: DeleteApplicationVersion removes a version.
+      tags: [applications]
+      parameters:
+        - name: replacement_version_id
+          in: query
+          schema: { type: integer }
+          description: Version to use as replacement when this version is the default
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '409': { $ref: '#/components/responses/409' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/versions/prompt_lib/{project_id}/{application_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: saveApplicationNewVersion
+      summary: Create a new version for an existing application
+      description: SaveApplicationNewVersion creates a new version for an existing application.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/default_version/prompt_lib/{project_id}/{application_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    patch:
+      operationId: setApplicationDefaultVersion
+      summary: Mark a version as the default for its parent application
+      description: SetApplicationDefaultVersion marks a version as the default for its parent application.
+      tags: [applications]
+      parameters:
+        - name: version_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: checkVersionInUse
+      summary: Report whether a version is referenced by other entities
+      description: CheckVersionInUse reports whether a version is referenced by other entities.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/batch_replace_version/prompt_lib/{project_id}/{old_version_id}/{new_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: old_version_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: new_version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: batchReplaceVersionReferences
+      summary: Atomically repoint all references from old to new version
+      description: BatchReplaceVersionReferences atomically repoints all references from old_version_id to new_version_id.
+      tags: [applications]
+      parameters:
+        - name: delete_old
+          in: query
+          schema: { type: boolean }
+          description: Whether to delete the old version after replacement
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/version_validator/prompt_lib/{project_id}/{application_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: validateApplicationVersion
+      summary: Validate a version's configuration against current platform constraints
+      description: ValidateApplicationVersion validates a version's configuration against current platform constraints.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — import/export
+  /elitea_core/export_import/prompt_lib/{project_id}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: exportApplication
+      summary: Export an application as JSON or Markdown
+      description: ExportApplication exports an application as JSON or Markdown.
+      tags: [applications]
+      parameters:
+        - name: fork
+          in: query
+          schema: { type: boolean }
+        - name: follow_version_ids
+          in: query
+          schema:
+            type: array
+            items: { type: integer }
+          style: form
+          explode: true
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, markdown]
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/export_converter/prompt_lib:
+    post:
+      operationId: convertLegacyApplication
+      summary: Convert a legacy-format application payload into the current schema
+      description: ConvertLegacyApplication converts a legacy-format application payload into the current schema.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/import_wizard/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: importWizard
+      summary: Guided multi-step import flow for an application
+      description: ImportWizard runs the guided multi-step import flow for an application payload into a target project.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — icons
+  /elitea_core/upload_icon/prompt_lib/{project_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: uploadApplicationIcon
+      summary: Upload a new icon for a specific application version
+      description: UploadApplicationIcon uploads a new icon for a specific application version.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file_content:
+                  type: string
+                  format: binary
+                file_name:
+                  type: string
+                width:
+                  type: integer
+                height:
+                  type: integer
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: replaceApplicationIcon
+      summary: Replace an existing icon's metadata / file for a version
+      description: ReplaceApplicationIcon replaces an existing icon's metadata / file for a version.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/upload_icon/prompt_lib/{project_id}/{name}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+
+    delete:
+      operationId: deleteApplicationIcon
+      summary: Remove an icon by its storage name/key
+      description: DeleteApplicationIcon removes an icon by its storage name/key.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/upload_icon/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getApplicationIcons
+      summary: List uploaded icons for a project
+      description: GetApplicationIcons lists uploaded icons for a project with pagination.
+      tags: [applications]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: skip
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/default_icons/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getApplicationDefaultIcons
+      summary: Get the platform-level default icon set
+      description: GetApplicationDefaultIcons returns the platform-level default icon set.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — relations, attachment storage, recommendations
+  /elitea_core/application_relation/prompt_lib/{project_id}/{selected_application_id}/{selected_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: selected_application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: selected_version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    patch:
+      operationId: updateApplicationRelation
+      summary: Update the typed relationship between two application versions
+      description: UpdateApplicationRelation updates the typed relationship between two application versions.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/application_attachment_storage/prompt_lib/{project_id}/{application_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: application_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      operationId: setAgentAttachmentStorage
+      summary: Configure file-attachment storage toolkit for an agent version
+      description: SetAgentAttachmentStorage configures which toolkit handles file-attachment storage for a specific agent version.
+      tags: [applications]
+      parameters:
+        - name: toolkit_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/recommendations/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getRecommendations
+      summary: Get recommended applications for a project
+      description: GetRecommendations returns applications recommended for a project based on platform-wide usage trends.
+      tags: [applications]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: days
+          in: query
+          schema: { type: integer }
+          description: Number of days of history to base recommendations on
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/index_types/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getDocumentLoaders
+      summary: Get available document loader / index type configurations
+      description: GetDocumentLoaders returns the available document loader / index type configurations for a project.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — pipeline triggers
+  /elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: getPipelineTrigger
+      summary: Retrieve the scheduled/event trigger for a pipeline version
+      description: GetPipelineTrigger retrieves the scheduled/event trigger for a pipeline version.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: updatePipelineTrigger
+      summary: Set or replace the pipeline trigger configuration
+      description: UpdatePipelineTrigger sets or replaces the trigger configuration.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/trending_authors/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getTrendingAuthors
+      summary: Get list of authors with trending published agents
+      description: GetTrendingAuthors returns the list of authors with trending published agents for a project context.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/fork/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: forkAgent
+      summary: Copy a published application into the caller's project
+      description: ForkAgent copies a published application into the caller's project.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/agent_categories/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getAgentCategories
+      summary: Get taxonomy used to classify published agents
+      description: GetAgentCategories returns the taxonomy used to classify published agents in the marketplace.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/generate_application_draft/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: generateAgentDraft
+      summary: AI-assisted agent scaffolding — returns a pre-populated draft
+      description: GenerateAgentDraft invokes the AI-assisted agent scaffolding service, returning a pre-populated draft agent configuration.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — projects & groups
+  /projects/project/default/{public_project_id}:
+    parameters:
+      - name: public_project_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: listProjects
+      summary: List projects accessible to the caller
+      description: ListProjects returns projects accessible to the caller, scoped to a public project sentinel.
+      tags: [applications]
+      parameters:
+        - name: check_public_role
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /projects/groups/prompt_lib:
+    get:
+      operationId: listGroups
+      summary: List all prompt-lib groups
+      description: ListGroups returns all prompt-lib groups (org-level units used to organise projects in the UI).
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /projects/groups/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    put:
+      operationId: putProjectGroups
+      summary: Set group membership for a project
+      description: PutProjectGroups sets the group membership for a project, replacing any existing assignments.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # APPLICATIONS — project context
+  /elitea_core/project_context/prompt_lib/{project_id}/project-context:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getProjectContext
+      summary: Retrieve the shared context blob for a project
+      description: GetProjectContext retrieves the shared context blob for a project.
+      tags: [applications]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: updateProjectContext
+      summary: Replace the shared context blob for a project
+      description: UpdateProjectContext replaces the shared context blob for a project.
+      tags: [applications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # ARTIFACTS — buckets
+  # ==========================================================================
+  /artifacts/s3:
+    get:
+      operationId: bucketList
+      summary: List all storage buckets visible to the given project
+      description: BucketList returns all storage buckets visible to the given project.
+      tags: [artifacts]
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: format
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /artifacts/buckets/default/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    post:
+      operationId: createBucket
+      summary: Create a new storage bucket for the specified project
+      description: CreateBucket creates a new storage bucket for the specified project.
+      tags: [artifacts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    put:
+      operationId: editBucket
+      summary: Fully replace the configuration of an existing bucket
+      description: EditBucket fully replaces the configuration of an existing bucket.
+      tags: [artifacts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    patch:
+      operationId: updateBucketPin
+      summary: Toggle the pinned state of a named bucket
+      description: UpdateBucketPin toggles the pinned state of a named bucket.
+      tags: [artifacts]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+    delete:
+      operationId: deleteBucket
+      summary: Remove a bucket and all of its contents
+      description: DeleteBucket removes a bucket and all of its contents from the project.
+      tags: [artifacts]
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+          description: Bucket name to delete
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ARTIFACTS — artifact list
+  /artifacts/s3/{bucket}:
+    parameters:
+      - name: bucket
+        in: path
+        required: true
+        schema: { type: string }
+
+    get:
+      operationId: artifactList
+      summary: List all artifacts stored in the specified bucket
+      description: ArtifactList returns all artifacts stored in the specified bucket.
+      tags: [artifacts]
+      parameters:
+        - name: project_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: format
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ARTIFACTS — CRUD
+  /artifacts/artifacts/default/{project_id}/{bucket}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: bucket
+        in: path
+        required: true
+        schema: { type: string }
+
+    post:
+      operationId: createArtifact
+      summary: Upload a file to the specified bucket
+      description: CreateArtifact uploads a file to the specified bucket.
+      tags: [artifacts]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                filename:
+                  type: string
+                overwrite_attachments:
+                  type: boolean
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    delete:
+      operationId: deleteArtifacts
+      summary: Remove multiple artifacts from a bucket in one request
+      description: DeleteArtifacts removes multiple artifacts from a bucket in one request.
+      tags: [artifacts]
+      parameters:
+        - name: fnames
+          in: query
+          schema:
+            type: array
+            items: { type: string }
+          style: form
+          explode: true
+          description: List of filenames to delete
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /artifacts/artifact/default/{project_id}/{bucket}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: bucket
+        in: path
+        required: true
+        schema: { type: string }
+
+    delete:
+      operationId: deleteArtifact
+      summary: Remove a single named artifact from a bucket
+      description: DeleteArtifact removes a single named artifact from a bucket.
+      tags: [artifacts]
+      parameters:
+        - name: integration_id
+          in: query
+          schema: { type: integer }
+        - name: is_local
+          in: query
+          schema: { type: boolean }
+        - name: filename
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Object200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # AUTH — permissions
+  # ==========================================================================
+  /auth/permissions/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: permissionList
+      summary: List permissions for a project (authenticated)
+      description: List permissions for a project (authenticated caller).
+      tags: [auth]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /auth/permissions/prompt_lib/public/{public_project_id}:
+    parameters:
+      - name: public_project_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: publicPermissionList
+      summary: List permissions for a project (public/unauthenticated context)
+      description: List permissions for a project using a public (unauthenticated) context.
+      tags: [auth]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # CHAT
+  # ==========================================================================
+  /chat/{project_id}/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    post:
+      operationId: webchatSync
+      summary: Synchronous chat endpoint for embedded widgets
+      description: Synchronous chat endpoint for embedded widgets.
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /chat/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getChatConfig
+      summary: Get chat configuration (model defaults etc.)
+      description: Get chat configuration (model defaults etc.).
+      tags: [chat]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # CONFIGURATIONS
+  # TODO: Enumerate endpoints when inventory is available
+  # ==========================================================================
+
+  # ==========================================================================
+  # NOTIFICATIONS
+  # TODO: Enumerate endpoints when inventory is available
+  # ==========================================================================
+
+  # ==========================================================================
+  # RESOURCES
+  # TODO: Enumerate endpoints when inventory is available
+  # ==========================================================================
+
+  # ==========================================================================
+  # SEARCH
+  # ==========================================================================
+  /elitea_core/search/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: getSearchOptions
+      summary: Get search filter options (models, etc.)
+      description: Get search filter options (models, etc.) for a project.
+      tags: [search]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # SECRETS
+  # TODO: Enumerate endpoints when inventory is available
+  # ==========================================================================
+
+  # ==========================================================================
+  # SETTINGS
+  # ==========================================================================
+  /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      operationId: replaceEntitySettings
+      summary: Replace participant/conversation settings
+      description: Replace participant/conversation settings in full.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    patch:
+      operationId: patchEntitySettings
+      summary: Partial settings update
+      description: Partial update of participant/conversation settings.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: conversation_id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: participant_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      operationId: replaceParticipantSettings
+      summary: Replace settings for a specific participant
+      description: Replace settings for a specific participant within a conversation.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    patch:
+      operationId: patchParticipantSettings
+      summary: Partial update for a specific participant's settings
+      description: Partial update of settings for a specific participant within a conversation.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # NOTE: /elitea_core/platform_settings/prompt_lib is defined above under ADMIN.
+  # The settings domain aliases to the same path (tagged [settings] in the UI).
+
+  # ==========================================================================
+  # SKILLS
+  # ==========================================================================
+  /elitea_core/application_skills/prompt_lib/{project_id}/{app_version_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: app_version_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      operationId: listApplicationSkills
+      summary: List skills attached to an agent version
+      description: List skills attached to an agent version.
+      tags: [skills]
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/skills/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listSkills
+      summary: Paginated list of skills for a project
+      description: Returns a paginated list of skills for a project.
+      tags: [skills]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+    post:
+      operationId: createSkill
+      summary: Create a skill
+      description: Create a new skill.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  /elitea_core/skills/prompt_lib:
+    get:
+      operationId: listPublicSkills
+      summary: List all skills (no project scope)
+      description: Returns a paginated list of all skills across the platform.
+      tags: [skills]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          $ref: '#/components/responses/Paginated200'
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+    post:
+      operationId: createPublicSkill
+      summary: Create a platform-scoped skill
+      description: Create a new platform-scoped skill.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Struct'
+      responses:
+        '200':
+          $ref: '#/components/responses/Generic200'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # SOCIAL
+  # TODO: Enumerate endpoints when inventory is available
+  # ==========================================================================
+
+  # ==========================================================================
+  # TAGS
+  # ==========================================================================
+  /elitea_core/tags/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listTags
+      summary: Get all tags for a project
+      description: Get all tags for a project.
+      tags: [tags]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }
+
+  # ==========================================================================
+  # TOOLKITS
+  # ==========================================================================
+  /elitea_core/toolkits/prompt_lib/{project_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+
+    get:
+      operationId: listToolkits
+      summary: List installed toolkit instances for a project
+      description: List installed toolkit (integration) instances for a project.
+      tags: [toolkits]
+      responses:
+        '200':
+          $ref: '#/components/responses/Array200'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '429': { $ref: '#/components/responses/429' }

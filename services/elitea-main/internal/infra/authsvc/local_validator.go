@@ -93,10 +93,29 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 		}
 	}
 
+	// Get permissions via role → permission mapping
+	permRows, err := v.pool.Query(ctx, `
+		SELECT DISTINCT rp.permission
+		FROM auth_core__role_permission rp
+		JOIN auth_core__user_role ur ON ur.role_id = rp.role_id
+		WHERE ur.user_id = $1
+		ORDER BY rp.permission
+	`, userID)
+	var permissions []string
+	if err == nil {
+		defer permRows.Close()
+		for permRows.Next() {
+			var perm string
+			permRows.Scan(&perm)
+			permissions = append(permissions, perm)
+		}
+	}
+
 	return auth.User{
-		ID:       fmt.Sprintf("%d", userID),
-		Email:    email,
-		AuthType: "token",
-		Roles:    roles,
+		ID:          fmt.Sprintf("%d", userID),
+		Email:       email,
+		AuthType:    "token",
+		Roles:       roles,
+		Permissions: permissions,
 	}, nil
 }

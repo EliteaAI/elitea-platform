@@ -52,7 +52,11 @@ func (h *Handler) PermissionList(w http.ResponseWriter, r *http.Request) {
 	permissions := h.loadUserPermissions(r.Context(), user.ID, projectID)
 
 	if len(permissions) == 0 {
-		// Fallback: return all known permissions (treat as admin/owner).
+		// Check global role permissions (super_admin, admin via auth_core__role_permission)
+		permissions = h.loadGlobalRolePermissions(r.Context(), user.ID)
+	}
+
+	if len(permissions) == 0 {
 		permissions = h.loadAllProjectPermissions(r.Context(), projectID)
 	}
 
@@ -67,6 +71,7 @@ func (h *Handler) loadUserPermissions(ctx context.Context, userID, projectID str
 	if h.pool == nil {
 		return nil
 	}
+	// First try project-specific role permissions
 	q := `
 		SELECT DISTINCT prp.permission
 		FROM auth_core__project_role_permission prp
@@ -74,6 +79,54 @@ func (h *Handler) loadUserPermissions(ctx context.Context, userID, projectID str
 		WHERE pur.user_id = $1 AND pur.project_id = $2
 		ORDER BY prp.permission`
 	rows, err := h.pool.Query(ctx, q, userID, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var perms []string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) == nil {
+			perms = append(perms, p)
+		}
+	}
+	if len(perms) > 0 {
+		return perms
+	}
+	// Fallback: resolve permissions via global role_permission using the project role name
+	q2 := `
+		SELECT DISTINCT rp.permission
+		FROM auth_core__role_permission rp
+		JOIN auth_core__role r ON r.id = rp.role_id
+		JOIN auth_core__project_role pr ON pr.name = r.name
+		JOIN auth_core__project_user_role pur ON pur.role_id = pr.id AND pur.project_id = pr.project_id
+		WHERE pur.user_id = $1 AND pur.project_id = $2
+		ORDER BY rp.permission`
+	rows2, err := h.pool.Query(ctx, q2, userID, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var p string
+		if rows2.Scan(&p) == nil {
+			perms = append(perms, p)
+		}
+	}
+	return perms
+}
+
+func (h *Handler) loadGlobalRolePermissions(ctx context.Context, userID string) []string {
+	if h.pool == nil {
+		return nil
+	}
+	q := `
+		SELECT DISTINCT rp.permission
+		FROM auth_core__role_permission rp
+		JOIN auth_core__user_role ur ON ur.role_id = rp.role_id
+		WHERE ur.user_id = $1
+		ORDER BY rp.permission`
+	rows, err := h.pool.Query(ctx, q, userID)
 	if err != nil {
 		return nil
 	}
@@ -135,6 +188,9 @@ func (h *Handler) CorePermissions(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
 	permissions := h.loadUserPermissions(r.Context(), user.ID, projectID)
+	if len(permissions) == 0 {
+		permissions = h.loadGlobalRolePermissions(r.Context(), user.ID)
+	}
 	if len(permissions) == 0 {
 		permissions = h.loadAllProjectPermissions(r.Context(), projectID)
 	}

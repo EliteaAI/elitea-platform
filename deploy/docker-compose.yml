@@ -1,8 +1,18 @@
-version: "3.9"
-
 services:
+  traefik:
+    image: traefik:v3.4
+    ports:
+      - "8080:80"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    depends_on:
+      - elitea-main
+      - elitea-ui
+
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18
+    shm_size: '2g'
     environment:
       POSTGRES_USER: elitea
       POSTGRES_PASSWORD: elitea
@@ -10,7 +20,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U elitea"]
       interval: 5s
@@ -29,29 +39,119 @@ services:
       timeout: 5s
       retries: 5
 
+  model-cache-init:
+    profiles: ["full"]
+    build:
+      context: ../docker/model-cache-init
+      dockerfile: Dockerfile
+    volumes:
+      - pylon_cache:/cache
+      - ../docker/model-cache-init/manifest.json:/config/manifest.json:ro
+    environment:
+      CACHE_DIR: /cache
+      MANIFEST_PATH: /config/manifest.json
+      MAX_RETRIES: "3"
+      AWS_DEFAULT_REGION: eu-north-1
+
   elitea-main:
     build:
-      context: ../services/elitea-main
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
       target: final
-    image: eliteaai/elitea-main:dev
-    ports:
-      - "8080:8080"
+    image: ghcr.io/eliteaai/elitea-main:dev
     environment:
-      DB_DSN: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
-      LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      SHADOW_ENABLED: "false"
+      LEGACY_URL: ""
+      ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
+      APPLICATION_SECRET_KEY: "changeme"
+      SKIP_MIGRATIONS: "1"
+      OIDC_ISSUER_URL: "https://oidc-mock.technicaldomain.xyz"
+      OIDC_CLIENT_ID: "39818061-ddc6-40f2-89c3-18ba59b28ce9"
+      OIDC_CLIENT_SECRET: "8dutMbJP9M8yuoucx31OSg"
+      OIDC_REDIRECT_URI: "http://localhost:8080/forward-auth/auth_oidc/callback"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 10s
+
+  elitea-ui:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Containerfile.elitea-ui
+    image: ghcr.io/eliteaai/elitea-ui:dev
+    environment:
+      VITE_SERVER_URL: "/api/v2"
+      VITE_BASE_URI: "/app/"
+      VITE_SOCKET_SERVER: ""
+      VITE_SOCKET_PATH: "/socket.io"
+      VITE_PUBLIC_PROJECT_ID: "1"
+      DEV: ""
+    depends_on:
+      - elitea-main
+
+  pylon-indexer:
+    build:
+      context: ../services/pylon-indexer
+      dockerfile: Containerfile
+      args:
+        PYLON_VERSION: "1.2.25"
+    image: ghcr.io/eliteaai/pylon-indexer:dev
+    environment:
+      NAME: pylon-indexer
+      NAME_PREFIX: elitea
+      ELITEA_RELEASE: main
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      REDIS_SSL: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: elitea
+      POSTGRES_PASSWORD: elitea
+      POSTGRES_DB: elitea
+      INDEXER_HMAC_KEY: ""
+      EVENT_HMAC_KEY: ""
+      RPC_HMAC_KEY: ""
+      LITELLM_MASTER_KEY: sk-elitea-litellm-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - pylon_cache:/data/cache
+
+  elitea-scheduler:
+    build:
+      context: ../services/elitea-scheduler
+      dockerfile: Containerfile
+    image: ghcr.io/eliteaai/elitea-scheduler:dev
+    environment:
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      REDIS_URL: "redis:6379"
+      RPC_CHANNEL: "elitea_rpc"
+      RPC_HMAC_KEY: ""
+      HTTP_ADDR: ":8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No container healthcheck: the image is distroless (no shell/wget/curl) and the
+    # binary has no -healthcheck flag. Liveness is via /healthz on :8081 — use a k8s
+    # httpGet probe in production (see deploy/helm).
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+  pylon_cache:

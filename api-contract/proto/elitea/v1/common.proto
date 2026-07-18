@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package elitea.v1;
+
+option go_package = "github.com/EliteaAI/elitea-platform/gen/go/elitea/v1;eliteav1";
+
+// PaginationRequest holds standard pagination and sorting parameters
+// shared across all list endpoints in the Elitea API.
+message PaginationRequest {
+  // offset is the zero-based index of the first row to return.
+  int32 offset = 1;
+
+  // limit is the maximum number of rows to return per page.
+  int32 limit = 2;
+
+  // sort_by is the field name to sort the results by.
+  string sort_by = 3;
+
+  // sort_order is the sort direction; expected values are "asc" or "desc".
+  string sort_order = 4;
+
+  // query is an optional free-text search term applied server-side.
+  string query = 5;
+}
+
+// PaginatedMeta is a reusable pagination metadata block embedded in list
+// responses to communicate total count and load-more hints to clients.
+message PaginatedMeta {
+  // total is the count of all matching records regardless of pagination.
+  int32 total = 1;
+
+  // offset is the zero-based index of the first row in this page.
+  int32 offset = 2;
+
+  // limit is the maximum number of rows in this page.
+  int32 limit = 3;
+
+  // is_load_more indicates whether additional pages are available beyond
+  // the current page.
+  bool is_load_more = 4;
+}
+
+// DateRange holds an inclusive start and end for date-based filters.
+// Both fields are ISO 8601 date strings (e.g. "2024-01-01").
+message DateRange {
+  // date_from is the inclusive start of the date range.
+  string date_from = 1;
+
+  // date_to is the inclusive end of the date range.
+  string date_to = 2;
+}
+
+// IdName is a minimal identifier-name pair returned by lookup and
+// autocomplete endpoints where only these two fields are needed.
+message IdName {
+  // id is the unique numeric identifier of the entity.
+  int32 id = 1;
+
+  // name is the human-readable display name of the entity.
+  string name = 2;
+}
+
+// Empty is a reusable empty message used as a request or response placeholder
+// for operations that carry no parameters or return no payload.
+message Empty {}

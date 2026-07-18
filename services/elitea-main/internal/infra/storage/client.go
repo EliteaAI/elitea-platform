@@ -1,10 +1,7 @@
 package storage
 
-// Client is a placeholder for the object storage client (e.g. S3-compatible).
-// TODO: implement using AWS SDK v2 or MinIO client.
-type Client struct{}
-
-// New creates a new placeholder Client.
-func New() *Client {
-	return &Client{}
-}
+// This file is intentionally minimal. The Backend factory logic lives in
+// cmd/elitea-main/main.go to avoid import cycles (backends import this
+// package for the interface types; this package cannot import them back).
+//
+// See storage.Backend interface in storage.go and ConfigFromEnv() in config.go.

@@ -1,9 +1,11 @@
-go 1.25.0
+go 1.25.8
 
 use (
-	./services/elitea-main
+	./gen/go
 	./libs/go/authlib
 	./libs/go/eventslib
-	./libs/go/rpclib
 	./libs/go/observability
+	./libs/go/rpclib
+	./services/elitea-main
+	./services/elitea-scheduler
 )
