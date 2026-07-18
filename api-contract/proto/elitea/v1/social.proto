@@ -1,0 +1,290 @@
+syntax = "proto3";
+
+// Package elitea.v1.social exposes social features: likes, pins, author profiles,
+// feedback, and trending author discovery.
+//
+// REST mapping is provided via grpc-gateway annotations. All paths preserve the
+// existing /api/v2/social/* and /api/v2/elitea_core/* URL contracts.
+package elitea.v1.social;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/gen/go/elitea/social/v1;socialv1";
+
+// ============================================================================
+// Like / Unlike Application
+// ============================================================================
+
+// LikeApplicationRequest is the input for the LikeApplication RPC.
+// All fields are bound from the URL path.
+message LikeApplicationRequest {
+  // public_project_id identifies the public project that owns the application.
+  string public_project_id = 1;
+  // application_id identifies the application to like.
+  string application_id = 2;
+}
+
+// LikeApplicationResponse is returned after a like is recorded.
+// The server may return a dynamic JSON object; the full payload is captured in data.
+message LikeApplicationResponse {
+  // data holds the server response object. May contain like counts, timestamps, etc.
+  google.protobuf.Struct data = 1;
+}
+
+// UnlikeApplicationRequest is the input for the UnlikeApplication RPC.
+// All fields are bound from the URL path.
+message UnlikeApplicationRequest {
+  // public_project_id identifies the public project that owns the application.
+  string public_project_id = 1;
+  // application_id identifies the application to unlike.
+  string application_id = 2;
+}
+
+// UnlikeApplicationResponse is returned after a like is removed.
+message UnlikeApplicationResponse {
+  // data holds the server response object.
+  google.protobuf.Struct data = 1;
+}
+
+// ============================================================================
+// Author List
+// ============================================================================
+
+// AuthorListRequest is the input for the AuthorList RPC.
+message AuthorListRequest {
+  // project_id identifies the project whose authors are to be listed.
+  string project_id = 1;
+
+  // limit is the maximum number of authors to return.
+  // Maps to the ?limit= query parameter.
+  int32 limit = 2;
+
+  // sort_by specifies the field used to sort the returned authors.
+  // Maps to the ?sort_by= query parameter.
+  string sort_by = 3;
+}
+
+// AuthorListResponse is the response for the AuthorList RPC.
+// Author objects are dynamic; each row is a JSON object with at minimum an "id"
+// field (which may be a string or number — captured as google.protobuf.Struct).
+message AuthorListResponse {
+  // rows contains the list of author objects.
+  repeated google.protobuf.Struct rows = 1;
+
+  // total is the total number of authors available for the project.
+  int32 total = 2;
+}
+
+// ============================================================================
+// Author Details
+// ============================================================================
+
+// AuthorDetailsRequest is the input for the AuthorDetails RPC.
+// The author identity is resolved from the authenticated session; no path
+// or query parameters are required.
+message AuthorDetailsRequest {}
+
+// AuthorDetailsResponse is the response for the AuthorDetails RPC.
+// The author profile is a dynamic JSON object with at minimum an "id" field.
+message AuthorDetailsResponse {
+  // data holds the author profile object.
+  google.protobuf.Struct data = 1;
+}
+
+// ============================================================================
+// Author Description (update)
+// ============================================================================
+
+// AuthorDescriptionRequest is the input for the AuthorDescription RPC.
+// The identity of the author to update is resolved from the authenticated session.
+message AuthorDescriptionRequest {
+  // description is the new author bio. Optional — omit to leave unchanged.
+  string description = 1;
+}
+
+// AuthorDescriptionResponse is returned after updating the author description.
+message AuthorDescriptionResponse {
+  // data holds the server response object. May be empty or echo the updated record.
+  google.protobuf.Struct data = 1;
+}
+
+// ============================================================================
+// Feedback
+// ============================================================================
+
+// FeedbackRequest is the input for the Feedback RPC.
+message FeedbackRequest {
+  // public_project_id identifies the project for which feedback is submitted.
+  string public_project_id = 1;
+
+  // message is the feedback text. Optional.
+  string message = 2;
+}
+
+// FeedbackResponse is returned after feedback is submitted.
+message FeedbackResponse {
+  // data holds the server response object.
+  google.protobuf.Struct data = 1;
+}
+
+// ============================================================================
+// Toggle Pin Item
+// ============================================================================
+
+// TogglePinItemRequest is the input for the TogglePinItem RPC.
+// All fields are bound from the URL path.
+message TogglePinItemRequest {
+  // project_id identifies the project that owns the entity.
+  string project_id = 1;
+
+  // entity_type is the kind of entity being pinned or unpinned
+  // (e.g. "application", "datasource", "pipeline").
+  string entity_type = 2;
+
+  // entity_id identifies the specific entity to pin or unpin.
+  string entity_id = 3;
+}
+
+// TogglePinItemResponse is returned after toggling the pin state.
+message TogglePinItemResponse {
+  // ok is true when the operation completed successfully.
+  bool ok = 1;
+}
+
+// ============================================================================
+// Trending Authors List
+// ============================================================================
+
+// TrendingAuthorsListRequest is the input for the TrendingAuthorsList RPC.
+message TrendingAuthorsListRequest {
+  // project_id identifies the project context for trending author computation.
+  string project_id = 1;
+}
+
+// TrendingAuthorsListResponse is the response for the TrendingAuthorsList RPC.
+// Author objects are dynamic; each row is a JSON object with at minimum an "id" field.
+message TrendingAuthorsListResponse {
+  // rows contains the list of trending author objects.
+  repeated google.protobuf.Struct rows = 1;
+
+  // total is the total number of trending authors.
+  int32 total = 2;
+}
+
+// ============================================================================
+// Trending Author Details
+// ============================================================================
+
+// TrendingAuthorsDetailsRequest is the input for the TrendingAuthorsDetails RPC.
+message TrendingAuthorsDetailsRequest {
+  // author_id identifies the trending author whose details are requested.
+  string author_id = 1;
+}
+
+// TrendingAuthorsDetailsResponse is the response for the TrendingAuthorsDetails RPC.
+// The author detail object is dynamic; it contains at minimum an "id" field.
+message TrendingAuthorsDetailsResponse {
+  // data holds the trending author detail object.
+  google.protobuf.Struct data = 1;
+}
+
+// ============================================================================
+// SocialService
+// ============================================================================
+
+// SocialService handles social interactions: application likes, author profiles,
+// item pinning, user feedback, and trending author discovery.
+//
+// URL namespaces used:
+//   /api/v2/social/*            — like, author, pin, feedback endpoints
+//   /api/v2/elitea_core/*       — trending author endpoints (legacy path preserved)
+service SocialService {
+  // LikeApplication records a like for a published application.
+  //
+  // POST /api/v2/social/like/prompt_lib/{public_project_id}/application/{application_id}
+  rpc LikeApplication(LikeApplicationRequest) returns (LikeApplicationResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/social/like/prompt_lib/{public_project_id}/application/{application_id}"
+      body: "*"
+    };
+  }
+
+  // UnlikeApplication removes a previously recorded like from a published application.
+  //
+  // DELETE /api/v2/social/like/prompt_lib/{public_project_id}/application/{application_id}
+  rpc UnlikeApplication(UnlikeApplicationRequest) returns (UnlikeApplicationResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/social/like/prompt_lib/{public_project_id}/application/{application_id}"
+    };
+  }
+
+  // AuthorList returns a filtered, optionally sorted list of authors for a project.
+  // Supports limit and sort_by query parameters.
+  //
+  // GET /api/v2/social/authors/{project_id}?limit=N&sort_by=field
+  rpc AuthorList(AuthorListRequest) returns (AuthorListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/social/authors/{project_id}"
+    };
+  }
+
+  // AuthorDetails returns the author profile for the currently authenticated user.
+  //
+  // GET /api/v2/social/author/
+  rpc AuthorDetails(AuthorDetailsRequest) returns (AuthorDetailsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/social/author"
+    };
+  }
+
+  // AuthorDescription updates the bio/description of the currently authenticated
+  // user's author profile.
+  //
+  // PUT /api/v2/social/author/
+  rpc AuthorDescription(AuthorDescriptionRequest) returns (AuthorDescriptionResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/social/author"
+      body: "*"
+    };
+  }
+
+  // Feedback submits user feedback associated with a public project.
+  //
+  // POST /api/v2/social/feedbacks/default/{public_project_id}
+  rpc Feedback(FeedbackRequest) returns (FeedbackResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/social/feedbacks/default/{public_project_id}"
+      body: "*"
+    };
+  }
+
+  // TogglePinItem pins or unpins an entity within a project. Calling this RPC
+  // twice for the same entity toggles the pin state back to unpinned.
+  //
+  // POST /api/v2/social/pin/prompt_lib/{project_id}/{entity_type}/{entity_id}
+  rpc TogglePinItem(TogglePinItemRequest) returns (TogglePinItemResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/social/pin/prompt_lib/{project_id}/{entity_type}/{entity_id}"
+      body: "*"
+    };
+  }
+
+  // TrendingAuthorsList returns the list of trending authors computed for a project.
+  //
+  // GET /api/v2/elitea_core/trending_authors/prompt_lib/{project_id}
+  rpc TrendingAuthorsList(TrendingAuthorsListRequest) returns (TrendingAuthorsListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/trending_authors/prompt_lib/{project_id}"
+    };
+  }
+
+  // TrendingAuthorsDetails returns full profile details for a single trending author.
+  //
+  // GET /api/v2/elitea_core/author/prompt_lib/{author_id}
+  rpc TrendingAuthorsDetails(TrendingAuthorsDetailsRequest) returns (TrendingAuthorsDetailsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/author/prompt_lib/{author_id}"
+    };
+  }
+}

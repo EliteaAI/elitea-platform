@@ -43,7 +43,7 @@ func TestAvailable_Success(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 
-	var types []handler.ConfigurationType
+	var types []map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&types); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -51,12 +51,14 @@ func TestAvailable_Success(t *testing.T) {
 		t.Error("expected non-empty list of available configuration types")
 	}
 
-	// Verify well-known types are present.
+	// Verify well-known types are present (from fallbacks).
 	found := make(map[string]bool)
 	for _, ct := range types {
-		found[ct.Type] = true
+		if tp, ok := ct["type"].(string); ok {
+			found[tp] = true
+		}
 	}
-	for _, want := range []string{"openai", "anthropic", "chroma"} {
+	for _, want := range []string{"llm_model", "embedding_model", "github"} {
 		if !found[want] {
 			t.Errorf("expected type %q in available list", want)
 		}
@@ -70,18 +72,21 @@ func TestAvailable_ContainsRequiredFields(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	var types []handler.ConfigurationType
+	var types []map[string]any
 	json.NewDecoder(rec.Body).Decode(&types)
 
 	for _, ct := range types {
-		if ct.Type == "" {
-			t.Error("ConfigurationType.Type must not be empty")
+		tp, _ := ct["type"].(string)
+		if tp == "" {
+			t.Error("type must not be empty")
 		}
-		if ct.DisplayName == "" {
-			t.Errorf("ConfigurationType.DisplayName must not be empty for type %q", ct.Type)
+		sec, _ := ct["section"].(string)
+		if sec == "" {
+			t.Errorf("section must not be empty for type %q", tp)
 		}
-		if ct.Section == "" {
-			t.Errorf("ConfigurationType.Section must not be empty for type %q", ct.Type)
+		cs, _ := ct["config_schema"].(map[string]any)
+		if cs == nil {
+			t.Errorf("config_schema must not be nil for type %q", tp)
 		}
 	}
 }

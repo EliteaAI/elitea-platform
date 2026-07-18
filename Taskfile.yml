@@ -43,6 +43,26 @@ tasks:
     cmds:
       - sqlc generate
 
+  proto:
+    desc: Lint and generate protobuf stubs (Go + Python)
+    cmds:
+      - cd proto && buf lint
+      - cd proto && buf generate
+
+  openapi:
+    desc: Generate OpenAPI server interface for elitea-main
+    dir: "{{.SERVICE}}"
+    cmds:
+      - mkdir -p internal/api/generated
+      - oapi-codegen --config api/openapi/oapi-codegen.yaml api/openapi/v2.yaml
+
+  generate:
+    desc: Run all code generation (sqlc + proto + openapi)
+    cmds:
+      - task: sqlc
+      - task: proto
+      - task: openapi
+
   # ── UI ────────────────────────────────────────────────────────────────────────
   ui:build:
     desc: Build EliteaUI SPA

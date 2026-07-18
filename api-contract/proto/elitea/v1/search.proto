@@ -1,0 +1,153 @@
+syntax = "proto3";
+
+package elitea.v1.search;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/eliteaai/elitea-main/internal/api/gen/search/v1;searchv1";
+
+// ----------------------------------------------------------------------------
+// Shared sub-messages
+// ----------------------------------------------------------------------------
+
+// SearchOptionItem is a minimal id/name pair returned for every entity category.
+message SearchOptionItem {
+  int32 id = 1;
+  string name = 2;
+}
+
+// TagSearchOptionItem extends SearchOptionItem with an optional arbitrary-data
+// blob stored in the Tag.data JSONB column.
+message TagSearchOptionItem {
+  int32 id = 1;
+  string name = 2;
+  // Optional JSONB payload attached to the tag row (may be absent).
+  google.protobuf.Struct data = 3;
+}
+
+// SearchOptionEntityResult is the paginated result set for a single entity
+// category (application, pipeline, toolkit, credential, skill, collection).
+message SearchOptionEntityResult {
+  // Total number of matching rows available (before pagination).
+  int32 total = 1;
+  // Page of matching rows.
+  repeated SearchOptionItem rows = 2;
+}
+
+// TagSearchOptionResult is the paginated result set for the tag category.
+// Tags carry an optional data blob so they use a dedicated item message.
+message TagSearchOptionResult {
+  // Total number of matching tag rows available (before pagination).
+  int32 total = 1;
+  // Page of matching tag rows.
+  repeated TagSearchOptionItem rows = 2;
+}
+
+// ----------------------------------------------------------------------------
+// Request / Response messages
+// ----------------------------------------------------------------------------
+
+// AutoSuggestRequest maps to:
+//   GET /api/v2/elitea_core/search_options/prompt_lib/{project_id}
+//
+// All query-string parameters are optional except project_id (path param).
+// entity category results are only populated when the corresponding value
+// appears in the entities list.
+message AutoSuggestRequest {
+  // Path parameter: owning project.
+  int32 project_id = 1;
+
+  // entities[] — which entity categories to populate in the response.
+  // Accepted values: "application", "pipeline", "toolkit", "credential", "skill".
+  // Omitting a value means that category is skipped entirely.
+  repeated string entities = 2;
+
+  // Full-text search query applied to entity name fields (SQL ILIKE %query%).
+  string query = 3;
+
+  // tags[] — restrict entities to those associated with any of these tag IDs.
+  repeated int32 tags = 4;
+
+  // statuses[] — restrict entities to those whose active version has one of
+  // these publish statuses (e.g. "draft", "published", "embedded").
+  repeated string statuses = 5;
+
+  // author_id — restrict entities to those whose active version was created
+  // by this user ID.
+  int32 author_id = 6;
+
+  // toolkit_type — restrict toolkit results to this toolkit type string.
+  string toolkit_type = 7;
+
+  // Pagination for the "tag" section of the response.
+  int32 tag_limit = 8;
+  int32 tag_offset = 9;
+
+  // Pagination for the "collection" section of the response.
+  int32 col_limit = 10;
+  int32 col_offset = 11;
+}
+
+// AutoSuggestResponse contains merged search-option results for all requested
+// entity categories.
+//
+// The server returns a result map keyed by entity name; each present field
+// holds a paginated list of id/name pairs that can be used to populate
+// autocomplete dropdowns or tag filters in the UI.
+//
+// Fields whose corresponding entity was not in the request's entities[] list
+// are returned as empty (zero total, no rows) rather than being absent, so
+// callers do not need to check for field presence.
+message AutoSuggestResponse {
+  // is_load_more signals to the client that this response should be appended
+  // to an existing in-memory list rather than replacing it (i.e. page > 0).
+  // Populated by the client from the request's page argument; included here
+  // as part of the documented API contract for the transformed response shape.
+  bool is_load_more = 1;
+
+  // application — agents whose active version is not of type "pipeline".
+  SearchOptionEntityResult application = 2;
+
+  // pipeline — agents whose active version is of type "pipeline".
+  SearchOptionEntityResult pipeline = 3;
+
+  // toolkit — toolkits visible to the project (optionally filtered by type).
+  SearchOptionEntityResult toolkit = 4;
+
+  // credential — credential configurations (section = "credentials").
+  SearchOptionEntityResult credential = 5;
+
+  // skill — skills visible to the project.
+  SearchOptionEntityResult skill = 6;
+
+  // tag — tags that are associated with at least one entity matching the
+  // other filters.  Uses TagSearchOptionResult because Tag rows may carry an
+  // arbitrary data blob.
+  TagSearchOptionResult tag = 7;
+
+  // collection — collections visible to the project.
+  // Pagination is driven by col_limit / col_offset in the request.
+  SearchOptionEntityResult collection = 8;
+}
+
+// ----------------------------------------------------------------------------
+// Service
+// ----------------------------------------------------------------------------
+
+// SearchService exposes the discovery / auto-suggest surface of the Elitea
+// prompt library.  It aggregates entity metadata from multiple backend
+// subsystems (applications, configurations, skills) into a single response
+// suitable for populating search filter dropdowns and autocomplete widgets.
+service SearchService {
+  // AutoSuggest returns paginated id/name lists for all requested entity
+  // categories, merged from applications, pipelines, toolkits, credentials,
+  // skills, and tags that match the supplied filter parameters.
+  //
+  // Required permission: models.promptlib_shared.search
+  rpc AutoSuggest(AutoSuggestRequest) returns (AutoSuggestResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/search_options/prompt_lib/{project_id}"
+    };
+  }
+}

@@ -1,0 +1,576 @@
+syntax = "proto3";
+
+package elitea.v1.toolkits;
+
+import "google/api/annotations.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/gen/go/elitea/v1/toolkits;toolkitspb";
+
+// ToolkitsService covers all toolkit, tool, MCP sync, and index-management
+// operations under /api/v2/elitea_core/**. All endpoints are project-scoped
+// via the prompt_lib URL mode (project_id path parameter).
+//
+// URL structure: /api/v2/elitea_core/{resource}/prompt_lib/{project_id}[/{id}...]
+//
+// NOTE on URL collisions:
+//   GET  /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+//   is shared by GetToolkitDetails and GetIndexSchedule. grpc-gateway only
+//   binds one HTTP rule per method+path; GetIndexSchedule therefore has no
+//   google.api.http annotation and must be dispatched at the application layer.
+//
+// NOTE on DELETE + body:
+//   DeleteIndexItem sends is_hidden in the request body. This is non-standard;
+//   some grpc-gateway versions reject body on DELETE. Treat is_hidden as a
+//   query parameter in grpc-gateway routing if the generated server rejects
+//   the body: "*" binding.
+service ToolkitsService {
+
+  // ── Toolkit type discovery ──────────────────────────────────────────────
+
+  // GetToolkitTypes returns the legacy toolkit types object for a project
+  // (endpoint name: toolkitTypes).
+  rpc GetToolkitTypes(GetToolkitTypesRequest) returns (GetToolkitTypesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/toolkits/prompt_lib/{project_id}"
+    };
+  }
+
+  // ListToolkitTypes returns all registered toolkit type descriptors
+  // (endpoint name: listToolkitTypes).
+  rpc ListToolkitTypes(ListToolkitTypesRequest) returns (ListToolkitTypesResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/toolkit_types/prompt_lib/{project_id}"
+    };
+  }
+
+  // ── Toolkit CRUD ────────────────────────────────────────────────────────
+
+  // ListToolkits returns a paginated list of toolkit instances for a project
+  // (endpoint name: toolkitsList).
+  rpc ListToolkits(ListToolkitsRequest) returns (ListToolkitsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/tools/prompt_lib/{project_id}"
+    };
+  }
+
+  // GetToolkitDetails returns a single toolkit instance by ID
+  // (endpoint name: toolkitsDetails / getIndexSchedule — shared URL).
+  rpc GetToolkitDetails(GetToolkitDetailsRequest) returns (GetToolkitDetailsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}"
+    };
+  }
+
+  // CreateToolkit creates a new toolkit instance in a project
+  // (endpoint name: toolkitCreate).
+  rpc CreateToolkit(CreateToolkitRequest) returns (CreateToolkitResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/tools/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // EditToolkit performs a full update of a toolkit instance
+  // (endpoint name: toolkitEdit).
+  rpc EditToolkit(EditToolkitRequest) returns (EditToolkitResponse) {
+    option (google.api.http) = {
+      put: "/api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}"
+      body: "*"
+    };
+  }
+
+  // DeleteToolkit removes a toolkit instance from a project
+  // (endpoint name: toolkitDelete).
+  rpc DeleteToolkit(DeleteToolkitRequest) returns (DeleteToolkitResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}"
+    };
+  }
+
+  // AssociateToolkit partially updates entity-to-toolkit associations
+  // (endpoint name: toolkitAssociate). Uses PATCH on the same path as
+  // EditToolkit/DeleteToolkit/GetToolkitDetails — differentiated by HTTP method.
+  rpc AssociateToolkit(AssociateToolkitRequest) returns (AssociateToolkitResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}"
+      body: "*"
+    };
+  }
+
+  // ── Toolkit operations ──────────────────────────────────────────────────
+
+  // ForkToolkit duplicates one or more toolkits into a project
+  // (endpoint name: toolkitFork).
+  rpc ForkToolkit(ForkToolkitRequest) returns (ForkToolkitResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/fork_toolkit/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // ExportToolkit exports a toolkit definition, optionally flagged as a fork
+  // (endpoint name: toolkitExport).
+  rpc ExportToolkit(ExportToolkitRequest) returns (ExportToolkitResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/export_toolkit/prompt_lib/{project_id}/{id}"
+    };
+  }
+
+  // TestToolkit submits a test invocation for a toolkit tool
+  // (endpoint name: toolkitTest).
+  rpc TestToolkit(TestToolkitRequest) returns (TestToolkitResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/test_tool/prompt_lib/{project_id}/{id}"
+      body: "*"
+    };
+  }
+
+  // ValidateToolkit checks that a toolkit is correctly configured and reachable
+  // (endpoint name: validateToolkit).
+  rpc ValidateToolkit(ValidateToolkitRequest) returns (ValidateToolkitResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/toolkit_validator/prompt_lib/{project_id}/{toolkit_id}"
+    };
+  }
+
+  // GetToolkitAvailableTools returns the tool list exposed by a toolkit instance
+  // (endpoint name: toolkitAvailableTools).
+  rpc GetToolkitAvailableTools(GetToolkitAvailableToolsRequest) returns (GetToolkitAvailableToolsResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/toolkit_available_tools/prompt_lib/{project_id}/{toolkit_id}"
+    };
+  }
+
+  // ── MCP server operations ───────────────────────────────────────────────
+
+  // McpSyncTools synchronises tools from a remote MCP server into the project
+  // (endpoint name: mcpSyncTools).
+  rpc McpSyncTools(McpSyncToolsRequest) returns (McpSyncToolsResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/mcp_sync_tools/prompt_lib/{project_id}"
+      body: "*"
+    };
+  }
+
+  // DiscoverMcpTools discovers the tools available for a given toolkit type
+  // (endpoint name: discoverMcpTools).
+  rpc DiscoverMcpTools(DiscoverMcpToolsRequest) returns (DiscoverMcpToolsResponse) {
+    option (google.api.http) = {
+      post: "/api/v2/elitea_core/toolkit_discover_tools/prompt_lib/{project_id}/{toolkit_type}"
+      body: "*"
+    };
+  }
+
+  // ── Index management ────────────────────────────────────────────────────
+
+  // GetIndexesList returns all index metadata entries for a toolkit
+  // (endpoint name: getIndexesList).
+  rpc GetIndexesList(GetIndexesListRequest) returns (GetIndexesListResponse) {
+    option (google.api.http) = {
+      get: "/api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}"
+    };
+  }
+
+  // DeleteIndexItem soft-deletes or hides an index metadata entry
+  // (endpoint name: deleteIndexItem).
+  // is_hidden is passed as a query parameter (grpc-gateway v2 does not allow
+  // a request body on DELETE requests; remaining fields map to query params).
+  rpc DeleteIndexItem(DeleteIndexItemRequest) returns (DeleteIndexItemResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}/{index_id}"
+    };
+  }
+
+  // StopIndexingItem cancels an in-progress indexing task
+  // (endpoint name: stopIndexingItem).
+  rpc StopIndexingItem(StopIndexingItemRequest) returns (StopIndexingItemResponse) {
+    option (google.api.http) = {
+      delete: "/api/v2/elitea_core/index_cancel/prompt_lib/{project_id}/{toolkit_id}/{index_name}/{task_id}"
+    };
+  }
+
+  // UpdateIndexSchedule updates the cron/timezone schedule for a toolkit index
+  // (endpoint name: updateIndexSchedule).
+  rpc UpdateIndexSchedule(UpdateIndexScheduleRequest) returns (UpdateIndexScheduleResponse) {
+    option (google.api.http) = {
+      patch: "/api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}/{index_name}"
+      body: "*"
+    };
+  }
+
+  // GetIndexSchedule retrieves the index schedule for a toolkit
+  // (endpoint name: getIndexSchedule).
+  // HTTP annotation intentionally omitted: this RPC maps to
+  //   GET /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+  // which is already bound to GetToolkitDetails. Route disambiguation must
+  // be handled at the application layer (e.g. via a query parameter flag or
+  // separate handler registration).
+  rpc GetIndexSchedule(GetIndexScheduleRequest) returns (GetIndexScheduleResponse) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GetToolkitTypes
+// GET /api/v2/elitea_core/toolkits/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message GetToolkitTypesRequest {
+  string project_id = 1;
+
+  // params is an opaque query-filter object forwarded to the indexer.
+  google.protobuf.Struct params = 2;
+}
+
+message GetToolkitTypesResponse {
+  // Opaque response object whose structure is determined by the indexer.
+  google.protobuf.Struct result = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ListToolkitTypes
+// GET /api/v2/elitea_core/toolkit_types/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message ListToolkitTypesRequest {
+  string project_id = 1;
+
+  // params is an opaque query-filter object forwarded to the indexer.
+  google.protobuf.Struct params = 2;
+}
+
+message ListToolkitTypesResponse {
+  // Array of toolkit type descriptors. Each element may be a plain string
+  // name or a structured object depending on the indexer version.
+  repeated google.protobuf.Value items = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ListToolkits
+// GET /api/v2/elitea_core/tools/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message ListToolkitsRequest {
+  string project_id = 1;
+
+  // Standard pagination. Defaults applied server-side (limit=20, offset=0).
+  int32 limit  = 2;
+  int32 offset = 3;
+
+  // toolkit_type filters by one or more type labels. The original API accepts
+  // either a single string or a comma-separated list; map to repeated here.
+  repeated string toolkit_type = 4;
+}
+
+message ListToolkitsResponse {
+  // Toolkit records. Fields vary by toolkit type; Struct preserves the full
+  // JSON shape returned by the Python service (id, name, type, description,
+  // settings, meta, created_at, updated_at, author_id, shared_id, ...).
+  repeated google.protobuf.Struct rows         = 1;
+  int32                           total        = 2;
+  bool                            is_load_more = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GetToolkitDetails
+// GET /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message GetToolkitDetailsRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message GetToolkitDetailsResponse {
+  // Scalar fields present on all toolkit responses.
+  int64 id        = 1;
+  bool  is_pinned = 2;
+
+  // Full toolkit payload (name, type, description, settings, meta, etc.)
+  // returned as a struct to accommodate per-type variability.
+  google.protobuf.Struct details = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CreateToolkit
+// POST /api/v2/elitea_core/tools/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message CreateToolkitRequest {
+  string project_id = 1;
+
+  // name is required.
+  string                 name        = 2;
+  string                 type        = 3;
+  string                 description = 4;
+  google.protobuf.Struct settings    = 5;
+}
+
+message CreateToolkitResponse {
+  int64 id = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EditToolkit
+// PUT /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message EditToolkitRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+
+  // All fields are optional for partial updates via PUT.
+  string                 name        = 3;
+  string                 description = 4;
+  google.protobuf.Struct settings    = 5;
+}
+
+message EditToolkitResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DeleteToolkit
+// DELETE /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message DeleteToolkitRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message DeleteToolkitResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AssociateToolkit
+// PATCH /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message AssociateToolkitRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+
+  // entity_version_id and entity_id are required.
+  int64 entity_version_id = 3;
+  int64 entity_id         = 4;
+
+  string entity_type = 5;
+  bool   has_relation = 6;
+
+  // selected_tools is an array of tool descriptors (mixed types allowed).
+  repeated google.protobuf.Value selected_tools = 7;
+}
+
+message AssociateToolkitResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ForkToolkit
+// POST /api/v2/elitea_core/fork_toolkit/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message ForkToolkitRequest {
+  string project_id = 1;
+
+  // toolkits is required; each element is a toolkit ID or descriptor object.
+  repeated google.protobuf.Value toolkits = 2;
+}
+
+message ForkToolkitResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ExportToolkit
+// GET /api/v2/elitea_core/export_toolkit/prompt_lib/{project_id}/{id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message ExportToolkitRequest {
+  string project_id = 1;
+  string id         = 2;
+
+  // fork=true marks the exported snapshot as a fork.
+  bool fork = 3;
+}
+
+message ExportToolkitResponse {
+  // Full exported toolkit payload (id, name, type, description, settings,
+  // env_vars, meta, forked).
+  google.protobuf.Struct data = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TestToolkit
+// POST /api/v2/elitea_core/test_tool/prompt_lib/{project_id}/{id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message TestToolkitRequest {
+  string project_id = 1;
+  string id         = 2;
+
+  // await_response=true blocks until the test invocation completes.
+  bool await_response = 3;
+
+  // input holds tool_name, tool_params, and any other invocation parameters.
+  google.protobuf.Struct input = 4;
+}
+
+message TestToolkitResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ValidateToolkit
+// GET /api/v2/elitea_core/toolkit_validator/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message ValidateToolkitRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message ValidateToolkitResponse {
+  // valid indicates whether the toolkit passed all validation checks.
+  bool                   valid  = 1;
+  // details carries per-check results when available.
+  google.protobuf.Struct details = 2;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GetToolkitAvailableTools
+// GET /api/v2/elitea_core/toolkit_available_tools/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message GetToolkitAvailableToolsRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message GetToolkitAvailableToolsResponse {
+  // tools is the list of tool records exposed by this toolkit instance.
+  // Each record contains id, name, type, description.
+  repeated google.protobuf.Struct tools = 1;
+  int32                           total = 2;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// McpSyncTools
+// POST /api/v2/elitea_core/mcp_sync_tools/prompt_lib/{project_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message McpSyncToolsRequest {
+  string project_id = 1;
+
+  // await_response=true blocks until the sync operation completes.
+  bool await_response = 2;
+
+  string                 url          = 3;
+  // headers is a map of HTTP headers to forward to the MCP server.
+  google.protobuf.Struct headers      = 4;
+  // timeout in seconds for the MCP server connection.
+  int32                  timeout      = 5;
+  // mcp_tokens holds per-token or per-service authentication credentials.
+  google.protobuf.Struct mcp_tokens   = 6;
+  // sid is an optional session identifier for stateful MCP transports.
+  string                 sid          = 7;
+  bool                   ssl_verify   = 8;
+  string                 toolkit_type = 9;
+}
+
+message McpSyncToolsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DiscoverMcpTools
+// POST /api/v2/elitea_core/toolkit_discover_tools/prompt_lib/{project_id}/{toolkit_type}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message DiscoverMcpToolsRequest {
+  string project_id   = 1;
+  string toolkit_type = 2;
+
+  // settings holds connection and authentication parameters for discovery.
+  google.protobuf.Struct settings = 3;
+}
+
+message DiscoverMcpToolsResponse {
+  google.protobuf.Struct result = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GetIndexesList
+// GET /api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message GetIndexesListRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message GetIndexesListResponse {
+  // items contains index_meta records (id, name, status, progress, created_at).
+  repeated google.protobuf.Struct items = 1;
+  int32                           total = 2;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DeleteIndexItem
+// DELETE /api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}/{index_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message DeleteIndexItemRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+  string index_id   = 3;
+
+  // is_hidden is required; when true the record is soft-deleted rather than
+  // physically removed. Sent as a JSON request body on the DELETE call.
+  bool is_hidden = 4;
+}
+
+message DeleteIndexItemResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// StopIndexingItem
+// DELETE /api/v2/elitea_core/index_cancel/prompt_lib/{project_id}/{toolkit_id}/{index_name}/{task_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message StopIndexingItemRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+  string index_name = 3;
+  string task_id    = 4;
+}
+
+message StopIndexingItemResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UpdateIndexSchedule
+// PATCH /api/v2/elitea_core/index_meta/prompt_lib/{project_id}/{toolkit_id}/{index_name}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message UpdateIndexScheduleRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+  string index_name = 3;
+
+  // timezone is required; must be a valid IANA timezone name, e.g. "UTC" or
+  // "America/New_York".
+  string timezone = 4;
+}
+
+message UpdateIndexScheduleResponse {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GetIndexSchedule
+// (Shares URL with GetToolkitDetails — HTTP annotation omitted.)
+// GET /api/v2/elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}
+// ═══════════════════════════════════════════════════════════════════════════
+
+message GetIndexScheduleRequest {
+  string project_id = 1;
+  string toolkit_id = 2;
+}
+
+message GetIndexScheduleResponse {
+  // schedule holds cron expression, timezone, next/last run times, and
+  // any other schedule metadata returned by the server.
+  google.protobuf.Struct schedule = 1;
+}

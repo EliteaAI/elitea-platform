@@ -1,0 +1,19 @@
+# Build artifacts
+apps/admin-ui/static/dist/assets/*.js.map
+
+# Local data (dumps, storage blobs)
+deploy/data/staging/
+deploy/data/production/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Go binaries
+/services/*/cmd/*/__debug_bin*
+/services/elitea-main/elitea-main
+/services/elitea-scheduler/elitea-scheduler

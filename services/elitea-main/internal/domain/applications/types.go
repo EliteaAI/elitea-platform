@@ -2,20 +2,32 @@ package applications
 
 import "time"
 
+type Author struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 type Application struct {
-	ID          string            `json:"id"`
-	ProjectID   string            `json:"project_id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Type        string            `json:"type"`
-	Icon        string            `json:"icon,omitempty"`
-	Tags        []string          `json:"tags,omitempty"`
-	FolderID    string            `json:"folder_id,omitempty"`
-	Status      string            `json:"status"`
-	Metadata    map[string]any    `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	CreatedBy   string            `json:"created_by"`
+	ID           string         `json:"id"`
+	ProjectID    string         `json:"project_id,omitempty"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	Type         string         `json:"type,omitempty"`
+	Icon         string         `json:"icon,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	FolderID     string         `json:"folder_id,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at,omitempty"`
+	CreatedBy    string         `json:"created_by,omitempty"`
+	OwnerID      string         `json:"owner_id"`
+	Authors      []Author       `json:"authors,omitempty"`
+	IsForked     bool           `json:"is_forked"`
+	Meta         map[string]any `json:"meta"`
+	HasInterrupt bool           `json:"has_interrupt"`
+	AgentType    string         `json:"agent_type,omitempty"`
 }
 
 type Version struct {
@@ -62,16 +74,17 @@ type GuardrailRule struct {
 }
 
 type ListRequest struct {
-	ProjectID string `json:"-"`
-	Page      int    `json:"page,omitempty"`
-	PageSize  int    `json:"page_size,omitempty"`
-	Search    string `json:"search,omitempty"`
-	Tags      string `json:"tags,omitempty"`
-	FolderID  string `json:"folder_id,omitempty"`
+	ProjectID  string `json:"-"`
+	Page       int    `json:"page,omitempty"`
+	PageSize   int    `json:"page_size,omitempty"`
+	Search     string `json:"search,omitempty"`
+	Tags       string `json:"tags,omitempty"`
+	FolderID   string `json:"folder_id,omitempty"`
+	AgentsType string `json:"-"`
 }
 
 type ListResponse struct {
-	Items      []Application `json:"items"`
+	Rows       []Application `json:"rows"`
 	Total      int           `json:"total"`
 	Page       int           `json:"page"`
 	PageSize   int           `json:"page_size"`

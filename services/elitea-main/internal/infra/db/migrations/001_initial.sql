@@ -103,8 +103,6 @@ BEGIN
             CONSTRAINT _application_version_name_uc UNIQUE (application_id, name)
         )', schema_name, schema_name);
 
-    CREATE INDEX IF NOT EXISTS idx_app_versions_app_id ON ONLY application_versions(application_id);
-
     -- Application variables
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.application_variables (

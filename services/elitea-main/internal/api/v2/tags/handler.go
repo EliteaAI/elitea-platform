@@ -11,8 +11,9 @@ import (
 )
 
 type Tag struct {
-	Name  string `json:"name"`
-	Count int    `json:"count,omitempty"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Data any    `json:"data"`
 }
 
 type Repository interface {
@@ -44,7 +45,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{"items": tags})
+	json.NewEncoder(w).Encode(map[string]any{"rows": tags, "total": len(tags)})
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {

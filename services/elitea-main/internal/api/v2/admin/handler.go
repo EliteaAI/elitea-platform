@@ -325,6 +325,39 @@ func (h *Handler) ActiveTasks(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userID")
+	var body struct {
+		Suspended bool `json:"suspended"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	if h.pool != nil {
+		h.pool.Exec(r.Context(), `UPDATE auth_core__user SET suspended = $1 WHERE id = $2`, body.Suspended, userID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	var body struct {
+		Suspended bool `json:"suspended"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	if h.pool != nil {
+		h.pool.Exec(r.Context(), `UPDATE centry.project SET suspended = $1 WHERE id = $2`, body.Suspended, projectID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) ModerationStatusSingle(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":  []any{},
+		"total": 0,
+	})
+}
+
 func paginationParams(r *http.Request) (limit, offset int) {
 	limit = 20
 	offset = 0

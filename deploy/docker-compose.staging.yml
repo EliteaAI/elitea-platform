@@ -1,0 +1,25 @@
+# Compose override for validating against a staging DB dump.
+# Usage:
+#   1. Load dump: bash deploy/scripts/load-staging-dump.sh ~/tmp/stagin-dump/saas-stage2_*.sql.gz
+#   2. Start:     podman compose -f deploy/docker-compose.yml -f deploy/docker-compose.staging.yml up --build
+services:
+  elitea-main:
+    environment:
+      DATABASE_URL: "postgres://eliteausr:elitea@postgres:5432/eliteadmstage2?sslmode=disable"
+      SKIP_MIGRATIONS: "true"
+      APPLICATION_SECRET_KEY: "staging-secret-for-local-dev"
+      SECRETS_MASTER_KEY: "vKSMVUaVhEdptzHFisRSSDED_0UcixrxbIvKtthpyrk="
+      ARTIFACTS_DATA_DIR: "/data/artifacts"
+      OIDC_ISSUER_URL: "https://oidc-mock.technicaldomain.xyz"
+      OIDC_CLIENT_ID: "elitea-local"
+      OIDC_CLIENT_SECRET: "elitea-local-secret"
+      OIDC_REDIRECT_URI: "http://localhost/forward-auth/auth_oidc/callback"
+      PUBLIC_PROJECT_ID: "1"
+    volumes:
+      - ./data/staging/storage-restructured:/data/artifacts
+
+  pylon-indexer:
+    environment:
+      POSTGRES_DB: eliteadmstage2
+      POSTGRES_USER: eliteausr
+      POSTGRES_PASSWORD: elitea
