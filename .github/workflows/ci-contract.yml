@@ -27,6 +27,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Minimal token scope — these jobs only read the checked-out repo.
+permissions:
+  contents: read
+
 jobs:
   # ── Always-on gate: compile the contract suite and run it. The suite skips
   #    cleanly (exit 0) when CONTRACT_AUTH_TOKEN is unset, so this keeps the
