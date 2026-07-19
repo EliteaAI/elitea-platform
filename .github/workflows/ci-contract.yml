@@ -8,6 +8,7 @@ on:
       - "scripts/contract/**"
       - "scripts/security/**"
       - "testdata/baseline/auth-static-catalog.json"
+      - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
   push:
@@ -17,6 +18,9 @@ on:
       - "libs/proto/**"
       - "libs/jsonschema/**"
       - "scripts/contract/**"
+      - "scripts/security/**"
+      - "testdata/baseline/auth-static-catalog.json"
+      - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
 

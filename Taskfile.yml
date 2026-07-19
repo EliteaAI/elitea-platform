@@ -64,7 +64,7 @@ tasks:
       - python3 scripts/security/check_legacy_rbac_drift.py
 
   baseline:auth:refresh:
-    desc: Refresh deterministic current-baseline pylon_auth interface evidence
+    desc: Refresh deterministic current-baseline pylon_auth source and tracked runtime evidence
     vars:
       AUTH_BASELINE_PLUGINS_ROOT: '{{.AUTH_BASELINE_PLUGINS_ROOT | default "../centry/pylon_auth/plugins"}}'
     preconditions:
@@ -74,13 +74,14 @@ tasks:
       - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json
 
   baseline:auth:check:
-    desc: Verify checked-in current-baseline pylon_auth interface evidence
+    desc: Verify checked-in current-baseline pylon_auth source and tracked runtime evidence
     vars:
       AUTH_BASELINE_PLUGINS_ROOT: '{{.AUTH_BASELINE_PLUGINS_ROOT | default "../centry/pylon_auth/plugins"}}'
     preconditions:
       - sh: test -d "{{.AUTH_BASELINE_PLUGINS_ROOT}}"
         msg: Set AUTH_BASELINE_PLUGINS_ROOT to the current pylon_auth/plugins directory
     cmds:
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_export_auth_baseline_catalog.py
       - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json --check
       - python3 scripts/security/check_auth_baseline_catalog.py
 
