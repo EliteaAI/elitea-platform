@@ -53,7 +53,7 @@ func (eb *EventBus) Subscribe(ctx context.Context, channel string, handler Event
 	sub := eb.client.Subscribe(ctx, channel)
 
 	go func() {
-		defer sub.Close()
+		defer func() { _ = sub.Close() }()
 		ch := sub.Channel()
 
 		for {

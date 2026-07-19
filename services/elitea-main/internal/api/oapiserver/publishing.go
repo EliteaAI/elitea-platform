@@ -18,7 +18,7 @@ func (s *Server) PublishApplication(w http.ResponseWriter, r *http.Request, proj
 	}
 	schema := fmt.Sprintf("p_%s", projectId)
 	q := fmt.Sprintf(`UPDATE %q.application_versions SET status = 'published' WHERE id = $1`, schema)
-	s.pool.Exec(r.Context(), q, versionId)
+	_, _ = s.pool.Exec(r.Context(), q, versionId) // best-effort status update
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -29,7 +29,7 @@ func (s *Server) UnpublishApplication(w http.ResponseWriter, r *http.Request, pr
 	}
 	schema := fmt.Sprintf("p_%s", projectId)
 	q := fmt.Sprintf(`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, schema)
-	s.pool.Exec(r.Context(), q, versionId)
+	_, _ = s.pool.Exec(r.Context(), q, versionId) // best-effort status update
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -41,7 +41,7 @@ func (s *Server) ValidateForPublish(w http.ResponseWriter, r *http.Request, proj
 	schema := fmt.Sprintf("p_%s", projectId)
 	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, schema)
 	var exists bool
-	s.pool.QueryRow(r.Context(), q, versionId).Scan(&exists)
+	_ = s.pool.QueryRow(r.Context(), q, versionId).Scan(&exists) // exists defaults to false on error
 	writeJSON(w, http.StatusOK, map[string]any{"valid": exists})
 }
 
@@ -85,27 +85,29 @@ func (s *Server) ForkAgent(w http.ResponseWriter, r *http.Request, projectId gen
 			var srcVersionID int
 			var name, status string
 			var prompt []byte
-			rows.Scan(&srcVersionID, &name, &prompt, &status)
+			if err := rows.Scan(&srcVersionID, &name, &prompt, &status); err != nil {
+				continue
+			}
 
 			var newVersionID int
-			s.pool.QueryRow(ctx, fmt.Sprintf(`
+			_ = s.pool.QueryRow(ctx, fmt.Sprintf(`
 				INSERT INTO %q.application_versions (application_id, name, prompt, status, created_at)
 				VALUES ($1, $2, $3, 'draft', NOW()) RETURNING id`, dstSchema),
-				newAppID, name, prompt).Scan(&newVersionID)
+				newAppID, name, prompt).Scan(&newVersionID) // newVersionID stays 0 on error; mappings below will no-op
 
 			// Copy skill mappings
-			s.pool.Exec(ctx, fmt.Sprintf(`
+			_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 				INSERT INTO %q.entity_skill_mapping (entity_version_id, skill_id, skill_version_id)
 				SELECT $1, skill_id, skill_version_id
 				FROM %q.entity_skill_mapping WHERE entity_version_id = $2`, dstSchema, srcSchema),
-				newVersionID, srcVersionID)
+				newVersionID, srcVersionID) // best-effort mapping copy
 
 			// Copy tool mappings
-			s.pool.Exec(ctx, fmt.Sprintf(`
+			_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 				INSERT INTO %q.entity_tool_mapping (entity_version_id, tool_id)
 				SELECT $1, tool_id
 				FROM %q.entity_tool_mapping WHERE entity_version_id = $2`, dstSchema, srcSchema),
-				newVersionID, srcVersionID)
+				newVersionID, srcVersionID) // best-effort mapping copy
 		}
 	}
 
@@ -141,9 +143,11 @@ func (s *Server) ExportApplication(w http.ResponseWriter, r *http.Request, proje
 		for rows.Next() {
 			var vID int
 			var vName, prompt, status string
-			rows.Scan(&vID, &vName, &prompt, &status)
+			if err := rows.Scan(&vID, &vName, &prompt, &status); err != nil {
+				continue
+			}
 			var promptObj any
-			json.Unmarshal([]byte(prompt), &promptObj)
+			_ = json.Unmarshal([]byte(prompt), &promptObj) // DB column; safe to ignore parse error
 			versions = append(versions, map[string]any{
 				"id": vID, "name": vName, "prompt": promptObj, "status": status,
 			})
@@ -220,11 +224,11 @@ func (s *Server) ImportWizard(w http.ResponseWriter, r *http.Request, projectId 
 		}
 
 		for _, v := range app.Versions {
-			promptBytes, _ := json.Marshal(v.Prompt)
-			s.pool.Exec(ctx, fmt.Sprintf(`
+			promptBytes, _ := json.Marshal(v.Prompt) // v.Prompt is an arbitrary JSON value; Marshal cannot fail for valid JSON
+			_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 				INSERT INTO %q.application_versions (application_id, name, prompt, status, created_at)
 				VALUES ($1, $2, $3, 'draft', NOW())`, schema),
-				newID, v.Name, promptBytes)
+				newID, v.Name, promptBytes) // best-effort version import
 		}
 
 		imported = append(imported, map[string]any{"id": newID, "name": app.Name})
@@ -282,20 +286,20 @@ func (s *Server) GetPublicApplication(w http.ResponseWriter, r *http.Request, ap
 	schema := fmt.Sprintf("p_%s", strconv.Itoa(projectID))
 
 	var appName, appDesc string
-	s.pool.QueryRow(ctx, fmt.Sprintf(`
+	_ = s.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT name, COALESCE(description, '') FROM %q.applications WHERE id = $1`, schema),
-		applicationId).Scan(&appName, &appDesc)
+		applicationId).Scan(&appName, &appDesc) // appName/appDesc stay empty on error
 
 	var versionID int
 	var prompt string
-	s.pool.QueryRow(ctx, fmt.Sprintf(`
+	_ = s.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT id, COALESCE(prompt::text, '{}')
 		FROM %q.application_versions
 		WHERE application_id = $1 AND name = $2 AND status = 'published' LIMIT 1`, schema),
-		applicationId, versionName).Scan(&versionID, &prompt)
+		applicationId, versionName).Scan(&versionID, &prompt) // versionID/prompt stay zero/empty on error
 
 	var promptObj any
-	json.Unmarshal([]byte(prompt), &promptObj)
+	_ = json.Unmarshal([]byte(prompt), &promptObj) // DB column; safe to ignore parse error
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": applicationId, "name": appName, "description": appDesc,
@@ -325,7 +329,9 @@ func (s *Server) ListPublicApplications(w http.ResponseWriter, r *http.Request, 
 	for rows.Next() {
 		var appID, projID int
 		var projName string
-		rows.Scan(&appID, &projID, &projName)
+		if err := rows.Scan(&appID, &projID, &projName); err != nil {
+			continue
+		}
 		items = append(items, map[string]any{
 			"id": appID, "project_id": projID, "project_name": projName,
 		})

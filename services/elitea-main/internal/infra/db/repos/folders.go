@@ -36,7 +36,9 @@ func (r *FoldersRepo) List(ctx context.Context, projectID string) ([]folders.Fol
 		var f folders.Folder
 		var ownerID int
 		var position int
-		rows.Scan(&f.ID, &f.Name, &f.ParentID, &ownerID, &position, &f.CreatedAt, &f.UpdatedAt)
+		if err := rows.Scan(&f.ID, &f.Name, &f.ParentID, &ownerID, &position, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			continue
+		}
 		f.ProjectID = projectID
 		f.ParentID = "" // flat structure for now
 		items = append(items, f)

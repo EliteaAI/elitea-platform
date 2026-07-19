@@ -39,12 +39,12 @@ func TestRouterMiddleware_GoState(t *testing.T) {
 	require.NoError(t, tracker.Set(context.Background(), "/api/v2/projects/{projectID}/applications", StateGo, "test"))
 
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("legacy"))
+		_, _ = w.Write([]byte("legacy"))
 	}))
 	defer legacy.Close()
 
 	goHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("go"))
+		_, _ = w.Write([]byte("go"))
 	})
 
 	router := NewRouter(RouterConfig{
@@ -69,12 +69,12 @@ func TestRouterMiddleware_LegacyState(t *testing.T) {
 	require.NoError(t, tracker.Set(context.Background(), "/api/v2/projects/{projectID}/applications", StateLegacy, "test"))
 
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("legacy"))
+		_, _ = w.Write([]byte("legacy"))
 	}))
 	defer legacy.Close()
 
 	goHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("go"))
+		_, _ = w.Write([]byte("go"))
 	})
 
 	router := NewRouter(RouterConfig{
@@ -101,14 +101,14 @@ func TestRouterMiddleware_CanaryState(t *testing.T) {
 	legacyHits := 0
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		legacyHits++
-		w.Write([]byte("legacy"))
+		_, _ = w.Write([]byte("legacy"))
 	}))
 	defer legacy.Close()
 
 	goHits := 0
 	goHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		goHits++
-		w.Write([]byte("go"))
+		_, _ = w.Write([]byte("go"))
 	})
 
 	router := NewRouter(RouterConfig{

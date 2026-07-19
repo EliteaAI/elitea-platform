@@ -75,7 +75,7 @@ func (h *Handler) streamPredict(w http.ResponseWriter, r *http.Request, req pred
 
 	if err := h.predictor.PredictStream(r.Context(), req, send); err != nil {
 		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
-		sse.Event("error", string(errData))
+		_ = sse.Event("error", string(errData))
 	}
 }
 
@@ -116,7 +116,7 @@ func (h *Handler) streamLLM(w http.ResponseWriter, r *http.Request, req predict.
 
 	if err := h.llmService.CompleteStream(r.Context(), req, send); err != nil {
 		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
-		sse.Event("error", string(errData))
+		_ = sse.Event("error", string(errData))
 	}
 }
 
@@ -135,5 +135,5 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -22,7 +22,7 @@ import (
 
 func generateID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error on supported platforms
 	return hex.EncodeToString(b)
 }
 
@@ -99,10 +99,10 @@ func (h *Handler) UpdateProjectInfo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore EOF/empty-body errors
 
 	if name, ok := body["name"].(string); ok && name != "" {
-		h.pool.Exec(ctx, `UPDATE centry.project SET name = $1 WHERE id = $2`, name, projectID)
+		_, _ = h.pool.Exec(ctx, `UPDATE centry.project SET name = $1 WHERE id = $2`, name, projectID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -126,7 +126,7 @@ func (h *Handler) ProjectContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg map[string]any
-	json.Unmarshal(data, &cfg)
+	_ = json.Unmarshal(data, &cfg) // data was just read from DB; malformed means empty cfg is safe
 	writeJSON(w, http.StatusOK, map[string]any{
 		"content": cfg["content"],
 		"enabled": cfg["enabled"],
@@ -138,7 +138,7 @@ func (h *Handler) UpdateProjectContext(w http.ResponseWriter, r *http.Request) {
 		Content string `json:"content"`
 		Enabled bool   `json:"enabled"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore EOF/empty-body errors
 
 	if h.pool == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -159,7 +159,7 @@ func (h *Handler) UpdateProjectContext(w http.ResponseWriter, r *http.Request) {
 	_, err := h.pool.Exec(ctx, q, projectID, dataBytes)
 	if err != nil {
 		q2 := fmt.Sprintf(`UPDATE %q.configuration SET data = $1 WHERE type = 'project_context'`, s)
-		h.pool.Exec(ctx, q2, dataBytes)
+		_, _ = h.pool.Exec(ctx, q2, dataBytes) // fallback update; ignore error, best-effort
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"content": body.Content, "enabled": body.Enabled})
 }
@@ -177,7 +177,9 @@ func (h *Handler) SearchOptions(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var name string
-			rows.Scan(&name)
+			if rows.Scan(&name) != nil {
+				continue
+			}
 			tags = append(tags, name)
 		}
 	}
@@ -212,7 +214,7 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
 			) combined
 		`
-		h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total)
+		_ = h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total) // failure leaves total=0, which is safe
 
 		// Fetch paginated: project-specific roles for members, 'super_admin' for global admins
 		q := `
@@ -245,7 +247,9 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				var id int
 				var email, name string
 				var roles []string
-				rows.Scan(&id, &email, &name, &roles)
+				if rows.Scan(&id, &email, &name, &roles) != nil {
+					continue
+				}
 				if roles == nil {
 					roles = []string{"viewer"}
 				}
@@ -273,7 +277,9 @@ func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
 			for rows.Next() {
 				var id int
 				var name string
-				rows.Scan(&id, &name)
+				if rows.Scan(&id, &name) != nil {
+					continue
+				}
 				items = append(items, map[string]any{"id": fmt.Sprintf("%d", id), "name": name})
 			}
 		}
@@ -313,7 +319,9 @@ func (h *Handler) ChatConfig(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var title, cType string
 			var data []byte
-			rows.Scan(&title, &cType, &data)
+			if rows.Scan(&title, &cType, &data) != nil {
+				continue
+			}
 			models = append(models, map[string]any{
 				"name":        title,
 				"config_type": cType,
@@ -358,7 +366,7 @@ func (h *Handler) Notifications(w http.ResponseWriter, r *http.Request) {
 			var createdAt interface{}
 			if rows.Scan(&id, &uuid, &isSeen, &meta, &eventType, &createdAt) == nil {
 				var metaObj any
-				json.Unmarshal(meta, &metaObj)
+				_ = json.Unmarshal(meta, &metaObj) // meta is a DB jsonb column; malformed means nil metaObj
 				items = append(items, map[string]any{
 					"id": fmt.Sprintf("%d", id), "uuid": uuid, "is_seen": isSeen,
 					"meta": metaObj, "event_type": eventType, "created_at": createdAt,
@@ -394,19 +402,25 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 		var schemas []string
 		for schemaRows.Next() {
 			var s string
-			schemaRows.Scan(&s)
+			if schemaRows.Scan(&s) != nil {
+				continue
+			}
 			schemas = append(schemas, s)
 		}
 		schemaRows.Close()
 		for _, s := range schemas {
 			var cnt int
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			// Each Scan failure leaves cnt=0, which is safe for counting
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalApps += cnt
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			cnt = 0
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalPipelines += cnt
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			cnt = 0
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
 			totalToolkits += cnt
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.prompt_collections WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			cnt = 0
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.prompt_collections WHERE author_id = $1`, s), authorID).Scan(&cnt)
 			totalCollections += cnt
 		}
 	}
@@ -434,7 +448,10 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		ValidationToken string `json:"validation_token"`
 		Category        string `json:"category"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	if body.VersionName == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": []map[string]any{
@@ -446,7 +463,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 
 	// Validate version name: only alphanumeric, hyphens, underscores, dots
 	for _, c := range body.VersionName {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error": []map[string]any{
 					{"loc": []string{"body", "version_name"}, "msg": "string does not match regex \"^[a-zA-Z0-9._-]+$\"", "type": "value_error.str.regex"},
@@ -476,9 +493,9 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-check: does a version with this name already exist for this application?
 	var nameExists bool
-	h.pool.QueryRow(ctx, fmt.Sprintf(
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
 		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
-		appID, body.VersionName).Scan(&nameExists)
+		appID, body.VersionName).Scan(&nameExists) // failure leaves nameExists=false, safe to continue
 	if nameExists {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error": "validation_failed",
@@ -519,11 +536,11 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		sharedProjID = "4"
 	}
 	var llmSettingsStr *string
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmSettingsStr)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmSettingsStr) // failure leaves nil, safe
 	if llmSettingsStr != nil {
 		var llmSettings map[string]any
-		json.Unmarshal([]byte(*llmSettingsStr), &llmSettings)
+		_ = json.Unmarshal([]byte(*llmSettingsStr), &llmSettings) // DB jsonb column; malformed means empty map
 		if modelProjID, ok := llmSettings["model_project_id"]; ok && modelProjID != nil {
 			mpid := fmt.Sprintf("%v", modelProjID)
 			if mpid != publicProjID && mpid != sharedProjID {
@@ -559,7 +576,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 			validToken = false
 		}
 		for _, c := range body.ValidationToken {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 				validToken = false
 				break
 			}
@@ -605,10 +622,10 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clone entity_tool_mapping rows from source version to new published version
-	h.pool.Exec(ctx, fmt.Sprintf(`
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 		SELECT $2, entity_id, entity_type, tool_id, selected_tools
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID)
+		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID) // best-effort copy
 
 	// Embed sub-agents: clone application_tools of type 'application' recursively
 	h.embedSubAgents(ctx, s, versionID, cloneID)
@@ -633,9 +650,11 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 	var embeddedAppIDs []string
 	for rows.Next() {
 		var settingsStr string
-		rows.Scan(&settingsStr)
+		if rows.Scan(&settingsStr) != nil {
+			continue
+		}
 		var settings map[string]any
-		json.Unmarshal([]byte(settingsStr), &settings)
+		_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
 		if aid, ok := settings["application_id"]; ok {
 			embeddedAppIDs = append(embeddedAppIDs, fmt.Sprintf("%v", aid))
 		}
@@ -645,18 +664,18 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 	for _, eAppID := range embeddedAppIDs {
 		// Recursively delete sub-agents of this embedded agent
 		var eVerID string
-		h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status = 'embedded' LIMIT 1`, schema), eAppID).Scan(&eVerID)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status = 'embedded' LIMIT 1`, schema), eAppID).Scan(&eVerID) // failure leaves eVerID empty, safe
 		if eVerID != "" {
 			h.deleteEmbeddedSubAgents(ctx, schema, eVerID)
 		}
 		// Delete in FK-safe order: tools → versions → application
-		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
-		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, schema), eAppID)
-		h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, schema), eAppID)
 	}
 	// Clean up application_tools entries on this version
-	h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
 }
 
 // embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
@@ -672,8 +691,8 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 
 	// Look up the parent published app ID (the application that owns targetVersionID)
 	var parentAppID int
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT application_id FROM %q.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT application_id FROM %q.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID) // failure leaves parentAppID=0
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT name, type, settings::text
@@ -692,9 +711,11 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 	var refs []subAgentRef
 	for rows.Next() {
 		var name, toolType, settingsStr string
-		rows.Scan(&name, &toolType, &settingsStr)
+		if rows.Scan(&name, &toolType, &settingsStr) != nil {
+			continue
+		}
 		var settings map[string]any
-		json.Unmarshal([]byte(settingsStr), &settings)
+		_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
 		refAppID := fmt.Sprintf("%v", settings["application_id"])
 		refVerID := fmt.Sprintf("%v", settings["version_id"])
 		refs = append(refs, subAgentRef{name: name, appID: refAppID, versionID: refVerID})
@@ -704,8 +725,8 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 	for _, ref := range refs {
 		// Skip pipeline sub-agents — they cannot be published/embedded
 		var subAgentType string
-		h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType) // failure leaves subAgentType empty
 		if subAgentType == "pipeline" {
 			continue
 		}
@@ -747,11 +768,11 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		}
 
 		// Clone entity_tool_mapping for the embedded version
-		h.pool.Exec(ctx, fmt.Sprintf(`
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 			SELECT $2, $3, entity_type, tool_id, selected_tools
 			FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
-			ref.versionID, embeddedVerID, embeddedAppID)
+			ref.versionID, embeddedVerID, embeddedAppID) // best-effort copy
 
 		// Create application_tools entry on the published version pointing to embedded copy
 		embeddedSettings := map[string]any{
@@ -759,10 +780,10 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			"application_version_id": strconv.Itoa(embeddedVerID),
 		}
 		settingsJSON, _ := json.Marshal(embeddedSettings)
-		h.pool.Exec(ctx, fmt.Sprintf(`
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, schema),
-			targetVersionID, ref.name, settingsJSON)
+			targetVersionID, ref.name, settingsJSON) // best-effort link
 
 		// Recursively embed sub-agents of this sub-agent
 		h.embedSubAgentsRecursive(ctx, schema, ref.versionID, embeddedVerID, depth+1)
@@ -778,7 +799,7 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // optional body; ignore decode errors
 
 	// Check version exists and get meta
 	var status string
@@ -791,22 +812,23 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var meta map[string]any
-	json.Unmarshal([]byte(metaStr), &meta)
+	_ = json.Unmarshal([]byte(metaStr), &meta) // DB jsonb column; malformed means nil meta
 
-	if status == "published" || status == "embedded" {
+	switch status {
+	case "published", "embedded":
 		h.deleteEmbeddedSubAgents(ctx, s, versionID)
 
 		// Revert to draft
-		h.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, s), versionID)
-	} else if status == "draft" {
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, s), versionID) // best-effort revert
+	case "draft":
 		// Unpublish via the source draft version: find all published clones and delete them
 		var appID int
-		h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT application_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT application_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID) // failure leaves appID=0
 		var hasPublished bool
-		h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND status IN ('published', 'embedded') AND id != $2)`, s), appID, versionID).Scan(&hasPublished)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND status IN ('published', 'embedded') AND id != $2)`, s), appID, versionID).Scan(&hasPublished) // failure leaves hasPublished=false
 		if !hasPublished {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
 			return
@@ -817,7 +839,9 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 			var pubVerIDs []string
 			for pubRows.Next() {
 				var pvid string
-				pubRows.Scan(&pvid)
+				if pubRows.Scan(&pvid) != nil {
+					continue
+				}
 				pubVerIDs = append(pubVerIDs, pvid)
 			}
 			pubRows.Close()
@@ -825,9 +849,9 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 				h.deleteEmbeddedSubAgents(ctx, s, pvid)
 			}
 		}
-		h.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET status = 'draft' WHERE application_id = $1 AND status IN ('published', 'embedded')`, s), appID)
-	} else {
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET status = 'draft' WHERE application_id = $1 AND status IN ('published', 'embedded')`, s), appID) // best-effort revert
+	default:
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
 		return
 	}
@@ -854,9 +878,9 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 
 	// Check version name collision
 	var nameExists bool
-	h.pool.QueryRow(ctx, fmt.Sprintf(
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
 		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
-		appID, versionName).Scan(&nameExists)
+		appID, versionName).Scan(&nameExists) // failure leaves nameExists=false, safe
 	if nameExists {
 		criticalIssues = append(criticalIssues, map[string]any{"rule": "version_name_exists_in_source", "field": "version_name", "issue": "version name already exists", "source": "deterministic"})
 	}
@@ -884,14 +908,16 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	if saErr == nil {
 		for subAgentRows.Next() {
 			var name, settingsStr string
-			subAgentRows.Scan(&name, &settingsStr)
+			if subAgentRows.Scan(&name, &settingsStr) != nil {
+				continue
+			}
 			var settings map[string]any
-			json.Unmarshal([]byte(settingsStr), &settings)
+			_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
 			saAppID := fmt.Sprintf("%v", settings["application_id"])
 			saVerID := fmt.Sprintf("%v", settings["version_id"])
 			var saAppName, saVerName, saAgentType string
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %q.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
-			h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %q.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %q.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %q.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
 			subAgents = append(subAgents, subAgentInfo{name: name, appID: saAppID, versionID: saVerID, appName: saAppName, verName: saVerName, agentType: saAgentType})
 		}
 		subAgentRows.Close()
@@ -921,9 +947,11 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			defer rows2.Close()
 			for rows2.Next() {
 				var ss string
-				rows2.Scan(&ss)
+				if rows2.Scan(&ss) != nil {
+					continue
+				}
 				var sett map[string]any
-				json.Unmarshal([]byte(ss), &sett)
+				_ = json.Unmarshal([]byte(ss), &sett) // DB column; malformed means empty sett
 				childVerID := fmt.Sprintf("%v", sett["version_id"])
 				if visited[childVerID] {
 					hasCycle = true
@@ -989,16 +1017,16 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	var instructions, welcomeMsg string
 	var conversationStarters []byte
 	var tagCount, toolCount int
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COALESCE(instructions, ''), COALESCE(welcome_message, ''), COALESCE(conversation_starters::text, '[]')::bytea FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&instructions, &welcomeMsg, &conversationStarters)
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), versionID).Scan(&toolCount)
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.application_version_tag_association WHERE version_id = $1`, s), versionID).Scan(&tagCount)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COALESCE(instructions, ''), COALESCE(welcome_message, ''), COALESCE(conversation_starters::text, '[]')::bytea FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&instructions, &welcomeMsg, &conversationStarters) // failure leaves empty strings
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), versionID).Scan(&toolCount) // failure leaves toolCount=0
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.application_version_tag_association WHERE version_id = $1`, s), versionID).Scan(&tagCount) // failure leaves tagCount=0
 
 	// Parse conversation_starters
 	var starters []string
-	json.Unmarshal(conversationStarters, &starters)
+	_ = json.Unmarshal(conversationStarters, &starters) // DB jsonb column; malformed means empty starters
 
 	// Sparse agent: instructions too short (< 50 chars)
 	if len(strings.TrimSpace(instructions)) < 50 {
@@ -1056,9 +1084,11 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			var saRefs []saRef
 			for saRows.Next() {
 				var ss string
-				saRows.Scan(&ss)
+				if saRows.Scan(&ss) != nil {
+					continue
+				}
 				var sett map[string]any
-				json.Unmarshal([]byte(ss), &sett)
+				_ = json.Unmarshal([]byte(ss), &sett) // DB column; malformed means empty sett
 				saRefs = append(saRefs, saRef{
 					appID:     fmt.Sprintf("%v", sett["application_id"]),
 					versionID: fmt.Sprintf("%v", sett["version_id"]),
@@ -1067,8 +1097,8 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			saRows.Close()
 			for _, ref := range saRefs {
 				var saAppName, saVerName, saAgentType, saInstr, saDesc string
-				h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %q.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
-				h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %q.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %q.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %q.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
 				if saAgentType == "pipeline" {
 					continue
 				}
@@ -1097,11 +1127,11 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 
 	// Check LLM model is from an accessible project
 	var llmStr *string
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmStr)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmStr) // failure leaves nil, safe
 	if llmStr != nil {
 		var llm map[string]any
-		json.Unmarshal([]byte(*llmStr), &llm)
+		_ = json.Unmarshal([]byte(*llmStr), &llm) // DB jsonb column; malformed means empty map
 		if mpid, ok := llm["model_project_id"]; ok && mpid != nil {
 			mpidStr := fmt.Sprintf("%v", mpid)
 			pubPID := os.Getenv("PUBLIC_PROJECT_ID")
@@ -1163,7 +1193,10 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 		VersionName string `json:"version_name"`
 		Category    string `json:"category"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	// Validate version_name
 	if body.VersionName == "" {
@@ -1175,7 +1208,7 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, c := range body.VersionName {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' && c != '_' && c != '.' {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error": []map[string]any{
 					{"loc": []string{"body", "version_name"}, "msg": "string does not match regex \"^[a-zA-Z0-9._-]+$\"", "type": "value_error.str.regex"},
@@ -1187,8 +1220,8 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 
 	// Check version exists
 	var exists bool
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, s), versionID).Scan(&exists)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, s), versionID).Scan(&exists) // failure leaves exists=false, returns 404
 	if !exists {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
 		return
@@ -1211,7 +1244,7 @@ func (h *Handler) VersionValidator(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1 AND application_id = $2)`, s)
 	var valid bool
-	h.pool.QueryRow(ctx, q, versionID, applicationID).Scan(&valid)
+	_ = h.pool.QueryRow(ctx, q, versionID, applicationID).Scan(&valid) // failure leaves valid=false, which is correct (not found)
 	writeJSON(w, http.StatusOK, map[string]any{"valid": valid})
 }
 
@@ -1266,7 +1299,7 @@ func (h *Handler) PublicApplications(w http.ResponseWriter, r *http.Request) {
 			var metaJSON []byte
 			if rows.Scan(&aID, &name, &desc, &vID, &vName, &agentType, &metaJSON) == nil {
 				var meta map[string]any
-				json.Unmarshal(metaJSON, &meta)
+				_ = json.Unmarshal(metaJSON, &meta) // DB jsonb column; malformed means nil meta
 				items = append(items, map[string]any{
 					"project_id":   publicProjectID,
 					"id":           strconv.Itoa(aID),
@@ -1344,10 +1377,10 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	}
 
 	var llmSettings, meta, starters, pipelineSettings any
-	json.Unmarshal(llmJSON, &llmSettings)
-	json.Unmarshal(metaJSON, &meta)
-	json.Unmarshal(startersJSON, &starters)
-	json.Unmarshal(pipelineJSON, &pipelineSettings)
+	_ = json.Unmarshal(llmJSON, &llmSettings)         // DB jsonb columns
+	_ = json.Unmarshal(metaJSON, &meta)               // DB jsonb columns
+	_ = json.Unmarshal(startersJSON, &starters)       // DB jsonb columns
+	_ = json.Unmarshal(pipelineJSON, &pipelineSettings) // DB jsonb columns
 
 	projIDInt, _ := strconv.Atoi(publicProjectID)
 
@@ -1366,12 +1399,14 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 			var entityType, selectedToolsStr string
 			var tName, tType *string
 			var tSettings []byte
-			toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tSettings)
+			if toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tSettings) != nil {
+				continue
+			}
 			var selectedTools any
-			json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
+			_ = json.Unmarshal([]byte(selectedToolsStr), &selectedTools) // DB jsonb column
 			var settings any
 			if tSettings != nil {
-				json.Unmarshal(tSettings, &settings)
+				_ = json.Unmarshal(tSettings, &settings) // DB jsonb column
 			}
 			tool := map[string]any{
 				"id":             etmID,
@@ -1402,9 +1437,11 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 		for appToolRows.Next() {
 			var atID int
 			var atName, atType, settingsStr string
-			appToolRows.Scan(&atID, &atName, &atType, &settingsStr)
+			if appToolRows.Scan(&atID, &atName, &atType, &settingsStr) != nil {
+				continue
+			}
 			var settings any
-			json.Unmarshal([]byte(settingsStr), &settings)
+			_ = json.Unmarshal([]byte(settingsStr), &settings) // DB jsonb column
 			tools = append(tools, map[string]any{
 				"id":         atID,
 				"name":       atName,
@@ -1458,7 +1495,9 @@ func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
 	var schemas []string
 	for schemaRows.Next() {
 		var s string
-		schemaRows.Scan(&s)
+		if schemaRows.Scan(&s) != nil {
+			continue
+		}
 		schemas = append(schemas, s)
 	}
 
@@ -1563,7 +1602,9 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		for rows.Next() {
 			var skillID string
-			rows.Scan(&skillID)
+			if rows.Scan(&skillID) != nil {
+				continue
+			}
 			items = append(items, map[string]any{"type": "skill", "id": skillID})
 		}
 	}
@@ -1575,7 +1616,9 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 		defer rows2.Close()
 		for rows2.Next() {
 			var toolID string
-			rows2.Scan(&toolID)
+			if rows2.Scan(&toolID) != nil {
+				continue
+			}
 			items = append(items, map[string]any{"type": "tool", "id": toolID})
 		}
 	}
@@ -1591,10 +1634,13 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
-	parentAppID, _ := body["application_id"]
-	parentVerID, _ := body["version_id"]
+	parentAppID := body["application_id"]
+	parentVerID := body["version_id"]
 	hasRelation, _ := body["has_relation"].(bool)
 
 	// Guard: block changes to published/embedded parent versions
@@ -1614,12 +1660,12 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 	if hasRelation && parentAppID != nil && parentVerID != nil {
 		// Check for duplicate relation
 		var exists bool
-		h.pool.QueryRow(ctx, fmt.Sprintf(`
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`
 			SELECT EXISTS(SELECT 1 FROM %q.application_tools
 			WHERE application_version_id = $1 AND type = 'application'
 			AND settings->>'application_id' = $2
 			AND settings->>'version_id' = $3)`, s),
-			parentVerID, appID, versionID).Scan(&exists)
+			parentVerID, appID, versionID).Scan(&exists) // failure leaves exists=false, safe
 		if exists {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error": "relation already exists",
@@ -1638,7 +1684,7 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 		q := fmt.Sprintf(`
 			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, s)
-		h.pool.Exec(ctx, q, parentVerID, toolName, settingsJSON)
+		_, _ = h.pool.Exec(ctx, q, parentVerID, toolName, settingsJSON) // best-effort insert
 	} else {
 		// Remove relation
 		q := fmt.Sprintf(`
@@ -1646,7 +1692,7 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 			WHERE application_version_id = $1
 			AND settings->>'application_id' = $2
 			AND settings->>'version_id' = $3`, s)
-		h.pool.Exec(ctx, q, body["version_id"], appID, versionID)
+		_, _ = h.pool.Exec(ctx, q, body["version_id"], appID, versionID) // best-effort delete
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -1677,7 +1723,9 @@ func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {
 			var id int
 			var name, desc string
 			var likes int
-			rows.Scan(&id, &name, &desc, &likes)
+			if rows.Scan(&id, &name, &desc, &likes) != nil {
+				continue
+			}
 			items = append(items, map[string]any{
 				"id": fmt.Sprintf("%d", id), "name": name, "description": desc, "likes": likes,
 			})
@@ -1701,7 +1749,9 @@ func (h *Handler) Feedbacks(w http.ResponseWriter, r *http.Request) {
 			var entityName, entityID, userID, comment string
 			var rating int
 			var createdAt interface{}
-			rows.Scan(&id, &entityName, &entityID, &userID, &rating, &comment, &createdAt)
+			if rows.Scan(&id, &entityName, &entityID, &userID, &rating, &comment, &createdAt) != nil {
+				continue
+			}
 			items = append(items, map[string]any{
 				"id": fmt.Sprintf("%d", id), "entity_name": entityName, "entity_id": entityID,
 				"user_id": userID, "rating": rating, "comment": comment,
@@ -1715,13 +1765,16 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	toolkitID, _ := body["toolkit_id"].(string)
 	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
-	h.pool.Exec(ctx, fmt.Sprintf(`
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE %q.application_versions
 		SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb)
 		WHERE id = $2`, s),
@@ -1744,16 +1797,16 @@ func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
-	r.ParseMultipartForm(512 * 1024)
+	_ = r.ParseMultipartForm(512 * 1024) // ignore parse errors; FormFile will fail if parsing failed
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": ""})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	iconDir := fmt.Sprintf("/data/icons/%s", projectID)
-	os.MkdirAll(iconDir, 0755)
+	_ = os.MkdirAll(iconDir, 0755) // best-effort; os.Create below will fail if dir doesn't exist
 
 	ext := ".png"
 	if strings.Contains(header.Filename, ".") {
@@ -1768,8 +1821,8 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
 		return
 	}
-	defer dst.Close()
-	io.Copy(dst, file)
+	defer func() { _ = dst.Close() }()
+	_, _ = io.Copy(dst, file) // best-effort copy; error here results in partial file but we still return URL
 
 	url := fmt.Sprintf("/icons/%s/%s", projectID, filename)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1794,12 +1847,15 @@ func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var iconMeta map[string]any
-	json.NewDecoder(r.Body).Decode(&iconMeta)
+	if err := json.NewDecoder(r.Body).Decode(&iconMeta); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	// Update meta.icon_meta on the version
-	h.pool.Exec(ctx, fmt.Sprintf(
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
 		`UPDATE %q.application_versions SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('icon_meta', $2::jsonb) WHERE id = $1`, s),
-		versionID, mustJSON(iconMeta))
+		versionID, mustJSON(iconMeta)) // best-effort update
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1811,15 +1867,15 @@ func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
 	s := fmt.Sprintf("p_%s", projectID)
 
 	// Clear icon_meta from all versions referencing this icon
-	h.pool.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name)
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
+		`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
 
 	// Remove file from disk
 	iconsDir := os.Getenv("ICONS_DATA_DIR")
 	if iconsDir == "" {
 		iconsDir = "/data/icons"
 	}
-	os.Remove(filepath.Join(iconsDir, projectID, name))
+	_ = os.Remove(filepath.Join(iconsDir, projectID, name)) // best-effort remove
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1832,10 +1888,10 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, _ := io.ReadAll(r.Body)
 	var entities []any
 	if len(bodyBytes) > 0 && bodyBytes[0] == '[' {
-		json.Unmarshal(bodyBytes, &entities)
+		_ = json.Unmarshal(bodyBytes, &entities) // request body; malformed means empty entities
 	} else {
 		var bodyMap map[string]any
-		json.Unmarshal(bodyBytes, &bodyMap)
+		_ = json.Unmarshal(bodyBytes, &bodyMap) // request body; malformed means empty map
 		if apps, ok := bodyMap["applications"].([]any); ok {
 			entities = apps
 		}
@@ -1853,7 +1909,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	user, _ := auth.UserFromContext(ctx)
 	userID := 1
 	if user.ID != "" {
-		fmt.Sscanf(user.ID, "%d", &userID)
+		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
 	}
 
 	// Separate entities by type, preserving original indices for error reporting
@@ -2008,8 +2064,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			})
 
 			var llmParsed, startersParsed any
-			json.Unmarshal([]byte(llmJSON), &llmParsed)
-			json.Unmarshal([]byte(startersJSON), &startersParsed)
+			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)       // already marshaled above; can't fail
+			_ = json.Unmarshal([]byte(startersJSON), &startersParsed) // already marshaled above; can't fail
 
 			versionDetails = map[string]any{
 				"id":                    fmt.Sprintf("%d", vID),
@@ -2120,7 +2176,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 			vIDStr, _ := createdVersions[vIdx]["id"].(string)
 			var vID int
-			fmt.Sscanf(vIDStr, "%d", &vID)
+			_, _ = fmt.Sscanf(vIDStr, "%d", &vID)
 
 			for _, toolRef := range toolRefs {
 				refUUID, _ := toolRef["import_uuid"].(string)
@@ -2138,10 +2194,10 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 							selToolsJSON = string(b)
 						}
 					}
-					h.pool.Exec(ctx, fmt.Sprintf(`
+					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 						VALUES ($1, $2, 'application', $3, $4::jsonb)`, s),
-						vID, info.appID, toolID, selToolsJSON)
+						vID, info.appID, toolID, selToolsJSON) // best-effort link
 					vTools = append(vTools, map[string]any{"id": strconv.Itoa(toolID), "type": "custom", "name": ""})
 				} else {
 					hasLinkError = true
@@ -2190,7 +2246,10 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	s := fmt.Sprintf("p_%s", projectID)
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	apps, _ := body["applications"].([]any)
 	if len(apps) == 0 || h.pool == nil {
@@ -2205,7 +2264,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	user, _ := auth.UserFromContext(ctx)
 	userID := 1
 	if user.ID != "" {
-		fmt.Sscanf(user.ID, "%d", &userID)
+		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
 	}
 
 	resultAgents := make([]map[string]any, 0)
@@ -2313,9 +2372,9 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					}
 					varName, _ := varMap["name"].(string)
 					varValue, _ := varMap["value"].(string)
-					h.pool.Exec(ctx, fmt.Sprintf(`
+					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
-						vID, varName, varValue)
+						vID, varName, varValue) // best-effort insert
 				}
 			}
 
@@ -2340,9 +2399,9 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 						ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data
 						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID)
 					if err2 == nil {
-						h.pool.Exec(ctx, fmt.Sprintf(`
+						_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
 							INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
-							ON CONFLICT DO NOTHING`, s), vID, tagID)
+							ON CONFLICT DO NOTHING`, s), vID, tagID) // best-effort insert
 					}
 				}
 			}
@@ -2356,7 +2415,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 
 			// Build version_details response
 			var starters any
-			json.Unmarshal([]byte(startersJSON), &starters)
+			_ = json.Unmarshal([]byte(startersJSON), &starters) // already marshaled above; can't fail
 
 			// Rebuild variables list for response
 			respVars := make([]map[string]any, 0)
@@ -2443,8 +2502,8 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 	// Determine app type from its versions
 	appType := "agent"
 	var hasPipeline bool
-	h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), entityID).Scan(&hasPipeline)
+	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), entityID).Scan(&hasPipeline) // failure leaves hasPipeline=false, safe
 	if hasPipeline {
 		appType = "pipeline"
 	}
@@ -2463,10 +2522,12 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		for toolkitRows.Next() {
 			var tID int
 			var tName, tType, configStr string
-			toolkitRows.Scan(&tID, &tName, &tType, &configStr)
+			if toolkitRows.Scan(&tID, &tName, &tType, &configStr) != nil {
+				continue
+			}
 			tUUID := fmt.Sprintf("tool-%d", tID)
 			var config map[string]any
-			json.Unmarshal([]byte(configStr), &config)
+			_ = json.Unmarshal([]byte(configStr), &config) // DB jsonb column; malformed means empty config
 			if config == nil {
 				config = map[string]any{}
 			}
@@ -2504,11 +2565,13 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 			var vID, vAppID, vAuthorID int
 			var vName, vStatus, agentType, instructions, welcomeMsg string
 			var llmStr, startersStr, metaStr, vUUID string
-			vRows.Scan(&vID, &vName, &vStatus, &agentType, &instructions, &welcomeMsg, &llmStr, &startersStr, &metaStr, &vUUID, &vAppID, &vAuthorID)
+			if vRows.Scan(&vID, &vName, &vStatus, &agentType, &instructions, &welcomeMsg, &llmStr, &startersStr, &metaStr, &vUUID, &vAppID, &vAuthorID) != nil {
+				continue
+			}
 			var llm, starters, meta any
-			json.Unmarshal([]byte(llmStr), &llm)
-			json.Unmarshal([]byte(startersStr), &starters)
-			json.Unmarshal([]byte(metaStr), &meta)
+			_ = json.Unmarshal([]byte(llmStr), &llm)       // DB jsonb columns
+			_ = json.Unmarshal([]byte(startersStr), &starters) // DB jsonb columns
+			_ = json.Unmarshal([]byte(metaStr), &meta)      // DB jsonb columns
 
 			// Ensure meta has icon_meta
 			if metaMap, ok := meta.(map[string]any); ok {
@@ -2538,9 +2601,11 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 				for tRows.Next() {
 					var toolID int
 					var selToolsStr string
-					tRows.Scan(&toolID, &selToolsStr)
+					if tRows.Scan(&toolID, &selToolsStr) != nil {
+						continue
+					}
 					var selTools any
-					json.Unmarshal([]byte(selToolsStr), &selTools)
+					_ = json.Unmarshal([]byte(selToolsStr), &selTools) // DB jsonb column
 					importUUID := toolkitMap[toolID]
 					vTools = append(vTools, map[string]any{
 						"import_uuid":    importUUID,
@@ -2558,7 +2623,9 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 			if varErr == nil {
 				for varRows.Next() {
 					var varName, varValue string
-					varRows.Scan(&varName, &varValue)
+					if varRows.Scan(&varName, &varValue) != nil {
+						continue
+					}
 					variables = append(variables, map[string]any{"name": varName, "value": varValue})
 				}
 				varRows.Close()
@@ -2574,9 +2641,11 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 			if tagErr == nil {
 				for tagRows.Next() {
 					var tagName, tagDataStr string
-					tagRows.Scan(&tagName, &tagDataStr)
+					if tagRows.Scan(&tagName, &tagDataStr) != nil {
+						continue
+					}
 					var tagData any
-					json.Unmarshal([]byte(tagDataStr), &tagData)
+					_ = json.Unmarshal([]byte(tagDataStr), &tagData) // DB jsonb column
 					if tagData == nil {
 						tagData = map[string]any{}
 					}
@@ -2648,7 +2717,7 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="elitea_export_%s.json"`, entityID))
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result) // response writer; connection already committed
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -2656,7 +2725,7 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ExportConverter(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore decode errors
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "converted": body})
 }
 
@@ -2674,15 +2743,15 @@ func (h *Handler) UpdateNotification(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut:
 		if notificationID != "" {
-			h.pool.Exec(ctx, `UPDATE centry.notifications SET is_seen = true WHERE id = $1 AND user_id = $2`, notificationID, user.ID)
+			_, _ = h.pool.Exec(ctx, `UPDATE centry.notifications SET is_seen = true WHERE id = $1 AND user_id = $2`, notificationID, user.ID)
 		} else {
-			h.pool.Exec(ctx, `UPDATE centry.notifications SET is_seen = true WHERE project_id = $1 AND user_id = $2`, projectID, user.ID)
+			_, _ = h.pool.Exec(ctx, `UPDATE centry.notifications SET is_seen = true WHERE project_id = $1 AND user_id = $2`, projectID, user.ID)
 		}
 	case http.MethodDelete:
 		if notificationID != "" {
-			h.pool.Exec(ctx, `DELETE FROM centry.notifications WHERE id = $1 AND user_id = $2`, notificationID, user.ID)
+			_, _ = h.pool.Exec(ctx, `DELETE FROM centry.notifications WHERE id = $1 AND user_id = $2`, notificationID, user.ID)
 		} else {
-			h.pool.Exec(ctx, `DELETE FROM centry.notifications WHERE project_id = $1 AND user_id = $2`, projectID, user.ID)
+			_, _ = h.pool.Exec(ctx, `DELETE FROM centry.notifications WHERE project_id = $1 AND user_id = $2`, projectID, user.ID)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -2695,7 +2764,7 @@ func (h *Handler) ListProjectIcons(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) CreateProjectIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
-	r.ParseMultipartForm(512 * 1024)
+	_ = r.ParseMultipartForm(512 * 1024) // ignore parse errors; FormValue still returns ""
 	name := r.FormValue("name")
 	if name == "" {
 		_, header, err := r.FormFile("file")
@@ -2747,10 +2816,10 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 	if body.ToolkitID != "" && (clientID == "" || clientSecret == "") {
 		s := fmt.Sprintf("p_%s", projectID)
 		var settings []byte
-		h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT settings FROM %q.elitea_tools WHERE id = $1`, s), body.ToolkitID).Scan(&settings)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT settings FROM %q.elitea_tools WHERE id = $1`, s), body.ToolkitID).Scan(&settings) // failure leaves settings nil
 		if len(settings) > 0 {
 			var cfg map[string]any
-			json.Unmarshal(settings, &cfg)
+			_ = json.Unmarshal(settings, &cfg) // DB jsonb column; malformed means empty cfg
 			if clientID == "" {
 				if v, ok := cfg["client_id"].(string); ok {
 					clientID = v
@@ -2794,10 +2863,10 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "token_exchange_failed", "error_description": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var tokenResp map[string]any
-	json.NewDecoder(resp.Body).Decode(&tokenResp)
+	_ = json.NewDecoder(resp.Body).Decode(&tokenResp) // external HTTP response; malformed means nil tokenResp
 	writeJSON(w, resp.StatusCode, tokenResp)
 }
 
@@ -2839,10 +2908,10 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "dcr_failed", "error_description": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var dcrResp map[string]any
-	json.NewDecoder(resp.Body).Decode(&dcrResp)
+	_ = json.NewDecoder(resp.Body).Decode(&dcrResp) // external HTTP response; malformed means nil dcrResp
 	writeJSON(w, resp.StatusCode, dcrResp)
 }
 
@@ -2869,7 +2938,7 @@ func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(data)
+	_, _ = w.Write(data) // response writer; connection already committed
 }
 
 func (h *Handler) SupportConfig(w http.ResponseWriter, _ *http.Request) {
@@ -2961,7 +3030,7 @@ func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO %q.social_pins (entity_name, entity_id, user_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (entity_name, entity_id, user_id) DO NOTHING`, s)
-	h.pool.Exec(ctx, q, entityType, entityID, user.ID)
+	_, _ = h.pool.Exec(ctx, q, entityType, entityID, user.ID) // best-effort upsert
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -2975,7 +3044,7 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 	user, _ := auth.UserFromContext(ctx)
 
 	q := fmt.Sprintf(`DELETE FROM %q.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
-	h.pool.Exec(ctx, q, entityType, entityID, user.ID)
+	_, _ = h.pool.Exec(ctx, q, entityType, entityID, user.ID) // best-effort delete
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -3005,7 +3074,7 @@ func (h *Handler) RegisterDescriptor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // body is optional; ignore decode errors
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -3033,7 +3102,10 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	name, _ := body["name"].(string)
 	desc, _ := body["description"].(string)
 
@@ -3070,7 +3142,9 @@ func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id int
 		var name, desc string
-		rows.Scan(&id, &name, &desc)
+		if rows.Scan(&id, &name, &desc) != nil {
+			continue
+		}
 		items = append(items, map[string]any{"id": id, "name": name, "description": desc})
 	}
 	if items == nil {
@@ -3100,8 +3174,8 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var appEntities, dsEntities []any
-	json.Unmarshal(appsJSON, &appEntities)
-	json.Unmarshal(datasourcesJSON, &dsEntities)
+	_ = json.Unmarshal(appsJSON, &appEntities)         // DB jsonb column; malformed means empty list
+	_ = json.Unmarshal(datasourcesJSON, &dsEntities)   // DB jsonb column; malformed means empty list
 
 	// Separate applications vs pipelines
 	var apps, pipelines []map[string]any
@@ -3125,8 +3199,8 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		var isPipeline bool
-		h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), eidInt).Scan(&isPipeline)
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), eidInt).Scan(&isPipeline) // failure leaves isPipeline=false
 		item := map[string]any{"id": strconv.Itoa(eidInt)}
 		if isPipeline {
 			pipelines = append(pipelines, item)
@@ -3157,7 +3231,10 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	operation, _ := body["operation"].(string)
 
@@ -3197,7 +3274,7 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var apps []map[string]any
-	json.Unmarshal(appsJSON, &apps)
+	_ = json.Unmarshal(appsJSON, &apps) // DB jsonb column; malformed means empty list
 
 	switch operation {
 	case "add":
@@ -3224,8 +3301,8 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updatedJSON, _ := json.Marshal(apps)
-	h.pool.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.prompt_collections SET applications = $1::jsonb WHERE id = $2`, s), string(updatedJSON), collectionID)
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
+		`UPDATE %q.prompt_collections SET applications = $1::jsonb WHERE id = $2`, s), string(updatedJSON), collectionID) // best-effort update
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":           collectionID,
@@ -3251,5 +3328,5 @@ func (h *Handler) DeleteCollection(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) // response writer; connection already committed
 }

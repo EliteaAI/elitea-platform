@@ -108,7 +108,7 @@ func TestFolderList_Empty(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	items, _ := body["items"].([]any)
 	if len(items) != 0 {
 		t.Errorf("expected empty items, got %d", len(items))
@@ -245,7 +245,11 @@ func TestFolderUpdate_InvalidBody(t *testing.T) {
 // ---- Update (PATCH) ---------------------------------------------------------
 
 func TestFolderPatch_Success(t *testing.T) {
-	repo := &mockFolderRepo{}
+	repo := &mockFolderRepo{
+		folders: []handler.Folder{
+			{ID: "f-1", ProjectID: "proj-1", Name: "Original Folder"},
+		},
+	}
 	r := setupFoldersRouter(repo)
 
 	payload, _ := json.Marshal(handler.Folder{Name: "Patched Folder"})

@@ -57,14 +57,20 @@ jobs:
             services/elitea-scheduler/go.sum
             libs/go/*/go.sum
 
+      # go.work wildcards must resolve within a module root, so `./services/...`
+      # fails with "directory prefix does not contain modules". Iterate the real
+      # module directories reported by `go list -m` instead.
       - name: Go vet (workspace)
         run: |
-          go vet ./services/...
-          go vet ./libs/...
+          for mod in $(go list -m -f '{{.Dir}}'); do
+            (cd "$mod" && go vet ./...)
+          done
 
       - name: Run tests (workspace)
         run: |
-          go test -race -count=1 -coverprofile=coverage.out ./services/... ./libs/...
+          for mod in $(go list -m -f '{{.Dir}}'); do
+            (cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...)
+          done
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7

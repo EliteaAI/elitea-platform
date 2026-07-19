@@ -28,7 +28,7 @@ func TestComparator_MatchingResponse(t *testing.T) {
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(body))
+		_, _ = w.Write([]byte(body))
 	}))
 	defer legacy.Close()
 
@@ -55,7 +55,7 @@ func TestComparator_MatchingResponse(t *testing.T) {
 func TestComparator_StatusMismatch(t *testing.T) {
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"error":"not found"}`))
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
 	}))
 	defer legacy.Close()
 
@@ -79,7 +79,7 @@ func TestComparator_StatusMismatch(t *testing.T) {
 func TestComparator_BodyMismatch(t *testing.T) {
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"value":"old"}`))
+		_, _ = w.Write([]byte(`{"value":"old"}`))
 	}))
 	defer legacy.Close()
 
@@ -119,7 +119,7 @@ func TestComparator_HeaderForwarding(t *testing.T) {
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer legacy.Close()
 
@@ -143,7 +143,7 @@ func TestMiddleware_PassesThrough(t *testing.T) {
 	c := shadow.NewComparator(shadow.Config{Enabled: false})
 	handler := shadow.Middleware(c)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)

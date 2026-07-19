@@ -41,8 +41,8 @@ func setupTagsRouter(repo handler.Repository) *chi.Mux {
 func TestTagList_Success(t *testing.T) {
 	repo := &mockRepo{
 		tags: []handler.Tag{
-			{Name: "go", Count: 5},
-			{Name: "python", Count: 3},
+			{ID: 1, Name: "go"},
+			{ID: 2, Name: "python"},
 		},
 	}
 	r := setupTagsRouter(repo)
@@ -60,16 +60,16 @@ func TestTagList_Success(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	items, ok := body["items"]
+	rows, ok := body["rows"]
 	if !ok {
-		t.Fatal("expected 'items' key in response")
+		t.Fatal("expected 'rows' key in response")
 	}
-	itemSlice, ok := items.([]any)
+	rowSlice, ok := rows.([]any)
 	if !ok {
-		t.Fatalf("expected 'items' to be a slice, got %T", items)
+		t.Fatalf("expected 'rows' to be a slice, got %T", rows)
 	}
-	if len(itemSlice) != 2 {
-		t.Errorf("expected 2 tags, got %d", len(itemSlice))
+	if len(rowSlice) != 2 {
+		t.Errorf("expected 2 tags, got %d", len(rowSlice))
 	}
 }
 
@@ -86,10 +86,10 @@ func TestTagList_Empty(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
-	items, _ := body["items"].([]any)
-	if len(items) != 0 {
-		t.Errorf("expected empty items, got %d", len(items))
+	_ = json.NewDecoder(rec.Body).Decode(&body)
+	rows, _ := body["rows"].([]any)
+	if len(rows) != 0 {
+		t.Errorf("expected empty rows, got %d", len(rows))
 	}
 }
 

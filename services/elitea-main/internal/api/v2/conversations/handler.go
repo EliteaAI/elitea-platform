@@ -204,11 +204,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var createdAt, updatedAt time.Time
 		var metaBytes []byte
 		var msgCount int
-		rows.Scan(&id, &name, &createdAt, &updatedAt, &metaBytes, &msgCount)
+		if err := rows.Scan(&id, &name, &createdAt, &updatedAt, &metaBytes, &msgCount); err != nil {
+			continue
+		}
 
 		var meta map[string]any
 		if metaBytes != nil {
-			json.Unmarshal(metaBytes, &meta)
+			_ = json.Unmarshal(metaBytes, &meta) // internal DB column; nil map on error is handled below
 		}
 		if meta == nil {
 			meta = map[string]any{}
@@ -348,7 +350,10 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	conversationUUID := chi.URLParam(r, "conversationID")
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 
 	pool, _ := h.pool.(*pgxpool.Pool)
 	if pool == nil {
@@ -554,13 +559,11 @@ func (h *Handler) AddParticipant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result []map[string]any
 	for _, body := range bodyList {
 		if err := h.repo.AddParticipant(r.Context(), projectID, conversationID, body); err != nil {
 			apierr.Write(w, err)
 			return
 		}
-		result = append(result, body)
 	}
 
 	// Return the participants list from DB
@@ -584,7 +587,10 @@ func (h *Handler) UpdateEntitySettings(w http.ResponseWriter, r *http.Request) {
 	conversationID := chi.URLParam(r, "conversationID")
 	participantID := chi.URLParam(r, "participantID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 
 	// If llm_settings present, validate based on participant type
 	if llmSettings, hasLLM := body["llm_settings"]; hasLLM && llmSettings != nil {
@@ -598,7 +604,7 @@ func (h *Handler) UpdateEntitySettings(w http.ResponseWriter, r *http.Request) {
 				}
 				if agentProjectID != publicProjectID {
 					// Non-published agent: reject if llm_settings differs from version baseline
-					versionID, _ := body["version_id"]
+					versionID := body["version_id"]
 					if versionID != nil && h.llmSettingsDiffer(r.Context(), pool, projectID, versionID, llmSettings) {
 						apierr.Write(w, apierr.BadRequest("LLM settings override is only allowed for published agents from agent studio"))
 						return
@@ -625,7 +631,7 @@ func (h *Handler) getParticipantEntityInfo(ctx context.Context, pool *pgxpool.Po
 		JOIN %q.chat_participant_mapping pm ON pm.participant_id = p.id
 		WHERE pm.conversation_id = $1 AND p.id = $2`, s, s)
 	var entityName, agentProjectID string
-	pool.QueryRow(ctx, q, conversationID, participantID).Scan(&entityName, &agentProjectID)
+	_ = pool.QueryRow(ctx, q, conversationID, participantID).Scan(&entityName, &agentProjectID)
 	return entityName, agentProjectID
 }
 
@@ -638,10 +644,10 @@ func (h *Handler) llmSettingsDiffer(ctx context.Context, pool *pgxpool.Pool, pro
 		return true // can't verify, reject
 	}
 	var stored map[string]any
-	json.Unmarshal(storedRaw, &stored)
+	_ = json.Unmarshal(storedRaw, &stored) // DB column; error leaves stored nil, handled in comparison
 	incoming, _ := json.Marshal(llmSettings)
 	var incomingMap map[string]any
-	json.Unmarshal(incoming, &incomingMap)
+	_ = json.Unmarshal(incoming, &incomingMap) // re-marshal of already-decoded map; can't fail
 
 	// Compare key fields
 	for _, key := range []string{"temperature", "max_tokens", "top_p", "model_name"} {
@@ -658,7 +664,10 @@ func (h *Handler) BatchUpdateEntitySettings(w http.ResponseWriter, r *http.Reque
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 	var body []map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	if err := h.repo.BatchUpdateEntitySettings(r.Context(), projectID, conversationID, body); err != nil {
 		apierr.Write(w, err)
 		return
@@ -694,7 +703,10 @@ func (h *Handler) Regenerate(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) CreateCanvas(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	canvas, err := h.repo.CreateCanvas(r.Context(), projectID, body)
 	if err != nil {
 		apierr.Write(w, err)
@@ -718,7 +730,10 @@ func (h *Handler) UpdateCanvas(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	canvasID := chi.URLParam(r, "canvasID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	if err := h.repo.UpdateCanvas(r.Context(), projectID, canvasID, body); err != nil {
 		apierr.Write(w, err)
 		return
@@ -730,7 +745,10 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	if err := h.repo.UpdateAttachmentStorage(r.Context(), projectID, conversationID, body); err != nil {
 		apierr.Write(w, err)
 		return
@@ -742,7 +760,10 @@ func (h *Handler) AddAttachments(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	if err := h.repo.AddAttachments(r.Context(), projectID, conversationID, body); err != nil {
 		apierr.Write(w, err)
 		return
@@ -775,7 +796,10 @@ func (h *Handler) UpdateContextStrategy(w http.ResponseWriter, r *http.Request) 
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 	if err := h.repo.UpdateContextStrategy(r.Context(), projectID, conversationID, body); err != nil {
 		apierr.Write(w, err)
 		return
@@ -786,5 +810,5 @@ func (h *Handler) UpdateContextStrategy(w http.ResponseWriter, r *http.Request) 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) // connection already committed; ignore write error
 }

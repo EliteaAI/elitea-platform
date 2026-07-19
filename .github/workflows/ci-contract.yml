@@ -1,0 +1,78 @@
+name: CI — Contract Tests
+
+on:
+  pull_request:
+    paths:
+      - "services/elitea-main/tests/contract/**"
+      - "services/elitea-main/api/openapi/**"
+      - ".github/workflows/ci-contract.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/elitea-main/tests/contract/**"
+      - "services/elitea-main/api/openapi/**"
+  workflow_dispatch:
+    inputs:
+      go_url:
+        description: "Go service URL"
+        default: "http://elitea-main:8080"
+      legacy_url:
+        description: "Legacy service URL"
+        default: "http://pylon-main:8000"
+  schedule:
+    - cron: "23 6 * * 1" # Mondays at 06:23 UTC
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Always-on gate: compile the contract suite and run it. The suite skips
+  #    cleanly (exit 0) when CONTRACT_AUTH_TOKEN is unset, so this keeps the
+  #    contract fixtures compiling on every PR/push without needing secrets. ──
+  compile:
+    name: Compile & Skip-Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/elitea-main/go.sum
+
+      - name: Vet contract tests
+        run: |
+          cd services/elitea-main
+          go vet ./tests/contract/
+
+      - name: Run contract tests (skips without credentials)
+        run: |
+          cd services/elitea-main
+          go test -v -count=1 -timeout=60s ./tests/contract/
+
+  # ── Credential-gated live parity run against staging. Only fires on the
+  #    weekly schedule or manual dispatch, where staging secrets are available. ──
+  contract:
+    name: Contract Parity Tests
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/elitea-main/go.sum
+
+      - name: Run contract tests
+        env:
+          CONTRACT_GO_URL: ${{ inputs.go_url || 'http://elitea-main:8080' }}
+          CONTRACT_LEGACY_URL: ${{ inputs.legacy_url || 'http://pylon-main:8000' }}
+          CONTRACT_AUTH_TOKEN: ${{ secrets.CONTRACT_AUTH_TOKEN }}
+          CONTRACT_PROJECT_ID: ${{ secrets.CONTRACT_PROJECT_ID }}
+        run: |
+          cd services/elitea-main
+          go test -v -count=1 -timeout=60s ./tests/contract/

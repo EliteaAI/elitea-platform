@@ -40,7 +40,9 @@ func (s *Server) RoleList(w http.ResponseWriter, r *http.Request, projectId gene
 	var roles []role
 	for rows.Next() {
 		var r role
-		rows.Scan(&r.ID, &r.Name)
+		if err := rows.Scan(&r.ID, &r.Name); err != nil {
+			continue
+		}
 		roles = append(roles, r)
 	}
 	if len(roles) == 0 {
@@ -76,7 +78,9 @@ func (s *Server) UserList(w http.ResponseWriter, r *http.Request, projectId gene
 	for rows.Next() {
 		var id int
 		var email, name, roleName string
-		rows.Scan(&id, &email, &name, &roleName)
+		if err := rows.Scan(&id, &email, &name, &roleName); err != nil {
+			continue
+		}
 		users = append(users, map[string]any{
 			"id": id, "email": email, "name": name, "role": roleName,
 		})

@@ -29,18 +29,20 @@ func (r *ApplicationsRepo) List(ctx context.Context, req applications.ListReques
 
 	// Build agent_type filter: "classic" means non-pipeline, "pipeline" means pipeline
 	agentTypeFilter := ""
-	if req.AgentsType == "pipeline" {
+	switch req.AgentsType {
+	case "pipeline":
 		agentTypeFilter = "pipeline"
-	} else if req.AgentsType == "classic" || req.AgentsType == "" {
+	case "classic", "":
 		agentTypeFilter = "classic"
 	}
 
 	var join string
-	if agentTypeFilter == "pipeline" {
+	switch agentTypeFilter {
+	case "pipeline":
 		join = fmt.Sprintf(` JOIN %q.application_versions av ON av.application_id = a.id AND av.agent_type = 'pipeline'`, s)
-	} else if agentTypeFilter == "classic" {
+	case "classic":
 		join = fmt.Sprintf(` JOIN %q.application_versions av ON av.application_id = a.id AND av.agent_type != 'pipeline'`, s)
-	} else {
+	default:
 		join = fmt.Sprintf(` LEFT JOIN %q.application_versions av ON av.application_id = a.id`, s)
 	}
 
@@ -53,7 +55,6 @@ func (r *ApplicationsRepo) List(ctx context.Context, req applications.ListReques
 	if req.Search != "" {
 		where += fmt.Sprintf(` WHERE (a.name ILIKE $%d OR a.description ILIKE $%d)`, argIdx, argIdx)
 		args = append(args, "%"+req.Search+"%")
-		argIdx++
 	}
 
 	var total int
@@ -240,11 +241,20 @@ func (r *ApplicationsRepo) Update(ctx context.Context, req applications.UpdateRe
 
 func (r *ApplicationsRepo) Delete(ctx context.Context, projectID, applicationID string) error {
 	s := schema(projectID)
-	// Delete child records first (application_tools, application_variables, tag associations)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_variables WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_version_tag_association WHERE version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, s), applicationID)
+	// Delete child records first (application_tools, application_variables, tag associations).
+	// Errors here are best-effort cascades; we propagate any failure.
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
+		return fmt.Errorf("applications: delete tools: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_variables WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
+		return fmt.Errorf("applications: delete variables: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_version_tag_association WHERE version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, s, s), applicationID); err != nil {
+		return fmt.Errorf("applications: delete tag associations: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, s), applicationID); err != nil {
+		return fmt.Errorf("applications: delete versions: %w", err)
+	}
 	query := fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, s)
 	ct, err := r.pool.Exec(ctx, query, applicationID)
 	if err != nil {
@@ -340,7 +350,7 @@ func (r *ApplicationsRepo) UpdateVersion(ctx context.Context, projectID, applica
 	}
 
 	if len(setClauses) == 0 {
-		setClauses = append(setClauses, fmt.Sprintf("name = name"))
+		setClauses = append(setClauses, "name = name")
 	}
 
 	query := fmt.Sprintf(`UPDATE %q.application_versions SET %s WHERE application_id = $%d AND id = $%d RETURNING id, application_id, name, status, created_at`,
@@ -407,7 +417,9 @@ func (r *ApplicationsRepo) BatchReplaceVersion(ctx context.Context, projectID, o
 	}
 	if deleteOld {
 		delQ := fmt.Sprintf(`DELETE FROM %q.application_versions WHERE id = $1`, s)
-		r.pool.Exec(ctx, delQ, oldVersionID)
+		if _, err := r.pool.Exec(ctx, delQ, oldVersionID); err != nil {
+			return fmt.Errorf("applications: batch replace version delete old: %w", err)
+		}
 	}
 	return nil
 }

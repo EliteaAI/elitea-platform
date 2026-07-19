@@ -118,7 +118,9 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		rows.Scan(&g.ID, &g.Name)
+		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+			continue
+		}
 		groups = append(groups, g)
 	}
 	if groups == nil {
@@ -132,7 +134,10 @@ func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	groupNames, _ := body["groups"].([]any)
 	if groupNames == nil {
@@ -159,11 +164,17 @@ func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete all existing associations for this project
-	h.pool.Exec(ctx, `DELETE FROM centry.project_group_association WHERE project_id = $1`, pid)
+	if _, err := h.pool.Exec(ctx, `DELETE FROM centry.project_group_association WHERE project_id = $1`, pid); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to update groups"})
+		return
+	}
 
 	// Insert new associations
 	for _, gid := range groupIDs {
-		h.pool.Exec(ctx, `INSERT INTO centry.project_group_association (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, pid, gid)
+		if _, err := h.pool.Exec(ctx, `INSERT INTO centry.project_group_association (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, pid, gid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to update groups"})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, body)
@@ -199,7 +210,10 @@ func (h *Handler) AdminProjectCreate(w http.ResponseWriter, r *http.Request) {
 		Name              string `json:"name"`
 		ProjectAdminEmail string `json:"project_admin_email"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	var id int
 	err := h.pool.QueryRow(r.Context(),
@@ -213,12 +227,15 @@ func (h *Handler) AdminProjectCreate(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AdminProjectDelete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	h.pool.Exec(r.Context(), `DELETE FROM centry.project WHERE id = $1`, projectID)
+	if _, err := h.pool.Exec(r.Context(), `DELETE FROM centry.project WHERE id = $1`, projectID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to delete project"})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

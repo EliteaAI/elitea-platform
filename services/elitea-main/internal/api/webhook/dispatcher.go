@@ -84,7 +84,7 @@ func (d *Dispatcher) deliver(wh Webhook, body []byte) {
 		slog.Warn("webhook: delivery failed", "err", err, "url", wh.URL)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		slog.Warn("webhook: non-success response", "status", resp.StatusCode, "url", wh.URL)

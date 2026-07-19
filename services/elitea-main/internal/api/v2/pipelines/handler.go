@@ -96,7 +96,10 @@ func (h *Handler) Trigger(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 
 	req := predict.PipelineRunRequest{
 		ProjectID: projectID,
@@ -139,7 +142,8 @@ func (h *Handler) GetTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var settings map[string]any
-	json.Unmarshal(settingsRaw, &settings)
+	// settingsRaw is a DB JSONB column we just read; unmarshal failure is safe to ignore here
+	_ = json.Unmarshal(settingsRaw, &settings)
 
 	trigger, _ := settings["trigger"].(map[string]any)
 	if trigger == nil {
@@ -159,7 +163,10 @@ func (h *Handler) UpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	versionID := chi.URLParam(r, "versionID")
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
 
 	if h.pool == nil {
 		body["version_id"] = versionID
@@ -172,7 +179,10 @@ func (h *Handler) UpdateTrigger(w http.ResponseWriter, r *http.Request) {
 
 	triggerBytes, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.application_versions SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{trigger}', $1) WHERE id = $2`, s)
-	h.pool.Exec(ctx, q, triggerBytes, versionID)
+	if _, err := h.pool.Exec(ctx, q, triggerBytes, versionID); err != nil {
+		apierr.Write(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version_id": versionID,
@@ -185,5 +195,5 @@ func (h *Handler) UpdateTrigger(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

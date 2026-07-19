@@ -8,9 +8,13 @@ Monorepo for the EliteA AI platform — Go API, React SPA, and Pylon agent runti
 elitea-platform/
 ├── services/
 │   ├── elitea-main/       # Go API server (chi/v5, pgx/v5, go-redis/v9)
+│   ├── elitea-scheduler/  # Scheduled job runner (Go, cron + Redis RPC)
 │   └── pylon-indexer/     # Agent runtime (pylon-based, plugin-driven)
 ├── apps/
-│   └── elitea-ui/         # React SPA (git submodule)
+│   ├── elitea-ui/         # React SPA (git submodule)
+│   └── admin-ui/          # Admin console SPA (git submodule)
+├── proto/                 # Protobuf contracts (buf v2) → gen/go, gen/python
+├── gen/                   # Generated protobuf stubs (Go + Python)
 ├── libs/go/               # Shared Go libraries
 ├── deploy/
 │   ├── docker/            # Containerfiles for UI

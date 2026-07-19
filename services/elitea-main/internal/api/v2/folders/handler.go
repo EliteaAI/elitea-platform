@@ -108,9 +108,10 @@ func (h *Handler) listGrouped(w http.ResponseWriter, r *http.Request, projectID 
 	}
 
 	orderCol := "c.updated_at"
-	if sortBy == "created_at" {
+	switch sortBy {
+	case "created_at":
 		orderCol = "c.created_at"
-	} else if sortBy == "name" {
+	case "name":
 		orderCol = "c.name"
 	}
 	orderDir := "DESC"
@@ -224,7 +225,7 @@ func (h *Handler) listGrouped(w http.ResponseWriter, r *http.Request, projectID 
 	foldersResponse := make([]map[string]any, 0, len(folders))
 	for _, f := range folders {
 		fID := 0
-		fmt.Sscanf(f.ID, "%d", &fID)
+		_, _ = fmt.Sscanf(f.ID, "%d", &fID)
 		convs := foldered[fID]
 		if convs == nil {
 			convs = []conversationItem{}
@@ -399,5 +400,5 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

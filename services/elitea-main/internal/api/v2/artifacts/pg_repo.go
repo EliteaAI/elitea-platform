@@ -60,7 +60,8 @@ func (r *PgRepo) ListBuckets(ctx context.Context, projectID string) ([]Bucket, e
 			} `json:"tags"`
 			Lifecycle int `json:"lifecycle"`
 		}
-		json.Unmarshal([]byte(dataStr), &meta)
+		// ignore unmarshal error — missing/malformed tags just leaves meta at zero value
+		_ = json.Unmarshal([]byte(dataStr), &meta)
 
 		isPinned := meta.Tags.Type == "system"
 
@@ -105,7 +106,8 @@ func (r *PgRepo) CreateBucket(ctx context.Context, projectID, name string) (Buck
 		return Bucket{}, err
 	}
 
-	r.backend.CreateBucket(ctx, projectID, name)
+	// best-effort: bucket may already exist in storage backend; ignore error
+	_ = r.backend.CreateBucket(ctx, projectID, name)
 
 	return Bucket{
 		ID:        key,
@@ -119,8 +121,11 @@ func (r *PgRepo) UpdateBucket(ctx context.Context, projectID, name string, meta 
 	if newName != "" && newName != name {
 		oldKey := r.bucketKey(projectID, name)
 		newKey := r.bucketKey(projectID, newName)
-		r.pool.Exec(ctx, `UPDATE centry.storage_meta SET id = $1 WHERE id = $2`, newKey, oldKey)
-		r.backend.RenameBucket(ctx, projectID, name, newName)
+		if _, err := r.pool.Exec(ctx, `UPDATE centry.storage_meta SET id = $1 WHERE id = $2`, newKey, oldKey); err != nil {
+			return Bucket{}, fmt.Errorf("rename bucket metadata: %w", err)
+		}
+		// best-effort: rename in storage backend; ignore error if backend does not support rename
+		_ = r.backend.RenameBucket(ctx, projectID, name, newName)
 		name = newName
 	}
 	return Bucket{ID: r.bucketKey(projectID, name), Name: name, CreatedAt: time.Now()}, nil
@@ -132,8 +137,11 @@ func (r *PgRepo) PatchBucket(ctx context.Context, projectID, name string, isPinn
 
 func (r *PgRepo) DeleteBucket(ctx context.Context, projectID, name string) error {
 	key := r.bucketKey(projectID, name)
-	r.pool.Exec(ctx, `DELETE FROM centry.storage_meta WHERE id = $1`, key)
-	r.backend.DeleteBucket(ctx, projectID, name)
+	if _, err := r.pool.Exec(ctx, `DELETE FROM centry.storage_meta WHERE id = $1`, key); err != nil {
+		return fmt.Errorf("delete bucket metadata: %w", err)
+	}
+	// best-effort: remove from storage backend; ignore error
+	_ = r.backend.DeleteBucket(ctx, projectID, name)
 	return nil
 }
 
@@ -179,7 +187,8 @@ func (r *PgRepo) DeleteArtifact(_ context.Context, projectID, bucket string) err
 }
 
 func (r *PgRepo) UploadArtifact(ctx context.Context, projectID, bucket, filename, mimeType string, size int64) (Artifact, error) {
-	r.backend.CreateBucket(ctx, projectID, bucket)
+	// best-effort: ensure bucket exists in storage backend before upload
+	_ = r.backend.CreateBucket(ctx, projectID, bucket)
 
 	return Artifact{
 		ID:        base64.StdEncoding.EncodeToString([]byte(filename)),
