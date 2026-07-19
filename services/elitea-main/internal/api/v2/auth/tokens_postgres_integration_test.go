@@ -84,6 +84,16 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 	if principal.TokenID != fmt.Sprintf("%d", created.ID) || principal.UserID != "7" || principal.ID != "7" {
 		t.Fatalf("validated principal = %+v", principal)
 	}
+	currentUser, err := authsvc.NewCurrentUserResolver(pool).Resolve(ctx, principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentUser.ID != 7 || currentUser.Email == nil || *currentUser.Email != "owner@example.test" {
+		t.Fatalf("current user = %+v", currentUser)
+	}
+	if currentUser.Name != nil || currentUser.LastLogin != nil || currentUser.Suspended {
+		t.Fatalf("current user nullable/state fields = %+v", currentUser)
+	}
 	principalValidator := authsvc.NewPrincipalValidator(pool)
 	forwarded, err := principalValidator.ValidatePrincipal(ctx, identity.User{
 		ID:       fmt.Sprintf("%d", created.ID),
