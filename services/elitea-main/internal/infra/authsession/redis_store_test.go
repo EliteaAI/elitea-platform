@@ -36,12 +36,28 @@ func TestRandomSessionIDIsCanonicalAndUnique(t *testing.T) {
 	}
 }
 
+func TestNewRedisStoreRejectsClusterAndRingClients(t *testing.T) {
+	t.Parallel()
+
+	cluster := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{"127.0.0.1:0"}})
+	t.Cleanup(func() { _ = cluster.Close() })
+	if _, err := NewRedisStore(cluster, Config{KeyPrefix: testKeyPrefix, TTL: time.Hour}); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("cluster error = %v, want %v", err, ErrInvalidConfiguration)
+	}
+
+	ring := redis.NewRing(&redis.RingOptions{Addrs: map[string]string{"shard": "127.0.0.1:0"}})
+	t.Cleanup(func() { _ = ring.Close() })
+	if _, err := NewRedisStore(ring, Config{KeyPrefix: testKeyPrefix, TTL: time.Hour}); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("ring error = %v, want %v", err, ErrInvalidConfiguration)
+	}
+}
+
 func TestRedisStoreCreateReadKeepsSensitiveStateOutOfOpaqueID(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	opaqueID := testSessionID(1)
-	store, server := newTestStore(t, 30*time.Minute, fixedGenerator(opaqueID), func() time.Time { return now })
+	store, server := newTestStore(t, 30*time.Minute, fixedGenerator(opaqueID))
 	state := completedState(now.Add(20 * time.Minute))
 
 	id, err := store.Create(context.Background(), state)
@@ -74,18 +90,17 @@ func TestRedisStoreCreateReadKeepsSensitiveStateOutOfOpaqueID(t *testing.T) {
 	if string(got.ProviderAttributes) != string(state.ProviderAttributes) {
 		t.Fatalf("provider state changed: %+v", got)
 	}
-	if ttl := server.TTL(testKeyPrefix + id); ttl <= 0 || ttl > 20*time.Minute {
-		t.Fatalf("Redis TTL = %s, want positive and no more than logical expiration", ttl)
+	if ttl := server.TTL(testKeyPrefix + id); ttl <= 0 || ttl > 30*time.Minute {
+		t.Fatalf("Redis TTL = %s, want configured server-session lifetime", ttl)
 	}
 }
 
-func TestRedisStoreEnforcesRedisAndLogicalExpiration(t *testing.T) {
+func TestRedisStoreKeepsServerLifetimeIndependentFromAuthExpiration(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Redis TTL", func(t *testing.T) {
 		t.Parallel()
-		now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-		store, server := newTestStore(t, 5*time.Minute, fixedGenerator(testSessionID(1)), func() time.Time { return now })
+		store, server := newTestStore(t, 5*time.Minute, fixedGenerator(testSessionID(1)))
 		id, err := store.Create(context.Background(), incompleteState())
 		if err != nil {
 			t.Fatal(err)
@@ -96,35 +111,91 @@ func TestRedisStoreEnforcesRedisAndLogicalExpiration(t *testing.T) {
 		}
 	})
 
-	t.Run("logical expiration", func(t *testing.T) {
+	t.Run("expired auth context remains available to authorization and logout", func(t *testing.T) {
 		t.Parallel()
 		now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-		clockNow := now
-		store, server := newTestStore(t, 30*time.Minute, fixedGenerator(testSessionID(2)), func() time.Time { return clockNow })
-		id, err := store.Create(context.Background(), completedState(now.Add(10*time.Minute)))
+		store, server := newTestStore(t, 30*time.Minute, fixedGenerator(testSessionID(2)))
+		state := completedState(now.Add(-time.Minute))
+		id, err := store.Create(context.Background(), state)
 		if err != nil {
 			t.Fatal(err)
 		}
-		clockNow = now.Add(11 * time.Minute)
-		if _, err := store.Read(context.Background(), id); !errors.Is(err, ErrExpired) {
-			t.Fatalf("read error = %v, want %v", err, ErrExpired)
+		got, err := store.Read(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if server.Exists(testKeyPrefix + id) {
-			t.Fatal("logically expired record was not removed")
+		if got.Expiration == nil || !got.Expiration.Equal(*state.Expiration) {
+			t.Fatalf("auth expiration changed: got %v, want %v", got.Expiration, state.Expiration)
+		}
+		if ttl := server.TTL(testKeyPrefix + id); ttl <= 0 || ttl > 30*time.Minute {
+			t.Fatalf("Redis TTL = %s, want configured server-session lifetime", ttl)
 		}
 	})
+}
 
-	t.Run("already expired create", func(t *testing.T) {
-		t.Parallel()
-		now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-		store, server := newTestStore(t, 30*time.Minute, fixedGenerator(testSessionID(3)), func() time.Time { return now })
-		if _, err := store.Create(context.Background(), completedState(now)); !errors.Is(err, ErrExpired) {
-			t.Fatalf("create error = %v, want %v", err, ErrExpired)
-		}
-		if len(server.Keys()) != 0 {
-			t.Fatalf("expired session created keys: %v", server.Keys())
-		}
-	})
+func TestRedisStoreRotateAndReplaceCommitsAuthenticatedStateAtomically(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	oldID := testSessionID(12)
+	newID := testSessionID(13)
+	store, server := newTestStore(
+		t,
+		30*time.Minute,
+		sequenceGenerator(oldID, newID),
+	)
+	createdID, err := store.Create(context.Background(), incompleteState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.FastForward(7 * time.Minute)
+	replacement := completedState(now.Add(time.Hour))
+
+	rotatedID, err := store.RotateAndReplace(context.Background(), createdID, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotatedID != newID {
+		t.Fatalf("rotated ID = %q, want %q", rotatedID, newID)
+	}
+	if _, err := store.Read(context.Background(), createdID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old ID read error = %v, want %v", err, ErrNotFound)
+	}
+	got, err := store.Read(context.Background(), rotatedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Done || got.UserID == nil || *got.UserID != 42 {
+		t.Fatalf("replacement state = %+v", got)
+	}
+	if ttl := server.TTL(testKeyPrefix + rotatedID); ttl <= 23*time.Minute || ttl > 30*time.Minute {
+		t.Fatalf("replacement TTL = %s, want refreshed server-session lifetime", ttl)
+	}
+}
+
+func TestRedisStoreRotateAndReplaceRejectsInvalidStateBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	oldID := testSessionID(14)
+	newID := testSessionID(15)
+	store, server := newTestStore(
+		t,
+		time.Hour,
+		sequenceGenerator(oldID, newID),
+	)
+	createdID, err := store.Create(context.Background(), incompleteState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := incompleteState()
+	invalid.SchemaVersion = sessionstate.CurrentSchemaVersion + 1
+
+	if _, err := store.RotateAndReplace(context.Background(), createdID, invalid); !errors.Is(err, sessionstate.ErrInvalidState) {
+		t.Fatalf("rotate-and-replace error = %v, want %v", err, sessionstate.ErrInvalidState)
+	}
+	if !server.Exists(testKeyPrefix+createdID) || server.Exists(testKeyPrefix+newID) {
+		t.Fatalf("invalid replacement mutated Redis keys: %v", server.Keys())
+	}
 }
 
 func TestRedisStoreRotateInvalidatesOldIDAndPreservesRemainingTTL(t *testing.T) {
@@ -137,7 +208,6 @@ func TestRedisStoreRotateInvalidatesOldIDAndPreservesRemainingTTL(t *testing.T) 
 		t,
 		30*time.Minute,
 		sequenceGenerator(oldID, newID),
-		func() time.Time { return now },
 	)
 	state := completedState(now.Add(time.Hour))
 	createdID, err := store.Create(context.Background(), state)
@@ -176,7 +246,6 @@ func TestRedisStoreRotationRetriesCollisionWithoutExposingOldID(t *testing.T) {
 		t,
 		30*time.Minute,
 		sequenceGenerator(oldID, collidingID, newID),
-		func() time.Time { return now },
 	)
 	createdID, err := store.Create(context.Background(), completedState(now.Add(time.Hour)))
 	if err != nil {
@@ -203,9 +272,8 @@ func TestRedisStoreRotationRetriesCollisionWithoutExposingOldID(t *testing.T) {
 func TestRedisStoreCreateCollisionsAreBounded(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	collidingID := testSessionID(30)
-	store, server := newTestStore(t, time.Hour, fixedGenerator(collidingID), func() time.Time { return now })
+	store, server := newTestStore(t, time.Hour, fixedGenerator(collidingID))
 	server.Set(testKeyPrefix+collidingID, "existing")
 	server.SetTTL(testKeyPrefix+collidingID, time.Hour)
 
@@ -221,7 +289,7 @@ func TestRedisStoreRejectsMalformedUnknownAndOversizedRecords(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-	store, server := newTestStore(t, time.Hour, fixedGenerator(testSessionID(40)), func() time.Time { return now })
+	store, server := newTestStore(t, time.Hour, fixedGenerator(testSessionID(40)))
 
 	unknownVersion := completedState(now.Add(time.Hour))
 	unknownVersion.SchemaVersion++
@@ -274,7 +342,7 @@ func TestRedisStoreDeleteIsIdempotentLogoutPrimitive(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-	store, _ := newTestStore(t, time.Hour, fixedGenerator(testSessionID(70)), func() time.Time { return now })
+	store, _ := newTestStore(t, time.Hour, fixedGenerator(testSessionID(70)))
 	id, err := store.Create(context.Background(), completedState(now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +375,6 @@ func TestRedisStoreFailsClosedWhenRedisIsUnavailable(t *testing.T) {
 		client,
 		Config{KeyPrefix: testKeyPrefix, TTL: time.Hour},
 		fixedGenerator(testSessionID(80)),
-		func() time.Time { return now },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -330,13 +397,15 @@ func TestRedisStoreFailsClosedWhenRedisIsUnavailable(t *testing.T) {
 	if _, err := store.Rotate(context.Background(), id); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("rotate error = %v, want %v", err, ErrUnavailable)
 	}
+	if _, err := store.RotateAndReplace(context.Background(), id, incompleteState()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("rotate-and-replace error = %v, want %v", err, ErrUnavailable)
+	}
 }
 
 func TestRedisStoreRejectsInvalidIDsBeforeRedisAccess(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
-	store, _ := newTestStore(t, time.Hour, fixedGenerator(testSessionID(90)), func() time.Time { return now })
+	store, _ := newTestStore(t, time.Hour, fixedGenerator(testSessionID(90)))
 	if _, err := store.Read(context.Background(), "../../not-a-session"); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("read error = %v, want %v", err, ErrInvalidID)
 	}
@@ -349,7 +418,6 @@ func newTestStore(
 	t *testing.T,
 	ttl time.Duration,
 	generate idGenerator,
-	now clock,
 ) (*RedisStore, *miniredis.Miniredis) {
 	t.Helper()
 	server := miniredis.RunT(t)
@@ -359,7 +427,6 @@ func newTestStore(
 		client,
 		Config{KeyPrefix: testKeyPrefix, TTL: ttl},
 		generate,
-		now,
 	)
 	if err != nil {
 		t.Fatal(err)

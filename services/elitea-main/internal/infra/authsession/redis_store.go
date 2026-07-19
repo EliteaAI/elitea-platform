@@ -30,7 +30,6 @@ var (
 	ErrInvalidConfiguration = errors.New("invalid browser session store configuration")
 	ErrInvalidID            = errors.New("invalid browser session ID")
 	ErrNotFound             = errors.New("browser session not found")
-	ErrExpired              = errors.New("browser session expired")
 	ErrUnavailable          = errors.New("browser session store unavailable")
 	ErrIDCollision          = errors.New("browser session ID collision limit reached")
 	ErrRotationConflict     = errors.New("browser session changed during rotation")
@@ -45,7 +44,6 @@ type Config struct {
 }
 
 type idGenerator func() (string, error)
-type clock func() time.Time
 
 // RedisStore does not own or close the injected Redis client. Its methods are
 // safe for concurrent use when the client is safe for concurrent use.
@@ -54,22 +52,27 @@ type RedisStore struct {
 	keyPrefix string
 	ttl       time.Duration
 	generate  idGenerator
-	now       clock
 }
 
 // NewRedisStore creates an unmounted server-side session store.
 func NewRedisStore(client redis.UniversalClient, config Config) (*RedisStore, error) {
-	return newRedisStore(client, config, randomSessionID, time.Now)
+	return newRedisStore(client, config, randomSessionID)
 }
 
 func newRedisStore(
 	client redis.UniversalClient,
 	config Config,
 	generate idGenerator,
-	now clock,
 ) (*RedisStore, error) {
-	if client == nil || generate == nil || now == nil {
+	if client == nil || generate == nil {
 		return nil, ErrInvalidConfiguration
+	}
+	// Session rotation is a two-key atomic script in phase one. Accept only one
+	// logical primary (standalone or Sentinel/failover); a Cluster or Ring client
+	// would either CROSSSLOT or concentrate every session in one fixed hash slot.
+	switch client.(type) {
+	case *redis.ClusterClient, *redis.Ring:
+		return nil, fmt.Errorf("%w: browser sessions require one logical Redis primary", ErrInvalidConfiguration)
 	}
 	if err := validateKeyPrefix(config.KeyPrefix); err != nil {
 		return nil, err
@@ -82,7 +85,6 @@ func newRedisStore(
 		keyPrefix: config.KeyPrefix,
 		ttl:       config.TTL,
 		generate:  generate,
-		now:       now,
 	}, nil
 }
 
@@ -113,9 +115,10 @@ func (s *RedisStore) Create(ctx context.Context, state sessionstate.State) (stri
 	return "", ErrIDCollision
 }
 
-// Read returns only a supported, bounded, unexpired state. Missing Redis TTLs,
-// malformed records, unknown schema versions, and dependency failures fail
-// closed.
+// Read returns only a supported, bounded state backed by a positive Redis TTL.
+// Provider authentication expiration remains data for the authorization and
+// logout boundaries; it does not shorten the independent server-session TTL.
+// Malformed records, unknown schema versions, and dependency failures fail closed.
 func (s *RedisStore) Read(ctx context.Context, id string) (sessionstate.State, error) {
 	state, _, err := s.readRecord(ctx, id)
 	return state, err
@@ -133,15 +136,42 @@ func (s *RedisStore) Delete(ctx context.Context, id string) error {
 }
 
 // Rotate atomically moves the existing record and its remaining Redis TTL to a
-// fresh ID. The old ID is invalid after success. The two keys must map to the
-// same Redis Cluster hash slot; deployments using Redis Cluster must include a
-// fixed hash tag in KeyPrefix.
+// fresh ID. The old ID is invalid after success.
 func (s *RedisStore) Rotate(ctx context.Context, id string) (string, error) {
-	state, record, err := s.readRecord(ctx, id)
+	_, record, err := s.readRecord(ctx, id)
 	if err != nil {
 		return "", err
 	}
+	return s.rotateRecord(ctx, id, record, record, 0)
+}
 
+// RotateAndReplace atomically invalidates id and installs replacement under a
+// fresh ID with the configured full server-session lifetime. Authentication
+// callbacks use this operation so an unauthenticated session can never become
+// authenticated under the same browser identifier.
+func (s *RedisStore) RotateAndReplace(
+	ctx context.Context,
+	id string,
+	replacement sessionstate.State,
+) (string, error) {
+	_, currentRecord, err := s.readRecord(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	replacementRecord, ttl, err := s.encodeForCreate(replacement)
+	if err != nil {
+		return "", err
+	}
+	return s.rotateRecord(ctx, id, currentRecord, replacementRecord, ttl)
+}
+
+func (s *RedisStore) rotateRecord(
+	ctx context.Context,
+	id string,
+	currentRecord []byte,
+	replacementRecord []byte,
+	ttl time.Duration,
+) (string, error) {
 	for range createAttempts {
 		newID, err := s.generate()
 		if err != nil {
@@ -154,7 +184,9 @@ func (s *RedisStore) Rotate(ctx context.Context, id string) (string, error) {
 			ctx,
 			s.client,
 			[]string{s.key(id), s.key(newID)},
-			record,
+			currentRecord,
+			replacementRecord,
+			ttl.Milliseconds(),
 		).Result()
 		if err != nil {
 			return "", storeError(ctx, "rotate", err)
@@ -165,10 +197,6 @@ func (s *RedisStore) Rotate(ctx context.Context, id string) (string, error) {
 		}
 		switch status {
 		case rotateSucceeded:
-			if logicallyExpired(state, s.now()) {
-				_ = s.Delete(ctx, newID)
-				return "", ErrExpired
-			}
 			return newID, nil
 		case rotateCollision:
 			continue
@@ -198,21 +226,6 @@ func (s *RedisStore) encodeForCreate(state sessionstate.State) ([]byte, time.Dur
 		return nil, 0, err
 	}
 
-	now := s.now()
-	ttl := s.ttl
-	if state.Expiration != nil {
-		remaining := state.Expiration.Sub(now)
-		if remaining <= 0 {
-			return nil, 0, ErrExpired
-		}
-		if remaining < ttl {
-			ttl = remaining
-		}
-	}
-	if ttl < time.Millisecond {
-		ttl = time.Millisecond
-	}
-
 	record, err := json.Marshal(state)
 	if err != nil {
 		return nil, 0, fmt.Errorf("encode browser session: %w", err)
@@ -220,7 +233,7 @@ func (s *RedisStore) encodeForCreate(state sessionstate.State) ([]byte, time.Dur
 	if len(record) > MaxRecordBytes {
 		return nil, 0, fmt.Errorf("%w: encoded record is too large", sessionstate.ErrInvalidState)
 	}
-	return record, ttl, nil
+	return record, s.ttl, nil
 }
 
 func (s *RedisStore) readRecord(
@@ -255,10 +268,6 @@ func (s *RedisStore) readRecord(
 	if err != nil {
 		return sessionstate.State{}, nil, err
 	}
-	if logicallyExpired(state, s.now()) {
-		_ = s.client.Del(ctx, s.key(id)).Err()
-		return sessionstate.State{}, nil, ErrExpired
-	}
 	return state, record, nil
 }
 
@@ -276,10 +285,6 @@ func decodeRecord(record []byte) (sessionstate.State, error) {
 		return sessionstate.State{}, err
 	}
 	return state, nil
-}
-
-func logicallyExpired(state sessionstate.State, now time.Time) bool {
-	return state.Expiration != nil && !state.Expiration.After(now)
 }
 
 func (s *RedisStore) key(id string) string {
@@ -337,14 +342,17 @@ end
 if current ~= ARGV[1] then
     return -1
 end
-if redis.call('EXISTS', KEYS[2]) == 1 then
-    return 0
+local ttl = tonumber(ARGV[3])
+if not ttl or ttl <= 0 then
+    ttl = redis.call('PTTL', KEYS[1])
 end
-local ttl = redis.call('PTTL', KEYS[1])
 if ttl <= 0 then
     return -2
 end
-redis.call('SET', KEYS[2], current, 'PX', ttl, 'NX')
+local created = redis.call('SET', KEYS[2], ARGV[2], 'PX', ttl, 'NX')
+if not created then
+    return 0
+end
 redis.call('DEL', KEYS[1])
 return 1
 `)
