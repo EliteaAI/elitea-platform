@@ -5,64 +5,120 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 )
 
-// ForwardAuthHandler implements Traefik's forward-auth protocol.
-// Traefik sends the original request headers; this handler validates
-// credentials and responds 200 + auth headers on success, or 401/403 on failure.
-type ForwardAuthHandler struct {
-	authClient *authsvc.Client
-	validator  apimw.TokenValidator
+var traefikForwardHeaders = [...]string{
+	"X-Forwarded-Method",
+	"X-Forwarded-Proto",
+	"X-Forwarded-Host",
+	"X-Forwarded-Uri",
+	"X-Forwarded-For",
 }
 
-func NewForwardAuthHandler(client *authsvc.Client, validator apimw.TokenValidator) *ForwardAuthHandler {
-	return &ForwardAuthHandler{authClient: client, validator: validator}
+// ForwardAuthCredentialHeader maps an additional request header to one of the
+// credential handlers supported by the current baseline: "bearer" or "basic".
+// Order is significant when a request contains more than one configured
+// header, so callers must preserve configuration order.
+type ForwardAuthCredentialHeader struct {
+	Name           string
+	CredentialType string
+}
+
+type ForwardAuthOption func(*ForwardAuthHandler)
+
+// WithForwardAuthCredentialHeaders configures current-baseline
+// other_auth_headers behavior. No additional credential header is trusted by
+// default.
+func WithForwardAuthCredentialHeaders(headers ...ForwardAuthCredentialHeader) ForwardAuthOption {
+	configured := append([]ForwardAuthCredentialHeader(nil), headers...)
+	return func(handler *ForwardAuthHandler) {
+		handler.credentialHeaders = configured
+	}
+}
+
+// ForwardAuthHandler implements Traefik's forward-auth protocol.
+// Traefik sends the original request headers; this handler validates
+// credentials and responds 200 on success or 403 on credential failure.
+type ForwardAuthHandler struct {
+	authClient        *authsvc.Client
+	validator         apimw.TokenValidator
+	credentialHeaders []ForwardAuthCredentialHeader
+}
+
+func NewForwardAuthHandler(
+	client *authsvc.Client,
+	validator apimw.TokenValidator,
+	opts ...ForwardAuthOption,
+) *ForwardAuthHandler {
+	handler := &ForwardAuthHandler{authClient: client, validator: validator}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	return handler
 }
 
 func (h *ForwardAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
-	// Traefik sends the original request's headers in the forwarded request.
-	// We validate Authorization (Bearer/Basic) or X-API-Key.
 
-	// Try X-API-Key first
-	if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-		user, err := h.validate(r, apiKey)
-		if err != nil {
-			http.Error(w, "Access Denied", http.StatusForbidden)
+	// The current baseline checks header presence to establish that the request
+	// came through Traefik. It intentionally does not require non-empty values.
+	for _, name := range traefikForwardHeaders {
+		if _, ok := requestHeader(r.Header, name); !ok {
+			writeAccessDenied(w)
 			return
 		}
-		if err := h.writeSuccess(w, user); err != nil {
-			http.Error(w, "Access Denied", http.StatusForbidden)
-		}
-		return
 	}
 
-	// Try Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader != "" {
-		token, ok := extractToken(authHeader)
+	// Authorization has precedence over every configured additional credential
+	// header, including when its value is empty or malformed.
+	if authorization, ok := requestHeader(r.Header, "Authorization"); ok {
+		credentialType, credentialData, ok := parseAuthorization(authorization)
 		if !ok {
-			http.Error(w, "Access Denied", http.StatusForbidden)
+			writeAccessDenied(w)
 			return
 		}
-		user, err := h.validate(r, token)
-		if err != nil {
-			http.Error(w, "Access Denied", http.StatusForbidden)
-			return
-		}
-		if err := h.writeSuccess(w, user); err != nil {
-			http.Error(w, "Access Denied", http.StatusForbidden)
-		}
+		h.authenticate(w, r, credentialType, credentialData)
 		return
 	}
 
-	// No credentials provided
-	http.Error(w, "Access Denied", http.StatusForbidden)
+	for _, configured := range h.credentialHeaders {
+		credentialData, ok := requestHeader(r.Header, configured.Name)
+		if !ok {
+			continue
+		}
+		h.authenticate(w, r, configured.CredentialType, credentialData)
+		return
+	}
+
+	writeAccessDenied(w)
+}
+
+func (h *ForwardAuthHandler) authenticate(
+	w http.ResponseWriter,
+	r *http.Request,
+	credentialType string,
+	credentialData string,
+) {
+	token, ok := credentialToken(credentialType, credentialData)
+	if !ok {
+		writeAccessDenied(w)
+		return
+	}
+
+	user, err := h.validate(r, token)
+	if err != nil {
+		writeAccessDenied(w)
+		return
+	}
+	if err := writeSuccess(w, r, user); err != nil {
+		writeAccessDenied(w)
+	}
 }
 
 func (h *ForwardAuthHandler) validate(r *http.Request, token string) (identity.User, error) {
@@ -86,37 +142,98 @@ func (h *ForwardAuthHandler) validate(r *http.Request, token string) (identity.U
 	return user, nil
 }
 
-func (h *ForwardAuthHandler) writeSuccess(w http.ResponseWriter, user identity.User) error {
-	// Legacy forward-auth identifies a token by auth_core__token.id. The owner
-	// is carried separately so downstream code can cross-check it and never
-	// infer ownership from a colliding numeric user ID.
+func writeSuccess(w http.ResponseWriter, r *http.Request, user identity.User) error {
+	// The current baseline identifies a token by auth_core__token.id. The
+	// additive owner header lets downstream code cross-check it without changing
+	// the existing X-Auth-ID contract.
 	if user.TokenID == "" || user.UserID == "" {
 		return errors.New("validated token identity is incomplete")
 	}
-	authRef := user.Email
-	if authRef == "" {
-		authRef = "-"
+
+	targetValues, targetProvided := r.URL.Query()["target"]
+	if !targetProvided {
+		writeOK(w)
+		return nil
 	}
+	target := ""
+	if len(targetValues) > 0 {
+		target = targetValues[0]
+	}
+	if target != "rpc" {
+		return errors.New("forward-auth success target is not registered")
+	}
+
 	w.Header().Set("X-Auth-Type", "token")
 	w.Header().Set("X-Auth-ID", user.TokenID)
 	w.Header().Set("X-Auth-User-ID", user.UserID)
-	w.Header().Set("X-Auth-Reference", authRef)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("OK"))
+	w.Header().Set("X-Auth-Reference", "-")
+	writeOK(w)
 	return nil
 }
 
-func extractToken(authHeader string) (string, bool) {
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		return strings.TrimPrefix(authHeader, "Bearer "), true
+func writeOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
+}
+
+func writeAccessDenied(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte("Access Denied"))
+}
+
+func parseAuthorization(value string) (string, string, bool) {
+	separator := strings.IndexByte(value, ' ')
+	if separator < 0 {
+		return "", "", false
 	}
-	if strings.HasPrefix(authHeader, "Basic ") {
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Basic "))
+	return strings.ToLower(value[:separator]), value[separator+1:], true
+}
+
+func credentialToken(credentialType, credentialData string) (string, bool) {
+	switch credentialType {
+	case "bearer":
+		return credentialData, true
+	case "basic":
+		// This deliberately rejects non-alphabet bytes that Python's permissive
+		// base64 decoder could discard. Well-formed Basic credentials are
+		// unchanged, while ambiguous malformed credentials fail closed.
+		decoded, err := base64.StdEncoding.DecodeString(credentialData)
 		if err != nil {
 			return "", false
 		}
+		if !utf8.Valid(decoded) {
+			return "", false
+		}
 		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			return "", false
+		}
 		return parts[0], true
+	default:
+		return "", false
+	}
+}
+
+func requestHeader(headers http.Header, name string) (string, bool) {
+	canonicalName := http.CanonicalHeaderKey(name)
+	if values, ok := headers[canonicalName]; ok {
+		if len(values) == 0 {
+			return "", true
+		}
+		return values[0], true
+	}
+	// Incoming net/http requests use canonical keys. The fallback preserves
+	// HTTP's case-insensitive semantics for directly constructed request maps.
+	for key, values := range headers {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		if len(values) == 0 {
+			return "", true
+		}
+		return values[0], true
 	}
 	return "", false
 }
