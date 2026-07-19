@@ -14,6 +14,13 @@ const (
 	fallbackEmailDomain       = "centry.user"
 	initialAdministrationMode = "administration"
 	initialAdministrationRole = "super_admin"
+
+	// These conservative bounds keep IdP-controlled writes finite. They must be
+	// revalidated against sanitized identity and IdP-claim maxima before mount.
+	MaxProviderBytes          = 64
+	MaxProviderReferenceBytes = 768
+	MaxEmailBytes             = 1024
+	MaxNameClaimBytes         = 2048
 )
 
 var (
@@ -108,27 +115,30 @@ func (s *ProvisionService) Provision(ctx context.Context, request ProvisionReque
 }
 
 func (a VerifiedAssertion) validate() error {
-	if !validRequiredText(a.Provider) || !validRequiredText(a.ProviderReference) {
+	if !validRequiredText(a.Provider, MaxProviderBytes) ||
+		!validRequiredText(a.ProviderReference, MaxProviderReferenceBytes) {
 		return ErrInvalidAssertion
 	}
 	// The current baseline does not require RFC email syntax. Preserve that
 	// contract while rejecting whitespace-bearing input as a strict malformed-
 	// claim correction at the new typed boundary.
-	if !validOptionalText(a.Email) || strings.ContainsFunc(a.Email, unicode.IsSpace) {
+	if !validOptionalText(a.Email, MaxEmailBytes) || strings.ContainsFunc(a.Email, unicode.IsSpace) {
 		return ErrInvalidAssertion
 	}
-	if !validOptionalText(a.GivenName) || !validOptionalText(a.FamilyName) || !validOptionalText(a.Name) {
+	if !validOptionalText(a.GivenName, MaxNameClaimBytes) ||
+		!validOptionalText(a.FamilyName, MaxNameClaimBytes) ||
+		!validOptionalText(a.Name, MaxNameClaimBytes) {
 		return ErrInvalidAssertion
 	}
 	return nil
 }
 
-func validRequiredText(value string) bool {
-	return validText(value) && strings.TrimSpace(value) != ""
+func validRequiredText(value string, maxBytes int) bool {
+	return len(value) <= maxBytes && validText(value) && strings.TrimSpace(value) != ""
 }
 
-func validOptionalText(value string) bool {
-	return value == "" || validRequiredText(value)
+func validOptionalText(value string, maxBytes int) bool {
+	return value == "" || validRequiredText(value, maxBytes)
 }
 
 func validText(value string) bool {

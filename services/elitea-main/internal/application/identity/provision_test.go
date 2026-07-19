@@ -150,15 +150,21 @@ func TestProvisionRejectsInvalidAssertionWithoutRepositoryCall(t *testing.T) {
 		{name: "missing provider", assertion: validAssertion(func(a *VerifiedAssertion) { a.Provider = "" })},
 		{name: "blank provider", assertion: validAssertion(func(a *VerifiedAssertion) { a.Provider = " \t " })},
 		{name: "invalid provider encoding", assertion: validAssertion(func(a *VerifiedAssertion) { a.Provider = invalidUTF8 })},
+		{name: "oversized provider", assertion: validAssertion(func(a *VerifiedAssertion) { a.Provider = strings.Repeat("p", MaxProviderBytes+1) })},
 		{name: "missing provider reference", assertion: validAssertion(func(a *VerifiedAssertion) { a.ProviderReference = "" })},
 		{name: "blank provider reference", assertion: validAssertion(func(a *VerifiedAssertion) { a.ProviderReference = " \t " })},
 		{name: "provider reference control character", assertion: validAssertion(func(a *VerifiedAssertion) { a.ProviderReference = "subject\nother" })},
+		{name: "oversized provider reference", assertion: validAssertion(func(a *VerifiedAssertion) { a.ProviderReference = strings.Repeat("s", MaxProviderReferenceBytes+1) })},
 		{name: "blank asserted email", assertion: validAssertion(func(a *VerifiedAssertion) { a.Email = " \t " })},
 		{name: "email whitespace", assertion: validAssertion(func(a *VerifiedAssertion) { a.Email = "user @example.com" })},
 		{name: "invalid email encoding", assertion: validAssertion(func(a *VerifiedAssertion) { a.Email = invalidUTF8 })},
+		{name: "oversized email", assertion: validAssertion(func(a *VerifiedAssertion) { a.Email = strings.Repeat("e", MaxEmailBytes+1) })},
 		{name: "blank given name", assertion: validAssertion(func(a *VerifiedAssertion) { a.GivenName = " \t " })},
+		{name: "oversized given name", assertion: validAssertion(func(a *VerifiedAssertion) { a.GivenName = strings.Repeat("g", MaxNameClaimBytes+1) })},
 		{name: "invalid family name encoding", assertion: validAssertion(func(a *VerifiedAssertion) { a.FamilyName = invalidUTF8 })},
+		{name: "oversized family name", assertion: validAssertion(func(a *VerifiedAssertion) { a.FamilyName = strings.Repeat("f", MaxNameClaimBytes+1) })},
 		{name: "name control character", assertion: validAssertion(func(a *VerifiedAssertion) { a.Name = "first\rsecond" })},
+		{name: "oversized display name", assertion: validAssertion(func(a *VerifiedAssertion) { a.Name = strings.Repeat("n", MaxNameClaimBytes+1) })},
 	}
 
 	for _, test := range tests {
