@@ -74,7 +74,7 @@ tasks:
       - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json
 
   baseline:auth:check:
-    desc: Verify checked-in current-baseline pylon_auth source and tracked runtime evidence
+    desc: Compare sibling pylon_auth sources and validate the checked-in snapshot
     vars:
       AUTH_BASELINE_PLUGINS_ROOT: '{{.AUTH_BASELINE_PLUGINS_ROOT | default "../centry/pylon_auth/plugins"}}'
     preconditions:

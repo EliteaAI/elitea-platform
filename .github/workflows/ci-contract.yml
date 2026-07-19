@@ -74,12 +74,21 @@ jobs:
           scripts/contract/generate_proto.sh
           git diff --exit-code -- libs/proto/gen
 
-      - name: Check baseline-derived byte corpus and security invariants
+      - name: Check baseline-derived byte corpus
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python scripts/contract/generate_configuration_validation_fixtures.py --check
           python scripts/contract/check_configuration_validation_contract.py
+
+      # This checkout does not contain the nine independent pylon_auth source
+      # repositories. CI validates the reviewed snapshot's internal integrity;
+      # `task baseline:auth:check` performs live sibling-source comparison in
+      # the controlled release workspace.
+      - name: Check Auth current-baseline snapshot integrity
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
           python scripts/security/test_export_auth_baseline_catalog.py
           python scripts/security/check_auth_baseline_catalog.py
 

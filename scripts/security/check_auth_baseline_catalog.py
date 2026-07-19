@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed when the reviewed pylon_auth current baseline changes."""
+"""Validate the checked-in pylon_auth current-baseline snapshot integrity."""
 
 from __future__ import annotations
 
