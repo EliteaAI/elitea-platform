@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"time"
@@ -11,9 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -52,53 +55,60 @@ type tokenRepository interface {
 }
 
 type postgresTokenRepository struct {
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	queries *sqlcgen.Queries
+}
+
+func newPostgresTokenRepository(pool *pgxpool.Pool) *postgresTokenRepository {
+	return &postgresTokenRepository{
+		pool:    pool,
+		queries: sqlcgen.New(pool),
+	}
 }
 
 func (r *postgresTokenRepository) List(ctx context.Context, userID int64) ([]tokenRecord, error) {
-	rows, err := r.pool.Query(ctx, `
-SELECT id, uuid, expires, user_id, COALESCE(name, '')
-FROM public.auth_core__token
-WHERE user_id = $1
-ORDER BY id`, userID)
+	databaseUserID, err := patDatabaseID(userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	records := make([]tokenRecord, 0)
-	for rows.Next() {
-		var record tokenRecord
-		if err := rows.Scan(&record.ID, &record.UUID, &record.Expires, &record.UserID, &record.Name); err != nil {
+	rows, err := r.queries.ListOwnedPATs(ctx, databaseUserID)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]tokenRecord, 0, len(rows))
+	for _, row := range rows {
+		record, err := patRecord(row.ID, row.Uuid, row.Expires, row.UserID, row.Name)
+		if err != nil {
 			return nil, err
 		}
 		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	return records, nil
 }
 
 func (r *postgresTokenRepository) GetOwned(ctx context.Context, userID int64, tokenUUID string) (tokenRecord, error) {
-	var record tokenRecord
-	err := r.pool.QueryRow(ctx, `
-SELECT id, uuid, expires, user_id, COALESCE(name, '')
-FROM public.auth_core__token
-WHERE uuid = $1 AND user_id = $2`, tokenUUID, userID).Scan(
-		&record.ID,
-		&record.UUID,
-		&record.Expires,
-		&record.UserID,
-		&record.Name,
-	)
+	databaseUserID, err := patDatabaseID(userID)
+	if err != nil {
+		return tokenRecord{}, err
+	}
+	row, err := r.queries.GetOwnedPAT(ctx, sqlcgen.GetOwnedPATParams{
+		Uuid:   tokenUUID,
+		UserID: databaseUserID,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tokenRecord{}, errTokenNotFound
 	}
-	return record, err
+	if err != nil {
+		return tokenRecord{}, err
+	}
+	return patRecord(row.ID, row.Uuid, row.Expires, row.UserID, row.Name)
 }
 
 func (r *postgresTokenRepository) Create(ctx context.Context, userID int64, name string, expires *time.Time) (tokenRecord, error) {
+	databaseUserID, err := patDatabaseID(userID)
+	if err != nil {
+		return tokenRecord{}, err
+	}
 	tokenUUID, err := generateUUID()
 	if err != nil {
 		return tokenRecord{}, err
@@ -109,18 +119,22 @@ func (r *postgresTokenRepository) Create(ctx context.Context, userID int64, name
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var record tokenRecord
-	err = tx.QueryRow(ctx, `
-INSERT INTO public.auth_core__token (uuid, expires, user_id, name)
-SELECT $1, $2, owner.id, $4
-FROM public.auth_core__user AS owner
-WHERE owner.id = $3 AND owner.suspended = false
-RETURNING id, uuid, expires, user_id, COALESCE(name, '')`,
-		tokenUUID, expires, userID, name,
-	).Scan(&record.ID, &record.UUID, &record.Expires, &record.UserID, &record.Name)
+	row, err := r.queries.WithTx(tx).CreatePATForActiveUser(
+		ctx,
+		sqlcgen.CreatePATForActiveUserParams{
+			Uuid:    tokenUUID,
+			Expires: patDatabaseTimestamp(expires),
+			Name:    name,
+			UserID:  databaseUserID,
+		},
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tokenRecord{}, errTokenForbidden
 	}
+	if err != nil {
+		return tokenRecord{}, err
+	}
+	record, err := patRecord(row.ID, row.Uuid, row.Expires, row.UserID, row.Name)
 	if err != nil {
 		return tokenRecord{}, err
 	}
@@ -131,30 +145,73 @@ RETURNING id, uuid, expires, user_id, COALESCE(name, '')`,
 }
 
 func (r *postgresTokenRepository) DeleteOwned(ctx context.Context, userID int64, tokenUUID string) error {
+	databaseUserID, err := patDatabaseID(userID)
+	if err != nil {
+		return err
+	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var tokenID, ownerID int64
-	err = tx.QueryRow(ctx,
-		`SELECT id, user_id FROM public.auth_core__token WHERE uuid = $1 FOR UPDATE`,
-		tokenUUID,
-	).Scan(&tokenID, &ownerID)
+	queries := r.queries.WithTx(tx)
+	locked, err := queries.LockPATByUUID(ctx, tokenUUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errTokenNotFound
 	}
 	if err != nil {
 		return err
 	}
-	if ownerID != userID {
+	if locked.UserID != databaseUserID {
 		return errTokenForbidden
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM public.auth_core__token WHERE id = $1`, tokenID); err != nil {
+	deleted, err := queries.DeletePATByID(ctx, locked.ID)
+	if err != nil {
 		return err
 	}
+	if deleted != 1 {
+		return fmt.Errorf("delete PAT: affected %d rows, want 1", deleted)
+	}
 	return tx.Commit(ctx)
+}
+
+func patDatabaseID(id int64) (int32, error) {
+	if id <= 0 || id > math.MaxInt32 {
+		return 0, fmt.Errorf("PAT owner ID is outside the baseline integer range")
+	}
+	return int32(id), nil
+}
+
+func patDatabaseTimestamp(value *time.Time) pgtype.Timestamp {
+	if value == nil {
+		return pgtype.Timestamp{}
+	}
+	return pgtype.Timestamp{Time: *value, Valid: true}
+}
+
+func patRecord(
+	id int32,
+	uuid string,
+	expires pgtype.Timestamp,
+	userID int32,
+	name string,
+) (tokenRecord, error) {
+	if id <= 0 || userID <= 0 || !validTokenUUID(uuid) {
+		return tokenRecord{}, errors.New("PAT row contains invalid identity data")
+	}
+	var expiration *time.Time
+	if expires.Valid {
+		value := expires.Time
+		expiration = &value
+	}
+	return tokenRecord{
+		ID:      int64(id),
+		UUID:    uuid,
+		Expires: expiration,
+		UserID:  int64(userID),
+		Name:    name,
+	}, nil
 }
 
 func (h *Handler) TokenList(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +374,7 @@ func (h *Handler) tokenServiceAvailable(w http.ResponseWriter) bool {
 }
 
 func (h *Handler) presentToken(record tokenRecord, reveal bool) (Token, error) {
-	encoded, err := signLegacyToken(h.tokenSigningKey, record)
+	encoded, err := signBaselineToken(h.tokenSigningKey, record)
 	if err != nil {
 		return Token{}, err
 	}
@@ -334,13 +391,13 @@ func (h *Handler) presentToken(record tokenRecord, reveal bool) (Token, error) {
 	}, nil
 }
 
-type legacyTokenClaims struct {
+type baselineTokenClaims struct {
 	UUID    string  `json:"uuid"`
 	Expires *string `json:"expires"`
 	jwt.RegisteredClaims
 }
 
-func signLegacyToken(secret []byte, record tokenRecord) (string, error) {
+func signBaselineToken(secret []byte, record tokenRecord) (string, error) {
 	if len(secret) == 0 {
 		return "", errors.New("token signing key is empty")
 	}
@@ -349,7 +406,7 @@ func signLegacyToken(secret []byte, record tokenRecord) (string, error) {
 		value := record.Expires.Format("2006-01-02T15:04")
 		expires = &value
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS512, legacyTokenClaims{
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, baselineTokenClaims{
 		UUID:    record.UUID,
 		Expires: expires,
 	})

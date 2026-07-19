@@ -63,6 +63,75 @@ USER_SHAPE = [
     ("suspended", "boolean", False),
 ]
 
+AUTH_TABLE_SHAPES = {
+    "auth_core__group": [
+        ("id", "integer", False),
+        ("parent_id", "integer", True),
+        ("name", "text", True),
+    ],
+    "auth_core__group_permission": [
+        ("group_id", "integer", False),
+        ("scope_id", "integer", False),
+        ("permission", "text", False),
+    ],
+    "auth_core__group_provider": [
+        ("group_id", "integer", False),
+        ("provider_ref", "text", False),
+    ],
+    "auth_core__project_role": [
+        ("id", "integer", False),
+        ("project_id", "integer", False),
+        ("name", "text", False),
+    ],
+    "auth_core__project_role_permission": [
+        ("id", "integer", False),
+        ("project_id", "integer", False),
+        ("role_id", "integer", True),
+        ("permission", "text", False),
+    ],
+    "auth_core__project_user_role": [
+        ("id", "integer", False),
+        ("project_id", "integer", False),
+        ("user_id", "integer", True),
+        ("role_id", "integer", True),
+    ],
+    "auth_core__role": [
+        ("id", "integer", False),
+        ("name", "character varying(64)", False),
+        ("mode", "character varying(64)", False),
+    ],
+    "auth_core__role_permission": [
+        ("id", "integer", False),
+        ("role_id", "integer", False),
+        ("permission", "character varying(64)", True),
+    ],
+    "auth_core__scope": [
+        ("id", "integer", False),
+        ("parent_id", "integer", True),
+        ("name", "text", True),
+    ],
+    "auth_core__token": TOKEN_SHAPE,
+    "auth_core__user": USER_SHAPE,
+    "auth_core__user_group": [
+        ("user_id", "integer", False),
+        ("group_id", "integer", False),
+    ],
+    "auth_core__user_permission": [
+        ("user_id", "integer", False),
+        ("scope_id", "integer", False),
+        ("permission", "text", False),
+    ],
+    "auth_core__user_provider": [
+        ("user_id", "integer", False),
+        ("provider_ref", "text", False),
+    ],
+    "auth_core__user_role": [
+        ("id", "integer", False),
+        ("user_id", "integer", False),
+        ("role_id", "integer", False),
+    ],
+}
+
 PROJECT_SHAPE = [
     ("id", "integer", False),
     ("name", "character varying(256)", False),
@@ -86,8 +155,8 @@ def main() -> None:
     p2 = table(catalog, "p_2", "configuration")
     assert shape(p1) == CONFIGURATION_SHAPE
     assert shape(p2) == CONFIGURATION_SHAPE
-    assert shape(table(catalog, "public", "auth_core__token")) == TOKEN_SHAPE
-    assert shape(table(catalog, "public", "auth_core__user")) == USER_SHAPE
+    for table_name, expected_shape in AUTH_TABLE_SHAPES.items():
+        assert shape(table(catalog, "public", table_name)) == expected_shape
     assert shape(table(catalog, "centry", "project")) == PROJECT_SHAPE
 
     for relation in (p1, p2):
@@ -108,7 +177,7 @@ def main() -> None:
                 "database_timezone": "Etc/UTC",
                 "configuration_schemas": ["p_1", "p_2"],
                 "configuration_columns": len(CONFIGURATION_SHAPE),
-                "auth_tables_checked": ["auth_core__token", "auth_core__user"],
+                "auth_tables_checked": sorted(AUTH_TABLE_SHAPES),
                 "project_lifecycle_columns_checked": ["create_success", "suspended"],
             },
             sort_keys=True,

@@ -94,7 +94,7 @@ func TestTokenCreatePersistsLegacyContractForOwningUser(t *testing.T) {
 	if err := json.Unmarshal(response["token"], &encoded); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := jwt.ParseWithClaims(encoded, &legacyTokenClaims{}, func(token *jwt.Token) (any, error) {
+	parsed, err := jwt.ParseWithClaims(encoded, &baselineTokenClaims{}, func(token *jwt.Token) (any, error) {
 		if token.Method.Alg() != jwt.SigningMethodHS512.Alg() {
 			t.Fatalf("signing algorithm = %s, want HS512", token.Method.Alg())
 		}
@@ -103,7 +103,7 @@ func TestTokenCreatePersistsLegacyContractForOwningUser(t *testing.T) {
 	if err != nil || !parsed.Valid {
 		t.Fatalf("created token is not a valid legacy HS512 JWT: valid=%v err=%v", parsed.Valid, err)
 	}
-	claims := parsed.Claims.(*legacyTokenClaims)
+	claims := parsed.Claims.(*baselineTokenClaims)
 	if claims.UUID != tokenUUID || claims.Expires == nil {
 		t.Fatalf("claims = %+v", claims)
 	}

@@ -10,6 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 )
 
 func TestPostgresTokenRepositoryLifecycle(t *testing.T) {
@@ -50,25 +53,16 @@ func TestPostgresTokenRepositoryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
+	if _, err := pool.Exec(ctx, dbschema.AuthCoreBaselineSQLCProjection); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `
-CREATE TABLE public.auth_core__user (
-    id integer PRIMARY KEY,
-    email text,
-    suspended boolean NOT NULL DEFAULT false
-);
-CREATE TABLE public.auth_core__token (
-    id serial PRIMARY KEY,
-    uuid varchar(36) UNIQUE,
-    expires timestamp without time zone,
-    user_id integer REFERENCES public.auth_core__user(id) ON DELETE CASCADE,
-    name text
-);
 INSERT INTO public.auth_core__user (id, email, suspended)
 VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`); err != nil {
 		t.Fatal(err)
 	}
 
-	repository := &postgresTokenRepository{pool: pool}
+	repository := newPostgresTokenRepository(pool)
 	expires := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Microsecond)
 	created, err := repository.Create(ctx, 7, "ci-token", &expires)
 	if err != nil {
@@ -76,6 +70,18 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 	}
 	if created.UserID != 7 || created.ID <= 0 || !validTokenUUID(created.UUID) || created.Name != "ci-token" {
 		t.Fatalf("created = %+v", created)
+	}
+	const signingKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	encoded, err := signBaselineToken([]byte(signingKey), created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.TokenID != fmt.Sprintf("%d", created.ID) || principal.UserID != "7" || principal.ID != "7" {
+		t.Fatalf("validated principal = %+v", principal)
 	}
 
 	listed, err := repository.List(ctx, 7)
@@ -97,6 +103,9 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 	}
 	if err := repository.DeleteOwned(ctx, 7, created.UUID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, encoded); err == nil {
+		t.Fatal("deleted PAT remained valid")
 	}
 	if _, err := repository.GetOwned(ctx, 7, created.UUID); !errors.Is(err, errTokenNotFound) {
 		t.Fatalf("deleted token get error = %v, want errTokenNotFound", err)

@@ -34,7 +34,7 @@ func WithTokenSigningKey(secret string) Option {
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	handler := &Handler{}
 	if pool != nil {
-		handler.tokens = &postgresTokenRepository{pool: pool}
+		handler.tokens = newPostgresTokenRepository(pool)
 	}
 	for _, opt := range opts {
 		opt(handler)
