@@ -34,7 +34,6 @@ func validationWorkerCommand(protocolRevision string, dispatch executionapp.Vali
 		ResourceProjectId:   dispatch.ResourceProjectID,
 		ProjectionProjectId: dispatch.ProjectionProjectID,
 		PrincipalRef:        dispatch.PrincipalRef,
-		GrantTemplateId:     dispatch.GrantTemplateID,
 		InputBundleRef: &runtimev1.ExecutionInputBundleReferenceV1{
 			InputBundleId:    dispatch.InputBundleID,
 			ImmutableVersion: dispatch.InputBundleVersion,
@@ -77,7 +76,7 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 	values := []string{
 		command.GetProtocolRevision(), command.GetCommandId(), command.GetIdempotencyKey(), command.GetExecutionId(),
 		command.GetRootExecutionId(), command.GetParentExecutionId(), command.GetParentCallId(), command.GetTenantId(),
-		command.GetResourceProjectId(), command.GetProjectionProjectId(), command.GetPrincipalRef(), command.GetGrantTemplateId(),
+		command.GetResourceProjectId(), command.GetProjectionProjectId(), command.GetPrincipalRef(),
 		command.GetCapabilityId(), command.GetCapabilityVersion(), command.GetResourceClass(), command.GetIsolationClass(),
 		command.GetTraceparent(), command.GetTracestate(), command.GetLimitsRevision(),
 	}

@@ -56,6 +56,31 @@ func TestVerifyChecksumRejectsEditedAppliedMigration(t *testing.T) {
 	require.Error(t, verifyChecksum(migration, recorded[:]))
 }
 
+func TestValidateRecordedLedgerRejectsDatabaseAheadAndMetadataDrift(t *testing.T) {
+	t.Parallel()
+	first := Migration{Scope: ScopeShared, Version: 1, Name: "first", Path: "shared/0001_first.sql", Checksum: sha256.Sum256([]byte("one"))}
+	second := Migration{Scope: ScopeShared, Version: 2, Name: "second", Path: "shared/0002_second.sql", Checksum: sha256.Sum256([]byte("two"))}
+	futureChecksum := sha256.Sum256([]byte("future"))
+	manifest := []Migration{first, second}
+
+	for name, recorded := range map[string][]recordedMigration{
+		"database ahead":  {{version: 3, name: "future", checksum: futureChecksum[:]}},
+		"renamed history": {{version: 1, name: "other", checksum: first.Checksum[:]}},
+		"edited history":  {{version: 1, name: first.Name, checksum: second.Checksum[:]}},
+	} {
+		recorded := recorded
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := validateRecordedLedger(manifest, recorded, false); err == nil {
+				t.Fatal("ledger drift was accepted")
+			}
+		})
+	}
+	if _, err := validateRecordedLedger(manifest, []recordedMigration{{version: 1, name: first.Name, checksum: first.Checksum[:]}}, true); err == nil {
+		t.Fatal("incomplete head was accepted")
+	}
+}
+
 func TestAdvisoryLockKeyIsScopedAndStable(t *testing.T) {
 	t.Parallel()
 

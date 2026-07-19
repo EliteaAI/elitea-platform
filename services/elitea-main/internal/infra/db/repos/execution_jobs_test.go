@@ -230,7 +230,6 @@ func testDispatchPolicy() ValidationDispatchPolicy {
 	return ValidationDispatchPolicy{
 		StreamName:        "runtime:commands",
 		CapabilityVersion: "1.0.0",
-		GrantTemplateID:   "input-read-v1",
 		ResourceClass:     "validation-small",
 		IsolationClass:    "tenant",
 		Priority:          1,

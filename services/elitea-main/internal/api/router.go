@@ -35,41 +35,48 @@ import (
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
+	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type RouterConfig struct {
-	AuthClient     *authsvc.Client
-	AuthValidator  apimw.TokenValidator
-	SessionHandler *v2auth.SessionHandler
-	OIDCHandler    *v2auth.OIDCHandler
-	HealthDeps     health.Deps
-	Pool           *pgxpool.Pool
-	AppsRepo       applications.Repository
-	SkillsRepo     v2skills.Repository
-	FoldersRepo    v2folders.Repository
-	TagsRepo       v2tags.Repository
-	AnalyticsRepo  v2analytics.Repository
-	ConvsRepo      v2convs.Repository
-	WebhookRepo    webhook.Repository
-	RedisClient    *goredis.Client
-	Predictor      v2predict.Predictor
-	LLMService     v2predict.LLMService
-	ChatService    v2chat.ChatService
-	PipelineRunner v2pipelines.Runner
-	ToolTester     v2toolkits.ToolTester
-	MCPSyncer      v2core.MCPToolSyncer
-	Shadow         *shadow.Comparator
-	ShadowMetrics  *shadow.Metrics
-	CutoverTracker *cutover.Tracker
-	CutoverRouter  *cutover.Router
-	AdminUI        *adminui.Config
-	SessionSecret  string
-	RuntimeRoutes  RuntimeRoutes
+	AuthClient         *authsvc.Client
+	AuthValidator      apimw.TokenValidator
+	PrincipalValidator apimw.PrincipalValidator
+	SessionHandler     *v2auth.SessionHandler
+	OIDCHandler        *v2auth.OIDCHandler
+	HealthDeps         health.Deps
+	Pool               *pgxpool.Pool
+	AppsRepo           applications.Repository
+	SkillsRepo         v2skills.Repository
+	FoldersRepo        v2folders.Repository
+	TagsRepo           v2tags.Repository
+	AnalyticsRepo      v2analytics.Repository
+	ConvsRepo          v2convs.Repository
+	WebhookRepo        webhook.Repository
+	RedisClient        *goredis.Client
+	Predictor          v2predict.Predictor
+	LLMService         v2predict.LLMService
+	ChatService        v2chat.ChatService
+	PipelineRunner     v2pipelines.Runner
+	ToolTester         v2toolkits.ToolTester
+	MCPSyncer          v2core.MCPToolSyncer
+	Shadow             *shadow.Comparator
+	ShadowMetrics      *shadow.Metrics
+	CutoverTracker     *cutover.Tracker
+	CutoverRouter      *cutover.Router
+	AdminUI            *adminui.Config
+	SessionSecret      string
+	// InternalAdminToken is a disabled-by-default transitional control for
+	// shadow/cutover operations, not production workload identity. Empty leaves
+	// those routes unmounted.
+	InternalAdminToken string
+	RuntimeRoutes      RuntimeRoutes
 }
 
 type RuntimeRoutes struct {
@@ -82,8 +89,12 @@ const (
 	runtimeEventsPath     = "/executions/{projectID}/{executionID}/events"
 )
 
-func NewRouter(cfg RouterConfig) chi.Router {
+// newPrototypeCompatibilityRouter preserves the broad prototype registration
+// map for parity work. Production composition deliberately does not call it:
+// most of these routes have not yet been assigned an exact legacy route policy.
+func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
+	permissionResolver := legacyrbac.NewPostgresResolver(cfg.Pool)
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -97,7 +108,6 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	r.Use(chimw.RealIP)
 	r.Use(apimw.OtelMiddleware)
 	r.Use(apimw.Recover)
-	r.Use(apimw.RateLimit)
 
 	r.Mount("/", health.RoutesWithDeps(cfg.HealthDeps))
 
@@ -105,38 +115,33 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	forwardAuth := v2auth.NewForwardAuthHandler(cfg.AuthClient, cfg.AuthValidator)
 	r.Get("/auth", forwardAuth.ServeHTTP)
 
-	// Browser-facing login/logout (replaces pylon_auth session flows)
+	// Browser-facing OIDC session lifecycle. Legacy form authentication is not
+	// mounted because auth_core__user has no password credential columns; the
+	// previous prototype queried columns that do not exist in the legacy schema.
 	if cfg.SessionHandler != nil {
 		r.Route("/forward-auth", func(r chi.Router) {
 			if cfg.OIDCHandler != nil {
 				r.Get("/login", func(w http.ResponseWriter, req *http.Request) {
 					http.Redirect(w, req, "/forward-auth/auth_oidc/login", http.StatusFound)
 				})
-			} else {
-				r.Get("/login", cfg.SessionHandler.Login)
 			}
 			r.Get("/logout", cfg.SessionHandler.Logout)
 			r.Get("/info", cfg.SessionHandler.Info)
-			r.Get("/auth_form/login", cfg.SessionHandler.Login)
-			r.Post("/auth_form/authorize", cfg.SessionHandler.Authorize)
 			r.Get("/auth_form/logout", cfg.SessionHandler.Logout)
 			if cfg.OIDCHandler != nil {
 				r.Get("/auth_oidc/login", cfg.OIDCHandler.Login)
 				r.Get("/auth_oidc/callback", cfg.OIDCHandler.Callback)
-			} else {
-				r.Get("/auth_oidc/login", cfg.SessionHandler.Login)
 			}
 			r.Get("/auth_oidc/logout", cfg.SessionHandler.Logout)
 		})
 	}
 
-	// S3-compatible artifacts API (root level — UI fetches via raw fetch, not baseQuery)
-	s3Handler := v2artifacts.NewS3Handler(cfg.Pool)
-	r.Get("/artifacts/s3/", s3Handler.ListBuckets)
-	r.Get("/artifacts/s3/{bucket}", s3Handler.ListObjects)
-	r.Get("/artifacts/s3/{bucket}/*", s3Handler.GetObject)
-	r.Put("/artifacts/s3/{bucket}/*", s3Handler.PutObject)
-	r.Delete("/artifacts/s3/{bucket}/*", s3Handler.DeleteObject)
+	// Do not mount /artifacts/s3 until the legacy S3 credential contract is
+	// implemented. That surface authenticates SigV4 and presigned credentials,
+	// derives the tenant/user from the credential, and enforces per-bucket
+	// grants. Ordinary user auth plus a caller-supplied project_id is not a
+	// compatible or safe substitute. mountArtifactS3Routes remains a hardened
+	// candidate seam for focused tests, not production composition.
 
 	// Static file serving for application icons (root level like pylon)
 	iconDir := os.Getenv("ICON_DATA_DIR")
@@ -156,11 +161,16 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		r.Mount(cfg.AdminUI.BasePath, adminUIHandler.Routes())
 	}
 
-	if cfg.Shadow != nil && cfg.ShadowMetrics != nil {
-		r.Mount("/internal/shadow", shadow.NewAdminHandler(cfg.Shadow, cfg.ShadowMetrics).Routes())
-	}
-	if cfg.CutoverTracker != nil {
-		r.Mount("/internal/cutover", cutover.NewAdminHandler(cfg.CutoverTracker).Routes())
+	if len(cfg.InternalAdminToken) >= apimw.MinimumInternalAdminTokenBytes {
+		r.Group(func(r chi.Router) {
+			r.Use(apimw.RequireInternalAdminToken(cfg.InternalAdminToken))
+			if cfg.Shadow != nil && cfg.ShadowMetrics != nil {
+				r.Mount("/internal/shadow", shadow.NewAdminHandler(cfg.Shadow, cfg.ShadowMetrics).Routes())
+			}
+			if cfg.CutoverTracker != nil {
+				r.Mount("/internal/cutover", cutover.NewAdminHandler(cfg.CutoverTracker).Routes())
+			}
+		})
 	}
 
 	// Strip doubled /api/v2/api/v2/... prefix caused by admin_ui RTK Query
@@ -172,7 +182,12 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.AuthClient, Validator: cfg.AuthValidator, SessionSecret: cfg.SessionSecret}))
+		r.Use(apimw.Auth(apimw.AuthConfig{
+			Client:             cfg.AuthClient,
+			Validator:          cfg.AuthValidator,
+			PrincipalValidator: cfg.PrincipalValidator,
+			SessionSecret:      cfg.SessionSecret,
+		}))
 
 		if cfg.CutoverRouter != nil {
 			r.Use(cfg.CutoverRouter.Middleware)
@@ -188,13 +203,20 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		r.Route("/api/v2", func(r chi.Router) {
 			mountRuntimeRoutes(r, cfg.RuntimeRoutes)
 
-			coreHandler := v2core.NewHandler(cfg.Pool)
+			coreHandler := v2core.NewHandler(
+				cfg.Pool,
+				v2core.WithPermissionResolver(permissionResolver),
+			)
 			if cfg.MCPSyncer != nil {
 				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
 			}
 
 			// === Auth endpoints ===
-			r.Mount("/auth", v2auth.NewHandler(cfg.AuthClient, cfg.RedisClient, cfg.Pool).Routes())
+			r.Mount("/auth", v2auth.NewHandler(
+				cfg.Pool,
+				v2auth.WithPermissionResolver(permissionResolver),
+				v2auth.WithTokenSigningKey(cfg.SessionSecret),
+			).Routes())
 
 			// === Projects endpoints ===
 			r.Mount("/projects", v2projects.NewHandler(cfg.Pool).Routes())
@@ -242,7 +264,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			r.Get("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.Schedules)
 
 			// === Configurations ===
-			r.Mount("/configurations", v2configs.NewHandler(cfg.Pool).Routes())
+			r.Mount("/configurations", v2configs.NewHandler(
+				cfg.Pool,
+				v2configs.WithPermissionResolver(permissionResolver),
+			).Routes())
 
 			// === Secrets ===
 			r.Mount("/secrets", v2secrets.NewHandler(cfg.Pool).Routes())
@@ -563,6 +588,42 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	return r
+}
+
+func mountArtifactS3Routes(
+	r chi.Router,
+	handler *v2artifacts.S3Handler,
+	authenticate func(http.Handler) http.Handler,
+	resolver platformauth.PermissionResolver,
+) {
+	projectID := apimw.ProjectIDFromQuery("project_id")
+	view := apimw.RequireResolvedPermissionsForProject(
+		resolver,
+		platformauth.PermissionModeDefault,
+		projectID,
+		"configuration.artifacts.artifacts.view",
+	)
+	create := apimw.RequireResolvedPermissionsForProject(
+		resolver,
+		platformauth.PermissionModeDefault,
+		projectID,
+		"configuration.artifacts.artifacts.create",
+	)
+	deleteObject := apimw.RequireResolvedPermissionsForProject(
+		resolver,
+		platformauth.PermissionModeDefault,
+		projectID,
+		"configuration.artifacts.artifacts.delete",
+	)
+
+	r.Route("/artifacts/s3", func(r chi.Router) {
+		r.Use(authenticate)
+		r.With(view).Get("/", handler.ListBuckets)
+		r.With(view).Get("/{bucket}", handler.ListObjects)
+		r.With(view).Get("/{bucket}/*", handler.GetObject)
+		r.With(create).Put("/{bucket}/*", handler.PutObject)
+		r.With(deleteObject).Delete("/{bucket}/*", handler.DeleteObject)
+	})
 }
 
 func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {

@@ -140,7 +140,6 @@ func validRawWorkerCommand(t *testing.T) []byte {
 		ResourceProjectId:   "project-1",
 		ProjectionProjectId: "project-1",
 		PrincipalRef:        "actor-1",
-		GrantTemplateId:     "configuration-validation-read-v1",
 		InputBundleRef: &runtimev1.ExecutionInputBundleReferenceV1{
 			InputBundleId:    "bundle-1",
 			ImmutableVersion: "bundle-v1",

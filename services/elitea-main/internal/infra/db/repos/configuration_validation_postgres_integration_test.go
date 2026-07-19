@@ -16,6 +16,7 @@ import (
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,7 +25,79 @@ import (
 
 const postgresIntegrationDatabaseURL = "ELITEA_TEST_DATABASE_URL"
 
-// TestPostgresServiceBackedCancellationControlPlane is a real PostgreSQL 16
+func TestTenantBoundariesRejectMissingLegacySchema(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `INSERT INTO centry.project (id) VALUES (2)`); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := migrate.New(pool, platformmigrations.Files)
+	if err := runner.ApplyTenant(ctx, 2); err == nil || !strings.Contains(err.Error(), "tenant schema p_2 does not exist") {
+		t.Fatalf("missing-schema migration error = %v", err)
+	}
+
+	callbackCalled := false
+	executor := tenant.NewExecutor(pool)
+	err := executor.WithinTx(ctx, tenant.Project{ID: 2}, pgx.TxOptions{}, func(context.Context, pgx.Tx) error {
+		callbackCalled = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "schema p_2 does not exist") {
+		t.Fatalf("missing-schema transaction error = %v", err)
+	}
+	if callbackCalled {
+		t.Fatal("tenant callback ran without its legacy schema")
+	}
+
+	for _, relation := range []string{"configuration_revisions", "configuration_validation_projection"} {
+		var createdInCatalog bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass('pg_catalog.' || $1) IS NOT NULL`, relation).Scan(&createdInCatalog); err != nil {
+			t.Fatal(err)
+		}
+		if createdInCatalog {
+			t.Fatalf("tenant relation %s escaped into pg_catalog", relation)
+		}
+	}
+}
+
+func TestTenantMigrationPreservesLegacyConfigurationDelete(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	digest := make([]byte, 32)
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_1.configuration_revisions (
+    revision_id, configuration_id, configuration_type, settings_entry_id,
+    settings_entry_version, settings_content_digest, input_bundle_id,
+    catalog_revision, catalog_digest, schema_id, schema_revision,
+    schema_digest, created_by
+) VALUES (
+    'legacy-delete-shadow', 1, 'openapi', 'settings', '1', $1, 'bundle',
+    'catalog', $1, 'schema', '1', $1, 'test'
+)`, digest); err != nil {
+		t.Fatalf("seed shadow revision: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM p_1.configuration WHERE id = 1`); err != nil {
+		t.Fatalf("tenant expansion blocked legacy configuration delete: %v", err)
+	}
+	var configurationID *int
+	if err := pool.QueryRow(ctx, `
+SELECT configuration_id
+FROM p_1.configuration_revisions
+WHERE revision_id = 'legacy-delete-shadow'`).Scan(&configurationID); err != nil {
+		t.Fatalf("read detached shadow revision: %v", err)
+	}
+	if configurationID != nil {
+		t.Fatalf("deleted legacy configuration remains attached to shadow revision: %d", *configurationID)
+	}
+}
+
+// TestPostgresServiceBackedCancellationControlPlane is a real PostgreSQL 16-18
 // service-integration test. It intentionally does not claim full transport
 // E2E, penetration, performance, or soak coverage.
 func TestPostgresServiceBackedCancellationControlPlane(t *testing.T) {
@@ -502,7 +575,7 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
 	if databaseURL == "" {
-		t.Skipf("set %s to run the PostgreSQL 16 service-integration test", postgresIntegrationDatabaseURL)
+		t.Skipf("set %s to run the PostgreSQL 16-18 service-integration test", postgresIntegrationDatabaseURL)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -551,11 +624,11 @@ func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 		adminPool.Close()
 		t.Fatalf("read PostgreSQL server version: %v", err)
 	}
-	if serverVersion < 160000 || serverVersion >= 170000 {
+	if serverVersion < 160000 || serverVersion >= 190000 {
 		pool.Close()
 		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
 		adminPool.Close()
-		t.Fatalf("service-integration gate requires PostgreSQL 16, got server_version_num=%d", serverVersion)
+		t.Fatalf("service-integration gate requires PostgreSQL 16 through 18, got server_version_num=%d", serverVersion)
 	}
 
 	t.Cleanup(func() {
@@ -579,8 +652,32 @@ CREATE SCHEMA centry;
 CREATE TABLE centry.project (id INTEGER PRIMARY KEY);
 INSERT INTO centry.project (id) VALUES (1);
 CREATE SCHEMA p_1;
-CREATE TABLE p_1.configuration (id INTEGER PRIMARY KEY);
-INSERT INTO p_1.configuration (id) VALUES (1);`); err != nil {
+CREATE TABLE p_1.configuration (
+    id SERIAL PRIMARY KEY,
+    uuid UUID NOT NULL UNIQUE,
+    project_id INTEGER NOT NULL,
+    label VARCHAR,
+    elitea_title VARCHAR NOT NULL UNIQUE,
+    type VARCHAR NOT NULL,
+    section VARCHAR NOT NULL,
+    data JSONB NOT NULL,
+    meta JSONB NOT NULL,
+    shared BOOLEAN NOT NULL,
+    status_ok BOOLEAN NOT NULL,
+    status_logs TEXT,
+    source VARCHAR NOT NULL,
+    author_id INTEGER,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP
+);
+INSERT INTO p_1.configuration (
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, status_logs, source, author_id
+) VALUES (
+    1, '00000000-0000-0000-0000-000000000001', 1, 'Integration fixture',
+    'integration_fixture', 'openapi', 'credentials', '{}'::jsonb, '{}'::jsonb,
+    false, false, NULL, 'user', 1
+);`); err != nil {
 		t.Fatalf("preseed minimum legacy project schemas: %v", err)
 	}
 
@@ -596,6 +693,21 @@ INSERT INTO p_1.configuration (id) VALUES (1);`); err != nil {
 	}
 	if err := runner.CheckHead(ctx, migrate.ScopeTenant, "1"); err != nil {
 		t.Fatalf("verify tenant migration head: %v", err)
+	}
+	expectedConfigurationColumns := []string{
+		"id", "uuid", "project_id", "label", "elitea_title", "type", "section",
+		"data", "meta", "shared", "status_ok", "status_logs", "source",
+		"author_id", "created_at", "updated_at",
+	}
+	var configurationColumns []string
+	if err := pool.QueryRow(ctx, `
+SELECT array_agg(column_name::text ORDER BY ordinal_position)
+FROM information_schema.columns
+WHERE table_schema = 'p_1' AND table_name = 'configuration'`).Scan(&configurationColumns); err != nil {
+		t.Fatalf("read legacy configuration columns after tenant migration: %v", err)
+	}
+	if strings.Join(configurationColumns, ",") != strings.Join(expectedConfigurationColumns, ",") {
+		t.Fatalf("tenant migration changed the legacy configuration shape: got %v", configurationColumns)
 	}
 }
 
@@ -637,7 +749,7 @@ INSERT INTO elitea_runtime.input_bundles (
 INSERT INTO elitea_runtime.execution_jobs (
     execution_id, generation, command_id, tenant_id,
     resource_project_id, projection_project_id, actor_id, principal_ref,
-    grant_template_id, capability_id, capability_version, input_bundle_id,
+    capability_id, capability_version, input_bundle_id,
     request_digest, idempotency_scope, idempotency_key,
     configuration_revision_id, configuration_type, catalog_revision,
     catalog_digest, schema_id, schema_revision, schema_digest,
@@ -645,7 +757,7 @@ INSERT INTO elitea_runtime.execution_jobs (
 ) VALUES (
     $1, $2, $3, 'tenant-postgres',
     1, 1, 'actor-postgres-test', 'principal-postgres-test',
-    'grant-postgres-test', $4, 'v1', 'bundle-outbox-order',
+    $4, 'v1', 'bundle-outbox-order',
     $5, 'postgres-outbox-order', $3,
     $6, 'openapi', 'catalog-postgres-v1',
     $5, 'openapi', 'schema-postgres-v1', $5,
@@ -994,15 +1106,15 @@ INSERT INTO p_1.configuration_revisions (
 INSERT INTO elitea_runtime.execution_jobs (
     execution_id, generation, command_id, tenant_id,
     resource_project_id, projection_project_id, actor_id, principal_ref,
-    grant_template_id, capability_id, capability_version, input_bundle_id,
+    capability_id, capability_version, input_bundle_id,
     request_digest, idempotency_scope, idempotency_key,
     configuration_revision_id, configuration_type, catalog_revision,
     catalog_digest, schema_id, schema_revision, schema_digest,
     settings_entry_id, state, desired_state
 ) VALUES (
-    $1, $2, $3, $4, 1, 1, $5, $6, $7,
-    'configuration.validate.v1', 'v1', $8, $9, $10, $11,
-    $12, $13, $14, $15, $16, $17, $18, $19, 'CLAIMED', $20
+    $1, $2, $3, $4, 1, 1, $5, $6,
+    'configuration.validate.v1', 'v1', $7, $8, $9, $10,
+    $11, $12, $13, $14, $15, $16, $17, $18, 'CLAIMED', $19
 )`,
 		frame.Fence.ExecutionID,
 		int64(frame.Fence.Generation),
@@ -1010,7 +1122,6 @@ INSERT INTO elitea_runtime.execution_jobs (
 		frame.TenantID,
 		"actor-postgres-test",
 		"principal-postgres-test",
-		"grant-postgres-test",
 		binding.InputBundleID,
 		postgresDigestBytes(runtimedomain.SHA256([]byte("request:"+frame.Fence.CommandID))),
 		"postgres-integration",

@@ -1,5 +1,5 @@
-version: "3.9"
-
+# DEVELOPMENT TOPOLOGY ONLY. Credentials, published cleartext ports, and the
+# service environment below are not a production security contract.
 services:
   postgres:
     image: postgres:16-alpine
@@ -17,41 +17,26 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   elitea-main:
     build:
-      context: ../services/elitea-main
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
       target: final
     image: eliteaai/elitea-main:dev
     ports:
       - "8080:8080"
     environment:
-      DB_DSN: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
-      REDIS_ADDR: "redis:6379"
-      LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      AUTH_DEV_MODE: "true"
+      ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA: "true"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "/elitea-main", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
 
 volumes:
   postgres_data:
-  redis_data:

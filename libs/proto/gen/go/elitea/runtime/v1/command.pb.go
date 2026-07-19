@@ -104,7 +104,6 @@ type WorkerCommandV1 struct {
 	ResourceProjectId   string                           `protobuf:"bytes,12,opt,name=resource_project_id,json=resourceProjectId,proto3" json:"resource_project_id,omitempty"`
 	ProjectionProjectId string                           `protobuf:"bytes,13,opt,name=projection_project_id,json=projectionProjectId,proto3" json:"projection_project_id,omitempty"`
 	PrincipalRef        string                           `protobuf:"bytes,14,opt,name=principal_ref,json=principalRef,proto3" json:"principal_ref,omitempty"`
-	GrantTemplateId     string                           `protobuf:"bytes,15,opt,name=grant_template_id,json=grantTemplateId,proto3" json:"grant_template_id,omitempty"`
 	InputBundleRef      *ExecutionInputBundleReferenceV1 `protobuf:"bytes,16,opt,name=input_bundle_ref,json=inputBundleRef,proto3" json:"input_bundle_ref,omitempty"`
 	CapabilityId        string                           `protobuf:"bytes,17,opt,name=capability_id,json=capabilityId,proto3" json:"capability_id,omitempty"`
 	CapabilityVersion   string                           `protobuf:"bytes,18,opt,name=capability_version,json=capabilityVersion,proto3" json:"capability_version,omitempty"`
@@ -252,13 +251,6 @@ func (x *WorkerCommandV1) GetPrincipalRef() string {
 	return ""
 }
 
-func (x *WorkerCommandV1) GetGrantTemplateId() string {
-	if x != nil {
-		return x.GrantTemplateId
-	}
-	return ""
-}
-
 func (x *WorkerCommandV1) GetInputBundleRef() *ExecutionInputBundleReferenceV1 {
 	if x != nil {
 		return x.InputBundleRef
@@ -374,7 +366,7 @@ var File_elitea_runtime_v1_command_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\n" +
-	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a\x1delitea/runtime/v1/input.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\xcf\n" +
+	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a\x1delitea/runtime/v1/input.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\xbc\n" +
 	"\n" +
 	"\x0fWorkerCommandV1\x12+\n" +
 	"\x11protocol_revision\x18\x01 \x01(\tR\x10protocolRevision\x12\x1d\n" +
@@ -394,8 +386,7 @@ const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\ttenant_id\x18\v \x01(\tR\btenantId\x12.\n" +
 	"\x13resource_project_id\x18\f \x01(\tR\x11resourceProjectId\x122\n" +
 	"\x15projection_project_id\x18\r \x01(\tR\x13projectionProjectId\x12#\n" +
-	"\rprincipal_ref\x18\x0e \x01(\tR\fprincipalRef\x12*\n" +
-	"\x11grant_template_id\x18\x0f \x01(\tR\x0fgrantTemplateId\x12\\\n" +
+	"\rprincipal_ref\x18\x0e \x01(\tR\fprincipalRef\x12\\\n" +
 	"\x10input_bundle_ref\x18\x10 \x01(\v22.elitea.runtime.v1.ExecutionInputBundleReferenceV1R\x0einputBundleRef\x12#\n" +
 	"\rcapability_id\x18\x11 \x01(\tR\fcapabilityId\x12-\n" +
 	"\x12capability_version\x18\x12 \x01(\tR\x11capabilityVersion\x12%\n" +
@@ -410,7 +401,7 @@ const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\x0flimits_revision\x18\x19 \x01(\tR\x0elimitsRevision\x12p\n" +
 	"\x18configuration_validation\x18  \x01(\v23.elitea.runtime.v1.ConfigurationValidationCommandV1H\x00R\x17configurationValidation\x12k\n" +
 	"\x17toolkit_available_tools\x18! \x01(\v21.elitea.runtime.v1.ToolkitAvailableToolsCommandV1H\x00R\x15toolkitAvailableToolsB\x14\n" +
-	"\x12capability_commandJ\x04\b\x1a\x10 J\x04\b\"\x10@*\xb1\x02\n" +
+	"\x12capability_commandJ\x04\b\x0f\x10\x10J\x04\b\x1a\x10 J\x04\b\"\x10@R\x11grant_template_id*\xb1\x02\n" +
 	"\x13WorkerCommandTypeV1\x12&\n" +
 	"\"WORKER_COMMAND_TYPE_V1_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cWORKER_COMMAND_TYPE_V1_START\x10\x01\x12!\n" +

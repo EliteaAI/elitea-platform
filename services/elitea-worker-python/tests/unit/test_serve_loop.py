@@ -25,19 +25,57 @@ from elitea_worker.transport.redis_commands import RedisCommandDelivery
 class FakeConsumer:
     def __init__(self, deliveries: tuple[RedisCommandDelivery, ...]) -> None:
         self._deliveries = deliveries
-        self._read = False
+        self._read_offset = 0
+        self.read_counts: list[int] = []
+        self.read_blocks: list[int] = []
+        self.reclaim_counts: list[int] = []
         self.reclaim_calls = 0
+        self.heartbeat_calls: list[tuple[str, ...]] = []
 
-    async def read(self) -> tuple[RedisCommandDelivery, ...]:
-        if not self._read:
-            self._read = True
-            return self._deliveries
-        await asyncio.Event().wait()
+    @property
+    def delivery_batch_size(self) -> int:
+        return 2
+
+    @property
+    def heartbeat_batch_size(self) -> int:
+        return 2
+
+    async def read(
+        self,
+        *,
+        count: int | None = None,
+        block_ms: int | None = None,
+    ) -> tuple[RedisCommandDelivery, ...]:
+        assert count is not None
+        assert block_ms is not None
+        self.read_counts.append(count)
+        self.read_blocks.append(block_ms)
+        if self._read_offset < len(self._deliveries):
+            end = self._read_offset + count
+            deliveries = self._deliveries[self._read_offset : end]
+            self._read_offset = end
+            return deliveries
+        await asyncio.sleep(block_ms / 1_000)
         return ()
 
-    async def reclaim_page(self, *, min_idle_ms: int, start_id: str = "0-0"):
+    async def reclaim_page(
+        self,
+        *,
+        min_idle_ms: int,
+        start_id: str = "0-0",
+        count: int | None = None,
+    ):
+        assert count is not None
+        self.reclaim_counts.append(count)
         self.reclaim_calls += 1
-        return "0-0", self._deliveries[:1]
+        return "0-0", self._deliveries[:count][:1]
+
+    async def heartbeat_pending(
+        self,
+        entry_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        self.heartbeat_calls.append(entry_ids)
+        return entry_ids
 
 
 def test_serve_loop_bounds_workers_and_drains() -> None:
@@ -77,7 +115,7 @@ def test_serve_loop_bounds_workers_and_drains() -> None:
             dependency_retry_millis=1,
             shutdown_timeout_millis=1000,
         )
-        await runtime.run(stop)
+        await asyncio.wait_for(runtime.run(stop), timeout=0.2)
 
         assert sorted(processed) == ["1-0", "2-0", "3-0"]
         assert peak == 2
@@ -99,7 +137,7 @@ def test_serve_loop_does_not_run_reclaimed_duplicate_concurrently() -> None:
         async def process(_: RedisCommandDelivery) -> DeliveryResult:
             nonlocal calls
             calls += 1
-            while consumer.reclaim_calls == 0:
+            while consumer.reclaim_calls == 0 or not consumer.heartbeat_calls:
                 await asyncio.sleep(0)
             stop.set()
             return DeliveryResult(DeliveryDisposition.RETRY_LATER_NOACK)
@@ -114,9 +152,166 @@ def test_serve_loop_does_not_run_reclaimed_duplicate_concurrently() -> None:
             dependency_retry_millis=1,
             shutdown_timeout_millis=1000,
         )
-        await runtime.run(stop)
+        await asyncio.wait_for(runtime.run(stop), timeout=0.2)
 
         assert calls == 1
+        assert consumer.reclaim_calls >= 1
+        assert max(consumer.read_blocks) <= 1
+        assert consumer.heartbeat_calls[0] == ("1-0",)
+
+    asyncio.run(run())
+
+
+def test_serve_loop_heartbeats_queued_and_active_entries_in_bounded_batches() -> None:
+    async def run() -> None:
+        deliveries = tuple(
+            RedisCommandDelivery(
+                "commands.v1",
+                f"{index}-0",
+                {"signed_envelope": b"reference"},
+            )
+            for index in range(1, 4)
+        )
+        consumer = FakeConsumer(deliveries)
+        stop = asyncio.Event()
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            while len(consumer.heartbeat_calls) < 2:
+                await asyncio.sleep(0)
+            stop.set()
+            return DeliveryResult(DeliveryDisposition.RETRY_LATER_NOACK)
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=3,
+            reclaim_idle_millis=100,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+        )
+        await runtime.run(stop)
+
+        assert consumer.heartbeat_calls[:2] == [("1-0", "2-0"), ("3-0",)]
+
+    asyncio.run(run())
+
+
+def test_serve_loop_limits_fetch_to_unowned_delivery_capacity() -> None:
+    async def run() -> None:
+        deliveries = tuple(
+            RedisCommandDelivery(
+                "commands.v1",
+                f"{index}-0",
+                {"signed_envelope": b"reference"},
+            )
+            for index in range(1, 4)
+        )
+
+        class ThreeEntryBatch(FakeConsumer):
+            @property
+            def delivery_batch_size(self) -> int:
+                return 3
+
+            async def reclaim_page(
+                self,
+                *,
+                min_idle_ms: int,
+                start_id: str = "0-0",
+                count: int | None = None,
+            ):
+                del min_idle_ms, count
+                return start_id, ()
+
+        consumer = ThreeEntryBatch(deliveries)
+        stop = asyncio.Event()
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        processed: list[str] = []
+
+        async def process(delivery: RedisCommandDelivery) -> DeliveryResult:
+            processed.append(delivery.entry_id)
+            if delivery.entry_id == "1-0":
+                first_started.set()
+                await release_first.wait()
+            if len(processed) == len(deliveries):
+                stop.set()
+            return DeliveryResult(DeliveryDisposition.RETRY_LATER_NOACK)
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=100,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+        )
+        running = asyncio.create_task(runtime.run(stop))
+        await asyncio.wait_for(first_started.wait(), timeout=0.2)
+
+        while not consumer.heartbeat_calls:
+            await asyncio.sleep(0)
+        assert consumer.read_counts == [2]
+        assert consumer.heartbeat_calls[0] == ("1-0", "2-0")
+
+        release_first.set()
+        await asyncio.wait_for(running, timeout=0.5)
+        assert processed == ["1-0", "2-0", "3-0"]
+
+    asyncio.run(run())
+
+
+def test_serve_loop_keeps_heartbeat_alive_while_shutdown_drains() -> None:
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        stop = asyncio.Event()
+        heartbeat_after_stop = asyncio.Event()
+
+        class ShutdownAwareConsumer(FakeConsumer):
+            async def heartbeat_pending(
+                self,
+                entry_ids: tuple[str, ...],
+            ) -> tuple[str, ...]:
+                refreshed = await super().heartbeat_pending(entry_ids)
+                if stop.is_set():
+                    heartbeat_after_stop.set()
+                return refreshed
+
+        consumer = ShutdownAwareConsumer((delivery,))
+        processing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            processing.set()
+            await release.wait()
+            return DeliveryResult(DeliveryDisposition.RETRY_LATER_NOACK)
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=100,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+        )
+        running = asyncio.create_task(runtime.run(stop))
+        await asyncio.wait_for(processing.wait(), timeout=0.2)
+
+        stop.set()
+        await asyncio.wait_for(heartbeat_after_stop.wait(), timeout=0.2)
+        assert not running.done()
+
+        release.set()
+        await asyncio.wait_for(running, timeout=0.2)
 
     asyncio.run(run())
 
@@ -130,8 +325,16 @@ def test_serve_loop_reclaims_pending_delivery_without_new_read() -> None:
         )
 
         class ReclaimOnly(FakeConsumer):
-            async def read(self):
-                await asyncio.Event().wait()
+            async def read(
+                self,
+                *,
+                count: int | None = None,
+                block_ms: int | None = None,
+            ):
+                del count
+                assert block_ms is not None
+                await asyncio.sleep(block_ms / 1_000)
+                return ()
 
         consumer = ReclaimOnly((delivery,))
         stop = asyncio.Event()
@@ -156,6 +359,30 @@ def test_serve_loop_reclaims_pending_delivery_without_new_read() -> None:
 
         assert processed == ["1-0"]
         assert consumer.reclaim_calls >= 1
+
+    asyncio.run(run())
+
+
+def test_serve_loop_fails_when_background_task_exits_unexpectedly() -> None:
+    class ExitingHeartbeatRuntime(WorkerServeLoop):
+        async def _heartbeat_loop(self) -> None:
+            return
+
+    async def run() -> None:
+        consumer = FakeConsumer(())
+        runtime = ExitingHeartbeatRuntime(
+            consumer=consumer,
+            process_delivery=lambda _delivery: asyncio.sleep(0),
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=100,
+            reclaim_interval_millis=100,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+        )
+
+        with pytest.raises(DependencyUnavailable, match="exited unexpectedly"):
+            await asyncio.wait_for(runtime.run(asyncio.Event()), timeout=0.2)
 
     asyncio.run(run())
 

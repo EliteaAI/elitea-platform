@@ -39,7 +39,6 @@ message WorkerCommandV1 {
   string resource_project_id = 12;
   string projection_project_id = 13;
   string principal_ref = 14;
-  string grant_template_id = 15;
   ExecutionInputBundleReferenceV1 input_bundle_ref = 16;
   string capability_id = 17;
   string capability_version = 18;
@@ -56,6 +55,7 @@ message WorkerCommandV1 {
     ToolkitAvailableToolsCommandV1 toolkit_available_tools = 33;
   }
 
-  reserved 26 to 31;
+  reserved 15, 26 to 31;
+  reserved "grant_template_id";
   reserved 34 to 63;
 }

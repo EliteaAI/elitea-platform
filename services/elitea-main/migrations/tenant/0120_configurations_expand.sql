@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS configuration_revisions (
     revision_id TEXT PRIMARY KEY,
-    configuration_id INTEGER REFERENCES configuration(id) ON DELETE RESTRICT,
-    supersedes_revision_id TEXT REFERENCES configuration_revisions(revision_id),
+    configuration_id INTEGER REFERENCES configuration(id) ON DELETE SET NULL,
     configuration_type TEXT NOT NULL,
     settings_entry_id TEXT NOT NULL,
     settings_entry_version TEXT NOT NULL,
@@ -22,16 +21,6 @@ CREATE TABLE IF NOT EXISTS configuration_revisions (
         CHECK (octet_length(schema_digest) = 32)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS configuration_revision_successor_idx
-    ON configuration_revisions (supersedes_revision_id)
-    WHERE supersedes_revision_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS configuration_revision_heads (
-    configuration_id INTEGER PRIMARY KEY REFERENCES configuration(id) ON DELETE CASCADE,
-    revision_id TEXT NOT NULL UNIQUE REFERENCES configuration_revisions(revision_id),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
 CREATE TABLE IF NOT EXISTS configuration_validation_projection (
     revision_id TEXT PRIMARY KEY REFERENCES configuration_revisions(revision_id),
     execution_id TEXT NOT NULL,
@@ -43,18 +32,3 @@ CREATE TABLE IF NOT EXISTS configuration_validation_projection (
     CONSTRAINT configuration_validation_projection_issues
         CHECK (jsonb_typeof(issues_json) = 'array')
 );
-
-CREATE OR REPLACE FUNCTION reject_configuration_revision_mutation()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RAISE EXCEPTION 'configuration revisions are immutable';
-END;
-$$;
-
-DROP TRIGGER IF EXISTS configuration_revisions_immutable
-    ON configuration_revisions;
-CREATE TRIGGER configuration_revisions_immutable
-BEFORE UPDATE OR DELETE ON configuration_revisions
-FOR EACH ROW EXECUTE FUNCTION reject_configuration_revision_mutation();

@@ -32,7 +32,6 @@ type ValidationDispatch struct {
 	ResourceProjectID     string
 	ProjectionProjectID   string
 	PrincipalRef          string
-	GrantTemplateID       string
 	InputBundleID         string
 	InputBundleVersion    string
 	InputBundleMediaType  string
@@ -50,7 +49,7 @@ type ValidationDispatch struct {
 }
 
 func (d ValidationDispatch) Validate() error {
-	if d.OutboxID == "" || d.CommandID == "" || d.ExecutionID == "" || d.Generation == 0 || d.DispatchOrdinal == 0 || d.TenantID == "" || d.ResourceProjectID == "" || d.ProjectionProjectID == "" || d.PrincipalRef == "" || d.GrantTemplateID == "" {
+	if d.OutboxID == "" || d.CommandID == "" || d.ExecutionID == "" || d.Generation == 0 || d.DispatchOrdinal == 0 || d.TenantID == "" || d.ResourceProjectID == "" || d.ProjectionProjectID == "" || d.PrincipalRef == "" {
 		return ErrInvalidDispatch
 	}
 	if d.InputBundleID == "" || d.InputBundleVersion == "" || d.InputBundleMediaType == "" || d.InputBundleByteLength == 0 || d.InputBundleDigest.IsZero() {

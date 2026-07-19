@@ -16,6 +16,7 @@ from elitea_worker.constants import (
     MAX_GRPC_REQUEST_BYTES,
     MAX_GRPC_RESPONSE_BYTES,
     MAX_LEASE_POLL_INTERVAL_MILLIS,
+    MIN_REDIS_RECLAIM_IDLE_MILLIS,
 )
 from elitea_worker.execution.errors import InvalidInput
 
@@ -64,6 +65,10 @@ class RuntimeLimits(BaseModel):
             raise ValueError("delivery queue must hold at least one item per worker")
         if self.sync_max_in_flight < self.sync_max_workers:
             raise ValueError("sync in-flight bound cannot be below the thread count")
+        if self.redis_reclaim_idle_millis < MIN_REDIS_RECLAIM_IDLE_MILLIS:
+            raise ValueError("Redis reclaim idle must be at least twice the Go claim lease")
+        if self.redis_reclaim_interval_millis > MAX_LEASE_POLL_INTERVAL_MILLIS:
+            raise ValueError("Redis PEL heartbeat cannot be slower than the lease profile")
         if _V1_OUTPUT_FRAME_BYTES > self.output_max_queued_bytes:
             raise ValueError("one output frame must fit inside the output queue")
         if self.http_max_keepalive_connections > self.http_max_connections:

@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"strconv"
+	"strings"
+)
 
 type ctxKey string
 
@@ -19,12 +23,33 @@ const (
 )
 
 type User struct {
-	ID          string   `json:"id"`
+	ID          string   `json:"id"`                 // Compatibility owning-user ID after validation; use UserID/TokenID at security boundaries.
+	UserID      string   `json:"user_id,omitempty"`  // Owning auth_core__user ID when resolved.
+	TokenID     string   `json:"token_id,omitempty"` // auth_core__token ID when the source principal is a token.
 	Email       string   `json:"email"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	ProjectID   string   `json:"project_id,omitempty"`
 	AuthType    string   `json:"auth_type,omitempty"`
+}
+
+// OwningUserID returns the database user that owns the authenticated identity.
+// Token IDs are never accepted as author IDs. A fully validated token
+// principal carries the token row in TokenID and its owner in both UserID and
+// the compatibility ID used by legacy handlers.
+func (u User) OwningUserID() (int64, bool) {
+	if u.UserID != "" {
+		return positiveID(u.UserID)
+	}
+	if u.TokenID != "" || strings.EqualFold(u.AuthType, "token") {
+		return 0, false
+	}
+	return positiveID(u.ID)
+}
+
+func positiveID(value string) (int64, bool) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return id, err == nil && id > 0
 }
 
 func UserFromContext(ctx context.Context) (User, bool) {

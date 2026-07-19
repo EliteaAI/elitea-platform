@@ -1,7 +1,9 @@
+# DEVELOPMENT TOPOLOGY ONLY. The reviewed Go router is health-only; the broad
+# path rules remain prototype wiring and must not be treated as cutover routes.
 http:
   routers:
     api:
-      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/internal/`) || PathPrefix(`/admin/app`)"
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`)"
       service: elitea-main
       entryPoints:
         - web

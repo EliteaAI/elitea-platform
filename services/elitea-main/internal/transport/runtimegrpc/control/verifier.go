@@ -132,7 +132,7 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 	values := []string{
 		command.GetCommandId(), command.GetIdempotencyKey(), command.GetExecutionId(), command.GetRootExecutionId(),
 		command.GetTenantId(), command.GetResourceProjectId(), command.GetProjectionProjectId(), command.GetPrincipalRef(),
-		command.GetGrantTemplateId(), command.GetCapabilityId(), command.GetCapabilityVersion(), command.GetResourceClass(),
+		command.GetCapabilityId(), command.GetCapabilityVersion(), command.GetResourceClass(),
 		command.GetIsolationClass(), input.GetInputBundleId(), input.GetImmutableVersion(), input.GetMediaType(),
 		validation.GetConfigurationRevisionId(), validation.GetConfigurationType(), validation.GetCatalogRevision(),
 		validation.GetSchemaId(), validation.GetSchemaRevision(), validation.GetSettingsEntryId(),

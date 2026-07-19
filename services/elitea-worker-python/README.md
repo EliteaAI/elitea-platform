@@ -74,7 +74,7 @@ The current `elitea.runtime-deploy.v1` shape is:
   "limits": {
     "redis_read_batch": 8,
     "redis_block_millis": 1000,
-    "redis_reclaim_idle_millis": 30000,
+    "redis_reclaim_idle_millis": 60000,
     "redis_reclaim_interval_millis": 5000,
     "dependency_retry_millis": 250,
     "delivery_max_concurrency": 4,
@@ -104,6 +104,13 @@ deployment values. In runtime v1 they are 64 KiB, 48 KiB, 64 KiB, 80 KiB,
 claim response nests the bounded input manifest inside its receipt. Changing
 one requires a new compatible protocol limits revision, not an
 environment-specific JSON override.
+
+Runtime v1 also fixes the initial liveness profile: the Go business-claim lease
+is 30 seconds, the Redis PEL heartbeat interval is at most 10 seconds, and an
+entry cannot be reclaimed until it has been idle for at least 60 seconds. A
+heartbeat atomically checks that the entry is still pending under the local
+consumer before refreshing it; stale local state cannot take ownership back
+from a peer that already reclaimed the delivery.
 
 The Redis password and workload/spool private keys must be non-empty regular
 files with no group or world permission bits. A Redis password file may contain
@@ -175,7 +182,10 @@ SIGINT/SIGTERM arms one shutdown deadline shared by delivery drain and all
 dependency closure. HTTP, gRPC, Redis and supervisor closure run concurrently;
 they cannot each consume a fresh copy of the configured timeout. Expiry returns
 the stable retryable dependency error and never creates a shutdown-path command
-ACK, so unfinished entries remain reclaimable. The phase-one synchronous SDK
+ACK, so unfinished entries remain reclaimable. Intake, heartbeat, and delivery
+tasks are supervised as one runtime: an unexpected sibling exit fails the
+process instead of leaving an apparently live worker stalled on its stop event.
+The phase-one synchronous SDK
 bridge cannot preempt a Python thread already inside SDK code; the deployment
 supervisor must enforce its process termination grace after the worker deadline.
 The planned async SDK phase removes that cancellation limitation.

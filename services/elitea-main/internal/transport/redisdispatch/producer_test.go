@@ -241,7 +241,6 @@ func validTransportDispatch() executionapp.ValidationDispatch {
 		ResourceProjectID:     "project-1",
 		ProjectionProjectID:   "project-1",
 		PrincipalRef:          "actor-1",
-		GrantTemplateID:       "configuration-validation-read-v1",
 		InputBundleID:         "bundle-1",
 		InputBundleVersion:    "bundle-v1",
 		InputBundleMediaType:  "application/x-protobuf",

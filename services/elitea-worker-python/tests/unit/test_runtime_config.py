@@ -11,6 +11,7 @@ from elitea_worker.constants import (
     CLAIM_LEASE_TTL_MILLIS,
     LIMITS_REVISION,
     MAX_LEASE_POLL_INTERVAL_MILLIS,
+    MIN_REDIS_RECLAIM_IDLE_MILLIS,
 )
 from elitea_worker.execution.errors import InvalidInput
 
@@ -38,7 +39,7 @@ def _config(tmp_path: Path) -> dict[str, object]:
         "limits": {
             "redis_read_batch": 8,
             "redis_block_millis": 1000,
-            "redis_reclaim_idle_millis": 30000,
+            "redis_reclaim_idle_millis": 60000,
             "redis_reclaim_interval_millis": 5000,
             "dependency_retry_millis": 250,
             "delivery_max_concurrency": 4,
@@ -148,6 +149,47 @@ def test_lease_poll_interval_is_bounded_by_claim_authority(tmp_path: Path) -> No
     _write_config(path, value)
     with pytest.raises(InvalidInput):
         load_deploy_config(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("redis_reclaim_idle_millis", MIN_REDIS_RECLAIM_IDLE_MILLIS - 1),
+        (
+            "redis_reclaim_interval_millis",
+            MAX_LEASE_POLL_INTERVAL_MILLIS + 1,
+        ),
+    ],
+)
+def test_pel_heartbeat_and_reclaim_follow_the_claim_lease_profile(
+    tmp_path: Path,
+    field: str,
+    value: int,
+) -> None:
+    config = _config(tmp_path)
+    config["limits"][field] = value  # type: ignore[index]
+    path = tmp_path / "runtime.json"
+    _write_config(path, config)
+
+    with pytest.raises(InvalidInput):
+        load_deploy_config(path)
+
+
+def test_pel_reclaim_profile_accepts_exact_fixed_boundaries(tmp_path: Path) -> None:
+    assert MIN_REDIS_RECLAIM_IDLE_MILLIS == 2 * CLAIM_LEASE_TTL_MILLIS
+    config = _config(tmp_path)
+    config["limits"]["redis_reclaim_idle_millis"] = (  # type: ignore[index]
+        MIN_REDIS_RECLAIM_IDLE_MILLIS
+    )
+    config["limits"]["redis_reclaim_interval_millis"] = (  # type: ignore[index]
+        MAX_LEASE_POLL_INTERVAL_MILLIS
+    )
+    path = tmp_path / "runtime.json"
+    _write_config(path, config)
+
+    limits = load_deploy_config(path).limits
+    assert limits.redis_reclaim_idle_millis == 60_000
+    assert limits.redis_reclaim_interval_millis == 10_000
 
 
 def test_config_and_private_material_reject_symlink_and_open_permissions(

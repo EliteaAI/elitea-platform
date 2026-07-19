@@ -39,12 +39,22 @@ from elitea_worker.execution.errors import (
 
 _COMMAND_FIELDS = frozenset({"signed_envelope"})
 _MAX_STABLE_DELIVERY_ID_BYTES = 256
+_MAX_READ_COUNT = 64
 
 
 class RedisStreamsClient(Protocol):
     async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any: ...
 
     async def xautoclaim(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    async def heartbeat_owned_pending(
+        self,
+        *,
+        stream: str,
+        group: str,
+        consumer: str,
+        entry_ids: tuple[str, ...],
+    ) -> Any: ...
 
     async def retire_delivery(
         self,
@@ -86,6 +96,8 @@ class RedisCommandConsumer:
             raise ValueError("stream, group and consumer are required")
         if min(max_entry_bytes, max_field_bytes, read_count, block_ms) < 1:
             raise ValueError("Redis command limits must be positive")
+        if read_count > _MAX_READ_COUNT:
+            raise ValueError("Redis command read count exceeds the runtime-v1 bound")
         if max_field_bytes > max_entry_bytes:
             raise ValueError("Redis field limit cannot exceed the complete entry limit")
         self._client = client
@@ -97,15 +109,26 @@ class RedisCommandConsumer:
         self._read_count = read_count
         self._block_ms = block_ms
 
-    async def read(self) -> tuple[RedisCommandDelivery, ...]:
+    @property
+    def delivery_batch_size(self) -> int:
+        return self._read_count
+
+    async def read(
+        self,
+        *,
+        count: int | None = None,
+        block_ms: int | None = None,
+    ) -> tuple[RedisCommandDelivery, ...]:
+        read_count = self._bounded_count(count)
+        read_block_ms = self._bounded_block_millis(block_ms)
         response = await self._client.xreadgroup(
             groupname=self._group,
             consumername=self._consumer,
             streams={self._stream: ">"},
-            count=self._read_count,
-            block=self._block_ms,
+            count=read_count,
+            block=read_block_ms,
         )
-        return self._decode_read(response)
+        return self._decode_read(response, max_count=read_count)
 
     async def reclaim(self, *, min_idle_ms: int, start_id: str = "0-0") -> tuple[RedisCommandDelivery, ...]:
         _, deliveries = await self.reclaim_page(
@@ -119,23 +142,59 @@ class RedisCommandConsumer:
         *,
         min_idle_ms: int,
         start_id: str = "0-0",
+        count: int | None = None,
     ) -> tuple[str, tuple[RedisCommandDelivery, ...]]:
         if min_idle_ms < 1:
             raise ValueError("min_idle_ms must be positive")
+        reclaim_count = self._bounded_count(count)
         response = await self._client.xautoclaim(
             self._stream,
             self._group,
             self._consumer,
             min_idle_ms,
             start_id,
-            count=self._read_count,
+            count=reclaim_count,
         )
         next_start_id = _ascii(response[0], "reclaim cursor") if response else "0-0"
         entries = response[1] if response and len(response) > 1 else ()
-        if len(entries) > self._read_count:
+        if len(entries) > reclaim_count:
             raise ResourceExhausted("Redis reclaim response exceeds the bounded read count.")
         deliveries = tuple(self._decode_entry(self._stream, entry) for entry in entries)
         return next_start_id, deliveries
+
+    @property
+    def heartbeat_batch_size(self) -> int:
+        return self._read_count
+
+    async def heartbeat_pending(self, entry_ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Reset PEL idle for this consumer's bounded local ownership set.
+
+        This is transport liveness only. It never grants the Go business claim,
+        acknowledges a command, or retrieves the command body from Redis.
+        """
+
+        if not entry_ids:
+            return ()
+        if len(entry_ids) > self._read_count:
+            raise ResourceExhausted("Redis PEL heartbeat exceeds the bounded batch size.")
+        if len(set(entry_ids)) != len(entry_ids) or any(
+            not _valid_entry_id(entry_id) for entry_id in entry_ids
+        ):
+            raise InvalidInput("Redis PEL heartbeat entry IDs are malformed.")
+        response = await self._client.heartbeat_owned_pending(
+            stream=self._stream,
+            group=self._group,
+            consumer=self._consumer,
+            entry_ids=entry_ids,
+        )
+        if not isinstance(response, (list, tuple)):
+            raise InvalidInput("Redis PEL heartbeat response is malformed.")
+        if len(response) > len(entry_ids):
+            raise ResourceExhausted("Redis PEL heartbeat response exceeds the bounded batch size.")
+        refreshed = tuple(_ascii(value, "heartbeat entry ID") for value in response)
+        if len(set(refreshed)) != len(refreshed) or not set(refreshed).issubset(entry_ids):
+            raise InvalidInput("Redis PEL heartbeat response is malformed.")
+        return refreshed
 
     async def ack_after_settlement(
         self,
@@ -164,14 +223,37 @@ class RedisCommandConsumer:
                 "Redis did not confirm atomic command acknowledgement, deletion, and unmapping."
             )
 
-    def _decode_read(self, response: Any) -> tuple[RedisCommandDelivery, ...]:
+    def _bounded_count(self, count: int | None) -> int:
+        if count is None:
+            return self._read_count
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= self._read_count
+        ):
+            raise ValueError("Redis command count is outside the configured read bound")
+        return count
+
+    def _bounded_block_millis(self, block_ms: int | None) -> int:
+        if block_ms is None:
+            return self._block_ms
+        if isinstance(block_ms, bool) or not isinstance(block_ms, int) or block_ms < 1:
+            raise ValueError("Redis command block time must be a positive integer")
+        return min(block_ms, self._block_ms)
+
+    def _decode_read(
+        self,
+        response: Any,
+        *,
+        max_count: int,
+    ) -> tuple[RedisCommandDelivery, ...]:
         deliveries: list[RedisCommandDelivery] = []
         for stream, entries in response or ():
             stream_name = _ascii(stream, "stream")
             if stream_name != self._stream:
                 raise InvalidInput("Redis returned a command from an unexpected stream.")
             deliveries.extend(self._decode_entry(stream_name, entry) for entry in entries)
-            if len(deliveries) > self._read_count:
+            if len(deliveries) > max_count:
                 raise ResourceExhausted("Redis read response exceeds the bounded read count.")
         return tuple(deliveries)
 
@@ -217,6 +299,15 @@ def _valid_stable_delivery_id(value: object) -> bool:
     return (
         len(encoded) <= _MAX_STABLE_DELIVERY_ID_BYTES
         and not any(character in value for character in ("\r", "\n", "\x00"))
+    )
+
+
+def _valid_entry_id(value: object) -> bool:
+    if not isinstance(value, str) or len(value) > 64:
+        return False
+    timestamp, separator, sequence = value.partition("-")
+    return bool(separator and timestamp.isascii() and sequence.isascii()) and (
+        timestamp.isdecimal() and sequence.isdecimal()
     )
 
 

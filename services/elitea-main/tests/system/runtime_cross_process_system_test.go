@@ -35,6 +35,7 @@ const (
 	workerPassword   = "system-worker-password-5681"
 	observerPassword = "system-observer-password-5681"
 	publicSecret     = "system-public-session-secret-5681"
+	testReclaimIdle  = 60 * time.Second
 
 	catalogRevision = "2cb85480260a92207f3b3d6d3a84149e10de7949"
 	catalogDigest   = "1cfe9846435f68d5ec46d6bc36992679a4fadbbe248a28879c0a312969ca6ef4"
@@ -43,15 +44,15 @@ const (
 	schemaDigest    = "8d72b85e9f389410a56a0dd11b5ed6a031ac5c5c677f5f8b68278bb7be638b4d"
 )
 
-// TestProductionRuntimeCrossProcessSystem is opt-in because it starts real
-// PostgreSQL, legacy Redis and dedicated TLS Redis containers plus independent
-// elitea-main and elitea-worker processes. It exercises only public HTTP/SSE
-// and production TLS/Redis/gRPC protocols; PostgreSQL and Redis reads below are
-// assertions and fixture provisioning, never in-process runtime replacements.
+// TestProductionRuntimeCrossProcessSystem is retained as a topology fixture,
+// but cannot be production evidence while public admission/SSE are deliberately
+// unmounted. The next system slice must drive a private authenticated admission
+// seam and test public routes separately after exact legacy RBAC/audit parity.
 func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	if os.Getenv(systemTestOptIn) != "1" {
 		t.Skip("set ELITEA_RUNTIME_SYSTEM_TEST=1 to run the Docker-backed cross-process runtime system test")
 	}
+	t.Skip("pending private admission refactor; public runtime routes are intentionally unmounted")
 
 	repositoryRoot := findRepositoryRoot(t)
 	python := systemPython(t, repositoryRoot)
@@ -119,7 +120,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	migrateBinary := filepath.Join(root, "elitea-migrate")
 	buildGoBinary(t, repositoryRoot, mainBinary, "./cmd/elitea-main")
 	buildGoBinary(t, repositoryRoot, migrateBinary, "./cmd/elitea-migrate")
-	runCommand(t, filepath.Join(repositoryRoot, "services", "elitea-main"), []string{"DATABASE_URL=" + databaseURL}, migrateBinary, "-tenant-project", "1")
+	runCommand(t, filepath.Join(repositoryRoot, "services", "elitea-main"), []string{"DATABASE_URL=" + databaseURL}, migrateBinary, "-all-tenants")
 
 	settingsMarker := "REDIS-MUST-NEVER-CONTAIN-SETTINGS-5681-" + strings.Repeat("x", 24*1024)
 	settings := []byte(`{"scope":"` + settingsMarker + `"}`)
@@ -160,6 +161,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	assertReferenceOnlyRedisEntry(t, ctx, observer, settingsMarker)
 	assertNoClaim(t, ctx, pool, admission.ExecutionID)
 	badSignatureWorker.stop(t)
+	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-signature")
 
 	wrongIdentityPKI := pki
 	wrongIdentityPKI.workerCertPath = pki.wrongIdentityWorkerCertPath
@@ -170,6 +172,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-identity", badIdentityWorker)
 	assertNoClaim(t, ctx, pool, admission.ExecutionID)
 	badIdentityWorker.stop(t)
+	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-identity")
 
 	untrustedPKI := pki
 	untrustedPKI.workerCertPath = pki.untrustedWorkerCertPath
@@ -180,6 +183,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-tls", badTLSWorker)
 	assertNoClaim(t, ctx, pool, admission.ExecutionID)
 	badTLSWorker.stop(t)
+	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-tls")
 
 	goodConfigPath := writeWorkerConfig(t, root, "good", controlRedisPort, controlPort, outputPort, contentPort, workerPasswordPath, pki, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	goodWorker := startWorker(t, python, repositoryRoot, goodConfigPath, filepath.Join(root, "worker-good.log"))
@@ -218,6 +222,16 @@ func assertBrokerLeastPrivilege(t *testing.T, ctx context.Context, port int, caP
 	}).Err())
 	assertNOPERM("producer XACK", producer.XAck(ctx, commandStream, consumerGroup, "0-0").Err())
 	assertNOPERM("producer XDEL", producer.XDel(ctx, commandStream, "0-0").Err())
+	assertNOPERM("observer XCLAIM", observer.Do(
+		ctx,
+		"XCLAIM",
+		commandStream,
+		consumerGroup,
+		"forbidden-observer",
+		0,
+		"0-0",
+		"JUSTID",
+	).Err())
 
 	length, err := observer.XLen(ctx, commandStream).Result()
 	if err != nil || length != 0 {

@@ -2,7 +2,6 @@ package migrate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -31,27 +30,82 @@ func ensureLedger(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func recordedChecksum(
+type ledgerQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+type recordedMigration struct {
+	version  int64
+	name     string
+	checksum []byte
+}
+
+func readValidatedLedger(
 	ctx context.Context,
-	tx pgx.Tx,
+	queryer ledgerQueryer,
 	scope Scope,
 	targetID string,
-	version int64,
-) ([]byte, bool, error) {
-	var checksum []byte
-	err := tx.QueryRow(ctx, `
-SELECT checksum
+	manifest []Migration,
+	requireComplete bool,
+) (map[int64]struct{}, error) {
+	rows, err := queryer.Query(ctx, `
+SELECT version, name, checksum
 FROM elitea_runtime.schema_migrations
-WHERE target_kind = $1 AND target_id = $2 AND version = $3`,
-		string(scope), targetID, version,
-	).Scan(&checksum)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, nil
-	}
+WHERE target_kind = $1 AND target_id = $2
+ORDER BY version`, string(scope), targetID)
 	if err != nil {
-		return nil, false, fmt.Errorf("migrate: read ledger: %w", err)
+		return nil, fmt.Errorf("migrate: read ledger: %w", err)
 	}
-	return checksum, true, nil
+	defer rows.Close()
+
+	recorded := make([]recordedMigration, 0, len(manifest))
+	for rows.Next() {
+		var entry recordedMigration
+		if err := rows.Scan(&entry.version, &entry.name, &entry.checksum); err != nil {
+			return nil, fmt.Errorf("migrate: scan ledger: %w", err)
+		}
+		recorded = append(recorded, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("migrate: iterate ledger: %w", err)
+	}
+	return validateRecordedLedger(manifest, recorded, requireComplete)
+}
+
+func validateRecordedLedger(
+	manifest []Migration,
+	recorded []recordedMigration,
+	requireComplete bool,
+) (map[int64]struct{}, error) {
+	expected := make(map[int64]Migration, len(manifest))
+	for _, migration := range manifest {
+		expected[migration.Version] = migration
+	}
+	applied := make(map[int64]struct{}, len(recorded))
+	for _, entry := range recorded {
+		migration, ok := expected[entry.version]
+		if !ok {
+			return nil, fmt.Errorf("migrate: database version %04d is not present in the binary manifest", entry.version)
+		}
+		if _, duplicate := applied[entry.version]; duplicate {
+			return nil, fmt.Errorf("migrate: duplicate database version %04d", entry.version)
+		}
+		if entry.name != migration.Name {
+			return nil, fmt.Errorf("migrate: name mismatch for %s", migration.Path)
+		}
+		if err := verifyChecksum(migration, entry.checksum); err != nil {
+			return nil, err
+		}
+		applied[entry.version] = struct{}{}
+	}
+	if requireComplete {
+		for _, migration := range manifest {
+			if _, ok := applied[migration.Version]; !ok {
+				return nil, fmt.Errorf("migrate: expected %s is not applied", migration.Path)
+			}
+		}
+	}
+	return applied, nil
 }
 
 func recordMigration(

@@ -298,18 +298,18 @@ BEGIN
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.configuration (
             id SERIAL PRIMARY KEY,
-            uuid UUID UNIQUE DEFAULT gen_random_uuid(),
+            uuid UUID NOT NULL UNIQUE,
             project_id INTEGER NOT NULL,
             label VARCHAR,
             elitea_title VARCHAR NOT NULL UNIQUE,
             type VARCHAR NOT NULL,
             section VARCHAR NOT NULL,
-            data JSONB NOT NULL DEFAULT ''{}''::jsonb,
-            meta JSONB NOT NULL DEFAULT ''{}''::jsonb,
-            shared BOOLEAN NOT NULL DEFAULT false,
-            status_ok BOOLEAN NOT NULL DEFAULT false,
+            data JSONB NOT NULL,
+            meta JSONB NOT NULL,
+            shared BOOLEAN NOT NULL,
+            status_ok BOOLEAN NOT NULL,
             status_logs TEXT,
-            source VARCHAR NOT NULL DEFAULT ''user'',
+            source VARCHAR NOT NULL,
             author_id INTEGER,
             created_at TIMESTAMP NOT NULL DEFAULT now(),
             updated_at TIMESTAMP
@@ -361,7 +361,8 @@ CREATE TABLE IF NOT EXISTS auth_core__user (
     id SERIAL PRIMARY KEY,
     email TEXT UNIQUE,
     name TEXT,
-    last_login TIMESTAMP
+    last_login TIMESTAMP,
+    suspended BOOLEAN NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS idx_auth_core_user_email ON auth_core__user(email);
 

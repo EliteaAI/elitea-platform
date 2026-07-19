@@ -1,36 +1,64 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 type Handler struct {
-	authClient *authsvc.Client
-	redis      *goredis.Client
-	pool       *pgxpool.Pool
+	permissions     auth.PermissionResolver
+	tokens          tokenRepository
+	tokenSigningKey []byte
 }
 
-func NewHandler(authClient *authsvc.Client, redis *goredis.Client, pool *pgxpool.Pool) *Handler {
-	return &Handler{authClient: authClient, redis: redis, pool: pool}
+type Option func(*Handler)
+
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(handler *Handler) {
+		handler.permissions = resolver
+	}
+}
+
+func WithTokenSigningKey(secret string) Option {
+	return func(handler *Handler) {
+		handler.tokenSigningKey = []byte(secret)
+	}
+}
+
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
+	handler := &Handler{}
+	if pool != nil {
+		handler.tokens = &postgresTokenRepository{pool: pool}
+	}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	return handler
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
+	r.Use(noStore)
 	r.Get("/permissions/prompt_lib/{projectID}", h.PermissionList)
 	r.Get("/token/", h.TokenList)
+	r.Get("/token/{tokenUUID}", h.TokenGet)
 	r.Post("/token/", h.TokenCreate)
 	r.Delete("/token/{tokenUUID}", h.TokenDelete)
 	return r
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type Permission struct {
@@ -47,235 +75,20 @@ func (h *Handler) PermissionList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := chi.URLParam(r, "projectID")
-
-	// Try to load permissions from DB for this user+project.
-	permissions := h.loadUserPermissions(r.Context(), user.ID, projectID)
-
-	if len(permissions) == 0 {
-		// Fallback: return all known permissions (treat as admin/owner).
-		permissions = h.loadAllProjectPermissions(r.Context(), projectID)
-	}
-
-	if len(permissions) == 0 {
-		permissions = defaultPermissionNames()
+	permissions := []string{}
+	if h.permissions != nil {
+		resolution, err := h.permissions.ResolvePermissions(
+			r.Context(),
+			user,
+			auth.PermissionModeDefault,
+			projectID,
+		)
+		if err == nil {
+			permissions = resolution.Permissions
+		}
 	}
 
 	writeJSON(w, http.StatusOK, permissions)
-}
-
-func (h *Handler) loadUserPermissions(ctx context.Context, userID, projectID string) []string {
-	if h.pool == nil {
-		return nil
-	}
-	q := `
-		SELECT DISTINCT prp.permission
-		FROM auth_core__project_role_permission prp
-		JOIN auth_core__project_user_role pur ON pur.role_id = prp.role_id AND pur.project_id = prp.project_id
-		WHERE pur.user_id = $1 AND pur.project_id = $2
-		ORDER BY prp.permission`
-	rows, err := h.pool.Query(ctx, q, userID, projectID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var perms []string
-	for rows.Next() {
-		var p string
-		if rows.Scan(&p) == nil {
-			perms = append(perms, p)
-		}
-	}
-	return perms
-}
-
-func (h *Handler) loadAllProjectPermissions(ctx context.Context, projectID string) []string {
-	if h.pool == nil {
-		return nil
-	}
-	// Return ALL permissions defined for any role in this project (admin fallback).
-	q := `SELECT DISTINCT permission FROM auth_core__project_role_permission WHERE project_id = $1 ORDER BY permission`
-	rows, err := h.pool.Query(ctx, q, projectID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var perms []string
-	for rows.Next() {
-		var p string
-		if rows.Scan(&p) == nil {
-			perms = append(perms, p)
-		}
-	}
-	if len(perms) > 0 {
-		return perms
-	}
-	// If this project has no permissions at all, grab from any project that does.
-	q2 := `SELECT DISTINCT permission FROM auth_core__project_role_permission ORDER BY permission`
-	rows2, err := h.pool.Query(ctx, q2)
-	if err != nil {
-		return nil
-	}
-	defer rows2.Close()
-	for rows2.Next() {
-		var p string
-		if rows2.Scan(&p) == nil {
-			perms = append(perms, p)
-		}
-	}
-	return perms
-}
-
-// CorePermissions is called from the elitea_core route to keep backward-compat.
-func (h *Handler) CorePermissions(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		apierr.Write(w, apierr.Unauthorized("not authenticated"))
-		return
-	}
-	projectID := chi.URLParam(r, "projectID")
-
-	permissions := h.loadUserPermissions(r.Context(), user.ID, projectID)
-	if len(permissions) == 0 {
-		permissions = h.loadAllProjectPermissions(r.Context(), projectID)
-	}
-	if len(permissions) == 0 {
-		permissions = defaultPermissionNames()
-	}
-	writeJSON(w, http.StatusOK, permissions)
-}
-
-type Token struct {
-	UUID      string `json:"uuid"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"created_at"`
-	Prefix    string `json:"prefix"`
-}
-
-func (h *Handler) TokenList(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		apierr.Write(w, apierr.Unauthorized("not authenticated"))
-		return
-	}
-
-	ctx := r.Context()
-	key := "user_tokens:" + user.ID
-	val, err := h.redis.Get(ctx, key).Result()
-	if err != nil {
-		writeJSON(w, http.StatusOK, []Token{})
-		return
-	}
-
-	var tokens []Token
-	if err := json.Unmarshal([]byte(val), &tokens); err != nil {
-		writeJSON(w, http.StatusOK, []Token{})
-		return
-	}
-	writeJSON(w, http.StatusOK, tokens)
-}
-
-type tokenCreateRequest struct {
-	Name string `json:"name"`
-}
-
-func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		apierr.Write(w, apierr.Unauthorized("not authenticated"))
-		return
-	}
-
-	var req tokenCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		apierr.Write(w, apierr.BadRequest("invalid request body"))
-		return
-	}
-
-	token := Token{
-		UUID:      generateUUID(),
-		Name:      req.Name,
-		CreatedAt: nowISO(),
-		Prefix:    "elt_",
-	}
-
-	ctx := r.Context()
-	key := "user_tokens:" + user.ID
-	var tokens []Token
-	if val, err := h.redis.Get(ctx, key).Result(); err == nil {
-		json.Unmarshal([]byte(val), &tokens)
-	}
-	tokens = append(tokens, token)
-	data, _ := json.Marshal(tokens)
-	h.redis.Set(ctx, key, data, 0)
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"uuid":       token.UUID,
-		"name":       token.Name,
-		"created_at": token.CreatedAt,
-		"token":      "elt_" + token.UUID,
-	})
-}
-
-func (h *Handler) TokenDelete(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		apierr.Write(w, apierr.Unauthorized("not authenticated"))
-		return
-	}
-
-	tokenUUID := chi.URLParam(r, "tokenUUID")
-	ctx := r.Context()
-	key := "user_tokens:" + user.ID
-
-	var tokens []Token
-	if val, err := h.redis.Get(ctx, key).Result(); err == nil {
-		json.Unmarshal([]byte(val), &tokens)
-	}
-
-	filtered := make([]Token, 0, len(tokens))
-	for _, t := range tokens {
-		if t.UUID != tokenUUID {
-			filtered = append(filtered, t)
-		}
-	}
-	data, _ := json.Marshal(filtered)
-	h.redis.Set(ctx, key, data, 0)
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func defaultPermissionNames() []string {
-	return []string{
-		"models.create",
-		"models.read",
-		"models.update",
-		"models.delete",
-		"prompts.create",
-		"prompts.read",
-		"prompts.update",
-		"prompts.delete",
-		"datasources.create",
-		"datasources.read",
-		"datasources.update",
-		"datasources.delete",
-		"applications.create",
-		"applications.read",
-		"applications.update",
-		"applications.delete",
-		"conversations.create",
-		"conversations.read",
-		"conversations.update",
-		"conversations.delete",
-		"settings.read",
-		"settings.update",
-		"integrations.create",
-		"integrations.read",
-		"integrations.update",
-		"integrations.delete",
-		"modes.users",
-		"modes.prompt_lib",
-		"modes.collections",
-	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

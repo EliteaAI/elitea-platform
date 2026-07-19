@@ -2,15 +2,35 @@ package configurations_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
+
+type permissionResolverFunc func(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error)
+
+func (f permissionResolverFunc) ResolvePermissions(
+	ctx context.Context,
+	principal auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	return f(ctx, principal, mode, projectID)
+}
 
 // setupConfigRouter creates a router that mounts the handler routes under the given base path.
 // Because configurations.NewHandler requires a *pgxpool.Pool (no Repository interface),
@@ -28,6 +48,86 @@ func setupConfigRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Mount("/api/v2", h.Routes())
 	return r
+}
+
+func TestConfigurationCRUDRoutesRequireLegacyPermissions(t *testing.T) {
+	resolver := permissionResolverFunc(func(
+		_ context.Context,
+		_ auth.User,
+		mode string,
+		projectID string,
+	) (auth.PermissionResolution, error) {
+		if mode != auth.PermissionModeDefault || projectID != "7" {
+			t.Fatalf("resolver called with mode=%q project=%q", mode, projectID)
+		}
+		return auth.PermissionResolution{UserID: 1, Permissions: []string{}}, nil
+	})
+	h := handler.NewHandler(nil, handler.WithPermissionResolver(resolver))
+	router := chi.NewRouter()
+	router.Mount("/api/v2/configurations", h.ProductionRoutes())
+
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v2/configurations/configurations/7"},
+		{method: http.MethodPost, path: "/api/v2/configurations/configurations/7"},
+		{method: http.MethodGet, path: "/api/v2/configurations/configuration/7/11"},
+		{method: http.MethodPut, path: "/api/v2/configurations/configuration/7/11"},
+		{method: http.MethodDelete, path: "/api/v2/configurations/configuration/7/11"},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, test.path, bytes.NewBufferString(`{}`))
+			req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "1"}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+func TestConfigurationCRUDRoutesUseExactLegacyPermissionNames(t *testing.T) {
+	pool, err := pgxpool.New(context.Background(), "postgres://unused:unused@127.0.0.1:1/unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.Close()
+
+	for _, test := range []struct {
+		method     string
+		path       string
+		permission string
+	}{
+		{method: http.MethodGet, path: "/api/v2/configurations/configurations/7", permission: "configurations.configurations.list"},
+		{method: http.MethodPost, path: "/api/v2/configurations/configurations/7", permission: "configurations.configuration.create"},
+		{method: http.MethodGet, path: "/api/v2/configurations/configuration/7/11", permission: "configurations.configuration.details"},
+		{method: http.MethodPut, path: "/api/v2/configurations/configuration/7/11", permission: "configurations.configuration.update"},
+		{method: http.MethodDelete, path: "/api/v2/configurations/configuration/7/11", permission: "configurations.configuration.delete"},
+	} {
+		t.Run(test.permission, func(t *testing.T) {
+			resolver := permissionResolverFunc(func(
+				_ context.Context,
+				_ auth.User,
+				_ string,
+				_ string,
+			) (auth.PermissionResolution, error) {
+				return auth.PermissionResolution{UserID: 1, Permissions: []string{test.permission}}, nil
+			})
+			h := handler.NewHandler(pool, handler.WithPermissionResolver(resolver))
+			router := chi.NewRouter()
+			router.Mount("/api/v2/configurations", h.ProductionRoutes())
+
+			req := httptest.NewRequest(test.method, test.path, bytes.NewBufferString(`{}`))
+			req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "1"}))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code == http.StatusForbidden {
+				t.Fatalf("exact legacy permission %q did not pass its route gate", test.permission)
+			}
+		})
+	}
 }
 
 // ---- Available ---------------------------------------------------------------
@@ -156,6 +256,37 @@ func TestBatchCheckConnections_MultiplItems(t *testing.T) {
 	}
 }
 
+func TestBatchCheckConnectionsRejectsOversizedBody(t *testing.T) {
+	router := setupConfigRouter()
+	body := `[{"id":"` + strings.Repeat("x", (1<<20)+1) + `"}]`
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connections/7", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestBatchCheckConnectionsRejectsTrailingJSON(t *testing.T) {
+	router := setupConfigRouter()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/check_connections/7",
+		strings.NewReader(`[] {}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 // ---- ListModels -------------------------------------------------------------
 
 func TestListModels_Success(t *testing.T) {
@@ -205,10 +336,12 @@ func TestListTypes_Success(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 
-	var types []string
-	json.NewDecoder(rec.Body).Decode(&types)
-	if len(types) == 0 {
-		t.Error("expected non-empty list of types")
+	var types []handler.TypeDescriptor
+	if err := json.NewDecoder(rec.Body).Decode(&types); err != nil {
+		t.Fatalf("failed to decode type descriptors: %v", err)
+	}
+	if types == nil {
+		t.Error("expected an empty JSON array, got null")
 	}
 }
 

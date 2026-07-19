@@ -21,12 +21,27 @@ class FakeRedis:
         self.fields = fields
         self.retirement_results = retirement_results
         self.retirements: list[dict[str, object]] = []
+        self.heartbeats: list[dict[str, object]] = []
+        self.reads: list[dict[str, object]] = []
+        self.reclaims: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.pending_owners = {"1-0": "worker-1", "2-0": "worker-1"}
 
     async def xreadgroup(self, **kwargs):
+        self.reads.append(kwargs)
         return [(b"commands.v1", [(b"1-0", self.fields)])]
 
     async def xautoclaim(self, *args, **kwargs):
+        self.reclaims.append((args, kwargs))
         return (b"0-0", [(b"1-0", self.fields)], [])
+
+    async def heartbeat_owned_pending(self, **kwargs: object):
+        self.heartbeats.append(kwargs)
+        consumer = kwargs["consumer"]
+        return [
+            entry_id.encode("ascii")
+            for entry_id in kwargs["entry_ids"]
+            if self.pending_owners.get(entry_id) == consumer
+        ]
 
     async def retire_delivery(self, **kwargs: object):
         self.retirements.append(kwargs)
@@ -35,6 +50,17 @@ class FakeRedis:
 
 def _fields() -> dict[bytes, bytes]:
     return {b"signed_envelope": b"reference-only-envelope"}
+
+
+def test_rejects_read_count_above_runtime_heartbeat_bound() -> None:
+    with pytest.raises(ValueError, match="read count exceeds"):
+        RedisCommandConsumer(
+            FakeRedis(_fields()),
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-1",
+            read_count=65,
+        )
 
 
 def test_reads_reclaims_and_atomically_retires_only_reference_command() -> None:
@@ -63,6 +89,121 @@ def test_reads_reclaims_and_atomically_retires_only_reference_command() -> None:
                 "signed_envelope": b"reference-only-envelope",
             }
         ]
+
+    asyncio.run(run())
+
+
+def test_read_and_reclaim_honor_a_smaller_capacity_bound() -> None:
+    async def run() -> None:
+        redis = FakeRedis(_fields())
+        consumer = RedisCommandConsumer(
+            redis,
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-1",
+            read_count=4,
+        )
+
+        await consumer.read(count=1, block_ms=250)
+        await consumer.read(count=1, block_ms=5_000)
+        await consumer.reclaim_page(min_idle_ms=1_000, count=2)
+
+        assert consumer.delivery_batch_size == 4
+        assert redis.reads[0]["count"] == 1
+        assert redis.reads[0]["block"] == 250
+        assert redis.reads[1]["block"] == 1_000
+        assert redis.reclaims[0][1]["count"] == 2
+        with pytest.raises(ValueError, match="outside the configured read bound"):
+            await consumer.read(count=5)
+        with pytest.raises(ValueError, match="block time must be a positive integer"):
+            await consumer.read(block_ms=0)
+
+    asyncio.run(run())
+
+
+def test_heartbeats_pending_ids_in_bounded_same_consumer_batches() -> None:
+    async def run() -> None:
+        redis = FakeRedis(_fields())
+        consumer = RedisCommandConsumer(
+            redis,
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-1",
+            read_count=2,
+        )
+
+        refreshed = await consumer.heartbeat_pending(("1-0", "2-0"))
+
+        assert refreshed == ("1-0", "2-0")
+        assert redis.heartbeats == [
+            {
+                "stream": "commands.v1",
+                "group": "workers",
+                "consumer": "worker-1",
+                "entry_ids": ("1-0", "2-0"),
+            }
+        ]
+
+        with pytest.raises(ResourceExhausted, match="heartbeat exceeds"):
+            await consumer.heartbeat_pending(("1-0", "2-0", "3-0"))
+        assert len(redis.heartbeats) == 1
+
+    asyncio.run(run())
+
+
+def test_stale_consumer_heartbeat_cannot_reacquire_peer_owned_pending_entry() -> None:
+    async def run() -> None:
+        redis = FakeRedis(_fields())
+        stale = RedisCommandConsumer(
+            redis,
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-1",
+        )
+        peer = RedisCommandConsumer(
+            redis,
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-2",
+        )
+
+        assert await stale.heartbeat_pending(("1-0",)) == ("1-0",)
+        redis.pending_owners["1-0"] = "worker-2"
+
+        assert await stale.heartbeat_pending(("1-0",)) == ()
+        assert redis.pending_owners["1-0"] == "worker-2"
+        assert await peer.heartbeat_pending(("1-0",)) == ("1-0",)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "entry_ids",
+    [
+        ("",),
+        ("1",),
+        ("-0",),
+        ("1-",),
+        ("one-0",),
+        ("1-two",),
+        ("1-0", "1-0"),
+    ],
+)
+def test_heartbeat_rejects_malformed_or_duplicate_entry_ids_before_redis(
+    entry_ids: tuple[str, ...],
+) -> None:
+    async def run() -> None:
+        redis = FakeRedis(_fields())
+        consumer = RedisCommandConsumer(
+            redis,
+            stream="commands.v1",
+            group="workers",
+            consumer="worker-1",
+        )
+
+        with pytest.raises(InvalidInput, match="heartbeat entry IDs"):
+            await consumer.heartbeat_pending(entry_ids)
+        assert redis.heartbeats == []
 
     asyncio.run(run())
 

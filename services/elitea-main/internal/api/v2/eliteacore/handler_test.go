@@ -15,6 +15,22 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
+type permissionResolverFunc func(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error)
+
+func (f permissionResolverFunc) ResolvePermissions(
+	ctx context.Context,
+	principal auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	return f(ctx, principal, mode, projectID)
+}
+
 // newHandler creates a Handler with a nil pool. Safe only for static handlers
 // (those that never dereference h.pool).
 func newHandler() *eliteacore.Handler {
@@ -220,10 +236,21 @@ func TestPermissions_NoAuth_ReturnsEmptyArray(t *testing.T) {
 }
 
 func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
-	h := newHandler()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resolver := permissionResolverFunc(func(
+		_ context.Context,
+		principal auth.User,
+		mode string,
+		projectID string,
+	) (auth.PermissionResolution, error) {
+		if principal.ID != "1" || mode != auth.PermissionModeDefault || projectID != "7" {
+			t.Fatalf("unexpected resolver input: principal=%+v mode=%q project=%q", principal, mode, projectID)
+		}
+		return auth.PermissionResolution{UserID: 1, Permissions: []string{"configurations.configurations.list"}}, nil
+	})
+	h := eliteacore.NewHandler(nil, eliteacore.WithPermissionResolver(resolver))
+	req := newRequest(http.MethodGet, "/", map[string]string{"projectID": "7"}, nil)
 	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{
-		ID:    "user-1",
+		ID:    "1",
 		Email: "test@test.com",
 	}))
 	w := httptest.NewRecorder()
@@ -233,8 +260,8 @@ func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
 	assertContentTypeJSON(t, w)
 
 	items := decodeArr(t, w)
-	if len(items) == 0 {
-		t.Fatal("expected non-empty permissions with auth context")
+	if len(items) != 1 {
+		t.Fatalf("expected one resolved permission, got %d", len(items))
 	}
 
 	for i, item := range items {
@@ -246,6 +273,9 @@ func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
 		name, hasName := perm["name"].(string)
 		if !hasName || name == "" {
 			t.Errorf("permission[%d] missing or empty 'name'", i)
+		}
+		if name != "configurations.configurations.list" {
+			t.Errorf("permission[%d] name = %q", i, name)
 		}
 		enabled, hasEnabled := perm["enabled"].(bool)
 		if !hasEnabled {
@@ -387,8 +417,13 @@ func TestCreateProjectIcon(t *testing.T) {
 
 	assertStatus(t, w, http.StatusOK)
 	body := decodeObj(t, w)
-	if ok, _ := body["ok"].(bool); !ok {
-		t.Error("ok should be true")
+	name, nameOK := body["name"].(string)
+	if !nameOK || name == "" {
+		t.Error("response should contain a generated icon name")
+	}
+	url, urlOK := body["url"].(string)
+	if !urlOK || url != "/app/project_icon//"+name {
+		t.Errorf("url = %q, want generated icon URL", url)
 	}
 }
 

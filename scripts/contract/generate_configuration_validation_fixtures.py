@@ -418,7 +418,6 @@ def fixture_files(case: str, settings: object, configuration_type: str) -> dict[
         resource_project_id="project-conformance-v1",
         projection_project_id="project-conformance-v1",
         principal_ref="principal-conformance-v1",
-        grant_template_id="grant-template-conformance-v1",
         input_bundle_ref={
             "input_bundle_id": bundle_id,
             "immutable_version": bundle_version,

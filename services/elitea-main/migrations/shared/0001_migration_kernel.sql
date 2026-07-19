@@ -1,18 +1,5 @@
 CREATE SCHEMA IF NOT EXISTS elitea_runtime;
 
-CREATE TABLE IF NOT EXISTS centry.project_runtime_schema (
-    project_id INTEGER PRIMARY KEY REFERENCES centry.project(id) ON DELETE CASCADE,
-    schema_name TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    CONSTRAINT project_runtime_schema_name_format
-        CHECK (schema_name ~ '^p_[1-9][0-9]*$')
-);
-
-INSERT INTO centry.project_runtime_schema (project_id, schema_name)
-SELECT id, 'p_' || id::text
-FROM centry.project
-ON CONFLICT (project_id) DO NOTHING;
-
 CREATE TABLE IF NOT EXISTS elitea_runtime.schema_migrations (
     target_kind TEXT NOT NULL,
     target_id TEXT NOT NULL,

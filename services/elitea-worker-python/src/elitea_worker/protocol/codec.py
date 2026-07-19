@@ -424,7 +424,6 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
         command.resource_project_id,
         command.projection_project_id,
         command.principal_ref,
-        command.grant_template_id,
         command.input_bundle_ref.input_bundle_id,
         command.input_bundle_ref.immutable_version,
         command.input_bundle_ref.media_type,

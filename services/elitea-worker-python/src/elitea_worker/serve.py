@@ -56,13 +56,30 @@ from elitea_worker.transport.redis_commands import (
 
 
 class DeliveryConsumer(Protocol):
-    async def read(self) -> tuple[RedisCommandDelivery, ...]: ...
+    @property
+    def delivery_batch_size(self) -> int: ...
+
+    @property
+    def heartbeat_batch_size(self) -> int: ...
+
+    async def read(
+        self,
+        *,
+        count: int | None = None,
+        block_ms: int | None = None,
+    ) -> tuple[RedisCommandDelivery, ...]: ...
+
+    async def heartbeat_pending(
+        self,
+        entry_ids: tuple[str, ...],
+    ) -> tuple[str, ...]: ...
 
     async def reclaim_page(
         self,
         *,
         min_idle_ms: int,
         start_id: str = "0-0",
+        count: int | None = None,
     ) -> tuple[str, tuple[RedisCommandDelivery, ...]]: ...
 
 
@@ -132,90 +149,214 @@ class WorkerServeLoop:
         self._reclaim_interval = reclaim_interval_millis / 1000
         self._dependency_retry = dependency_retry_millis / 1000
         self._shutdown_timeout = shutdown_timeout_millis / 1000
-        self._queued_entry_ids: set[tuple[str, str]] = set()
+        self._owned_entry_ids: set[tuple[str, str]] = set()
+        # One token covers each fetched, queued, or actively processed PEL entry.
+        self._ownership_slots: asyncio.Queue[None] = asyncio.Queue(
+            queue_capacity + max_concurrency
+        )
+        for _ in range(queue_capacity + max_concurrency):
+            self._ownership_slots.put_nowait(None)
         self._event_sink = event_sink or (lambda _event, _error: None)
 
     async def run(self, stop: asyncio.Event) -> None:
         if stop.is_set():
             return
-        intake = (
-            asyncio.create_task(self._read_loop(stop), name="elitea-redis-read"),
-            asyncio.create_task(self._reclaim_loop(stop), name="elitea-redis-reclaim"),
+        intake = asyncio.create_task(
+            self._intake_loop(stop),
+            name="elitea-redis-intake",
+        )
+        heartbeat = asyncio.create_task(
+            self._heartbeat_loop(),
+            name="elitea-redis-heartbeat",
         )
         workers = tuple(
             asyncio.create_task(self._worker(), name=f"elitea-delivery-{index}")
             for index in range(self._max_concurrency)
         )
+        stop_waiter = asyncio.create_task(
+            stop.wait(),
+            name="elitea-worker-stop",
+        )
+        background = (intake, heartbeat, *workers)
+        shutdown_complete = False
         try:
-            await stop.wait()
-        finally:
-            for task in intake:
-                task.cancel()
-            await asyncio.gather(*intake, return_exceptions=True)
+            done, _ = await asyncio.wait(
+                (stop_waiter, *background),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_waiter not in done:
+                failed = next(task for task in background if task in done)
+                await _raise_unexpected_background_exit(failed)
+
+            intake.cancel()
+            await asyncio.gather(intake, return_exceptions=True)
+            drain = asyncio.create_task(
+                self._queue.join(),
+                name="elitea-delivery-drain",
+            )
             try:
-                await asyncio.wait_for(
-                    self._queue.join(),
+                drained, _ = await asyncio.wait(
+                    (drain, heartbeat, *workers),
                     timeout=self._shutdown_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                if drain not in drained:
+                    failed = next(
+                        (task for task in (heartbeat, *workers) if task in drained),
+                        None,
+                    )
+                    if failed is not None:
+                        await _raise_unexpected_background_exit(failed)
+                    raise DependencyUnavailable(
+                        "The worker did not drain before its shutdown deadline."
+                    )
+                await drain
             except asyncio.CancelledError:
-                _detach_cancelled_tasks(workers)
+                _detach_cancelled_tasks((drain, *workers))
                 raise
-            except TimeoutError as exc:
-                _detach_cancelled_tasks(workers)
-                raise DependencyUnavailable(
-                    "The worker did not drain before its shutdown deadline."
-                ) from exc
+            finally:
+                if not drain.done():
+                    _detach_cancelled_tasks((drain,))
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
             for _ in workers:
                 await self._queue.put(None)
             await asyncio.gather(*workers)
+            shutdown_complete = True
+        finally:
+            stop_waiter.cancel()
+            await asyncio.gather(stop_waiter, return_exceptions=True)
+            if not shutdown_complete:
+                _detach_cancelled_tasks(background)
 
-    async def _read_loop(self, stop: asyncio.Event) -> None:
-        while not stop.is_set():
-            try:
-                for delivery in await self._consumer.read():
-                    await self._enqueue(delivery)
-            except asyncio.CancelledError:
-                raise
-            except WorkerError as exc:
-                self._event_sink("redis_read_rejected", exc)
-                await _wait_or_stop(stop, self._dependency_retry)
-            except Exception:
-                self._event_sink("redis_read_unavailable", DependencyUnavailable())
-                await _wait_or_stop(stop, self._dependency_retry)
+    async def _intake_loop(self, stop: asyncio.Event) -> None:
+        """Fairly alternate bounded new reads with reclaim maintenance."""
 
-    async def _reclaim_loop(self, stop: asyncio.Event) -> None:
+        loop = asyncio.get_running_loop()
         cursor = "0-0"
+        next_reclaim = loop.time() + self._reclaim_interval
         while not stop.is_set():
-            await _wait_or_stop(stop, self._reclaim_interval)
-            if stop.is_set():
-                return
+            reserved = 0
+            operation = "read"
+            reclaim_due = False
             try:
-                cursor, deliveries = await self._consumer.reclaim_page(
-                    min_idle_ms=self._reclaim_idle,
-                    start_id=cursor,
+                reserved = await self._reserve_delivery_capacity()
+                now = loop.time()
+                reclaim_due = now >= next_reclaim
+                if reclaim_due:
+                    operation = "reclaim"
+                    cursor, deliveries = await self._consumer.reclaim_page(
+                        min_idle_ms=self._reclaim_idle,
+                        start_id=cursor,
+                        count=reserved,
+                    )
+                else:
+                    # The read releases its reservation no later than the next
+                    # reclaim turn. RedisCommandConsumer additionally caps this
+                    # value by the deployment's configured XREADGROUP block.
+                    block_ms = max(1, int((next_reclaim - now) * 1_000))
+                    deliveries = await self._consumer.read(
+                        count=reserved,
+                        block_ms=block_ms,
+                    )
+                accepted_reservation = reserved
+                reserved = 0
+                await self._enqueue_reserved(
+                    deliveries,
+                    reserved=accepted_reservation,
                 )
-                for delivery in deliveries:
-                    await self._enqueue(delivery)
             except asyncio.CancelledError:
                 raise
             except WorkerError as exc:
-                self._event_sink("redis_reclaim_rejected", exc)
-                cursor = "0-0"
+                self._event_sink(f"redis_{operation}_rejected", exc)
+                if reclaim_due:
+                    cursor = "0-0"
                 await _wait_or_stop(stop, self._dependency_retry)
             except Exception:
-                self._event_sink("redis_reclaim_unavailable", DependencyUnavailable())
-                cursor = "0-0"
+                self._event_sink(
+                    f"redis_{operation}_unavailable",
+                    DependencyUnavailable(),
+                )
+                if reclaim_due:
+                    cursor = "0-0"
                 await _wait_or_stop(stop, self._dependency_retry)
+            finally:
+                if reclaim_due:
+                    next_reclaim = loop.time() + self._reclaim_interval
+                self._release_delivery_capacity(reserved)
 
-    async def _enqueue(self, delivery: RedisCommandDelivery) -> None:
-        key = (delivery.stream, delivery.entry_id)
-        if key in self._queued_entry_ids:
-            return
-        self._queued_entry_ids.add(key)
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._reclaim_interval)
+            try:
+                await self._heartbeat_pending()
+            except asyncio.CancelledError:
+                raise
+            except WorkerError as exc:
+                self._event_sink("redis_heartbeat_rejected", exc)
+            except Exception:
+                self._event_sink("redis_heartbeat_unavailable", DependencyUnavailable())
+
+    async def _heartbeat_pending(self) -> None:
+        owned = tuple(sorted(self._owned_entry_ids))
+        batch_size = self._consumer.heartbeat_batch_size
+        if batch_size < 1:
+            raise DependencyUnavailable("The Redis PEL heartbeat batch is invalid.")
+        for offset in range(0, len(owned), batch_size):
+            batch = owned[offset : offset + batch_size]
+            entry_ids = tuple(entry_id for _, entry_id in batch)
+            await self._consumer.heartbeat_pending(entry_ids)
+
+    async def _reserve_delivery_capacity(self) -> int:
+        await self._ownership_slots.get()
+        reserved = 1
+        while reserved < self._consumer.delivery_batch_size:
+            try:
+                self._ownership_slots.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            reserved += 1
+        return reserved
+
+    def _release_delivery_capacity(self, count: int) -> None:
+        for _ in range(count):
+            self._ownership_slots.put_nowait(None)
+
+    async def _enqueue_reserved(
+        self,
+        deliveries: tuple[RedisCommandDelivery, ...],
+        *,
+        reserved: int,
+    ) -> None:
+        """Register the complete fetched batch before a queue put can block."""
+
+        if len(deliveries) > reserved:
+            self._release_delivery_capacity(reserved)
+            raise DependencyUnavailable(
+                "Redis returned more deliveries than the worker reserved."
+            )
+
+        accepted: list[RedisCommandDelivery] = []
+        for delivery in deliveries:
+            key = (delivery.stream, delivery.entry_id)
+            if key in self._owned_entry_ids:
+                self._release_delivery_capacity(1)
+                continue
+            self._owned_entry_ids.add(key)
+            accepted.append(delivery)
+        self._release_delivery_capacity(reserved - len(deliveries))
+
+        queued = 0
         try:
-            await self._queue.put(delivery)
+            for delivery in accepted:
+                await self._queue.put(delivery)
+                queued += 1
         except BaseException:
-            self._queued_entry_ids.discard(key)
+            for delivery in accepted[queued:]:
+                key = (delivery.stream, delivery.entry_id)
+                if key in self._owned_entry_ids:
+                    self._owned_entry_ids.remove(key)
+                    self._release_delivery_capacity(1)
             raise
 
     async def _worker(self) -> None:
@@ -235,7 +376,9 @@ class WorkerServeLoop:
             except Exception:
                 self._event_sink("delivery_unavailable", DependencyUnavailable())
             finally:
-                self._queued_entry_ids.discard(key)
+                if key in self._owned_entry_ids:
+                    self._owned_entry_ids.remove(key)
+                    self._release_delivery_capacity(1)
                 self._queue.task_done()
 
 
@@ -646,6 +789,22 @@ def _consume_task_result(task: asyncio.Task[object]) -> None:
         task.exception()
     except asyncio.CancelledError:
         return
+
+
+async def _raise_unexpected_background_exit(task: asyncio.Task[object]) -> None:
+    """Turn any silent sibling exit into one stable process-level failure."""
+
+    try:
+        await task
+    except asyncio.CancelledError as exc:
+        raise DependencyUnavailable(
+            "A worker runtime task was cancelled unexpectedly."
+        ) from exc
+    except Exception as exc:
+        raise DependencyUnavailable(
+            "A worker runtime task stopped unexpectedly."
+        ) from exc
+    raise DependencyUnavailable("A worker runtime task exited unexpectedly.")
 
 
 async def _wait_for_redis(

@@ -289,7 +289,7 @@ func prepareTLSRedisConfig(t *testing.T, directory string, pki runtimePKI) {
 	writeFile(t, filepath.Join(directory, "users.acl"), []byte(strings.Join([]string{
 		"user default off",
 		"user producer on >" + producerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +eval +evalsha +xlen +xadd +hget +xrange +hdel +hlen +hset",
-		"user worker on >" + workerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +eval +xreadgroup +xautoclaim +hget +xrange +xpending +xack +xdel +hdel",
+		"user worker on >" + workerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +eval +xreadgroup +xclaim +xautoclaim +hget +xrange +xpending +xack +xdel +hdel",
 		"user observer on >" + observerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +xgroup +xrange +xlen +xpending +xinfo +hget +hlen",
 	}, "\n")+"\n"), 0o644)
 	writeFile(t, filepath.Join(directory, "redis.conf"), []byte(strings.Join([]string{
@@ -476,8 +476,13 @@ func seedRuntimeFixtures(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	defer transaction.Rollback(ctx)
 	if _, err := transaction.Exec(ctx, `
 INSERT INTO p_1.configuration (
-    id, project_id, label, elitea_title, type, section, data, author_id
-) VALUES (1, 1, 'System runtime', 'System runtime', 'openapi', 'credentials', '{}'::jsonb, 1)
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, status_logs, source, author_id
+) VALUES (
+    1, '00000000-0000-0000-0000-000000000001', 1, 'System runtime',
+    'System runtime', 'openapi', 'credentials', '{}'::jsonb, '{}'::jsonb,
+    false, false, NULL, 'user', 1
+)
 ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +600,7 @@ func writeWorkerConfig(t *testing.T, root, name string, redisPort, controlPort, 
 		"limits": map[string]any{
 			"redis_read_batch":               4,
 			"redis_block_millis":             250,
-			"redis_reclaim_idle_millis":      1000,
+			"redis_reclaim_idle_millis":      testReclaimIdle.Milliseconds(),
 			"redis_reclaim_interval_millis":  250,
 			"dependency_retry_millis":        250,
 			"delivery_max_concurrency":       2,
@@ -770,6 +775,37 @@ func waitForPendingDelivery(t *testing.T, ctx context.Context, client *redis.Cli
 		return state == "DISPATCHED", nil
 	}); err != nil {
 		t.Fatalf("unauthorized worker %q did not leave one pending reference: %v\n%s", consumer, err, process.logs())
+	}
+}
+
+func agePendingDelivery(t *testing.T, ctx context.Context, port int, caPath, consumer string) {
+	t.Helper()
+	worker := newControlRedisClient(t, port, "worker", workerPassword, caPath)
+	defer worker.Close()
+	pending, err := worker.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: commandStream,
+		Group:  consumerGroup,
+		Start:  "-",
+		End:    "+",
+		Count:  1,
+	}).Result()
+	if err != nil || len(pending) != 1 || pending[0].Consumer != consumer {
+		t.Fatalf("locate pending delivery owned by %q before accelerated reclaim: pending=%v err=%v", consumer, pending, err)
+	}
+	result, err := worker.Do(
+		ctx,
+		"XCLAIM",
+		commandStream,
+		consumerGroup,
+		consumer,
+		0,
+		pending[0].ID,
+		"IDLE",
+		testReclaimIdle.Milliseconds(),
+		"JUSTID",
+	).Result()
+	if err != nil || result == nil {
+		t.Fatalf("age pending delivery for accelerated reclaim: result=%v err=%v", result, err)
 	}
 }
 

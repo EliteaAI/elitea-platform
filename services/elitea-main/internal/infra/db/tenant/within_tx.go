@@ -3,12 +3,10 @@ package tenant
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 )
-
-var registeredSchemaName = regexp.MustCompile(`^p_[1-9][0-9]*$`)
 
 // Project identifies an already authorized project. Callers cannot provide a
 // database schema name.
@@ -31,9 +29,10 @@ func NewExecutor(db Beginner) *Executor {
 	return &Executor{db: db}
 }
 
-// WithinTx resolves the project-to-schema mapping inside the transaction,
-// installs a transaction-local search_path, executes fn, and always ends the
-// transaction before returning. A raw pooled connection never escapes.
+// WithinTx verifies the project inside the transaction, derives the legacy
+// p_<project-id> schema from the positive integer identity, installs a
+// transaction-local search_path, executes fn, and always ends the transaction
+// before returning. A raw pooled connection never escapes.
 func (e *Executor) WithinTx(
 	ctx context.Context,
 	project Project,
@@ -55,20 +54,37 @@ func (e *Executor) WithinTx(
 		_ = tx.Rollback(context.WithoutCancel(ctx))
 	}()
 
-	var schema string
+	schema := "p_" + strconv.FormatInt(project.ID, 10)
+	var projectExists, schemaExists bool
 	if err := tx.QueryRow(ctx, `
-SELECT schema_name
-FROM centry.project_runtime_schema
-WHERE project_id = $1`, project.ID).Scan(&schema); err != nil {
-		return fmt.Errorf("tenant: resolve project schema: %w", err)
+SELECT
+    EXISTS (SELECT 1 FROM centry.project WHERE id = $1),
+    EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $2)`,
+		project.ID,
+		schema,
+	).Scan(&projectExists, &schemaExists); err != nil {
+		return fmt.Errorf("tenant: resolve project: %w", err)
 	}
-	if !registeredSchemaName.MatchString(schema) {
-		return fmt.Errorf("tenant: registry returned invalid schema name")
+	if !projectExists {
+		return fmt.Errorf("tenant: project does not exist")
+	}
+	if !schemaExists {
+		return fmt.Errorf("tenant: schema %s does not exist", schema)
 	}
 
-	searchPath := pgx.Identifier{schema}.Sanitize() + ", pg_catalog"
+	// pg_catalog remains available implicitly for built-ins. Omitting it as an
+	// explicit fallback ensures unqualified writes fail if the tenant schema is
+	// concurrently removed.
+	searchPath := pgx.Identifier{schema}.Sanitize()
 	if _, err := tx.Exec(ctx, "SELECT set_config('search_path', $1, true)", searchPath); err != nil {
 		return fmt.Errorf("tenant: install transaction context: %w", err)
+	}
+	var effectiveSchema *string
+	if err := tx.QueryRow(ctx, "SELECT current_schema()").Scan(&effectiveSchema); err != nil {
+		return fmt.Errorf("tenant: verify transaction context: %w", err)
+	}
+	if effectiveSchema == nil || *effectiveSchema != schema {
+		return fmt.Errorf("tenant: schema %s is not the effective schema", schema)
 	}
 	if err := fn(ctx, tx); err != nil {
 		return err

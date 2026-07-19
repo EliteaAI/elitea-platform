@@ -39,6 +39,8 @@ def test_real_redis_adapter_is_acl_binary_and_exact_ca_tls_only(monkeypatch) -> 
 
         async def eval(self, *args: object):
             evaluations.append(args)
+            if "invalid bounded PEL heartbeat" in str(args[0]):
+                return [str(entry_id).encode("ascii") for entry_id in args[5:]]
             return [1, 1, 1]
 
     redis = SimpleNamespace(ConnectionPool=ConnectionPool, Redis=Redis)
@@ -81,10 +83,50 @@ def test_real_redis_adapter_is_acl_binary_and_exact_ca_tls_only(monkeypatch) -> 
     assert connection_class()._connection_arguments()["ssl"] is context
     assert not hasattr(client, "publish")
     assert not hasattr(client, "xadd")
+    assert not hasattr(client, "xclaim")
     assert not hasattr(client, "ensure_consumer_group")
     assert not hasattr(client, "eval")
     assert not hasattr(client, "pipeline")
     assert not hasattr(client, "execute_command")
+    refreshed = asyncio.run(
+        client.heartbeat_owned_pending(
+            stream="configuration-validation.v1",
+            group="elitea-worker-python",
+            consumer="worker-1",
+            entry_ids=("1-0", "2-0"),
+        )
+    )
+    assert refreshed == [b"1-0", b"2-0"]
+    heartbeat = evaluations[0]
+    script, key_count, stream, group, consumer, *entry_ids = heartbeat
+    assert "XPENDING" in script
+    assert "XCLAIM" in script
+    assert "pending[1][2] == consumer" in script
+    assert "JUSTID" in script
+    assert key_count == 1
+    assert stream == "configuration-validation.v1"
+    assert group == "elitea-worker-python"
+    assert consumer == "worker-1"
+    assert entry_ids == ["1-0", "2-0"]
+    with pytest.raises(ValueError, match="heartbeat batch"):
+        asyncio.run(
+            client.heartbeat_owned_pending(
+                stream="configuration-validation.v1",
+                group="elitea-worker-python",
+                consumer="worker-1",
+                entry_ids=(),
+            )
+        )
+    with pytest.raises(ValueError, match="heartbeat batch"):
+        asyncio.run(
+            client.heartbeat_owned_pending(
+                stream="configuration-validation.v1",
+                group="elitea-worker-python",
+                consumer="worker-1",
+                entry_ids=tuple(f"{index}-0" for index in range(65)),
+            )
+        )
+    assert len(evaluations) == 1
     result = asyncio.run(
         client.retire_delivery(
             stream="configuration-validation.v1",
@@ -96,9 +138,9 @@ def test_real_redis_adapter_is_acl_binary_and_exact_ca_tls_only(monkeypatch) -> 
         )
     )
     assert result == [1, 1, 1]
-    assert len(evaluations) == 1
+    assert len(evaluations) == 2
     script, key_count, stream, index, stable_id, entry_id, envelope, group, consumer = (
-        evaluations[0]
+        evaluations[1]
     )
     assert "HGET" in script
     assert "XRANGE" in script

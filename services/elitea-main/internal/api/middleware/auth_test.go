@@ -3,8 +3,11 @@ package middleware_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
@@ -12,6 +15,18 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	"github.com/redis/go-redis/v9"
 )
+
+type tokenValidatorFunc func(context.Context, string) (auth.User, error)
+
+func (f tokenValidatorFunc) ValidateToken(ctx context.Context, token string) (auth.User, error) {
+	return f(ctx, token)
+}
+
+type principalValidatorFunc func(context.Context, auth.User) (auth.User, error)
+
+func (f principalValidatorFunc) ValidatePrincipal(ctx context.Context, user auth.User) (auth.User, error) {
+	return f(ctx, user)
+}
 
 func newTestClient() *authsvc.Client {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
@@ -98,7 +113,13 @@ func TestAuth_BasicAuthExtractsUsername(t *testing.T) {
 func TestAuth_TraefikHeaders(t *testing.T) {
 	var gotUser auth.User
 	var gotSource auth.AuthenticationSource
-	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient()})(
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:                 newTestClient(),
+		TrustForwardedIdentity: true,
+		PrincipalValidator: principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+			return user, nil
+		}),
+	})(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u, ok := auth.UserFromContext(r.Context())
 			if !ok {
@@ -115,8 +136,8 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	)
 
 	req := httptest.NewRequest("GET", "/api/v1/test", nil)
-	req.Header.Set("X-Auth-Type", "jwt")
-	req.Header.Set("X-Auth-Id", "user-123")
+	req.Header.Set("X-Auth-Type", "user")
+	req.Header.Set("X-Auth-Id", "123")
 	req.Header.Set("X-Auth-Reference", "user@example.com")
 	rec := httptest.NewRecorder()
 
@@ -125,14 +146,14 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if gotUser.ID != "user-123" {
-		t.Errorf("expected ID user-123, got %q", gotUser.ID)
+	if gotUser.ID != "123" || gotUser.UserID != "123" {
+		t.Errorf("expected user ID 123, got %+v", gotUser)
 	}
 	if gotUser.Email != "user@example.com" {
 		t.Errorf("expected email user@example.com, got %q", gotUser.Email)
 	}
-	if gotUser.AuthType != "jwt" {
-		t.Errorf("expected AuthType jwt, got %q", gotUser.AuthType)
+	if gotUser.AuthType != "user" {
+		t.Errorf("expected AuthType user, got %q", gotUser.AuthType)
 	}
 	if gotSource != auth.AuthenticationSourceForwarded {
 		t.Errorf("expected forwarded source, got %d", gotSource)
@@ -142,15 +163,152 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	}
 }
 
-func TestAuth_TraefikHeaders_MissingID(t *testing.T) {
+func TestAuth_TraefikTokenNormalizesCompatibilityIDToOwningUser(t *testing.T) {
+	var gotUser auth.User
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:                 newTestClient(),
+		TrustForwardedIdentity: true,
+		PrincipalValidator: principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+			if user.TokenID != "900" || user.UserID != "7" {
+				t.Fatalf("unvalidated forwarded identity = %+v", user)
+			}
+			user.ID = user.UserID
+			return user, nil
+		}),
+	})(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var ok bool
+			gotUser, ok = auth.UserFromContext(r.Context())
+			if !ok {
+				t.Fatal("expected user in context")
+			}
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+	req.Header.Set("X-Auth-Type", "token")
+	req.Header.Set("X-Auth-Id", "900")
+	req.Header.Set("X-Auth-User-ID", "7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotUser.ID != "7" || gotUser.TokenID != "900" || gotUser.UserID != "7" {
+		t.Fatalf("forwarded token identity = %+v, compatibility ID must be the owning user", gotUser)
+	}
+	if ownerID, ok := gotUser.OwningUserID(); !ok || ownerID != 7 {
+		t.Fatalf("owning user = %d, %v; want 7", ownerID, ok)
+	}
+}
+
+func TestAuth_TrustedForwardedIdentityRequiresPrincipalValidator(t *testing.T) {
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:                 newTestClient(),
+		TrustForwardedIdentity: true,
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("unvalidated forwarded identity reached protected handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+	req.Header.Set("X-Auth-Type", "token")
+	req.Header.Set("X-Auth-Id", "42")
+	req.Header.Set("X-Auth-User-ID", "7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuth_DoesNotTrustForwardedHeadersOnPublicListenerByDefault(t *testing.T) {
 	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient()})(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("spoofed forwarded identity reached protected handler")
+		}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/projects", nil)
+	req.Header.Set("X-Auth-Type", "user")
+	req.Header.Set("X-Auth-Id", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthRejectsCredentialWhenAuthoritativePrincipalCheckFails(t *testing.T) {
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client: newTestClient(),
+		Validator: tokenValidatorFunc(func(context.Context, string) (auth.User, error) {
+			return auth.User{ID: "7", UserID: "7", AuthType: "token"}, nil
+		}),
+		PrincipalValidator: principalValidatorFunc(func(context.Context, auth.User) (auth.User, error) {
+			return auth.User{}, errors.New("user suspended")
+		}),
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inactive principal reached protected handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/projects", nil)
+	req.Header.Set("Authorization", "Bearer valid-credential")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthLocalValidationNeverConsultsSharedRedisCache(t *testing.T) {
+	var redisDials atomic.Int64
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "shared-legacy-redis.invalid:6379",
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			redisDials.Add(1)
+			return nil, errors.New("shared Redis must not be an authentication authority")
+		},
+	})
+	t.Cleanup(func() { _ = rdb.Close() })
+	validatorCalls := 0
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client: authsvc.New(rdb),
+		Validator: tokenValidatorFunc(func(context.Context, string) (auth.User, error) {
+			validatorCalls++
+			return auth.User{}, errors.New("invalid signature")
+		}),
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("invalid credential reached protected handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/auth/token/", nil)
+	req.Header.Set("Authorization", "Bearer attacker-controlled-cache-key")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+	if validatorCalls != 1 {
+		t.Fatalf("local validator calls = %d, want 1", validatorCalls)
+	}
+	if redisDials.Load() != 0 {
+		t.Fatalf("shared Redis dials = %d, want 0", redisDials.Load())
+	}
+}
+
+func TestAuth_TraefikHeaders_MissingID(t *testing.T) {
+	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient(), TrustForwardedIdentity: true})(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Fatal("should not reach handler without Authorization header")
 		}),
 	)
 
 	req := httptest.NewRequest("GET", "/api/v1/test", nil)
-	req.Header.Set("X-Auth-Type", "jwt")
+	req.Header.Set("X-Auth-Type", "user")
 	// Missing X-Auth-Id
 	rec := httptest.NewRecorder()
 

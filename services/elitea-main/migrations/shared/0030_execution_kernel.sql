@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS elitea_runtime.execution_jobs (
     projection_project_id INTEGER NOT NULL REFERENCES centry.project(id),
     actor_id TEXT NOT NULL,
     principal_ref TEXT NOT NULL,
-    grant_template_id TEXT NOT NULL,
     capability_id TEXT NOT NULL,
     capability_version TEXT NOT NULL,
     input_bundle_id TEXT NOT NULL

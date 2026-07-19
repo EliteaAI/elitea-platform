@@ -2,10 +2,12 @@ package auth
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 )
 
@@ -22,6 +24,8 @@ func NewForwardAuthHandler(client *authsvc.Client, validator apimw.TokenValidato
 }
 
 func (h *ForwardAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	// Traefik sends the original request's headers in the forwarded request.
 	// We validate Authorization (Bearer/Basic) or X-API-Key.
 
@@ -32,7 +36,9 @@ func (h *ForwardAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Access Denied", http.StatusForbidden)
 			return
 		}
-		h.writeSuccess(w, "token", user.ID, user.Email)
+		if err := h.writeSuccess(w, user); err != nil {
+			http.Error(w, "Access Denied", http.StatusForbidden)
+		}
 		return
 	}
 
@@ -49,7 +55,9 @@ func (h *ForwardAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Access Denied", http.StatusForbidden)
 			return
 		}
-		h.writeSuccess(w, "token", user.ID, user.Email)
+		if err := h.writeSuccess(w, user); err != nil {
+			http.Error(w, "Access Denied", http.StatusForbidden)
+		}
 		return
 	}
 
@@ -57,35 +65,45 @@ func (h *ForwardAuthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Access Denied", http.StatusForbidden)
 }
 
-func (h *ForwardAuthHandler) validate(r *http.Request, token string) (struct{ ID, Email string }, error) {
-	type result struct{ ID, Email string }
-
+func (h *ForwardAuthHandler) validate(r *http.Request, token string) (identity.User, error) {
 	ctx := r.Context()
 
 	if h.validator != nil {
 		user, err := h.validator.ValidateToken(ctx, token)
 		if err != nil {
-			return result{}, err
+			return identity.User{}, err
 		}
-		return result{ID: user.ID, Email: user.Email}, nil
+		return user, nil
+	}
+	if h.authClient == nil {
+		return identity.User{}, errors.New("auth client is not configured")
 	}
 
 	user, err := h.authClient.ValidateToken(ctx, token)
 	if err != nil {
-		return result{}, err
+		return identity.User{}, err
 	}
-	return result{ID: user.ID, Email: user.Email}, nil
+	return user, nil
 }
 
-func (h *ForwardAuthHandler) writeSuccess(w http.ResponseWriter, authType, authID, authRef string) {
+func (h *ForwardAuthHandler) writeSuccess(w http.ResponseWriter, user identity.User) error {
+	// Legacy forward-auth identifies a token by auth_core__token.id. The owner
+	// is carried separately so downstream code can cross-check it and never
+	// infer ownership from a colliding numeric user ID.
+	if user.TokenID == "" || user.UserID == "" {
+		return errors.New("validated token identity is incomplete")
+	}
+	authRef := user.Email
 	if authRef == "" {
 		authRef = "-"
 	}
-	w.Header().Set("X-Auth-Type", authType)
-	w.Header().Set("X-Auth-ID", authID)
+	w.Header().Set("X-Auth-Type", "token")
+	w.Header().Set("X-Auth-ID", user.TokenID)
+	w.Header().Set("X-Auth-User-ID", user.UserID)
 	w.Header().Set("X-Auth-Reference", authRef)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
+	return nil
 }
 
 func extractToken(authHeader string) (string, bool) {

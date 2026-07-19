@@ -43,9 +43,40 @@ local unmapped = redis.call('HDEL', KEYS[2], ARGV[1])
 return {acknowledged, deleted, unmapped}
 """
 
+_HEARTBEAT_OWNED_PENDING_SCRIPT = """
+-- Runtime v1 permits at most 64 IDs per heartbeat. Keep the bound inside the
+-- atomic ownership operation as defense in depth.
+if #ARGV < 3 or #ARGV > 66 then
+    return redis.error_reply('invalid bounded PEL heartbeat')
+end
+
+local group = ARGV[1]
+local consumer = ARGV[2]
+local refreshed = {}
+for argument_index = 3, #ARGV do
+    local entry_id = ARGV[argument_index]
+    local pending = redis.call(
+        'XPENDING', KEYS[1], group, entry_id, entry_id, 1
+    )
+    if #pending == 1
+        and pending[1][1] == entry_id
+        and pending[1][2] == consumer then
+        local claimed = redis.call(
+            'XCLAIM', KEYS[1], group, consumer, 0, entry_id, 'JUSTID'
+        )
+        if #claimed == 1 and claimed[1] == entry_id then
+            refreshed[#refreshed + 1] = entry_id
+        end
+    end
+end
+return refreshed
+"""
+
+_MAX_HEARTBEAT_ENTRY_IDS = 64
+
 
 class RedisAsyncioControlClient:
-    """Expose intake/retirement only; deliberately no publish, set or xadd."""
+    """Expose intake/liveness/retirement; deliberately no publish, set or xadd."""
 
     def __init__(self, client: Any, pool: Any) -> None:
         self._client = client
@@ -118,6 +149,27 @@ class RedisAsyncioControlClient:
 
     async def xautoclaim(self, *args: Any, **kwargs: Any) -> Any:
         return await self._client.xautoclaim(*args, **kwargs)
+
+    async def heartbeat_owned_pending(
+        self,
+        *,
+        stream: str,
+        group: str,
+        consumer: str,
+        entry_ids: tuple[str, ...],
+    ) -> Any:
+        """Atomically refresh only IDs still pending under this consumer."""
+
+        if not 1 <= len(entry_ids) <= _MAX_HEARTBEAT_ENTRY_IDS:
+            raise ValueError("Redis PEL heartbeat batch is invalid")
+        return await self._client.eval(
+            _HEARTBEAT_OWNED_PENDING_SCRIPT,
+            1,
+            stream,
+            group,
+            consumer,
+            *entry_ids,
+        )
 
     async def retire_delivery(
         self,

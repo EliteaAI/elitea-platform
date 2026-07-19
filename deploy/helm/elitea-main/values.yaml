@@ -1,3 +1,5 @@
+# PROTOTYPE VALUES ONLY. This chart does not yet define TLS ingress,
+# NetworkPolicy, split database principals, or production secret delivery.
 replicaCount: 2
 
 image:
@@ -19,12 +21,6 @@ resources:
 
 env:
   DATABASE_URL: ""
-  REDIS_URL: ""
-  SHADOW_ENABLED: "false"
-  SHADOW_LEGACY_URL: ""
-  SHADOW_WEIGHT: "0.1"
-  LEGACY_URL: ""
-  CANARY_WEIGHT: "0.1"
 
 probes:
   startup:

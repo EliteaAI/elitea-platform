@@ -30,7 +30,6 @@ var ErrAdmissionPolicyMismatch = errors.New("execution admission policy does not
 type ValidationDispatchPolicy struct {
 	StreamName        string
 	CapabilityVersion string
-	GrantTemplateID   string
 	ResourceClass     string
 	IsolationClass    string
 	Priority          uint32
@@ -40,10 +39,10 @@ type ValidationDispatchPolicy struct {
 }
 
 func (p ValidationDispatchPolicy) validate() error {
-	if p.StreamName == "" || p.CapabilityVersion == "" || p.GrantTemplateID == "" || p.ResourceClass == "" || p.IsolationClass == "" || p.Priority == 0 || p.Priority > math.MaxInt32 || p.DeadlineTTL < minValidationDeadlineTTL || p.DeadlineTTL > maxValidationDeadlineTTL || p.DeadlineTTL%time.Millisecond != 0 || p.LimitsRevision == "" || p.MaxOutstanding <= 0 || p.MaxOutstanding > maxSupportedOutstandingJobs {
+	if p.StreamName == "" || p.CapabilityVersion == "" || p.ResourceClass == "" || p.IsolationClass == "" || p.Priority == 0 || p.Priority > math.MaxInt32 || p.DeadlineTTL < minValidationDeadlineTTL || p.DeadlineTTL > maxValidationDeadlineTTL || p.DeadlineTTL%time.Millisecond != 0 || p.LimitsRevision == "" || p.MaxOutstanding <= 0 || p.MaxOutstanding > maxSupportedOutstandingJobs {
 		return errors.New("validation dispatch policy is incomplete")
 	}
-	for _, value := range []string{p.StreamName, p.CapabilityVersion, p.GrantTemplateID, p.ResourceClass, p.IsolationClass, p.LimitsRevision} {
+	for _, value := range []string{p.StreamName, p.CapabilityVersion, p.ResourceClass, p.IsolationClass, p.LimitsRevision} {
 		if len(value) > 256 || strings.ContainsRune(value, '\x00') {
 			return errors.New("validation dispatch policy exceeds storage bounds")
 		}
@@ -334,15 +333,15 @@ func insertExecutionJob(ctx context.Context, tx sqlExecutor, resourceProjectID, 
 	err := tx.QueryRow(ctx, `
 INSERT INTO elitea_runtime.execution_jobs (
     execution_id, generation, command_id, tenant_id, resource_project_id,
-    projection_project_id, actor_id, principal_ref, grant_template_id,
-    capability_id, capability_version, input_bundle_id, request_digest,
+    projection_project_id, actor_id, principal_ref, capability_id,
+    capability_version, input_bundle_id, request_digest,
     idempotency_scope, idempotency_key, configuration_revision_id,
     configuration_type, catalog_revision, catalog_digest, schema_id,
     schema_revision, schema_digest, settings_entry_id, state, desired_state,
     admitted_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13,
-    $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 'RUNNING', $24
+    $1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12,
+    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'RUNNING', $23
 )
 ON CONFLICT (idempotency_scope, idempotency_key) DO NOTHING
 RETURNING execution_id`,
@@ -353,7 +352,6 @@ RETURNING execution_id`,
 		resourceProjectID,
 		projectionProjectID,
 		record.Job.ActorID,
-		policy.GrantTemplateID,
 		record.Job.CapabilityID,
 		policy.CapabilityVersion,
 		record.InputBundle.ID,

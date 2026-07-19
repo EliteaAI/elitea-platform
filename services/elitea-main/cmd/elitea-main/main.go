@@ -8,26 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
-	sioserver "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/socketio"
-	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -61,6 +49,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return err
 	}
+	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
+	bootstrapLegacySchema := os.Getenv("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") == "true"
+	if bootstrapLegacySchema && !devMode {
+		return errors.New("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA requires AUTH_DEV_MODE=true")
+	}
+
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
 	pool, err := pgxpool.New(ctx, dbDSN)
@@ -69,13 +63,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	defer pool.Close()
 
-	// Run migrations (skip if loading from an existing dump)
-	if envOr("SKIP_MIGRATIONS", "") == "" {
+	// The unversioned legacy bootstrap exists only for an empty local developer
+	// database. Production shared/tenant histories are owned by elitea-migrate.
+	if bootstrapLegacySchema {
 		if err := infradb.RunMigrations(ctx, pool); err != nil {
-			return fmt.Errorf("run legacy database migrations: %w", err)
+			return fmt.Errorf("bootstrap local legacy database schema: %w", err)
 		}
-	} else {
-		slog.Info("SKIP_MIGRATIONS set, skipping schema migrations")
 	}
 
 	runtimeConfig, err := runtimecomposition.ConfigFromEnv(os.LookupEnv)
@@ -83,7 +76,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("load optional runtime configuration: %w", err)
 	}
 	var runtimeRoot *runtimecomposition.Runtime
-	var runtimeRoutes api.RuntimeRoutes
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -106,157 +98,22 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				runErr = fmt.Errorf("close optional runtime: %w", err)
 			}
 		}()
-		publicRoutes := runtimeRoot.PublicRoutes()
-		runtimeRoutes = api.RuntimeRoutes{Validation: publicRoutes.Validation, ExecutionEvents: publicRoutes.ExecutionEvents}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
-	// Redis
-	redisAddr := envOr("REDIS_URL", "localhost:6379")
-	rdb := goredis.NewClient(&goredis.Options{Addr: redisAddr})
-	defer func() {
-		if err := rdb.Close(); runErr == nil && err != nil {
-			runErr = fmt.Errorf("close legacy Redis client: %w", err)
-		}
-	}()
-
-	authClient := authsvc.New(rdb)
-	jwtSecret := envOr("APPLICATION_SECRET_KEY", "")
-	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
-	var localValidator *authsvc.LocalValidator
-	var sessionHandler *v2auth.SessionHandler
-	if jwtSecret != "" {
-		if devMode {
-			return errors.New("AUTH_DEV_MODE=true conflicts with APPLICATION_SECRET_KEY")
-		}
-		localValidator = authsvc.NewLocalValidator(pool, jwtSecret)
-		sessionHandler = v2auth.NewSessionHandler(pool, rdb, jwtSecret)
-		slog.Info("auth: using local token validator (pylon_auth not required)")
-	} else {
-		if devMode {
-			slog.Warn("auth: AUTH_DEV_MODE enabled (no real authentication, dev user only)")
-		} else {
-			slog.Warn("auth: APPLICATION_SECRET_KEY not set, falling back to pylon_auth RPC")
-		}
-	}
-
-	// OIDC (optional — enabled when OIDC_ISSUER_URL is set)
-	var oidcHandler *v2auth.OIDCHandler
-	oidcCfg, err := v2auth.OIDCConfigFromEnv()
-	if err != nil {
-		return fmt.Errorf("load OIDC configuration: %w", err)
-	}
-	if oidcCfg != nil {
-		oidcHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, jwtSecret)
-		if err != nil {
-			return fmt.Errorf("discover OIDC provider: %w", err)
-		}
-		slog.Info("auth: OIDC enabled", "issuer", oidcCfg.IssuerURL)
-	}
-	eventBus := redis.NewEventBus(rdb, "elitea-main")
-
-	// Repositories (declared early so dispatcher can reference webhookRepo)
-	appsRepo := repos.NewApplicationsRepo(pool)
-	skillsRepo := repos.NewSkillsRepo(pool)
-	foldersRepo := repos.NewFoldersRepo(pool)
-	tagsRepo := repos.NewTagsRepo(pool)
-	analyticsRepo := repos.NewAnalyticsRepo(pool)
-	convsRepo := repos.NewConversationsRepo(pool)
-	webhookRepo := repos.NewWebhooksRepo(pool)
-
-	// Webhook dispatcher: fires HTTP callbacks on platform events
-	webhookDispatcher := webhook.NewDispatcher(webhookRepo)
-	eventBus.Subscribe(ctx, "elitea:*", webhookDispatcher.HandleEvent)
-
-	// Shadow mode
-	shadowWeight := 0.1
-	if w := os.Getenv("SHADOW_WEIGHT"); w != "" {
-		if f, err := strconv.ParseFloat(w, 64); err == nil {
-			shadowWeight = f
-		}
-	}
-	shadowCfg := shadow.Config{
-		Enabled:       os.Getenv("SHADOW_ENABLED") == "true",
-		LegacyBaseURL: os.Getenv("SHADOW_LEGACY_URL"),
-		Weight:        shadowWeight,
-		Timeout:       5 * time.Second,
-		LogDiffs:      true,
-	}
-	comparator := shadow.NewComparator(shadowCfg)
-	shadowMetrics := shadow.NewMetrics(1000)
-
-	// Indexer RPC client (predict/chat/pipelines)
-	indexerClient := indexersvc.New(rdb)
-
-	// Cutover tracker + routing
-	cutoverTracker := cutover.NewTracker(rdb)
-
-	canaryWeight := 0.1
-	if w := os.Getenv("CANARY_WEIGHT"); w != "" {
-		if f, err := strconv.ParseFloat(w, 64); err == nil {
-			canaryWeight = f
-		}
-	}
-	if err := cutoverTracker.SeedDefaults(ctx); err != nil {
-		slog.Warn("failed to seed cutover defaults", "err", err)
-	}
-
-	var cutoverRouter *cutover.Router
-	if legacyURL := os.Getenv("LEGACY_URL"); legacyURL != "" {
-		cutoverRouter = cutover.NewRouter(cutover.RouterConfig{
-			Tracker:      cutoverTracker,
-			LegacyURL:    legacyURL,
-			CanaryWeight: canaryWeight,
-		})
-	}
-
-	// Socket.IO server for real-time streaming (chat/application predict)
-	sioSrv := sioserver.NewServer(sioserver.Config{
-		Indexer: indexerClient,
-		Redis:   rdb,
-	})
-
 	r := api.NewRouter(api.RouterConfig{
-		AuthClient:     authClient,
-		AuthValidator:  localValidator,
-		SessionHandler: sessionHandler,
-		OIDCHandler:    oidcHandler,
-		Pool:           pool,
 		HealthDeps: health.Deps{
-			DB:    &poolChecker{pool: pool},
-			Redis: eventBus,
+			DB: &poolChecker{pool: pool},
 		},
-		AppsRepo:       appsRepo,
-		SkillsRepo:     skillsRepo,
-		FoldersRepo:    foldersRepo,
-		TagsRepo:       tagsRepo,
-		AnalyticsRepo:  analyticsRepo,
-		ConvsRepo:      convsRepo,
-		WebhookRepo:    webhookRepo,
-		RedisClient:    rdb,
-		Shadow:         comparator,
-		ShadowMetrics:  shadowMetrics,
-		Predictor:      indexerClient,
-		LLMService:     indexerClient,
-		ChatService:    indexerClient,
-		PipelineRunner: indexerClient,
-		ToolTester:     indexerClient,
-		MCPSyncer:      indexerClient,
-		CutoverTracker: cutoverTracker,
-		CutoverRouter:  cutoverRouter,
-		AdminUI:        adminUIConfig(),
-		SessionSecret:  jwtSecret,
-		RuntimeRoutes:  runtimeRoutes,
 	})
-
-	// Combine chi router + Socket.IO on one port
-	mux := http.NewServeMux()
-	mux.Handle("/socket.io/", sioSrv.Handler())
-	mux.Handle("/", r)
 
 	srv := &http.Server{
-		Addr:         publicAddress,
-		Handler:      mux,
+		Addr: publicAddress,
+		// Socket.IO remains unmounted until its legacy connection
+		// authentication, project-membership checks, room authorization, and
+		// per-event permission contract are implemented. Mounting the current
+		// prototype would expose cross-tenant rooms and execution events.
+		Handler:      r,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -368,23 +225,6 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func adminUIConfig() *adminui.Config {
-	staticDir := os.Getenv("ADMIN_UI_STATIC_DIR")
-	if staticDir == "" {
-		staticDir = "/data/admin_ui/static/dist"
-	}
-	if _, err := os.Stat(staticDir); err != nil {
-		slog.Info("admin UI disabled (static dir not found)", "path", staticDir)
-		return nil
-	}
-	return &adminui.Config{
-		StaticDir:     staticDir,
-		ViteServerURL: envOr("ADMIN_UI_API_URL", "/api/v2"),
-		BasePath:      envOr("ADMIN_UI_BASE_PATH", "/admin/app"),
-		SecretKey:     envOr("APPLICATION_SECRET_KEY", ""),
-	}
 }
 
 type poolChecker struct {

@@ -54,7 +54,6 @@ def test_bulk_settings_and_result_stay_out_of_control_and_output_frames() -> Non
         resource_project_id="project-1",
         projection_project_id="project-1",
         principal_ref="principal-1",
-        grant_template_id="grant-1",
         input_bundle_ref=input_pb2.ExecutionInputBundleReferenceV1(
             input_bundle_id="bundle-1",
             immutable_version="1",

@@ -191,7 +191,7 @@ def _write_runtime_material(root: Path) -> Path:
         "limits": {
             "redis_read_batch": 1,
             "redis_block_millis": 100,
-            "redis_reclaim_idle_millis": 1000,
+            "redis_reclaim_idle_millis": 60000,
             "redis_reclaim_interval_millis": 100,
             "dependency_retry_millis": 100,
             "delivery_max_concurrency": 1,

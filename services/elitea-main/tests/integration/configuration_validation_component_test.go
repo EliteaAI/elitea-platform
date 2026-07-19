@@ -449,7 +449,6 @@ func admitAndDispatchCorpus(t *testing.T, command *runtimev1.WorkerCommandV1, ma
 	jobIDs := []string{command.GetExecutionId(), command.GetCommandId(), command.GetIdempotencyKey()}
 	store := &verticalStore{template: executionapp.ValidationDispatch{
 		DispatchOrdinal:   command.GetDispatchOrdinal(),
-		GrantTemplateID:   command.GetGrantTemplateId(),
 		CapabilityVersion: command.GetCapabilityVersion(),
 		ResourceClass:     command.GetResourceClass(),
 		IsolationClass:    command.GetIsolationClass(),

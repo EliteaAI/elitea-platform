@@ -61,6 +61,7 @@ type validateTokenPayload struct {
 
 type validateTokenResponse struct {
 	UserID      string   `json:"user_id"`
+	TokenID     string   `json:"token_id"`
 	Email       string   `json:"email"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
@@ -111,9 +112,12 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (auth.User, er
 		}
 		return auth.User{
 			ID:          data.UserID,
+			UserID:      data.UserID,
+			TokenID:     data.TokenID,
 			Email:       data.Email,
 			Roles:       data.Roles,
 			Permissions: data.Permissions,
+			AuthType:    "token",
 		}, nil
 	case <-timeout:
 		return auth.User{}, errors.New("authsvc: rpc timeout")

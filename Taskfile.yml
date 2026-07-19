@@ -59,6 +59,34 @@ tasks:
       - buf build libs/proto
       - python scripts/contract/generate_configuration_validation_fixtures.py --check
       - python scripts/contract/check_configuration_validation_contract.py
+      - python3 scripts/database/check_legacy_catalog_contract.py
+      - python3 scripts/security/check_legacy_rbac_drift.py
+
+  legacy:rbac:refresh:
+    desc: Refresh deterministic legacy route/permission evidence from the Centry checkout
+    vars:
+      LEGACY_PLUGINS_ROOT: '{{.LEGACY_PLUGINS_ROOT | default "../centry/pylon_main/plugins"}}'
+    preconditions:
+      - sh: test -d "{{.LEGACY_PLUGINS_ROOT}}"
+        msg: Set LEGACY_PLUGINS_ROOT to the legacy pylon_main/plugins directory
+    cmds:
+      - python3 scripts/security/export_legacy_rbac_catalog.py --plugins-root "{{.LEGACY_PLUGINS_ROOT}}" --output testdata/legacy/legacy-rbac-static-catalog.json
+
+  legacy:database:evidence:check:
+    desc: Verify checked-in live PostgreSQL evidence still matches coded legacy assumptions
+    cmds:
+      - python3 scripts/database/check_legacy_catalog_contract.py
+
+  legacy:rbac:check:
+    desc: Verify checked-in pylon_main route/permission evidence is current
+    vars:
+      LEGACY_PLUGINS_ROOT: '{{.LEGACY_PLUGINS_ROOT | default "../centry/pylon_main/plugins"}}'
+    preconditions:
+      - sh: test -d "{{.LEGACY_PLUGINS_ROOT}}"
+        msg: Set LEGACY_PLUGINS_ROOT to the legacy pylon_main/plugins directory
+    cmds:
+      - python3 scripts/security/export_legacy_rbac_catalog.py --plugins-root "{{.LEGACY_PLUGINS_ROOT}}" --output testdata/legacy/legacy-rbac-static-catalog.json --check
+      - python3 scripts/security/check_legacy_rbac_drift.py
 
   worker:test:
     desc: Run the standalone Python worker unit and conformance tests

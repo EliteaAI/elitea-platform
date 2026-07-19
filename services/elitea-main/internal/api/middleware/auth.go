@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,16 +23,18 @@ type TokenValidator interface {
 	ValidateToken(ctx context.Context, token string) (auth.User, error)
 }
 
-// AuthCache provides get/set for caching validated tokens.
-type AuthCache interface {
-	GetCached(ctx context.Context, key string) (*auth.User, error)
-	SetCached(ctx context.Context, key string, user auth.User) error
+// PrincipalValidator checks mutable account state after credentials have been
+// validated, including signed sessions.
+type PrincipalValidator interface {
+	ValidatePrincipal(ctx context.Context, principal auth.User) (auth.User, error)
 }
 
 type AuthConfig struct {
-	Client        *authsvc.Client // Legacy RPC client (also implements cache)
-	Validator     TokenValidator  // Local validator (used if non-nil, falls back to Client)
-	SessionSecret string          // HMAC key for session cookies
+	Client                 *authsvc.Client // Legacy RPC validator used only when Validator is nil.
+	Validator              TokenValidator  // Local validator (used if non-nil, falls back to Client)
+	PrincipalValidator     PrincipalValidator
+	SessionSecret          string // HMAC key for session cookies
+	TrustForwardedIdentity bool   // Only for a listener isolated behind a header-stripping trusted proxy.
 }
 
 func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
@@ -41,28 +44,37 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if user, ok := tryTraefikHeaders(r); ok {
-				ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceForwarded)
-				next.ServeHTTP(w, r.WithContext(ctx))
+			if user, ok := tryTraefikHeaders(r, cfg.TrustForwardedIdentity); ok {
+				// A forwarded token ID is not an owning user ID. The authoritative
+				// principal check must cross-check both typed IDs and normalize the
+				// compatibility ID before any downstream handler can use it as a
+				// user foreign key.
+				if cfg.PrincipalValidator == nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				user, err := validatePrincipal(r.Context(), cfg, user)
+				if err != nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
 				return
 			}
 
 			// X-API-Key header (pylon compatibility)
 			if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-				cacheKey := authCacheKey("apikey:" + apiKey)
-				if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-					ctx := auth.ContextWithAuthenticatedUser(r.Context(), *cached, auth.AuthenticationSourceAPIKey)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
 				user, err := validateToken(r.Context(), cfg, apiKey)
 				if err != nil {
 					http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
 					return
 				}
-				_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
-				ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceAPIKey)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				user, err = validatePrincipal(r.Context(), cfg, user)
+				if err != nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceAPIKey)
 				return
 			}
 
@@ -71,14 +83,17 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				// Try session cookie (set by OIDC/form login)
 				if cookie, err := r.Cookie("elitea_session"); err == nil && cfg.SessionSecret != "" {
 					if user, ok := verifySessionCookie(cookie.Value, cfg.SessionSecret); ok {
-						ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceSession)
-						next.ServeHTTP(w, r.WithContext(ctx))
+						user, validationErr := validatePrincipal(r.Context(), cfg, user)
+						if validationErr != nil {
+							writeInactivePrincipal(w)
+							return
+						}
+						serveAuthenticated(next, w, r, user, auth.AuthenticationSourceSession)
 						return
 					}
 				}
 				if devMode {
-					ctx := auth.ContextWithAuthenticatedUser(r.Context(), devUser(), auth.AuthenticationSourceDevelopment)
-					next.ServeHTTP(w, r.WithContext(ctx))
+					serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 					return
 				}
 				http.Error(w, `{"error":"missing authorization header"}`, http.StatusUnauthorized)
@@ -86,15 +101,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			}
 
 			if devMode {
-				ctx := auth.ContextWithAuthenticatedUser(r.Context(), devUser(), auth.AuthenticationSourceDevelopment)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			cacheKey := authCacheKey(authHeader)
-			if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-				ctx := auth.ContextWithAuthenticatedUser(r.Context(), *cached, auth.AuthenticationSourceToken)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 				return
 			}
 
@@ -120,15 +127,20 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
-
-			ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, auth.AuthenticationSourceToken)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			user, err = validatePrincipal(r.Context(), cfg, user)
+			if err != nil {
+				writeInactivePrincipal(w)
+				return
+			}
+			serveAuthenticated(next, w, r, user, auth.AuthenticationSourceToken)
 		})
 	}
 }
 
-func tryTraefikHeaders(r *http.Request) (auth.User, bool) {
+func tryTraefikHeaders(r *http.Request, trusted bool) (auth.User, bool) {
+	if !trusted {
+		return auth.User{}, false
+	}
 	authType := r.Header.Get("X-Auth-Type")
 	authID := r.Header.Get("X-Auth-Id")
 	authRef := r.Header.Get("X-Auth-Reference")
@@ -136,12 +148,38 @@ func tryTraefikHeaders(r *http.Request) (auth.User, bool) {
 	if authType == "" || authID == "" {
 		return auth.User{}, false
 	}
+	if !strings.EqualFold(authType, "token") && !strings.EqualFold(authType, "user") {
+		return auth.User{}, false
+	}
 
-	return auth.User{
+	user := auth.User{
 		ID:       authID,
 		AuthType: authType,
 		Email:    authRef,
-	}, true
+	}
+	if strings.EqualFold(authType, "token") {
+		user.TokenID = authID
+		user.UserID = r.Header.Get("X-Auth-User-ID")
+	} else {
+		user.UserID = authID
+	}
+	return user, true
+}
+
+func validatePrincipal(ctx context.Context, cfg AuthConfig, user auth.User) (auth.User, error) {
+	if cfg.PrincipalValidator == nil {
+		return user, nil
+	}
+	return cfg.PrincipalValidator.ValidatePrincipal(ctx, user)
+}
+
+func serveAuthenticated(next http.Handler, w http.ResponseWriter, r *http.Request, user auth.User, source auth.AuthenticationSource) {
+	ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, source)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func writeInactivePrincipal(w http.ResponseWriter) {
+	http.Error(w, `{"error":"authenticated principal is inactive"}`, http.StatusUnauthorized)
 }
 
 func verifySessionCookie(token, secret string) (auth.User, bool) {
@@ -167,10 +205,9 @@ func verifySessionCookie(token, secret string) (auth.User, bool) {
 		return auth.User{}, false
 	}
 
-	if exp, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(exp) {
-			return auth.User{}, false
-		}
+	exp, ok := claims["exp"].(float64)
+	if !ok || exp != float64(int64(exp)) || time.Now().Unix() > int64(exp) {
+		return auth.User{}, false
 	}
 
 	var uid string
@@ -180,34 +217,41 @@ func verifySessionCookie(token, secret string) (auth.User, bool) {
 	case float64:
 		uid = fmt.Sprintf("%d", int64(v))
 	}
+	if _, ok := positiveSessionUserID(uid); !ok {
+		return auth.User{}, false
+	}
 
 	email, _ := claims["email"].(string)
 
 	return auth.User{
 		ID:       uid,
+		UserID:   uid,
 		Email:    email,
 		AuthType: "session",
-		Roles:    []string{"admin"},
 	}, true
+}
+
+func positiveSessionUserID(value string) (int64, bool) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return id, err == nil && id > 0
 }
 
 func devUser() auth.User {
 	return auth.User{
 		ID:       "1",
+		UserID:   "1",
 		Email:    "dev@elitea.ai",
 		AuthType: "dev",
 		Roles:    []string{"admin"},
 	}
 }
 
-func authCacheKey(authHeader string) string {
-	h := sha256.Sum256([]byte(authHeader))
-	return "auth:token:" + hex.EncodeToString(h[:])
-}
-
 func validateToken(ctx context.Context, cfg AuthConfig, token string) (auth.User, error) {
 	if cfg.Validator != nil {
 		return cfg.Validator.ValidateToken(ctx, token)
+	}
+	if cfg.Client == nil {
+		return auth.User{}, fmt.Errorf("authentication validator is not configured")
 	}
 	return cfg.Client.ValidateToken(ctx, token)
 }

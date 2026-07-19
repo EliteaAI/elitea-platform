@@ -2,31 +2,50 @@ package configurations
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	defaultConfigurationListLimit = 20
+	maxConfigurationListLimit     = 200
+	maxConfigurationModelRows     = 1000
+	maxConfigurationRequestBytes  = 1 << 20
+)
+
 type Handler struct {
-	pool *pgxpool.Pool
+	pool               *pgxpool.Pool
+	permissionResolver auth.PermissionResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+type Option func(*Handler)
+
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(handler *Handler) {
+		handler.permissionResolver = resolver
+	}
+}
+
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	return handler
 }
 
 func (h *Handler) Routes() chi.Router {
-	r := chi.NewRouter()
+	r := h.ProductionRoutes()
 	r.Get("/available/", h.Available)
-	r.Get("/configurations/{projectID}", h.List)
-	r.Post("/configurations/{projectID}", h.Create)
-	r.Get("/configuration/{projectID}/{configID}", h.Get)
-	r.Put("/configuration/{projectID}/{configID}", h.Update)
-	r.Delete("/configuration/{projectID}/{configID}", h.Delete)
 	r.Post("/check_connection/{projectID}/{configType}", h.CheckConnection)
 	r.Post("/check_connections/{projectID}", h.BatchCheckConnections)
 	r.Get("/models/{projectID}", h.ListModels)
@@ -34,6 +53,29 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/types/{projectID}", h.ListTypes)
 	r.Get("/tts_voices/{projectID}", h.TTSVoices)
 	return r
+}
+
+// ProductionRoutes is an unmounted cutover candidate containing only methods
+// with an audited exact legacy permission, mode, and project extractor. RBAC
+// parity alone is not business-logic parity; NewRouter must not mount this set
+// until the tenant repository, validation, secret, event, and DTO contracts are
+// complete. Routes() retains the wider prototype surface for parity work.
+func (h *Handler) ProductionRoutes() chi.Router {
+	r := chi.NewRouter()
+	r.With(h.require("configurations.configurations.list")).Get("/configurations/{projectID}", h.List)
+	r.With(h.require("configurations.configuration.create")).Post("/configurations/{projectID}", h.Create)
+	r.With(h.require("configurations.configuration.details")).Get("/configuration/{projectID}/{configID}", h.Get)
+	r.With(h.require("configurations.configuration.update")).Put("/configuration/{projectID}/{configID}", h.Update)
+	r.With(h.require("configurations.configuration.delete")).Delete("/configuration/{projectID}/{configID}", h.Delete)
+	return r
+}
+
+func (h *Handler) require(permission string) func(http.Handler) http.Handler {
+	return middleware.RequireResolvedPermissions(
+		h.permissionResolver,
+		auth.PermissionModeDefault,
+		permission,
+	)
 }
 
 type ConfigurationType struct {
@@ -69,27 +111,31 @@ func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
 		"image_generation_model": "Image Generation Model",
 	}
 
-	// Supplement with distinct types from p_1 as a representative schema
-	ctx := r.Context()
-	dbQ := `SELECT DISTINCT type, section FROM "p_1".configuration WHERE type IS NOT NULL ORDER BY type`
-	rows, err := h.pool.Query(ctx, dbQ)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var typeName, section string
-			if err := rows.Scan(&typeName, &section); err != nil || known[typeName] {
-				continue
+	// Until the versioned catalog is composed, supplement the compatibility
+	// response only when a database is configured. Never make p_1 availability
+	// a process-start requirement for static handler tests or tooling.
+	if h.pool != nil {
+		ctx := r.Context()
+		dbQ := `SELECT DISTINCT type, section FROM "p_1".configuration WHERE type IS NOT NULL ORDER BY type`
+		rows, err := h.pool.Query(ctx, dbQ)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var typeName, section string
+				if err := rows.Scan(&typeName, &section); err != nil || known[typeName] {
+					continue
+				}
+				displayName := displayNames[typeName]
+				if displayName == "" {
+					displayName = typeName
+				}
+				hardcoded = append(hardcoded, ConfigurationType{
+					Type:        typeName,
+					DisplayName: displayName,
+					Section:     section,
+				})
+				known[typeName] = true
 			}
-			displayName := displayNames[typeName]
-			if displayName == "" {
-				displayName = typeName
-			}
-			hardcoded = append(hardcoded, ConfigurationType{
-				Type:        typeName,
-				DisplayName: displayName,
-				Section:     section,
-			})
-			known[typeName] = true
 		}
 	}
 
@@ -135,7 +181,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 {
-		limit = 20
+		limit = defaultConfigurationListLimit
+	}
+	if limit > maxConfigurationListLimit {
+		limit = maxConfigurationListLimit
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
 	schema := fmt.Sprintf("p_%s", projectID)
@@ -291,7 +343,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeBoundedJSON(w, r, &body) {
+		return
+	}
 
 	dataBytes, _ := json.Marshal(body["data"])
 	metaBytes, _ := json.Marshal(body["meta"])
@@ -304,6 +358,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	`, schema)
 
 	pID, _ := strconv.Atoi(projectID)
+	var authorID any
+	if user, ok := auth.UserFromContext(ctx); ok {
+		if owningUserID, safe := user.OwningUserID(); safe {
+			authorID = owningUserID
+		}
+	}
 	var id int
 	var uuid string
 	var createdAt time.Time
@@ -316,10 +376,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		dataBytes,
 		metaBytes,
 		shared,
-		nil,
+		authorID,
 	).Scan(&id, &uuid, &createdAt)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"create failed: %s"}`, err.Error()), http.StatusInternalServerError)
+		http.Error(w, `{"error":"create failed"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -347,7 +407,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeBoundedJSON(w, r, &body) {
+		return
+	}
 
 	dataBytes, _ := json.Marshal(body["data"])
 	metaBytes, _ := json.Marshal(body["meta"])
@@ -421,7 +483,9 @@ func (h *Handler) CheckConnection(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) {
 	var items []map[string]any
-	json.NewDecoder(r.Body).Decode(&items)
+	if !decodeBoundedJSON(w, r, &items) {
+		return
+	}
 	results := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		results = append(results, map[string]any{"id": item["id"], "success": true, "message": "Connection successful"})
@@ -449,6 +513,10 @@ type TypeDescriptor struct {
 }
 
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
@@ -460,7 +528,8 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		FROM %q.configuration
 		WHERE type = ANY($1)
 		ORDER BY id
-	`, schema)
+		LIMIT %d
+	`, schema, maxConfigurationModelRows)
 
 	rows, err := h.pool.Query(ctx, q, modelTypes)
 	if err != nil {
@@ -492,28 +561,34 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeBoundedJSON(w, r, &body) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
 }
 
 func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		writeJSON(w, http.StatusOK, []TypeDescriptor{})
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
 	displayNames := map[string]string{
-		"llm_model":               "LLM Model",
-		"embedding_model":         "Embedding Model",
-		"asr_model":               "ASR Model",
-		"tts_model":               "TTS Model",
-		"image_generation_model":  "Image Generation Model",
+		"llm_model":              "LLM Model",
+		"embedding_model":        "Embedding Model",
+		"asr_model":              "ASR Model",
+		"tts_model":              "TTS Model",
+		"image_generation_model": "Image Generation Model",
 	}
 	sectionMap := map[string]string{
-		"llm_model":               "llm",
-		"embedding_model":         "embedding",
-		"asr_model":               "asr",
-		"tts_model":               "tts",
-		"image_generation_model":  "image_generation",
+		"llm_model":              "llm",
+		"embedding_model":        "embedding",
+		"asr_model":              "asr",
+		"tts_model":              "tts",
+		"image_generation_model": "image_generation",
 	}
 
 	q := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration ORDER BY type`, schema)
@@ -556,4 +631,25 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
+}
+
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxConfigurationRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return false
+	}
+
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return false
+	}
+	return true
 }

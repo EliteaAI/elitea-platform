@@ -31,7 +31,6 @@ const (
 
 	resourceClass       = "validation-small"
 	isolationClass      = "shared-credential-free"
-	grantTemplateID     = "configuration-validation-read-v1"
 	inputClassification = "tenant-confidential"
 	inputGrantAudience  = "elitea.runtime.input.read.v1"
 
@@ -147,7 +146,6 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	dispatchPolicy := repos.ValidationDispatchPolicy{
 		StreamName:        config.CommandStream,
 		CapabilityVersion: capabilityVersion,
-		GrantTemplateID:   grantTemplateID,
 		ResourceClass:     resourceClass,
 		IsolationClass:    isolationClass,
 		Priority:          1,
