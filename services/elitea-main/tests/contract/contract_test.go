@@ -98,8 +98,8 @@ func compareEndpoints(t *testing.T, method, path string, body io.Reader) Compare
 
 	goBody, _ := io.ReadAll(goResp.Body)
 	legacyBody, _ := io.ReadAll(legacyResp.Body)
-	goResp.Body.Close()
-	legacyResp.Body.Close()
+	_ = goResp.Body.Close()
+	_ = legacyResp.Body.Close()
 
 	goKeys := extractTopLevelKeys(goBody)
 	legacyKeys := extractTopLevelKeys(legacyBody)

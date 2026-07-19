@@ -73,5 +73,5 @@ func (h *AdminHandler) DecommissionReport(w http.ResponseWriter, r *http.Request
 	} else {
 		w.WriteHeader(http.StatusPreconditionFailed)
 	}
-	json.NewEncoder(w).Encode(report)
+	_ = json.NewEncoder(w).Encode(report)
 }

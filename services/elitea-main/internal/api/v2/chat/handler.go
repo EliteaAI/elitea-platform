@@ -71,12 +71,12 @@ func (h *Handler) streamSend(w http.ResponseWriter, r *http.Request, req convers
 
 	if err := h.chat.SendMessageStream(r.Context(), req, send); err != nil {
 		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
-		sse.Event("error", string(errData))
+		_ = sse.Event("error", string(errData))
 	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -81,7 +81,9 @@ func TestOptimizeContext_ReturnsOK(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if v, _ := resp["ok"].(bool); !v {
 		t.Errorf("expected ok=true in response, got %v", resp)
 	}
@@ -128,7 +130,9 @@ func TestGetAnalytics_ErrorFallsBackToDefaults(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	var resp contextmgr.Analytics
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp.TokenCount != 0 {
 		t.Errorf("expected token_count 0, got %d", resp.TokenCount)
 	}
@@ -150,7 +154,9 @@ func TestListSummaries_Empty(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	items, ok := resp["summaries"].([]interface{})
 	if !ok {
 		t.Fatalf("expected summaries array, got %T", resp["summaries"])
@@ -176,7 +182,9 @@ func TestListSummaries_ErrorFallsBackToEmpty(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp["summaries"] == nil {
 		t.Error("expected summaries field in response")
 	}
@@ -225,7 +233,9 @@ func TestUpdateSummary_OK(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if v, _ := resp["ok"].(bool); !v {
 		t.Errorf("expected ok=true, got %v", resp)
 	}

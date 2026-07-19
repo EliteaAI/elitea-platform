@@ -12,10 +12,10 @@ func parseAnalyticsQueryParams(projectID string, dateFrom *generated.DateFrom, d
 		ProjectID: projectID,
 	}
 	if dateFrom != nil {
-		params.StartDate = dateFrom.Time.Format("2006-01-02")
+		params.StartDate = dateFrom.Format("2006-01-02")
 	}
 	if dateTo != nil {
-		params.EndDate = dateTo.Time.Format("2006-01-02")
+		params.EndDate = dateTo.Format("2006-01-02")
 	}
 	return params
 }

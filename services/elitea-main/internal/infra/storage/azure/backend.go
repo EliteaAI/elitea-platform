@@ -122,7 +122,9 @@ func (b *Backend) RenameBucket(ctx context.Context, projectID, oldName, newName 
 			if err != nil {
 				return fmt.Errorf("storage/azure: rename copy: %w", err)
 			}
-			b.containerClient().NewBlobClient(*item.Name).Delete(ctx, nil)
+			if _, err := b.containerClient().NewBlobClient(*item.Name).Delete(ctx, nil); err != nil {
+				return fmt.Errorf("storage/azure: rename delete old: %w", err)
+			}
 		}
 	}
 	return nil

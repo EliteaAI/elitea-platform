@@ -71,7 +71,7 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (auth.User, er
 	replyChannel := fmt.Sprintf("pylon_main:rpc:reply:%s", reqID)
 
 	sub := c.redis.Subscribe(ctx, replyChannel)
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	if _, err := sub.Receive(ctx); err != nil {
 		return auth.User{}, fmt.Errorf("authsvc: subscribe failed: %w", err)

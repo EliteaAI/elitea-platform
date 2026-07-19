@@ -58,7 +58,7 @@ func TestListResponse_JSONShape(t *testing.T) {
 	}
 
 	var raw map[string]json.RawMessage
-	json.Unmarshal(data, &raw)
+	_ = json.Unmarshal(data, &raw)
 
 	requiredFields := []string{"rows", "total", "page", "page_size", "total_pages"}
 	for _, f := range requiredFields {
@@ -110,7 +110,7 @@ func TestPredictRequest_OmitsEmpty(t *testing.T) {
 	}
 
 	var raw map[string]json.RawMessage
-	json.Unmarshal(data, &raw)
+	_ = json.Unmarshal(data, &raw)
 
 	if _, ok := raw["variables"]; ok {
 		t.Error("expected variables to be omitted when nil")

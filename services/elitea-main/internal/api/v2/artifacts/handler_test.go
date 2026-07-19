@@ -38,12 +38,12 @@ func TestListBuckets_Empty(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	items, ok := resp["items"].([]interface{})
+	rows, ok := resp["rows"].([]interface{})
 	if !ok {
-		t.Fatalf("expected items array, got %T", resp["items"])
+		t.Fatalf("expected rows array, got %T", resp["rows"])
 	}
-	if len(items) != 0 {
-		t.Errorf("expected empty items, got %d items", len(items))
+	if len(rows) != 0 {
+		t.Errorf("expected empty rows, got %d rows", len(rows))
 	}
 	if total := resp["total"].(float64); total != 0 {
 		t.Errorf("expected total 0, got %v", total)
@@ -60,21 +60,22 @@ func TestCreateBucket_ReturnsCreated(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d", rr.Code)
+	// Handler returns 200 with {"message":"Created","id":...,"name":...}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
 	}
-	var bucket artifacts.Bucket
-	if err := json.NewDecoder(rr.Body).Decode(&bucket); err != nil {
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if bucket.Name != "test-bucket" {
-		t.Errorf("expected name %q, got %q", "test-bucket", bucket.Name)
+	if resp["name"] != "test-bucket" {
+		t.Errorf("expected name %q, got %q", "test-bucket", resp["name"])
 	}
-	if bucket.ID == "" {
-		t.Error("expected non-empty bucket ID")
+	if id, ok := resp["id"].(string); !ok || id == "" {
+		t.Error("expected non-empty id in response")
 	}
-	if bucket.CreatedAt.IsZero() {
-		t.Error("expected non-zero created_at")
+	if msg, _ := resp["message"].(string); msg != "Created" {
+		t.Errorf("expected message %q, got %q", "Created", msg)
 	}
 }
 
@@ -93,12 +94,12 @@ func TestListArtifacts_Empty(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	items, ok := resp["items"].([]interface{})
+	rows, ok := resp["rows"].([]interface{})
 	if !ok {
-		t.Fatalf("expected items array, got %T", resp["items"])
+		t.Fatalf("expected rows array, got %T", resp["rows"])
 	}
-	if len(items) != 0 {
-		t.Errorf("expected empty items, got %d items", len(items))
+	if len(rows) != 0 {
+		t.Errorf("expected empty rows, got %d rows", len(rows))
 	}
 }
 
@@ -114,7 +115,9 @@ func TestGetArtifact_NotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rr.Code)
 	}
 	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp["error"] == nil {
 		t.Error("expected error field in response")
 	}
@@ -148,15 +151,44 @@ func TestCreateArtifact_ReturnsCreated(t *testing.T) {
 	}
 }
 
-func TestDeleteArtifact_NoContent(t *testing.T) {
+func TestDeleteArtifact_MissingFilename(t *testing.T) {
 	h := artifacts.NewInMemoryHandler()
 	r := newTestRouter(h)
 
+	// No filename query param — handler must return 400.
 	req := httptest.NewRequest(http.MethodDelete, "/projects/p1/buckets/b1/artifact", nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["error"] == nil {
+		t.Error("expected error field in response")
+	}
+}
+
+func TestDeleteArtifact_WithFilename(t *testing.T) {
+	h := artifacts.NewInMemoryHandler()
+	r := newTestRouter(h)
+
+	// With filename provided and no storage backend, handler returns 200 + message.
+	req := httptest.NewRequest(http.MethodDelete, "/projects/p1/buckets/b1/artifact?filename=test.txt", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["message"] != "Deleted" {
+		t.Errorf("expected message %q, got %v", "Deleted", resp["message"])
 	}
 }

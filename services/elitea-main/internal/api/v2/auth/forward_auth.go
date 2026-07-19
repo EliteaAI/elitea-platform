@@ -85,7 +85,7 @@ func (h *ForwardAuthHandler) writeSuccess(w http.ResponseWriter, authType, authI
 	w.Header().Set("X-Auth-ID", authID)
 	w.Header().Set("X-Auth-Reference", authRef)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 }
 
 func extractToken(authHeader string) (string, bool) {

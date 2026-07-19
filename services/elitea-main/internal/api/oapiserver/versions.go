@@ -105,7 +105,7 @@ func (s *Server) ValidateApplicationVersion(w http.ResponseWriter, r *http.Reque
 
 	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1 AND application_id = $2)`, schema)
 	var valid bool
-	s.pool.QueryRow(ctx, q, versionId, applicationId).Scan(&valid)
+	_ = s.pool.QueryRow(ctx, q, versionId, applicationId).Scan(&valid) // valid defaults to false on error
 	writeJSON(w, http.StatusOK, map[string]any{"valid": valid})
 }
 
@@ -154,8 +154,8 @@ func (s *Server) CheckVersionInUse(w http.ResponseWriter, r *http.Request, proje
 
 	// Check entity_skill_mapping and entity_tool_mapping for references to this version.
 	var skillCount, toolCount int
-	s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), versionId).Scan(&skillCount)
-	s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionId).Scan(&toolCount)
+	_ = s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), versionId).Scan(&skillCount) // counts default to 0 on error
+	_ = s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionId).Scan(&toolCount)   // counts default to 0 on error
 
 	inUse := skillCount+toolCount > 0
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -185,19 +185,19 @@ func (s *Server) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 
 	// Replace skill mappings.
-	s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), selectedVersionId)
+	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema), selectedVersionId) // best-effort
 	for _, skillID := range body.Skills {
-		s.pool.Exec(ctx, fmt.Sprintf(`
+		_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.entity_skill_mapping (entity_version_id, skill_id)
-			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, skillID)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, skillID) // best-effort
 	}
 
 	// Replace tool mappings.
-	s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), selectedVersionId)
+	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), selectedVersionId) // best-effort
 	for _, toolID := range body.Tools {
-		s.pool.Exec(ctx, fmt.Sprintf(`
+		_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.entity_tool_mapping (entity_version_id, tool_id)
-			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, toolID)
+			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), selectedVersionId, toolID) // best-effort
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -256,11 +256,11 @@ func (s *Server) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 
 	toolkitIDStr := strconv.Itoa(params.ToolkitId)
-	s.pool.Exec(ctx, fmt.Sprintf(`
+	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE %q.application_versions
 		SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb)
 		WHERE id = $2`, schema),
-		fmt.Sprintf(`{"toolkit_id":"%s"}`, toolkitIDStr), versionId)
+		fmt.Sprintf(`{"toolkit_id":"%s"}`, toolkitIDStr), versionId) // best-effort metadata update
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
