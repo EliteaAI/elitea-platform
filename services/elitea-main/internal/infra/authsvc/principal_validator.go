@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -11,30 +12,38 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
 var ErrPrincipalInactive = errors.New("authsvc: principal is inactive")
 
-type principalStore interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
+type principalQueries interface {
+	GetActivePATPrincipalByID(
+		context.Context,
+		int32,
+	) (sqlcgen.GetActivePATPrincipalByIDRow, error)
+	GetActiveUserPrincipalByID(
+		context.Context,
+		int32,
+	) (sqlcgen.GetActiveUserPrincipalByIDRow, error)
 }
 
 // PrincipalValidator rechecks mutable account state after a credential or
 // session has been validated. This keeps suspension authoritative even when
 // the credential result came from the short-lived authentication cache.
 type PrincipalValidator struct {
-	store principalStore
+	queries principalQueries
 }
 
 func NewPrincipalValidator(pool *pgxpool.Pool) *PrincipalValidator {
 	if pool == nil {
 		return &PrincipalValidator{}
 	}
-	return &PrincipalValidator{store: pool}
+	return &PrincipalValidator{queries: sqlcgen.New(pool)}
 }
 
 func (v *PrincipalValidator) ValidatePrincipal(ctx context.Context, principal auth.User) (auth.User, error) {
-	if v == nil || v.store == nil {
+	if v == nil || v.queries == nil {
 		return auth.User{}, ErrPrincipalInactive
 	}
 
@@ -47,37 +56,30 @@ func (v *PrincipalValidator) ValidatePrincipal(ctx context.Context, principal au
 		if principal.TokenID == "" || principal.UserID == "" {
 			return auth.User{}, ErrPrincipalInactive
 		}
-		id, ok := positivePrincipalID(principal.TokenID)
+		id, ok := principalDatabaseID(principal.TokenID)
 		if !ok {
 			return auth.User{}, ErrPrincipalInactive
 		}
-		claimedUserID, ok := positivePrincipalID(principal.UserID)
+		claimedUserID, ok := principalDatabaseID(principal.UserID)
 		if !ok {
 			return auth.User{}, ErrPrincipalInactive
 		}
-		var userID int64
-		var email string
-		err := v.store.QueryRow(ctx, `
-SELECT token.user_id, COALESCE(owner.email, '')
-FROM public.auth_core__token AS token
-JOIN public.auth_core__user AS owner ON owner.id = token.user_id
-WHERE token.id = $1
-  AND owner.suspended = false
-  AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'))`, id).Scan(&userID, &email)
+		row, err := v.queries.GetActivePATPrincipalByID(ctx, id)
 		if err != nil {
 			return auth.User{}, principalValidationError("token", err)
 		}
-		if claimedUserID != userID {
+		if row.TokenID <= 0 || row.UserID <= 0 || claimedUserID != row.UserID {
 			return auth.User{}, ErrPrincipalInactive
 		}
-		principal.TokenID = strconv.FormatInt(id, 10)
-		principal.UserID = strconv.FormatInt(userID, 10)
+		principal.TokenID = strconv.FormatInt(int64(row.TokenID), 10)
+		principal.UserID = strconv.FormatInt(int64(row.UserID), 10)
 		// Compatibility handlers still use User.ID as an owning-user foreign
 		// key. Never allow the forwarded token row ID to reach those paths.
 		principal.ID = principal.UserID
-		if principal.Email == "" {
-			principal.Email = email
-		}
+		// ForwardAuth intentionally emits the current-baseline token reference
+		// "-". Resolve mutable identity attributes from PostgreSQL instead of
+		// trusting that transport field or a stale session/cache value.
+		principal.Email = row.Email
 		return principal, nil
 	}
 
@@ -85,31 +87,26 @@ WHERE token.id = $1
 	if userIDValue == "" {
 		userIDValue = principal.ID
 	}
-	userID, ok := positivePrincipalID(userIDValue)
+	userID, ok := principalDatabaseID(userIDValue)
 	if !ok {
 		return auth.User{}, ErrPrincipalInactive
 	}
-	var email string
-	err := v.store.QueryRow(ctx,
-		`SELECT COALESCE(email, '') FROM public.auth_core__user WHERE id = $1 AND suspended = false`,
-		userID,
-	).Scan(&email)
+	row, err := v.queries.GetActiveUserPrincipalByID(ctx, userID)
 	if err != nil {
 		return auth.User{}, principalValidationError("user", err)
 	}
-	principal.UserID = strconv.FormatInt(userID, 10)
-	if principal.ID == "" {
-		principal.ID = principal.UserID
+	if row.UserID <= 0 || row.UserID != userID {
+		return auth.User{}, ErrPrincipalInactive
 	}
-	if principal.Email == "" {
-		principal.Email = email
-	}
+	principal.UserID = strconv.FormatInt(int64(row.UserID), 10)
+	principal.ID = principal.UserID
+	principal.Email = row.Email
 	return principal, nil
 }
 
-func positivePrincipalID(value string) (int64, bool) {
+func principalDatabaseID(value string) (int32, bool) {
 	id, err := strconv.ParseInt(value, 10, 64)
-	return id, err == nil && id > 0
+	return int32(id), err == nil && id > 0 && id <= math.MaxInt32
 }
 
 func principalValidationError(kind string, err error) error {

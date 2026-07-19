@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 )
@@ -82,6 +83,32 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 	}
 	if principal.TokenID != fmt.Sprintf("%d", created.ID) || principal.UserID != "7" || principal.ID != "7" {
 		t.Fatalf("validated principal = %+v", principal)
+	}
+	principalValidator := authsvc.NewPrincipalValidator(pool)
+	forwarded, err := principalValidator.ValidatePrincipal(ctx, identity.User{
+		ID:       fmt.Sprintf("%d", created.ID),
+		TokenID:  fmt.Sprintf("%d", created.ID),
+		UserID:   "7",
+		Email:    "-",
+		AuthType: "token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forwarded.ID != "7" || forwarded.UserID != "7" || forwarded.TokenID != fmt.Sprintf("%d", created.ID) || forwarded.Email != "owner@example.test" {
+		t.Fatalf("forwarded principal = %+v", forwarded)
+	}
+	session, err := principalValidator.ValidatePrincipal(ctx, identity.User{
+		ID:       "42",
+		UserID:   "7",
+		Email:    "untrusted@example.test",
+		AuthType: "session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ID != "7" || session.UserID != "7" || session.Email != "owner@example.test" {
+		t.Fatalf("session principal = %+v", session)
 	}
 
 	listed, err := repository.List(ctx, 7)

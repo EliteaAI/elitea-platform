@@ -8,53 +8,55 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
-type principalRow struct {
-	values []any
-	err    error
+type principalQueriesStub struct {
+	activePAT  func(context.Context, int32) (sqlcgen.GetActivePATPrincipalByIDRow, error)
+	activeUser func(context.Context, int32) (sqlcgen.GetActiveUserPrincipalByIDRow, error)
 }
 
-func (r principalRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
+func (s principalQueriesStub) GetActivePATPrincipalByID(
+	ctx context.Context,
+	tokenID int32,
+) (sqlcgen.GetActivePATPrincipalByIDRow, error) {
+	if s.activePAT == nil {
+		return sqlcgen.GetActivePATPrincipalByIDRow{}, pgx.ErrNoRows
 	}
-	if len(dest) != len(r.values) {
-		return errors.New("unexpected scan shape")
-	}
-	for i, value := range r.values {
-		switch target := dest[i].(type) {
-		case *int64:
-			*target = value.(int64)
-		case *string:
-			*target = value.(string)
-		default:
-			return errors.New("unexpected scan target")
-		}
-	}
-	return nil
+	return s.activePAT(ctx, tokenID)
 }
 
-type principalStoreFunc func(context.Context, string, ...any) pgx.Row
-
-func (f principalStoreFunc) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	return f(ctx, query, args...)
+func (s principalQueriesStub) GetActiveUserPrincipalByID(
+	ctx context.Context,
+	userID int32,
+) (sqlcgen.GetActiveUserPrincipalByIDRow, error) {
+	if s.activeUser == nil {
+		return sqlcgen.GetActiveUserPrincipalByIDRow{}, pgx.ErrNoRows
+	}
+	return s.activeUser(ctx, userID)
 }
 
 func TestPrincipalValidatorTokenCrossChecksOwnerDespiteNumericIDCollision(t *testing.T) {
-	validator := &PrincipalValidator{store: principalStoreFunc(func(_ context.Context, _ string, args ...any) pgx.Row {
-		if got := args[0]; got != int64(42) {
-			t.Fatalf("token row ID = %v, want 42", got)
-		}
-		// Token row 42 deliberately belongs to user 7. The user table may also
-		// contain row 42; it must never be inferred as this token's owner.
-		return principalRow{values: []any{int64(7), "owner@example.test"}}
-	})}
+	validator := &PrincipalValidator{queries: principalQueriesStub{
+		activePAT: func(_ context.Context, tokenID int32) (sqlcgen.GetActivePATPrincipalByIDRow, error) {
+			if tokenID != 42 {
+				t.Fatalf("token row ID = %d, want 42", tokenID)
+			}
+			// Token row 42 deliberately belongs to user 7. The user table may
+			// also contain row 42; it must never be inferred as this token's owner.
+			return sqlcgen.GetActivePATPrincipalByIDRow{
+				TokenID: 42,
+				UserID:  7,
+				Email:   "owner@example.test",
+			}, nil
+		},
+	}}
 
 	got, err := validator.ValidatePrincipal(context.Background(), auth.User{
 		ID:       "42",
 		TokenID:  "42",
 		UserID:   "7",
+		Email:    "-",
 		AuthType: "token",
 	})
 	if err != nil {
@@ -63,12 +65,21 @@ func TestPrincipalValidatorTokenCrossChecksOwnerDespiteNumericIDCollision(t *tes
 	if got.ID != "7" || got.TokenID != "42" || got.UserID != "7" {
 		t.Fatalf("resolved principal = %+v", got)
 	}
+	if got.Email != "owner@example.test" {
+		t.Fatalf("resolved email = %q, want authoritative database email", got.Email)
+	}
 }
 
 func TestPrincipalValidatorRejectsMismatchedClaimedTokenOwner(t *testing.T) {
-	validator := &PrincipalValidator{store: principalStoreFunc(func(context.Context, string, ...any) pgx.Row {
-		return principalRow{values: []any{int64(7), "owner@example.test"}}
-	})}
+	validator := &PrincipalValidator{queries: principalQueriesStub{
+		activePAT: func(context.Context, int32) (sqlcgen.GetActivePATPrincipalByIDRow, error) {
+			return sqlcgen.GetActivePATPrincipalByIDRow{
+				TokenID: 42,
+				UserID:  7,
+				Email:   "owner@example.test",
+			}, nil
+		},
+	}}
 
 	_, err := validator.ValidatePrincipal(context.Background(), auth.User{
 		ID:       "42",
@@ -108,10 +119,16 @@ func TestPrincipalValidatorRejectsIncompleteCachedTokenBeforeLookup(t *testing.T
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			validator := &PrincipalValidator{store: principalStoreFunc(func(context.Context, string, ...any) pgx.Row {
-				calls++
-				return principalRow{err: pgx.ErrNoRows}
-			})}
+			validator := &PrincipalValidator{queries: principalQueriesStub{
+				activePAT: func(context.Context, int32) (sqlcgen.GetActivePATPrincipalByIDRow, error) {
+					calls++
+					return sqlcgen.GetActivePATPrincipalByIDRow{}, pgx.ErrNoRows
+				},
+				activeUser: func(context.Context, int32) (sqlcgen.GetActiveUserPrincipalByIDRow, error) {
+					calls++
+					return sqlcgen.GetActiveUserPrincipalByIDRow{}, pgx.ErrNoRows
+				},
+			}}
 
 			_, err := validator.ValidatePrincipal(context.Background(), test.principal)
 			if !errors.Is(err, ErrPrincipalInactive) {
@@ -124,13 +141,62 @@ func TestPrincipalValidatorRejectsIncompleteCachedTokenBeforeLookup(t *testing.T
 	}
 }
 
-func TestPrincipalValidatorRejectsSuspendedOrMissingUser(t *testing.T) {
-	validator := &PrincipalValidator{store: principalStoreFunc(func(context.Context, string, ...any) pgx.Row {
-		return principalRow{err: pgx.ErrNoRows}
-	})}
+func TestPrincipalValidatorUsesAuthoritativeActiveUserAttributes(t *testing.T) {
+	validator := &PrincipalValidator{queries: principalQueriesStub{
+		activeUser: func(_ context.Context, userID int32) (sqlcgen.GetActiveUserPrincipalByIDRow, error) {
+			if userID != 7 {
+				t.Fatalf("user ID = %d, want 7", userID)
+			}
+			return sqlcgen.GetActiveUserPrincipalByIDRow{
+				UserID: 7,
+				Email:  "owner@example.test",
+			}, nil
+		},
+	}}
 
-	_, err := validator.ValidatePrincipal(context.Background(), auth.User{ID: "7", UserID: "7", AuthType: "session"})
+	got, err := validator.ValidatePrincipal(context.Background(), auth.User{
+		ID:       "42",
+		UserID:   "7",
+		Email:    "untrusted@example.test",
+		AuthType: "session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "7" || got.UserID != "7" || got.Email != "owner@example.test" {
+		t.Fatalf("resolved principal = %+v", got)
+	}
+}
+
+func TestPrincipalValidatorRejectsSuspendedOrMissingUser(t *testing.T) {
+	validator := &PrincipalValidator{queries: principalQueriesStub{}}
+
+	_, err := validator.ValidatePrincipal(
+		context.Background(),
+		auth.User{ID: "7", UserID: "7", AuthType: "session"},
+	)
 	if !errors.Is(err, ErrPrincipalInactive) {
 		t.Fatalf("error = %v, want ErrPrincipalInactive", err)
+	}
+}
+
+func TestPrincipalValidatorRejectsIDsOutsideBaselineDatabaseRangeBeforeLookup(t *testing.T) {
+	calls := 0
+	validator := &PrincipalValidator{queries: principalQueriesStub{
+		activeUser: func(context.Context, int32) (sqlcgen.GetActiveUserPrincipalByIDRow, error) {
+			calls++
+			return sqlcgen.GetActiveUserPrincipalByIDRow{}, nil
+		},
+	}}
+
+	_, err := validator.ValidatePrincipal(
+		context.Background(),
+		auth.User{ID: "2147483648", UserID: "2147483648", AuthType: "session"},
+	)
+	if !errors.Is(err, ErrPrincipalInactive) {
+		t.Fatalf("error = %v, want ErrPrincipalInactive", err)
+	}
+	if calls != 0 {
+		t.Fatalf("database lookups = %d, want 0", calls)
 	}
 }

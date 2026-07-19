@@ -11,7 +11,9 @@ import (
 type Querier interface {
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
+	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
+	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
