@@ -60,7 +60,29 @@ tasks:
       - python scripts/contract/generate_configuration_validation_fixtures.py --check
       - python scripts/contract/check_configuration_validation_contract.py
       - python3 scripts/database/check_legacy_catalog_contract.py
+      - python3 scripts/security/check_auth_baseline_catalog.py
       - python3 scripts/security/check_legacy_rbac_drift.py
+
+  baseline:auth:refresh:
+    desc: Refresh deterministic current-baseline pylon_auth interface evidence
+    vars:
+      AUTH_BASELINE_PLUGINS_ROOT: '{{.AUTH_BASELINE_PLUGINS_ROOT | default "../centry/pylon_auth/plugins"}}'
+    preconditions:
+      - sh: test -d "{{.AUTH_BASELINE_PLUGINS_ROOT}}"
+        msg: Set AUTH_BASELINE_PLUGINS_ROOT to the current pylon_auth/plugins directory
+    cmds:
+      - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json
+
+  baseline:auth:check:
+    desc: Verify checked-in current-baseline pylon_auth interface evidence
+    vars:
+      AUTH_BASELINE_PLUGINS_ROOT: '{{.AUTH_BASELINE_PLUGINS_ROOT | default "../centry/pylon_auth/plugins"}}'
+    preconditions:
+      - sh: test -d "{{.AUTH_BASELINE_PLUGINS_ROOT}}"
+        msg: Set AUTH_BASELINE_PLUGINS_ROOT to the current pylon_auth/plugins directory
+    cmds:
+      - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json --check
+      - python3 scripts/security/check_auth_baseline_catalog.py
 
   legacy:rbac:refresh:
     desc: Refresh deterministic legacy route/permission evidence from the Centry checkout

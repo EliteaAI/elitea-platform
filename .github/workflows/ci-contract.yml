@@ -6,6 +6,8 @@ on:
       - "libs/proto/**"
       - "libs/jsonschema/**"
       - "scripts/contract/**"
+      - "scripts/security/**"
+      - "testdata/baseline/auth-static-catalog.json"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
   push:
@@ -68,12 +70,14 @@ jobs:
           scripts/contract/generate_proto.sh
           git diff --exit-code -- libs/proto/gen
 
-      - name: Check legacy-derived byte corpus and security invariants
+      - name: Check baseline-derived byte corpus and security invariants
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           python scripts/contract/generate_configuration_validation_fixtures.py --check
           python scripts/contract/check_configuration_validation_contract.py
+          python scripts/security/test_export_auth_baseline_catalog.py
+          python scripts/security/check_auth_baseline_catalog.py
 
       - name: Test generated Go module
         working-directory: libs/proto/gen/go
