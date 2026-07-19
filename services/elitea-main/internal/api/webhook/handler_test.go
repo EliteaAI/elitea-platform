@@ -74,7 +74,7 @@ func TestHandler_List(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(w.Body).Decode(&body)
+	_ = json.NewDecoder(w.Body).Decode(&body)
 	items := body["items"].([]any)
 	if len(items) != 1 {
 		t.Errorf("expected 1 webhook, got %d", len(items))
@@ -101,7 +101,7 @@ func TestHandler_Create(t *testing.T) {
 	}
 
 	var wh Webhook
-	json.NewDecoder(w.Body).Decode(&wh)
+	_ = json.NewDecoder(w.Body).Decode(&wh)
 	if wh.ID != "wh-new" {
 		t.Errorf("expected ID wh-new, got %s", wh.ID)
 	}

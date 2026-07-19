@@ -48,7 +48,9 @@ func (r *ConversationsRepo) List(ctx context.Context, projectID string, page, pa
 	for rows.Next() {
 		var c conversations.Conversation
 		var authorID int
-		rows.Scan(&c.ID, &c.Name, &c.UUID, &authorID, &c.CreatedAt, &c.UpdatedAt, &c.MessageCount)
+		if err := rows.Scan(&c.ID, &c.Name, &c.UUID, &authorID, &c.CreatedAt, &c.UpdatedAt, &c.MessageCount); err != nil {
+			continue
+		}
 		c.ProjectID = projectID
 		c.CreatedBy = fmt.Sprintf("%d", authorID)
 		items = append(items, c)
@@ -113,21 +115,23 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	for rows.Next() {
 		var p conversations.Participant
 		var entityMeta, meta, entitySettings []byte
-		rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings)
+		if err := rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings); err != nil {
+			continue
+		}
 		if entityMeta != nil {
-			json.Unmarshal(entityMeta, &p.EntityMeta)
+			_ = json.Unmarshal(entityMeta, &p.EntityMeta) // best-effort: DB column is trusted JSON
 		}
 		if p.EntityMeta == nil {
 			p.EntityMeta = map[string]any{}
 		}
 		if meta != nil {
-			json.Unmarshal(meta, &p.Meta)
+			_ = json.Unmarshal(meta, &p.Meta) // best-effort: DB column is trusted JSON
 		}
 		if p.Meta == nil {
 			p.Meta = map[string]any{}
 		}
 		if entitySettings != nil {
-			json.Unmarshal(entitySettings, &p.EntitySettings)
+			_ = json.Unmarshal(entitySettings, &p.EntitySettings) // best-effort: DB column is trusted JSON
 		}
 		if p.EntitySettings == nil {
 			p.EntitySettings = map[string]any{}
@@ -206,12 +210,22 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 
 func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationID string) error {
 	s := schema(projectID)
-	// Delete dependent records first
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), conversationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), conversationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s), conversationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), conversationID)
-	r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_conversation_summaries WHERE conversation_id = $1`, s), conversationID)
+	// Delete dependent records first; propagate any failure.
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), conversationID); err != nil {
+		return fmt.Errorf("conversations: delete participant mapping: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), conversationID); err != nil {
+		return fmt.Errorf("conversations: delete message groups: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s), conversationID); err != nil {
+		return fmt.Errorf("conversations: delete messages: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), conversationID); err != nil {
+		return fmt.Errorf("conversations: delete selected conversations: %w", err)
+	}
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_conversation_summaries WHERE conversation_id = $1`, s), conversationID); err != nil {
+		return fmt.Errorf("conversations: delete summaries: %w", err)
+	}
 
 	q := fmt.Sprintf(`DELETE FROM %q.chat_conversations WHERE id = $1`, s)
 	ct, err := r.pool.Exec(ctx, q, conversationID)
@@ -239,19 +253,25 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 	err := r.pool.QueryRow(ctx, q, entityName, entityMeta).Scan(&participantID)
 	if err != nil {
 		q2 := fmt.Sprintf(`SELECT id FROM %q.chat_participants WHERE entity_name = $1 AND entity_meta = $2::jsonb`, s)
-		r.pool.QueryRow(ctx, q2, entityName, entityMeta).Scan(&participantID)
+		if err2 := r.pool.QueryRow(ctx, q2, entityName, entityMeta).Scan(&participantID); err2 != nil {
+			return fmt.Errorf("conversations: add participant lookup: %w", err2)
+		}
 	}
 
 	q3 := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
 		VALUES ($1, $2, $3::jsonb) ON CONFLICT ON CONSTRAINT _participant_conversation_uc DO NOTHING`, s)
-	r.pool.Exec(ctx, q3, conversationID, participantID, entitySettings)
+	if _, err := r.pool.Exec(ctx, q3, conversationID, participantID, entitySettings); err != nil {
+		return fmt.Errorf("conversations: add participant mapping: %w", err)
+	}
 	return nil
 }
 
 func (r *ConversationsRepo) RemoveParticipant(ctx context.Context, projectID, conversationID, participantID string) error {
 	s := schema(projectID)
 	q := fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s)
-	r.pool.Exec(ctx, q, conversationID, participantID)
+	if _, err := r.pool.Exec(ctx, q, conversationID, participantID); err != nil {
+		return fmt.Errorf("conversations: remove participant: %w", err)
+	}
 	return nil
 }
 
@@ -259,7 +279,9 @@ func (r *ConversationsRepo) UpdateEntitySettings(ctx context.Context, projectID,
 	s := schema(projectID)
 	data, _ := json.Marshal(settings)
 	q := fmt.Sprintf(`UPDATE %q.chat_participant_mapping SET entity_settings = $1 WHERE conversation_id = $2 AND participant_id = $3`, s)
-	r.pool.Exec(ctx, q, data, conversationID, participantID)
+	if _, err := r.pool.Exec(ctx, q, data, conversationID, participantID); err != nil {
+		return fmt.Errorf("conversations: update entity settings: %w", err)
+	}
 	return nil
 }
 
@@ -267,7 +289,9 @@ func (r *ConversationsRepo) BatchUpdateEntitySettings(ctx context.Context, proje
 	for _, s := range settings {
 		pid, _ := s["participant_id"].(string)
 		delete(s, "participant_id")
-		r.UpdateEntitySettings(ctx, projectID, conversationID, pid, s)
+		if err := r.UpdateEntitySettings(ctx, projectID, conversationID, pid, s); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -276,16 +300,22 @@ func (r *ConversationsRepo) SelectConversation(ctx context.Context, projectID, c
 	s := schema(projectID)
 	// Schema: id, user_id, conversation_id (no unique on user_id, so delete+insert)
 	delQ := fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE user_id = $1`, s)
-	r.pool.Exec(ctx, delQ, userID)
+	if _, err := r.pool.Exec(ctx, delQ, userID); err != nil {
+		return fmt.Errorf("conversations: select conversation delete old: %w", err)
+	}
 	insQ := fmt.Sprintf(`INSERT INTO %q.chat_selected_conversations (conversation_id, user_id) VALUES ($1, $2)`, s)
-	r.pool.Exec(ctx, insQ, conversationID, userID)
+	if _, err := r.pool.Exec(ctx, insQ, conversationID, userID); err != nil {
+		return fmt.Errorf("conversations: select conversation insert: %w", err)
+	}
 	return nil
 }
 
 func (r *ConversationsRepo) DeselectConversation(ctx context.Context, projectID, userID string) error {
 	s := schema(projectID)
 	q := fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE user_id = $1`, s)
-	r.pool.Exec(ctx, q, userID)
+	if _, err := r.pool.Exec(ctx, q, userID); err != nil {
+		return fmt.Errorf("conversations: deselect conversation: %w", err)
+	}
 	return nil
 }
 
@@ -340,9 +370,13 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 
 	// 3. Delete old text item (cascades from chat_messages_text)
 	delTextQ := fmt.Sprintf(`DELETE FROM %q.chat_messages_text WHERE id = $1`, s)
-	r.pool.Exec(ctx, delTextQ, oldItemID)
+	if _, err := r.pool.Exec(ctx, delTextQ, oldItemID); err != nil {
+		return nil, fmt.Errorf("delete old text item: %w", err)
+	}
 	delItemQ := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE id = $1`, s)
-	r.pool.Exec(ctx, delItemQ, oldItemID)
+	if _, err := r.pool.Exec(ctx, delItemQ, oldItemID); err != nil {
+		return nil, fmt.Errorf("delete old message item: %w", err)
+	}
 
 	// 4. Insert new items with proper ordering
 	newOrder := orderIndex
@@ -407,7 +441,9 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 	reorderQ := fmt.Sprintf(`UPDATE %q.chat_message_items
 		SET order_index = order_index + 100
 		WHERE message_group_id = $1 AND id != $2 AND order_index < $3`, s)
-	r.pool.Exec(ctx, reorderQ, messageGroupID, canvasItemID, orderIndex)
+	if _, err := r.pool.Exec(ctx, reorderQ, messageGroupID, canvasItemID, orderIndex); err != nil {
+		return nil, fmt.Errorf("reorder message items: %w", err)
+	}
 
 	// 6. Build response matching CanvasItemDetail
 	result := map[string]any{
@@ -448,7 +484,9 @@ func (r *ConversationsRepo) UpdateCanvas(ctx context.Context, projectID, canvasI
 	s := schema(projectID)
 	name, _ := body["name"].(string)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET name = $1, updated_at = now() WHERE id = $2`, s)
-	r.pool.Exec(ctx, q, name, canvasID)
+	if _, err := r.pool.Exec(ctx, q, name, canvasID); err != nil {
+		return fmt.Errorf("conversations: update canvas: %w", err)
+	}
 	return nil
 }
 
@@ -473,7 +511,7 @@ func (r *ConversationsRepo) GetMessageByUUID(ctx context.Context, projectID, mes
 	}
 
 	var meta map[string]any
-	json.Unmarshal(metaBytes, &meta)
+	_ = json.Unmarshal(metaBytes, &meta) // best-effort: DB column is trusted JSON
 
 	// Get message items with their content, ordered
 	qi := fmt.Sprintf(`SELECT mi.id, mi.uuid::text, mi.item_type, mi.order_index, mi.meta,
@@ -539,7 +577,9 @@ func (r *ConversationsRepo) UpdateAttachmentStorage(ctx context.Context, project
 	s := schema(projectID)
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb) WHERE id = $2`, s)
-	r.pool.Exec(ctx, q, data, conversationID)
+	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+		return fmt.Errorf("conversations: update attachment storage: %w", err)
+	}
 	return nil
 }
 
@@ -547,14 +587,18 @@ func (r *ConversationsRepo) AddAttachments(ctx context.Context, projectID, conve
 	s := schema(projectID)
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachments}', $1::jsonb) WHERE id = $2`, s)
-	r.pool.Exec(ctx, q, data, conversationID)
+	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+		return fmt.Errorf("conversations: add attachments: %w", err)
+	}
 	return nil
 }
 
 func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, conversationID string) error {
 	s := schema(projectID)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = (COALESCE(meta, '{}')::jsonb - 'attachments') WHERE id = $1`, s)
-	r.pool.Exec(ctx, q, conversationID)
+	if _, err := r.pool.Exec(ctx, q, conversationID); err != nil {
+		return fmt.Errorf("conversations: delete attachments: %w", err)
+	}
 	return nil
 }
 
@@ -642,7 +686,9 @@ func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID
 	s := schema(projectID)
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
-	r.pool.Exec(ctx, q, data, conversationID)
+	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+		return fmt.Errorf("conversations: update context strategy: %w", err)
+	}
 	return nil
 }
 
@@ -702,9 +748,11 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		var m conversations.Message
 		var meta []byte
 		var entityName string
-		rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt, &m.Content)
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt, &m.Content); err != nil {
+			continue
+		}
 		if meta != nil {
-			json.Unmarshal(meta, &m.Metadata)
+			_ = json.Unmarshal(meta, &m.Metadata) // best-effort: DB column is trusted JSON
 		}
 		// Map entity_name to role
 		if entityName == "user" {
@@ -769,11 +817,13 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		var updatedAt *time.Time
 		var taskID *string
 
-		rows.Scan(&id, &uuid, &authorParticipantID, &sentToID, &replyToID, &meta, &isStreaming, &createdAt, &updatedAt, &taskID)
+		if err := rows.Scan(&id, &uuid, &authorParticipantID, &sentToID, &replyToID, &meta, &isStreaming, &createdAt, &updatedAt, &taskID); err != nil {
+			continue
+		}
 
 		var metaObj map[string]any
 		if meta != nil {
-			json.Unmarshal(meta, &metaObj)
+			_ = json.Unmarshal(meta, &metaObj) // best-effort: DB column is trusted JSON
 		}
 		if metaObj == nil {
 			metaObj = map[string]any{}
@@ -835,7 +885,9 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 			var itemMeta []byte
 			var textContent string
 
-			itemRows.Scan(&itemID, &groupID, &itemType, &orderIndex, &itemMeta, &textContent)
+			if err := itemRows.Scan(&itemID, &groupID, &itemType, &orderIndex, &itemMeta, &textContent); err != nil {
+				continue
+			}
 
 			item := map[string]any{
 				"id":         itemID,

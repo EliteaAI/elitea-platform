@@ -135,7 +135,10 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 
@@ -185,7 +188,9 @@ func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id int
 		var name, email, avatar, desc string
-		rows.Scan(&id, &name, &email, &avatar, &desc)
+		if err := rows.Scan(&id, &name, &email, &avatar, &desc); err != nil {
+			continue
+		}
 		items = append(items, map[string]any{
 			"id": intToStr(id), "name": name, "email": email,
 			"avatar": avatar, "description": desc,
@@ -219,7 +224,9 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 			var id int
 			var name, email, avatar string
 			var likes int
-			rows.Scan(&id, &name, &email, &avatar, &likes)
+			if err := rows.Scan(&id, &name, &email, &avatar, &likes); err != nil {
+				continue
+			}
 			items = append(items, map[string]any{
 				"id": intToStr(id), "name": name, "email": email,
 				"avatar": avatar, "likes": likes,
@@ -287,10 +294,13 @@ func (h *Handler) Unlike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.pool.Exec(ctx, `
+	if _, err := h.pool.Exec(ctx, `
 		DELETE FROM centry.social_likes
 		WHERE entity = $1 AND user_id = $2 AND project_id = $3 AND entity_id = $4`,
-		entityType, user.ID, projectID, entityID)
+		entityType, user.ID, projectID, entityID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unlike"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -307,7 +317,10 @@ func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
 	}
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`INSERT INTO %q.social_pins (entity_name, entity_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, s)
-	h.pool.Exec(ctx, q, entityType, entityID, user.ID)
+	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to pin"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -324,7 +337,10 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 	}
 	s := fmt.Sprintf("p_%s", projectID)
 	q := fmt.Sprintf(`DELETE FROM %q.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
-	h.pool.Exec(ctx, q, entityType, entityID, user.ID)
+	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unpin"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -379,7 +395,10 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	entityName, _ := body["entity_name"].(string)
 	entityID, _ := body["entity_id"].(string)
@@ -406,7 +425,7 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func intToStr(i int) string {

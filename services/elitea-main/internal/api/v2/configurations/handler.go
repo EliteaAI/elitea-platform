@@ -20,7 +20,7 @@ var sdkConfigSchemas map[string]any
 
 func init() {
 	sdkConfigSchemas = make(map[string]any)
-	json.Unmarshal(sdkConfigSchemasRaw, &sdkConfigSchemas)
+	_ = json.Unmarshal(sdkConfigSchemasRaw, &sdkConfigSchemas) // embedded JSON — cannot fail at runtime if the file compiled
 }
 
 type Handler struct {
@@ -520,14 +520,16 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var c Configuration
 		var data, meta []byte
 		var createdAt, updatedAt *time.Time
-		rows.Scan(
+		if err := rows.Scan(
 			&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
 			&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 			&createdAt, &updatedAt,
-		)
+		); err != nil {
+			continue
+		}
 		c.EliteaTitle = c.Name
-		json.Unmarshal(data, &c.Data)
-		json.Unmarshal(meta, &c.Meta)
+		_ = json.Unmarshal(data, &c.Data) // data is a DB JSONB column; malformed rows are skipped above
+		_ = json.Unmarshal(meta, &c.Meta)
 		if createdAt != nil {
 			c.CreatedAt = createdAt.Format(time.RFC3339)
 		}
@@ -562,7 +564,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true`, schema) + sharedFilterWhere
-		h.pool.QueryRow(ctx, sharedCountQ, sharedFilterArgs...).Scan(&sharedTotal)
+		_ = h.pool.QueryRow(ctx, sharedCountQ, sharedFilterArgs...).Scan(&sharedTotal) // sharedTotal stays 0 on error — acceptable for pagination
 
 		sharedQ := fmt.Sprintf(`
 			SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
@@ -580,13 +582,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 				var c Configuration
 				var data, meta []byte
 				var createdAt, updatedAt *time.Time
-				sharedRows.Scan(
+				if err := sharedRows.Scan(
 					&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
 					&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 					&createdAt, &updatedAt,
-				)
-				json.Unmarshal(data, &c.Data)
-				json.Unmarshal(meta, &c.Meta)
+				); err != nil {
+					continue
+				}
+				_ = json.Unmarshal(data, &c.Data) // DB JSONB column
+				_ = json.Unmarshal(meta, &c.Meta)
 				if createdAt != nil {
 					c.CreatedAt = createdAt.Format(time.RFC3339)
 				}
@@ -654,8 +658,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.EliteaTitle = c.Name
-	json.Unmarshal(data, &c.Data)
-	json.Unmarshal(meta, &c.Meta)
+	_ = json.Unmarshal(data, &c.Data) // DB JSONB column
+	_ = json.Unmarshal(meta, &c.Meta)
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -671,7 +675,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
 
 	eliteaTitle := strVal(body, "elitea_title")
 	if eliteaTitle == "" {
@@ -756,8 +763,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		StatusOK:    true,
 		CreatedAt:   createdAt.Format(time.RFC3339),
 	}
-	json.Unmarshal(dataBytes, &c.Data)
-	json.Unmarshal(metaBytes, &c.Meta)
+	_ = json.Unmarshal(dataBytes, &c.Data) // dataBytes was produced by json.Marshal above
+	_ = json.Unmarshal(metaBytes, &c.Meta)
 
 	writeJSON(w, http.StatusOK, c)
 }
@@ -794,7 +801,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
 
 	dataMap, _ := body["data"].(map[string]any)
 	if dataMap == nil {
@@ -842,8 +852,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.EliteaTitle = c.Name
-	json.Unmarshal(data2, &c.Data)
-	json.Unmarshal(meta2, &c.Meta)
+	_ = json.Unmarshal(data2, &c.Data) // DB JSONB column returned by RETURNING clause
+	_ = json.Unmarshal(meta2, &c.Meta)
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -874,7 +884,10 @@ func (h *Handler) CheckConnection(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) {
 	var items []map[string]any
-	json.NewDecoder(r.Body).Decode(&items)
+	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
 	results := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		results = append(results, map[string]any{"id": item["id"], "success": true, "message": "Connection successful"})
@@ -935,7 +948,7 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		m.ProjectID = strconv.Itoa(dbProjectID)
 		m.IsDefault = false
 		if dataBytes != nil {
-			json.Unmarshal(dataBytes, &m.Data)
+			_ = json.Unmarshal(dataBytes, &m.Data) // DB JSONB column
 		}
 		items = append(items, m)
 	}
@@ -945,7 +958,10 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
 }
 
@@ -1043,5 +1059,5 @@ func validateConfigData(configType string, data map[string]any) error {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) // response already committed; nothing useful to do with a write error
 }

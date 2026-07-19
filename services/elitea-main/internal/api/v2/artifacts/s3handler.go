@@ -39,7 +39,7 @@ func (h *S3Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"buckets": buckets,
 			"owner":   map[string]string{"DisplayName": "elitea", "ID": projectID},
 		})
@@ -47,12 +47,12 @@ func (h *S3Handler) ListBuckets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/xml")
-	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult><Buckets>`)
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult><Buckets>`)
 	for _, b := range buckets {
-		fmt.Fprintf(w, `<Bucket><Name>%s</Name><CreationDate>%s</CreationDate></Bucket>`,
+		_, _ = fmt.Fprintf(w, `<Bucket><Name>%s</Name><CreationDate>%s</CreationDate></Bucket>`,
 			b["name"], b["creation_date"])
 	}
-	fmt.Fprintf(w, `</Buckets></ListAllMyBucketsResult>`)
+	_, _ = fmt.Fprintf(w, `</Buckets></ListAllMyBucketsResult>`)
 }
 
 func (h *S3Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,7 @@ func (h *S3Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
 	if format == "json" {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"contents": objects,
 			"name":     bucket,
 		})
@@ -83,12 +83,12 @@ func (h *S3Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/xml")
-	fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>%s</Name><Contents>`, bucket)
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>%s</Name><Contents>`, bucket)
 	for _, obj := range objects {
-		fmt.Fprintf(w, `<Content><Key>%s</Key><Size>%d</Size><LastModified>%s</LastModified></Content>`,
+		_, _ = fmt.Fprintf(w, `<Content><Key>%s</Key><Size>%d</Size><LastModified>%s</LastModified></Content>`,
 			obj["key"], obj["size"], obj["lastModified"])
 	}
-	fmt.Fprintf(w, `</Contents></ListBucketResult>`)
+	_, _ = fmt.Fprintf(w, `</Contents></ListBucketResult>`)
 }
 
 func (h *S3Handler) GetObject(w http.ResponseWriter, r *http.Request) {
@@ -104,11 +104,11 @@ func (h *S3Handler) GetObject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
 	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 func (h *S3Handler) PutObject(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,8 @@ func (h *S3Handler) PutObject(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	h.backend.CreateBucket(r.Context(), projectID, bucket)
+	// best-effort: ensure bucket exists before putting object
+	_ = h.backend.CreateBucket(r.Context(), projectID, bucket)
 	if err := h.backend.PutObject(r.Context(), projectID, bucket, key, r.Body, r.ContentLength, ""); err != nil {
 		http.Error(w, "Internal Error", http.StatusInternalServerError)
 		return
@@ -136,6 +137,7 @@ func (h *S3Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 		projectID = "1"
 	}
 
-	h.backend.DeleteObject(r.Context(), projectID, bucket, key)
+	// best-effort delete; caller receives 204 regardless
+	_ = h.backend.DeleteObject(r.Context(), projectID, bucket, key)
 	w.WriteHeader(http.StatusNoContent)
 }

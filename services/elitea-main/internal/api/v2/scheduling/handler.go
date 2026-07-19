@@ -33,7 +33,7 @@ func (h *Handler) Schedules(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if h.pool == nil || projectID == "" || projectID == "0" {
-		json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		return
 	}
 
@@ -53,7 +53,7 @@ func (h *Handler) Schedules(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {
 		// Column may not exist or table may be missing — return empty
-		json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		return
 	}
 	defer rows.Close()
@@ -83,7 +83,7 @@ func (h *Handler) Schedules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"items": items,
 		"total": len(items),
 	})

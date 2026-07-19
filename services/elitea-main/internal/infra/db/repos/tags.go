@@ -32,9 +32,11 @@ func (r *TagsRepo) List(ctx context.Context, projectID string) ([]tags.Tag, erro
 	for rows.Next() {
 		var t tags.Tag
 		var dataStr string
-		rows.Scan(&t.ID, &t.Name, &dataStr)
+		if err := rows.Scan(&t.ID, &t.Name, &dataStr); err != nil {
+			continue
+		}
 		if dataStr != "" && dataStr != "null" {
-			json.Unmarshal([]byte(dataStr), &t.Data)
+			_ = json.Unmarshal([]byte(dataStr), &t.Data) // best-effort: DB column is trusted JSON
 		}
 		items = append(items, t)
 	}

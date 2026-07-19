@@ -16,7 +16,7 @@ import (
 func (s *Server) BucketList(w http.ResponseWriter, r *http.Request, params generated.BucketListParams) {
 	projectID := strconv.Itoa(params.ProjectId)
 	dir := filepath.Join(s.artifactsDir, projectID)
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0755) // best-effort; subsequent ReadDir will fail if it actually failed
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -48,7 +48,7 @@ func (s *Server) BucketList(w http.ResponseWriter, r *http.Request, params gener
 func (s *Server) ArtifactList(w http.ResponseWriter, r *http.Request, bucket string, params generated.ArtifactListParams) {
 	projectID := strconv.Itoa(params.ProjectId)
 	dir := filepath.Join(s.artifactsDir, projectID, bucket)
-	os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0755) // best-effort; subsequent ReadDir will fail if it actually failed
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *Server) EditBucket(w http.ResponseWriter, r *http.Request, projectId ge
 
 func (s *Server) DeleteBucket(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, params generated.DeleteBucketParams) {
 	dir := filepath.Join(s.artifactsDir, projectId, params.Name)
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir) // best-effort delete; response is always 204
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -126,13 +126,13 @@ func (s *Server) UpdateBucketPin(w http.ResponseWriter, r *http.Request, project
 	var body struct {
 		Pinned bool `json:"pinned"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body) // on parse error body is zero-valued (pinned=false), which is safe
 
 	if s.pool != nil {
-		s.pool.Exec(r.Context(), fmt.Sprintf(
+		_, _ = s.pool.Exec(r.Context(), fmt.Sprintf(
 			`INSERT INTO "p_%s".bucket_metadata (name, pinned) VALUES ($1, $2)
 			 ON CONFLICT (name) DO UPDATE SET pinned = $2`, projectId),
-			params.Name, body.Pinned)
+			params.Name, body.Pinned) // best-effort metadata write
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -148,7 +148,7 @@ func (s *Server) CreateArtifact(w http.ResponseWriter, r *http.Request, projectI
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "file field required"})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	filename := header.Filename
 	if fn := r.FormValue("filename"); fn != "" {
@@ -156,22 +156,28 @@ func (s *Server) CreateArtifact(w http.ResponseWriter, r *http.Request, projectI
 	}
 
 	dir := filepath.Join(s.artifactsDir, projectId, bucket)
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 
 	dst, err := os.Create(filepath.Join(dir, filename))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
-	io.Copy(dst, file)
+	if _, err := io.Copy(dst, file); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) DeleteArtifact(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, bucket string, params generated.DeleteArtifactParams) {
 	path := filepath.Join(s.artifactsDir, projectId, bucket, params.Filename)
-	os.Remove(path)
+	_ = os.Remove(path) // best-effort delete; response is always 204
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -179,7 +185,7 @@ func (s *Server) DeleteArtifacts(w http.ResponseWriter, r *http.Request, project
 	if params.Fnames != nil {
 		for _, fname := range *params.Fnames {
 			path := filepath.Join(s.artifactsDir, projectId, bucket, fname)
-			os.Remove(path)
+			_ = os.Remove(path) // best-effort delete; response is always 204
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -61,7 +61,7 @@ func (cp *chatPredictor) resolveModel(ctx context.Context, projectID, modelName 
 	}
 
 	var model map[string]any
-	json.Unmarshal(modelData, &model)
+	_ = json.Unmarshal(modelData, &model) // internal DB column; nil map handled below
 
 	cfg := modelConfig{
 		Name: strVal(model, "name"),
@@ -109,7 +109,7 @@ func (cp *chatPredictor) resolveCredentials(ctx context.Context, projectID, cred
 	}
 
 	var data map[string]any
-	json.Unmarshal(credData, &data)
+	_ = json.Unmarshal(credData, &data) // internal DB column; nil map handled in switch below
 
 	cfg := credentialConfig{}
 
@@ -216,7 +216,7 @@ func (cp *chatPredictor) callLLM(ctx context.Context, cfg modelConfig, userInput
 	if err != nil {
 		return "", fmt.Errorf("LLM request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {

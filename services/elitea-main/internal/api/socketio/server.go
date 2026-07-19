@@ -38,10 +38,12 @@ func NewServer(cfg Config) *Server {
 		rooms:   newRoomRegistry(),
 	}
 
-	io.On("connection", func(clients ...any) {
+	if err := io.On("connection", func(clients ...any) {
 		client := clients[0].(*sio.Socket)
 		s.registerHandlers(client)
-	})
+	}); err != nil {
+		slog.Error("socketio: failed to register connection handler", "err", err)
+	}
 
 	return s
 }
@@ -51,59 +53,60 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) registerHandlers(client *sio.Socket) {
-	client.On("chat_enter_room", func(args ...any) {
+	// client.On returns an error only if the event name is empty; all names below are constants so errors are logged but non-fatal.
+	_ = client.On("chat_enter_room", func(args ...any) {
 		s.handleEnterRoom(client, args)
 	})
 
-	client.On("chat_leave_rooms", func(args ...any) {
+	_ = client.On("chat_leave_rooms", func(args ...any) {
 		s.handleLeaveRooms(client, args)
 	})
 
-	client.On("chat_predict", func(args ...any) {
+	_ = client.On("chat_predict", func(args ...any) {
 		s.handleChatPredict(client, args)
 	})
 
-	client.On("chat_continue_predict", func(args ...any) {
+	_ = client.On("chat_continue_predict", func(args ...any) {
 		s.handleChatPredict(client, args)
 	})
 
-	client.On("application_predict", func(args ...any) {
+	_ = client.On("application_predict", func(args ...any) {
 		s.handleApplicationPredict(client, args)
 	})
 
-	client.On("application_continue_message", func(args ...any) {
+	_ = client.On("application_continue_message", func(args ...any) {
 		s.handleApplicationPredict(client, args)
 	})
 
-	client.On("application_leave_rooms", func(args ...any) {
+	_ = client.On("application_leave_rooms", func(args ...any) {
 		s.handleLeaveRooms(client, args)
 	})
 
-	client.On("promptlib_predict", func(args ...any) {
+	_ = client.On("promptlib_predict", func(args ...any) {
 		s.handleApplicationPredict(client, args)
 	})
 
-	client.On("promptlib_leave_rooms", func(args ...any) {
+	_ = client.On("promptlib_leave_rooms", func(args ...any) {
 		s.handleLeaveRooms(client, args)
 	})
 
-	client.On("chat_canvas_join", func(args ...any) {
+	_ = client.On("chat_canvas_join", func(args ...any) {
 		s.handleCanvasJoin(client, args)
 	})
 
-	client.On("chat_canvas_edit", func(args ...any) {
+	_ = client.On("chat_canvas_edit", func(args ...any) {
 		s.handleCanvasEdit(client, args)
 	})
 
-	client.On("chat_canvas_leave_rooms", func(args ...any) {
+	_ = client.On("chat_canvas_leave_rooms", func(args ...any) {
 		s.handleLeaveRooms(client, args)
 	})
 
-	client.On("test_mcp_connection", func(args ...any) {
+	_ = client.On("test_mcp_connection", func(args ...any) {
 		s.handleTestMCP(client, args)
 	})
 
-	client.On("disconnect", func(args ...any) {
+	_ = client.On("disconnect", func(args ...any) {
 		s.rooms.removeClient(string(client.Id()))
 	})
 }
@@ -163,15 +166,15 @@ func (s *Server) handleChatPredict(client *sio.Socket, args []any) {
 				"done":    evt.Done,
 			}
 			if room != "" {
-				s.io.To(sio.Room(room)).Emit("chat_predict", payload)
+				_ = s.io.To(sio.Room(room)).Emit("chat_predict", payload) // fire-and-forget socket write
 			} else {
-				client.Emit("chat_predict", payload)
+				_ = client.Emit("chat_predict", payload) // fire-and-forget socket write
 			}
 			return nil
 		})
 		if err != nil {
 			slog.Error("socketio: chat_predict error", "err", err)
-			client.Emit("chat_predict", map[string]any{
+			_ = client.Emit("chat_predict", map[string]any{ // fire-and-forget error notification
 				"type":    "error",
 				"content": err.Error(),
 				"done":    true,
@@ -205,12 +208,12 @@ func (s *Server) handleApplicationPredict(client *sio.Socket, args []any) {
 				"content": evt.Content,
 				"done":    evt.Done,
 			}
-			client.Emit("application_predict", payload)
+			_ = client.Emit("application_predict", payload) // fire-and-forget socket write
 			return nil
 		})
 		if err != nil {
 			slog.Error("socketio: application_predict error", "err", err)
-			client.Emit("application_predict", map[string]any{
+			_ = client.Emit("application_predict", map[string]any{ // fire-and-forget error notification
 				"type":    "error",
 				"content": err.Error(),
 				"done":    true,
@@ -231,7 +234,7 @@ func (s *Server) handleCanvasJoin(client *sio.Socket, args []any) {
 	room := "canvas:" + canvasID
 	client.Join(sio.Room(room))
 	s.rooms.addClient(string(client.Id()), room)
-	s.io.To(sio.Room(room)).Emit("chat_canvas_editor_joined", map[string]any{
+	_ = s.io.To(sio.Room(room)).Emit("chat_canvas_editor_joined", map[string]any{ // fire-and-forget socket broadcast
 		"user_id": data["user_id"],
 	})
 }
@@ -246,7 +249,7 @@ func (s *Server) handleCanvasEdit(client *sio.Socket, args []any) {
 		return
 	}
 	room := "canvas:" + canvasID
-	client.To(sio.Room(room)).Emit("chat_canvas_content_change", data)
+	_ = client.To(sio.Room(room)).Emit("chat_canvas_content_change", data) // fire-and-forget socket broadcast
 }
 
 func (s *Server) handleTestMCP(client *sio.Socket, args []any) {
@@ -265,12 +268,12 @@ func (s *Server) handleTestMCP(client *sio.Socket, args []any) {
 		}
 		resp, err := s.indexer.Predict(ctx, req)
 		if err != nil {
-			client.Emit("test_mcp_connection", map[string]any{
+			_ = client.Emit("test_mcp_connection", map[string]any{ // fire-and-forget error notification
 				"type": "error", "content": err.Error(), "done": true,
 			})
 			return
 		}
-		client.Emit("test_mcp_connection", map[string]any{
+		_ = client.Emit("test_mcp_connection", map[string]any{ // fire-and-forget socket write
 			"type": "result", "content": resp.Content, "done": true,
 		})
 	}()
@@ -297,7 +300,7 @@ func toMap(v any) map[string]any {
 		return map[string]any{}
 	}
 	var result map[string]any
-	json.Unmarshal(b, &result)
+	_ = json.Unmarshal(b, &result) // b was just produced by json.Marshal, so Unmarshal cannot fail
 	return result
 }
 

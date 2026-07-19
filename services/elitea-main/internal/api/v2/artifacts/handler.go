@@ -89,7 +89,10 @@ func (h *Handler) CreateBucket(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	bucket, err := h.repo.CreateBucket(r.Context(), projectID, body.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -111,7 +114,10 @@ func (h *Handler) UpdateBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var meta map[string]any
-	json.NewDecoder(r.Body).Decode(&meta)
+	if err := json.NewDecoder(r.Body).Decode(&meta); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	bucket, err := h.repo.UpdateBucket(r.Context(), projectID, name, meta)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -131,7 +137,10 @@ func (h *Handler) PatchBucket(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IsPinned bool `json:"is_pinned"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	bucket, err := h.repo.PatchBucket(r.Context(), projectID, name, body.IsPinned)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -212,7 +221,7 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	mimeType := info.ContentType
 	if mimeType == "" {
@@ -228,14 +237,17 @@ func (h *Handler) ServeFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 func (h *Handler) CreateArtifact(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	artifact, err := h.repo.CreateArtifact(r.Context(), projectID, bucket, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -257,7 +269,8 @@ func (h *Handler) DeleteArtifact(w http.ResponseWriter, r *http.Request) {
 		if info, err := h.backend.StatObject(r.Context(), projectID, bucket, filename); err == nil {
 			size = info.Size
 		}
-		h.backend.DeleteObject(r.Context(), projectID, bucket, filename)
+		// best-effort delete; ignore error since stat already confirmed object exists
+		_ = h.backend.DeleteObject(r.Context(), projectID, bucket, filename)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "Deleted", "size": size})
 }
@@ -277,7 +290,7 @@ func (h *Handler) UploadArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "file field required"})
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(file)
 	if err != nil {
@@ -297,7 +310,10 @@ func (h *Handler) UploadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.backend != nil {
-		h.backend.PutObject(r.Context(), projectID, bucket, header.Filename, bytes.NewReader(data), int64(len(data)), mimeType)
+		if err := h.backend.PutObject(r.Context(), projectID, bucket, header.Filename, bytes.NewReader(data), int64(len(data)), mimeType); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to store file"})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -492,5 +508,5 @@ func (r *memRepo) DeleteArtifacts(_ context.Context, projectID, bucket string, n
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

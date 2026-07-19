@@ -113,7 +113,7 @@ func (b *Backend) PutObject(_ context.Context, projectID, bucketName, key string
 	if err != nil {
 		return fmt.Errorf("storage/filesystem: put object create: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := io.Copy(f, data); err != nil {
 		return fmt.Errorf("storage/filesystem: put object write: %w", err)
 	}
@@ -128,7 +128,7 @@ func (b *Backend) GetObject(_ context.Context, projectID, bucketName, key string
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, storage.ObjectInfo{}, fmt.Errorf("storage/filesystem: get object stat: %w", err)
 	}
 	return f, storage.ObjectInfo{

@@ -95,7 +95,7 @@ func pickleRPCEvent(funcName string, kwargs map[string]any) []byte {
 	// "payload" key
 	writePickleString(&buf, "payload")
 	// payload value (dict of kwargs or None)
-	if kwargs == nil || len(kwargs) == 0 {
+	if len(kwargs) == 0 {
 		buf.WriteByte('N') // NONE
 	} else {
 		writePickleDict(&buf, kwargs)
@@ -120,7 +120,7 @@ func writePickleString(buf *bytes.Buffer, s string) {
 		buf.Reset() // shouldn't happen for our use case, but safe
 		buf.WriteByte('X')
 		l := uint32(len(b))
-		binary.Write(buf, binary.LittleEndian, l)
+		_ = binary.Write(buf, binary.LittleEndian, l) // bytes.Buffer.Write never errors
 		buf.Write(b)
 	}
 }
@@ -155,7 +155,7 @@ func writePickleValue(buf *bytes.Buffer, v any) {
 	case float64:
 		buf.WriteByte('G') // BINFLOAT
 		bits := math.Float64bits(val)
-		binary.Write(buf, binary.BigEndian, bits)
+		_ = binary.Write(buf, binary.BigEndian, bits) // bytes.Buffer.Write never errors
 	case string:
 		writePickleString(buf, val)
 	case map[string]any:
@@ -172,9 +172,9 @@ func writePickleInt(buf *bytes.Buffer, n int64) {
 		buf.WriteByte(byte(n))
 	} else if n >= 0 && n < 65536 {
 		buf.WriteByte('M') // BININT2
-		binary.Write(buf, binary.LittleEndian, uint16(n))
+		_ = binary.Write(buf, binary.LittleEndian, uint16(n)) // bytes.Buffer.Write never errors
 	} else {
 		buf.WriteByte('J') // BININT
-		binary.Write(buf, binary.LittleEndian, int32(n))
+		_ = binary.Write(buf, binary.LittleEndian, int32(n)) // bytes.Buffer.Write never errors
 	}
 }

@@ -99,7 +99,7 @@ func (c *Comparator) Compare(ctx context.Context, method, path string, newStatus
 		result.Error = fmt.Sprintf("legacy request: %v", err)
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	result.LegacyStatus = resp.StatusCode
 	result.StatusMatch = resp.StatusCode == newStatus

@@ -102,7 +102,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		slog.Debug("scheduler: lock held by another instance, skipping")
 		return
 	}
-	defer lock.Release(ctx)
+	defer func() { _ = lock.Release(ctx) }()
 
 	s.runSchedules(ctx)
 }
@@ -133,7 +133,10 @@ func (s *Scheduler) runSchedules(ctx context.Context) {
 		}
 
 		if kwargsRaw != nil {
-			json.Unmarshal(kwargsRaw, &sc.RPCKwargs)
+			if err := json.Unmarshal(kwargsRaw, &sc.RPCKwargs); err != nil {
+				slog.Error("scheduler: unmarshal rpc_kwargs", "id", sc.ID, "err", err)
+				continue
+			}
 		}
 
 		if !s.timeToRun(sc, now) {

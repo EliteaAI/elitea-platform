@@ -83,7 +83,7 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawState := make([]byte, 16)
-	rand.Read(rawState)
+	_, _ = rand.Read(rawState)
 	stateNonce := base64.RawURLEncoding.EncodeToString(rawState)
 
 	stateValue := stateNonce + "|" + targetTo
@@ -224,7 +224,7 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var userID int
 	err = tx.QueryRow(ctx,

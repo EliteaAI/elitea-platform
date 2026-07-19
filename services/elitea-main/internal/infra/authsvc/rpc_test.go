@@ -23,7 +23,7 @@ func skipIfNoRedis(t *testing.T, rdb *redis.Client) {
 func TestClient_ValidateToken_Timeout(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(100*time.Millisecond))
 
@@ -40,7 +40,7 @@ func TestClient_ValidateToken_Timeout(t *testing.T) {
 func TestClient_ValidateToken_Success(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(2*time.Second))
 
@@ -49,7 +49,7 @@ func TestClient_ValidateToken_Success(t *testing.T) {
 	defer cancel()
 
 	sub := rdb.Subscribe(ctx, "pylon_auth:rpc:request")
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	go func() {
 		ch := sub.Channel()
@@ -102,7 +102,7 @@ func TestClient_ValidateToken_Success(t *testing.T) {
 func TestClient_ValidateToken_ErrorResponse(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(2*time.Second))
 
@@ -110,7 +110,7 @@ func TestClient_ValidateToken_ErrorResponse(t *testing.T) {
 	defer cancel()
 
 	sub := rdb.Subscribe(ctx, "pylon_auth:rpc:request")
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	go func() {
 		ch := sub.Channel()
@@ -147,7 +147,7 @@ func TestClient_ValidateToken_ErrorResponse(t *testing.T) {
 func TestClient_Cache(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	// Clean test keys
 	rdb.Del(context.Background(), "auth:token:testkey")
@@ -189,7 +189,7 @@ func TestClient_Cache(t *testing.T) {
 func TestClient_ContextCancelled(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	client := authsvc.New(rdb, authsvc.WithRPCTimeout(5*time.Second))
 

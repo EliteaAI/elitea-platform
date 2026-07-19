@@ -131,7 +131,7 @@ func TestSkillList_DefaultPagination(t *testing.T) {
 	}
 
 	var resp handler.ListResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Page != 1 {
 		t.Errorf("expected default page=1, got %d", resp.Page)
 	}

@@ -46,7 +46,7 @@ func main() {
 		slog.Error("redis unreachable", "err", err)
 		os.Exit(1)
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	rpcClient := rpc.New(rdb, cfg.RPCChannel, cfg.RPCHMACKey)
 	sched := scheduler.New(pool, rdb, rpcClient, cfg)
@@ -76,6 +76,8 @@ func main() {
 
 	shutCtx, sc := context.WithTimeout(context.Background(), 10*time.Second)
 	defer sc()
-	srv.Shutdown(shutCtx)
+	if err := srv.Shutdown(shutCtx); err != nil {
+		slog.Error("health server shutdown error", "err", err)
+	}
 	sched.Stop()
 }

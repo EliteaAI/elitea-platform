@@ -38,14 +38,14 @@ func (h *Handler) Stream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	sub := h.redis.Subscribe(ctx, channel)
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	ch := sub.Channel()
 
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
-	sse.Comment("connected")
+	_ = sse.Comment("connected")
 
 	for {
 		select {
@@ -62,7 +62,7 @@ func (h *Handler) Stream(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal([]byte(msg.Payload), &evt); err != nil {
 				continue
 			}
-			sse.Event(evt.Type, string(evt.Data))
+			_ = sse.Event(evt.Type, string(evt.Data))
 		case <-heartbeat.C:
 			if err := sse.Comment("heartbeat"); err != nil {
 				return

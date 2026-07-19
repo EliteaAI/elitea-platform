@@ -223,7 +223,7 @@ func (h *Handler) TokenList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tokens []Token
-	if err := json.Unmarshal([]byte(val), &tokens); err != nil {
+	if err2 := json.Unmarshal([]byte(val), &tokens); err2 != nil {
 		writeJSON(w, http.StatusOK, []Token{})
 		return
 	}
@@ -258,11 +258,11 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 	key := "user_tokens:" + user.ID
 	var tokens []Token
 	if val, err := h.redis.Get(ctx, key).Result(); err == nil {
-		json.Unmarshal([]byte(val), &tokens)
+		_ = json.Unmarshal([]byte(val), &tokens) // best-effort: start with empty slice on corrupt cache
 	}
 	tokens = append(tokens, token)
 	data, _ := json.Marshal(tokens)
-	h.redis.Set(ctx, key, data, 0)
+	_ = h.redis.Set(ctx, key, data, 0)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"uuid":       token.UUID,
@@ -285,7 +285,7 @@ func (h *Handler) TokenDelete(w http.ResponseWriter, r *http.Request) {
 
 	var tokens []Token
 	if val, err := h.redis.Get(ctx, key).Result(); err == nil {
-		json.Unmarshal([]byte(val), &tokens)
+		_ = json.Unmarshal([]byte(val), &tokens) // best-effort: start with empty slice on corrupt cache
 	}
 
 	filtered := make([]Token, 0, len(tokens))
@@ -295,7 +295,7 @@ func (h *Handler) TokenDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data, _ := json.Marshal(filtered)
-	h.redis.Set(ctx, key, data, 0)
+	_ = h.redis.Set(ctx, key, data, 0)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -337,5 +337,5 @@ func defaultPermissionNames() []string {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

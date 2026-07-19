@@ -88,7 +88,9 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 		defer rows.Close()
 		for rows.Next() {
 			var role string
-			rows.Scan(&role)
+			if err := rows.Scan(&role); err != nil {
+				continue
+			}
 			roles = append(roles, role)
 		}
 	}
@@ -106,7 +108,9 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 		defer permRows.Close()
 		for permRows.Next() {
 			var perm string
-			permRows.Scan(&perm)
+			if err := permRows.Scan(&perm); err != nil {
+				continue
+			}
 			permissions = append(permissions, perm)
 		}
 	}

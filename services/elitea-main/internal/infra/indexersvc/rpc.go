@@ -65,7 +65,7 @@ func (c *Client) call(ctx context.Context, method string, payload interface{}, t
 	replyChannel := fmt.Sprintf("elitea_main:rpc:reply:%s", reqID)
 
 	sub := c.redis.Subscribe(ctx, replyChannel)
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	if _, err := sub.Receive(ctx); err != nil {
 		return nil, fmt.Errorf("indexersvc: subscribe failed: %w", err)
@@ -113,7 +113,7 @@ func (c *Client) callStream(ctx context.Context, method string, payload interfac
 	replyChannel := fmt.Sprintf("elitea_main:rpc:reply:%s", reqID)
 
 	sub := c.redis.Subscribe(ctx, replyChannel)
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 
 	if _, err := sub.Receive(ctx); err != nil {
 		return fmt.Errorf("indexersvc: subscribe failed: %w", err)

@@ -81,11 +81,11 @@ type endpointState struct {
 func cmdStatus(client *http.Client, baseURL string) {
 	endpoints := fetchEndpoints(client, baseURL)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(w, "ENDPOINT\tSTATE\tUPDATED\tBY\n")
+	_, _ = fmt.Fprintf(w, "ENDPOINT\tSTATE\tUPDATED\tBY\n")
 	for _, ep := range endpoints {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", ep.Path, ep.Backend, ep.UpdatedAt.Format(time.RFC3339), ep.UpdatedBy)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", ep.Path, ep.Backend, ep.UpdatedAt.Format(time.RFC3339), ep.UpdatedBy)
 	}
-	w.Flush()
+	_ = w.Flush()
 }
 
 func cmdSummary(client *http.Client, baseURL string) {
@@ -93,10 +93,12 @@ func cmdSummary(client *http.Client, baseURL string) {
 	if err != nil {
 		fatal("failed to fetch summary: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var counts map[string]int
-	json.NewDecoder(resp.Body).Decode(&counts)
+	if err := json.NewDecoder(resp.Body).Decode(&counts); err != nil {
+		fatal("failed to decode summary: %v", err)
+	}
 
 	total := 0
 	for _, v := range counts {
@@ -258,7 +260,7 @@ func checkReadinessGate(client *http.Client, baseURL, endpoint, targetState stri
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health check failed")
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Gate 2: shadow match rate (for promoting to canary or go)
 	if targetState == "canary" || targetState == "go" {
@@ -269,8 +271,8 @@ func checkReadinessGate(client *http.Client, baseURL, endpoint, targetState stri
 				MatchRate float64 `json:"match_rate"`
 				Total     int     `json:"total"`
 			}
-			json.NewDecoder(resp.Body).Decode(&stats)
-			resp.Body.Close()
+			_ = json.NewDecoder(resp.Body).Decode(&stats)
+			_ = resp.Body.Close()
 
 			if stats.Total > 10 && stats.MatchRate < 0.95 {
 				return fmt.Errorf("shadow match rate %.1f%% < 95%% (need more parity)", stats.MatchRate*100)
@@ -286,12 +288,14 @@ func fetchEndpoints(client *http.Client, baseURL string) []endpointState {
 	if err != nil {
 		fatal("failed to fetch endpoints: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		Endpoints []endpointState `json:"endpoints"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fatal("failed to decode endpoints: %v", err)
+	}
 	return result.Endpoints
 }
 
@@ -304,7 +308,7 @@ func setEndpointState(client *http.Client, baseURL, path, backend string) error 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
