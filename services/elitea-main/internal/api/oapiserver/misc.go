@@ -38,7 +38,9 @@ func (s *Server) GetChatConfig(w http.ResponseWriter, r *http.Request, projectId
 		for rows.Next() {
 			var title, cType string
 			var data []byte
-			rows.Scan(&title, &cType, &data)
+			if err := rows.Scan(&title, &cType, &data); err != nil {
+				continue
+			}
 			models = append(models, map[string]any{
 				"name":        title,
 				"config_type": cType,
@@ -230,7 +232,10 @@ func (s *Server) GetProjectContext(w http.ResponseWriter, r *http.Request, proje
 		return
 	}
 	var cfg map[string]any
-	json.Unmarshal(data, &cfg)
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"content": "", "enabled": false})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"content": cfg["content"],
 		"enabled": cfg["enabled"],
@@ -244,7 +249,10 @@ func (s *Server) UpdateProjectContext(w http.ResponseWriter, r *http.Request, pr
 		Content string `json:"content"`
 		Enabled bool   `json:"enabled"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	if s.pool == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -263,7 +271,7 @@ func (s *Server) UpdateProjectContext(w http.ResponseWriter, r *http.Request, pr
 	_, err := s.pool.Exec(ctx, q, projectId, dataBytes)
 	if err != nil {
 		q2 := fmt.Sprintf(`UPDATE %q.configuration SET data = $1 WHERE type = 'project_context'`, schema)
-		s.pool.Exec(ctx, q2, dataBytes)
+		_, _ = s.pool.Exec(ctx, q2, dataBytes) // best-effort fallback update
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"content": body.Content, "enabled": body.Enabled})
 }
@@ -297,8 +305,8 @@ func (s *Server) DeleteApplicationIcon(w http.ResponseWriter, r *http.Request, p
 
 	// Clear icon_meta from all application_versions that reference this icon
 	if s.pool != nil {
-		s.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, schema), name)
+		_, _ = s.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, schema), name) // best-effort metadata clear
 	}
 
 	// Remove file from disk
@@ -306,7 +314,7 @@ func (s *Server) DeleteApplicationIcon(w http.ResponseWriter, r *http.Request, p
 	if iconsDir == "" {
 		iconsDir = "/data/icons"
 	}
-	os.Remove(filepath.Join(iconsDir, fmt.Sprintf("%s", projectId), name))
+	_ = os.Remove(filepath.Join(iconsDir, string(projectId), name)) // best-effort file delete
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -326,13 +334,16 @@ func (s *Server) ReplaceApplicationIcon(w http.ResponseWriter, r *http.Request, 
 	}
 
 	var iconMeta map[string]any
-	json.NewDecoder(r.Body).Decode(&iconMeta)
+	if err := json.NewDecoder(r.Body).Decode(&iconMeta); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	schema := fmt.Sprintf("p_%s", projectId)
-	iconJSON, _ := json.Marshal(iconMeta)
-	s.pool.Exec(r.Context(), fmt.Sprintf(
+	iconJSON, _ := json.Marshal(iconMeta) // iconMeta is a plain map; Marshal cannot fail
+	_, _ = s.pool.Exec(r.Context(), fmt.Sprintf(
 		`UPDATE %q.application_versions SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('icon_meta', $2::jsonb) WHERE id = $1`, schema),
-		strconv.Itoa(versionId), string(iconJSON))
+		strconv.Itoa(versionId), string(iconJSON)) // best-effort metadata update
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -357,7 +368,9 @@ func (s *Server) GetSearchOptions(w http.ResponseWriter, r *http.Request, projec
 		defer rows.Close()
 		for rows.Next() {
 			var name string
-			rows.Scan(&name)
+			if err := rows.Scan(&name); err != nil {
+				continue
+			}
 			tags = append(tags, name)
 		}
 	}
@@ -391,7 +404,9 @@ func (s *Server) GetRecommendations(w http.ResponseWriter, r *http.Request, proj
 			var id int
 			var name, desc string
 			var likes int
-			rows.Scan(&id, &name, &desc, &likes)
+			if err := rows.Scan(&id, &name, &desc, &likes); err != nil {
+				continue
+			}
 			items = append(items, map[string]any{
 				"id": fmt.Sprintf("%d", id), "name": name, "description": desc, "likes": likes,
 			})
@@ -426,7 +441,9 @@ func (s *Server) GetTrendingAuthors(w http.ResponseWriter, r *http.Request, proj
 			var id int
 			var name, email, avatar string
 			var likes int
-			rows.Scan(&id, &name, &email, &avatar, &likes)
+			if err := rows.Scan(&id, &name, &email, &avatar, &likes); err != nil {
+				continue
+			}
 			items = append(items, map[string]any{
 				"id":     fmt.Sprintf("%d", id),
 				"name":   name,
@@ -485,7 +502,7 @@ func (s *Server) ListToolkits(w http.ResponseWriter, r *http.Request, projectId 
 	ctx := r.Context()
 
 	var total int
-	s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools`, schema)).Scan(&total)
+	_ = s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools`, schema)).Scan(&total) // total defaults to 0 on error
 
 	q := fmt.Sprintf(`
 		SELECT id, type, name, COALESCE(description,''),
@@ -506,11 +523,13 @@ func (s *Server) ListToolkits(w http.ResponseWriter, r *http.Request, projectId 
 		var tType, name, desc, settings, meta string
 		var createdAt, updatedAt any
 		var authorID, sharedID *int
-		rows.Scan(&id, &tType, &name, &desc, &settings, &meta, &createdAt, &updatedAt, &authorID, &sharedID)
+		if err := rows.Scan(&id, &tType, &name, &desc, &settings, &meta, &createdAt, &updatedAt, &authorID, &sharedID); err != nil {
+			continue
+		}
 
 		var settingsObj, metaObj any
-		json.Unmarshal([]byte(settings), &settingsObj)
-		json.Unmarshal([]byte(meta), &metaObj)
+		_ = json.Unmarshal([]byte(settings), &settingsObj) // DB column; safe to ignore parse error
+		_ = json.Unmarshal([]byte(meta), &metaObj)         // DB column; safe to ignore parse error
 
 		items = append(items, map[string]any{
 			"id": id, "type": tType, "name": name, "description": desc,
@@ -530,7 +549,7 @@ func (s *Server) DeleteApplicationTool(w http.ResponseWriter, r *http.Request, p
 	}
 
 	schema := fmt.Sprintf("p_%s", projectId)
-	s.pool.Exec(r.Context(), fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE tool_id = $1`, schema), toolId)
+	_, _ = s.pool.Exec(r.Context(), fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE tool_id = $1`, schema), toolId) // best-effort delete
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -563,7 +582,7 @@ func (s *Server) GetPipelineTrigger(w http.ResponseWriter, r *http.Request, proj
 	}
 
 	var settings map[string]any
-	json.Unmarshal(settingsRaw, &settings)
+	_ = json.Unmarshal(settingsRaw, &settings) // DB column; settings stays nil on error, trigger will be empty
 
 	trigger, _ := settings["trigger"].(map[string]any)
 	if trigger == nil {
@@ -582,7 +601,10 @@ func (s *Server) GetPipelineTrigger(w http.ResponseWriter, r *http.Request, proj
 // Mirrors pipelines.Handler.UpdateTrigger.
 func (s *Server) UpdatePipelineTrigger(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, versionId int) {
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	if s.pool == nil {
 		body["version_id"] = versionId
@@ -593,9 +615,9 @@ func (s *Server) UpdatePipelineTrigger(w http.ResponseWriter, r *http.Request, p
 	ctx := r.Context()
 	schema := fmt.Sprintf("p_%s", projectId)
 
-	triggerBytes, _ := json.Marshal(body)
+	triggerBytes, _ := json.Marshal(body) // body is a plain map; Marshal cannot fail
 	q := fmt.Sprintf(`UPDATE %q.application_versions SET settings = jsonb_set(COALESCE(settings, '{}')::jsonb, '{trigger}', $1) WHERE id = $2`, schema)
-	s.pool.Exec(ctx, q, triggerBytes, versionId)
+	_, _ = s.pool.Exec(ctx, q, triggerBytes, versionId) // best-effort trigger update
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version_id": versionId,
@@ -630,7 +652,9 @@ func (s *Server) ListGroups(w http.ResponseWriter, r *http.Request) {
 	var groups []group
 	for rows.Next() {
 		var g group
-		rows.Scan(&g.ID, &g.Name)
+		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+			continue
+		}
 		groups = append(groups, g)
 	}
 	if groups == nil {
@@ -675,7 +699,10 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request, publicProj
 func (s *Server) PutProjectGroups(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId) {
 	ctx := r.Context()
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	if s.pool == nil {
 		writeJSON(w, http.StatusOK, body)
@@ -688,7 +715,7 @@ func (s *Server) PutProjectGroups(w http.ResponseWriter, r *http.Request, projec
 		return
 	}
 
-	pid, _ := strconv.Atoi(fmt.Sprintf("%s", projectId))
+	pid, _ := strconv.Atoi(string(projectId))
 
 	var groupIDs []int
 	for _, gn := range groupNames {
@@ -705,10 +732,10 @@ func (s *Server) PutProjectGroups(w http.ResponseWriter, r *http.Request, projec
 		groupIDs = append(groupIDs, gid)
 	}
 
-	s.pool.Exec(ctx, `DELETE FROM centry.project_group_association WHERE project_id = $1`, pid)
+	_, _ = s.pool.Exec(ctx, `DELETE FROM centry.project_group_association WHERE project_id = $1`, pid) // best-effort
 
 	for _, gid := range groupIDs {
-		s.pool.Exec(ctx, `INSERT INTO centry.project_group_association (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, pid, gid)
+		_, _ = s.pool.Exec(ctx, `INSERT INTO centry.project_group_association (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, pid, gid) // best-effort
 	}
 
 	writeJSON(w, http.StatusOK, body)

@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 )
 
@@ -25,12 +24,6 @@ func setupProjectRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Mount("/api/v2", h.Routes())
 	return r
-}
-
-// withUser injects an auth.User into the request context.
-func withUser(req *http.Request, u auth.User) *http.Request {
-	ctx := auth.ContextWithUser(req.Context(), u)
-	return req.WithContext(ctx)
 }
 
 // ---- GetProject -------------------------------------------------------------
@@ -81,7 +74,9 @@ func TestPutProjectGroups_EchoesBody(t *testing.T) {
 	}
 
 	var result map[string]any
-	json.NewDecoder(rec.Body).Decode(&result)
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	ids, ok := result["group_ids"]
 	if !ok {
 		t.Error("expected 'group_ids' echoed back in response")

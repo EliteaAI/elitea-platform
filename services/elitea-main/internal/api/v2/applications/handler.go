@@ -153,7 +153,9 @@ func (h *Handler) getVersions(ctx context.Context, projectID, applicationID stri
 		var id int
 		var name, status, agentType string
 		var createdAt any
-		rows.Scan(&id, &name, &status, &agentType, &createdAt)
+		if err := rows.Scan(&id, &name, &status, &agentType, &createdAt); err != nil {
+			continue
+		}
 		versions = append(versions, map[string]any{
 			"id":         strconv.Itoa(id),
 			"name":       name,
@@ -177,7 +179,8 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		}
 		b, _ := json.Marshal(version)
 		var m map[string]any
-		json.Unmarshal(b, &m)
+		// b is from json.Marshal above — cannot fail
+		_ = json.Unmarshal(b, &m)
 		return m
 	}
 
@@ -210,10 +213,11 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 	}
 
 	var llmSettings, meta, starters, pipelineSettings any
-	json.Unmarshal(llmSettingsJSON, &llmSettings)
-	json.Unmarshal(metaJSON, &meta)
-	json.Unmarshal(startersJSON, &starters)
-	json.Unmarshal(pipelineSettingsJSON, &pipelineSettings)
+	// JSON was read from DB via COALESCE — cannot produce invalid JSON
+	_ = json.Unmarshal(llmSettingsJSON, &llmSettings)
+	_ = json.Unmarshal(metaJSON, &meta)
+	_ = json.Unmarshal(startersJSON, &starters)
+	_ = json.Unmarshal(pipelineSettingsJSON, &pipelineSettings)
 
 	instrVal := ""
 	if instructions != nil {
@@ -238,12 +242,16 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 			var entityType, selectedToolsStr string
 			var tName, tType *string
 			var tConfig []byte
-			toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tConfig)
+			if err := toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tConfig); err != nil {
+				continue
+			}
 			var selectedTools any
-			json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
+			// selectedToolsStr is COALESCE'd DB JSON — cannot fail
+			_ = json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
 			var config any
 			if tConfig != nil {
-				json.Unmarshal(tConfig, &config)
+				// tConfig is DB-stored JSON — cannot fail
+				_ = json.Unmarshal(tConfig, &config)
 			}
 			tool := map[string]any{
 				"id":             etmID,
@@ -278,9 +286,12 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		for appToolRows.Next() {
 			var atID int
 			var atName, atType, settingsStr string
-			appToolRows.Scan(&atID, &atName, &atType, &settingsStr)
+			if err := appToolRows.Scan(&atID, &atName, &atType, &settingsStr); err != nil {
+				continue
+			}
 			var settings any
-			json.Unmarshal([]byte(settingsStr), &settings)
+			// settingsStr is DB-stored JSON — cannot fail
+			_ = json.Unmarshal([]byte(settingsStr), &settings)
 			tools = append(tools, map[string]any{
 				"id":        atID,
 				"name":      atName,
@@ -301,7 +312,9 @@ func (h *Handler) fetchVersionDetails(ctx context.Context, projectID, applicatio
 		defer varRows.Close()
 		for varRows.Next() {
 			var vName, vValue string
-			varRows.Scan(&vName, &vValue)
+			if err := varRows.Scan(&vName, &vValue); err != nil {
+				continue
+			}
 			variables = append(variables, map[string]any{
 				"name":  vName,
 				"value": vValue,
@@ -406,14 +419,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 							varsJSON = string(b)
 						}
 					}
-					h.pool.Exec(r.Context(), fmt.Sprintf(
+					if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
 						`UPDATE %q.application_versions SET agent_type=$1, instructions=$2, welcome_message=$3, llm_settings=$4::jsonb, conversation_starters=$5::jsonb, author_id=$6 WHERE id=$7`, s),
-						agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, ver.ID)
+						agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, ver.ID); execErr != nil {
+						apierr.Write(w, apierr.Internal("failed to persist version fields"))
+						return
+					}
 					// Store variables in meta as pylon does
 					if vars, ok := vBody["variables"].([]any); ok && len(vars) > 0 {
 						metaJSON := fmt.Sprintf(`{"step_limit":25,"variables":%s}`, varsJSON)
-						h.pool.Exec(r.Context(), fmt.Sprintf(
-							`UPDATE %q.application_versions SET meta=$1::jsonb WHERE id=$2`, s), metaJSON, ver.ID)
+						if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
+							`UPDATE %q.application_versions SET meta=$1::jsonb WHERE id=$2`, s), metaJSON, ver.ID); execErr != nil {
+							apierr.Write(w, apierr.Internal("failed to persist version meta"))
+							return
+						}
 					}
 					_ = varsJSON
 				}
@@ -611,9 +630,12 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	if h.pool != nil {
 		s := fmt.Sprintf("p_%s", projectID)
 		var pubCount int
-		h.pool.QueryRow(r.Context(), fmt.Sprintf(
+		if err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
 			`SELECT COUNT(*) FROM %q.application_versions WHERE application_id = $1 AND status IN ('published','embedded')`, s),
-			applicationID).Scan(&pubCount)
+			applicationID).Scan(&pubCount); err != nil {
+			apierr.Write(w, apierr.Internal("failed to check published versions"))
+			return
+		}
 		if pubCount > 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error": "Unpublish first. Cannot delete application with published versions.",
@@ -635,7 +657,8 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	// Clean up application_tools entries on other versions that reference this deleted app
 	if h.pool != nil {
 		s := fmt.Sprintf("p_%s", projectID)
-		h.pool.Exec(r.Context(), fmt.Sprintf(`
+		// best-effort cleanup; ignore error so the 204 response is still sent
+		_, _ = h.pool.Exec(r.Context(), fmt.Sprintf(`
 			DELETE FROM %q.application_tools
 			WHERE type = 'application'
 			AND settings->>'application_id' = $1`, s), applicationID)
@@ -728,9 +751,12 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		h.pool.Exec(r.Context(), fmt.Sprintf(
+		if _, execErr := h.pool.Exec(r.Context(), fmt.Sprintf(
 			`UPDATE %q.application_versions SET agent_type=$1, instructions=$2, welcome_message=$3, llm_settings=$4::jsonb, conversation_starters=$5::jsonb, author_id=$6, meta=$7::jsonb WHERE id=$8`, s),
-			agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON, ver.ID)
+			agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON, ver.ID); execErr != nil {
+			apierr.Write(w, apierr.Internal("failed to persist version fields"))
+			return
+		}
 
 		llmResp := map[string]any{}
 		if llm, ok := body["llm_settings"].(map[string]any); ok {
@@ -751,7 +777,8 @@ func (h *Handler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 			variables = []any{}
 		}
 		var meta map[string]any
-		json.Unmarshal([]byte(metaJSON), &meta)
+		// metaJSON was just built from json.Marshal above — cannot be invalid JSON
+		_ = json.Unmarshal([]byte(metaJSON), &meta)
 
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id":                    ver.ID,
@@ -853,7 +880,10 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 		args = append(args, versionID, applicationID)
 		q := fmt.Sprintf(`UPDATE %q.application_versions SET %s WHERE id = $%d AND application_id = $%d`,
 			s, strings.Join(setClauses, ", "), argIdx, argIdx+1)
-		h.pool.Exec(r.Context(), q, args...)
+		if _, execErr := h.pool.Exec(r.Context(), q, args...); execErr != nil {
+			apierr.Write(w, apierr.Internal("failed to update version"))
+			return
+		}
 	}
 
 	// Return the updated version
@@ -863,18 +893,22 @@ func (h *Handler) UpdateVersion(w http.ResponseWriter, r *http.Request) {
 		var name, status, agentType string
 		var llmJSON, metaJSON, startersJSON []byte
 		var instructions, welcomeMsg string
-		h.pool.QueryRow(r.Context(), fmt.Sprintf(
+		if err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
 			`SELECT id, name, status, COALESCE(agent_type,''), COALESCE(instructions,''), COALESCE(welcome_message,''),
 			        COALESCE(llm_settings::text,'{}')::bytea, COALESCE(meta::text,'{}')::bytea,
 			        COALESCE(conversation_starters::text,'[]')::bytea
 			 FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(
-			&id, &name, &status, &agentType, &instructions, &welcomeMsg, &llmJSON, &metaJSON, &startersJSON)
+			&id, &name, &status, &agentType, &instructions, &welcomeMsg, &llmJSON, &metaJSON, &startersJSON); err != nil {
+			apierr.Write(w, apierr.Internal("failed to read updated version"))
+			return
+		}
 
 		var llm, meta map[string]any
 		var starters []any
-		json.Unmarshal(llmJSON, &llm)
-		json.Unmarshal(metaJSON, &meta)
-		json.Unmarshal(startersJSON, &starters)
+		// JSON was read from DB via COALESCE — cannot be invalid
+		_ = json.Unmarshal(llmJSON, &llm)
+		_ = json.Unmarshal(metaJSON, &meta)
+		_ = json.Unmarshal(startersJSON, &starters)
 
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": strconv.Itoa(id), "application_id": applicationID,
@@ -1014,10 +1048,11 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var llmSettings, meta, starters, pipelineSettings any
-	json.Unmarshal(llmSettingsJSON, &llmSettings)
-	json.Unmarshal(metaJSON, &meta)
-	json.Unmarshal(startersJSON, &starters)
-	json.Unmarshal(pipelineSettingsJSON, &pipelineSettings)
+	// JSON was read from DB via COALESCE — cannot be invalid JSON
+	_ = json.Unmarshal(llmSettingsJSON, &llmSettings)
+	_ = json.Unmarshal(metaJSON, &meta)
+	_ = json.Unmarshal(startersJSON, &starters)
+	_ = json.Unmarshal(pipelineSettingsJSON, &pipelineSettings)
 
 	instrVal := ""
 	if instructions != nil {
@@ -1045,12 +1080,16 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 			var entityType, selectedToolsStr string
 			var tName, tType *string
 			var tConfig []byte
-			toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tConfig)
+			if err := toolRows.Scan(&etmID, &toolID, &entityType, &selectedToolsStr, &tName, &tType, &tConfig); err != nil {
+				continue
+			}
 			var selectedTools any
-			json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
+			// selectedToolsStr is COALESCE'd DB JSON — cannot fail
+			_ = json.Unmarshal([]byte(selectedToolsStr), &selectedTools)
 			var config map[string]any
 			if tConfig != nil {
-				json.Unmarshal(tConfig, &config)
+				// tConfig is DB-stored JSON — cannot fail
+				_ = json.Unmarshal(tConfig, &config)
 			}
 			if config == nil {
 				config = map[string]any{}
@@ -1092,9 +1131,12 @@ func (h *Handler) GetVersionExpanded(w http.ResponseWriter, r *http.Request) {
 		for appToolRows.Next() {
 			var atID int
 			var atName, atType, settingsStr string
-			appToolRows.Scan(&atID, &atName, &atType, &settingsStr)
+			if err := appToolRows.Scan(&atID, &atName, &atType, &settingsStr); err != nil {
+				continue
+			}
 			var settings any
-			json.Unmarshal([]byte(settingsStr), &settings)
+			// settingsStr is DB-stored JSON — cannot fail
+			_ = json.Unmarshal([]byte(settingsStr), &settings)
 			tools = append(tools, map[string]any{
 				"id":         atID,
 				"name":       atName,
@@ -1180,7 +1222,8 @@ func (h *Handler) expandToolSettings(ctx context.Context, schema, projectID stri
 		}
 
 		var data map[string]any
-		json.Unmarshal(configData, &data)
+		// configData is DB-stored JSON from the configuration table — cannot be invalid
+		_ = json.Unmarshal(configData, &data)
 		if data == nil {
 			data = map[string]any{}
 		}
@@ -1218,5 +1261,6 @@ func (h *Handler) expandToolSettings(ctx context.Context, schema, projectID stri
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	// connection already committed; ignore write error
+	_ = json.NewEncoder(w).Encode(v)
 }

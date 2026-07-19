@@ -180,12 +180,12 @@ func TestTrendingAuthors(t *testing.T) {
 	h.TrendingAuthors(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	assertStatus(t, w, http.StatusOK)
-	body := decodeObj(t, w)
-	if _, ok := body["items"]; !ok {
-		t.Error("response must contain 'items' key")
-	}
-	if total, _ := body["total"].(float64); total != 0 {
-		t.Errorf("total should be 0, got %v", body["total"])
+	assertContentTypeJSON(t, w)
+
+	// Handler returns a plain JSON array (not an object with items/total wrapper).
+	items := decodeArr(t, w)
+	if len(items) != 0 {
+		t.Errorf("expected empty array, got %d items", len(items))
 	}
 }
 
@@ -266,17 +266,11 @@ func TestDefaultIcons(t *testing.T) {
 	assertStatus(t, w, http.StatusOK)
 	assertContentTypeJSON(t, w)
 
-	body := decodeObj(t, w)
-	items, ok := body["items"].([]any)
-	if !ok {
-		t.Fatal("response must contain 'items' array")
-	}
+	// Handler returns a plain JSON array of icon objects (no wrapper object).
+	items := decodeArr(t, w)
 	const wantCount = 5
 	if len(items) != wantCount {
 		t.Errorf("expected %d icons, got %d", wantCount, len(items))
-	}
-	if total, _ := body["total"].(float64); int(total) != wantCount {
-		t.Errorf("total: want %d, got %v", wantCount, body["total"])
 	}
 
 	for i, raw := range items {
@@ -318,10 +312,14 @@ func TestExportImportPost(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ExportImportPost(w, httptest.NewRequest(http.MethodPost, "/", nil))
 
-	assertStatus(t, w, http.StatusOK)
+	// With nil pool and empty body, the handler returns 201 with result/errors shape.
+	assertStatus(t, w, http.StatusCreated)
 	body := decodeObj(t, w)
-	if ok, _ := body["ok"].(bool); !ok {
-		t.Error("ok should be true")
+	if _, hasResult := body["result"]; !hasResult {
+		t.Error("response must contain 'result' key")
+	}
+	if _, hasErrors := body["errors"]; !hasErrors {
+		t.Error("response must contain 'errors' key")
 	}
 }
 
@@ -385,10 +383,14 @@ func TestCreateProjectIcon(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.CreateProjectIcon(w, httptest.NewRequest(http.MethodPost, "/", nil))
 
+	// Handler returns 200 with {name, url} (no "ok" field).
 	assertStatus(t, w, http.StatusOK)
 	body := decodeObj(t, w)
-	if ok, _ := body["ok"].(bool); !ok {
-		t.Error("ok should be true")
+	if _, hasURL := body["url"]; !hasURL {
+		t.Error("response must contain 'url' key")
+	}
+	if _, hasName := body["name"]; !hasName {
+		t.Error("response must contain 'name' key")
 	}
 }
 

@@ -72,7 +72,10 @@ func (h *Handler) CreateSummary(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	summary, err := h.repo.CreateSummary(r.Context(), projectID, conversationID, body.Content)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -88,7 +91,10 @@ func (h *Handler) UpdateSummary(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	if err := h.repo.UpdateSummary(r.Context(), projectID, conversationID, summaryID, body.Content); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "summary not found"})
 		return
@@ -141,5 +147,5 @@ func (r *pgRepo) DeleteSummary(_ context.Context, _, _, _ string) error {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

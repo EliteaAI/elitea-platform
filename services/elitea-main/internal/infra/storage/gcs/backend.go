@@ -154,7 +154,7 @@ func (b *Backend) PutObject(ctx context.Context, projectID, bucketName, key stri
 		w.ContentType = contentType
 	}
 	if _, err := io.Copy(w, data); err != nil {
-		w.Close()
+		_ = w.Close()
 		return fmt.Errorf("storage/gcs: put object: %w", err)
 	}
 	return w.Close()

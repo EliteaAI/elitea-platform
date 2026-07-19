@@ -25,7 +25,7 @@ func TestOtelMiddleware_SetsStatusCode(t *testing.T) {
 
 func TestOtelMiddleware_DefaultStatus200(t *testing.T) {
 	handler := middleware.OtelMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)

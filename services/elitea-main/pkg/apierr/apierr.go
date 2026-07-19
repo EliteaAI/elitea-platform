@@ -49,11 +49,11 @@ func Write(w http.ResponseWriter, err error) {
 	if errors.As(err, &apiErr) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(apiErr.Status)
-		json.NewEncoder(w).Encode(Response{Error: apiErr.Message})
+		_ = json.NewEncoder(w).Encode(Response{Error: apiErr.Message})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
-	json.NewEncoder(w).Encode(Response{Error: "internal server error"})
+	_ = json.NewEncoder(w).Encode(Response{Error: "internal server error"})
 }

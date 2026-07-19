@@ -29,7 +29,7 @@ func TestLiveness(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	var s health.Status
-	json.NewDecoder(rec.Body).Decode(&s)
+	_ = json.NewDecoder(rec.Body).Decode(&s)
 	if s.Status != "ok" {
 		t.Errorf("expected status ok, got %q", s.Status)
 	}
@@ -59,7 +59,7 @@ func TestReadiness_AllHealthy(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	var s health.Status
-	json.NewDecoder(rec.Body).Decode(&s)
+	_ = json.NewDecoder(rec.Body).Decode(&s)
 	if s.Status != "ready" {
 		t.Errorf("expected status ready, got %q", s.Status)
 	}
@@ -84,7 +84,7 @@ func TestReadiness_DBDown(t *testing.T) {
 		t.Fatalf("expected 503, got %d", rec.Code)
 	}
 	var s health.Status
-	json.NewDecoder(rec.Body).Decode(&s)
+	_ = json.NewDecoder(rec.Body).Decode(&s)
 	if s.Status != "not_ready" {
 		t.Errorf("expected status not_ready, got %q", s.Status)
 	}

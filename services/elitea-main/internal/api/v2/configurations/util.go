@@ -46,7 +46,7 @@ func isSensitiveField(key string) bool {
 
 func generateSecretName() string {
 	b := make([]byte, 12)
-	rand.Read(b)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error (always nil per Go stdlib docs)
 	return hex.EncodeToString(b)
 }
 

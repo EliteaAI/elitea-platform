@@ -31,7 +31,7 @@ func TestAdminHandler_GetConfig(t *testing.T) {
 	}
 
 	var cfg map[string]any
-	json.NewDecoder(w.Body).Decode(&cfg)
+	_ = json.NewDecoder(w.Body).Decode(&cfg)
 	if cfg["enabled"] != true {
 		t.Errorf("expected enabled true")
 	}
@@ -56,7 +56,7 @@ func TestAdminHandler_UpdateConfig(t *testing.T) {
 	}
 
 	var cfg map[string]any
-	json.NewDecoder(w.Body).Decode(&cfg)
+	_ = json.NewDecoder(w.Body).Decode(&cfg)
 	if cfg["enabled"] != true {
 		t.Errorf("expected enabled true after update")
 	}
@@ -81,7 +81,7 @@ func TestAdminHandler_Stats(t *testing.T) {
 	}
 
 	var stats map[string]any
-	json.NewDecoder(w.Body).Decode(&stats)
+	_ = json.NewDecoder(w.Body).Decode(&stats)
 	if stats["total"].(float64) != 1 {
 		t.Errorf("expected total 1, got %v", stats["total"])
 	}

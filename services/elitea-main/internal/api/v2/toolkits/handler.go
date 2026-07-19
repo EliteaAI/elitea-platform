@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -276,7 +277,10 @@ func (h *Handler) ValidateToolkit(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ForkToolkit(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 	tool, err := h.repo.ForkToolkit(r.Context(), projectID, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -296,7 +300,10 @@ func (h *Handler) TestTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	toolParams, _ := body["tool_params"].(map[string]any)
 	toolName, _ := body["tool_name"].(string)
@@ -330,7 +337,10 @@ func (h *Handler) TestToolkitTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
 
 	toolkitID, _ := body["toolkit_id"].(string)
 	toolName, _ := body["tool_name"].(string)
@@ -374,9 +384,10 @@ func (h *Handler) ExportToolkit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var settingsObj, envVarsObj, metaObj any
-	json.Unmarshal(settings, &settingsObj)
-	json.Unmarshal(envVars, &envVarsObj)
-	json.Unmarshal(meta, &metaObj)
+	// DB columns are stored as valid JSON; Unmarshal into any cannot fail for well-formed rows.
+	_ = json.Unmarshal(settings, &settingsObj)
+	_ = json.Unmarshal(envVars, &envVarsObj)
+	_ = json.Unmarshal(meta, &metaObj)
 
 	fork := r.URL.Query().Get("fork") == "true"
 	result := map[string]any{
@@ -684,7 +695,9 @@ func (r *pgRepo) ListTypes(ctx context.Context, projectID string) ([]string, err
 	var types []string
 	for rows.Next() {
 		var t string
-		rows.Scan(&t)
+		if err := rows.Scan(&t); err != nil {
+			continue
+		}
 		types = append(types, t)
 	}
 	if types == nil {
@@ -708,7 +721,9 @@ func (r *pgRepo) AvailableTools(ctx context.Context, projectID, toolkitID string
 	var tools []Tool
 	for rows.Next() {
 		var t Tool
-		rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description)
+		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
+			continue
+		}
 		tools = append(tools, t)
 	}
 	if tools == nil {
@@ -728,7 +743,9 @@ func (r *pgRepo) DiscoverTools(ctx context.Context, projectID, toolkitType strin
 	var tools []Tool
 	for rows.Next() {
 		var t Tool
-		rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description)
+		if err := rows.Scan(&t.ID, &t.Name, &t.Type, &t.Description); err != nil {
+			continue
+		}
 		tools = append(tools, t)
 	}
 	if tools == nil {
@@ -751,7 +768,8 @@ func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID strin
 	}
 
 	var settings map[string]any
-	json.Unmarshal([]byte(*settingsStr), &settings)
+	// settingsStr is a DB JSON column; Unmarshal into map cannot fail for well-formed rows.
+	_ = json.Unmarshal([]byte(*settingsStr), &settings)
 
 	// Check if referenced embedding_model config still exists
 	if embModel, ok := settings["embedding_model"]; ok && embModel != nil {
@@ -762,7 +780,9 @@ func (r *pgRepo) ValidateToolkit(ctx context.Context, projectID, toolkitID strin
 				SELECT 1 FROM %q.configuration
 				WHERE type = 'embedding_model' AND data->>'name' = $1
 			)`, s)
-			r.pool.QueryRow(ctx, cq, embName).Scan(&configExists)
+			if err := r.pool.QueryRow(ctx, cq, embName).Scan(&configExists); err != nil {
+				return false, fmt.Errorf("check embedding model: %w", err)
+			}
 			if !configExists {
 				return false, fmt.Errorf("embedding model '%s' not found", embName)
 			}
@@ -820,8 +840,9 @@ func (r *pgRepo) ListToolkits(ctx context.Context, projectID string, page, pageS
 			continue
 		}
 		var settings, meta any
-		json.Unmarshal(settingsRaw, &settings)
-		json.Unmarshal(metaRaw, &meta)
+		// DB columns are valid JSON; Unmarshal into any cannot fail for well-formed rows.
+		_ = json.Unmarshal(settingsRaw, &settings)
+		_ = json.Unmarshal(metaRaw, &meta)
 		items = append(items, map[string]any{
 			"id":          id,
 			"type":        typ,
@@ -873,8 +894,9 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		return nil, fmt.Errorf("create toolkit: %w", err)
 	}
 	var settings, meta any
-	json.Unmarshal(settingsRaw, &settings)
-	json.Unmarshal(metaRaw, &meta)
+	// DB columns are valid JSON; Unmarshal into any cannot fail for well-formed rows.
+	_ = json.Unmarshal(settingsRaw, &settings)
+	_ = json.Unmarshal(metaRaw, &meta)
 	return map[string]any{
 		"id":          id,
 		"type":        retType,
@@ -912,8 +934,9 @@ func (r *pgRepo) GetToolkit(ctx context.Context, projectID, toolkitID string) (m
 		return nil, fmt.Errorf("get toolkit: %w", err)
 	}
 	var settings, meta any
-	json.Unmarshal(settingsRaw, &settings)
-	json.Unmarshal(metaRaw, &meta)
+	// DB columns are valid JSON; Unmarshal into any cannot fail for well-formed rows.
+	_ = json.Unmarshal(settingsRaw, &settings)
+	_ = json.Unmarshal(metaRaw, &meta)
 
 	author := map[string]any{"id": strconv.Itoa(uID), "email": uEmail, "name": uName}
 
@@ -992,8 +1015,9 @@ func (r *pgRepo) UpdateToolkit(ctx context.Context, projectID, toolkitID string,
 		return nil, fmt.Errorf("update toolkit: %w", err)
 	}
 	var settings, meta any
-	json.Unmarshal(settingsRaw, &settings)
-	json.Unmarshal(metaRaw, &meta)
+	// DB columns are valid JSON; Unmarshal into any cannot fail for well-formed rows.
+	_ = json.Unmarshal(settingsRaw, &settings)
+	_ = json.Unmarshal(metaRaw, &meta)
 	return map[string]any{
 		"id":          id,
 		"type":        typ,
@@ -1028,5 +1052,6 @@ func sanitizeToolkitName(name string) string {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	// Response is already committed; encoding errors cannot be surfaced to the client.
+	_ = json.NewEncoder(w).Encode(v)
 }

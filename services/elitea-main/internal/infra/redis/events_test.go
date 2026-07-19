@@ -23,7 +23,7 @@ func skipIfNoRedis(t *testing.T, rdb *goredis.Client) {
 func TestEventBus_PublishSubscribe(t *testing.T) {
 	rdb := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	eb := infraredis.NewEventBus(rdb, "test-service")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -51,7 +51,9 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 			t.Errorf("expected source test-service, got %q", evt.Source)
 		}
 		var p map[string]string
-		json.Unmarshal(evt.Payload, &p)
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+				t.Errorf("unmarshal payload: %v", err)
+			}
 		if p["key"] != "value" {
 			t.Errorf("expected payload key=value, got %v", p)
 		}
@@ -63,7 +65,7 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 func TestEventBus_Ping(t *testing.T) {
 	rdb := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
 	skipIfNoRedis(t, rdb)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 
 	eb := infraredis.NewEventBus(rdb, "test-service")
 	if err := eb.Ping(context.Background()); err != nil {

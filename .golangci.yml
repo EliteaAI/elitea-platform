@@ -1,0 +1,21 @@
+# golangci-lint configuration for the elitea-platform Go workspace.
+# Applied to every module (services/*, libs/go/*) via `golangci-lint run ./...`.
+#
+# All findings from these linters are fixed in-tree rather than excluded, so the
+# error paths (DB Scan/Exec, json.Unmarshal, response writes) are handled
+# explicitly per the AGENTS.md "typed, safe errors" guardrail.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    generated: lax
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

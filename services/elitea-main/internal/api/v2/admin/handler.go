@@ -76,9 +76,10 @@ func (h *Handler) queryUsers(ctx context.Context, limit, offset int, userType st
 
 	// system users have email like '%@centry.user', platform users don't
 	whereClause := ""
-	if userType == "system" {
+	switch userType {
+	case "system":
 		whereClause = " WHERE u.email LIKE '%@centry.user'"
-	} else if userType == "platform" {
+	case "platform":
 		whereClause = " WHERE u.email NOT LIKE '%@centry.user'"
 	}
 
@@ -330,10 +331,16 @@ func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Suspended bool `json:"suspended"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
 
 	if h.pool != nil {
-		h.pool.Exec(r.Context(), `UPDATE auth_core__user SET suspended = $1 WHERE id = $2`, body.Suspended, userID)
+		if _, err := h.pool.Exec(r.Context(), `UPDATE auth_core__user SET suspended = $1 WHERE id = $2`, body.Suspended, userID); err != nil {
+			http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -343,10 +350,16 @@ func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Suspended bool `json:"suspended"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
 
 	if h.pool != nil {
-		h.pool.Exec(r.Context(), `UPDATE centry.project SET suspended = $1 WHERE id = $2`, body.Suspended, projectID)
+		if _, err := h.pool.Exec(r.Context(), `UPDATE centry.project SET suspended = $1 WHERE id = $2`, body.Suspended, projectID); err != nil {
+			http.Error(w, `{"error":"failed to update project"}`, http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -377,5 +390,5 @@ func paginationParams(r *http.Request) (limit, offset int) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

@@ -45,7 +45,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{"rows": tags, "total": len(tags)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"rows": tags, "total": len(tags)})
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +56,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(tag)
+	_ = json.NewEncoder(w).Encode(tag)
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, _ *http.Request) {

@@ -58,6 +58,38 @@ func (m *mockRepo) ForkToolkit(_ context.Context, _ string, _ map[string]any) (t
 	return m.tool, nil
 }
 
+func (m *mockRepo) ListToolkits(_ context.Context, _ string, _, _ int) ([]map[string]any, int, error) {
+	if m.err != nil {
+		return nil, 0, m.err
+	}
+	return nil, 0, nil
+}
+
+func (m *mockRepo) CreateToolkit(_ context.Context, _ string, body map[string]any) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return body, nil
+}
+
+func (m *mockRepo) GetToolkit(_ context.Context, _, _ string) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return map[string]any{}, nil
+}
+
+func (m *mockRepo) UpdateToolkit(_ context.Context, _, _ string, body map[string]any) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return body, nil
+}
+
+func (m *mockRepo) DeleteToolkit(_ context.Context, _, _ string) error {
+	return m.err
+}
+
 // setupRouter wires up a chi router with the given mock repo attached at the
 // URL patterns matching router.go.
 func setupRouter(repo toolkits.Repository) *chi.Mux {
@@ -77,6 +109,8 @@ func setupRouter(repo toolkits.Repository) *chi.Mux {
 // --- ListTypes ---
 
 func TestListTypes_Success(t *testing.T) {
+	// Mock returns ["openai", "langchain", "custom"]; handler merges with 10 knownToolkitTypes.
+	// "custom" is already in the known list, so result is 10 + 2 = 12.
 	repo := &mockRepo{types: []string{"openai", "langchain", "custom"}}
 	r := setupRouter(repo)
 
@@ -89,22 +123,26 @@ func TestListTypes_Success(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
-	types, ok := resp["toolkit_types"].([]any)
+	// Handler emits key "rows", not "toolkit_types".
+	types, ok := resp["rows"].([]any)
 	if !ok {
-		t.Fatalf("expected toolkit_types array, got %T", resp["toolkit_types"])
+		t.Fatalf("expected rows array, got %T", resp["rows"])
 	}
-	if len(types) != 3 {
-		t.Errorf("expected 3 types, got %d", len(types))
+	// 10 knownToolkitTypes + "openai" + "langchain" ("custom" is deduped)
+	if len(types) != 12 {
+		t.Errorf("expected 12 types, got %d", len(types))
 	}
 	total := resp["total"].(float64)
-	if int(total) != 3 {
-		t.Errorf("expected total 3, got %v", total)
+	if int(total) != 12 {
+		t.Errorf("expected total 12, got %v", total)
 	}
 }
 
 func TestListTypes_DBError(t *testing.T) {
+	// Even on DB error, handler ignores the error and merges nil dbTypes with
+	// the 10 knownToolkitTypes, so it always returns the static list.
 	repo := &mockRepo{err: errors.New("db error")}
 	r := setupRouter(repo)
 
@@ -112,24 +150,25 @@ func TestListTypes_DBError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// Handler returns 200 with empty list on error
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
-	types, ok := resp["toolkit_types"].([]any)
+	// Handler emits key "rows", not "toolkit_types".
+	types, ok := resp["rows"].([]any)
 	if !ok {
-		t.Fatalf("expected toolkit_types array, got %T", resp["toolkit_types"])
+		t.Fatalf("expected rows array, got %T", resp["rows"])
 	}
-	if len(types) != 0 {
-		t.Errorf("expected 0 types on error, got %d", len(types))
+	// DB error means no extra types; only the 10 static knownToolkitTypes are returned.
+	if len(types) != 10 {
+		t.Errorf("expected 10 types on DB error (static list), got %d", len(types))
 	}
 	total := resp["total"].(float64)
-	if int(total) != 0 {
-		t.Errorf("expected total 0 on error, got %v", total)
+	if int(total) != 10 {
+		t.Errorf("expected total 10 on DB error, got %v", total)
 	}
 }
 
@@ -153,7 +192,7 @@ func TestAvailableTools_Success(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	tools, ok := resp["tools"].([]any)
 	if !ok {
@@ -181,7 +220,7 @@ func TestAvailableTools_Empty(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	tools, ok := resp["tools"].([]any)
 	if !ok {
@@ -211,7 +250,7 @@ func TestDiscoverTools_Success(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	tools, ok := resp["tools"].([]any)
 	if !ok {
@@ -239,7 +278,7 @@ func TestDiscoverTools_Empty(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	tools, ok := resp["tools"].([]any)
 	if !ok {
@@ -265,7 +304,7 @@ func TestValidateToolkit_Valid(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	valid, ok := resp["valid"].(bool)
 	if !ok {
@@ -277,6 +316,7 @@ func TestValidateToolkit_Valid(t *testing.T) {
 }
 
 func TestValidateToolkit_Invalid(t *testing.T) {
+	// Handler returns 400 (not 200) when valid=false.
 	repo := &mockRepo{valid: false}
 	r := setupRouter(repo)
 
@@ -284,12 +324,12 @@ func TestValidateToolkit_Invalid(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	valid, ok := resp["valid"].(bool)
 	if !ok {
@@ -301,6 +341,7 @@ func TestValidateToolkit_Invalid(t *testing.T) {
 }
 
 func TestValidateToolkit_DBError(t *testing.T) {
+	// Handler returns 400 with valid=false and settings_errors on repo error.
 	repo := &mockRepo{err: errors.New("connection reset")}
 	r := setupRouter(repo)
 
@@ -308,13 +349,12 @@ func TestValidateToolkit_DBError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// Handler returns 200 with valid=false on error
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	valid, ok := resp["valid"].(bool)
 	if !ok {
@@ -322,6 +362,10 @@ func TestValidateToolkit_DBError(t *testing.T) {
 	}
 	if valid {
 		t.Error("expected valid=false on error")
+	}
+	// On error, handler also includes settings_errors array.
+	if _, hasErrors := resp["settings_errors"]; !hasErrors {
+		t.Error("expected settings_errors field in error response")
 	}
 }
 
@@ -343,7 +387,7 @@ func TestForkToolkit_Success(t *testing.T) {
 	}
 
 	var tool toolkits.Tool
-	json.NewDecoder(rec.Body).Decode(&tool)
+	_ = json.NewDecoder(rec.Body).Decode(&tool)
 	if tool.ID != "forked-1" {
 		t.Errorf("expected ID forked-1, got %q", tool.ID)
 	}
@@ -367,7 +411,7 @@ func TestForkToolkit_Error(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	ok, exists := resp["ok"].(bool)
 	if !exists || ok {
@@ -423,35 +467,45 @@ func TestIndexTypes_StaticResponse(t *testing.T) {
 	}
 
 	var resp map[string]any
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
-	indexTypes, ok := resp["index_types"].([]any)
+	// Handler emits key "items", not "index_types".
+	indexTypes, ok := resp["items"].([]any)
 	if !ok {
-		t.Fatalf("expected index_types array, got %T", resp["index_types"])
+		t.Fatalf("expected items array, got %T", resp["items"])
 	}
-	if len(indexTypes) != 3 {
-		t.Errorf("expected 3 index types, got %d", len(indexTypes))
+	// Handler defines 6 static index types (file_loader, web_loader, confluence_loader,
+	// github_loader, jira_loader, s3_loader).
+	if len(indexTypes) != 6 {
+		t.Errorf("expected 6 index types, got %d", len(indexTypes))
 	}
 
 	total := resp["total"].(float64)
-	if int(total) != 3 {
-		t.Errorf("expected total 3, got %v", total)
+	if int(total) != 6 {
+		t.Errorf("expected total 6, got %v", total)
 	}
 
-	// Verify expected names are present
-	expected := map[string]bool{"vector": false, "keyword": false, "hybrid": false}
+	// Verify expected loader types are present via the "type" field.
+	expected := map[string]bool{
+		"file_loader":        false,
+		"web_loader":         false,
+		"confluence_loader":  false,
+		"github_loader":      false,
+		"jira_loader":        false,
+		"s3_loader":          false,
+	}
 	for _, item := range indexTypes {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if name, _ := entry["name"].(string); name != "" {
-			expected[name] = true
+		if typ, _ := entry["type"].(string); typ != "" {
+			expected[typ] = true
 		}
 	}
-	for name, found := range expected {
+	for typ, found := range expected {
 		if !found {
-			t.Errorf("missing index type %q in response", name)
+			t.Errorf("missing index type %q in response", typ)
 		}
 	}
 }

@@ -16,8 +16,12 @@ tasks:
   test:
     desc: Run all Go tests across the workspace
     cmds:
-      - go test -race -count=1 ./services/...
-      - go test -race -count=1 ./libs/...
+      # go.work wildcards must resolve within a module root, so `./services/...`
+      # fails ("directory prefix does not contain modules"). Iterate real module dirs.
+      - |
+        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
+          (cd "$mod" && go test -race -count=1 ./...)
+        done
 
   lint:
     desc: Run golangci-lint on Go code
@@ -28,8 +32,12 @@ tasks:
   vet:
     desc: Run go vet across the workspace
     cmds:
-      - go vet ./services/...
-      - go vet ./libs/...
+      # go.work wildcards must resolve within a module root, so `./services/...`
+      # fails ("directory prefix does not contain modules"). Iterate real module dirs.
+      - |
+        for mod in $(go list -m -f '{{`{{.Dir}}`}}'); do
+          (cd "$mod" && go vet ./...)
+        done
 
   run:
     desc: Run elitea-main locally

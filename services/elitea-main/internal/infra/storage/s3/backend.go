@@ -116,10 +116,12 @@ func (b *Backend) DeleteBucket(ctx context.Context, projectID, bktName string) e
 		for _, obj := range page.Contents {
 			objs = append(objs, types.ObjectIdentifier{Key: obj.Key})
 		}
-		b.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		if _, err := b.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(name),
 			Delete: &types.Delete{Objects: objs, Quiet: aws.Bool(true)},
-		})
+		}); err != nil {
+			return fmt.Errorf("storage/s3: delete bucket objects: %w", err)
+		}
 	}
 
 	_, err := b.client.DeleteBucket(ctx, &s3.DeleteBucketInput{

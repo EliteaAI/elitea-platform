@@ -34,7 +34,7 @@ func (h *SessionHandler) Login(w http.ResponseWriter, r *http.Request) {
 	isError := r.URL.Query().Get("error") != ""
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	loginTmpl.Execute(w, map[string]any{
+	_ = loginTmpl.Execute(w, map[string]any{
 		"Action":   "/forward-auth/auth_form/authorize",
 		"Target":   targetTo,
 		"HasError": isError,
@@ -42,7 +42,10 @@ func (h *SessionHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SessionHandler) Authorize(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/forward-auth/auth_form/login?error=true", http.StatusFound)
+		return
+	}
 	targetTo := r.FormValue("target")
 	login := strings.TrimSpace(r.FormValue("login"))
 	password := r.FormValue("password")
@@ -185,7 +188,7 @@ func verifySessionToken(secretKey, token string) (map[string]any, error) {
 func writeSessionJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // Suppress unused import warning for rand

@@ -195,7 +195,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		Name  string `json:"name"`
 		Value string `json:"value"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
 	if body.Name == "" {
 		body.Name = oldName
 	}
@@ -657,5 +660,5 @@ func (h *Handler) ResolveSecretValue(ctx context.Context, projectID, secretRef s
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }

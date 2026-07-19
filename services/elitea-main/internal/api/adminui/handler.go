@@ -108,7 +108,7 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, indexHTML)
+	_, _ = fmt.Fprint(w, indexHTML)
 }
 
 func (h *Handler) verifySession(token string) map[string]any {

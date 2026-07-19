@@ -24,9 +24,9 @@ func (m *mockPredictor) Predict(_ context.Context, req predict.Request) (predict
 }
 
 func (m *mockPredictor) PredictStream(_ context.Context, _ predict.Request, send func(predict.StreamEvent) error) error {
-	send(predict.StreamEvent{Type: "token", Content: "Hello"})
-	send(predict.StreamEvent{Type: "token", Content: " world"})
-	send(predict.StreamEvent{Type: "done", Done: true})
+	_ = send(predict.StreamEvent{Type: "token", Content: "Hello"})
+	_ = send(predict.StreamEvent{Type: "token", Content: " world"})
+	_ = send(predict.StreamEvent{Type: "done", Done: true})
 	return nil
 }
 
@@ -37,8 +37,8 @@ func (m *mockLLM) Complete(_ context.Context, req predict.LLMRequest) (predict.L
 }
 
 func (m *mockLLM) CompleteStream(_ context.Context, _ predict.LLMRequest, send func(predict.StreamEvent) error) error {
-	send(predict.StreamEvent{Type: "token", Content: "streamed"})
-	send(predict.StreamEvent{Type: "done", Done: true})
+	_ = send(predict.StreamEvent{Type: "token", Content: "streamed"})
+	_ = send(predict.StreamEvent{Type: "done", Done: true})
 	return nil
 }
 
@@ -61,7 +61,7 @@ func TestPredict_JSON(t *testing.T) {
 	}
 
 	var resp predict.Response
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Content != "Hello from proj-1" {
 		t.Errorf("unexpected content: %s", resp.Content)
 	}
@@ -121,7 +121,7 @@ func TestLLM_JSON(t *testing.T) {
 	}
 
 	var resp predict.LLMResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Model != "gpt-4" {
 		t.Errorf("unexpected model: %s", resp.Model)
 	}
