@@ -44,10 +44,9 @@ jobs:
         working-directory: ${{ matrix.app.path }}
         run: npm install --no-audit --no-fund
 
-      - name: Lint
-        working-directory: ${{ matrix.app.path }}
-        run: npm run lint
-
+      # Linting the UI source belongs to the EliteaUI repo's own CI (AGENTS.md:
+      # "make UI changes in its owning repository"). This monorepo gate only
+      # needs to confirm the pinned submodule builds.
       - name: Build
         working-directory: ${{ matrix.app.path }}
         run: npm run build
