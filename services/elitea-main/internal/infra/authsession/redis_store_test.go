@@ -342,8 +342,24 @@ func TestRedisStoreRejectsMalformedUnknownAndOversizedRecords(t *testing.T) {
 			if _, err := store.Read(context.Background(), id); !errors.Is(err, sessionstate.ErrInvalidState) {
 				t.Fatalf("read error = %v, want %v", err, sessionstate.ErrInvalidState)
 			}
+			if server.Exists(key) {
+				t.Fatal("invalid stored session was not removed")
+			}
 		})
 	}
+
+	t.Run("wrong Redis type", func(t *testing.T) {
+		id := testSessionID(69)
+		key := testKeyPrefix + id
+		server.HSet(key, "record", "{}")
+		server.SetTTL(key, time.Hour)
+		if _, err := store.Read(context.Background(), id); !errors.Is(err, sessionstate.ErrInvalidState) {
+			t.Fatalf("read error = %v, want %v", err, sessionstate.ErrInvalidState)
+		}
+		if server.Exists(key) {
+			t.Fatal("wrong-type stored session was not removed")
+		}
+	})
 }
 
 func TestRedisStoreDeleteIsIdempotentLogoutPrimitive(t *testing.T) {
@@ -363,6 +379,211 @@ func TestRedisStoreDeleteIsIdempotentLogoutPrimitive(t *testing.T) {
 	}
 	if _, err := store.Read(context.Background(), id); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("read error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func TestRedisStoreConsumeForLogoutLinearizesAgainstRotation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	t.Run("logout first fences rotation", func(t *testing.T) {
+		t.Parallel()
+		oldID := testSessionID(71)
+		newID := testSessionID(72)
+		store, _ := newTestStore(t, time.Hour, sequenceGenerator(oldID, newID))
+		createdID, err := store.Create(context.Background(), completedState(now.Add(time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		consumed, err := store.ConsumeForLogout(context.Background(), createdID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !consumed.Done || consumed.UserID == nil || *consumed.UserID != 42 {
+			t.Fatalf("consumed state = %+v", consumed)
+		}
+		if _, err := store.RotateAndReplace(context.Background(), createdID, completedState(now.Add(2*time.Hour))); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("rotation error = %v, want %v", err, ErrNotFound)
+		}
+	})
+
+	t.Run("rotation first leaves new ID outside stale logout", func(t *testing.T) {
+		t.Parallel()
+		oldID := testSessionID(73)
+		newID := testSessionID(74)
+		store, _ := newTestStore(t, time.Hour, sequenceGenerator(oldID, newID))
+		createdID, err := store.Create(context.Background(), completedState(now.Add(time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rotatedID, err := store.RotateAndReplace(context.Background(), createdID, completedState(now.Add(2*time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		consumed, err := store.ConsumeForLogout(context.Background(), createdID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !isZeroState(consumed) {
+			t.Fatalf("stale logout state = %+v, want zero", consumed)
+		}
+		if _, err := store.Read(context.Background(), rotatedID); err != nil {
+			t.Fatalf("rotated session was revoked by stale logout: %v", err)
+		}
+	})
+}
+
+func TestRedisStoreConcurrentLogoutAndRotationHaveOneLinearizedWinner(t *testing.T) {
+	t.Parallel()
+
+	type logoutResult struct {
+		state sessionstate.State
+		err   error
+	}
+	type rotationResult struct {
+		id  string
+		err error
+	}
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	for round := range 32 {
+		oldID := testSessionID(byte(100 + round*2))
+		newID := testSessionID(byte(101 + round*2))
+		store, _ := newTestStore(t, time.Hour, sequenceGenerator(oldID, newID))
+		createdID, err := store.Create(context.Background(), completedState(now.Add(time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		logoutDone := make(chan logoutResult, 1)
+		rotationDone := make(chan rotationResult, 1)
+		go func() {
+			<-start
+			state, err := store.ConsumeForLogout(context.Background(), createdID)
+			logoutDone <- logoutResult{state: state, err: err}
+		}()
+		go func() {
+			<-start
+			id, err := store.RotateAndReplace(
+				context.Background(),
+				createdID,
+				completedState(now.Add(2*time.Hour)),
+			)
+			rotationDone <- rotationResult{id: id, err: err}
+		}()
+		close(start)
+		logout := <-logoutDone
+		rotation := <-rotationDone
+		if logout.err != nil {
+			t.Fatalf("round %d logout: %v", round, logout.err)
+		}
+
+		switch {
+		case !isZeroState(logout.state):
+			if !errors.Is(rotation.err, ErrNotFound) {
+				t.Fatalf("round %d logout won but rotation error = %v", round, rotation.err)
+			}
+		case rotation.err == nil:
+			if rotation.id != newID {
+				t.Fatalf("round %d rotated ID = %q, want %q", round, rotation.id, newID)
+			}
+			if _, err := store.Read(context.Background(), rotation.id); err != nil {
+				t.Fatalf("round %d rotation winner is unreadable: %v", round, err)
+			}
+		default:
+			t.Fatalf(
+				"round %d had no valid winner: logout=%+v rotation=%+v",
+				round,
+				logout,
+				rotation,
+			)
+		}
+	}
+}
+
+func TestRedisStoreConsumeForLogoutHandlesExpiredMissingAndMalformedState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	store, server := newTestStore(t, time.Minute, sequenceGenerator(
+		testSessionID(75),
+		testSessionID(76),
+	))
+
+	expiredAuthID, err := store.Create(context.Background(), completedState(now.Add(-time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredAuth, err := store.ConsumeForLogout(context.Background(), expiredAuthID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expiredAuth.Done || expiredAuth.Expiration == nil || !expiredAuth.Expiration.Before(now) {
+		t.Fatalf("expired authentication logout state = %+v", expiredAuth)
+	}
+
+	expiredRedisID, err := store.Create(context.Background(), incompleteState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.FastForward(time.Minute)
+	for _, id := range []string{expiredRedisID, testSessionID(77)} {
+		state, err := store.ConsumeForLogout(context.Background(), id)
+		if err != nil {
+			t.Fatalf("idempotent missing logout %q: %v", id, err)
+		}
+		if !isZeroState(state) {
+			t.Fatalf("missing logout state = %+v, want zero", state)
+		}
+	}
+
+	for _, test := range []struct {
+		name   string
+		id     string
+		mutate func(string)
+	}{
+		{
+			name: "malformed JSON",
+			id:   testSessionID(78),
+			mutate: func(key string) {
+				server.Set(key, "{")
+				server.SetTTL(key, time.Hour)
+			},
+		},
+		{
+			name: "oversized record",
+			id:   testSessionID(79),
+			mutate: func(key string) {
+				server.Set(key, strings.Repeat("x", MaxRecordBytes+1))
+				server.SetTTL(key, time.Hour)
+			},
+		},
+		{
+			name: "wrong Redis type",
+			id:   testSessionID(80),
+			mutate: func(key string) {
+				server.HSet(key, "record", "{}")
+				server.SetTTL(key, time.Hour)
+			},
+		},
+		{
+			name: "missing Redis TTL",
+			id:   testSessionID(81),
+			mutate: func(key string) {
+				server.Set(key, "{}")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := testKeyPrefix + test.id
+			test.mutate(key)
+			if _, err := store.ConsumeForLogout(context.Background(), test.id); !errors.Is(err, sessionstate.ErrInvalidState) {
+				t.Fatalf("error = %v, want %v", err, sessionstate.ErrInvalidState)
+			}
+			if server.Exists(key) {
+				t.Fatal("malformed logout state was not consumed")
+			}
+		})
 	}
 }
 
@@ -408,6 +629,9 @@ func TestRedisStoreFailsClosedWhenRedisIsUnavailable(t *testing.T) {
 	if _, err := store.RotateAndReplace(context.Background(), id, incompleteState()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("rotate-and-replace error = %v, want %v", err, ErrUnavailable)
 	}
+	if _, err := store.ConsumeForLogout(context.Background(), id); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("consume-for-logout error = %v, want %v", err, ErrUnavailable)
+	}
 }
 
 func TestRedisStoreRejectsInvalidIDsBeforeRedisAccess(t *testing.T) {
@@ -419,6 +643,14 @@ func TestRedisStoreRejectsInvalidIDsBeforeRedisAccess(t *testing.T) {
 	}
 	if err := store.Delete(context.Background(), "../../not-a-session"); !errors.Is(err, ErrInvalidID) {
 		t.Fatalf("delete error = %v, want %v", err, ErrInvalidID)
+	}
+	if _, err := store.ConsumeForLogout(context.Background(), "../../not-a-session"); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("consume-for-logout error = %v, want %v", err, ErrInvalidID)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.ConsumeForLogout(ctx, testSessionID(91)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled consume-for-logout error = %v, want %v", err, context.Canceled)
 	}
 }
 
@@ -460,6 +692,11 @@ func incompleteState() sessionstate.State {
 		SchemaVersion:      sessionstate.CurrentSchemaVersion,
 		ProviderAttributes: json.RawMessage("{}"),
 	}
+}
+
+func isZeroState(state sessionstate.State) bool {
+	return state.SchemaVersion == 0 && !state.Done && state.Error == "" && state.Expiration == nil &&
+		state.Provider == nil && len(state.ProviderAttributes) == 0 && state.UserID == nil
 }
 
 func testSessionID(value byte) string {

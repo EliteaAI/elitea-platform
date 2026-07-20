@@ -135,6 +135,51 @@ func (s *RedisStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// ConsumeForLogout atomically reads and deletes the exact session ID. Missing
+// and Redis-expired IDs are idempotent zero-value successes. This operation
+// linearizes against RotateAndReplace for the same ID: if logout wins, rotation
+// fails; if rotation wins, stale logout cannot revoke the new ID. Session-
+// family tombstones that would bridge the latter case are intentionally not in
+// this slice.
+func (s *RedisStore) ConsumeForLogout(
+	ctx context.Context,
+	id string,
+) (sessionstate.State, error) {
+	if !validSessionID(id) {
+		return sessionstate.State{}, ErrInvalidID
+	}
+	values, err := consumeForLogoutScript.Run(
+		ctx,
+		s.client,
+		[]string{s.key(id)},
+		MaxRecordBytes,
+	).Slice()
+	if err != nil {
+		return sessionstate.State{}, storeError(ctx, "consume for logout", err)
+	}
+	status, record, err := recordScriptResult(values)
+	if err != nil {
+		return sessionstate.State{}, err
+	}
+	switch status {
+	case recordMissing:
+		return sessionstate.State{}, nil
+	case recordMalformed:
+		return sessionstate.State{}, fmt.Errorf("%w: encoded record is invalid", sessionstate.ErrInvalidState)
+	case recordSucceeded:
+	default:
+		return sessionstate.State{}, fmt.Errorf("%w: invalid logout status", ErrUnavailable)
+	}
+	if len(record) == 0 || len(record) > MaxRecordBytes {
+		return sessionstate.State{}, fmt.Errorf("%w: encoded record size is invalid", sessionstate.ErrInvalidState)
+	}
+	state, err := decodeRecord(record)
+	if err != nil {
+		return sessionstate.State{}, err
+	}
+	return state, nil
+}
+
 // Rotate atomically moves the existing record and its remaining Redis TTL to a
 // fresh ID. The old ID is invalid after success.
 func (s *RedisStore) Rotate(ctx context.Context, id string) (string, error) {
@@ -243,32 +288,67 @@ func (s *RedisStore) readRecord(
 	if !validSessionID(id) {
 		return sessionstate.State{}, nil, ErrInvalidID
 	}
-	record, err := s.client.Get(ctx, s.key(id)).Bytes()
+	values, err := readRecordScript.Run(
+		ctx,
+		s.client,
+		[]string{s.key(id)},
+		MaxRecordBytes,
+	).Slice()
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return sessionstate.State{}, nil, ErrNotFound
-		}
 		return sessionstate.State{}, nil, storeError(ctx, "read", err)
+	}
+	status, record, err := recordScriptResult(values)
+	if err != nil {
+		return sessionstate.State{}, nil, err
+	}
+	switch status {
+	case recordMissing:
+		return sessionstate.State{}, nil, ErrNotFound
+	case recordMalformed:
+		return sessionstate.State{}, nil, fmt.Errorf("%w: stored record metadata is invalid", sessionstate.ErrInvalidState)
+	case recordSucceeded:
+	default:
+		return sessionstate.State{}, nil, fmt.Errorf("%w: invalid read status", ErrUnavailable)
 	}
 	if len(record) == 0 || len(record) > MaxRecordBytes {
 		return sessionstate.State{}, nil, fmt.Errorf("%w: encoded record size is invalid", sessionstate.ErrInvalidState)
 	}
-	ttl, err := s.client.PTTL(ctx, s.key(id)).Result()
-	if err != nil {
-		return sessionstate.State{}, nil, storeError(ctx, "read TTL", err)
-	}
-	if ttl == -2*time.Nanosecond {
-		return sessionstate.State{}, nil, ErrNotFound
-	}
-	if ttl <= 0 {
-		return sessionstate.State{}, nil, fmt.Errorf("%w: Redis TTL is missing", sessionstate.ErrInvalidState)
-	}
 
 	state, err := decodeRecord(record)
 	if err != nil {
+		// The transport-level script already bounded the response. Remove this
+		// malformed immutable record only if it has not changed since that read.
+		_ = deleteIfUnchangedScript.Run(ctx, s.client, []string{s.key(id)}, record).Err()
 		return sessionstate.State{}, nil, err
 	}
 	return state, record, nil
+}
+
+func recordScriptResult(values []interface{}) (int64, []byte, error) {
+	if len(values) == 0 {
+		return 0, nil, fmt.Errorf("%w: invalid record response", ErrUnavailable)
+	}
+	status, ok := values[0].(int64)
+	if !ok {
+		return 0, nil, fmt.Errorf("%w: invalid record response", ErrUnavailable)
+	}
+	if status != recordSucceeded {
+		if len(values) != 1 {
+			return 0, nil, fmt.Errorf("%w: invalid record response", ErrUnavailable)
+		}
+		return status, nil, nil
+	}
+	if len(values) != 2 {
+		return 0, nil, fmt.Errorf("%w: invalid record response", ErrUnavailable)
+	}
+	switch value := values[1].(type) {
+	case string:
+		return status, []byte(value), nil
+	case []byte:
+		return status, value, nil
+	default:
+		return 0, nil, fmt.Errorf("%w: invalid record response", ErrUnavailable)
+	}
 }
 
 func decodeRecord(record []byte) (sessionstate.State, error) {
@@ -332,6 +412,10 @@ const (
 	rotateChanged   int64 = -1
 	rotateCollision int64 = 0
 	rotateSucceeded int64 = 1
+
+	recordMalformed int64 = -1
+	recordMissing   int64 = 0
+	recordSucceeded int64 = 1
 )
 
 var rotateScript = redis.NewScript(`
@@ -355,4 +439,61 @@ if not created then
 end
 redis.call('DEL', KEYS[1])
 return 1
+`)
+
+var consumeForLogoutScript = redis.NewScript(`
+local key_type = redis.call('TYPE', KEYS[1])
+if type(key_type) == 'table' then
+    key_type = key_type['ok']
+end
+if key_type == 'none' then
+    return {0}
+end
+if key_type ~= 'string' then
+    redis.call('DEL', KEYS[1])
+    return {-1}
+end
+local ttl = redis.call('PTTL', KEYS[1])
+local record_size = redis.call('STRLEN', KEYS[1])
+local max_record_size = tonumber(ARGV[1])
+if ttl <= 0 or record_size <= 0 or not max_record_size or
+        record_size > max_record_size then
+    redis.call('DEL', KEYS[1])
+    return {-1}
+end
+local current = redis.call('GET', KEYS[1])
+redis.call('DEL', KEYS[1])
+return {1, current}
+`)
+
+var readRecordScript = redis.NewScript(`
+local key_type = redis.call('TYPE', KEYS[1])
+if type(key_type) == 'table' then
+    key_type = key_type['ok']
+end
+if key_type == 'none' then
+    return {0}
+end
+if key_type ~= 'string' then
+    redis.call('DEL', KEYS[1])
+    return {-1}
+end
+local ttl = redis.call('PTTL', KEYS[1])
+local record_size = redis.call('STRLEN', KEYS[1])
+local max_record_size = tonumber(ARGV[1])
+if ttl <= 0 or record_size <= 0 or not max_record_size or
+        record_size > max_record_size then
+    redis.call('DEL', KEYS[1])
+    return {-1}
+end
+local current = redis.call('GET', KEYS[1])
+return {1, current}
+`)
+
+var deleteIfUnchangedScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current and current == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
 `)
