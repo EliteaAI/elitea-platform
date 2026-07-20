@@ -10838,11 +10838,12 @@
     "auth_core/tools/rpc_tools.py": "ceb58dd5b91740f7e80e71ecce0561faeeda6a4fc78f03e2fc11ddbbe23c2023",
     "auth_form/.gitignore": "5e2c671ddc9e301dafc241ad1a7c07aa85a91fef560a17721b41977b9eddba17",
     "auth_form/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
-    "auth_form/README.md": "659ec846a86d05bdd911f3721cf436c1dfaab16514cca869f337301c39e69644",
+    "auth_form/README.md": "b3e13fbb5e9eec1c4462bb0adb74592974215331e93764683da6361910e87616",
     "auth_form/__init__.py": "048dc3b3a48503b23a8adc9a26431e73276288c4d40b4c6f61fed286f34cc74a",
     "auth_form/admin_schema.json": "2746b195fc579954e06c1aa0ec4e882672464f01e3a2fe29025735a3e88ee1ad",
+    "auth_form/form_export.py": "2e5d675d92ab4b803fe07020006f3fe869caa352936a497cff88405714bb48e0",
     "auth_form/metadata.json": "06d9afa13c5c655a123a23239c0ddd2f2d54ee3db5352d24f5549b96e8eba6ad",
-    "auth_form/module.py": "b54683c62ac197559783fba0f12b32796be0456443f43c2a5e1078780ed42d3f",
+    "auth_form/module.py": "47a430a5d830b5313a42cbbdc6151fd0580dd07d030aa0285e3980634759481c",
     "auth_form/requirements.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "auth_form/routes/__init__.py": "b9f9e091f4bace879bdd82cdbd1f85cc71ce9213a5ca05c98f3dc7babce8260c",
     "auth_form/routes/form.py": "5bb0fbaa1fd2468c5b2cc0d6c1b5a1ea3908baa7e078a49a7b1616bdb3803897",
@@ -10852,6 +10853,7 @@
     "auth_form/static/js/vendor/bootstrap.bundle.min.js": "92ebe65849b33e94db2b444de5b5c6eaef12cdd2da51e2b9f1f45026ed2b917b",
     "auth_form/templates/intergate.html": "a32b3c65c680afdb6f7f5de527f91a7b2a99cdd3f4142f62027cd1e0d716e8ed",
     "auth_form/templates/login.html": "dab3ac973b6b8ce3e01dbeabd5b1e31192e9d74dc84263efb9aa419574ded632",
+    "auth_form/tests/test_form_export.py": "c509587ffd07620db4725a8506188c16369eb0c95ba27ccc5b1fd3c59f5dfe83",
     "auth_idp_rpc/.gitignore": "5e2c671ddc9e301dafc241ad1a7c07aa85a91fef560a17721b41977b9eddba17",
     "auth_idp_rpc/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     "auth_idp_rpc/README.md": "04dbcceef4e9ce534797982b25f31bcf995b332b91c23c3494ab39467a2636d6",
@@ -10996,7 +10998,7 @@
       ]
     },
     "auth_form": {
-      "head": "376de1eb90a13a5d1b0e660940a75775158666ca",
+      "head": "f7da603da7b373737c043873cb83cc96b589f061",
       "tracked_dirty_paths": [
         "metadata.json"
       ]
@@ -11106,9 +11108,9 @@
       "migrations": 0,
       "permission_guards": 0,
       "permission_registrations": 0,
-      "plugin_evidence_files": 16,
+      "plugin_evidence_files": 18,
       "rpc_declarations": 0,
-      "runtime_registrations": 1,
+      "runtime_registrations": 3,
       "socket_io_declarations": 0
     },
     "auth_idp_rpc": {
@@ -11333,7 +11335,33 @@
           "value": "auth_form.logout"
         }
       },
-      "line": 41,
+      "line": 47,
+      "plugin": "auth_form",
+      "source": "auth_form/module.py"
+    },
+    {
+      "arguments": [
+        {
+          "literal": true,
+          "value": "form"
+        }
+      ],
+      "callee": "auth_core.unregister_auth_provider",
+      "keywords": {},
+      "line": 58,
+      "plugin": "auth_form",
+      "source": "auth_form/module.py"
+    },
+    {
+      "arguments": [
+        {
+          "literal": true,
+          "value": "form"
+        }
+      ],
+      "callee": "auth_core.unregister_auth_provider",
+      "keywords": {},
+      "line": 72,
       "plugin": "auth_form",
       "source": "auth_form/module.py"
     },
@@ -11598,10 +11626,10 @@
     "parse_errors": 0,
     "permission_guards": 4,
     "permission_registrations": 1,
-    "plugin_evidence_files": 195,
+    "plugin_evidence_files": 197,
     "plugins": 9,
     "runtime_evidence_files": 7,
-    "runtime_registrations": 19,
+    "runtime_registrations": 21,
     "runtime_untracked_evidence_files": 0,
     "unguarded_http_handler_methods": 0
   },

@@ -57,6 +57,7 @@ AUTH_CORE_FILES = (
 )
 AUTH_FORM_FILES = (
     "admin_schema.json",
+    "form_export.py",
     "module.py",
     "routes/form.py",
     "templates/login.html",
@@ -233,7 +234,10 @@ FINGERPRINT_TARGETS = {
         ),
     },
     "auth_form": {
-        "module.py": (("Module", "init"),),
+        "module.py": (
+            ("Module", "deinit"),
+            ("Module", "init"),
+        ),
         "routes/form.py": (
             ("Route", "authorize"),
             ("Route", "login"),
@@ -1601,6 +1605,38 @@ def _behavior_contracts() -> list[dict[str, Any]]:
                 "location": "/forward-auth/auth_form/login?error=true",
                 "target_preserved": False,
             },
+        },
+        {
+            "id": "form.resolved_snapshot_bridge",
+            "activation": "ELITEA_AUTH_FORM_USERS_FILE is present",
+            "input": (
+                "auth_form descriptor.config after Pylon base/settings/custom merge "
+                "and environment/vault/tunable substitution"
+            ),
+            "payload": {
+                "encoding": "canonical compact UTF-8 JSON",
+                "shape": {"users": "ordered closed login/password/email/attributes records"},
+                "maximum_bytes": 1048576,
+                "maximum_users": 256,
+                "excluded": ["login_template", "all other descriptor configuration"],
+            },
+            "publication": {
+                "parent": "absolute canonical process-owned 0700 directory",
+                "file_mode": "0600",
+                "algorithm": "same-directory temp, file fsync, atomic replace, best-effort directory fsync",
+                "errors": "generic and value/path-free",
+            },
+            "lifecycle": {
+                "preflight": "before route/provider registration",
+                "publish": "after successful route/provider registration",
+                "publish_failure": "unregister provider and deinitialize descriptor",
+                "deinit": "unregister provider without deleting the last complete snapshot",
+                "in_place_reconfiguration": "unsupported; restart or plugin reload required",
+            },
+            "target_gate": (
+                "elitea-auth-validate securely reads the file and invokes the exact Go "
+                "FormProvider parser before target startup"
+            ),
         },
         {
             "id": "browser.logout.get",

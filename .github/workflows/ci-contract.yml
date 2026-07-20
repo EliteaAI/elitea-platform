@@ -115,6 +115,7 @@ jobs:
         run: |
           python scripts/security/test_browser_auth_http_baseline.py
           python scripts/security/check_browser_auth_http_baseline.py
+          python scripts/security/check_form_snapshot_bridge.py --help
 
       - name: Test generated Go module
         working-directory: libs/proto/gen/go

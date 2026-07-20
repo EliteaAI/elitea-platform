@@ -232,6 +232,27 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
             EXPECTED_TRACKED_AUTH_MAPPER_CONTRACT,
         )
 
+    def test_fixture_pins_resolved_form_snapshot_bridge(self) -> None:
+        self.assertIn(
+            "auth_form/form_export.py",
+            self.catalog["source_files_sha256"],
+        )
+        self.assertIn(
+            "auth_form/module.py#Module.deinit",
+            self.catalog["behavior_fingerprints"],
+        )
+        contracts = {
+            contract["id"]: contract
+            for contract in self.catalog["behavior_contracts"]
+        }
+        bridge = contracts["form.resolved_snapshot_bridge"]
+        self.assertEqual(bridge["payload"]["maximum_bytes"], 1 << 20)
+        self.assertEqual(bridge["payload"]["maximum_users"], 256)
+        self.assertEqual(
+            bridge["lifecycle"]["in_place_reconfiguration"],
+            "unsupported; restart or plugin reload required",
+        )
+
     def test_optional_auth_mapper_runtime_config_inventory_never_reads_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             centry_root = Path(temp_dir)

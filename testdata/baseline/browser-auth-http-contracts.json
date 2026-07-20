@@ -115,6 +115,37 @@
       }
     },
     {
+      "activation": "ELITEA_AUTH_FORM_USERS_FILE is present",
+      "id": "form.resolved_snapshot_bridge",
+      "input": "auth_form descriptor.config after Pylon base/settings/custom merge and environment/vault/tunable substitution",
+      "lifecycle": {
+        "deinit": "unregister provider without deleting the last complete snapshot",
+        "in_place_reconfiguration": "unsupported; restart or plugin reload required",
+        "preflight": "before route/provider registration",
+        "publish": "after successful route/provider registration",
+        "publish_failure": "unregister provider and deinitialize descriptor"
+      },
+      "payload": {
+        "encoding": "canonical compact UTF-8 JSON",
+        "excluded": [
+          "login_template",
+          "all other descriptor configuration"
+        ],
+        "maximum_bytes": 1048576,
+        "maximum_users": 256,
+        "shape": {
+          "users": "ordered closed login/password/email/attributes records"
+        }
+      },
+      "publication": {
+        "algorithm": "same-directory temp, file fsync, atomic replace, best-effort directory fsync",
+        "errors": "generic and value/path-free",
+        "file_mode": "0600",
+        "parent": "absolute canonical process-owned 0700 directory"
+      },
+      "target_gate": "elitea-auth-validate securely reads the file and invokes the exact Go FormProvider parser before target startup"
+    },
+    {
       "default_target": "signed configured default_logout_url",
       "id": "browser.logout.get",
       "input": {
@@ -506,9 +537,13 @@
       "ast_sha256": "2511e083f4b53145e965b867abab3782a9f75d008cc05d87078fbb9d93a0a1cf",
       "line": 53
     },
+    "auth_form/module.py#Module.deinit": {
+      "ast_sha256": "aa9d0647c23c34dfafa0cb122080bb177aa9e0040414a2c7cc346ea4c813e7e1",
+      "line": 68
+    },
     "auth_form/module.py#Module.init": {
-      "ast_sha256": "9b21fcd9aadf0025bc4f8ddecdfafb6dd1b327bb0e237036c35bec15ed563419",
-      "line": 33
+      "ast_sha256": "65eb92e5a46e86d3d561921e427632b975399388c8d0448d33f17589da3aa957",
+      "line": 35
     },
     "auth_form/routes/form.py#Route.authorize": {
       "ast_sha256": "b7da4dd841f96fcb4b6ac83964f229b80e9b226f22a08cbb1e8fea5006f6f269",
@@ -1461,7 +1496,7 @@
     "auth_form_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
-      "pinned_head": "376de1eb90a13a5d1b0e660940a75775158666ca",
+      "pinned_head": "f7da603da7b373737c043873cb83cc96b589f061",
       "selected_contract_matches_pinned_head": {},
       "source_ref": "HEAD",
       "source_root": "pylon_auth/plugins/auth_form"
@@ -1747,7 +1782,8 @@
     "auth_core/rpc/user_providers.py": "fb9224b0d70d7475a4065ca1539a031691ecdf79c6023a587dcd6e340585b904",
     "auth_core/rpc/users.py": "3df51e92b88d51d02a389b6460d38fe5837798f475311090988f9204565a186e",
     "auth_form/admin_schema.json": "2746b195fc579954e06c1aa0ec4e882672464f01e3a2fe29025735a3e88ee1ad",
-    "auth_form/module.py": "b54683c62ac197559783fba0f12b32796be0456443f43c2a5e1078780ed42d3f",
+    "auth_form/form_export.py": "2e5d675d92ab4b803fe07020006f3fe869caa352936a497cff88405714bb48e0",
+    "auth_form/module.py": "47a430a5d830b5313a42cbbdc6151fd0580dd07d030aa0285e3980634759481c",
     "auth_form/routes/form.py": "5bb0fbaa1fd2468c5b2cc0d6c1b5a1ea3908baa7e078a49a7b1616bdb3803897",
     "auth_form/templates/login.html": "dab3ac973b6b8ce3e01dbeabd5b1e31192e9d74dc84263efb9aa419574ded632",
     "auth_idp_rpc/methods/auth_tools.py": "c415dd83bad71b1cf06e14b371db0da93a473bd175de99afc6bd875618c1e97d",
@@ -1826,6 +1862,7 @@
       "auth_core/rpc/user_providers.py",
       "auth_core/rpc/users.py",
       "auth_form/admin_schema.json",
+      "auth_form/form_export.py",
       "auth_form/module.py",
       "auth_form/routes/form.py",
       "auth_form/templates/login.html",

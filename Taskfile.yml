@@ -8,12 +8,13 @@ vars:
 tasks:
   # ── Go ────────────────────────────────────────────────────────────────────────
   build:
-    desc: Build elitea-main, migration, and cutover binaries
+    desc: Build elitea-main, migration, cutover, and Auth validation binaries
     dir: "{{.SERVICE}}"
     cmds:
       - go build -o bin/elitea-main ./cmd/elitea-main
       - go build -o bin/elitea-migrate ./cmd/elitea-migrate
       - go build -o bin/cutover-ctl ./cmd/cutover-ctl
+      - go build -o bin/elitea-auth-validate ./cmd/elitea-auth-validate
 
   test:
     desc: Run all Go tests across the workspace
@@ -67,6 +68,7 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_browser_auth_http_baseline.py
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root ../centry/pylon_auth/plugins/auth_core --auth-form-root ../centry/pylon_auth/plugins/auth_form --auth-idp-rpc-root ../centry/pylon_auth/plugins/auth_idp_rpc --auth-init-root ../centry/pylon_auth/plugins/auth_init --auth-mappers-root ../centry/pylon_auth/plugins/auth_mappers --main-auth-root ../centry/pylon_main/plugins/auth --admin-ui-root ../centry/pylon_main/plugins/admin_ui --centry-root ../centry --pylon-root ../pylon --ui-root ../EliteaUI --check
       - python3 scripts/security/check_browser_auth_http_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/check_form_snapshot_bridge.py --auth-form-root ../centry/pylon_auth/plugins/auth_form
       - python3 scripts/security/check_legacy_rbac_drift.py
 
   baseline:auth:refresh:
@@ -218,6 +220,7 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_browser_auth_http_baseline.py
       - python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root "{{.AUTH_CORE_ROOT}}" --auth-form-root "{{.AUTH_FORM_ROOT}}" --auth-idp-rpc-root "{{.AUTH_IDP_RPC_ROOT}}" --auth-init-root "{{.AUTH_INIT_ROOT}}" --auth-mappers-root "{{.AUTH_MAPPERS_ROOT}}" --main-auth-root "{{.MAIN_AUTH_ROOT}}" --admin-ui-root "{{.ADMIN_UI_ROOT}}" --centry-root "{{.CENTRY_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --ui-root "{{.UI_ROOT}}" --check
       - python3 scripts/security/check_browser_auth_http_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/check_form_snapshot_bridge.py --auth-form-root "{{.AUTH_FORM_ROOT}}"
 
   baseline:browser-auth-http:trusted-gate:
     desc: Required trusted multi-repository browser Auth merge and release gate

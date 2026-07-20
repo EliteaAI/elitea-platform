@@ -20,12 +20,15 @@ RUN cd services/elitea-main && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
       go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-      go build -trimpath -ldflags="-s -w" -o /out/elitea-migrate ./cmd/elitea-migrate
+      go build -trimpath -ldflags="-s -w" -o /out/elitea-migrate ./cmd/elitea-migrate && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      go build -trimpath -ldflags="-s -w" -o /out/elitea-auth-validate ./cmd/elitea-auth-validate
 
 # ── Stage 2: vulnerability scan ───────────────────────────────────────────────
 FROM aquasec/trivy:latest AS scanner
 COPY --from=builder /out/elitea-main /scan/elitea-main
 COPY --from=builder /out/elitea-migrate /scan/elitea-migrate
+COPY --from=builder /out/elitea-auth-validate /scan/elitea-auth-validate
 # Fail the build on HIGH/CRITICAL vulnerabilities in the binary.
 RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /scan
 
@@ -34,6 +37,7 @@ FROM gcr.io/distroless/static-debian12:nonroot AS final
 
 COPY --from=scanner /scan/elitea-main /elitea-main
 COPY --from=scanner /scan/elitea-migrate /elitea-migrate
+COPY --from=scanner /scan/elitea-auth-validate /elitea-auth-validate
 
 EXPOSE 8080
 

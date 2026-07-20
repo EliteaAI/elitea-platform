@@ -210,3 +210,8 @@ jobs:
         run: |
           cd services/elitea-main
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-migrate ./cmd/elitea-migrate
+
+      - name: Build elitea-auth-validate
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-auth-validate ./cmd/elitea-auth-validate

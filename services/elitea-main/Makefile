@@ -1,4 +1,4 @@
-.PHONY: build test lint run docker-build sqlc
+.PHONY: build auth-validate test lint run docker-build sqlc
 
 MODULE := github.com/EliteaAI/elitea-platform/services/elitea-main
 BINARY := elitea-main
@@ -6,6 +6,9 @@ IMAGE  := eliteaai/elitea-main
 
 build:
 	go build -o bin/$(BINARY) ./cmd/$(BINARY)
+
+auth-validate:
+	go build -o bin/elitea-auth-validate ./cmd/elitea-auth-validate
 
 test:
 	go test -race -count=1 ./...

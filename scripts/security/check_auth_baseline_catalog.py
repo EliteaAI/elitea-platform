@@ -50,7 +50,7 @@ EXPECTED_RUNTIME_FILES = [
 ]
 EXPECTED_PLUGIN_HEADS = {
     "auth_core": "fcc4c7a35fe095fb8d67e72451e3a4f9b497f871",
-    "auth_form": "376de1eb90a13a5d1b0e660940a75775158666ca",
+    "auth_form": "f7da603da7b373737c043873cb83cc96b589f061",
     "auth_idp_rpc": "68441d9fd94d0e45ad35955a38ea569a7b597f1e",
     "auth_init": "f3e47ea0d3e64dc23d96e5475032e03dee256ab4",
     "auth_mappers": "5a6934d4f9a6953e926e47a05192d7268a5e5a96",
@@ -83,10 +83,10 @@ EXPECTED_SUMMARY = {
     "parse_errors": 0,
     "permission_guards": 4,
     "permission_registrations": 1,
-    "plugin_evidence_files": 195,
+    "plugin_evidence_files": 197,
     "plugins": 9,
     "runtime_evidence_files": 7,
-    "runtime_registrations": 19,
+    "runtime_registrations": 21,
     "runtime_untracked_evidence_files": 0,
     "unguarded_http_handler_methods": 0,
 }

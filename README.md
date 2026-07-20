@@ -89,7 +89,15 @@ The core platform API. Handles authentication, project management, prompt librar
 cd services/elitea-main
 go run ./cmd/elitea-main     # Run directly
 go run ./cmd/cutover-ctl     # Migration cutover CLI
+go run ./cmd/elitea-auth-validate -form-users-file /absolute/private/form-users.json
+                             # Validate a resolved Form snapshot; success is silent
 ```
+
+The validator is also shipped as `/elitea-auth-validate` in the `elitea-main`
+image for a preflight/init-container command override. Its input must be a
+nonempty canonical absolute regular file, no larger than 1 MiB, with owner-only
+permissions (`0400` or `0600`) and no symlinked path component. It
+prints only fixed generic failures and never prints the file path or contents.
 
 **Environment variables:**
 

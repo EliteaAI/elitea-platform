@@ -13,11 +13,11 @@ from typing import Any
 
 
 EXPECTED_SCHEMA_VERSION = 1
-EXPECTED_CATALOG_SHA256 = "1520aee717b79c56b9dd04fbec4d2e823a5fa2d34723de53ba4df53bfb3730ec"
-EXPECTED_SOURCE_COUNT = 76
-EXPECTED_SOURCE_KEYSET_SHA256 = "c00841b461e065afca773f7159b69c1aa0f55e26892709d9f04d49c2f22d3f84"
-EXPECTED_FINGERPRINT_COUNT = 115
-EXPECTED_FINGERPRINT_KEYSET_SHA256 = "3538a5d3d43a3d9bd939694d2b6e53c872e00504a1f7f9d34cdef5f602e1c427"
+EXPECTED_CATALOG_SHA256 = "c15dd9c6c3e1aa177b053d366565fcd4d89df6c1cfb103b729cc7df2c3095768"
+EXPECTED_SOURCE_COUNT = 77
+EXPECTED_SOURCE_KEYSET_SHA256 = "481e22c121a04f376243d0260fbef97d8b35e1f1f29eeb72696f94f9bbf1e9dc"
+EXPECTED_FINGERPRINT_COUNT = 116
+EXPECTED_FINGERPRINT_KEYSET_SHA256 = "d22ca6f08039aef21cacd8eeb54ef400959c40bb425c51c24fbcdcbc3ca08b91"
 EXPECTED_TOP_LEVEL_KEYS = {
     "behavior_contracts",
     "behavior_fingerprints",
@@ -48,6 +48,7 @@ EXPECTED_CONTRACT_IDS = {
     "form.authorize.post",
     "form.login.get",
     "form.logout.get",
+    "form.resolved_snapshot_bridge",
 }
 EXPECTED_SECURITY_IDS = {
     "cors.options_replacement",
@@ -92,7 +93,7 @@ EXPECTED_PROVENANCE = {
         set(),
     ),
     "auth_form_repo": (
-        "376de1eb90a13a5d1b0e660940a75775158666ca",
+        "f7da603da7b373737c043873cb83cc96b589f061",
         "pylon_auth/plugins/auth_form",
         set(),
     ),
