@@ -23,25 +23,25 @@ WHERE owner.id = $4::integer
   AND owner.suspended = false
 RETURNING
     id,
-    COALESCE(uuid, '')::text AS uuid,
+    uuid,
     expires,
     COALESCE(user_id, 0)::integer AS user_id,
-    COALESCE(name, '')::text AS name
+    name
 `
 
 type CreatePATForActiveUserParams struct {
 	Uuid    string           `db:"uuid" json:"uuid"`
 	Expires pgtype.Timestamp `db:"expires" json:"expires"`
-	Name    string           `db:"name" json:"name"`
+	Name    *string          `db:"name" json:"name"`
 	UserID  int32            `db:"user_id" json:"user_id"`
 }
 
 type CreatePATForActiveUserRow struct {
 	ID      int32            `db:"id" json:"id"`
-	Uuid    string           `db:"uuid" json:"uuid"`
+	Uuid    *string          `db:"uuid" json:"uuid"`
 	Expires pgtype.Timestamp `db:"expires" json:"expires"`
 	UserID  int32            `db:"user_id" json:"user_id"`
-	Name    string           `db:"name" json:"name"`
+	Name    *string          `db:"name" json:"name"`
 }
 
 func (q *Queries) CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error) {
@@ -103,10 +103,10 @@ func (q *Queries) GetActivePATPrincipalByUUID(ctx context.Context, uuid string) 
 const getOwnedPAT = `-- name: GetOwnedPAT :one
 SELECT
     token.id,
-    COALESCE(token.uuid, '')::text AS uuid,
+    token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    COALESCE(token.name, '')::text AS name
+    token.name
 FROM public.auth_core__token AS token
 WHERE token.uuid = $1::text
   AND token.user_id = $2::integer
@@ -119,10 +119,10 @@ type GetOwnedPATParams struct {
 
 type GetOwnedPATRow struct {
 	ID      int32            `db:"id" json:"id"`
-	Uuid    string           `db:"uuid" json:"uuid"`
+	Uuid    *string          `db:"uuid" json:"uuid"`
 	Expires pgtype.Timestamp `db:"expires" json:"expires"`
 	UserID  int32            `db:"user_id" json:"user_id"`
-	Name    string           `db:"name" json:"name"`
+	Name    *string          `db:"name" json:"name"`
 }
 
 func (q *Queries) GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error) {
@@ -141,10 +141,10 @@ func (q *Queries) GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOw
 const listOwnedPATs = `-- name: ListOwnedPATs :many
 SELECT
     token.id,
-    COALESCE(token.uuid, '')::text AS uuid,
+    token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    COALESCE(token.name, '')::text AS name
+    token.name
 FROM public.auth_core__token AS token
 WHERE token.user_id = $1::integer
 ORDER BY token.id
@@ -152,10 +152,10 @@ ORDER BY token.id
 
 type ListOwnedPATsRow struct {
 	ID      int32            `db:"id" json:"id"`
-	Uuid    string           `db:"uuid" json:"uuid"`
+	Uuid    *string          `db:"uuid" json:"uuid"`
 	Expires pgtype.Timestamp `db:"expires" json:"expires"`
 	UserID  int32            `db:"user_id" json:"user_id"`
-	Name    string           `db:"name" json:"name"`
+	Name    *string          `db:"name" json:"name"`
 }
 
 func (q *Queries) ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error) {

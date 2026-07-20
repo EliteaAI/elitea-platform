@@ -65,11 +65,11 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 
 	repository := newPostgresTokenRepository(pool)
 	expires := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Microsecond)
-	created, err := repository.Create(ctx, 7, "ci-token", &expires)
+	created, err := repository.Create(ctx, 7, stringAddress("ci-token"), &expires)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.UserID != 7 || created.ID <= 0 || !validTokenUUID(created.UUID) || created.Name != "ci-token" {
+	if created.UserID != 7 || created.ID <= 0 || created.UUID == nil || !validTokenUUID(*created.UUID) || created.Name == nil || *created.Name != "ci-token" {
 		t.Fatalf("created = %+v", created)
 	}
 	const signingKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -128,30 +128,53 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 	if len(listed) != 1 || listed[0].ID != created.ID {
 		t.Fatalf("listed = %+v", listed)
 	}
-	got, err := repository.GetOwned(ctx, 7, created.UUID)
+	var nullableMetadataID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO public.auth_core__token (uuid, user_id, name)
+VALUES (NULL, 7, NULL)
+RETURNING id`).Scan(&nullableMetadataID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = repository.List(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nullableMetadataFound bool
+	for _, record := range listed {
+		if record.ID == nullableMetadataID {
+			nullableMetadataFound = true
+			if record.UUID != nil || record.Name != nil {
+				t.Fatalf("nullable PAT metadata was coerced: %+v", record)
+			}
+		}
+	}
+	if !nullableMetadataFound {
+		t.Fatalf("nullable PAT %d is missing from list: %+v", nullableMetadataID, listed)
+	}
+	got, err := repository.GetOwned(ctx, 7, *created.UUID)
 	if err != nil || got.ID != created.ID {
 		t.Fatalf("get = %+v, err=%v", got, err)
 	}
-	if _, err := repository.GetOwned(ctx, 42, created.UUID); !errors.Is(err, errTokenNotFound) {
+	if _, err := repository.GetOwned(ctx, 42, *created.UUID); !errors.Is(err, errTokenNotFound) {
 		t.Fatalf("cross-owner get error = %v, want errTokenNotFound", err)
 	}
-	if err := repository.DeleteOwned(ctx, 42, created.UUID); !errors.Is(err, errTokenForbidden) {
+	if err := repository.DeleteOwned(ctx, 42, *created.UUID); !errors.Is(err, errTokenForbidden) {
 		t.Fatalf("cross-owner delete error = %v, want errTokenForbidden", err)
 	}
-	if err := repository.DeleteOwned(ctx, 7, created.UUID); err != nil {
+	if err := repository.DeleteOwned(ctx, 7, *created.UUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, encoded); err == nil {
 		t.Fatal("deleted PAT remained valid")
 	}
-	if _, err := repository.GetOwned(ctx, 7, created.UUID); !errors.Is(err, errTokenNotFound) {
+	if _, err := repository.GetOwned(ctx, 7, *created.UUID); !errors.Is(err, errTokenNotFound) {
 		t.Fatalf("deleted token get error = %v, want errTokenNotFound", err)
 	}
 
 	if _, err := pool.Exec(ctx, `UPDATE public.auth_core__user SET suspended = true WHERE id = 7`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.Create(ctx, 7, "blocked-token", nil); !errors.Is(err, errTokenForbidden) {
+	if _, err := repository.Create(ctx, 7, stringAddress("blocked-token"), nil); !errors.Is(err, errTokenForbidden) {
 		t.Fatalf("suspended-owner create error = %v, want errTokenForbidden", err)
 	}
 }

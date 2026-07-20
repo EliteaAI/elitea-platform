@@ -19,7 +19,7 @@ import (
 type tokenRepositoryStub struct {
 	listFunc   func(context.Context, int64) ([]tokenRecord, error)
 	getFunc    func(context.Context, int64, string) (tokenRecord, error)
-	createFunc func(context.Context, int64, string, *time.Time) (tokenRecord, error)
+	createFunc func(context.Context, int64, *string, *time.Time) (tokenRecord, error)
 	deleteFunc func(context.Context, int64, string) error
 }
 
@@ -31,7 +31,7 @@ func (s tokenRepositoryStub) GetOwned(ctx context.Context, userID int64, tokenUU
 	return s.getFunc(ctx, userID, tokenUUID)
 }
 
-func (s tokenRepositoryStub) Create(ctx context.Context, userID int64, name string, expires *time.Time) (tokenRecord, error) {
+func (s tokenRepositoryStub) Create(ctx context.Context, userID int64, name *string, expires *time.Time) (tokenRecord, error) {
 	return s.createFunc(ctx, userID, name, expires)
 }
 
@@ -43,14 +43,14 @@ func TestTokenCreatePersistsCurrentBaselineContractForOwningUser(t *testing.T) {
 	const tokenUUID = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
 	secret := []byte("test-secret")
 	var gotOwnerID int64
-	var gotName string
+	var gotName *string
 	var gotExpires *time.Time
 	handler := &Handler{
 		tokenSigningKey: secret,
 		tokens: tokenRepositoryStub{
-			createFunc: func(_ context.Context, ownerID int64, name string, expires *time.Time) (tokenRecord, error) {
+			createFunc: func(_ context.Context, ownerID int64, name *string, expires *time.Time) (tokenRecord, error) {
 				gotOwnerID, gotName, gotExpires = ownerID, name, expires
-				return tokenRecord{ID: 11, UUID: tokenUUID, Expires: expires, UserID: ownerID, Name: name}, nil
+				return tokenRecord{ID: 11, UUID: stringAddress(tokenUUID), Expires: expires, UserID: ownerID, Name: name}, nil
 			},
 		},
 	}
@@ -68,8 +68,8 @@ func TestTokenCreatePersistsCurrentBaselineContractForOwningUser(t *testing.T) {
 	if gotOwnerID != 7 {
 		t.Fatalf("persisted owner = %d, want 7; token row ID 42 must not be treated as user ID", gotOwnerID)
 	}
-	if gotName != "ci-token" || gotExpires == nil {
-		t.Fatalf("persisted token name=%q expires=%v", gotName, gotExpires)
+	if gotName == nil || *gotName != "ci-token" || gotExpires == nil {
+		t.Fatalf("persisted token name=%v expires=%v", gotName, gotExpires)
 	}
 	remaining := time.Until(*gotExpires)
 	if remaining < 23*time.Hour+59*time.Minute || remaining > 24*time.Hour+time.Minute {
@@ -104,7 +104,7 @@ func TestTokenCreatePersistsCurrentBaselineContractForOwningUser(t *testing.T) {
 		t.Fatalf("created token is not a valid current-baseline HS512 JWT: valid=%v err=%v", parsed.Valid, err)
 	}
 	claims := parsed.Claims.(*baselineTokenClaims)
-	if claims.UUID != tokenUUID || claims.Expires == nil {
+	if claims.UUID == nil || *claims.UUID != tokenUUID || claims.Expires == nil {
 		t.Fatalf("claims = %+v", claims)
 	}
 }
@@ -114,7 +114,7 @@ func TestTokenCreateRejectsTrailingJSONDocument(t *testing.T) {
 	handler := &Handler{
 		tokenSigningKey: []byte("test-secret"),
 		tokens: tokenRepositoryStub{
-			createFunc: func(context.Context, int64, string, *time.Time) (tokenRecord, error) {
+			createFunc: func(context.Context, int64, *string, *time.Time) (tokenRecord, error) {
 				createCalls++
 				return tokenRecord{}, nil
 			},
@@ -133,6 +133,56 @@ func TestTokenCreateRejectsTrailingJSONDocument(t *testing.T) {
 	}
 }
 
+func TestTokenCreateDistinguishesMissingAndExplicitNullName(t *testing.T) {
+	const tokenUUID = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
+
+	t.Run("missing", func(t *testing.T) {
+		createCalls := 0
+		handler := &Handler{
+			tokenSigningKey: []byte("test-secret"),
+			tokens: tokenRepositoryStub{
+				createFunc: func(context.Context, int64, *string, *time.Time) (tokenRecord, error) {
+					createCalls++
+					return tokenRecord{}, nil
+				},
+			},
+		}
+		rec := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(rec, authenticatedTokenRequest(http.MethodPost, "/token/", `{}`))
+		if rec.Code != http.StatusBadRequest || createCalls != 0 {
+			t.Fatalf("status = %d, create calls = %d, body = %s", rec.Code, createCalls, rec.Body.String())
+		}
+	})
+
+	t.Run("explicit null", func(t *testing.T) {
+		createCalls := 0
+		handler := &Handler{
+			tokenSigningKey: []byte("test-secret"),
+			tokens: tokenRepositoryStub{
+				createFunc: func(_ context.Context, ownerID int64, name *string, expires *time.Time) (tokenRecord, error) {
+					createCalls++
+					if name != nil || expires != nil {
+						t.Fatalf("name = %v, expires = %v; want explicit nulls", name, expires)
+					}
+					return tokenRecord{ID: 11, UUID: stringAddress(tokenUUID), UserID: ownerID}, nil
+				},
+			},
+		}
+		rec := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(rec, authenticatedTokenRequest(http.MethodPost, "/token/", `{"name":null}`))
+		if rec.Code != http.StatusOK || createCalls != 1 {
+			t.Fatalf("status = %d, create calls = %d, body = %s", rec.Code, createCalls, rec.Body.String())
+		}
+		var response map[string]json.RawMessage
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if string(response["name"]) != "null" {
+			t.Fatalf("name = %s, want null", response["name"])
+		}
+	})
+}
+
 func TestTokenListMasksReconstructedTokensAndScopesByOwner(t *testing.T) {
 	const tokenUUID = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
 	var gotOwnerID int64
@@ -141,7 +191,7 @@ func TestTokenListMasksReconstructedTokensAndScopesByOwner(t *testing.T) {
 		tokens: tokenRepositoryStub{
 			listFunc: func(_ context.Context, ownerID int64) ([]tokenRecord, error) {
 				gotOwnerID = ownerID
-				return []tokenRecord{{ID: 11, UUID: tokenUUID, UserID: ownerID, Name: "ci-token"}}, nil
+				return []tokenRecord{{ID: 11, UUID: stringAddress(tokenUUID), UserID: ownerID, Name: stringAddress("ci-token")}}, nil
 			},
 		},
 	}
@@ -162,6 +212,31 @@ func TestTokenListMasksReconstructedTokensAndScopesByOwner(t *testing.T) {
 	}
 	if len(response) != 1 || len(response[0].Token) != 10 || !strings.HasPrefix(response[0].Token, "...") {
 		t.Fatalf("masked response = %+v", response)
+	}
+}
+
+func TestTokenListPreservesNullableCurrentBaselineMetadata(t *testing.T) {
+	handler := &Handler{
+		tokenSigningKey: []byte("test-secret"),
+		tokens: tokenRepositoryStub{
+			listFunc: func(_ context.Context, ownerID int64) ([]tokenRecord, error) {
+				return []tokenRecord{{ID: 11, UserID: ownerID}}, nil
+			},
+		},
+	}
+
+	req := authenticatedTokenRequest(http.MethodGet, "/token/", "")
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response []map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != 1 || string(response[0]["uuid"]) != "null" || string(response[0]["name"]) != "null" {
+		t.Fatalf("nullable metadata response = %s", rec.Body.String())
 	}
 }
 
@@ -221,4 +296,8 @@ func authenticatedTokenRequest(method, target, body string) *http.Request {
 		AuthType: "token",
 	}
 	return req.WithContext(identity.ContextWithUser(req.Context(), principal))
+}
+
+func stringAddress(value string) *string {
+	return &value
 }

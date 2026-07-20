@@ -33,25 +33,25 @@ var (
 
 type Token struct {
 	ID      int64      `json:"id"`
-	UUID    string     `json:"uuid"`
+	UUID    *string    `json:"uuid"`
 	Expires *time.Time `json:"expires"`
 	UserID  int64      `json:"user_id"`
-	Name    string     `json:"name"`
+	Name    *string    `json:"name"`
 	Token   string     `json:"token"`
 }
 
 type tokenRecord struct {
 	ID      int64
-	UUID    string
+	UUID    *string
 	Expires *time.Time
 	UserID  int64
-	Name    string
+	Name    *string
 }
 
 type tokenRepository interface {
 	List(context.Context, int64) ([]tokenRecord, error)
 	GetOwned(context.Context, int64, string) (tokenRecord, error)
-	Create(context.Context, int64, string, *time.Time) (tokenRecord, error)
+	Create(context.Context, int64, *string, *time.Time) (tokenRecord, error)
 	DeleteOwned(context.Context, int64, string) error
 }
 
@@ -105,7 +105,7 @@ func (r *postgresTokenRepository) GetOwned(ctx context.Context, userID int64, to
 	return patRecord(row.ID, row.Uuid, row.Expires, row.UserID, row.Name)
 }
 
-func (r *postgresTokenRepository) Create(ctx context.Context, userID int64, name string, expires *time.Time) (tokenRecord, error) {
+func (r *postgresTokenRepository) Create(ctx context.Context, userID int64, name *string, expires *time.Time) (tokenRecord, error) {
 	databaseUserID, err := patDatabaseID(userID)
 	if err != nil {
 		return tokenRecord{}, err
@@ -193,12 +193,12 @@ func patDatabaseTimestamp(value *time.Time) pgtype.Timestamp {
 
 func patRecord(
 	id int32,
-	uuid string,
+	uuid *string,
 	expires pgtype.Timestamp,
 	userID int32,
-	name string,
+	name *string,
 ) (tokenRecord, error) {
-	if id <= 0 || userID <= 0 || !validTokenUUID(uuid) {
+	if id <= 0 || userID <= 0 || (uuid != nil && !validTokenUUID(*uuid)) {
 		return tokenRecord{}, errors.New("PAT row contains invalid identity data")
 	}
 	var expiration *time.Time
@@ -273,8 +273,25 @@ func (h *Handler) TokenGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type tokenCreateRequest struct {
-	Name    *string          `json:"name"`
+	Name    tokenNameField   `json:"name"`
 	Expires *tokenExpiration `json:"expires"`
+}
+
+// tokenNameField preserves the current distinction between a missing name
+// (400) and an explicit JSON null (stored and returned as SQL/JSON null).
+type tokenNameField struct {
+	present bool
+	value   *string
+}
+
+func (f *tokenNameField) UnmarshalJSON(data []byte) error {
+	var value *string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	f.present = true
+	f.value = value
+	return nil
 }
 
 type tokenExpiration struct {
@@ -306,12 +323,12 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, apierr.BadRequest("invalid request body"))
 		return
 	}
-	if request.Name == nil {
+	if !request.Name.present {
 		apierr.Write(w, apierr.BadRequest("Name is required"))
 		return
 	}
-	name := *request.Name
-	if len(name) > maxTokenNameBytes {
+	name := request.Name.value
+	if name != nil && len(*name) > maxTokenNameBytes {
 		apierr.Write(w, apierr.BadRequest("invalid token name"))
 		return
 	}
@@ -412,7 +429,7 @@ func (h *Handler) presentToken(record tokenRecord, reveal bool) (Token, error) {
 }
 
 type baselineTokenClaims struct {
-	UUID    string  `json:"uuid"`
+	UUID    *string `json:"uuid"`
 	Expires *string `json:"expires"`
 	jwt.RegisteredClaims
 }

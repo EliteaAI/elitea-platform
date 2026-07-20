@@ -1,10 +1,10 @@
 -- name: ListOwnedPATs :many
 SELECT
     token.id,
-    COALESCE(token.uuid, '')::text AS uuid,
+    token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    COALESCE(token.name, '')::text AS name
+    token.name
 FROM public.auth_core__token AS token
 WHERE token.user_id = sqlc.arg(user_id)::integer
 ORDER BY token.id;
@@ -12,10 +12,10 @@ ORDER BY token.id;
 -- name: GetOwnedPAT :one
 SELECT
     token.id,
-    COALESCE(token.uuid, '')::text AS uuid,
+    token.uuid,
     token.expires,
     COALESCE(token.user_id, 0)::integer AS user_id,
-    COALESCE(token.name, '')::text AS name
+    token.name
 FROM public.auth_core__token AS token
 WHERE token.uuid = sqlc.arg(uuid)::text
   AND token.user_id = sqlc.arg(user_id)::integer;
@@ -26,16 +26,16 @@ SELECT
     sqlc.arg(uuid)::varchar(36),
     sqlc.narg(expires)::timestamp without time zone,
     owner.id,
-    sqlc.arg(name)::text
+    sqlc.narg(name)::text
 FROM public.auth_core__user AS owner
 WHERE owner.id = sqlc.arg(user_id)::integer
   AND owner.suspended = false
 RETURNING
     id,
-    COALESCE(uuid, '')::text AS uuid,
+    uuid,
     expires,
     COALESCE(user_id, 0)::integer AS user_id,
-    COALESCE(name, '')::text AS name;
+    name;
 
 -- name: LockPATByUUID :one
 SELECT
