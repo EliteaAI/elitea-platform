@@ -305,9 +305,10 @@ func (s *Service) Complete(
 	}
 
 	assertion, err := verifier.Verify(ctx, browserflow.VerificationContext{
-		Provider:      transaction.Provider,
-		Correlation:   transaction.Correlation,
-		ProviderState: transaction.ProviderState,
+		Provider:             transaction.Provider,
+		OriginatingSessionID: transaction.OriginatingSessionID,
+		Correlation:          transaction.Correlation,
+		ProviderState:        transaction.ProviderState,
 	})
 	if err != nil {
 		return CompleteResult{}, sanitizedError(ctx, ErrUnauthenticated, "verify provider assertion", err)

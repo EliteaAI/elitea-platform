@@ -78,6 +78,8 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 		"/admin/app/",
 		"/app/application_icon/icon.svg",
 		"/forward-auth/login",
+		"/forward-auth/auth_form/login",
+		"/forward-auth/auth_form/authorize",
 		"/forward-auth/auth_oidc/login",
 		"/forward-auth/auth_oidc/callback",
 		"/api/v2/projects/7",
@@ -143,6 +145,41 @@ func TestProductionAuthCandidatesRemainUnmountedForEveryCredentialShape(t *testi
 				}
 			})
 		}
+	}
+}
+
+func TestProductionFormBrowserSurfaceRemainsUnmountedForEffectiveMethods(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "false")
+	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/forward-auth/login"},
+		{method: http.MethodHead, path: "/forward-auth/login"},
+		{method: http.MethodOptions, path: "/forward-auth/login"},
+		{method: http.MethodGet, path: "/forward-auth/auth_form/login"},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/login"},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/login"},
+		{method: http.MethodPost, path: "/forward-auth/auth_form/authorize"},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/authorize"},
+		{method: http.MethodGet, path: "/forward-auth/logout"},
+		{method: http.MethodHead, path: "/forward-auth/logout"},
+		{method: http.MethodOptions, path: "/forward-auth/logout"},
+		{method: http.MethodGet, path: "/forward-auth/auth_form/logout"},
+		{method: http.MethodHead, path: "/forward-auth/auth_form/logout"},
+		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout"},
+	}
+
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(route.method, route.path, nil)
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			}
+		})
 	}
 }
 

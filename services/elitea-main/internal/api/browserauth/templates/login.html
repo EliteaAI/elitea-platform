@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Elitea login</title>
+  </head>
+  <body>
+    <main>
+      <h1>Sign in</h1>
+      <form action="/forward-auth/auth_form/authorize" method="post">
+        <label for="login">Login</label>
+        <input type="text" id="login" name="login" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+        <input type="hidden" name="target" value="{{.Target}}">
+        <button type="submit">Sign in</button>
+        {{if .Error}}<p role="alert">Invalid login or password</p>{{end}}
+      </form>
+    </main>
+  </body>
+</html>

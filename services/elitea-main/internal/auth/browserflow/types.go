@@ -50,12 +50,15 @@ type ProviderState struct {
 	PKCEVerifier string `json:"pkce_verifier,omitempty"`
 }
 
-// VerificationContext is the bounded input passed to a trusted Form, OIDC, or
-// SAML assertion verifier after the transaction has been consumed.
+// VerificationContext is the bounded, server-only input passed to a trusted
+// Form, OIDC, or SAML assertion verifier after the transaction has been
+// consumed. OriginatingSessionID is copied from that consumed transaction; the
+// context is neither serialized nor persisted as provider state.
 type VerificationContext struct {
-	Provider      string
-	Correlation   ProtocolCorrelation
-	ProviderState ProviderState
+	Provider             string              `json:"-"`
+	OriginatingSessionID string              `json:"-"`
+	Correlation          ProtocolCorrelation `json:"-"`
+	ProviderState        ProviderState       `json:"-"`
 }
 
 // Transaction is stored server-side and consumed exactly once. The store must

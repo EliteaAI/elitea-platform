@@ -108,7 +108,8 @@ func TestBrowserAuthenticationLifecycleRotatesAndRevalidates(t *testing.T) {
 		t.Fatalf("completed expiration = %v, want %v", completed.Expiration, expiresAt)
 	}
 	verification := verifier.lastVerification(t)
-	if verification.Provider != "oidc" || !verification.Correlation.Equal(correlation) ||
+	if verification.Provider != "oidc" || verification.OriginatingSessionID != begin.SessionID ||
+		!verification.Correlation.Equal(correlation) ||
 		verification.ProviderState != providerState {
 		t.Fatalf("verification context = %+v", verification)
 	}
