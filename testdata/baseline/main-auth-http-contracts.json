@@ -690,6 +690,10 @@
     }
   ],
   "behavior_fingerprints": {
+    "admin_ui/module.py#Module.init": {
+      "ast_sha256": "82ebe26427ac8b0c47507b7b4f467b7a8762f84391a2255e95fbb48c4437a0da",
+      "line": 25
+    },
     "api/v2/permissions.py#API.get": {
       "ast_sha256": "5afa579272c7f95e26ed3397bfc50e43488904268b8b1478270af6fa53c49f93",
       "line": 22
@@ -710,6 +714,14 @@
       "ast_sha256": "072993bb69d9651dd325ea99f8085e65144239f7243b32788d265d1fe7365503",
       "line": 52
     },
+    "artifacts/methods/s3.py#Method.s3_api_deinit": {
+      "ast_sha256": "33f861cfe9ca20844701af67d08d54b28fb0964ef3864569b910537461d6b7ac",
+      "line": 54
+    },
+    "artifacts/methods/s3.py#Method.s3_api_init": {
+      "ast_sha256": "17ef269f343a42b498d21928d0b7881d6dff7dddb53e780b36aa5f570bb65b0d",
+      "line": 36
+    },
     "auth_core/db/db_tools.py#sqlalchemy_mapping_to_dict": {
       "ast_sha256": "eaee91db113f84036fa050cb3a22aa33bb8a34840f9751b188e4dc094cbef469",
       "line": 21
@@ -717,6 +729,10 @@
     "auth_core/methods/auth_context.py#Method.get_auth_context": {
       "ast_sha256": "62bdadb0d28243ce638590c8d8eb5bb1c0dfec85be8b695f5c9b5d999cbb968f",
       "line": 38
+    },
+    "auth_core/methods/public_rules.py#Method.public_rules_init": {
+      "ast_sha256": "7a280f2b06dfdcc6b5fa1146191e406d7a90c259c1547b51e0b48121831db593",
+      "line": 36
     },
     "auth_core/module.py#Module.__init__": {
       "ast_sha256": "c8eb27180678ebb9a512b4082f105effbd5691a2f23a9999c40e70ca0f6fee3d",
@@ -729,6 +745,10 @@
     "auth_core/rpc/auth_context.py#RPC.get_referenced_auth_context": {
       "ast_sha256": "f66dfe9fb8c4311a5b199f52dd67d3c11a981960ae376da10a0c8ff066f4b874",
       "line": 31
+    },
+    "auth_core/rpc/public_rules.py#RPC.add_public_rule": {
+      "ast_sha256": "7512cafa86d333cc2e9ba08532b1a2b5702e48a98cd853f164b56c1afcc666ce",
+      "line": 32
     },
     "auth_core/rpc/tokens.py#RPC.add_token": {
       "ast_sha256": "7b6d8e414f4956e3b59d19ef82f6d00f4875f07f80368e24e353de9b86500e1a",
@@ -746,6 +766,26 @@
       "ast_sha256": "a68babf0d703f5953045e839a7f24c904730221285c1542ec561cd6fbd897a0b",
       "line": 24
     },
+    "elitea_core/module.py#Module.elitea_ui_init": {
+      "ast_sha256": "bbe6f2221bd4d31416180f0871849650327ef25d6984843a96e4e0d031ee7388",
+      "line": 980
+    },
+    "elitea_core/module.py#Module.init": {
+      "ast_sha256": "f89a621f1802674c02e807d47de8e3133cd61ebe47daec47f373e1ee3e444c33",
+      "line": 491
+    },
+    "elitea_core/module.py#Module.mcp_sse_deinit": {
+      "ast_sha256": "aac4ee6dfcca42eba3d803fc355801982d10a14301bc49ff18601d6b31a2f8eb",
+      "line": 918
+    },
+    "elitea_core/module.py#Module.mcp_sse_init": {
+      "ast_sha256": "4d38d50f677e1adb2737b8e0790b7b5cd79175867dbb8a4f5e004f0cf7169ea5",
+      "line": 890
+    },
+    "module.py#Module.__init__": {
+      "ast_sha256": "04cf21da681f713c4677c78c7181b2799e85afe069832d391cd456f591bfd50c",
+      "line": 127
+    },
     "module.py#Module._after_request_hook": {
       "ast_sha256": "71229e6a60014e51e76727266c4664d4987662f7e23d049cf79a0394b73922c1",
       "line": 470
@@ -757,6 +797,14 @@
     "module.py#Module.access_denied_reply": {
       "ast_sha256": "6b652a42ec750e8f7102fd8cec1f214df4da5673649751ef37a1a6668008604e",
       "line": 928
+    },
+    "module.py#Module.add_public_rule": {
+      "ast_sha256": "1d50cd4d0c1b3b66fec86d7bed5cd5d68e4beb79a32d849308d413f3611fa08b",
+      "line": 887
+    },
+    "module.py#Module.init": {
+      "ast_sha256": "cfaeae4939b6d1120293443f4a421d8c25c108c1bbd1000830b051d2414b2bd1",
+      "line": 399
     },
     "module.py#Module.resolve_permissions": {
       "ast_sha256": "c87f3a0d3798bd691005cfe948b2064597f32380cbc2b29183a6f18084f0b859",
@@ -778,9 +826,17 @@
       "ast_sha256": "27202880c4100950eff7c3dfc919a7fe431e1be1c0e0f07b85cd45f7123567d2",
       "line": 80
     },
+    "pylon/core/tools/server/init.py#init_context": {
+      "ast_sha256": "9a4a3d3aa7a1a600cfdc55b9bea27be2f27bfaec8b695499bba8b1177178ee1e",
+      "line": 29
+    },
     "rpc/user.py#RPC.current_user": {
       "ast_sha256": "72948e249a8bcb31f2f866e243d5d980bca61a3a6f6ac7a4dc8b9a89fa3c6169",
       "line": 7
+    },
+    "runtime_interface_litellm/methods/init.py#Method.init": {
+      "ast_sha256": "0dea7482bd53e6d26216f6be863f67dec2cbdfea9182e911e710fcbed0e579cb",
+      "line": 41
     },
     "shared/tools/api_tools.py#APIBase.delete": {
       "ast_sha256": "e6dabfc015e8c82f6585cd2eb36f4d7ef7ff233d3a9d4dcb726eee28d840365c",
@@ -967,8 +1023,9 @@
   },
   "inference_limits": [
     "This is static source, pinned dependency, and checked-in configuration evidence; it does not execute Flask, Redis, RPC, PostgreSQL, or Traefik.",
-    "Only permissions.py, token.py, user.py, shared APIBase inheritance, the shared current_user RPC, and their global request/route composition are covered.",
+    "Only permissions.py, token.py, user.py, shared APIBase inheritance, the shared current_user RPC, their global request/route composition, and the Main-local public-rule inventory are covered.",
     "The separately consumed Social current-author endpoint, administrative Auth APIs, browser login providers, UI behavior, and runtime-only config overrides are excluded.",
+    "Dynamic public rules pin registration ownership and source order within each method; cross-plugin initialization order and endpoint behavior behind those rules are not inferred.",
     "Python set-to-list and set-repr ordering is explicitly unspecified rather than normalized into a false byte-level promise.",
     "Framework generic 404/500 bodies are named but not byte-pinned because this evidence does not execute the configured Flask error pipeline."
   ],
@@ -1049,6 +1106,18 @@
     "user": "load authoritative user by auth_data.id and cache on auth_data.user"
   },
   "provenance": {
+    "admin_ui_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "33334cb59cca6bc97dc0869ab335123ff12287c9",
+      "source_root": "pylon_main/plugins/admin_ui"
+    },
+    "artifacts_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "9ad2139bdbb1df70f3fa5b4cf78ae953b3fa35b1",
+      "source_root": "pylon_main/plugins/artifacts"
+    },
     "auth_core_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
@@ -1060,6 +1129,12 @@
       "contract_sources_reconstructable_from_pinned_head": true,
       "pinned_head": "ff02d66a8858604e6947bb3a52bda8543dbe0e76",
       "source_root": "pylon_main/plugins/auth"
+    },
+    "elitea_core_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "2b713350aa73af770164ac023cc88b4cb83667e1",
+      "source_root": "pylon_main/plugins/elitea_core"
     },
     "projects_repo": {
       "contract_source_dirty_paths": [],
@@ -1079,11 +1154,150 @@
       "pinned_head": "6b3e59f7f41e41c9d5f1dcf7ca6e870d7391986c",
       "source_root": "centry"
     },
+    "runtime_interface_litellm_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "cab9507cdcb12b1d04094c7f8443ed94c8c0834d",
+      "source_root": "pylon_main/plugins/runtime_interface_litellm"
+    },
     "shared_api_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
       "pinned_head": "81583f7dd2cede7631b002f32d5e86cb2c025516",
       "source_root": "pylon_main/plugins/shared"
+    }
+  },
+  "public_rule_inventory": {
+    "auth_core_direct_plane": {
+      "initial_rules": [],
+      "main_rules_forwarded_via_rpc": false,
+      "ownership": "Auth Core initializes its own independent public_rules list empty; tracked Main auth_mode=rpc keeps configured and plugin registrations in Main"
+    },
+    "context_url_prefix": {
+      "normalized": "",
+      "selected_value_matches_pinned_head": true,
+      "source_chain": [
+        "centry/pylon_main/pylon.yml#server.path is /",
+        "pylon server init strips trailing slash to empty context.url_prefix"
+      ]
+    },
+    "main_local_plane": {
+      "configured_rules_ordered": [
+        {
+          "uri": "/forward\\-auth/.*"
+        },
+        {
+          "uri": "/applications/application_icon.*"
+        },
+        {
+          "uri": "/datasources/datasource_icon.*"
+        },
+        {
+          "uri": "/prompt_lib/prompt_icon.*"
+        }
+      ],
+      "deployment_selection": {
+        "bootstrap_selector": "centry/pylon_main/configs/bootstrap.yml#preordered_plugins",
+        "required_dynamic_plugins_enabled": [
+          "admin_ui",
+          "artifacts",
+          "elitea_core",
+          "runtime_interface_litellm"
+        ],
+        "semantics": "membership evidence only; bootstrap sequence order is not treated as a global runtime initialization order"
+      },
+      "dynamic_registration_sites": {
+        "admin_ui.Module.init": {
+          "conditional": false,
+          "owner": "admin_ui",
+          "rules_in_source_order": [
+            {
+              "uri": "/admin/app/.*\\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$"
+            }
+          ],
+          "source": "admin_ui/module.py"
+        },
+        "artifacts.Method.s3_api_init": {
+          "conditional": false,
+          "owner": "artifacts",
+          "rules_in_source_order": [
+            {
+              "uri": "/artifacts/s3/.*"
+            }
+          ],
+          "source": "artifacts/methods/s3.py"
+        },
+        "elitea_core.Module.elitea_ui_init": {
+          "conditional": false,
+          "owner": "elitea_core",
+          "rules_in_source_order": [
+            {
+              "uri": "/socket\\.io/.*"
+            },
+            {
+              "uri": "/robots\\.txt"
+            },
+            {
+              "uri": "/favicon\\.ico"
+            },
+            {
+              "uri": "/app/access_denied"
+            }
+          ],
+          "source": "elitea_core/module.py"
+        },
+        "elitea_core.Module.init": {
+          "conditional": false,
+          "owner": "elitea_core",
+          "rules_in_source_order": [
+            {
+              "uri": "/api/v2/elitea_core/webhook/prompt_lib/[0-9]+/[0-9]+/(github|gitlab|custom)"
+            }
+          ],
+          "source": "elitea_core/module.py"
+        },
+        "elitea_core.Module.mcp_sse_init": {
+          "condition": "descriptor.config.public_messages_route",
+          "conditional": true,
+          "enabled_by_tracked_configuration": true,
+          "owner": "elitea_core",
+          "rules_in_source_order": [
+            {
+              "uri": "/elitea_core/[0-9]+/messages\\?session_id=.+"
+            }
+          ],
+          "source": "elitea_core/module.py"
+        },
+        "runtime_interface_litellm.Method.init": {
+          "conditional": false,
+          "owner": "runtime_interface_litellm",
+          "rules_in_source_order": [
+            {
+              "uri": "/llm/.*"
+            }
+          ],
+          "source": "runtime_interface_litellm/methods/init.py"
+        }
+      },
+      "dynamic_source_inventory": [
+        "admin_ui/module.py",
+        "artifacts/methods/s3.py",
+        "elitea_core/module.py",
+        "runtime_interface_litellm/methods/init.py"
+      ],
+      "matching": "each compiled field regex uses fullmatch; every rule is evaluated into one public boolean",
+      "ordering": {
+        "configured": "the four configured rules are appended in YAML list order during Auth Module.init",
+        "cross_plugin": "not inferred from this evidence; no global plugin initialization order is claimed, and matching does not short-circuit on first rule",
+        "per_site": "rules_in_source_order is exact within each named registration method"
+      },
+      "ownership": "Main Module.add_public_rule compiles, de-duplicates, and appends locally when auth_mode=rpc"
+    },
+    "messages_rule_configuration": {
+      "base_plugin_value": true,
+      "effective_tracked_value": true,
+      "runtime_provider_limit": "an external runtime config-provider payload can override the tracked merge and is not executed here",
+      "tracked_runtime_override": null
     }
   },
   "resources": {
@@ -1226,7 +1440,7 @@
       "uncaught_mutation_or_followup": "POST add/get and DELETE execution do not catch transported RuntimeError and reach generic 500 handling"
     }
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "scope": {
     "claim": "bounded current-baseline pylon_main Auth HTTP evidence",
     "covered_contract_ids": [
@@ -1246,6 +1460,8 @@
     "full_auth_parity_claim": false
   },
   "source_files_sha256": {
+    "admin_ui/module.py": "327d83ec53d9dc5e2e72cd1d643e6bc05a259e0b8d34a5865264a9d0cb775b0b",
+    "artifacts/methods/s3.py": "0f81b30d8a0118352fa3a872218f1a1b4d6e8395f6d400687f2cdf4530b31f7a",
     "auth/api/v2/permissions.py": "77c99e5a47c0afb481a85217d5bd6f839b744c58eb536236e3cbb6d913c5771a",
     "auth/api/v2/token.py": "a906641b19a1ee249f84149515aba6290bac5ff46e80866bdfed9f24c7e41536",
     "auth/api/v2/user.py": "8663790b7f2dfea38c38a087ad23784c037cf52d01d649f5fa8ee9d03ff7a90f",
@@ -1256,25 +1472,36 @@
     "auth_core/db/db_tools.py": "17ebb8e74decb981c85f9d3b872e510ed941edb958a58fbebc1cb725da18f352",
     "auth_core/db/migrations/202202021633_core.py": "0bf300d959432a51ede0de4d4040fa3c8e5989c6f4148944a17462a2562769e3",
     "auth_core/methods/auth_context.py": "2de980256c76022162651a7e2592117fc7796e8a4861d9baebbae95dfd8149be",
+    "auth_core/methods/public_rules.py": "781b1d8048fcbb1aaddf1ace6ad4b9203bcad5a5ab20cfc8e4ed116d935de492",
     "auth_core/module.py": "86f7f99cce01b4a4bb92c7e3a1640ea1781ab2448a19fce66e6f4de48a8d4b39",
     "auth_core/requirements.txt": "c67a55a6cbac7a7fde460b6ef9e25cd0483400a12b7f0b6a8d0d658a93a4849b",
     "auth_core/rpc/auth_context.py": "89a0b234c1d383c86d8b565d11607b2254920838c5b73d9a4bc6b83bdcd93cec",
+    "auth_core/rpc/public_rules.py": "ee0808980f998e79d869eff27137c4905432eaef360e6e86dc3660271ec0ec53",
     "auth_core/rpc/tokens.py": "0bdb68a1631f1b150a87441ca2fdcf85e3b9a0696ebe701b552043a0661fb7b0",
     "auth_core/rpc/users.py": "3df51e92b88d51d02a389b6460d38fe5837798f475311090988f9204565a186e",
     "auth_core/tools/rpc_tools.py": "ceb58dd5b91740f7e80e71ecce0561faeeda6a4fc78f03e2fc11ddbbe23c2023",
     "centry/pylon_auth/configs/auth_core.yml": "3ad4d4a119538b66c0e7e6308945ed08c33d43d7046127ad64fb39a547062f6c",
     "centry/pylon_main/configs/auth.yml": "fb7c35f0d19eae7b5da5d8444a9a3524934572706eb701855c804eb3e52a7fc5",
+    "centry/pylon_main/configs/bootstrap.yml": "1c37850d1db86e1e4193aece45cc76ea8e06f2d6b7060d4a968658a32dc04c45",
+    "centry/pylon_main/configs/elitea_core.yml": "ec17b3dfee83fd0ffdc0117d7e77898fee2b981005822519648c2d1f8d7eac41",
+    "elitea_core/config.yml": "16e5d2b85bb2be219830237814aa2b8d5f07f88318b9123c26ed8f62f86a43a8",
+    "elitea_core/module.py": "e1e8567abcd2260c1533935bf930b0e2203fd56bb77e4c2ef2845180280a3ac1",
     "projects/rpc/poc.py": "84b238686d4099d6462ea8f28b1e1e807e5de71b8502f92a9caedf4d28d43336",
     "pylon/pylon/core/tools/dict.py": "4f3f332c898b9edfcee4eb79a31c88c5d5363730b72060865616be9bf1ac6815",
     "pylon/pylon/core/tools/module/descriptor.py": "021fb237ff254cb54ca91aa40dc4080b1a573468030066329f862f525f0d8a22",
+    "pylon/pylon/core/tools/server/init.py": "b5fcb336a8666270f9a96192042445861297e37f39a08f55300d8b4d6fc7e738",
     "pylon/requirements.txt": "17b66334289a5f6329491fb512fcce35587349734b7885dcab8c592fdbe4ed57",
+    "runtime_interface_litellm/config.yml": "a467cc7c3ecfe148a315e6dc8eaa77b22ac740d128ce74c1d7d80d386b17c1be",
+    "runtime_interface_litellm/methods/init.py": "6ad8bab0c3994e582eadb30b9745f0dc34e7e319262ee5801896bffd33ccea1c",
     "shared/module.py": "a18c99d92e5c2f9fca41fd49c817b31eae48e357ad928d3973f9cbf4014f3e61",
     "shared/tools/api_tools.py": "cc85b81aa0d2d022f382b616ac453ea5dd6cdc8bee09b43ec031c1b325127cdf",
     "shared/tools/config.py": "7eba3bab4443f7ddaaf027d4e3bcee327d59a5a1763bdbaa8fa43e70d669ad7b"
   },
   "source_reconstruction": {
     "contract_file_hashes": "source_files_sha256 hashes reviewed worktree bytes; every listed file is absent from its repository's contract_source_dirty_paths and therefore reconstructable from that repository's pinned_head",
-    "runtime_allow_cors_selector": "Only pylon_main/configs/shared.yml#settings.allow_cors is evidence: the current semantic selector is compared with pinned HEAD, while unrelated fields and whole-file dirty state are intentionally non-gating"
+    "runtime_allow_cors_selector": "Only pylon_main/configs/shared.yml#settings.allow_cors is evidence: the current semantic selector is compared with pinned HEAD, while unrelated fields and whole-file dirty state are intentionally non-gating",
+    "runtime_context_prefix_selector": "Only pylon_main/pylon.yml#server.path is selected and compared with pinned HEAD; unrelated runtime-file dirtiness is intentionally non-gating",
+    "runtime_plugin_selection": "pylon_main/configs/bootstrap.yml#preordered_plugins proves membership of each dynamic public-rule owner; its sequence is not interpreted as a global runtime initialization order"
   },
   "token_encoding": {
     "algorithm": "HS512",

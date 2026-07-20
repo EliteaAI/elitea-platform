@@ -101,6 +101,22 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
         failures = check_catalog(changed)
         self.assertIn("reviewed security migration disposition map changed", failures)
 
+    def test_checker_rejects_new_wire_compatibility_disposition_mutations(self) -> None:
+        changed = deepcopy(self.catalog)
+        dispositions = {item["id"]: item for item in changed["security_dispositions"]}
+        dispositions["wire.unsupported_method"]["requirement"] = "plain 400"
+        dispositions["credential.basic_decoding"]["baseline"] = "strict decoder"
+        dispositions["input.duplicates"]["requirement"] = "accept duplicates"
+        dispositions["proxy.trust"]["requirement"] = "trust proxy"
+        dispositions["public_rules.regex_engine"]["requirement"] = "compile regex"
+
+        failures = check_catalog(changed)
+        self.assertIn("unsupported-method wire correction disposition changed", failures)
+        self.assertIn("strict Basic-decoding disposition changed", failures)
+        self.assertIn("duplicate input disposition changed", failures)
+        self.assertIn("trusted-proxy normalization disposition changed", failures)
+        self.assertIn("public-rule regex-engine disposition changed", failures)
+
     def test_checker_rejects_removed_fail_open_and_partial_state_evidence(self) -> None:
         changed = deepcopy(self.catalog)
         contracts = {item["id"]: item for item in changed["behavior_contracts"]}
@@ -188,6 +204,46 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
         self.assertIn("pylon_repo source ref changed", failures)
         self.assertIn("tracked Pylon image/runtime composition changed", failures)
         self.assertIn("selected non-secret configuration source set changed", failures)
+
+    def test_checker_rejects_main_public_rule_ownership_order_and_value_mutations(self) -> None:
+        changed = deepcopy(self.catalog)
+        ownership = changed["deployment_contract"]["public_rule_ownership"]
+        ownership["auth_core_direct"]["initial_rules"] = [
+            {"uri": "/must-not-be-main-local"}
+        ]
+        configured = ownership["main_local"]["configured_registration_order"]
+        configured[0], configured[1] = configured[1], configured[0]
+        dynamic = ownership["main_local"]["dynamic_registration_sites"]
+        next(item for item in dynamic if item["id"] == "artifacts.s3_sigv4")[
+            "rule"
+        ]["uri"] = "/artifacts/.*"
+        next(item for item in dynamic if item["id"] == "elitea_core.public_messages")[
+            "effective_in_tracked_base_config"
+        ] = False
+
+        failures = check_catalog(changed)
+        self.assertIn("tracked Main/Auth Core public-rule ownership changed", failures)
+        self.assertIn("browser auth reviewed snapshot changed", failures)
+
+    def test_public_route_config_selectors_pin_conditional_and_prefix_values(self) -> None:
+        self.assertEqual(
+            exporter._selected_litellm_public_config("url_prefix: /llm\nunrelated: yes\n"),
+            {"url_prefix": "/llm"},
+        )
+        self.assertEqual(
+            exporter._selected_elitea_core_public_config(
+                "public_messages_route: true\nunrelated: yes\n"
+            ),
+            {"public_messages_route": True},
+        )
+        self.assertEqual(
+            exporter._selected_elitea_core_public_override("unrelated: yes\n"),
+            {"public_messages_route": None},
+        )
+        with self.assertRaisesRegex(ValueError, "explicit boolean"):
+            exporter._selected_elitea_core_public_config(
+                "public_messages_route: ${PUBLIC_MESSAGES}\n"
+            )
 
     def test_route_extraction_pins_literal_methods(self) -> None:
         tree = ast.parse(

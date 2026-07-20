@@ -286,6 +286,18 @@
     }
   ],
   "behavior_fingerprints": {
+    "admin_ui/module.py#Module.init": {
+      "ast_sha256": "82ebe26427ac8b0c47507b7b4f467b7a8762f84391a2255e95fbb48c4437a0da",
+      "line": 25
+    },
+    "artifacts/methods/s3.py#Method.s3_api_deinit": {
+      "ast_sha256": "33f861cfe9ca20844701af67d08d54b28fb0964ef3864569b910537461d6b7ac",
+      "line": 54
+    },
+    "artifacts/methods/s3.py#Method.s3_api_init": {
+      "ast_sha256": "17ef269f343a42b498d21928d0b7881d6dff7dddb53e780b36aa5f570bb65b0d",
+      "line": 36
+    },
     "auth_core/methods/auth_context.py#Method.get_auth_context": {
       "ast_sha256": "62bdadb0d28243ce638590c8d8eb5bb1c0dfec85be8b695f5c9b5d999cbb968f",
       "line": 38
@@ -546,6 +558,22 @@
       "ast_sha256": "2c2a17e916293ec5b8c2ea7e0a037422827ae08d5e2114f90c0fbf0b572b5481",
       "line": 32
     },
+    "elitea_core/module.py#Module.elitea_ui_init": {
+      "ast_sha256": "bbe6f2221bd4d31416180f0871849650327ef25d6984843a96e4e0d031ee7388",
+      "line": 980
+    },
+    "elitea_core/module.py#Module.init": {
+      "ast_sha256": "f89a621f1802674c02e807d47de8e3133cd61ebe47daec47f373e1ee3e444c33",
+      "line": 491
+    },
+    "elitea_core/module.py#Module.mcp_sse_deinit": {
+      "ast_sha256": "aac4ee6dfcca42eba3d803fc355801982d10a14301bc49ff18601d6b31a2f8eb",
+      "line": 918
+    },
+    "elitea_core/module.py#Module.mcp_sse_init": {
+      "ast_sha256": "4d38d50f677e1adb2737b8e0790b7b5cd79175867dbb8a4f5e004f0cf7169ea5",
+      "line": 890
+    },
     "main_auth/module.py#Module.__init__": {
       "ast_sha256": "04cf21da681f713c4677c78c7181b2799e85afe069832d391cd456f591bfd50c",
       "line": 127
@@ -697,6 +725,14 @@
     "pylon/pylon/main.py#main": {
       "ast_sha256": "432244a52b576d6dc7303eacf5c9b8a7b727c6a8ee25bed449b88f3d543a84b3",
       "line": 97
+    },
+    "runtime_interface_litellm/methods/init.py#Method.deinit": {
+      "ast_sha256": "0a48e3f8108af088773250727ca7706e738a399660ffe187d81b08bd0d14e081",
+      "line": 173
+    },
+    "runtime_interface_litellm/methods/init.py#Method.init": {
+      "ast_sha256": "0dea7482bd53e6d26216f6be863f67dec2cbdfea9182e911e710fcbed0e579cb",
+      "line": 41
     }
   },
   "deployment_contract": {
@@ -734,10 +770,153 @@
       "initial_root_permissions": []
     },
     "public_rule_ownership": {
-      "auth_core_initial_rules": [],
-      "main_rpc_mode_forwards_rules_to_auth_core": false,
-      "main_rules_are_local": true,
-      "reviewed_auth_process_registrations": []
+      "auth_core_direct": {
+        "initial_rules": [],
+        "reviewed_dynamic_registration_sites": []
+      },
+      "main_local": {
+        "configured_registration_order": [
+          {
+            "id": "config.forward_auth",
+            "ordinal": 0,
+            "rule": {
+              "uri": "/forward\\-auth/.*"
+            },
+            "source": "centry/pylon_main/configs/auth.yml#public_rules[0]"
+          },
+          {
+            "id": "config.application_icon",
+            "ordinal": 1,
+            "rule": {
+              "uri": "/applications/application_icon.*"
+            },
+            "source": "centry/pylon_main/configs/auth.yml#public_rules[1]"
+          },
+          {
+            "id": "config.datasource_icon",
+            "ordinal": 2,
+            "rule": {
+              "uri": "/datasources/datasource_icon.*"
+            },
+            "source": "centry/pylon_main/configs/auth.yml#public_rules[2]"
+          },
+          {
+            "id": "config.prompt_icon",
+            "ordinal": 3,
+            "rule": {
+              "uri": "/prompt_lib/prompt_icon.*"
+            },
+            "source": "centry/pylon_main/configs/auth.yml#public_rules[3]"
+          }
+        ],
+        "dynamic_registration_sites": [
+          {
+            "add_source": "runtime_interface_litellm/methods/init.py#Method.init",
+            "condition": "plugin initialized with tracked url_prefix=/llm",
+            "effective_in_tracked_base_config": true,
+            "id": "runtime_interface_litellm.proxy",
+            "plugin_local_order": 1,
+            "remove_source": "runtime_interface_litellm/methods/init.py#Method.deinit",
+            "rule": {
+              "uri": "/llm/.*"
+            }
+          },
+          {
+            "add_source": "admin_ui/module.py#Module.init",
+            "condition": "plugin initialized",
+            "effective_in_tracked_base_config": true,
+            "id": "admin_ui.static_assets",
+            "plugin_local_order": 1,
+            "remove_source": null,
+            "rule": {
+              "uri": "/admin/app/.*\\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$"
+            }
+          },
+          {
+            "add_source": "artifacts/methods/s3.py#Method.s3_api_init",
+            "condition": "S3 API init hook runs",
+            "effective_in_tracked_base_config": true,
+            "id": "artifacts.s3_sigv4",
+            "plugin_local_order": 1,
+            "remove_source": "artifacts/methods/s3.py#Method.s3_api_deinit",
+            "rule": {
+              "uri": "/artifacts/s3/.*"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+            "condition": "elitea_core UI init runs",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.socket_io",
+            "plugin_local_order": 1,
+            "remove_source": null,
+            "rule": {
+              "uri": "/socket\\.io/.*"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+            "condition": "elitea_core UI init runs",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.robots",
+            "plugin_local_order": 2,
+            "remove_source": null,
+            "rule": {
+              "uri": "/robots\\.txt"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+            "condition": "elitea_core UI init runs",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.favicon",
+            "plugin_local_order": 3,
+            "remove_source": null,
+            "rule": {
+              "uri": "/favicon\\.ico"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+            "condition": "elitea_core UI init runs",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.access_denied",
+            "plugin_local_order": 4,
+            "remove_source": null,
+            "rule": {
+              "uri": "/app/access_denied"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.mcp_sse_init",
+            "condition": "tracked base config public_messages_route=true",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.public_messages",
+            "plugin_local_order": 5,
+            "remove_source": "elitea_core/module.py#Module.mcp_sse_deinit",
+            "rule": {
+              "uri": "/elitea_core/[0-9]+/messages\\?session_id=.+"
+            }
+          },
+          {
+            "add_source": "elitea_core/module.py#Module.init",
+            "condition": "elitea_core main init reaches webhook registration",
+            "effective_in_tracked_base_config": true,
+            "id": "elitea_core.webhook",
+            "plugin_local_order": 6,
+            "remove_source": null,
+            "rule": {
+              "uri": "/api/v2/elitea_core/webhook/prompt_lib/[0-9]+/[0-9]+/(github|gitlab|custom)"
+            }
+          }
+        ],
+        "main_rpc_mode_forwards_rules_to_auth_core": false,
+        "ordering": {
+          "configured": "Auth Module.init appends the YAML rules in the listed order",
+          "dynamic": "each site appends during its plugin lifecycle; cross-plugin scheduler order is not inferred, while plugin_local_order pins order within a plugin",
+          "evaluation": "Main evaluates every rule in its local insertion-ordered list into one public boolean without short-circuiting; each mapping requires every regex value to fullmatch its corresponding source field"
+        }
+      }
     },
     "pylon_auth_selected": {
       "application.APPLICATION_ROOT": "/forward-auth/",
@@ -1238,7 +1417,8 @@
     "Pylon and browser behavior is derived from pinned source and configuration, not from a live Flask/Traefik execution.",
     "The Centry image tag is bound to the same local Pylon Git tag, but the deployed container image digest was not pulled or live-verified.",
     "The pylon.yml files are represented only by the named auth/session/exposure selectors; unrelated server settings are outside this contract.",
-    "The reviewed Auth Core public-rule set is empty in the examined sources; a runtime config-provider or unreviewed plugin registration could change that effective set.",
+    "The reviewed direct Auth Core public-rule set is empty; tracked Main-local configured and dynamic registrations are inventoried separately, while runtime config-provider payloads or unreviewed plugins can still change the effective Main set.",
+    "Migration dispositions preserve valid-client behavior but intentionally correct malformed or ambiguous inputs; they are not a byte-for-byte HTTP parity claim and require cutover validation.",
     "UI source is pinned only for browser-login redirects, logout, popup callback, and request retry behavior."
   ],
   "provenance": {
@@ -1249,6 +1429,14 @@
       "selected_contract_matches_pinned_head": {},
       "source_ref": "HEAD",
       "source_root": "pylon_main/plugins/admin_ui"
+    },
+    "artifacts_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "9ad2139bdbb1df70f3fa5b4cf78ae953b3fa35b1",
+      "selected_contract_matches_pinned_head": {},
+      "source_ref": "HEAD",
+      "source_root": "pylon_main/plugins/artifacts"
     },
     "auth_core_repo": {
       "contract_source_dirty_paths": [],
@@ -1302,11 +1490,20 @@
         "pylon_auth/configs/auth_init.yml": true,
         "pylon_auth/pylon.yml": true,
         "pylon_main/configs/auth.yml": true,
+        "pylon_main/configs/elitea_core.yml": true,
         "pylon_main/configs/shared.yml": true,
         "pylon_main/pylon.yml": true
       },
       "source_ref": "HEAD",
       "source_root": "."
+    },
+    "elitea_core_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "2b713350aa73af770164ac023cc88b4cb83667e1",
+      "selected_contract_matches_pinned_head": {},
+      "source_ref": "HEAD",
+      "source_root": "pylon_main/plugins/elitea_core"
     },
     "main_auth_repo": {
       "contract_source_dirty_paths": [],
@@ -1323,6 +1520,14 @@
       "selected_contract_matches_pinned_head": {},
       "source_ref": "1.2.25",
       "source_root": "."
+    },
+    "runtime_interface_litellm_repo": {
+      "contract_source_dirty_paths": [],
+      "contract_sources_reconstructable_from_pinned_head": true,
+      "pinned_head": "cab9507cdcb12b1d04094c7f8443ed94c8c0834d",
+      "selected_contract_matches_pinned_head": {},
+      "source_ref": "HEAD",
+      "source_root": "pylon_main/plugins/runtime_interface_litellm"
     },
     "ui_repo": {
       "contract_source_dirty_paths": [],
@@ -1377,6 +1582,7 @@
       "Auth mapper info behavior",
       "Pylon server-side session/cookie mechanics",
       "tracked Centry forward-auth composition",
+      "tracked Main-local configured and dynamic public-rule registrations",
       "EliteaUI browser-auth consumers",
       "Admin UI logout consumer"
     ],
@@ -1447,7 +1653,31 @@
       "baseline": "ProxyFix trusts one forwarded hop and target URL uses forwarded proto/host verbatim",
       "id": "proxy.trust",
       "migration": "correct",
-      "requirement": "honor forwarded metadata only from configured trusted proxy CIDRs and construct redirects from canonical public origin plus validated path"
+      "requirement": "honor forwarded metadata only from configured trusted proxy CIDRs; normalize and validate client IP, proto, and host before policy evaluation; construct redirects from canonical public origin plus validated path; preserve valid trusted-proxy clients and validate the cutover"
+    },
+    {
+      "baseline": "an outer-allowed method absent from the inner route returns the configured access-denied redirect HTML and Location header with status overwritten to 400",
+      "id": "wire.unsupported_method",
+      "migration": "correct",
+      "requirement": "the Go plain-400 response is an intentional invalid-request wire correction, not byte-for-byte parity; preserve status 400 and all valid-client behavior, inventory any client relying on the redirect body or Location, and validate the cutover"
+    },
+    {
+      "baseline": "Python base64.b64decode uses its permissive default before UTF-8 decoding and splitting the first colon",
+      "id": "credential.basic_decoding",
+      "migration": "correct",
+      "requirement": "strict canonical Base64 and bounded UTF-8 credential parsing may reject malformed encodings the current decoder tolerates; preserve valid Basic clients and validate real client encodings before cutover"
+    },
+    {
+      "baseline": "Flask header and query get calls consume one value and do not explicitly reject duplicate security-sensitive forwarded headers, Authorization, target, or scope",
+      "id": "input.duplicates",
+      "migration": "correct",
+      "requirement": "reject ambiguous duplicate security-sensitive headers and query parameters while preserving single-valued valid clients; treat this as an intentional correction requiring migration tests rather than byte-for-byte parity"
+    },
+    {
+      "baseline": "current Main and Auth Core compile Python regular expressions and require fullmatch for each rule field",
+      "id": "public_rules.regex_engine",
+      "migration": "correct",
+      "requirement": "Go RE2 deliberately excludes Python backreferences and look-around; validate every configured and dynamic rule before activation, reject unsupported expressions explicitly, and prove the tracked valid rules retain the same matches"
     },
     {
       "baseline": "tracked Main CORS handling replaces every OPTIONS response after global authorization and emits wildcard origin with credentials; the equivalent Auth Core branch also drops its previously applied Server: Centry header",
@@ -1476,6 +1706,8 @@
   ],
   "source_files_sha256": {
     "admin_ui/frontend/src/components/Layout/Sidebar.jsx": "313cfe270e480e7eb5345d10f4c4542eb85bd9cf3c56f0551ffd53846b3e1c6a",
+    "admin_ui/module.py": "327d83ec53d9dc5e2e72cd1d643e6bc05a259e0b8d34a5865264a9d0cb775b0b",
+    "artifacts/methods/s3.py": "0f81b30d8a0118352fa3a872218f1a1b4d6e8395f6d400687f2cdf4530b31f7a",
     "auth_core/config.yml": "2775b6b05d0d00eeb3d63a3b2a833deb5c755622a55a4674364eeff86e28bfd1",
     "auth_core/methods/auth_context.py": "2de980256c76022162651a7e2592117fc7796e8a4861d9baebbae95dfd8149be",
     "auth_core/methods/auth_processors.py": "0cb3b872f658cb1772e99643cabcf3f02668a1d86fd5ec735531b67c5861a03c",
@@ -1517,6 +1749,8 @@
     "auth_mappers/rpc/header.py": "c3e6c74539cb377734f086e5bc108a9683e3fd74c680ec81b80eb7b8b9feb375",
     "auth_mappers/rpc/json.py": "4b481f640dc024aeda141693ed2f232b180cf538e68660938d28eb077a55bcfd",
     "auth_mappers/rpc/noop.py": "a2655380c324757c64f141032a4e7a3f9dce167e381d5677eaa37aa26283a9d9",
+    "elitea_core/config.yml": "16e5d2b85bb2be219830237814aa2b8d5f07f88318b9123c26ed8f62f86a43a8",
+    "elitea_core/module.py": "e1e8567abcd2260c1533935bf930b0e2203fd56bb77e4c2ef2845180280a3ac1",
     "main_auth/module.py": "43893335919d184c2ea1ba3f84957a6fbebb1b5028dd0e979eff1b542fa2da46",
     "pylon/pylon/core/tools/app.py": "1bad7b3acb0c1fe6dfcc99ae37e1eddce62ea4501f895fe217bbc808a16a9331",
     "pylon/pylon/core/tools/app_shim.py": "93a26bce30a41467ad37afe086bd17b2b708b1d9fb3e2acb71c65dc9a4cc3939",
@@ -1532,6 +1766,8 @@
     "pylon/pylon/main.py": "31ef0a9194bb164b29ecbdce64e51c7f80bf1f569965d7a0a33d530f0c3c8a0a",
     "pylon/requirements.txt": "ff4b4c6808af6937372cc74d316266f6c043e88510c6c089d29eef499a705cde",
     "pylon/version.txt": "24282a40c1a6de0f90841072cc3fa92a1cfec3872672596f6d41ade44979b907",
+    "runtime_interface_litellm/config.yml": "a467cc7c3ecfe148a315e6dc8eaa77b22ac740d128ce74c1d7d80d386b17c1be",
+    "runtime_interface_litellm/methods/init.py": "6ad8bab0c3994e582eadb30b9745f0dc34e7e319262ee5801896bffd33ccea1c",
     "ui/README.md": "a7244163fee96e0182e4ece836b3bcddaccf025260afcde6c51ac8b43e689a99",
     "ui/src/[fsd]/app/routes/router.jsx": "3c5f30510375baf050ec7e7569b31c4a96bb078b7498950841ac81e41b874ede",
     "ui/src/[fsd]/features/auth/lib/constants/auth.constants.js": "a5b9126795247ed7f2d764f477c4962848ca53d28b7e4af23a3b920cad93a284",
@@ -1547,6 +1783,8 @@
   "source_inventory": {
     "full_byte_sources": [
       "admin_ui/frontend/src/components/Layout/Sidebar.jsx",
+      "admin_ui/module.py",
+      "artifacts/methods/s3.py",
       "auth_core/config.yml",
       "auth_core/methods/auth_context.py",
       "auth_core/methods/auth_processors.py",
@@ -1588,6 +1826,8 @@
       "auth_mappers/rpc/header.py",
       "auth_mappers/rpc/json.py",
       "auth_mappers/rpc/noop.py",
+      "elitea_core/config.yml",
+      "elitea_core/module.py",
       "main_auth/module.py",
       "pylon/pylon/core/tools/app.py",
       "pylon/pylon/core/tools/app_shim.py",
@@ -1603,6 +1843,8 @@
       "pylon/pylon/main.py",
       "pylon/requirements.txt",
       "pylon/version.txt",
+      "runtime_interface_litellm/config.yml",
+      "runtime_interface_litellm/methods/init.py",
       "ui/README.md",
       "ui/src/[fsd]/app/routes/router.jsx",
       "ui/src/[fsd]/features/auth/lib/constants/auth.constants.js",
@@ -1623,8 +1865,11 @@
       "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist": "834b853be71d34f2837c313da45ae7bea08d900ab9200a7a9f5d35a3189abed6",
       "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist": "9c887800bcdbae56991be130d12935a4c2daf04c1a930023b30823050cb54760",
       "centry/pylon_main/configs/auth.yml#auth_gate_allowlist": "a636a9ea6898a2c21f0eb385847527347857d23743773b2f986f68b2c9bcb445",
+      "centry/pylon_main/configs/elitea_core.yml#public_route_override_allowlist": "65741b218a43b164e65e21859ef3ae9daf43e7f2f649e9fe3ce24cea94aa505d",
       "centry/pylon_main/configs/shared.yml#cors_allowlist": "56cd8bea278fca6dfa0a932edf2d2cf5bcb987961a9d64a8e2ae9cbf23cb988c",
-      "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist": "29d83c0d5311098ac5464debae44656da63c787ffd9b200a56ac9809be4d5e64"
+      "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist": "29d83c0d5311098ac5464debae44656da63c787ffd9b200a56ac9809be4d5e64",
+      "elitea_core/config.yml#public_route_allowlist": "3ce8e6f14ec74e951a00d5aa688b4ecc2ef35ae1415f51f12c7b9e01b0f41f82",
+      "runtime_interface_litellm/config.yml#public_route_allowlist": "e3cf1fed9457dda56ab9a7231051e4702fcaec1bb22ab42a48f6d40b5f480f4d"
     },
     "selected_config_sources": [
       "centry/docker-compose.yml#auth_runtime_allowlist",
@@ -1634,8 +1879,11 @@
       "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist",
       "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist",
       "centry/pylon_main/configs/auth.yml#auth_gate_allowlist",
+      "centry/pylon_main/configs/elitea_core.yml#public_route_override_allowlist",
       "centry/pylon_main/configs/shared.yml#cors_allowlist",
-      "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist"
+      "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist",
+      "elitea_core/config.yml#public_route_allowlist",
+      "runtime_interface_litellm/config.yml#public_route_allowlist"
     ]
   },
   "ui_contract": {

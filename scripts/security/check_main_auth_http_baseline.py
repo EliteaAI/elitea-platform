@@ -45,6 +45,129 @@ PERMISSION_ROUTES = [
     "/api/v2/auth/permissions/<string:mode>/<int:project_id>",
     "/api/v2/auth/permissions/<string:mode>/<int:project_id>/",
 ]
+EXPECTED_PUBLIC_RULE_INVENTORY = {
+    "auth_core_direct_plane": {
+        "initial_rules": [],
+        "main_rules_forwarded_via_rpc": False,
+        "ownership": (
+            "Auth Core initializes its own independent public_rules list empty; tracked "
+            "Main auth_mode=rpc keeps configured and plugin registrations in Main"
+        ),
+    },
+    "context_url_prefix": {
+        "normalized": "",
+        "selected_value_matches_pinned_head": True,
+        "source_chain": [
+            "centry/pylon_main/pylon.yml#server.path is /",
+            "pylon server init strips trailing slash to empty context.url_prefix",
+        ],
+    },
+    "main_local_plane": {
+        "configured_rules_ordered": [
+            {"uri": r"/forward\-auth/.*"},
+            {"uri": "/applications/application_icon.*"},
+            {"uri": "/datasources/datasource_icon.*"},
+            {"uri": "/prompt_lib/prompt_icon.*"},
+        ],
+        "deployment_selection": {
+            "bootstrap_selector": "centry/pylon_main/configs/bootstrap.yml#preordered_plugins",
+            "required_dynamic_plugins_enabled": [
+                "admin_ui",
+                "artifacts",
+                "elitea_core",
+                "runtime_interface_litellm",
+            ],
+            "semantics": (
+                "membership evidence only; bootstrap sequence order is not treated as "
+                "a global runtime initialization order"
+            ),
+        },
+        "dynamic_registration_sites": {
+            "admin_ui.Module.init": {
+                "conditional": False,
+                "owner": "admin_ui",
+                "rules_in_source_order": [
+                    {
+                        "uri": "/admin/app/"
+                        r".*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$"
+                    }
+                ],
+                "source": "admin_ui/module.py",
+            },
+            "artifacts.Method.s3_api_init": {
+                "conditional": False,
+                "owner": "artifacts",
+                "rules_in_source_order": [{"uri": "/artifacts/s3/.*"}],
+                "source": "artifacts/methods/s3.py",
+            },
+            "elitea_core.Module.elitea_ui_init": {
+                "conditional": False,
+                "owner": "elitea_core",
+                "rules_in_source_order": [
+                    {"uri": r"/socket\.io/.*"},
+                    {"uri": r"/robots\.txt"},
+                    {"uri": r"/favicon\.ico"},
+                    {"uri": "/app/access_denied"},
+                ],
+                "source": "elitea_core/module.py",
+            },
+            "elitea_core.Module.init": {
+                "conditional": False,
+                "owner": "elitea_core",
+                "rules_in_source_order": [
+                    {
+                        "uri": "/api/v2/elitea_core/webhook/prompt_lib/"
+                        "[0-9]+/[0-9]+/(github|gitlab|custom)"
+                    }
+                ],
+                "source": "elitea_core/module.py",
+            },
+            "elitea_core.Module.mcp_sse_init": {
+                "condition": "descriptor.config.public_messages_route",
+                "conditional": True,
+                "enabled_by_tracked_configuration": True,
+                "owner": "elitea_core",
+                "rules_in_source_order": [
+                    {"uri": r"/elitea_core/[0-9]+/messages\?session_id=.+"}
+                ],
+                "source": "elitea_core/module.py",
+            },
+            "runtime_interface_litellm.Method.init": {
+                "conditional": False,
+                "owner": "runtime_interface_litellm",
+                "rules_in_source_order": [{"uri": "/llm/.*"}],
+                "source": "runtime_interface_litellm/methods/init.py",
+            },
+        },
+        "dynamic_source_inventory": [
+            "admin_ui/module.py",
+            "artifacts/methods/s3.py",
+            "elitea_core/module.py",
+            "runtime_interface_litellm/methods/init.py",
+        ],
+        "matching": "each compiled field regex uses fullmatch; every rule is evaluated into one public boolean",
+        "ordering": {
+            "configured": "the four configured rules are appended in YAML list order during Auth Module.init",
+            "cross_plugin": (
+                "not inferred from this evidence; no global plugin initialization order is claimed, "
+                "and matching does not short-circuit on first rule"
+            ),
+            "per_site": "rules_in_source_order is exact within each named registration method",
+        },
+        "ownership": (
+            "Main Module.add_public_rule compiles, de-duplicates, and appends locally "
+            "when auth_mode=rpc"
+        ),
+    },
+    "messages_rule_configuration": {
+        "base_plugin_value": True,
+        "effective_tracked_value": True,
+        "runtime_provider_limit": (
+            "an external runtime config-provider payload can override the tracked merge and is not executed here"
+        ),
+        "tracked_runtime_override": None,
+    },
+}
 
 
 def _expected_canonicalization_matrix() -> dict[str, dict[str, Any]]:
@@ -153,6 +276,8 @@ EXPECTED_RESOURCE_METHODS = {
     },
 }
 EXPECTED_SOURCE_HASHES = {
+    "admin_ui/module.py": "327d83ec53d9dc5e2e72cd1d643e6bc05a259e0b8d34a5865264a9d0cb775b0b",
+    "artifacts/methods/s3.py": "0f81b30d8a0118352fa3a872218f1a1b4d6e8395f6d400687f2cdf4530b31f7a",
     "auth/api/v2/permissions.py": "77c99e5a47c0afb481a85217d5bd6f839b744c58eb536236e3cbb6d913c5771a",
     "auth/api/v2/token.py": "a906641b19a1ee249f84149515aba6290bac5ff46e80866bdfed9f24c7e41536",
     "auth/api/v2/user.py": "8663790b7f2dfea38c38a087ad23784c037cf52d01d649f5fa8ee9d03ff7a90f",
@@ -163,46 +288,69 @@ EXPECTED_SOURCE_HASHES = {
     "auth_core/db/db_tools.py": "17ebb8e74decb981c85f9d3b872e510ed941edb958a58fbebc1cb725da18f352",
     "auth_core/db/migrations/202202021633_core.py": "0bf300d959432a51ede0de4d4040fa3c8e5989c6f4148944a17462a2562769e3",
     "auth_core/methods/auth_context.py": "2de980256c76022162651a7e2592117fc7796e8a4861d9baebbae95dfd8149be",
+    "auth_core/methods/public_rules.py": "781b1d8048fcbb1aaddf1ace6ad4b9203bcad5a5ab20cfc8e4ed116d935de492",
     "auth_core/module.py": "86f7f99cce01b4a4bb92c7e3a1640ea1781ab2448a19fce66e6f4de48a8d4b39",
     "auth_core/requirements.txt": "c67a55a6cbac7a7fde460b6ef9e25cd0483400a12b7f0b6a8d0d658a93a4849b",
     "auth_core/rpc/auth_context.py": "89a0b234c1d383c86d8b565d11607b2254920838c5b73d9a4bc6b83bdcd93cec",
+    "auth_core/rpc/public_rules.py": "ee0808980f998e79d869eff27137c4905432eaef360e6e86dc3660271ec0ec53",
     "auth_core/rpc/tokens.py": "0bdb68a1631f1b150a87441ca2fdcf85e3b9a0696ebe701b552043a0661fb7b0",
     "auth_core/rpc/users.py": "3df51e92b88d51d02a389b6460d38fe5837798f475311090988f9204565a186e",
     "auth_core/tools/rpc_tools.py": "ceb58dd5b91740f7e80e71ecce0561faeeda6a4fc78f03e2fc11ddbbe23c2023",
     "centry/pylon_auth/configs/auth_core.yml": "3ad4d4a119538b66c0e7e6308945ed08c33d43d7046127ad64fb39a547062f6c",
     "centry/pylon_main/configs/auth.yml": "fb7c35f0d19eae7b5da5d8444a9a3524934572706eb701855c804eb3e52a7fc5",
+    "centry/pylon_main/configs/bootstrap.yml": "1c37850d1db86e1e4193aece45cc76ea8e06f2d6b7060d4a968658a32dc04c45",
+    "centry/pylon_main/configs/elitea_core.yml": "ec17b3dfee83fd0ffdc0117d7e77898fee2b981005822519648c2d1f8d7eac41",
+    "elitea_core/config.yml": "16e5d2b85bb2be219830237814aa2b8d5f07f88318b9123c26ed8f62f86a43a8",
+    "elitea_core/module.py": "e1e8567abcd2260c1533935bf930b0e2203fd56bb77e4c2ef2845180280a3ac1",
     "projects/rpc/poc.py": "84b238686d4099d6462ea8f28b1e1e807e5de71b8502f92a9caedf4d28d43336",
     "pylon/pylon/core/tools/dict.py": "4f3f332c898b9edfcee4eb79a31c88c5d5363730b72060865616be9bf1ac6815",
     "pylon/pylon/core/tools/module/descriptor.py": "021fb237ff254cb54ca91aa40dc4080b1a573468030066329f862f525f0d8a22",
+    "pylon/pylon/core/tools/server/init.py": "b5fcb336a8666270f9a96192042445861297e37f39a08f55300d8b4d6fc7e738",
     "pylon/requirements.txt": "17b66334289a5f6329491fb512fcce35587349734b7885dcab8c592fdbe4ed57",
+    "runtime_interface_litellm/config.yml": "a467cc7c3ecfe148a315e6dc8eaa77b22ac740d128ce74c1d7d80d386b17c1be",
+    "runtime_interface_litellm/methods/init.py": "6ad8bab0c3994e582eadb30b9745f0dc34e7e319262ee5801896bffd33ccea1c",
     "shared/module.py": "a18c99d92e5c2f9fca41fd49c817b31eae48e357ad928d3973f9cbf4014f3e61",
     "shared/tools/api_tools.py": "cc85b81aa0d2d022f382b616ac453ea5dd6cdc8bee09b43ec031c1b325127cdf",
     "shared/tools/config.py": "7eba3bab4443f7ddaaf027d4e3bcee327d59a5a1763bdbaa8fa43e70d669ad7b",
 }
 EXPECTED_FINGERPRINT_KEYS = {
+    "admin_ui/module.py#Module.init",
     "api/v2/permissions.py#API.get",
     "api/v2/token.py#API.delete",
     "api/v2/token.py#API.get",
     "api/v2/token.py#API.post",
     "api/v2/user.py#API.get",
+    "artifacts/methods/s3.py#Method.s3_api_deinit",
+    "artifacts/methods/s3.py#Method.s3_api_init",
     "auth_core/db/db_tools.py#sqlalchemy_mapping_to_dict",
     "auth_core/methods/auth_context.py#Method.get_auth_context",
+    "auth_core/methods/public_rules.py#Method.public_rules_init",
     "auth_core/module.py#Module.__init__",
     "auth_core/module.py#Module.init",
     "auth_core/rpc/auth_context.py#RPC.get_referenced_auth_context",
+    "auth_core/rpc/public_rules.py#RPC.add_public_rule",
     "auth_core/rpc/tokens.py#RPC.add_token",
     "auth_core/rpc/tokens.py#RPC.encode_token",
     "auth_core/rpc/users.py#RPC.get_user",
     "auth_core/tools/rpc_tools.py#wrap_exceptions",
+    "elitea_core/module.py#Module.elitea_ui_init",
+    "elitea_core/module.py#Module.init",
+    "elitea_core/module.py#Module.mcp_sse_deinit",
+    "elitea_core/module.py#Module.mcp_sse_init",
+    "module.py#Module.__init__",
     "module.py#Module._after_request_hook",
     "module.py#Module._before_request_hook",
     "module.py#Module.access_denied_reply",
+    "module.py#Module.add_public_rule",
+    "module.py#Module.init",
     "module.py#Module.resolve_permissions",
     "pylon/core/tools/dict.py#recursive_merge",
     "pylon/core/tools/module/descriptor.py#ModuleDescriptor.init_api",
     "pylon/core/tools/module/descriptor.py#ModuleDescriptor.load_config",
+    "pylon/core/tools/server/init.py#init_context",
     "projects/rpc/poc.py#RPC.get_personal_project_id",
     "rpc/user.py#RPC.current_user",
+    "runtime_interface_litellm/methods/init.py#Method.init",
     "shared/tools/api_tools.py#APIBase.delete",
     "shared/tools/api_tools.py#APIBase.get",
     "shared/tools/api_tools.py#APIBase.patch",
@@ -211,31 +359,36 @@ EXPECTED_FINGERPRINT_KEYS = {
     "shared/tools/api_tools.py#APIBase.put",
 }
 EXPECTED_PROVENANCE = {
+    "admin_ui_repo": ("33334cb59cca6bc97dc0869ab335123ff12287c9", "pylon_main/plugins/admin_ui"),
+    "artifacts_repo": ("9ad2139bdbb1df70f3fa5b4cf78ae953b3fa35b1", "pylon_main/plugins/artifacts"),
     "auth_core_repo": ("fcc4c7a35fe095fb8d67e72451e3a4f9b497f871", "pylon_auth/plugins/auth_core"),
     "auth_repo": ("ff02d66a8858604e6947bb3a52bda8543dbe0e76", "pylon_main/plugins/auth"),
+    "elitea_core_repo": ("2b713350aa73af770164ac023cc88b4cb83667e1", "pylon_main/plugins/elitea_core"),
     "projects_repo": ("efe31605717e84f4857a0af0a2f7732b9377cb67", "pylon_main/plugins/projects"),
     "route_framework_repo": ("6cc508803adffcb0f38573eda7a1ad45e2d4ca39", "pylon"),
     "runtime_config_repo": ("6b3e59f7f41e41c9d5f1dcf7ca6e870d7391986c", "centry"),
+    "runtime_interface_litellm_repo": ("cab9507cdcb12b1d04094c7f8443ed94c8c0834d", "pylon_main/plugins/runtime_interface_litellm"),
     "shared_api_repo": ("81583f7dd2cede7631b002f32d5e86cb2c025516", "pylon_main/plugins/shared"),
 }
 EXPECTED_SECTION_SHA256 = {
     "authoritative_user_resolution": "5aee72f1a79a663527aae1f2227f14ec5c87b4100ee9142836f563e69b63fecc",
     "auth_core_persistence": "4053216d2ca04b3999f34d4fa41aafe9f461f3c9d1b617c960dfabc1be7d504d",
     "behavior_contracts": "cc8f28b05366e47d6b6a1cd49b160cb7a0492bc65a1810d62f28b174194ac775",
-    "behavior_fingerprints": "448548eee245da2680f056ba8136df2053f70869b25014cf4fc30c76700e920e",
+    "behavior_fingerprints": "b9fc5b0723c5b2d983371d2d931af932fb1c074d238deac5c85609adbb401bc5",
     "canonicalization_matrix": "6133ec72d0a8614638c006c14b1ac51a71d0c8512964c3692464efc75d29dfb9",
     "composition_evidence": "90c411068bf0f6e086cf717775374bf4a4db752cf30dc33ef6aab65eb42ebd0c",
     "framework_http_semantics": "eb753526209bcc06d80dace9c69eea83b0d3ab19cb624c85c65b2e63c0214586",
     "global_auth_rpc_gate": "183fcf4a823dca7ebebe4ad7431b928b2fe90ea9225cf29e9b06d817f30f9bac",
-    "inference_limits": "c518ca5ac0488ef167f38852e6219a4ff245ce9a4e680abd4526c4c5c0c96e15",
+    "inference_limits": "bd800120673c1d77f507de77a581f9ee9fedd5d24670852153757ed32ae019fd",
     "method_route_matrix": "720f08a227dafcd55baadb3f0b834dab703aa3d58e74958ff0a89405a8269357",
     "principal_resolution": "8042974cc4196c017d835b6d71a16d74332b6a7a4555278ed5a2ac9bf54096b5",
-    "provenance": "f69a13ccb0c7387e1dc5836c84ba5d64124a15b777216bed183fdc00e9ddd864",
+    "provenance": "1223b9a7846a73f95e3063d574a0456437a65ec8058a6364f04bd73f817300c0",
+    "public_rule_inventory": "77e3df18f6b67a5d1e404c1b2bc6d2f2fbceff85cef1d52c41ea6071c6a90ac9",
     "resources": "218f737477e46c7e85c0540b49443d0795d586a90db0058d7118546e6fc457ef",
     "rpc_exception_translation": "c981d1d037da396103ac8bf66247d3368ab4c70adf483d4227b599bf90d914e8",
     "scope": "6ca21539b50e1fc291b56c1fadac7500ca856061dd7b54b59a82843c634b709c",
-    "source_reconstruction": "188c632fc942b93d1262d3148525ca77a2c341187cd2725228d8bfffb50ab238",
-    "source_files_sha256": "ffc6021890edb5b320e5dda586588e3c12abedd8c3b255a0de9a87b31ea0b10d",
+    "source_reconstruction": "493cc8429419d931a4da096775c4366157ebc68a201824e22567f531d8483f27",
+    "source_files_sha256": "a974e58bf6055b08f5fe1a8e42ed05c345a7afd90ab799d3396830a153d279f3",
     "token_encoding": "1a0bff009543deadedd84a8b34c8e985ef3d3dc16ed93d50434e30e80a9716d9",
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -260,8 +413,8 @@ def _statuses(contract: dict[str, Any]) -> list[Any]:
 
 def check_catalog(catalog: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    if catalog.get("schema_version") != 3:
-        failures.append("schema_version must be 3")
+    if catalog.get("schema_version") != 4:
+        failures.append("schema_version must be 4")
 
     forbidden_term = "leg" + "acy"
     if forbidden_term in json.dumps(catalog, sort_keys=True).lower():
@@ -344,6 +497,10 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         reconstruction.get("runtime_allow_cors_selector", "")
     ):
         failures.append("ALLOW_CORS provenance statement changed")
+    if "unrelated runtime-file dirtiness is intentionally non-gating" not in str(
+        reconstruction.get("runtime_context_prefix_selector", "")
+    ):
+        failures.append("context URL-prefix provenance statement changed")
 
     composition = catalog.get("composition_evidence", {})
     if composition.get("auth_init_after") != ["shared", "auth_core"]:
@@ -364,6 +521,13 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         failures.append("Auth RPC timeout changed")
     if gate.get("reviewed_routes_match_public_rule") is not False:
         failures.append("reviewed routes must not be marked public")
+    if gate.get("public_rules") != [
+        rule["uri"]
+        for rule in EXPECTED_PUBLIC_RULE_INVENTORY["main_local_plane"][
+            "configured_rules_ordered"
+        ]
+    ]:
+        failures.append("ordered configured Main public rules changed")
     expected_denied = {
         "make_response": {"body": "auth_status.data", "session": "destroyed", "status": "auth_status.status_code"},
         "other": {"body": "Access Denied", "session": "kept", "status": 403},
@@ -377,6 +541,16 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         failures.append("Auth dependency fallback principal changed")
     if "request processing continues" not in str(dependency.get("effect", "")):
         failures.append("Auth dependency-exception continuation is missing")
+
+    public_rules = catalog.get("public_rule_inventory")
+    if public_rules != EXPECTED_PUBLIC_RULE_INVENTORY:
+        failures.append("Main/Auth Core public-rule inventory changed")
+    else:
+        ordering = public_rules["main_local_plane"]["ordering"]
+        if "not inferred" not in ordering["cross_plugin"]:
+            failures.append("public-rule inventory claims a false global order")
+        if public_rules["auth_core_direct_plane"]["initial_rules"] != []:
+            failures.append("Auth Core direct public-rule set is not empty")
 
     collection_get = _contract(catalog, "pat.collection.get")
     if _statuses(collection_get) != [200, 200, 500] or "every token" not in str(collection_get):
@@ -556,10 +730,12 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         failures.append("authoritative user missing-row behavior changed")
 
     limits = catalog.get("inference_limits")
-    if not isinstance(limits, list) or len(limits) != 5:
+    if not isinstance(limits, list) or len(limits) != 6:
         failures.append("bounded inference limits changed")
     elif not any("Social current-author endpoint" in item for item in limits):
         failures.append("Social endpoint exclusion is missing")
+    elif not any("cross-plugin initialization order" in item for item in limits):
+        failures.append("public-rule global-order inference limit is missing")
     return failures
 
 

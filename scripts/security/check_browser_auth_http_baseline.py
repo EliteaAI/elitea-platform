@@ -13,11 +13,11 @@ from typing import Any
 
 
 EXPECTED_SCHEMA_VERSION = 1
-EXPECTED_CATALOG_SHA256 = "02c7e3d7bf55819cf212fe3f1dacb549da17a9a25a1a128d581ac6e1d8eb7249"
-EXPECTED_SOURCE_COUNT = 68
-EXPECTED_SOURCE_KEYSET_SHA256 = "a491ec0ba604cd075f622833683d0837a10132a43dc039bc2c89eedfb687a4a3"
-EXPECTED_FINGERPRINT_COUNT = 103
-EXPECTED_FINGERPRINT_KEYSET_SHA256 = "7179f4745e9c85580b06d26bf197ed0f4a77d5177bc4ed86154d865142441fee"
+EXPECTED_CATALOG_SHA256 = "f929e8184ee15a748bd3f216f1777b2bfc0ddf6e3aff173c143e4427cecba363"
+EXPECTED_SOURCE_COUNT = 74
+EXPECTED_SOURCE_KEYSET_SHA256 = "de7ed3a85c17c859247e4d0e863ffe4ff1320ad0e595e08eeb5ff172b10be326"
+EXPECTED_FINGERPRINT_COUNT = 112
+EXPECTED_FINGERPRINT_KEYSET_SHA256 = "305c7c96ea3d8ac284cec7bfddb8be3b6d9966bc95be7021b08c0cea58f03b56"
 EXPECTED_TOP_LEVEL_KEYS = {
     "behavior_contracts",
     "behavior_fingerprints",
@@ -57,7 +57,9 @@ EXPECTED_SECURITY_IDS = {
     "form.csrf",
     "identity.provider_namespace",
     "info.disclosure",
+    "input.duplicates",
     "proxy.trust",
+    "public_rules.regex_engine",
     "rpc.boundary",
     "session.cookie",
     "session.fixation",
@@ -65,6 +67,8 @@ EXPECTED_SECURITY_IDS = {
     "session.processor_failure",
     "session.serialization",
     "target.redirect",
+    "credential.basic_decoding",
+    "wire.unsupported_method",
 }
 EXPECTED_SECURITY_MIGRATIONS = {
     identifier: (
@@ -118,6 +122,7 @@ EXPECTED_PROVENANCE = {
             "pylon_auth/configs/auth_init.yml",
             "pylon_auth/pylon.yml",
             "pylon_main/configs/auth.yml",
+            "pylon_main/configs/elitea_core.yml",
             "pylon_main/configs/shared.yml",
             "pylon_main/pylon.yml",
         },
@@ -125,6 +130,21 @@ EXPECTED_PROVENANCE = {
     "main_auth_repo": (
         "ff02d66a8858604e6947bb3a52bda8543dbe0e76",
         "pylon_main/plugins/auth",
+        set(),
+    ),
+    "runtime_interface_litellm_repo": (
+        "cab9507cdcb12b1d04094c7f8443ed94c8c0834d",
+        "pylon_main/plugins/runtime_interface_litellm",
+        set(),
+    ),
+    "artifacts_repo": (
+        "9ad2139bdbb1df70f3fa5b4cf78ae953b3fa35b1",
+        "pylon_main/plugins/artifacts",
+        set(),
+    ),
+    "elitea_core_repo": (
+        "2b713350aa73af770164ac023cc88b4cb83667e1",
+        "pylon_main/plugins/elitea_core",
         set(),
     ),
     "pylon_repo": ("cc12c3ec92f5b15d52ad62f557aed2012bca3aec", ".", set()),
@@ -232,8 +252,126 @@ EXPECTED_SELECTED_CONFIG_SOURCES = [
     "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist",
     "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist",
     "centry/pylon_main/configs/auth.yml#auth_gate_allowlist",
+    "centry/pylon_main/configs/elitea_core.yml#public_route_override_allowlist",
     "centry/pylon_main/configs/shared.yml#cors_allowlist",
     "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist",
+    "elitea_core/config.yml#public_route_allowlist",
+    "runtime_interface_litellm/config.yml#public_route_allowlist",
+]
+
+EXPECTED_CONFIGURED_PUBLIC_RULES = [
+    {
+        "id": "config.forward_auth",
+        "ordinal": 0,
+        "rule": {"uri": "/forward\\-auth/.*"},
+        "source": "centry/pylon_main/configs/auth.yml#public_rules[0]",
+    },
+    {
+        "id": "config.application_icon",
+        "ordinal": 1,
+        "rule": {"uri": "/applications/application_icon.*"},
+        "source": "centry/pylon_main/configs/auth.yml#public_rules[1]",
+    },
+    {
+        "id": "config.datasource_icon",
+        "ordinal": 2,
+        "rule": {"uri": "/datasources/datasource_icon.*"},
+        "source": "centry/pylon_main/configs/auth.yml#public_rules[2]",
+    },
+    {
+        "id": "config.prompt_icon",
+        "ordinal": 3,
+        "rule": {"uri": "/prompt_lib/prompt_icon.*"},
+        "source": "centry/pylon_main/configs/auth.yml#public_rules[3]",
+    },
+]
+
+EXPECTED_DYNAMIC_PUBLIC_RULES = [
+    {
+        "add_source": "runtime_interface_litellm/methods/init.py#Method.init",
+        "condition": "plugin initialized with tracked url_prefix=/llm",
+        "effective_in_tracked_base_config": True,
+        "id": "runtime_interface_litellm.proxy",
+        "plugin_local_order": 1,
+        "remove_source": "runtime_interface_litellm/methods/init.py#Method.deinit",
+        "rule": {"uri": "/llm/.*"},
+    },
+    {
+        "add_source": "admin_ui/module.py#Module.init",
+        "condition": "plugin initialized",
+        "effective_in_tracked_base_config": True,
+        "id": "admin_ui.static_assets",
+        "plugin_local_order": 1,
+        "remove_source": None,
+        "rule": {
+            "uri": "/admin/app/.*\\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$"
+        },
+    },
+    {
+        "add_source": "artifacts/methods/s3.py#Method.s3_api_init",
+        "condition": "S3 API init hook runs",
+        "effective_in_tracked_base_config": True,
+        "id": "artifacts.s3_sigv4",
+        "plugin_local_order": 1,
+        "remove_source": "artifacts/methods/s3.py#Method.s3_api_deinit",
+        "rule": {"uri": "/artifacts/s3/.*"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+        "condition": "elitea_core UI init runs",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.socket_io",
+        "plugin_local_order": 1,
+        "remove_source": None,
+        "rule": {"uri": "/socket\\.io/.*"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+        "condition": "elitea_core UI init runs",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.robots",
+        "plugin_local_order": 2,
+        "remove_source": None,
+        "rule": {"uri": "/robots\\.txt"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+        "condition": "elitea_core UI init runs",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.favicon",
+        "plugin_local_order": 3,
+        "remove_source": None,
+        "rule": {"uri": "/favicon\\.ico"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.elitea_ui_init",
+        "condition": "elitea_core UI init runs",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.access_denied",
+        "plugin_local_order": 4,
+        "remove_source": None,
+        "rule": {"uri": "/app/access_denied"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.mcp_sse_init",
+        "condition": "tracked base config public_messages_route=true",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.public_messages",
+        "plugin_local_order": 5,
+        "remove_source": "elitea_core/module.py#Module.mcp_sse_deinit",
+        "rule": {"uri": "/elitea_core/[0-9]+/messages\\?session_id=.+"},
+    },
+    {
+        "add_source": "elitea_core/module.py#Module.init",
+        "condition": "elitea_core main init reaches webhook registration",
+        "effective_in_tracked_base_config": True,
+        "id": "elitea_core.webhook",
+        "plugin_local_order": 6,
+        "remove_source": None,
+        "rule": {
+            "uri": "/api/v2/elitea_core/webhook/prompt_lib/[0-9]+/[0-9]+/(github|gitlab|custom)"
+        },
+    },
 ]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -307,6 +445,7 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "Auth mapper info behavior",
         "Pylon server-side session/cookie mechanics",
         "tracked Centry forward-auth composition",
+        "tracked Main-local configured and dynamic public-rule registrations",
         "EliteaUI browser-auth consumers",
         "Admin UI logout consumer",
     ]:
@@ -317,7 +456,8 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "Pylon and browser behavior is derived from pinned source and configuration, not from a live Flask/Traefik execution.",
         "The Centry image tag is bound to the same local Pylon Git tag, but the deployed container image digest was not pulled or live-verified.",
         "The pylon.yml files are represented only by the named auth/session/exposure selectors; unrelated server settings are outside this contract.",
-        "The reviewed Auth Core public-rule set is empty in the examined sources; a runtime config-provider or unreviewed plugin registration could change that effective set.",
+        "The reviewed direct Auth Core public-rule set is empty; tracked Main-local configured and dynamic registrations are inventoried separately, while runtime config-provider payloads or unreviewed plugins can still change the effective Main set.",
+        "Migration dispositions preserve valid-client behavior but intentionally correct malformed or ambiguous inputs; they are not a byte-for-byte HTTP parity claim and require cutover validation.",
         "UI source is pinned only for browser-login redirects, logout, popup callback, and request retry behavior.",
     ]:
         failures.append("browser-auth evidence inference limits changed")
@@ -470,6 +610,30 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         dispositions.get("dependency.failure", {}).get("baseline", "")
     ):
         failures.append("dependency fail-open defect is no longer explicit")
+    unsupported_wire = dispositions.get("wire.unsupported_method", {})
+    if "Location header" not in str(unsupported_wire.get("baseline", "")) or (
+        "not byte-for-byte parity" not in str(unsupported_wire.get("requirement", ""))
+        or "valid-client behavior" not in str(unsupported_wire.get("requirement", ""))
+    ):
+        failures.append("unsupported-method wire correction disposition changed")
+    if "permissive default" not in str(
+        dispositions.get("credential.basic_decoding", {}).get("baseline", "")
+    ) or "valid Basic clients" not in str(
+        dispositions.get("credential.basic_decoding", {}).get("requirement", "")
+    ):
+        failures.append("strict Basic-decoding disposition changed")
+    if "duplicate security-sensitive" not in str(
+        dispositions.get("input.duplicates", {}).get("requirement", "")
+    ):
+        failures.append("duplicate input disposition changed")
+    proxy_requirement = str(dispositions.get("proxy.trust", {}).get("requirement", ""))
+    if not all(value in proxy_requirement for value in ("client IP", "proto", "host")):
+        failures.append("trusted-proxy normalization disposition changed")
+    regex_requirement = str(
+        dispositions.get("public_rules.regex_engine", {}).get("requirement", "")
+    )
+    if "RE2" not in regex_requirement or "tracked valid rules" not in regex_requirement:
+        failures.append("public-rule regex-engine disposition changed")
 
     routes = catalog.get("effective_routes")
     if not isinstance(routes, dict):
@@ -697,12 +861,30 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         ],
     }:
         failures.append("tracked pylon_main auth mode changed")
-    if deployment.get("public_rule_ownership") != {
-        "auth_core_initial_rules": [],
-        "main_rpc_mode_forwards_rules_to_auth_core": False,
-        "main_rules_are_local": True,
-        "reviewed_auth_process_registrations": [],
-    }:
+    expected_public_rule_ownership = {
+        "auth_core_direct": {
+            "initial_rules": [],
+            "reviewed_dynamic_registration_sites": [],
+        },
+        "main_local": {
+            "configured_registration_order": EXPECTED_CONFIGURED_PUBLIC_RULES,
+            "dynamic_registration_sites": EXPECTED_DYNAMIC_PUBLIC_RULES,
+            "main_rpc_mode_forwards_rules_to_auth_core": False,
+            "ordering": {
+                "configured": "Auth Module.init appends the YAML rules in the listed order",
+                "dynamic": (
+                    "each site appends during its plugin lifecycle; cross-plugin scheduler "
+                    "order is not inferred, while plugin_local_order pins order within a plugin"
+                ),
+                "evaluation": (
+                    "Main evaluates every rule in its local insertion-ordered list into one "
+                    "public boolean without short-circuiting; each mapping requires every "
+                    "regex value to fullmatch its corresponding source field"
+                ),
+            },
+        },
+    }
+    if deployment.get("public_rule_ownership") != expected_public_rule_ownership:
         failures.append("tracked Main/Auth Core public-rule ownership changed")
     if deployment.get("pylon_auth_selected") != {
         "application.APPLICATION_ROOT": "/forward-auth/",

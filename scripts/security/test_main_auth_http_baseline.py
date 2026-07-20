@@ -110,6 +110,131 @@ class MainAuthHTTPBaselineTest(unittest.TestCase):
             with self.subTest(expected_failure=expected_failure):
                 self.assertIn(expected_failure, check_catalog(catalog))
 
+    def test_checker_rejects_public_rule_ownership_order_and_rule_mutations(self) -> None:
+        mutations = []
+
+        changed = deepcopy(self.catalog)
+        configured = changed["public_rule_inventory"]["main_local_plane"][
+            "configured_rules_ordered"
+        ]
+        configured[0], configured[1] = configured[1], configured[0]
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        changed = deepcopy(self.catalog)
+        sites = changed["public_rule_inventory"]["main_local_plane"][
+            "dynamic_registration_sites"
+        ]
+        sites["runtime_interface_litellm.Method.init"]["rules_in_source_order"][0][
+            "uri"
+        ] = "/llm/v1/.*"
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        changed = deepcopy(self.catalog)
+        changed["public_rule_inventory"]["messages_rule_configuration"][
+            "base_plugin_value"
+        ] = False
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        changed = deepcopy(self.catalog)
+        changed["public_rule_inventory"]["auth_core_direct_plane"][
+            "initial_rules"
+        ] = [{"uri": "/unexpected"}]
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        changed = deepcopy(self.catalog)
+        changed["public_rule_inventory"]["main_local_plane"]["ordering"][
+            "cross_plugin"
+        ] = "globally ordered by the fixture"
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        changed = deepcopy(self.catalog)
+        changed["public_rule_inventory"]["main_local_plane"][
+            "deployment_selection"
+        ]["required_dynamic_plugins_enabled"].remove("artifacts")
+        mutations.append((changed, "Main/Auth Core public-rule inventory changed"))
+
+        for catalog, expected_failure in mutations:
+            with self.subTest(expected_failure=expected_failure):
+                failures = check_catalog(catalog)
+                self.assertIn(expected_failure, failures)
+                self.assertIn("public_rule_inventory reviewed snapshot changed", failures)
+
+    def test_checker_pins_each_dynamic_public_rule_source_and_repository(self) -> None:
+        mutations = []
+        for source in (
+            "admin_ui/module.py",
+            "artifacts/methods/s3.py",
+            "elitea_core/module.py",
+            "runtime_interface_litellm/methods/init.py",
+        ):
+            changed = deepcopy(self.catalog)
+            changed["source_files_sha256"][source] = "0" * 64
+            mutations.append((changed, "reviewed source hashes changed"))
+
+        for fingerprint in (
+            "admin_ui/module.py#Module.init",
+            "artifacts/methods/s3.py#Method.s3_api_init",
+            "elitea_core/module.py#Module.elitea_ui_init",
+            "runtime_interface_litellm/methods/init.py#Method.init",
+            "auth_core/methods/public_rules.py#Method.public_rules_init",
+        ):
+            changed = deepcopy(self.catalog)
+            changed["behavior_fingerprints"][fingerprint]["ast_sha256"] = "0" * 64
+            mutations.append(
+                (changed, "behavior_fingerprints reviewed snapshot changed")
+            )
+
+        for repository in (
+            "admin_ui_repo",
+            "artifacts_repo",
+            "elitea_core_repo",
+            "runtime_interface_litellm_repo",
+        ):
+            changed = deepcopy(self.catalog)
+            changed["provenance"][repository]["pinned_head"] = "0" * 40
+            mutations.append((changed, f"{repository} pinned provenance changed"))
+
+        for catalog, expected_failure in mutations:
+            with self.subTest(expected_failure=expected_failure):
+                self.assertIn(expected_failure, check_catalog(catalog))
+
+    def test_public_rule_parser_preserves_config_order_and_roots_are_siblings(self) -> None:
+        rules = exporter._literal_public_rules(
+            """auth_mode: rpc
+public_rules:
+  - uri: '/first/.*'
+  - uri: '/second/.*'
+"""
+        )
+        self.assertEqual(rules, [
+            {"uri": "/first/.*"},
+            {"uri": "/second/.*"},
+        ])
+        self.assertEqual(
+            exporter._literal_yaml_sequence(
+                """preordered_plugins:
+- auth
+- artifacts
+""",
+                "preordered_plugins",
+            ),
+            ["auth", "artifacts"],
+        )
+
+        auth_root = Path("/workspace/plugins/auth")
+        roots = exporter._public_rule_plugin_roots(auth_root)
+        self.assertEqual(
+            roots,
+            {
+                "admin_ui": Path("/workspace/plugins/admin_ui"),
+                "artifacts": Path("/workspace/plugins/artifacts"),
+                "elitea_core": Path("/workspace/plugins/elitea_core"),
+                "runtime_interface_litellm": Path(
+                    "/workspace/plugins/runtime_interface_litellm"
+                ),
+            },
+        )
+
     def test_route_variants_preserve_pylon_trailing_slash_registration(self) -> None:
         registered = exporter._route_variants("token", ["", "<string:uid>"])
         self.assertEqual(registered, [

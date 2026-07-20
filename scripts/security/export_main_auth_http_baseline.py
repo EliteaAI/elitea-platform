@@ -15,13 +15,14 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 AUTH_SOURCE_FILES = (
     "api/v2/permissions.py",
     "api/v2/token.py",
@@ -35,9 +36,11 @@ AUTH_CORE_SOURCE_FILES = (
     "db/migrations/202202021633_core.py",
     "db/db_tools.py",
     "methods/auth_context.py",
+    "methods/public_rules.py",
     "module.py",
     "requirements.txt",
     "rpc/auth_context.py",
+    "rpc/public_rules.py",
     "rpc/tokens.py",
     "rpc/users.py",
     "tools/rpc_tools.py",
@@ -50,9 +53,28 @@ SHARED_API_SOURCE_FILES = (
 PYLON_SOURCE_FILES = (
     "pylon/core/tools/module/descriptor.py",
     "pylon/core/tools/dict.py",
+    "pylon/core/tools/server/init.py",
     "requirements.txt",
 )
 PROJECTS_SOURCE_FILES = ("rpc/poc.py",)
+PUBLIC_RULE_PLUGIN_SOURCE_FILES = {
+    "admin_ui": ("module.py",),
+    "artifacts": ("methods/s3.py",),
+    "elitea_core": ("config.yml", "module.py"),
+    "runtime_interface_litellm": ("config.yml", "methods/init.py"),
+}
+EXPECTED_CONFIGURED_PUBLIC_RULES = [
+    {"uri": r"/forward\-auth/.*"},
+    {"uri": "/applications/application_icon.*"},
+    {"uri": "/datasources/datasource_icon.*"},
+    {"uri": "/prompt_lib/prompt_icon.*"},
+]
+EXPECTED_DYNAMIC_PUBLIC_RULE_SOURCES = [
+    "admin_ui/module.py",
+    "artifacts/methods/s3.py",
+    "elitea_core/module.py",
+    "runtime_interface_litellm/methods/init.py",
+]
 EXPECTED_RESOURCES = {
     "permissions": {
         "base": "Resource",
@@ -75,9 +97,12 @@ FINGERPRINT_TARGETS = {
     "api/v2/token.py": (("API", "get"), ("API", "post"), ("API", "delete")),
     "api/v2/user.py": (("API", "get"),),
     "module.py": (
+        ("Module", "__init__"),
         ("Module", "_after_request_hook"),
         ("Module", "_before_request_hook"),
         ("Module", "access_denied_reply"),
+        ("Module", "add_public_rule"),
+        ("Module", "init"),
         ("Module", "resolve_permissions"),
     ),
     "rpc/user.py": (("RPC", "current_user"),),
@@ -96,6 +121,20 @@ AUTH_CORE_CONTEXT_FINGERPRINT_TARGETS = (
     ("module.py", "Module", "init"),
     ("rpc/auth_context.py", "RPC", "get_referenced_auth_context"),
 )
+PUBLIC_RULE_PLUGIN_FINGERPRINT_TARGETS = {
+    "admin_ui": (("module.py", "Module", "init"),),
+    "artifacts": (
+        ("methods/s3.py", "Method", "s3_api_init"),
+        ("methods/s3.py", "Method", "s3_api_deinit"),
+    ),
+    "elitea_core": (
+        ("module.py", "Module", "init"),
+        ("module.py", "Module", "mcp_sse_init"),
+        ("module.py", "Module", "mcp_sse_deinit"),
+        ("module.py", "Module", "elitea_ui_init"),
+    ),
+    "runtime_interface_litellm": (("methods/init.py", "Method", "init"),),
+}
 
 
 def _sha256(data: bytes) -> str:
@@ -338,6 +377,300 @@ def _literal_yaml_mapping_keys(text: str, key: str) -> list[str]:
                 keys.append(child.strip().split(":", 1)[0])
         return sorted(keys)
     raise ValueError(f"literal YAML mapping {key} not found")
+
+
+def _literal_yaml_sequence(text: str, key: str) -> list[str]:
+    """Read a scalar sequence, including YAML's indentationless sequence form."""
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip() or line.lstrip() != f"{key}:":
+            continue
+        parent_indent = len(line) - len(line.lstrip())
+        values: list[str] = []
+        for child_raw in lines[index + 1 :]:
+            child = child_raw.split("#", 1)[0].rstrip()
+            if not child.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            stripped = child.strip()
+            if child_indent in {parent_indent, parent_indent + 2} and stripped.startswith("- "):
+                value = stripped[2:].strip().strip('"').strip("'")
+                if not value:
+                    raise ValueError(f"literal YAML sequence {key} contains an empty item")
+                values.append(value)
+                continue
+            if child_indent <= parent_indent:
+                break
+            raise ValueError(f"literal YAML sequence {key} contains a non-scalar item")
+        return values
+    raise ValueError(f"literal YAML sequence {key} not found")
+
+
+def _optional_setting_bool(text: str, key: str) -> bool | None:
+    values = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line.startswith(f"{key}:"):
+            continue
+        value = line.split(":", 1)[1].strip().lower()
+        if value not in {"true", "false"}:
+            raise ValueError(f"{key} is not a literal YAML boolean")
+        values.append(value == "true")
+    if len(values) > 1:
+        raise ValueError(f"expected at most one literal {key} setting, found {len(values)}")
+    return values[0] if values else None
+
+
+def _literal_nested_yaml_scalar(text: str, parent: str, key: str) -> str | None:
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip() or line.lstrip() != f"{parent}:":
+            continue
+        parent_indent = len(line) - len(line.lstrip())
+        values: list[str] = []
+        for child_raw in lines[index + 1 :]:
+            child = child_raw.split("#", 1)[0].rstrip()
+            if not child.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= parent_indent:
+                break
+            if child_indent != parent_indent + 2 or not child.strip().startswith(f"{key}:"):
+                continue
+            value = child.strip().split(":", 1)[1].strip().strip('"').strip("'")
+            values.append(value)
+        if len(values) > 1:
+            raise ValueError(f"expected at most one literal {parent}.{key} value")
+        return values[0] if values else None
+    raise ValueError(f"literal YAML mapping {parent} not found")
+
+
+def _literal_public_rules(text: str) -> list[dict[str, str]]:
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
+        line = raw_line.split("#", 1)[0].rstrip()
+        if line.strip() != "public_rules:":
+            continue
+        parent_indent = len(line) - len(line.lstrip())
+        rules: list[dict[str, str]] = []
+        for child_raw in lines[index + 1 :]:
+            child = child_raw.split("#", 1)[0].rstrip()
+            if not child.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= parent_indent:
+                break
+            stripped = child.strip()
+            if child_indent != parent_indent + 2 or not stripped.startswith("- uri:"):
+                raise ValueError("public_rules must be an ordered uri-only literal list")
+            value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+            if not value:
+                raise ValueError("public_rules contains an empty uri")
+            rules.append({"uri": value})
+        return rules
+    raise ValueError("literal YAML public_rules list not found")
+
+
+def _public_rule_plugin_roots(auth_root: Path) -> dict[str, Path]:
+    plugin_parent = auth_root.resolve().parent
+    return {
+        name: plugin_parent / name
+        for name in sorted(PUBLIC_RULE_PLUGIN_SOURCE_FILES)
+    }
+
+
+def _discover_dynamic_public_rule_sources(plugin_parent: Path) -> list[str]:
+    sources: list[str] = []
+    for path in plugin_parent.glob("*/**/*.py"):
+        if "auth.add_public_rule" not in path.read_text(encoding="utf-8"):
+            continue
+        sources.append(path.relative_to(plugin_parent).as_posix())
+    return sorted(sources)
+
+
+def _method_assigns_empty_public_rules(path: Path, class_name: str, method_name: str) -> bool:
+    method = _method(_parse(path), class_name, method_name)
+    for node in ast.walk(method):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.List) or node.value.elts:
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                and target.attr == "public_rules"
+            ):
+                return True
+    return False
+
+
+def _normalize_context_url_prefix(server_path: str | None) -> str:
+    if server_path is None:
+        server_path = "/"
+    while server_path.endswith("/"):
+        server_path = server_path[:-1]
+    return server_path
+
+
+def _public_rule_contract(
+    configured_rules: list[dict[str, str]],
+    plugin_roots: dict[str, Path],
+    bootstrap_plugins: list[str],
+    context_url_prefix: str,
+    context_url_prefix_at_head: str,
+    messages_base_enabled: bool,
+    messages_runtime_override: bool | None,
+) -> dict[str, Any]:
+    if configured_rules != EXPECTED_CONFIGURED_PUBLIC_RULES:
+        raise ValueError("reviewed ordered Main public_rules configuration changed")
+    discovered_sources = _discover_dynamic_public_rule_sources(
+        next(iter(plugin_roots.values())).parent
+    )
+    if discovered_sources != EXPECTED_DYNAMIC_PUBLIC_RULE_SOURCES:
+        raise ValueError(
+            f"Main dynamic public-rule source inventory changed: {discovered_sources!r}"
+        )
+    required_plugins = sorted(PUBLIC_RULE_PLUGIN_SOURCE_FILES)
+    missing_plugins = sorted(set(required_plugins).difference(bootstrap_plugins))
+    if missing_plugins:
+        raise ValueError(
+            f"Main public-rule plugins missing from bootstrap: {missing_plugins!r}"
+        )
+    if context_url_prefix != context_url_prefix_at_head or context_url_prefix != "":
+        raise ValueError("reviewed Main context URL prefix changed")
+
+    runtime_prefix = _literal_yaml_scalar(
+        (plugin_roots["runtime_interface_litellm"] / "config.yml").read_text(
+            encoding="utf-8"
+        ),
+        "url_prefix",
+    )
+    if runtime_prefix != "/llm":
+        raise ValueError("reviewed LiteLLM URL prefix changed")
+    if not messages_base_enabled or messages_runtime_override is not None:
+        raise ValueError("reviewed public messages tracked configuration changed")
+
+    dynamic_sites = {
+        "admin_ui.Module.init": {
+            "conditional": False,
+            "owner": "admin_ui",
+            "rules_in_source_order": [
+                {
+                    "uri": re.escape("/admin/app/")
+                    + r".*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$"
+                }
+            ],
+            "source": "admin_ui/module.py",
+        },
+        "artifacts.Method.s3_api_init": {
+            "conditional": False,
+            "owner": "artifacts",
+            "rules_in_source_order": [
+                {"uri": f"{context_url_prefix}/artifacts/s3/.*"}
+            ],
+            "source": "artifacts/methods/s3.py",
+        },
+        "elitea_core.Module.elitea_ui_init": {
+            "conditional": False,
+            "owner": "elitea_core",
+            "rules_in_source_order": [
+                {"uri": f'{re.escape("/socket.io/")}.*'},
+                {"uri": re.escape("/robots.txt")},
+                {"uri": re.escape("/favicon.ico")},
+                {"uri": re.escape("/app/access_denied")},
+            ],
+            "source": "elitea_core/module.py",
+        },
+        "elitea_core.Module.init": {
+            "conditional": False,
+            "owner": "elitea_core",
+            "rules_in_source_order": [
+                {
+                    "uri": "/api/v2/elitea_core/webhook/prompt_lib/"
+                    "[0-9]+/[0-9]+/(github|gitlab|custom)"
+                }
+            ],
+            "source": "elitea_core/module.py",
+        },
+        "elitea_core.Module.mcp_sse_init": {
+            "conditional": True,
+            "condition": "descriptor.config.public_messages_route",
+            "enabled_by_tracked_configuration": True,
+            "owner": "elitea_core",
+            "rules_in_source_order": [
+                {
+                    "uri": f"{context_url_prefix}/elitea_core/"
+                    r"[0-9]+/messages\?session_id=.+"
+                }
+            ],
+            "source": "elitea_core/module.py",
+        },
+        "runtime_interface_litellm.Method.init": {
+            "conditional": False,
+            "owner": "runtime_interface_litellm",
+            "rules_in_source_order": [
+                {"uri": f"{context_url_prefix}/{runtime_prefix.strip('/')}/.*"}
+            ],
+            "source": "runtime_interface_litellm/methods/init.py",
+        },
+    }
+
+    return {
+        "auth_core_direct_plane": {
+            "initial_rules": [],
+            "main_rules_forwarded_via_rpc": False,
+            "ownership": (
+                "Auth Core initializes its own independent public_rules list empty; tracked "
+                "Main auth_mode=rpc keeps configured and plugin registrations in Main"
+            ),
+        },
+        "context_url_prefix": {
+            "normalized": context_url_prefix,
+            "selected_value_matches_pinned_head": True,
+            "source_chain": [
+                "centry/pylon_main/pylon.yml#server.path is /",
+                "pylon server init strips trailing slash to empty context.url_prefix",
+            ],
+        },
+        "main_local_plane": {
+            "configured_rules_ordered": configured_rules,
+            "deployment_selection": {
+                "bootstrap_selector": "centry/pylon_main/configs/bootstrap.yml#preordered_plugins",
+                "required_dynamic_plugins_enabled": required_plugins,
+                "semantics": (
+                    "membership evidence only; bootstrap sequence order is not treated as "
+                    "a global runtime initialization order"
+                ),
+            },
+            "dynamic_registration_sites": dynamic_sites,
+            "dynamic_source_inventory": discovered_sources,
+            "matching": "each compiled field regex uses fullmatch; every rule is evaluated into one public boolean",
+            "ownership": (
+                "Main Module.add_public_rule compiles, de-duplicates, and appends locally "
+                "when auth_mode=rpc"
+            ),
+            "ordering": {
+                "configured": "the four configured rules are appended in YAML list order during Auth Module.init",
+                "per_site": "rules_in_source_order is exact within each named registration method",
+                "cross_plugin": (
+                    "not inferred from this evidence; no global plugin initialization order is claimed, "
+                    "and matching does not short-circuit on first rule"
+                ),
+            },
+        },
+        "messages_rule_configuration": {
+            "base_plugin_value": messages_base_enabled,
+            "tracked_runtime_override": messages_runtime_override,
+            "effective_tracked_value": messages_runtime_override
+            if messages_runtime_override is not None
+            else messages_base_enabled,
+            "runtime_provider_limit": (
+                "an external runtime config-provider payload can override the tracked merge and is not executed here"
+            ),
+        },
+    }
 
 
 def _pat_post_contract(
@@ -915,7 +1248,7 @@ def _canonicalization_matrix(
     return matrix
 
 
-def _guard_contract() -> dict[str, Any]:
+def _guard_contract(configured_public_rules: list[dict[str, str]]) -> dict[str, Any]:
     return {
         "authentication_mode": "rpc from pylon_main/configs/auth.yml",
         "authorization_request": {
@@ -951,12 +1284,7 @@ def _guard_contract() -> dict[str, Any]:
             "principal": {"id": "-", "reference": "-", "type": "public"},
         },
         "identity_headers": ["X-Auth-Type", "X-Auth-ID", "X-Auth-Reference"],
-        "public_rules": [
-            "/forward\\-auth/.*",
-            "/applications/application_icon.*",
-            "/datasources/datasource_icon.*",
-            "/prompt_lib/prompt_icon.*",
-        ],
+        "public_rules": [rule["uri"] for rule in configured_public_rules],
         "reviewed_routes_match_public_rule": False,
     }
 
@@ -1104,6 +1432,7 @@ def build_catalog(
     projects_root = projects_root.resolve()
     pylon_root = pylon_root.resolve()
     main_auth_config = main_auth_config.resolve()
+    public_rule_plugin_roots = _public_rule_plugin_roots(auth_root)
     for relative in AUTH_SOURCE_FILES:
         if not (auth_root / relative).is_file():
             raise ValueError(f"missing Auth evidence source: {relative}")
@@ -1119,6 +1448,12 @@ def build_catalog(
     for relative in PYLON_SOURCE_FILES:
         if not (pylon_root / relative).is_file():
             raise ValueError(f"missing Pylon evidence source: {relative}")
+    for plugin, relatives in PUBLIC_RULE_PLUGIN_SOURCE_FILES.items():
+        for relative in relatives:
+            if not (public_rule_plugin_roots[plugin] / relative).is_file():
+                raise ValueError(
+                    f"missing {plugin} public-rule evidence source: {relative}"
+                )
     descriptor_path = pylon_root / PYLON_SOURCE_FILES[0]
     if not descriptor_path.is_file() or not main_auth_config.is_file():
         raise ValueError("missing route framework or pylon_main Auth runtime config evidence")
@@ -1188,6 +1523,10 @@ def build_catalog(
     fingerprints["pylon/core/tools/dict.py#recursive_merge"] = _method_fingerprint(
         _function(pylon_dict_tree, "recursive_merge")
     )
+    pylon_server_tree = _parse(pylon_root / "pylon/core/tools/server/init.py")
+    fingerprints["pylon/core/tools/server/init.py#init_context"] = _method_fingerprint(
+        _function(pylon_server_tree, "init_context")
+    )
     auth_core_tokens_tree = _parse(auth_core_root / "rpc/tokens.py")
     fingerprints["auth_core/rpc/tokens.py#RPC.add_token"] = _method_fingerprint(
         _method(auth_core_tokens_tree, "RPC", "add_token")
@@ -1209,6 +1548,18 @@ def build_catalog(
         tree = _parse(auth_core_root / relative)
         key = f"auth_core/{relative}#{class_name}.{method_name}"
         fingerprints[key] = _method_fingerprint(_method(tree, class_name, method_name))
+    auth_core_public_rules_tree = _parse(auth_core_root / "methods/public_rules.py")
+    fingerprints[
+        "auth_core/methods/public_rules.py#Method.public_rules_init"
+    ] = _method_fingerprint(
+        _method(auth_core_public_rules_tree, "Method", "public_rules_init")
+    )
+    auth_core_public_rules_rpc_tree = _parse(auth_core_root / "rpc/public_rules.py")
+    fingerprints[
+        "auth_core/rpc/public_rules.py#RPC.add_public_rule"
+    ] = _method_fingerprint(
+        _method(auth_core_public_rules_rpc_tree, "RPC", "add_public_rule")
+    )
     auth_core_rpc_tools_tree = _parse(auth_core_root / "tools/rpc_tools.py")
     fingerprints["auth_core/tools/rpc_tools.py#wrap_exceptions"] = _method_fingerprint(
         _function(auth_core_rpc_tools_tree, "wrap_exceptions")
@@ -1222,20 +1573,55 @@ def build_catalog(
     fingerprints["projects/rpc/poc.py#RPC.get_personal_project_id"] = (
         _method_fingerprint(_method(projects_tree, "RPC", "get_personal_project_id"))
     )
+    for plugin, targets in sorted(PUBLIC_RULE_PLUGIN_FINGERPRINT_TARGETS.items()):
+        for relative, class_name, method_name in targets:
+            tree = _parse(public_rule_plugin_roots[plugin] / relative)
+            key = f"{plugin}/{relative}#{class_name}.{method_name}"
+            fingerprints[key] = _method_fingerprint(
+                _method(tree, class_name, method_name)
+            )
+
+    if not _method_assigns_empty_public_rules(
+        auth_root / "module.py", "Module", "__init__"
+    ):
+        raise ValueError("Main Auth no longer initializes an empty local public-rule list")
+    if not _method_assigns_empty_public_rules(
+        auth_core_root / "methods/public_rules.py", "Method", "public_rules_init"
+    ):
+        raise ValueError("Auth Core no longer initializes an empty direct public-rule list")
 
     auth_contract_paths = set(AUTH_SOURCE_FILES)
     auth_core_contract_paths = set(AUTH_CORE_SOURCE_FILES)
     shared_api_contract_paths = set(SHARED_API_SOURCE_FILES)
     projects_contract_paths = set(PROJECTS_SOURCE_FILES)
     pylon_contract_paths = set(PYLON_SOURCE_FILES)
+    public_rule_plugin_contract_paths = {
+        plugin: set(relatives)
+        for plugin, relatives in PUBLIC_RULE_PLUGIN_SOURCE_FILES.items()
+    }
     pylon_contract_path = PYLON_SOURCE_FILES[0]
     centry_repo = Path(str(_run_git(main_auth_config.parent, "rev-parse", "--show-toplevel")).strip())
     config_relative = main_auth_config.relative_to(centry_repo).as_posix()
     shared_runtime_config_relative = "pylon_main/configs/shared.yml"
     auth_core_runtime_config_relative = "pylon_auth/configs/auth_core.yml"
+    elitea_core_runtime_config_relative = "pylon_main/configs/elitea_core.yml"
+    bootstrap_runtime_config_relative = "pylon_main/configs/bootstrap.yml"
+    main_pylon_relative = "pylon_main/pylon.yml"
     shared_runtime_config = centry_repo / shared_runtime_config_relative
     auth_core_runtime_config = centry_repo / auth_core_runtime_config_relative
-    if not shared_runtime_config.is_file() or not auth_core_runtime_config.is_file():
+    elitea_core_runtime_config = centry_repo / elitea_core_runtime_config_relative
+    bootstrap_runtime_config = centry_repo / bootstrap_runtime_config_relative
+    main_pylon_config = centry_repo / main_pylon_relative
+    if not all(
+        path.is_file()
+        for path in (
+            shared_runtime_config,
+            auth_core_runtime_config,
+            elitea_core_runtime_config,
+            bootstrap_runtime_config,
+            main_pylon_config,
+        )
+    ):
         raise ValueError("missing tracked Auth runtime config evidence")
     allow_cors = _setting_bool(shared_runtime_config.read_text(encoding="utf-8"), "allow_cors")
     allow_cors_at_head = _setting_bool(
@@ -1246,7 +1632,12 @@ def build_catalog(
         raise ValueError("reviewed runtime no longer enables ALLOW_CORS; review OPTIONS semantics")
     runtime_config_provenance = git_provenance(
         centry_repo,
-        {config_relative, auth_core_runtime_config_relative},
+        {
+            config_relative,
+            auth_core_runtime_config_relative,
+            elitea_core_runtime_config_relative,
+            bootstrap_runtime_config_relative,
+        },
     )
     auth_provenance = git_provenance(auth_root, auth_contract_paths)
     auth_metadata = json.loads((auth_root / "metadata.json").read_text(encoding="utf-8"))
@@ -1255,6 +1646,42 @@ def build_catalog(
     init_after_at_head = auth_metadata_at_head.get("init_after")
     if init_after != ["shared", "auth_core"] or init_after != init_after_at_head:
         raise ValueError("Auth init_after composition changed; review shared API inheritance")
+    main_auth_config_text = main_auth_config.read_text(encoding="utf-8")
+    if _literal_yaml_scalar(main_auth_config_text, "auth_mode") != "rpc":
+        raise ValueError("tracked Main Auth mode is no longer rpc")
+    configured_public_rules = _literal_public_rules(main_auth_config_text)
+    bootstrap_plugins = _literal_yaml_sequence(
+        bootstrap_runtime_config.read_text(encoding="utf-8"), "preordered_plugins"
+    )
+    server_path = _literal_nested_yaml_scalar(
+        main_pylon_config.read_text(encoding="utf-8"), "server", "path"
+    )
+    server_path_at_head = _literal_nested_yaml_scalar(
+        str(_run_git(centry_repo, "show", f"HEAD:{main_pylon_relative}")),
+        "server",
+        "path",
+    )
+    context_url_prefix = _normalize_context_url_prefix(server_path)
+    context_url_prefix_at_head = _normalize_context_url_prefix(server_path_at_head)
+    messages_base_enabled = _setting_bool(
+        (public_rule_plugin_roots["elitea_core"] / "config.yml").read_text(
+            encoding="utf-8"
+        ),
+        "public_messages_route",
+    )
+    messages_runtime_override = _optional_setting_bool(
+        elitea_core_runtime_config.read_text(encoding="utf-8"),
+        "public_messages_route",
+    )
+    public_rule_inventory = _public_rule_contract(
+        configured_public_rules,
+        public_rule_plugin_roots,
+        bootstrap_plugins,
+        context_url_prefix,
+        context_url_prefix_at_head,
+        messages_base_enabled,
+        messages_runtime_override,
+    )
     auth_core_config_text = (auth_core_root / "config.yml").read_text(encoding="utf-8")
     auth_core_config_at_head = str(_run_git(auth_core_root, "show", "HEAD:config.yml"))
     auth_core_runtime_config_text = auth_core_runtime_config.read_text(encoding="utf-8")
@@ -1301,16 +1728,18 @@ def build_catalog(
         },
         "canonicalization_matrix": _canonicalization_matrix(registered_routes),
         "framework_http_semantics": _framework_contract(allow_cors, allow_cors_at_head),
-        "global_auth_rpc_gate": _guard_contract(),
+        "global_auth_rpc_gate": _guard_contract(configured_public_rules),
         "inference_limits": [
             "This is static source, pinned dependency, and checked-in configuration evidence; it does not execute Flask, Redis, RPC, PostgreSQL, or Traefik.",
-            "Only permissions.py, token.py, user.py, shared APIBase inheritance, the shared current_user RPC, and their global request/route composition are covered.",
+            "Only permissions.py, token.py, user.py, shared APIBase inheritance, the shared current_user RPC, their global request/route composition, and the Main-local public-rule inventory are covered.",
             "The separately consumed Social current-author endpoint, administrative Auth APIs, browser login providers, UI behavior, and runtime-only config overrides are excluded.",
+            "Dynamic public rules pin registration ownership and source order within each method; cross-plugin initialization order and endpoint behavior behind those rules are not inferred.",
             "Python set-to-list and set-repr ordering is explicitly unspecified rather than normalized into a false byte-level promise.",
             "Framework generic 404/500 bodies are named but not byte-pinned because this evidence does not execute the configured Flask error pipeline.",
         ],
         "method_route_matrix": _method_route_matrix(handler_routes),
         "principal_resolution": _principal_contract(),
+        "public_rule_inventory": public_rule_inventory,
         "rpc_exception_translation": _rpc_exception_contract(),
         "provenance": {
             "auth_core_repo": {
@@ -1320,6 +1749,27 @@ def build_catalog(
             "auth_repo": {
                 **auth_provenance,
                 "source_root": "pylon_main/plugins/auth",
+            },
+            "admin_ui_repo": {
+                **git_provenance(
+                    public_rule_plugin_roots["admin_ui"],
+                    public_rule_plugin_contract_paths["admin_ui"],
+                ),
+                "source_root": "pylon_main/plugins/admin_ui",
+            },
+            "artifacts_repo": {
+                **git_provenance(
+                    public_rule_plugin_roots["artifacts"],
+                    public_rule_plugin_contract_paths["artifacts"],
+                ),
+                "source_root": "pylon_main/plugins/artifacts",
+            },
+            "elitea_core_repo": {
+                **git_provenance(
+                    public_rule_plugin_roots["elitea_core"],
+                    public_rule_plugin_contract_paths["elitea_core"],
+                ),
+                "source_root": "pylon_main/plugins/elitea_core",
             },
             "projects_repo": {
                 **git_provenance(projects_root, projects_contract_paths),
@@ -1332,6 +1782,15 @@ def build_catalog(
             "runtime_config_repo": {
                 **runtime_config_provenance,
                 "source_root": "centry",
+            },
+            "runtime_interface_litellm_repo": {
+                **git_provenance(
+                    public_rule_plugin_roots["runtime_interface_litellm"],
+                    public_rule_plugin_contract_paths[
+                        "runtime_interface_litellm"
+                    ],
+                ),
+                "source_root": "pylon_main/plugins/runtime_interface_litellm",
             },
             "shared_api_repo": {
                 **git_provenance(shared_api_root, shared_api_contract_paths),
@@ -1369,6 +1828,15 @@ def build_catalog(
                 "current semantic selector is compared with pinned HEAD, while unrelated "
                 "fields and whole-file dirty state are intentionally non-gating"
             ),
+            "runtime_context_prefix_selector": (
+                "Only pylon_main/pylon.yml#server.path is selected and compared with pinned "
+                "HEAD; unrelated runtime-file dirtiness is intentionally non-gating"
+            ),
+            "runtime_plugin_selection": (
+                "pylon_main/configs/bootstrap.yml#preordered_plugins proves membership of "
+                "each dynamic public-rule owner; its sequence is not interpreted as a "
+                "global runtime initialization order"
+            ),
         },
         "token_encoding": _token_encoding_contract(),
         "source_files_sha256": {
@@ -1388,9 +1856,22 @@ def build_catalog(
             for relative in PROJECTS_SOURCE_FILES
         }
         | {
+            plugin + "/" + relative: _file_sha256(
+                public_rule_plugin_roots[plugin] / relative
+            )
+            for plugin, relatives in PUBLIC_RULE_PLUGIN_SOURCE_FILES.items()
+            for relative in relatives
+        }
+        | {
             "centry/" + config_relative: _file_sha256(main_auth_config),
             "centry/" + auth_core_runtime_config_relative: _file_sha256(
                 auth_core_runtime_config
+            ),
+            "centry/" + elitea_core_runtime_config_relative: _file_sha256(
+                elitea_core_runtime_config
+            ),
+            "centry/" + bootstrap_runtime_config_relative: _file_sha256(
+                bootstrap_runtime_config
             ),
         }
         | {
