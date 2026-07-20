@@ -20,7 +20,10 @@ const (
 	MaxProviderAttributesNesting = 128
 )
 
-var ErrInvalidState = errors.New("invalid browser session state")
+var (
+	ErrInvalidState = errors.New("invalid browser session state")
+	ErrNotFound     = errors.New("browser session not found")
+)
 
 // State is the language-neutral replacement for the current pylon_auth auth
 // context persisted in the server-side session. ProviderAttributes is a JSON

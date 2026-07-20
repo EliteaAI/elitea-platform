@@ -11,6 +11,14 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
+func TestInactiveErrorUsesStorageNeutralAuthContract(t *testing.T) {
+	t.Parallel()
+
+	if ErrPrincipalInactive != auth.ErrPrincipalInactive {
+		t.Fatalf("ErrPrincipalInactive = %v, want storage-neutral %v", ErrPrincipalInactive, auth.ErrPrincipalInactive)
+	}
+}
+
 type principalQueriesStub struct {
 	activePAT  func(context.Context, int32) (sqlcgen.GetActivePATPrincipalByIDRow, error)
 	activeUser func(context.Context, int32) (sqlcgen.GetActiveUserPrincipalByIDRow, error)

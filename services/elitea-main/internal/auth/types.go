@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 )
+
+var ErrPrincipalInactive = errors.New("authenticated principal is inactive")
 
 type ctxKey string
 

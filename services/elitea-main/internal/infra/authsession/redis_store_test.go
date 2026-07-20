@@ -17,6 +17,14 @@ import (
 
 const testKeyPrefix = "elitea_auth_session_"
 
+func TestNotFoundErrorUsesStorageNeutralSessionContract(t *testing.T) {
+	t.Parallel()
+
+	if ErrNotFound != sessionstate.ErrNotFound {
+		t.Fatalf("ErrNotFound = %v, want storage-neutral %v", ErrNotFound, sessionstate.ErrNotFound)
+	}
+}
+
 func TestRandomSessionIDIsCanonicalAndUnique(t *testing.T) {
 	t.Parallel()
 

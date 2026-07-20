@@ -29,7 +29,7 @@ const (
 var (
 	ErrInvalidConfiguration = errors.New("invalid browser session store configuration")
 	ErrInvalidID            = errors.New("invalid browser session ID")
-	ErrNotFound             = errors.New("browser session not found")
+	ErrNotFound             = sessionstate.ErrNotFound
 	ErrUnavailable          = errors.New("browser session store unavailable")
 	ErrIDCollision          = errors.New("browser session ID collision limit reached")
 	ErrRotationConflict     = errors.New("browser session changed during rotation")

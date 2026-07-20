@@ -15,7 +15,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
-var ErrPrincipalInactive = errors.New("authsvc: principal is inactive")
+var ErrPrincipalInactive = auth.ErrPrincipalInactive
 
 type principalQueries interface {
 	GetActivePATPrincipalByID(
