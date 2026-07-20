@@ -135,18 +135,18 @@ func NewHandler(
 // Routes preserves the current Form route paths and effective methods. The
 // returned router is intentionally not mounted by production composition yet.
 func (h *Handler) Routes() chi.Router {
-	router := chi.NewRouter()
-	router.MethodNotAllowed(func(writer http.ResponseWriter, _ *http.Request) {
-		securityHeaders(writer)
-		writeProblem(writer, http.StatusBadRequest)
-	})
+	router := newRouter()
+	h.registerRoutes(router)
+	return router
+}
+
+func (h *Handler) registerRoutes(router chi.Router) {
 	h.registerReadRoute(router, LoginPath, h.beginLogin)
 	h.registerReadRoute(router, FormLoginPath, h.renderForm)
 	router.MethodFunc(http.MethodPost, FormAuthorizePath, h.authorizeForm)
 	router.MethodFunc(http.MethodOptions, FormAuthorizePath, options("POST, OPTIONS"))
 	h.registerReadRoute(router, LogoutPath, h.beginLogout)
 	h.registerReadRoute(router, FormLogoutPath, h.logout)
-	return router
 }
 
 func (h *Handler) registerReadRoute(router chi.Router, path string, handler http.HandlerFunc) {

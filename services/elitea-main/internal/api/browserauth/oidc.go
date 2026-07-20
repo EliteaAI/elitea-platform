@@ -91,14 +91,14 @@ func NewOIDCHandler(
 // intentional security correction: unlike the current Flask boundary it never
 // aliases a mutating GET. The router remains unmounted in production.
 func (h *OIDCHandler) Routes() chi.Router {
-	router := chi.NewRouter()
-	router.MethodNotAllowed(func(writer http.ResponseWriter, _ *http.Request) {
-		securityHeaders(writer)
-		writeProblem(writer, http.StatusBadRequest)
-	})
+	router := newRouter()
+	h.registerRoutes(router)
+	return router
+}
+
+func (h *OIDCHandler) registerRoutes(router chi.Router) {
 	h.registerReadRoute(router, OIDCLoginPath, h.beginLogin)
 	h.registerCallbackRoute(router, OIDCLoginCallbackPath, h.completeLogin)
-	return router
 }
 
 func (h *OIDCHandler) registerReadRoute(router chi.Router, path string, handler http.HandlerFunc) {

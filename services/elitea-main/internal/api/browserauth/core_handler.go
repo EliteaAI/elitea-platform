@@ -83,15 +83,15 @@ func NewCoreHandler(
 // Routes preserves the current Auth Core effective methods. It is a source-only
 // mount candidate; production composition does not call it yet.
 func (h *CoreHandler) Routes() chi.Router {
-	router := chi.NewRouter()
-	router.MethodNotAllowed(func(writer http.ResponseWriter, _ *http.Request) {
-		securityHeaders(writer)
-		writeProblem(writer, http.StatusBadRequest)
-	})
+	router := newRouter()
+	h.registerRoutes(router)
+	return router
+}
+
+func (h *CoreHandler) registerRoutes(router chi.Router) {
 	router.MethodFunc(http.MethodGet, AuthPath, h.ServeHTTP)
 	router.MethodFunc(http.MethodHead, AuthPath, head(h.ServeHTTP))
 	router.MethodFunc(http.MethodOptions, AuthPath, options("GET, HEAD, OPTIONS"))
-	return router
 }
 
 func (h *CoreHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
