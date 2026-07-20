@@ -9,15 +9,26 @@ import (
 )
 
 type Querier interface {
+	AcquireAuthProviderAdvisoryLock(ctx context.Context, providerRef string) error
+	AddNewAuthUserToRootGroup(ctx context.Context, userID int32) (int64, error)
+	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
+	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
+	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
+	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
+	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
+	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
+	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
+	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
+	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
 }
 
 var _ Querier = (*Queries)(nil)

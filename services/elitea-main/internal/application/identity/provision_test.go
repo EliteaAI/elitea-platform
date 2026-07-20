@@ -79,16 +79,37 @@ func TestProvisionDerivesCurrentBaselineCommand(t *testing.T) {
 			wantEmail: "locallogin",
 			wantName:  "locallogin",
 		},
+		{
+			name: "Python full lowercase expands dotted capital I",
+			assertion: VerifiedAssertion{
+				Provider:          "oidc",
+				ProviderReference: "subject",
+				Email:             "\u0130@EXAMPLE.COM",
+			},
+			wantEmail: "i\u0307@example.com",
+			wantName:  "i\u0307@example.com",
+		},
+		{
+			name: "Python contextual lowercase uses final sigma",
+			assertion: VerifiedAssertion{
+				Provider:          "oidc",
+				ProviderReference: "subject",
+				Email:             "\u039f\u03a3@EXAMPLE.COM",
+			},
+			wantEmail: "\u03bf\u03c2@example.com",
+			wantName:  "\u03bf\u03c2@example.com",
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &repositoryStub{result: successfulResult(42)}
-			service := mustProvisionService(t, repository)
+			service := mustProvisionService(t, repository, ProvisioningPolicy{
+				InitialGlobalAdmins: test.initialGlobalAdmins,
+			})
 
 			result, err := service.Provision(context.Background(), ProvisionRequest{
-				Assertion:           test.assertion,
-				InitialGlobalAdmins: test.initialGlobalAdmins,
+				Assertion: test.assertion,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -110,8 +131,65 @@ func TestProvisionDerivesCurrentBaselineCommand(t *testing.T) {
 			if command.InitialAdministrationMode != test.wantInitialAdminMode || command.InitialAdministrationRole != test.wantInitialAdminRole {
 				t.Fatalf("initial administration = (%q, %q), want (%q, %q)", command.InitialAdministrationMode, command.InitialAdministrationRole, test.wantInitialAdminMode, test.wantInitialAdminRole)
 			}
-			if command.Reconciliation != ReconciliationNewAIUser {
-				t.Fatalf("reconciliation = %q, want %q", command.Reconciliation, ReconciliationNewAIUser)
+		})
+	}
+}
+
+func TestProvisionDerivesCurrentBaselineProjectEnrollment(t *testing.T) {
+	tests := []struct {
+		name           string
+		email          string
+		policy         ProjectEnrollmentPolicy
+		wantEligible   bool
+		wantAdminRoles []string
+	}{
+		{
+			name:  "last at domain with whitespace and surrounding at signs",
+			email: "alias@department@example.com",
+			policy: ProjectEnrollmentPolicy{
+				ProjectID:                  7,
+				AllowedDomains:             " other.test, @@example.com@@ ",
+				AdditionalGlobalAdminRoles: []string{"public_admin", "viewer", "public_admin", ""},
+			},
+			wantEligible:   true,
+			wantAdminRoles: []string{"public_admin", ""},
+		},
+		{
+			name:  "domain comparison remains case sensitive after email lowercase",
+			email: "user@example.com",
+			policy: ProjectEnrollmentPolicy{
+				ProjectID:      7,
+				AllowedDomains: "Example.COM",
+			},
+		},
+		{
+			name:  "wildcard",
+			email: "local-login",
+			policy: ProjectEnrollmentPolicy{
+				ProjectID:      7,
+				AllowedDomains: "*",
+			},
+			wantEligible: true,
+		},
+		{
+			name:  "empty configured value matches empty trailing domain like Python split",
+			email: "user@",
+			policy: ProjectEnrollmentPolicy{
+				ProjectID:      7,
+				AllowedDomains: "",
+			},
+			wantEligible: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decision := deriveProjectEnrollment(test.email, test.policy)
+			if decision.ProjectID != test.policy.ProjectID || decision.Eligible != test.wantEligible {
+				t.Fatalf("decision = %+v, want project=%d eligible=%t", decision, test.policy.ProjectID, test.wantEligible)
+			}
+			if strings.Join(decision.AdditionalGlobalAdminRoles, "\x00") != strings.Join(test.wantAdminRoles, "\x00") {
+				t.Fatalf("admin roles = %q, want %q", decision.AdditionalGlobalAdminRoles, test.wantAdminRoles)
 			}
 		})
 	}
@@ -124,13 +202,14 @@ func TestProvisionInitialGlobalAdminMatchIsExactAndCaseSensitive(t *testing.T) {
 		{"other", "Admin"},
 	} {
 		repository := &repositoryStub{result: successfulResult(7)}
-		service := mustProvisionService(t, repository)
+		service := mustProvisionService(t, repository, ProvisioningPolicy{
+			InitialGlobalAdmins: admins,
+		})
 		_, err := service.Provision(context.Background(), ProvisionRequest{
 			Assertion: VerifiedAssertion{
 				Provider:          "oidc",
 				ProviderReference: "ADMIN",
 			},
-			InitialGlobalAdmins: admins,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -138,6 +217,38 @@ func TestProvisionInitialGlobalAdminMatchIsExactAndCaseSensitive(t *testing.T) {
 		if repository.command.InitialAdministrationMode != "" || repository.command.InitialAdministrationRole != "" {
 			t.Fatalf("non-exact config %q requested initial administration: %+v", admins, repository.command)
 		}
+	}
+}
+
+func TestProvisioningPolicyIsCopiedAtServiceConstruction(t *testing.T) {
+	initialAdmins := []string{"ADMIN"}
+	additionalRoles := []string{"public_admin"}
+	repository := &repositoryStub{result: successfulResult(7)}
+	service := mustProvisionService(t, repository, ProvisioningPolicy{
+		InitialGlobalAdmins: initialAdmins,
+		ProjectEnrollment: ProjectEnrollmentPolicy{
+			ProjectID:                  7,
+			AllowedDomains:             "example.com",
+			AdditionalGlobalAdminRoles: additionalRoles,
+		},
+	})
+	initialAdmins[0] = "changed"
+	additionalRoles[0] = "changed"
+
+	_, err := service.Provision(context.Background(), ProvisionRequest{Assertion: VerifiedAssertion{
+		Provider:          "oidc",
+		ProviderReference: "ADMIN",
+		Email:             "user@example.com",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.command.InitialAdministrationRole != initialAdministrationRole {
+		t.Fatalf("initial role = %q, policy was mutated through caller slice", repository.command.InitialAdministrationRole)
+	}
+	roles := repository.command.ProjectEnrollment.AdditionalGlobalAdminRoles
+	if len(roles) != 1 || roles[0] != "public_admin" {
+		t.Fatalf("additional roles = %q, policy was mutated through caller slice", roles)
 	}
 }
 
@@ -263,24 +374,9 @@ func TestProvisionRejectsSuspendedAndInvalidRepositoryResults(t *testing.T) {
 			want: ErrIdentitySuspended,
 		},
 		{
-			name: "missing user",
-			result: ProvisionResult{
-				ReconciliationQueued: ReconciliationNewAIUser,
-			},
-			want: ErrInvalidProvisioningResult,
-		},
-		{
-			name:   "missing reconciliation receipt",
-			result: ProvisionResult{UserID: 42},
+			name:   "missing user",
+			result: ProvisionResult{},
 			want:   ErrInvalidProvisioningResult,
-		},
-		{
-			name: "wrong reconciliation receipt",
-			result: ProvisionResult{
-				UserID:               42,
-				ReconciliationQueued: "different_event",
-			},
-			want: ErrInvalidProvisioningResult,
 		},
 	}
 
@@ -297,21 +393,22 @@ func TestProvisionRejectsSuspendedAndInvalidRepositoryResults(t *testing.T) {
 }
 
 func TestNewProvisionServiceRequiresRepository(t *testing.T) {
-	if _, err := NewProvisionService(nil); err == nil {
+	if _, err := NewProvisionService(nil, ProvisioningPolicy{}); err == nil {
 		t.Fatal("expected missing repository error")
 	}
 }
 
 func successfulResult(userID int64) ProvisionResult {
-	return ProvisionResult{
-		UserID:               userID,
-		ReconciliationQueued: ReconciliationNewAIUser,
-	}
+	return ProvisionResult{UserID: userID}
 }
 
-func mustProvisionService(t *testing.T, repository Repository) *ProvisionService {
+func mustProvisionService(t *testing.T, repository Repository, policies ...ProvisioningPolicy) *ProvisionService {
 	t.Helper()
-	service, err := NewProvisionService(repository)
+	policy := ProvisioningPolicy{}
+	if len(policies) != 0 {
+		policy = policies[0]
+	}
+	service, err := NewProvisionService(repository, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
