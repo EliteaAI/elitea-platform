@@ -61,6 +61,9 @@ tasks:
       - python scripts/contract/check_configuration_validation_contract.py
       - python3 scripts/database/check_legacy_catalog_contract.py
       - python3 scripts/security/check_auth_baseline_catalog.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_main_auth_http_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_main_auth_http_baseline.py --auth-root ../centry/pylon_main/plugins/auth --auth-core-root ../centry/pylon_auth/plugins/auth_core --shared-api-root ../centry/pylon_main/plugins/shared --projects-root ../centry/pylon_main/plugins/projects --pylon-root ../pylon --main-auth-config ../centry/pylon_main/configs/auth.yml --check
+      - python3 scripts/security/check_main_auth_http_baseline.py
       - python3 scripts/security/check_legacy_rbac_drift.py
 
   baseline:auth:refresh:
@@ -84,6 +87,58 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_export_auth_baseline_catalog.py
       - python3 scripts/security/export_auth_baseline_catalog.py --plugins-root "{{.AUTH_BASELINE_PLUGINS_ROOT}}" --output testdata/baseline/auth-static-catalog.json --check
       - python3 scripts/security/check_auth_baseline_catalog.py
+
+  baseline:main-auth-http:refresh:
+    desc: Refresh bounded current-baseline pylon_main Auth HTTP evidence
+    vars:
+      MAIN_AUTH_ROOT: '{{.MAIN_AUTH_ROOT | default "../centry/pylon_main/plugins/auth"}}'
+      AUTH_CORE_ROOT: '{{.AUTH_CORE_ROOT | default "../centry/pylon_auth/plugins/auth_core"}}'
+      SHARED_API_ROOT: '{{.SHARED_API_ROOT | default "../centry/pylon_main/plugins/shared"}}'
+      PROJECTS_ROOT: '{{.PROJECTS_ROOT | default "../centry/pylon_main/plugins/projects"}}'
+      PYLON_ROOT: '{{.PYLON_ROOT | default "../pylon"}}'
+      MAIN_AUTH_CONFIG: '{{.MAIN_AUTH_CONFIG | default "../centry/pylon_main/configs/auth.yml"}}'
+    preconditions:
+      - sh: test -d "{{.MAIN_AUTH_ROOT}}"
+        msg: Set MAIN_AUTH_ROOT to the current pylon_main Auth plugin directory
+      - sh: test -d "{{.AUTH_CORE_ROOT}}"
+        msg: Set AUTH_CORE_ROOT to the current pylon_auth Auth Core plugin directory
+      - sh: test -f "{{.SHARED_API_ROOT}}/tools/api_tools.py"
+        msg: Set SHARED_API_ROOT to the current pylon_main shared plugin directory
+      - sh: test -f "{{.PROJECTS_ROOT}}/rpc/poc.py"
+        msg: Set PROJECTS_ROOT to the current pylon_main projects plugin directory
+      - sh: test -f "{{.PYLON_ROOT}}/pylon/core/tools/module/descriptor.py"
+        msg: Set PYLON_ROOT to the current Pylon source directory
+      - sh: test -f "{{.MAIN_AUTH_CONFIG}}"
+        msg: Set MAIN_AUTH_CONFIG to the current pylon_main Auth runtime config
+    cmds:
+      - python3 scripts/security/export_main_auth_http_baseline.py --auth-root "{{.MAIN_AUTH_ROOT}}" --auth-core-root "{{.AUTH_CORE_ROOT}}" --shared-api-root "{{.SHARED_API_ROOT}}" --projects-root "{{.PROJECTS_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --main-auth-config "{{.MAIN_AUTH_CONFIG}}"
+
+  baseline:main-auth-http:check:
+    desc: Compare bounded pylon_main Auth HTTP sources and validate reviewed evidence
+    vars:
+      MAIN_AUTH_ROOT: '{{.MAIN_AUTH_ROOT | default "../centry/pylon_main/plugins/auth"}}'
+      AUTH_CORE_ROOT: '{{.AUTH_CORE_ROOT | default "../centry/pylon_auth/plugins/auth_core"}}'
+      SHARED_API_ROOT: '{{.SHARED_API_ROOT | default "../centry/pylon_main/plugins/shared"}}'
+      PROJECTS_ROOT: '{{.PROJECTS_ROOT | default "../centry/pylon_main/plugins/projects"}}'
+      PYLON_ROOT: '{{.PYLON_ROOT | default "../pylon"}}'
+      MAIN_AUTH_CONFIG: '{{.MAIN_AUTH_CONFIG | default "../centry/pylon_main/configs/auth.yml"}}'
+    preconditions:
+      - sh: test -d "{{.MAIN_AUTH_ROOT}}"
+        msg: Set MAIN_AUTH_ROOT to the current pylon_main Auth plugin directory
+      - sh: test -d "{{.AUTH_CORE_ROOT}}"
+        msg: Set AUTH_CORE_ROOT to the current pylon_auth Auth Core plugin directory
+      - sh: test -f "{{.SHARED_API_ROOT}}/tools/api_tools.py"
+        msg: Set SHARED_API_ROOT to the current pylon_main shared plugin directory
+      - sh: test -f "{{.PROJECTS_ROOT}}/rpc/poc.py"
+        msg: Set PROJECTS_ROOT to the current pylon_main projects plugin directory
+      - sh: test -f "{{.PYLON_ROOT}}/pylon/core/tools/module/descriptor.py"
+        msg: Set PYLON_ROOT to the current Pylon source directory
+      - sh: test -f "{{.MAIN_AUTH_CONFIG}}"
+        msg: Set MAIN_AUTH_CONFIG to the current pylon_main Auth runtime config
+    cmds:
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_main_auth_http_baseline.py
+      - python3 scripts/security/export_main_auth_http_baseline.py --auth-root "{{.MAIN_AUTH_ROOT}}" --auth-core-root "{{.AUTH_CORE_ROOT}}" --shared-api-root "{{.SHARED_API_ROOT}}" --projects-root "{{.PROJECTS_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --main-auth-config "{{.MAIN_AUTH_CONFIG}}" --check
+      - python3 scripts/security/check_main_auth_http_baseline.py
 
   legacy:rbac:refresh:
     desc: Refresh deterministic legacy route/permission evidence from the Centry checkout

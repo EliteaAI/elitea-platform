@@ -8,6 +8,7 @@ on:
       - "scripts/contract/**"
       - "scripts/security/**"
       - "testdata/baseline/auth-static-catalog.json"
+      - "testdata/baseline/main-auth-http-contracts.json"
       - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
@@ -20,6 +21,7 @@ on:
       - "scripts/contract/**"
       - "scripts/security/**"
       - "testdata/baseline/auth-static-catalog.json"
+      - "testdata/baseline/main-auth-http-contracts.json"
       - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
@@ -91,6 +93,15 @@ jobs:
         run: |
           python scripts/security/test_export_auth_baseline_catalog.py
           python scripts/security/check_auth_baseline_catalog.py
+
+      # Sibling pylon_main Auth/shared/projects, pylon_auth, and Pylon sources
+      # are absent in CI. Local checks compare sources; CI checks the fixture.
+      - name: Check pylon_main Auth HTTP evidence integrity
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/security/test_main_auth_http_baseline.py
+          python scripts/security/check_main_auth_http_baseline.py
 
       - name: Test generated Go module
         working-directory: libs/proto/gen/go
