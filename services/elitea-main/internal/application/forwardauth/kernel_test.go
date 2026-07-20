@@ -626,6 +626,11 @@ func TestConfigurationAndRequestBounds(t *testing.T) {
 		{name: "duplicate field", rules: []PublicRule{{Conditions: []RuleCondition{
 			{Field: SourceURI, Pattern: `.*`}, {Field: SourceURI, Pattern: `.*`},
 		}}}},
+		{name: "blank name", rules: []PublicRule{{Name: " ", Conditions: []RuleCondition{{Field: SourceURI, Pattern: `.*`}}}}},
+		{name: "duplicate name", rules: []PublicRule{
+			{Name: "same", Conditions: []RuleCondition{{Field: SourceURI, Pattern: `/first`}}},
+			{Name: "same", Conditions: []RuleCondition{{Field: SourceURI, Pattern: `/second`}}},
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := NewPublicPolicy(test.rules); !errors.Is(err, ErrInvalidConfiguration) {

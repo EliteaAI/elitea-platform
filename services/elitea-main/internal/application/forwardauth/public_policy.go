@@ -3,6 +3,7 @@ package forwardauth
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -61,12 +62,18 @@ func NewPublicPolicy(rules []PublicRule) (PublicPolicy, error) {
 	}
 
 	compiled := make([]compiledRule, 0, len(rules))
+	names := make(map[string]struct{}, len(rules))
 	for _, rule := range rules {
-		if len(rule.Name) > MaxRuleNameBytes || !utf8.ValidString(rule.Name) ||
+		if rule.Name == "" || rule.Name != strings.TrimSpace(rule.Name) ||
+			len(rule.Name) > MaxRuleNameBytes || !utf8.ValidString(rule.Name) ||
 			stringsContainControl(rule.Name) || len(rule.Conditions) > MaxConditionsPerRule ||
 			(rule.MatchAll && len(rule.Conditions) != 0) || (!rule.MatchAll && len(rule.Conditions) == 0) {
 			return PublicPolicy{}, ErrInvalidConfiguration
 		}
+		if _, duplicate := names[rule.Name]; duplicate {
+			return PublicPolicy{}, ErrInvalidConfiguration
+		}
+		names[rule.Name] = struct{}{}
 		seen := make(map[SourceField]struct{}, len(rule.Conditions))
 		conditions := make([]compiledCondition, 0, len(rule.Conditions))
 		for _, condition := range rule.Conditions {
