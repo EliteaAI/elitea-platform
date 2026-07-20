@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	browserapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/browserauth"
+	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/identity"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
@@ -390,6 +391,35 @@ func TestFormLifecycleAcrossRealHTTPAndApplicationBoundaries(t *testing.T) {
 	if authorization.Principal.UserID != "71" || authorization.Provider != browserapp.FormProviderName ||
 		!json.Valid(authorization.ProviderAttributes) {
 		t.Fatalf("authorization = %+v", authorization)
+	}
+
+	publicPolicy, err := forwardapp.NewPublicPolicy(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := forwardapp.NewKernel(panicCoreCredential(t), flow, publicPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyResolver, err := NewTrustedProxyResolver(TrustedProxyConfig{
+		TrustedProxyCIDRs: []string{"10.0.0.0/8"},
+		PublicOrigin:      "https://elitea.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := NewCoreHandler(kernel, proxyResolver, cookies, CoreConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwardRequest := coreRequest("/forward-auth/auth?target=rpc")
+	forwardRequest.AddCookie(authenticatedCookies[0])
+	forwardRecorder := httptest.NewRecorder()
+	core.ServeHTTP(forwardRecorder, forwardRequest)
+	if forwardRecorder.Code != http.StatusOK || forwardRecorder.Header().Get("X-Auth-Type") != "user" ||
+		forwardRecorder.Header().Get("X-Auth-ID") != "71" ||
+		forwardRecorder.Header().Get("X-Auth-Reference") != "-" {
+		t.Fatalf("forward-auth status=%d headers=%v", forwardRecorder.Code, forwardRecorder.Header())
 	}
 
 	restartRequest := httptest.NewRequest(http.MethodGet, BasePath+LoginPath+"?target_to=%2Fagain", nil)

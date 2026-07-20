@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
@@ -105,7 +104,9 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 		MaxAge:           300,
 	}))
 	r.Use(apimw.RequestID)
-	r.Use(chimw.RealIP)
+	// Keep the raw socket peer available to any trust-aware proxy resolver.
+	// Generic RealIP processing before authentication would make X-Real-IP and
+	// X-Forwarded-For caller-controlled trust inputs.
 	r.Use(apimw.OtelMiddleware)
 	r.Use(apimw.Recover)
 

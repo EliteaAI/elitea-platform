@@ -2,7 +2,6 @@ package api
 
 import (
 	"github.com/go-chi/chi/v5"
-	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
@@ -15,7 +14,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(apimw.RequestID)
-	r.Use(chimw.RealIP)
+	// Preserve the socket peer in Request.RemoteAddr. A generic RealIP
+	// middleware trusts caller-controlled forwarding headers before route-level
+	// proxy policy can validate the peer. TrustedProxyResolver performs the one
+	// authoritative forwarded-chain resolution for ForwardAuth and rate limits.
 	r.Use(apimw.OtelMiddleware)
 	r.Use(apimw.Recover)
 

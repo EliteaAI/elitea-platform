@@ -29,12 +29,19 @@ type PrincipalValidator interface {
 	ValidatePrincipal(ctx context.Context, principal auth.User) (auth.User, error)
 }
 
+// ForwardedIdentityPeerVerifier proves that an X-Auth-* request arrived over
+// the isolated, header-stripping ingress boundary. Reloading an active user is
+// not proof that the caller was entitled to assert that user ID.
+type ForwardedIdentityPeerVerifier interface {
+	VerifyForwardedIdentityPeer(*http.Request) error
+}
+
 type AuthConfig struct {
-	Client                 *authsvc.Client // Legacy RPC validator used only when Validator is nil.
-	Validator              TokenValidator  // Local validator (used if non-nil, falls back to Client)
-	PrincipalValidator     PrincipalValidator
-	SessionSecret          string // HMAC key for session cookies
-	TrustForwardedIdentity bool   // Only for a listener isolated behind a header-stripping trusted proxy.
+	Client                    *authsvc.Client // Legacy RPC validator used only when Validator is nil.
+	Validator                 TokenValidator  // Local validator (used if non-nil, falls back to Client)
+	PrincipalValidator        PrincipalValidator
+	ForwardedIdentityVerifier ForwardedIdentityPeerVerifier
+	SessionSecret             string // HMAC key for session cookies
 }
 
 func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
@@ -44,7 +51,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if user, ok := tryTraefikHeaders(r, cfg.TrustForwardedIdentity); ok {
+			if user, ok := tryTraefikHeaders(r, cfg.ForwardedIdentityVerifier); ok {
 				// A forwarded token ID is not an owning user ID. The authoritative
 				// principal check must cross-check both typed IDs and normalize the
 				// compatibility ID before any downstream handler can use it as a
@@ -137,33 +144,57 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 	}
 }
 
-func tryTraefikHeaders(r *http.Request, trusted bool) (auth.User, bool) {
-	if !trusted {
+func tryTraefikHeaders(r *http.Request, verifier ForwardedIdentityPeerVerifier) (auth.User, bool) {
+	authType, typePresent, typeValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-Type")
+	authID, idPresent, idValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-ID")
+	if !typePresent && !idPresent {
 		return auth.User{}, false
 	}
-	authType := r.Header.Get("X-Auth-Type")
-	authID := r.Header.Get("X-Auth-Id")
-	authRef := r.Header.Get("X-Auth-Reference")
+	if verifier == nil || !typePresent || !idPresent || !typeValid || !idValid ||
+		verifier.VerifyForwardedIdentityPeer(r) != nil {
+		return auth.User{}, false
+	}
+	// X-Auth-Reference is compatibility routing material and may be a browser
+	// session bearer value. It is never an identity claim; the mandatory
+	// PrincipalValidator reloads mutable email from PostgreSQL.
 
-	if authType == "" || authID == "" {
-		return auth.User{}, false
-	}
 	if !strings.EqualFold(authType, "token") && !strings.EqualFold(authType, "user") {
 		return auth.User{}, false
 	}
+	authType = strings.ToLower(authType)
 
 	user := auth.User{
 		ID:       authID,
 		AuthType: authType,
-		Email:    authRef,
 	}
-	if strings.EqualFold(authType, "token") {
+	if authType == "token" {
+		userID, present, valid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-User-ID")
+		if !present || !valid {
+			return auth.User{}, false
+		}
 		user.TokenID = authID
-		user.UserID = r.Header.Get("X-Auth-User-ID")
+		user.UserID = userID
 	} else {
 		user.UserID = authID
 	}
 	return user, true
+}
+
+func uniqueForwardedIdentityHeader(headers http.Header, name string) (string, bool, bool) {
+	var values []string
+	for key, current := range headers {
+		if strings.EqualFold(key, name) {
+			values = append(values, current...)
+		}
+	}
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 || values[0] == "" || values[0] != strings.TrimSpace(values[0]) ||
+		strings.ContainsAny(values[0], "\x00\r\n") {
+		return "", true, false
+	}
+	return values[0], true, true
 }
 
 func validatePrincipal(ctx context.Context, cfg AuthConfig, user auth.User) (auth.User, error) {

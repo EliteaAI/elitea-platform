@@ -30,6 +30,12 @@ func (f principalValidatorFunc) ValidatePrincipal(ctx context.Context, user iden
 	return f(ctx, user)
 }
 
+type forwardedIdentityVerifierFunc func(*http.Request) error
+
+func (f forwardedIdentityVerifierFunc) VerifyForwardedIdentityPeer(request *http.Request) error {
+	return f(request)
+}
+
 func TestForwardAuthRequiresCurrentBaselineTraefikHeaders(t *testing.T) {
 	for _, missing := range currentBaselineTraefikHeaders() {
 		t.Run(missing.name, func(t *testing.T) {
@@ -282,7 +288,7 @@ func TestForwardAuthPreservesTokenRowAndOwningUserAcrossHeaders(t *testing.T) {
 
 	var downstream identity.User
 	authMiddleware := middleware.Auth(middleware.AuthConfig{
-		TrustForwardedIdentity: true,
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(func(*http.Request) error { return nil }),
 		PrincipalValidator: principalValidatorFunc(func(_ context.Context, user identity.User) (identity.User, error) {
 			if user.ID != "42" || user.TokenID != "42" || user.UserID != "7" {
 				t.Fatalf("principal validator received %+v", user)

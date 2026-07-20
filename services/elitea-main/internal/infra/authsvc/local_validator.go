@@ -14,6 +14,17 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
+var (
+	// ErrTokenRejected identifies a syntactically invalid, expired, revoked, or
+	// otherwise unknown caller credential. It is safe to map to an ordinary
+	// authentication denial without exposing the underlying reason.
+	ErrTokenRejected = auth.ErrCredentialRejected
+	// ErrTokenValidationUnavailable identifies configuration, storage, or data
+	// integrity failures. ForwardAuth must fail closed without misreporting an
+	// infrastructure outage as an ordinary bad credential.
+	ErrTokenValidationUnavailable = auth.ErrCredentialValidationUnavailable
+)
+
 type activePATQueries interface {
 	GetActivePATPrincipalByUUID(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error)
 }
@@ -39,7 +50,7 @@ type tokenClaims struct {
 
 func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (auth.User, error) {
 	if v == nil || len(v.secretKey) == 0 {
-		return auth.User{}, errors.New("authsvc: token signing key is not configured")
+		return auth.User{}, fmt.Errorf("%w: token signing key is not configured", ErrTokenValidationUnavailable)
 	}
 	token, err := jwt.ParseWithClaims(tokenStr, &tokenClaims{}, func(t *jwt.Token) (interface{}, error) {
 		if t.Method.Alg() != jwt.SigningMethodHS512.Alg() {
@@ -48,15 +59,15 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 		return v.secretKey, nil
 	})
 	if err != nil {
-		return auth.User{}, fmt.Errorf("authsvc: invalid token: %w", err)
+		return auth.User{}, fmt.Errorf("%w: invalid token: %v", ErrTokenRejected, err)
 	}
 
 	claims, ok := token.Claims.(*tokenClaims)
 	if !ok || claims.UUID == "" {
-		return auth.User{}, errors.New("authsvc: invalid token claims")
+		return auth.User{}, fmt.Errorf("%w: invalid token claims", ErrTokenRejected)
 	}
 	if v.queries == nil {
-		return auth.User{}, errors.New("authsvc: token repository is not configured")
+		return auth.User{}, fmt.Errorf("%w: token repository is not configured", ErrTokenValidationUnavailable)
 	}
 
 	// Expiry and active ownership are validated in one generated query. Roles
@@ -64,13 +75,16 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 	// cached into the credential identity.
 	principal, err := v.queries.GetActivePATPrincipalByUUID(ctx, claims.UUID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return auth.User{}, errors.New("authsvc: token not found")
+		if contextErr := ctx.Err(); contextErr != nil {
+			return auth.User{}, contextErr
 		}
-		return auth.User{}, fmt.Errorf("authsvc: db lookup failed: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.User{}, fmt.Errorf("%w: token not found", ErrTokenRejected)
+		}
+		return auth.User{}, fmt.Errorf("%w: db lookup failed: %w", ErrTokenValidationUnavailable, err)
 	}
 	if principal.TokenID <= 0 || principal.UserID <= 0 {
-		return auth.User{}, errors.New("authsvc: token principal contains invalid identity data")
+		return auth.User{}, fmt.Errorf("%w: token principal contains invalid identity data", ErrTokenValidationUnavailable)
 	}
 
 	return auth.User{

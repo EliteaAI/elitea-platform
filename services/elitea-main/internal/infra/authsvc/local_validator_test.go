@@ -31,7 +31,7 @@ func TestLocalValidatorRejectsNonBaselineHMACAlgorithmBeforeDatabaseAccess(t *te
 
 	validator := NewLocalValidator(nil, secret)
 	_, err = validator.ValidateToken(context.Background(), encoded)
-	if err == nil || !strings.Contains(err.Error(), "unexpected signing method") {
+	if !errors.Is(err, ErrTokenRejected) || !strings.Contains(err.Error(), "unexpected signing method") {
 		t.Fatalf("error = %v, want HS512 rejection", err)
 	}
 }
@@ -95,7 +95,7 @@ func TestLocalValidatorFailsClosedForInactiveOrMissingPAT(t *testing.T) {
 	}
 
 	_, err = validator.ValidateToken(context.Background(), encoded)
-	if err == nil || !strings.Contains(err.Error(), "token not found") {
+	if !errors.Is(err, ErrTokenRejected) || !strings.Contains(err.Error(), "token not found") {
 		t.Fatalf("error = %v, want inactive token rejection", err)
 	}
 }
@@ -103,7 +103,7 @@ func TestLocalValidatorFailsClosedForInactiveOrMissingPAT(t *testing.T) {
 func TestLocalValidatorRejectsMissingConfiguration(t *testing.T) {
 	validator := NewLocalValidator(nil, "")
 	_, err := validator.ValidateToken(context.Background(), "not-a-token")
-	if err == nil || !strings.Contains(err.Error(), "signing key is not configured") {
+	if !errors.Is(err, ErrTokenValidationUnavailable) || !strings.Contains(err.Error(), "signing key is not configured") {
 		t.Fatalf("error = %v, want missing key rejection", err)
 	}
 
@@ -114,7 +114,7 @@ func TestLocalValidatorRejectsMissingConfiguration(t *testing.T) {
 		t.Fatal(signErr)
 	}
 	_, err = validator.ValidateToken(context.Background(), encoded)
-	if err == nil || !strings.Contains(err.Error(), "repository is not configured") {
+	if !errors.Is(err, ErrTokenValidationUnavailable) || !strings.Contains(err.Error(), "repository is not configured") {
 		t.Fatalf("error = %v, want missing repository rejection", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestLocalValidatorPreservesDatabaseFailures(t *testing.T) {
 	}
 
 	_, err = validator.ValidateToken(context.Background(), encoded)
-	if !errors.Is(err, want) {
-		t.Fatalf("error = %v, want wrapped database failure", err)
+	if !errors.Is(err, ErrTokenValidationUnavailable) || !errors.Is(err, want) {
+		t.Fatalf("error = %v, want unavailable plus wrapped database failure", err)
 	}
 }

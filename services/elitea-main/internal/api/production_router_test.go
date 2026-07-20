@@ -61,6 +61,28 @@ func TestProductionRouterMatchesReviewedRoutePolicy(t *testing.T) {
 	}
 }
 
+func TestProductionRouterPreservesRawSocketPeer(t *testing.T) {
+	router := NewRouter(RouterConfig{})
+	router.Get("/__test/raw-peer", func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte(request.RemoteAddr))
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/__test/raw-peer", nil)
+	request.RemoteAddr = "10.20.30.40:43120"
+	request.Header.Set("X-Forwarded-For", "198.51.100.25")
+	request.Header.Set("X-Real-IP", "203.0.113.17")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got, want := recorder.Body.String(), request.RemoteAddr; got != want {
+		t.Fatalf("RemoteAddr = %q, want raw socket peer %q", got, want)
+	}
+}
+
 func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T) {
 	// Even explicit development identity cannot make a source-only prototype
 	// route appear in the production allowlist.
@@ -70,6 +92,7 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 	for _, target := range []string{
 		"/socket.io/",
 		"/auth",
+		"/forward-auth/auth",
 		"/forward-auth/info",
 		"/forward-auth/logout",
 		"/forward-auth/auth_form/logout",
@@ -148,13 +171,16 @@ func TestProductionAuthCandidatesRemainUnmountedForEveryCredentialShape(t *testi
 	}
 }
 
-func TestProductionFormBrowserSurfaceRemainsUnmountedForEffectiveMethods(t *testing.T) {
+func TestProductionBrowserAuthSurfaceRemainsUnmountedForEffectiveMethods(t *testing.T) {
 	t.Setenv("AUTH_DEV_MODE", "false")
 	router := newCompleteProductionRouter("0123456789abcdef0123456789abcdef")
 	routes := []struct {
 		method string
 		path   string
 	}{
+		{method: http.MethodGet, path: "/forward-auth/auth"},
+		{method: http.MethodHead, path: "/forward-auth/auth"},
+		{method: http.MethodOptions, path: "/forward-auth/auth"},
 		{method: http.MethodGet, path: "/forward-auth/login"},
 		{method: http.MethodHead, path: "/forward-auth/login"},
 		{method: http.MethodOptions, path: "/forward-auth/login"},

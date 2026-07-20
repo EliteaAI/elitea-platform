@@ -28,6 +28,14 @@ func (f principalValidatorFunc) ValidatePrincipal(ctx context.Context, user auth
 	return f(ctx, user)
 }
 
+type forwardedIdentityVerifierFunc func(*http.Request) error
+
+func (f forwardedIdentityVerifierFunc) VerifyForwardedIdentityPeer(request *http.Request) error {
+	return f(request)
+}
+
+func allowForwardedIdentity(*http.Request) error { return nil }
+
 func newTestClient() *authsvc.Client {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	return authsvc.New(rdb)
@@ -114,9 +122,13 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	var gotUser auth.User
 	var gotSource auth.AuthenticationSource
 	handler := middleware.Auth(middleware.AuthConfig{
-		Client:                 newTestClient(),
-		TrustForwardedIdentity: true,
+		Client:                    newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
 		PrincipalValidator: principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+			if user.Email != "" {
+				t.Fatalf("forwarded reference was trusted as email: %+v", user)
+			}
+			user.Email = "authoritative@example.com"
 			return user, nil
 		}),
 	})(
@@ -149,8 +161,8 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	if gotUser.ID != "123" || gotUser.UserID != "123" {
 		t.Errorf("expected user ID 123, got %+v", gotUser)
 	}
-	if gotUser.Email != "user@example.com" {
-		t.Errorf("expected email user@example.com, got %q", gotUser.Email)
+	if gotUser.Email != "authoritative@example.com" {
+		t.Errorf("expected authoritative email, got %q", gotUser.Email)
 	}
 	if gotUser.AuthType != "user" {
 		t.Errorf("expected AuthType user, got %q", gotUser.AuthType)
@@ -166,8 +178,8 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 func TestAuth_TraefikTokenNormalizesCompatibilityIDToOwningUser(t *testing.T) {
 	var gotUser auth.User
 	handler := middleware.Auth(middleware.AuthConfig{
-		Client:                 newTestClient(),
-		TrustForwardedIdentity: true,
+		Client:                    newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
 		PrincipalValidator: principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
 			if user.TokenID != "900" || user.UserID != "7" {
 				t.Fatalf("unvalidated forwarded identity = %+v", user)
@@ -206,8 +218,8 @@ func TestAuth_TraefikTokenNormalizesCompatibilityIDToOwningUser(t *testing.T) {
 
 func TestAuth_TrustedForwardedIdentityRequiresPrincipalValidator(t *testing.T) {
 	handler := middleware.Auth(middleware.AuthConfig{
-		Client:                 newTestClient(),
-		TrustForwardedIdentity: true,
+		Client:                    newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
 	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("unvalidated forwarded identity reached protected handler")
 	}))
@@ -238,6 +250,57 @@ func TestAuth_DoesNotTrustForwardedHeadersOnPublicListenerByDefault(t *testing.T
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthRejectsForwardedIdentityFromUnverifiedPeer(t *testing.T) {
+	verifierCalls := 0
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client: newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(func(*http.Request) error {
+			verifierCalls++
+			return errors.New("untrusted socket peer")
+		}),
+		PrincipalValidator: principalValidatorFunc(func(context.Context, auth.User) (auth.User, error) {
+			t.Fatal("unverified forwarded identity reached principal validation")
+			return auth.User{}, nil
+		}),
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("unverified forwarded identity reached protected handler")
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/projects", nil)
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "7")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized || verifierCalls != 1 {
+		t.Fatalf("status=%d verifier calls=%d", recorder.Code, verifierCalls)
+	}
+}
+
+func TestAuthRejectsDuplicateForwardedIdentityHeaders(t *testing.T) {
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:                    newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
+		PrincipalValidator: principalValidatorFunc(func(context.Context, auth.User) (auth.User, error) {
+			t.Fatal("ambiguous forwarded identity reached principal validation")
+			return auth.User{}, nil
+		}),
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("ambiguous forwarded identity reached protected handler")
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/api/v2/projects", nil)
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "7")
+	request.Header["x-auth-id"] = []string{"8"}
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -301,7 +364,10 @@ func TestAuthLocalValidationNeverConsultsSharedRedisCache(t *testing.T) {
 }
 
 func TestAuth_TraefikHeaders_MissingID(t *testing.T) {
-	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient(), TrustForwardedIdentity: true})(
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:                    newTestClient(),
+		ForwardedIdentityVerifier: forwardedIdentityVerifierFunc(allowForwardedIdentity),
+	})(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Fatal("should not reach handler without Authorization header")
 		}),

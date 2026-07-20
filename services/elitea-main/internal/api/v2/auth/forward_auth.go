@@ -1,13 +1,12 @@
 package auth
 
 import (
-	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 )
@@ -45,8 +44,7 @@ func WithForwardAuthCredentialHeaders(headers ...ForwardAuthCredentialHeader) Fo
 // Traefik sends the original request headers; this handler validates
 // credentials and responds 200 on success or 403 on credential failure.
 type ForwardAuthHandler struct {
-	authClient        *authsvc.Client
-	validator         apimw.TokenValidator
+	credentials       *forwardapp.TokenCredentialAuthenticator
 	credentialHeaders []ForwardAuthCredentialHeader
 }
 
@@ -55,7 +53,14 @@ func NewForwardAuthHandler(
 	validator apimw.TokenValidator,
 	opts ...ForwardAuthOption,
 ) *ForwardAuthHandler {
-	handler := &ForwardAuthHandler{authClient: client, validator: validator}
+	var tokenValidator forwardapp.TokenValidator
+	if validator != nil {
+		tokenValidator = validator
+	} else if client != nil {
+		tokenValidator = client
+	}
+	credentials, _ := forwardapp.NewTokenCredentialAuthenticator(tokenValidator)
+	handler := &ForwardAuthHandler{credentials: credentials}
 	for _, opt := range opts {
 		opt(handler)
 	}
@@ -105,41 +110,22 @@ func (h *ForwardAuthHandler) authenticate(
 	credentialType string,
 	credentialData string,
 ) {
-	token, ok := credentialToken(credentialType, credentialData)
-	if !ok {
+	if h.credentials == nil {
 		writeAccessDenied(w)
 		return
 	}
-
-	user, err := h.validate(r, token)
-	if err != nil {
+	result, err := h.credentials.AuthenticateCredential(r.Context(), forwardapp.Source{}, forwardapp.CredentialInput{
+		Present: true,
+		Type:    credentialType,
+		Data:    credentialData,
+	})
+	if err != nil || result.Resolution != forwardapp.CredentialAccepted {
 		writeAccessDenied(w)
 		return
 	}
-	if err := writeSuccess(w, r, user); err != nil {
+	if err := writeSuccess(w, r, result.Principal); err != nil {
 		writeAccessDenied(w)
 	}
-}
-
-func (h *ForwardAuthHandler) validate(r *http.Request, token string) (identity.User, error) {
-	ctx := r.Context()
-
-	if h.validator != nil {
-		user, err := h.validator.ValidateToken(ctx, token)
-		if err != nil {
-			return identity.User{}, err
-		}
-		return user, nil
-	}
-	if h.authClient == nil {
-		return identity.User{}, errors.New("auth client is not configured")
-	}
-
-	user, err := h.authClient.ValidateToken(ctx, token)
-	if err != nil {
-		return identity.User{}, err
-	}
-	return user, nil
 }
 
 func writeSuccess(w http.ResponseWriter, r *http.Request, user identity.User) error {
@@ -189,31 +175,6 @@ func parseAuthorization(value string) (string, string, bool) {
 		return "", "", false
 	}
 	return strings.ToLower(value[:separator]), value[separator+1:], true
-}
-
-func credentialToken(credentialType, credentialData string) (string, bool) {
-	switch credentialType {
-	case "bearer":
-		return credentialData, true
-	case "basic":
-		// This deliberately rejects non-alphabet bytes that Python's permissive
-		// base64 decoder could discard. Well-formed Basic credentials are
-		// unchanged, while ambiguous malformed credentials fail closed.
-		decoded, err := base64.StdEncoding.DecodeString(credentialData)
-		if err != nil {
-			return "", false
-		}
-		if !utf8.Valid(decoded) {
-			return "", false
-		}
-		parts := strings.SplitN(string(decoded), ":", 2)
-		if len(parts) != 2 {
-			return "", false
-		}
-		return parts[0], true
-	default:
-		return "", false
-	}
 }
 
 func requestHeader(headers http.Header, name string) (string, bool) {
