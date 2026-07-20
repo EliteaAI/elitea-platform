@@ -64,6 +64,9 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_main_auth_http_baseline.py
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_main_auth_http_baseline.py --auth-root ../centry/pylon_main/plugins/auth --auth-core-root ../centry/pylon_auth/plugins/auth_core --shared-api-root ../centry/pylon_main/plugins/shared --projects-root ../centry/pylon_main/plugins/projects --pylon-root ../pylon --main-auth-config ../centry/pylon_main/configs/auth.yml --check
       - python3 scripts/security/check_main_auth_http_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_browser_auth_http_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root ../centry/pylon_auth/plugins/auth_core --auth-form-root ../centry/pylon_auth/plugins/auth_form --auth-idp-rpc-root ../centry/pylon_auth/plugins/auth_idp_rpc --auth-init-root ../centry/pylon_auth/plugins/auth_init --auth-mappers-root ../centry/pylon_auth/plugins/auth_mappers --main-auth-root ../centry/pylon_main/plugins/auth --admin-ui-root ../centry/pylon_main/plugins/admin_ui --centry-root ../centry --pylon-root ../pylon --ui-root ../EliteaUI --check
+      - python3 scripts/security/check_browser_auth_http_baseline.py
       - python3 scripts/security/check_legacy_rbac_drift.py
 
   baseline:auth:refresh:
@@ -139,6 +142,87 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_main_auth_http_baseline.py
       - python3 scripts/security/export_main_auth_http_baseline.py --auth-root "{{.MAIN_AUTH_ROOT}}" --auth-core-root "{{.AUTH_CORE_ROOT}}" --shared-api-root "{{.SHARED_API_ROOT}}" --projects-root "{{.PROJECTS_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --main-auth-config "{{.MAIN_AUTH_CONFIG}}" --check
       - python3 scripts/security/check_main_auth_http_baseline.py
+
+  baseline:browser-auth-http:refresh:
+    desc: Refresh bounded current-baseline browser and Form Auth HTTP evidence
+    vars:
+      AUTH_CORE_ROOT: '{{.AUTH_CORE_ROOT | default "../centry/pylon_auth/plugins/auth_core"}}'
+      AUTH_FORM_ROOT: '{{.AUTH_FORM_ROOT | default "../centry/pylon_auth/plugins/auth_form"}}'
+      AUTH_IDP_RPC_ROOT: '{{.AUTH_IDP_RPC_ROOT | default "../centry/pylon_auth/plugins/auth_idp_rpc"}}'
+      AUTH_INIT_ROOT: '{{.AUTH_INIT_ROOT | default "../centry/pylon_auth/plugins/auth_init"}}'
+      AUTH_MAPPERS_ROOT: '{{.AUTH_MAPPERS_ROOT | default "../centry/pylon_auth/plugins/auth_mappers"}}'
+      MAIN_AUTH_ROOT: '{{.MAIN_AUTH_ROOT | default "../centry/pylon_main/plugins/auth"}}'
+      ADMIN_UI_ROOT: '{{.ADMIN_UI_ROOT | default "../centry/pylon_main/plugins/admin_ui"}}'
+      CENTRY_ROOT: '{{.CENTRY_ROOT | default "../centry"}}'
+      PYLON_ROOT: '{{.PYLON_ROOT | default "../pylon"}}'
+      UI_ROOT: '{{.UI_ROOT | default "../EliteaUI"}}'
+    preconditions:
+      - sh: test -f "{{.AUTH_CORE_ROOT}}/routes/auth.py"
+        msg: Set AUTH_CORE_ROOT to the current Auth Core plugin directory
+      - sh: test -f "{{.AUTH_FORM_ROOT}}/routes/form.py"
+        msg: Set AUTH_FORM_ROOT to the current Form Auth plugin directory
+      - sh: test -f "{{.AUTH_IDP_RPC_ROOT}}/rpc/authorize.py"
+        msg: Set AUTH_IDP_RPC_ROOT to the current Auth IdP RPC plugin directory
+      - sh: test -f "{{.AUTH_INIT_ROOT}}/rpc/processor.py"
+        msg: Set AUTH_INIT_ROOT to the current Auth Init plugin directory
+      - sh: test -f "{{.AUTH_MAPPERS_ROOT}}/rpc/noop.py"
+        msg: Set AUTH_MAPPERS_ROOT to the current Auth Mappers plugin directory
+      - sh: test -f "{{.MAIN_AUTH_ROOT}}/module.py"
+        msg: Set MAIN_AUTH_ROOT to the current pylon_main Auth plugin directory
+      - sh: test -f "{{.ADMIN_UI_ROOT}}/frontend/src/components/Layout/Sidebar.jsx"
+        msg: Set ADMIN_UI_ROOT to the current pylon_main Admin UI plugin directory
+      - sh: test -f "{{.CENTRY_ROOT}}/pylon_auth/pylon.yml"
+        msg: Set CENTRY_ROOT to the current Centry repository
+      - sh: test -f "{{.PYLON_ROOT}}/pylon/core/tools/session.py"
+        msg: Set PYLON_ROOT to the current Pylon source directory
+      - sh: test -f "{{.UI_ROOT}}/src/api/eliteaApi.js"
+        msg: Set UI_ROOT to the current EliteaUI repository
+    cmds:
+      - python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root "{{.AUTH_CORE_ROOT}}" --auth-form-root "{{.AUTH_FORM_ROOT}}" --auth-idp-rpc-root "{{.AUTH_IDP_RPC_ROOT}}" --auth-init-root "{{.AUTH_INIT_ROOT}}" --auth-mappers-root "{{.AUTH_MAPPERS_ROOT}}" --main-auth-root "{{.MAIN_AUTH_ROOT}}" --admin-ui-root "{{.ADMIN_UI_ROOT}}" --centry-root "{{.CENTRY_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --ui-root "{{.UI_ROOT}}"
+
+  baseline:browser-auth-http:check:
+    desc: Compare browser/Form Auth sources and validate reviewed evidence
+    vars:
+      AUTH_CORE_ROOT: '{{.AUTH_CORE_ROOT | default "../centry/pylon_auth/plugins/auth_core"}}'
+      AUTH_FORM_ROOT: '{{.AUTH_FORM_ROOT | default "../centry/pylon_auth/plugins/auth_form"}}'
+      AUTH_IDP_RPC_ROOT: '{{.AUTH_IDP_RPC_ROOT | default "../centry/pylon_auth/plugins/auth_idp_rpc"}}'
+      AUTH_INIT_ROOT: '{{.AUTH_INIT_ROOT | default "../centry/pylon_auth/plugins/auth_init"}}'
+      AUTH_MAPPERS_ROOT: '{{.AUTH_MAPPERS_ROOT | default "../centry/pylon_auth/plugins/auth_mappers"}}'
+      MAIN_AUTH_ROOT: '{{.MAIN_AUTH_ROOT | default "../centry/pylon_main/plugins/auth"}}'
+      ADMIN_UI_ROOT: '{{.ADMIN_UI_ROOT | default "../centry/pylon_main/plugins/admin_ui"}}'
+      CENTRY_ROOT: '{{.CENTRY_ROOT | default "../centry"}}'
+      PYLON_ROOT: '{{.PYLON_ROOT | default "../pylon"}}'
+      UI_ROOT: '{{.UI_ROOT | default "../EliteaUI"}}'
+    preconditions:
+      - sh: test -f "{{.AUTH_CORE_ROOT}}/routes/auth.py"
+        msg: Set AUTH_CORE_ROOT to the current Auth Core plugin directory
+      - sh: test -f "{{.AUTH_FORM_ROOT}}/routes/form.py"
+        msg: Set AUTH_FORM_ROOT to the current Form Auth plugin directory
+      - sh: test -f "{{.AUTH_IDP_RPC_ROOT}}/rpc/authorize.py"
+        msg: Set AUTH_IDP_RPC_ROOT to the current Auth IdP RPC plugin directory
+      - sh: test -f "{{.AUTH_INIT_ROOT}}/rpc/processor.py"
+        msg: Set AUTH_INIT_ROOT to the current Auth Init plugin directory
+      - sh: test -f "{{.AUTH_MAPPERS_ROOT}}/rpc/noop.py"
+        msg: Set AUTH_MAPPERS_ROOT to the current Auth Mappers plugin directory
+      - sh: test -f "{{.MAIN_AUTH_ROOT}}/module.py"
+        msg: Set MAIN_AUTH_ROOT to the current pylon_main Auth plugin directory
+      - sh: test -f "{{.ADMIN_UI_ROOT}}/frontend/src/components/Layout/Sidebar.jsx"
+        msg: Set ADMIN_UI_ROOT to the current pylon_main Admin UI plugin directory
+      - sh: test -f "{{.CENTRY_ROOT}}/pylon_auth/pylon.yml"
+        msg: Set CENTRY_ROOT to the current Centry repository
+      - sh: test -f "{{.PYLON_ROOT}}/pylon/core/tools/session.py"
+        msg: Set PYLON_ROOT to the current Pylon source directory
+      - sh: test -f "{{.UI_ROOT}}/src/api/eliteaApi.js"
+        msg: Set UI_ROOT to the current EliteaUI repository
+    cmds:
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_browser_auth_http_baseline.py
+      - python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root "{{.AUTH_CORE_ROOT}}" --auth-form-root "{{.AUTH_FORM_ROOT}}" --auth-idp-rpc-root "{{.AUTH_IDP_RPC_ROOT}}" --auth-init-root "{{.AUTH_INIT_ROOT}}" --auth-mappers-root "{{.AUTH_MAPPERS_ROOT}}" --main-auth-root "{{.MAIN_AUTH_ROOT}}" --admin-ui-root "{{.ADMIN_UI_ROOT}}" --centry-root "{{.CENTRY_ROOT}}" --pylon-root "{{.PYLON_ROOT}}" --ui-root "{{.UI_ROOT}}" --check
+      - python3 scripts/security/check_browser_auth_http_baseline.py
+
+  baseline:browser-auth-http:trusted-gate:
+    desc: Required trusted multi-repository browser Auth merge and release gate
+    cmds:
+      - task: baseline:browser-auth-http:check
 
   legacy:rbac:refresh:
     desc: Refresh deterministic legacy route/permission evidence from the Centry checkout

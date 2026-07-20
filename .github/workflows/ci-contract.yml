@@ -9,6 +9,7 @@ on:
       - "scripts/security/**"
       - "testdata/baseline/auth-static-catalog.json"
       - "testdata/baseline/main-auth-http-contracts.json"
+      - "testdata/baseline/browser-auth-http-contracts.json"
       - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
@@ -22,6 +23,7 @@ on:
       - "scripts/security/**"
       - "testdata/baseline/auth-static-catalog.json"
       - "testdata/baseline/main-auth-http-contracts.json"
+      - "testdata/baseline/browser-auth-http-contracts.json"
       - "Taskfile.yml"
       - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-contract.yml"
@@ -102,6 +104,17 @@ jobs:
         run: |
           python scripts/security/test_main_auth_http_baseline.py
           python scripts/security/check_main_auth_http_baseline.py
+
+      # Browser/Form sibling plugins, Centry/Pylon, EliteaUI, and Admin UI are
+      # absent in this checkout. CI can validate only the reviewed fixture; it
+      # cannot prove sibling-repository provenance. The trusted merge/release
+      # gate is: task baseline:browser-auth-http:trusted-gate.
+      - name: Check browser and Form Auth HTTP evidence integrity
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/security/test_browser_auth_http_baseline.py
+          python scripts/security/check_browser_auth_http_baseline.py
 
       - name: Test generated Go module
         working-directory: libs/proto/gen/go
