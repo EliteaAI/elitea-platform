@@ -62,24 +62,24 @@ type ClientKeyResolver interface {
 	ResolveClientKey(*http.Request) (string, error)
 }
 
-type FormAttempt struct {
+type BrowserAttempt struct {
 	ClientKey   string
-	Stage       FormAttemptStage
+	Stage       BrowserAttemptStage
 	LoginDigest [sha256.Size]byte
 }
 
-type FormAttemptStage string
+type BrowserAttemptStage string
 
 const (
-	FormAttemptBegin      FormAttemptStage = "begin"
-	FormAttemptCredential FormAttemptStage = "credential"
+	BrowserAttemptFormBegin      BrowserAttemptStage = "form_begin"
+	BrowserAttemptFormCredential BrowserAttemptStage = "form_credential"
 )
 
-// AttemptAdmitter is called before login state allocation and again before
-// password verification. A production implementation must keep stage-specific
-// atomic limits shared across replicas.
+// AttemptAdmitter is called before login state allocation and before expensive
+// provider assertion work. A production implementation must keep
+// stage-specific atomic limits shared across replicas.
 type AttemptAdmitter interface {
-	Admit(context.Context, FormAttempt) (retryAfter time.Duration, err error)
+	Admit(context.Context, BrowserAttempt) (retryAfter time.Duration, err error)
 }
 
 type Config struct {
@@ -169,7 +169,7 @@ func (h *Handler) registerReadRoute(router chi.Router, path string, handler http
 
 func (h *Handler) beginLogin(writer http.ResponseWriter, request *http.Request) {
 	securityHeaders(writer)
-	if !h.admit(writer, request, FormAttempt{Stage: FormAttemptBegin}) {
+	if !h.admit(writer, request, BrowserAttempt{Stage: BrowserAttemptFormBegin}) {
 		return
 	}
 	if !h.resetExistingSession(writer, request) {
@@ -262,8 +262,8 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 		writeProblem(writer, http.StatusBadRequest)
 		return
 	}
-	if !h.admit(writer, request, FormAttempt{
-		Stage:       FormAttemptCredential,
+	if !h.admit(writer, request, BrowserAttempt{
+		Stage:       BrowserAttemptFormCredential,
 		LoginDigest: sha256.Sum256([]byte(login)),
 	}) {
 		return
@@ -301,24 +301,8 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 	http.Redirect(writer, request, result.ReturnTarget, http.StatusFound)
 }
 
-func (h *Handler) admit(writer http.ResponseWriter, request *http.Request, attempt FormAttempt) bool {
-	clientKey, err := h.clientKeys.ResolveClientKey(request)
-	if err != nil || !validClientKey(clientKey) {
-		writeProblem(writer, http.StatusServiceUnavailable)
-		return false
-	}
-	attempt.ClientKey = clientKey
-	retryAfter, err := h.attempts.Admit(request.Context(), attempt)
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, ErrAttemptLimited) {
-		setRetryAfter(writer, retryAfter)
-		writeProblem(writer, http.StatusTooManyRequests)
-		return false
-	}
-	writeProblem(writer, http.StatusServiceUnavailable)
-	return false
+func (h *Handler) admit(writer http.ResponseWriter, request *http.Request, attempt BrowserAttempt) bool {
+	return admitAttempt(writer, request, h.attempts, h.clientKeys, attempt)
 }
 
 func (h *Handler) resetExistingSession(writer http.ResponseWriter, request *http.Request) bool {

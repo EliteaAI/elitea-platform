@@ -79,7 +79,7 @@ func TestBeginLoginCreatesBoundTransactionAndVersionedCookie(t *testing.T) {
 		dependencies.flow.beginRequest.ReturnTarget != target {
 		t.Fatalf("begin request = %+v", dependencies.flow.beginRequest)
 	}
-	if dependencies.admitter.attempt.Stage != FormAttemptBegin ||
+	if dependencies.admitter.attempt.Stage != BrowserAttemptFormBegin ||
 		dependencies.admitter.attempt.ClientKey != "client-7" ||
 		dependencies.admitter.attempt.LoginDigest != ([sha256.Size]byte{}) {
 		t.Fatalf("begin attempt = %+v", dependencies.admitter.attempt)
@@ -270,7 +270,7 @@ func TestFormAuthorizeAdmitsBeforeVerificationAndRotatesCookie(t *testing.T) {
 	}
 	if dependencies.admitter.attempt.LoginDigest != sha256.Sum256([]byte("admin")) ||
 		dependencies.admitter.attempt.ClientKey != "client-7" ||
-		dependencies.admitter.attempt.Stage != FormAttemptCredential {
+		dependencies.admitter.attempt.Stage != BrowserAttemptFormCredential {
 		t.Fatalf("attempt = %+v", dependencies.admitter.attempt)
 	}
 	if dependencies.flow.completeRequest.SessionID != dependencies.flow.beginResult.SessionID ||
@@ -738,18 +738,19 @@ func requireSecurityHeaders(t *testing.T, headers http.Header) {
 }
 
 type flowStub struct {
-	events          *[]string
-	beginRequest    browserapp.BeginRequest
-	beginResult     browserapp.BeginResult
-	beginErr        error
-	beginCalls      int
-	completeRequest browserapp.CompleteRequest
-	completeResult  browserapp.CompleteResult
-	completeErr     error
-	completeCalls   int
-	logoutID        string
-	logoutErr       error
-	logoutCalls     int
+	events           *[]string
+	beginRequest     browserapp.BeginRequest
+	beginResult      browserapp.BeginResult
+	beginErr         error
+	beginCalls       int
+	completeRequest  browserapp.CompleteRequest
+	completeResult   browserapp.CompleteResult
+	completeVerifier browserapp.AssertionVerifier
+	completeErr      error
+	completeCalls    int
+	logoutID         string
+	logoutErr        error
+	logoutCalls      int
 }
 
 func (stub *flowStub) Begin(_ context.Context, request browserapp.BeginRequest) (browserapp.BeginResult, error) {
@@ -762,10 +763,11 @@ func (stub *flowStub) Begin(_ context.Context, request browserapp.BeginRequest) 
 func (stub *flowStub) Complete(
 	_ context.Context,
 	request browserapp.CompleteRequest,
-	_ browserapp.AssertionVerifier,
+	verifier browserapp.AssertionVerifier,
 ) (browserapp.CompleteResult, error) {
 	stub.completeCalls++
 	stub.completeRequest = request
+	stub.completeVerifier = verifier
 	*stub.events = append(*stub.events, "complete")
 	return stub.completeResult, stub.completeErr
 }
@@ -779,13 +781,13 @@ func (stub *flowStub) Logout(_ context.Context, sessionID string) (browserapp.Lo
 
 type attemptAdmitterStub struct {
 	events     *[]string
-	attempt    FormAttempt
+	attempt    BrowserAttempt
 	retryAfter time.Duration
 	err        error
 	calls      int
 }
 
-func (stub *attemptAdmitterStub) Admit(_ context.Context, attempt FormAttempt) (time.Duration, error) {
+func (stub *attemptAdmitterStub) Admit(_ context.Context, attempt BrowserAttempt) (time.Duration, error) {
 	stub.calls++
 	stub.attempt = attempt
 	*stub.events = append(*stub.events, "admit")

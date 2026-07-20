@@ -97,6 +97,7 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 		"/forward-auth/logout",
 		"/forward-auth/auth_form/logout",
 		"/forward-auth/auth_oidc/logout",
+		"/forward-auth/auth_oidc/logout_callback",
 		"/artifacts/s3/",
 		"/admin/app/",
 		"/app/application_icon/icon.svg",
@@ -105,6 +106,7 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 		"/forward-auth/auth_form/authorize",
 		"/forward-auth/auth_oidc/login",
 		"/forward-auth/auth_oidc/callback",
+		"/forward-auth/auth_oidc/login_callback",
 		"/api/v2/projects/7",
 		"/api/v2/admin/auth_users/",
 		"/api/v2/secrets/7",
@@ -195,6 +197,13 @@ func TestProductionBrowserAuthSurfaceRemainsUnmountedForEffectiveMethods(t *test
 		{method: http.MethodGet, path: "/forward-auth/auth_form/logout"},
 		{method: http.MethodHead, path: "/forward-auth/auth_form/logout"},
 		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout"},
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login"},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login"},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login"},
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login_callback"},
+		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback"},
+		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback"},
+		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback"},
 	}
 
 	for _, route := range routes {

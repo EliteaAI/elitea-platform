@@ -18,13 +18,18 @@ import (
 const minTransactionLifetime = time.Second
 
 var (
-	ErrInvalidConfiguration       = errors.New("invalid browser authentication configuration")
-	ErrInvalidRequest             = errors.New("invalid browser authentication request")
-	ErrTransactionRejected        = browserflow.ErrTransactionRejected
-	ErrUnauthenticated            = errors.New("browser session is not authenticated")
-	ErrAuthenticationExpired      = errors.New("browser authentication expired")
-	ErrDependencyUnavailable      = errors.New("browser authentication dependency unavailable")
-	ErrAuthenticationFinalization = errors.New("browser authentication session finalization failed")
+	ErrInvalidConfiguration = errors.New("invalid browser authentication configuration")
+	ErrInvalidRequest       = errors.New("invalid browser authentication request")
+	ErrTransactionRejected  = browserflow.ErrTransactionRejected
+	ErrUnauthenticated      = errors.New("browser session is not authenticated")
+	// ErrAssertionVerifierUnavailable is returned only by trusted protocol
+	// adapters when assertion verification could not be attempted because an
+	// identity-provider dependency was unavailable. Invalid codes, tokens, and
+	// claims must return a different error and remain authentication failures.
+	ErrAssertionVerifierUnavailable = errors.New("browser assertion verifier unavailable")
+	ErrAuthenticationExpired        = errors.New("browser authentication expired")
+	ErrDependencyUnavailable        = errors.New("browser authentication dependency unavailable")
+	ErrAuthenticationFinalization   = errors.New("browser authentication session finalization failed")
 )
 
 // SessionStore is the server-side browser-session contract. It retains the
@@ -311,6 +316,14 @@ func (s *Service) Complete(
 		ProviderState:        transaction.ProviderState,
 	})
 	if err != nil {
+		if errors.Is(err, ErrAssertionVerifierUnavailable) {
+			return CompleteResult{}, sanitizedError(
+				ctx,
+				ErrDependencyUnavailable,
+				"verify provider assertion",
+				err,
+			)
+		}
 		return CompleteResult{}, sanitizedError(ctx, ErrUnauthenticated, "verify provider assertion", err)
 	}
 	assertion = cloneAssertion(assertion)

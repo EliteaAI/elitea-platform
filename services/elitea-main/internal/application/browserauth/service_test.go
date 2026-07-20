@@ -825,6 +825,22 @@ func TestDependencyErrorsAreSanitized(t *testing.T) {
 		}
 	})
 
+	t.Run("provider verifier dependency", func(t *testing.T) {
+		t.Parallel()
+		service, _, _, _, _, _ := newTestService(t)
+		correlation := browserflow.ProtocolCorrelation{Nonce: "nonce-1"}
+		begin := beginFlow(t, service, "oidc", correlation)
+		_, err := service.Complete(context.Background(), CompleteRequest{
+			SessionID:     begin.SessionID,
+			TransactionID: begin.TransactionID,
+			Provider:      "oidc",
+		}, &assertionVerifierStub{err: fmt.Errorf("%w: %s", ErrAssertionVerifierUnavailable, protectedDetail)})
+		if !errors.Is(err, ErrDependencyUnavailable) || errors.Is(err, ErrUnauthenticated) ||
+			strings.Contains(err.Error(), protectedDetail) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
 	t.Run("principal validator", func(t *testing.T) {
 		t.Parallel()
 		now := time.Date(2026, time.July, 20, 9, 0, 0, 0, time.UTC)
