@@ -7,14 +7,12 @@ import (
 	_ "embed"
 	"errors"
 	"html/template"
-	"math"
 	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -34,12 +32,11 @@ const (
 	DefaultMaxFormBodyBytes = int64(8 << 10)
 	maxMaxFormBodyBytes     = int64(64 << 10)
 	maxPasswordBytes        = 4096
-	maxClientKeyBytes       = 512
 )
 
 var (
 	ErrInvalidHandlerConfiguration = errors.New("invalid browser authentication HTTP configuration")
-	ErrAttemptLimited              = errors.New("browser authentication attempt limit reached")
+	ErrAttemptLimited              = browserapp.ErrAttemptLimited
 )
 
 //go:embed templates/login.html
@@ -62,25 +59,16 @@ type ClientKeyResolver interface {
 	ResolveClientKey(*http.Request) (string, error)
 }
 
-type BrowserAttempt struct {
-	ClientKey   string
-	Stage       BrowserAttemptStage
-	LoginDigest [sha256.Size]byte
-}
-
-type BrowserAttemptStage string
+type BrowserAttempt = browserapp.BrowserAttempt
+type BrowserAttemptStage = browserapp.BrowserAttemptStage
+type AttemptAdmitter = browserapp.AttemptAdmitter
 
 const (
-	BrowserAttemptFormBegin      BrowserAttemptStage = "form_begin"
-	BrowserAttemptFormCredential BrowserAttemptStage = "form_credential"
+	BrowserAttemptFormBegin      = browserapp.BrowserAttemptFormBegin
+	BrowserAttemptFormCredential = browserapp.BrowserAttemptFormCredential
+	BrowserAttemptOIDCBegin      = browserapp.BrowserAttemptOIDCBegin
+	BrowserAttemptOIDCCallback   = browserapp.BrowserAttemptOIDCCallback
 )
-
-// AttemptAdmitter is called before login state allocation and before expensive
-// provider assertion work. A production implementation must keep
-// stage-specific atomic limits shared across replicas.
-type AttemptAdmitter interface {
-	Admit(context.Context, BrowserAttempt) (retryAfter time.Duration, err error)
-}
 
 type Config struct {
 	DefaultLoginTarget  string
@@ -406,19 +394,14 @@ func validFormText(value string, maxBytes int) bool {
 		!strings.ContainsRune(value, '\x00')
 }
 
-func validClientKey(value string) bool {
-	return value != "" && len(value) <= maxClientKeyBytes && utf8.ValidString(value) &&
-		!strings.ContainsFunc(value, unicode.IsControl)
-}
-
 func setRetryAfter(writer http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfter <= 0 {
 		return
 	}
-	seconds := int64(math.Ceil(retryAfter.Seconds()))
-	if seconds > 3600 {
-		seconds = 3600
+	if retryAfter > browserapp.MaxBrowserAttemptRetryAfter {
+		retryAfter = browserapp.MaxBrowserAttemptRetryAfter
 	}
+	seconds := int64((retryAfter + time.Second - 1) / time.Second)
 	writer.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
 }
 

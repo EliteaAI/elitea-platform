@@ -27,9 +27,6 @@ const (
 	maxOIDCCallbackKeyBytes     = 128
 	maxOIDCCallbackValueBytes   = 4096
 	maxOIDCAuthorizationURL     = 16 << 10
-
-	BrowserAttemptOIDCBegin    BrowserAttemptStage = "oidc_begin"
-	BrowserAttemptOIDCCallback BrowserAttemptStage = "oidc_callback"
 )
 
 var errOIDCCallbackRejected = errors.New("OIDC authorization response rejected")
@@ -352,11 +349,15 @@ func admitAttempt(
 	attempt BrowserAttempt,
 ) bool {
 	clientKey, err := clientKeys.ResolveClientKey(request)
-	if err != nil || !validClientKey(clientKey) {
+	if err != nil {
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return false
 	}
 	attempt.ClientKey = clientKey
+	if err := attempt.Validate(); err != nil {
+		writeProblem(writer, http.StatusServiceUnavailable)
+		return false
+	}
 	retryAfter, err := attempts.Admit(request.Context(), attempt)
 	if err == nil {
 		return true

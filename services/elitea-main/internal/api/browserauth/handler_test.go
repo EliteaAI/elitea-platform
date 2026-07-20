@@ -154,6 +154,27 @@ func TestBeginLoginAdmitsBeforeWritesAndRevokesExistingSession(t *testing.T) {
 	})
 }
 
+func TestSetRetryAfterPreservesSupportedWindowsAndBoundsDependencies(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		duration time.Duration
+		want     string
+	}{
+		{name: "rounds up", duration: 90*time.Minute + time.Millisecond, want: "5401"},
+		{name: "preserves maximum", duration: browserapp.MaxBrowserAttemptRetryAfter, want: "86400"},
+		{name: "bounds invalid dependency result", duration: 48 * time.Hour, want: "86400"},
+		{name: "omits non-positive", duration: 0, want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			setRetryAfter(recorder, test.duration)
+			if got := recorder.Header().Get("Retry-After"); got != test.want {
+				t.Fatalf("Retry-After = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestBeginLoginFallsBackFromUntrustedOrAmbiguousTarget(t *testing.T) {
 	for _, rawQuery := range []string{
 		"",
