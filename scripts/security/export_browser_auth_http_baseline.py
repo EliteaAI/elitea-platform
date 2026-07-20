@@ -118,6 +118,7 @@ CENTRY_SELECTED_FILES = (
     "pylon_auth/configs/auth_init.yml",
     "pylon_auth/pylon.yml",
     "pylon_main/configs/auth.yml",
+    "pylon_main/configs/shared.yml",
     "pylon_main/pylon.yml",
 )
 
@@ -246,6 +247,7 @@ FINGERPRINT_TARGETS = {
     "main_auth": {
         "module.py": (
             ("Module", "__init__"),
+            ("Module", "_after_request_hook"),
             ("Module", "_before_request_hook"),
             ("Module", "_get_auth_cache_key"),
             ("Module", "_get_cached_auth"),
@@ -728,6 +730,14 @@ def _selected_main_auth_config(text: str) -> dict[str, Any]:
     }
 
 
+def _selected_main_shared_config(text: str) -> dict[str, str]:
+    values = _yaml_scalars(text)
+    allow_cors = values.get("settings.allow_cors")
+    if allow_cors not in {"true", "false"}:
+        raise ValueError("tracked pylon_main allow_cors must be an explicit boolean")
+    return {"settings.allow_cors": allow_cors}
+
+
 def _safe_form_config(text: str) -> dict[str, Any]:
     users: list[set[str]] = []
     current: set[str] | None = None
@@ -957,6 +967,19 @@ def _http_outcomes(
             "response": {"body": "OK", "identity_headers": [], "status": 200},
         },
         {
+            "id": "forward_auth.empty_target",
+            "request": {
+                "method": "GET",
+                "precondition": (
+                    "a credential, browser session, or public-rule branch reaches the "
+                    "success mapper"
+                ),
+                "route": routes["auth"],
+                "target": "",
+            },
+            "response": {"location": denied, "status": 302},
+        },
+        {
             "id": "forward_auth.unknown_target",
             "request": {
                 "method": "GET",
@@ -1010,6 +1033,11 @@ def _http_outcomes(
             "id": "browser.info.raw",
             "request": {"method": "GET", "route": routes["info"], "target": None},
             "response": {"content_type": "application/json", "status": 200},
+        },
+        {
+            "id": "browser.info.empty_target",
+            "request": {"method": "GET", "route": routes["info"], "target": ""},
+            "response": {"location": denied, "status": 302},
         },
         {
             "id": "browser.info.json",
@@ -1093,6 +1121,28 @@ def _http_outcomes(
             },
         },
         {
+            "id": "main.cors_options_replacement",
+            "request": {
+                "method": "OPTIONS",
+                "scope": "pylon_main while tracked shared allow_cors is true",
+            },
+            "response": {
+                "body": "empty replacement response",
+                "headers": {
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Allow-Methods": "*",
+                    "Access-Control-Allow-Origin": "*",
+                },
+                "status": 200,
+            },
+            "side_effects": [
+                "global authorization still executes before the replacement",
+                "the original status, body, and headers are discarded",
+                "configured additional headers applied before replacement are lost",
+            ],
+        },
+        {
             "id": "inner.head",
             "request": {"method": "HEAD", "route": "a composed GET route"},
             "response": {
@@ -1160,6 +1210,15 @@ def _behavior_contracts() -> list[dict[str, Any]]:
                     "X-Forwarded-For",
                 ],
                 "query": ["scope", "target"],
+            },
+            "target_query_semantics": {
+                "absent": (
+                    "Flask returns None; None selects the registered built-in no-op mapper"
+                ),
+                "explicit_empty": (
+                    "Flask returns an empty string; it is distinct from None and has no "
+                    "mapper in the reviewed composition, so access is denied"
+                ),
             },
             "precedence": [
                 "Authorization credential handler",
@@ -1276,6 +1335,10 @@ def _behavior_contracts() -> list[dict[str, Any]]:
             "input": {"query": ["scope", "target"]},
             "outcome": {
                 "target_absent": "registered no-op mapper returns the raw six-field authentication context as JSON",
+                "target_empty": (
+                    "the explicit empty string is distinct from absent None and is "
+                    "unregistered, so it redirects to the configured access-denied URL"
+                ),
                 "target_json": "registered JSON mapper returns raw context plus configured JSONPath projections for scope",
                 "target_unknown": (
                     "302 redirect to the configured access-denied URL; mapper failure has the same outcome"
@@ -1340,15 +1403,62 @@ def _behavior_contracts() -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "browser.cors_options_replacement",
+            "main_effective_behavior": {
+                "enabled_by": "tracked pylon_main settings.allow_cors=true",
+                "ordering": [
+                    "global authorization executes first",
+                    "configured additional headers are applied to the original response",
+                    "the OPTIONS branch replaces that response with a new blank 200 response",
+                    "wildcard CORS headers are added to the replacement",
+                ],
+                "lost_response_state": ["body", "status", "previous headers"],
+            },
+            "auth_core_code_capability": (
+                "when Auth Core ALLOW_CORS is truthy for an API preflight, its equivalent "
+                "replacement occurs after tracked Server: Centry is applied, so the new "
+                "response loses that Server header"
+            ),
+            "security_defect": (
+                "Access-Control-Allow-Origin '*' is combined with "
+                "Access-Control-Allow-Credentials true"
+            ),
+        },
+        {
             "id": "browser.main_rpc_authorize",
             "transport": "pylon_main calls auth_authorize over Redis RPC in tracked auth_mode=rpc",
             "cache_contract": {
                 "cache_failures": "fall through to auth_authorize RPC",
                 "cached_results": "auth_ok=true only; denials and redirects are not cached",
                 "key_material": "Authorization header first, otherwise named or fallback *_session cookie",
+                "key_omissions": [
+                    "HTTP method",
+                    "request URI",
+                    "target",
+                    "scope",
+                    "public-rule or authorization-policy revision",
+                ],
                 "key_transform": "SHA-256 hex truncated to 32 characters, prefixed auth:token: or auth:session:",
+                "migration": (
+                    "do not port this cache: auth_authorize consumes request and policy "
+                    "inputs that the key does not bind, while the key contains only "
+                    "credential or session material"
+                ),
                 "revocation_delay_seconds": 60,
                 "ttl_seconds": 60,
+            },
+            "local_public_override": {
+                "classification_time": "before cache lookup and auth_authorize RPC",
+                "rpc_short_circuited": False,
+                "successful_authentication_wins": True,
+                "negative_authorization_result": (
+                    "a matching local public rule replaces the negative result with a "
+                    "synthetic public principal"
+                ),
+                "transport_exception": (
+                    "becomes a synthetic public principal regardless of whether a local "
+                    "public rule matched"
+                ),
             },
             "evaluation_sequence": [
                 "Authorization credential handler",
@@ -1363,6 +1473,11 @@ def _behavior_contracts() -> list[dict[str, Any]]:
             ),
             "http_route_difference": (
                 "Auth Core HTTP /forward-auth/auth immediately delegates invalid credentials to access_denied_reply(source): a matching public rule with an accepted target mapper succeeds, otherwise it denies, and it never traverses the browser session"
+            ),
+            "migration_transport": (
+                "after pylon_main and pylon_auth merge, auth_authorize becomes a direct "
+                "typed in-process call; the internal Redis RPC and its Redis success cache "
+                "disappear, while HTTP /forward-auth/auth remains the ingress contract"
             ),
             "transport_failure": (
                 "on a cache miss, pylon_main catches any auth_authorize RPC-call exception, installs a synthetic public principal regardless of local public rules, and continues; permission-decorated handlers may still deny that principal, while undecorated/public-principal flows proceed"
@@ -1440,6 +1555,20 @@ def _security_dispositions() -> list[dict[str, str]]:
             "requirement": "honor forwarded metadata only from configured trusted proxy CIDRs and construct redirects from canonical public origin plus validated path",
         },
         {
+            "id": "cors.options_replacement",
+            "baseline": (
+                "tracked Main CORS handling replaces every OPTIONS response after global "
+                "authorization and emits wildcard origin with credentials; the equivalent "
+                "Auth Core branch also drops its previously applied Server: Centry header"
+            ),
+            "migration": "correct",
+            "requirement": (
+                "preserve security/default headers and response ownership, emit credentials "
+                "only for an explicitly allowed concrete origin, and never combine wildcard "
+                "origin with credentials"
+            ),
+        },
+        {
             "id": "dependency.failure",
             "baseline": (
                 "broad exception handling converts some storage/provider failures to denial, unresolved identity, or duplicate-provision attempts; critically, on an authorization cache miss pylon_main converts any auth_authorize RPC-call failure into a synthetic public principal and continues regardless of local public rules"
@@ -1449,10 +1578,13 @@ def _security_dispositions() -> list[dict[str, str]]:
         },
         {
             "id": "rpc.boundary",
-            "baseline": "pylon_main reaches pylon_auth through Redis RPC and session reference headers",
+            "baseline": "pylon_main reaches pylon_auth through the Redis auth_authorize RPC and session reference headers",
             "migration": "remove_internal_only",
             "requirement": (
-                "direct in-process typed calls in the merged monolith; retain HTTP /forward-auth/auth for ingress compatibility, and add no root /auth alias without a separate reviewed contract"
+                "direct in-process typed calls in the merged monolith; no internal "
+                "auth_authorize RPC or associated Redis result cache remains; retain HTTP "
+                "/forward-auth/auth for ingress compatibility, and add no root /auth alias "
+                "without a separate reviewed contract"
             ),
         },
         {
@@ -1513,6 +1645,9 @@ def _deployment_contract(
     auth_main = _selected_main_auth_config(
         (centry_root / "pylon_main/configs/auth.yml").read_text(encoding="utf-8")
     )
+    main_shared = _selected_main_shared_config(
+        (centry_root / "pylon_main/configs/shared.yml").read_text(encoding="utf-8")
+    )
     init_config = _effective_auth_init_config(auth_init_root, centry_root)
     form_contract = _safe_form_config(
         (centry_root / "pylon_auth/configs/auth_form.yml").read_text(encoding="utf-8")
@@ -1551,6 +1686,8 @@ def _deployment_contract(
         raise ValueError("reviewed pylon_main alias changed")
     if auth_core.get("auth_provider") != "form" or auth_main.get("auth_mode") != "rpc":
         raise ValueError("effective tracked auth provider or pylon_main auth mode changed")
+    if main_shared != {"settings.allow_cors": "true"}:
+        raise ValueError("reviewed pylon_main CORS setting changed")
     if auth_core != {
         "allow_auth_traversal": True,
         "additional_headers": {"Server": "Centry"},
@@ -1606,6 +1743,7 @@ def _deployment_contract(
         },
         "pylon_auth_selected": auth_selected,
         "pylon_main": {
+            "allow_cors": True,
             "auth_mode": auth_main.get("auth_mode"),
             "forward_auth_exposure": main_selected,
             "public_uri_rules": auth_main.get("public_uri_rules"),
@@ -1838,6 +1976,7 @@ def build_catalog(
                 "pylon_auth/configs/auth_init.yml": _selected_auth_init_config,
                 "pylon_auth/pylon.yml": _selected_auth_pylon,
                 "pylon_main/configs/auth.yml": _selected_main_auth_config,
+                "pylon_main/configs/shared.yml": _selected_main_shared_config,
                 "pylon_main/pylon.yml": _selected_main_pylon,
             },
         ),
@@ -1855,6 +1994,7 @@ def build_catalog(
             "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist",
             "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist",
             "centry/pylon_main/configs/auth.yml#auth_gate_allowlist",
+            "centry/pylon_main/configs/shared.yml#cors_allowlist",
             "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist",
         ],
         "selected_config_sha256": {
@@ -1897,6 +2037,13 @@ def build_catalog(
             "centry/pylon_main/configs/auth.yml#auth_gate_allowlist": _canonical_sha256(
                 _selected_main_auth_config(
                     (roots["centry"] / "pylon_main/configs/auth.yml").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            ),
+            "centry/pylon_main/configs/shared.yml#cors_allowlist": _canonical_sha256(
+                _selected_main_shared_config(
+                    (roots["centry"] / "pylon_main/configs/shared.yml").read_text(
                         encoding="utf-8"
                     )
                 )

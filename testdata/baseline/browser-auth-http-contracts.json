@@ -29,6 +29,10 @@
         "clear authentication context and redirect to login"
       ],
       "route": "/forward-auth/auth",
+      "target_query_semantics": {
+        "absent": "Flask returns None; None selects the registered built-in no-op mapper",
+        "explicit_empty": "Flask returns an empty string; it is distinct from None and has no mapper in the reviewed composition, so access is denied"
+      },
       "unauthenticated": "sign proto://host+uri from forwarded headers and redirect through the configured provider"
     },
     {
@@ -151,6 +155,7 @@
       "method": "GET",
       "outcome": {
         "target_absent": "registered no-op mapper returns the raw six-field authentication context as JSON",
+        "target_empty": "the explicit empty string is distinct from absent None and is unregistered, so it redirects to the configured access-denied URL",
         "target_json": "registered JSON mapper returns raw context plus configured JSONPath projections for scope",
         "target_unknown": "302 redirect to the configured access-denied URL; mapper failure has the same outcome"
       },
@@ -222,11 +227,38 @@
       ]
     },
     {
+      "auth_core_code_capability": "when Auth Core ALLOW_CORS is truthy for an API preflight, its equivalent replacement occurs after tracked Server: Centry is applied, so the new response loses that Server header",
+      "id": "browser.cors_options_replacement",
+      "main_effective_behavior": {
+        "enabled_by": "tracked pylon_main settings.allow_cors=true",
+        "lost_response_state": [
+          "body",
+          "status",
+          "previous headers"
+        ],
+        "ordering": [
+          "global authorization executes first",
+          "configured additional headers are applied to the original response",
+          "the OPTIONS branch replaces that response with a new blank 200 response",
+          "wildcard CORS headers are added to the replacement"
+        ]
+      },
+      "security_defect": "Access-Control-Allow-Origin '*' is combined with Access-Control-Allow-Credentials true"
+    },
+    {
       "cache_contract": {
         "cache_failures": "fall through to auth_authorize RPC",
         "cached_results": "auth_ok=true only; denials and redirects are not cached",
         "key_material": "Authorization header first, otherwise named or fallback *_session cookie",
+        "key_omissions": [
+          "HTTP method",
+          "request URI",
+          "target",
+          "scope",
+          "public-rule or authorization-policy revision"
+        ],
         "key_transform": "SHA-256 hex truncated to 32 characters, prefixed auth:token: or auth:session:",
+        "migration": "do not port this cache: auth_authorize consumes request and policy inputs that the key does not bind, while the key contains only credential or session material",
         "revocation_delay_seconds": 60,
         "ttl_seconds": 60
       },
@@ -241,6 +273,14 @@
       ],
       "http_route_difference": "Auth Core HTTP /forward-auth/auth immediately delegates invalid credentials to access_denied_reply(source): a matching public rule with an accepted target mapper succeeds, otherwise it denies, and it never traverses the browser session",
       "id": "browser.main_rpc_authorize",
+      "local_public_override": {
+        "classification_time": "before cache lookup and auth_authorize RPC",
+        "negative_authorization_result": "a matching local public rule replaces the negative result with a synthetic public principal",
+        "rpc_short_circuited": false,
+        "successful_authentication_wins": true,
+        "transport_exception": "becomes a synthetic public principal regardless of whether a local public rule matched"
+      },
+      "migration_transport": "after pylon_main and pylon_auth merge, auth_authorize becomes a direct typed in-process call; the internal Redis RPC and its Redis success cache disappear, while HTTP /forward-auth/auth remains the ingress contract",
       "transport": "pylon_main calls auth_authorize over Redis RPC in tracked auth_mode=rpc",
       "transport_failure": "on a cache miss, pylon_main catches any auth_authorize RPC-call exception, installs a synthetic public principal regardless of local public rules, and continues; permission-decorated handlers may still deny that principal, while undecorated/public-principal flows proceed"
     }
@@ -510,6 +550,10 @@
       "ast_sha256": "04cf21da681f713c4677c78c7181b2799e85afe069832d391cd456f591bfd50c",
       "line": 127
     },
+    "main_auth/module.py#Module._after_request_hook": {
+      "ast_sha256": "71229e6a60014e51e76727266c4664d4987662f7e23d049cf79a0394b73922c1",
+      "line": 470
+    },
     "main_auth/module.py#Module._before_request_hook": {
       "ast_sha256": "6e0ed4dc521baa4527e5b67f139dcf2337874013af513df9945b56b9a128007c",
       "line": 528
@@ -718,6 +762,7 @@
       "sessions.redis_configured": true
     },
     "pylon_main": {
+      "allow_cors": true,
       "auth_mode": "rpc",
       "forward_auth_exposure": {
         "exposure.event_node.type": "RedisEventNode",
@@ -910,6 +955,19 @@
       }
     },
     {
+      "id": "forward_auth.empty_target",
+      "request": {
+        "method": "GET",
+        "precondition": "a credential, browser session, or public-rule branch reaches the success mapper",
+        "route": "/forward-auth/auth",
+        "target": ""
+      },
+      "response": {
+        "location": "${APP_PROTO}://${APP_HOST}/access_denied",
+        "status": 302
+      }
+    },
+    {
       "id": "forward_auth.unknown_target",
       "request": {
         "method": "GET",
@@ -982,6 +1040,18 @@
       "response": {
         "content_type": "application/json",
         "status": 200
+      }
+    },
+    {
+      "id": "browser.info.empty_target",
+      "request": {
+        "method": "GET",
+        "route": "/forward-auth/info",
+        "target": ""
+      },
+      "response": {
+        "location": "${APP_PROTO}://${APP_HOST}/access_denied",
+        "status": 302
       }
     },
     {
@@ -1100,6 +1170,28 @@
       }
     },
     {
+      "id": "main.cors_options_replacement",
+      "request": {
+        "method": "OPTIONS",
+        "scope": "pylon_main while tracked shared allow_cors is true"
+      },
+      "response": {
+        "body": "empty replacement response",
+        "headers": {
+          "Access-Control-Allow-Credentials": "true",
+          "Access-Control-Allow-Headers": "*",
+          "Access-Control-Allow-Methods": "*",
+          "Access-Control-Allow-Origin": "*"
+        },
+        "status": 200
+      },
+      "side_effects": [
+        "global authorization still executes before the replacement",
+        "the original status, body, and headers are discarded",
+        "configured additional headers applied before replacement are lost"
+      ]
+    },
+    {
       "id": "inner.head",
       "request": {
         "method": "HEAD",
@@ -1210,6 +1302,7 @@
         "pylon_auth/configs/auth_init.yml": true,
         "pylon_auth/pylon.yml": true,
         "pylon_main/configs/auth.yml": true,
+        "pylon_main/configs/shared.yml": true,
         "pylon_main/pylon.yml": true
       },
       "source_ref": "HEAD",
@@ -1357,16 +1450,22 @@
       "requirement": "honor forwarded metadata only from configured trusted proxy CIDRs and construct redirects from canonical public origin plus validated path"
     },
     {
+      "baseline": "tracked Main CORS handling replaces every OPTIONS response after global authorization and emits wildcard origin with credentials; the equivalent Auth Core branch also drops its previously applied Server: Centry header",
+      "id": "cors.options_replacement",
+      "migration": "correct",
+      "requirement": "preserve security/default headers and response ownership, emit credentials only for an explicitly allowed concrete origin, and never combine wildcard origin with credentials"
+    },
+    {
       "baseline": "broad exception handling converts some storage/provider failures to denial, unresolved identity, or duplicate-provision attempts; critically, on an authorization cache miss pylon_main converts any auth_authorize RPC-call failure into a synthetic public principal and continues regardless of local public rules",
       "id": "dependency.failure",
       "migration": "correct",
       "requirement": "typed fail-closed errors; dependency outages are distinguishable and never downgrade to anonymous or partial authentication"
     },
     {
-      "baseline": "pylon_main reaches pylon_auth through Redis RPC and session reference headers",
+      "baseline": "pylon_main reaches pylon_auth through the Redis auth_authorize RPC and session reference headers",
       "id": "rpc.boundary",
       "migration": "remove_internal_only",
-      "requirement": "direct in-process typed calls in the merged monolith; retain HTTP /forward-auth/auth for ingress compatibility, and add no root /auth alias without a separate reviewed contract"
+      "requirement": "direct in-process typed calls in the merged monolith; no internal auth_authorize RPC or associated Redis result cache remains; retain HTTP /forward-auth/auth for ingress compatibility, and add no root /auth alias without a separate reviewed contract"
     },
     {
       "baseline": "/forward-auth/info has no local authentication check and target absent returns raw authentication context JSON",
@@ -1524,6 +1623,7 @@
       "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist": "834b853be71d34f2837c313da45ae7bea08d900ab9200a7a9f5d35a3189abed6",
       "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist": "9c887800bcdbae56991be130d12935a4c2daf04c1a930023b30823050cb54760",
       "centry/pylon_main/configs/auth.yml#auth_gate_allowlist": "a636a9ea6898a2c21f0eb385847527347857d23743773b2f986f68b2c9bcb445",
+      "centry/pylon_main/configs/shared.yml#cors_allowlist": "56cd8bea278fca6dfa0a932edf2d2cf5bcb987961a9d64a8e2ae9cbf23cb988c",
       "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist": "29d83c0d5311098ac5464debae44656da63c787ffd9b200a56ac9809be4d5e64"
     },
     "selected_config_sources": [
@@ -1534,6 +1634,7 @@
       "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist",
       "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist",
       "centry/pylon_main/configs/auth.yml#auth_gate_allowlist",
+      "centry/pylon_main/configs/shared.yml#cors_allowlist",
       "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist"
     ]
   },

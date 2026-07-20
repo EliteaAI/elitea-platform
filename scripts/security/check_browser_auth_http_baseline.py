@@ -13,11 +13,11 @@ from typing import Any
 
 
 EXPECTED_SCHEMA_VERSION = 1
-EXPECTED_CATALOG_SHA256 = "3bd4a068840b6d9d58faf46064f4963e91d70495ac9c0282959458693b94ee12"
+EXPECTED_CATALOG_SHA256 = "02c7e3d7bf55819cf212fe3f1dacb549da17a9a25a1a128d581ac6e1d8eb7249"
 EXPECTED_SOURCE_COUNT = 68
 EXPECTED_SOURCE_KEYSET_SHA256 = "a491ec0ba604cd075f622833683d0837a10132a43dc039bc2c89eedfb687a4a3"
-EXPECTED_FINGERPRINT_COUNT = 102
-EXPECTED_FINGERPRINT_KEYSET_SHA256 = "2f7f3a65eb03b8d867b04acef0afe9a1a343d127cc2390fc88c24b211e862219"
+EXPECTED_FINGERPRINT_COUNT = 103
+EXPECTED_FINGERPRINT_KEYSET_SHA256 = "7179f4745e9c85580b06d26bf197ed0f4a77d5177bc4ed86154d865142441fee"
 EXPECTED_TOP_LEVEL_KEYS = {
     "behavior_contracts",
     "behavior_fingerprints",
@@ -37,6 +37,7 @@ EXPECTED_TOP_LEVEL_KEYS = {
 }
 EXPECTED_CONTRACT_IDS = {
     "browser.auth_init.processor",
+    "browser.cors_options_replacement",
     "browser.forward_auth.get",
     "browser.info.get",
     "browser.login.get",
@@ -49,6 +50,7 @@ EXPECTED_CONTRACT_IDS = {
     "form.logout.get",
 }
 EXPECTED_SECURITY_IDS = {
+    "cors.options_replacement",
     "dependency.failure",
     "form.brute_force",
     "form.credentials",
@@ -116,6 +118,7 @@ EXPECTED_PROVENANCE = {
             "pylon_auth/configs/auth_init.yml",
             "pylon_auth/pylon.yml",
             "pylon_main/configs/auth.yml",
+            "pylon_main/configs/shared.yml",
             "pylon_main/pylon.yml",
         },
     ),
@@ -188,6 +191,7 @@ EXPECTED_ROUTE_RECORDS = {
     },
 }
 EXPECTED_HTTP_OUTCOME_IDS = {
+    "browser.info.empty_target",
     "application.common_headers",
     "browser.info.denied",
     "browser.info.json",
@@ -204,6 +208,7 @@ EXPECTED_HTTP_OUTCOME_IDS = {
     "form.login",
     "form.logout",
     "forward_auth.invalid_credential",
+    "forward_auth.empty_target",
     "forward_auth.missing_forwarded_header",
     "forward_auth.no_authentication",
     "forward_auth.noop_success",
@@ -212,6 +217,7 @@ EXPECTED_HTTP_OUTCOME_IDS = {
     "inner.automatic_options",
     "inner.head",
     "inner.not_found",
+    "main.cors_options_replacement",
 }
 EXPECTED_LOGOUT_CONSUMERS = [
     "Admin UI sidebar assigns same-origin /forward-auth/logout",
@@ -226,6 +232,7 @@ EXPECTED_SELECTED_CONFIG_SOURCES = [
     "centry/pylon_auth/configs/auth_init.yml#initial_admin_allowlist",
     "centry/pylon_auth/pylon.yml#auth_http_and_session_allowlist",
     "centry/pylon_main/configs/auth.yml#auth_gate_allowlist",
+    "centry/pylon_main/configs/shared.yml#cors_allowlist",
     "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist",
 ]
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -330,6 +337,13 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "top_level_email_consumed_by_route"
     ) is not False:
         failures.append("Form runtime/admin-schema mismatch changed")
+    forward_auth = contracts.get("browser.forward_auth.get", {})
+    target_semantics = forward_auth.get("target_query_semantics", {})
+    if "returns None" not in str(target_semantics.get("absent", "")) or (
+        "empty string" not in str(target_semantics.get("explicit_empty", ""))
+        or "access is denied" not in str(target_semantics.get("explicit_empty", ""))
+    ):
+        failures.append("absent versus empty ForwardAuth target semantics changed")
     info = contracts.get("browser.info.get", {})
     if info.get("local_auth_check") is not False or "raw six-field" not in str(
         info.get("outcome", {}).get("target_absent", "")
@@ -337,6 +351,22 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         failures.append("unprotected raw info behavior changed")
     if "302 redirect" not in str(info.get("outcome", {}).get("target_unknown", "")):
         failures.append("unknown info mapper redirect outcome changed")
+    if "distinct from absent None" not in str(
+        info.get("outcome", {}).get("target_empty", "")
+    ):
+        failures.append("absent versus empty info target semantics changed")
+    cors = contracts.get("browser.cors_options_replacement", {})
+    main_cors = cors.get("main_effective_behavior", {})
+    if main_cors.get("enabled_by") != "tracked pylon_main settings.allow_cors=true" or (
+        main_cors.get("lost_response_state") != ["body", "status", "previous headers"]
+    ):
+        failures.append("effective Main OPTIONS replacement contract changed")
+    if "Server: Centry" not in str(cors.get("auth_core_code_capability", "")):
+        failures.append("Auth Core CORS Server-header loss is no longer explicit")
+    if "Allow-Origin '*'" not in str(cors.get("security_defect", "")) or (
+        "Allow-Credentials true" not in str(cors.get("security_defect", ""))
+    ):
+        failures.append("wildcard credentialed CORS defect is no longer explicit")
     rpc = contracts.get("browser.main_rpc_authorize", {})
     if "allow_auth_traversal defaults true" not in str(rpc.get("credential_failure_divergence", "")):
         failures.append("main RPC credential traversal divergence changed")
@@ -358,6 +388,32 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "revocation_delay_seconds"
     ) != 60 or "auth_ok=true only" not in str(cache_contract.get("cached_results", "")):
         failures.append("main RPC authorization-cache contract changed")
+    if cache_contract.get("key_omissions") != [
+        "HTTP method",
+        "request URI",
+        "target",
+        "scope",
+        "public-rule or authorization-policy revision",
+    ] or "do not port this cache" not in str(cache_contract.get("migration", "")):
+        failures.append("unsafe Main authorization-cache key disposition changed")
+    if rpc.get("local_public_override") != {
+        "classification_time": "before cache lookup and auth_authorize RPC",
+        "rpc_short_circuited": False,
+        "successful_authentication_wins": True,
+        "negative_authorization_result": (
+            "a matching local public rule replaces the negative result with a "
+            "synthetic public principal"
+        ),
+        "transport_exception": (
+            "becomes a synthetic public principal regardless of whether a local "
+            "public rule matched"
+        ),
+    }:
+        failures.append("Main local-public override ordering changed")
+    if "direct typed in-process call" not in str(rpc.get("migration_transport", "")) or (
+        "internal Redis RPC" not in str(rpc.get("migration_transport", ""))
+    ):
+        failures.append("auth_authorize in-process merge disposition changed")
     init_processor = contracts.get("browser.auth_init.processor", {})
     init_failures = " ".join(init_processor.get("failure_branches", []))
     startup_failures = " ".join(init_processor.get("startup_failure_branches", []))
@@ -400,6 +456,16 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         dispositions.get("rpc.boundary", {}).get("requirement", "")
     ):
         failures.append("ForwardAuth ingress compatibility path changed")
+    if "no internal auth_authorize RPC" not in str(
+        dispositions.get("rpc.boundary", {}).get("requirement", "")
+    ):
+        failures.append("auth_authorize RPC removal is no longer explicit")
+    cors_disposition = dispositions.get("cors.options_replacement", {})
+    if "Server: Centry" not in str(cors_disposition.get("baseline", "")) or (
+        "never combine wildcard origin with credentials"
+        not in str(cors_disposition.get("requirement", ""))
+    ):
+        failures.append("CORS OPTIONS security correction changed")
     if "synthetic public principal" not in str(
         dispositions.get("dependency.failure", {}).get("baseline", "")
     ):
@@ -504,6 +570,20 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "status": 302,
     }:
         failures.append("unknown/malformed info mapper outcome changed")
+    if outcomes.get("browser.info.empty_target", {}).get("response") != {
+        "location": denied_location,
+        "status": 302,
+    }:
+        failures.append("explicit empty info target outcome changed")
+    if outcomes.get("forward_auth.empty_target", {}).get("response") != {
+        "location": denied_location,
+        "status": 302,
+    } or "reaches the success mapper" not in str(
+        outcomes.get("forward_auth.empty_target", {}).get("request", {}).get(
+            "precondition", ""
+        )
+    ):
+        failures.append("explicit empty ForwardAuth target outcome changed")
     if outcomes.get("exposure.unsupported_inner_method", {}).get("response") != {
         "body": "Flask redirect HTML",
         "location": denied_location,
@@ -519,6 +599,16 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         "status": 200,
     }:
         failures.append("automatic OPTIONS outcome changed")
+    main_cors_outcome = outcomes.get("main.cors_options_replacement", {})
+    if main_cors_outcome.get("response", {}).get("headers") != {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Origin": "*",
+    } or "the original status, body, and headers are discarded" not in main_cors_outcome.get(
+        "side_effects", []
+    ):
+        failures.append("Main CORS replacement HTTP outcome changed")
     if outcomes.get("inner.not_found", {}).get("response", {}).get("status") != 404:
         failures.append("inner NotFound outcome changed")
     if outcomes.get("exposure.registry_miss", {}).get("response") != {"status": 404}:
@@ -592,6 +682,7 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
     if deployment.get("auth_core", {}).get("provider") != "form":
         failures.append("tracked default auth provider changed")
     if deployment.get("pylon_main") != {
+        "allow_cors": True,
         "auth_mode": "rpc",
         "forward_auth_exposure": {
             "exposure.event_node.type": "RedisEventNode",

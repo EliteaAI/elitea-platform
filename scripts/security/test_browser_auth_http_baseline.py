@@ -118,6 +118,27 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
         self.assertIn("Auth Init failure branch missing: AUTOCOMMIT", failures)
         self.assertIn("Auth Init partial bootstrap branch changed", failures)
 
+    def test_checker_rejects_newly_reviewed_boundary_semantic_mutations(self) -> None:
+        changed = deepcopy(self.catalog)
+        contracts = {item["id"]: item for item in changed["behavior_contracts"]}
+        contracts["browser.forward_auth.get"]["target_query_semantics"][
+            "explicit_empty"
+        ] = "same as absent"
+        main_rpc = contracts["browser.main_rpc_authorize"]
+        main_rpc["cache_contract"]["key_omissions"] = []
+        main_rpc["local_public_override"]["rpc_short_circuited"] = True
+        main_rpc["migration_transport"] = "retain Redis RPC"
+        contracts["browser.cors_options_replacement"][
+            "auth_core_code_capability"
+        ] = "all headers preserved"
+
+        failures = check_catalog(changed)
+        self.assertIn("absent versus empty ForwardAuth target semantics changed", failures)
+        self.assertIn("unsafe Main authorization-cache key disposition changed", failures)
+        self.assertIn("Main local-public override ordering changed", failures)
+        self.assertIn("auth_authorize in-process merge disposition changed", failures)
+        self.assertIn("Auth Core CORS Server-header loss is no longer explicit", failures)
+
     def test_checker_rejects_http_status_mutations(self) -> None:
         changed = deepcopy(self.catalog)
         outcomes = {item["id"]: item for item in changed["http_outcomes"]}
