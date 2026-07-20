@@ -237,16 +237,17 @@ func (config Config) Validate() error {
 		!validFilePath(config.Provider.Form.UsersJSONFile) {
 		return invalid("Form provider")
 	}
-	privatePaths := []string{
+	materialPaths := []string{
 		config.Redis.PasswordFile,
+		config.Redis.CAFile,
 		config.Redis.AttemptKeyFile,
 		config.Credentials.PATSigningKeyFile,
 		config.Provider.Form.UsersJSONFile,
 	}
-	seen := make(map[string]struct{}, len(privatePaths))
-	for _, path := range privatePaths {
+	seen := make(map[string]struct{}, len(materialPaths))
+	for _, path := range materialPaths {
 		if _, duplicate := seen[path]; duplicate {
-			return invalid("private reference path separation")
+			return invalid("material reference path separation")
 		}
 		seen[path] = struct{}{}
 	}

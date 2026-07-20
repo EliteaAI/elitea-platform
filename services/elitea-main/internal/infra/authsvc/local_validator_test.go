@@ -119,6 +119,24 @@ func TestLocalValidatorRejectsMissingConfiguration(t *testing.T) {
 	}
 }
 
+func TestLocalValidatorBytesSnapshotsExactKey(t *testing.T) {
+	key := []byte("configured-secret")
+	validator := NewLocalValidatorBytes(nil, key)
+	clear(key)
+	token := jwt.NewWithClaims(
+		jwt.SigningMethodHS512,
+		tokenClaims{UUID: "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"},
+	)
+	encoded, err := token.SignedString([]byte("configured-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = validator.ValidateToken(context.Background(), encoded)
+	if !errors.Is(err, ErrTokenValidationUnavailable) || !strings.Contains(err.Error(), "repository is not configured") {
+		t.Fatalf("snapshotted key error = %v", err)
+	}
+}
+
 func TestLocalValidatorPreservesDatabaseFailures(t *testing.T) {
 	const secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	token := jwt.NewWithClaims(jwt.SigningMethodHS512, tokenClaims{UUID: "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"})

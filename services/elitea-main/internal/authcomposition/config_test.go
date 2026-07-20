@@ -273,6 +273,7 @@ func TestConfigValidateRejectsUnsafeOrIncompleteValues(t *testing.T) {
 		"provider kind":         func(config *Config) { config.Provider.Kind = "oidc" },
 		"missing Form block":    func(config *Config) { config.Provider.Form = nil },
 		"reused private secret": func(config *Config) { config.Redis.AttemptKeyFile = config.Credentials.PATSigningKeyFile },
+		"reused CA reference":   func(config *Config) { config.Redis.CAFile = config.Credentials.PATSigningKeyFile },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

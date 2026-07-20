@@ -57,3 +57,38 @@ func TestReadAllowsReadOnlyPublicMaterialButRejectsGroupWrite(t *testing.T) {
 		t.Fatal("group-writable trust file was accepted")
 	}
 }
+
+func TestReadSnapshotRetainsOpenedIdentityWithoutConflatingEqualContent(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath := filepath.Join(root, "first")
+	aliasPath := filepath.Join(root, "alias")
+	distinctPath := filepath.Join(root, "distinct")
+	for _, path := range []string{firstPath, distinctPath} {
+		if err := os.WriteFile(path, []byte("same bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Link(firstPath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ReadSnapshot(firstPath, 64, PrivateMaterial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias, err := ReadSnapshot(aliasPath, 64, PrivateMaterial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	distinct, err := ReadSnapshot(distinctPath, 64, PrivateMaterial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first.Contents) != "same bytes" || !first.SameFile(alias) || alias.SameFile(distinct) ||
+		first.SameFile(Snapshot{}) {
+		t.Fatalf("unexpected snapshot identity: first=%v alias=%v distinct=%v", first.identity, alias.identity, distinct.identity)
+	}
+}

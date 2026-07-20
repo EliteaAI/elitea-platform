@@ -35,7 +35,14 @@ type LocalValidator struct {
 }
 
 func NewLocalValidator(pool *pgxpool.Pool, secretKey string) *LocalValidator {
-	validator := &LocalValidator{secretKey: []byte(secretKey)}
+	return NewLocalValidatorBytes(pool, []byte(secretKey))
+}
+
+// NewLocalValidatorBytes snapshots the exact HS512 key bytes without forcing
+// production composition to create an additional immutable secret string.
+// Existing Python-issued PAT compatibility depends on preserving every byte.
+func NewLocalValidatorBytes(pool *pgxpool.Pool, secretKey []byte) *LocalValidator {
+	validator := &LocalValidator{secretKey: append([]byte(nil), secretKey...)}
 	if pool != nil {
 		validator.queries = sqlcgen.New(pool)
 	}
