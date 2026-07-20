@@ -175,6 +175,10 @@ func newFormGraph(
 	if err != nil {
 		return nil, composeError("trusted proxy resolver", err)
 	}
+	mappers, err := browserapi.NewSuccessMapper(config.Mappers.Contract)
+	if err != nil {
+		return nil, composeError("Auth mapper projection", err)
+	}
 	coreHandler, err := browserapi.NewCoreHandler(
 		directKernel,
 		proxyResolver,
@@ -182,6 +186,7 @@ func newFormGraph(
 		browserapi.CoreConfig{
 			CredentialHeaders:  credentialHeaders(config.Credentials.Headers),
 			AccessDeniedTarget: config.Redirects.DirectAccessDenied,
+			Mappers:            mappers,
 		},
 	)
 	if err != nil {

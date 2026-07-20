@@ -709,6 +709,55 @@ func TestDecisionOwnsMutableIdentityData(t *testing.T) {
 	}
 }
 
+func TestDecisionAuthorizedBrowserRequiresCoherentKernelResultAndReturnsClone(t *testing.T) {
+	authorization := validBrowserAuthorizationFixture()
+	kernel := newTestKernel(t,
+		panicCredentialAuthenticator(),
+		sessionAuthorizerFunc(func(context.Context, string) (browserapp.Authorization, error) {
+			return authorization, nil
+		}),
+		emptyPublicPolicy(t),
+	)
+	request := validRequest(DirectHTTPTraversal)
+	request.BrowserSession = validBrowserInput()
+	decision, err := kernel.Authorize(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := decision.AuthorizedBrowser()
+	if !ok || got.Provider != "form" || string(got.ProviderAttributes) != `{"nameid":"user"}` ||
+		got.Principal.UserID != "7" {
+		t.Fatalf("authorization = %+v, ok=%v", got, ok)
+	}
+	got.ProviderAttributes[2] = 'X'
+	got.Principal.Email = "mutated@example.test"
+	again, ok := decision.AuthorizedBrowser()
+	if !ok || string(again.ProviderAttributes) != `{"nameid":"user"}` ||
+		again.Principal.Email != "user@example.test" {
+		t.Fatalf("authorization aliases caller data: %+v, ok=%v", again, ok)
+	}
+
+	invalid := []Decision{
+		func() Decision { value := decision; value.Kind = DecisionDeny; return value }(),
+		func() Decision { value := decision; value.Reason = ReasonPublicRuleMatched; return value }(),
+		func() Decision { value := decision; value.Authentication.Type = AuthenticationToken; return value }(),
+		func() Decision { value := decision; value.Authentication.Reference = ""; return value }(),
+		func() Decision { value := decision; value.Authentication.Principal.UserID = "8"; return value }(),
+		func() Decision {
+			value := decision
+			value.Authentication.BrowserAuthorization.ProviderAttributes = []byte(`{"nameid":"first","nameid":"second"}`)
+			return value
+		}(),
+	}
+	for index, value := range invalid {
+		if got, ok := value.AuthorizedBrowser(); ok || got.Provider != "" || got.ProviderAttributes != nil ||
+			got.Expiration != nil || got.Principal.ID != "" {
+			t.Fatalf("invalid decision %d authorization = %+v, ok=%v", index, got, ok)
+		}
+	}
+}
+
 func newTestKernel(
 	t *testing.T,
 	credentials CredentialAuthenticator,

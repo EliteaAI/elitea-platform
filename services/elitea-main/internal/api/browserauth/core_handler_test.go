@@ -14,6 +14,7 @@ import (
 	browserapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/browserauth"
 	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
 )
 
 type coreCredentialFunc func(
@@ -218,6 +219,207 @@ func TestCoreHandlerNoopMapperEmitsNoIdentityHeaders(t *testing.T) {
 	}
 }
 
+func TestCoreHandlerEmitsTrackedGrafanaProjectionWithoutSessionBearer(t *testing.T) {
+	mapper := newTrackedSuccessMapper(t)
+	sessionID := canonicalSessionID(8)
+	handler := newCoreTestHandlerWithMapper(t,
+		panicCoreCredential(t),
+		coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+			authorization := validCoreBrowserAuthorization()
+			authorization.ProviderAttributes = []byte(
+				`{"nameid":"admin","attributes":{},"sessionindex":"sensitive-provider-session"}`,
+			)
+			return authorization, nil
+		}),
+		mapper,
+	)
+	request := coreRequest("/forward-auth/auth?target=header&scope=grafana")
+	request.Header.Set("X-WEBAUTH-USER", "spoofed")
+	request.AddCookie(&http.Cookie{Name: "centry_auth_session", Value: CookieValuePrefix + sessionID})
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	requireCoreOK(t, recorder)
+	if got := recorder.Header().Get("X-WEBAUTH-USER"); got != "admin" {
+		t.Fatalf("X-WEBAUTH-USER = %q", got)
+	}
+	for _, name := range []string{
+		"X-Auth-Reference",
+		"X-Auth-Session-Id",
+		"X-Auth-Session-Endpoint",
+		"X-Auth-Session-Name",
+	} {
+		if value := recorder.Header().Get(name); value != "" {
+			t.Fatalf("%s = %q, want absent", name, value)
+		}
+	}
+	for name, values := range recorder.Header() {
+		for _, value := range values {
+			if strings.Contains(value, sessionID) || strings.Contains(value, "sensitive-provider-session") {
+				t.Fatalf("response %s leaked session material: %q", name, value)
+			}
+		}
+	}
+}
+
+func TestCoreHandlerHeaderMapperFailsClosedForUnsafeProviderReference(t *testing.T) {
+	tests := map[string]struct {
+		attributes string
+		wantStatus int
+	}{
+		"missing":             {attributes: `{"attributes":{}}`, wantStatus: http.StatusServiceUnavailable},
+		"non-string":          {attributes: `{"nameid":42}`, wantStatus: http.StatusServiceUnavailable},
+		"leading whitespace":  {attributes: `{"nameid":" admin"}`, wantStatus: http.StatusServiceUnavailable},
+		"trailing whitespace": {attributes: `{"nameid":"admin "}`, wantStatus: http.StatusServiceUnavailable},
+		"control":             {attributes: `{"nameid":"admin\r\nX-Injected: true"}`, wantStatus: http.StatusServiceUnavailable},
+		"oversized": {
+			attributes: `{"nameid":"` + strings.Repeat("x", browserflow.MaxProviderReferenceBytes+1) + `"}`,
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		"duplicate": {
+			attributes: `{"nameid":"first","nameid":"second"}`,
+			wantStatus: http.StatusServiceUnavailable,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			handler := newCoreTestHandlerWithMapper(t,
+				panicCoreCredential(t),
+				coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+					authorization := validCoreBrowserAuthorization()
+					authorization.ProviderAttributes = []byte(test.attributes)
+					return authorization, nil
+				}),
+				newTrackedSuccessMapper(t),
+			)
+			request := coreRequest("/forward-auth/auth?target=header&scope=grafana")
+			request.AddCookie(&http.Cookie{
+				Name: "centry_auth_session", Value: CookieValuePrefix + canonicalSessionID(10),
+			})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.wantStatus || recorder.Header().Get("X-WEBAUTH-USER") != "" {
+				t.Fatalf("status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+			}
+			for _, header := range []string{
+				"X-Auth-Reference", "X-Auth-Session-Id", "X-Auth-Session-Endpoint", "X-Auth-Session-Name",
+			} {
+				if value := recorder.Header().Get(header); value != "" {
+					t.Fatalf("%s = %q", header, value)
+				}
+			}
+		})
+	}
+}
+
+func TestCoreHandlerOptionalMappersFailClosedOutsideTrackedHeaderScope(t *testing.T) {
+	mapper := newTrackedSuccessMapper(t)
+	handler := newCoreTestHandlerWithMapper(t,
+		panicCoreCredential(t),
+		coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+			authorization := validCoreBrowserAuthorization()
+			authorization.ProviderAttributes = []byte(`{"nameid":"admin"}`)
+			return authorization, nil
+		}),
+		mapper,
+	)
+	for _, query := range []string{
+		"target=header",
+		"target=header&scope=",
+		"target=header&scope=unknown",
+		"target=header&scope=grafana&scope=unknown",
+		"target=json&scope=galloper",
+	} {
+		t.Run(query, func(t *testing.T) {
+			request := coreRequest("/forward-auth/auth?" + query)
+			request.AddCookie(&http.Cookie{
+				Name: "centry_auth_session", Value: CookieValuePrefix + canonicalSessionID(9),
+			})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/access_denied" ||
+				recorder.Header().Get("X-WEBAUTH-USER") != "" || recorder.Header().Get("X-Auth-Session-Id") != "" {
+				t.Fatalf("status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestCoreHandlerJSONTransportRemainsAbsentForEveryAuthenticationType(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler *CoreHandler
+		prepare func(*http.Request)
+	}{
+		{
+			name: "token",
+			handler: newCoreTestHandlerWithMapper(t,
+				coreCredentialFunc(func(context.Context, forwardapp.Source, forwardapp.CredentialInput) (forwardapp.CredentialResult, error) {
+					return acceptedCoreToken(), nil
+				}),
+				panicCoreSession(t),
+				newTrackedSuccessMapper(t),
+			),
+			prepare: func(request *http.Request) { request.Header.Set("Authorization", "Bearer valid") },
+		},
+		{
+			name: "browser",
+			handler: newCoreTestHandlerWithMapper(t,
+				panicCoreCredential(t),
+				coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+					authorization := validCoreBrowserAuthorization()
+					authorization.ProviderAttributes = []byte(`{"nameid":"admin"}`)
+					return authorization, nil
+				}),
+				newTrackedSuccessMapper(t),
+			),
+			prepare: func(request *http.Request) {
+				request.AddCookie(&http.Cookie{
+					Name: "centry_auth_session", Value: CookieValuePrefix + canonicalSessionID(11),
+				})
+			},
+		},
+		{
+			name: "public",
+			handler: func() *CoreHandler {
+				policy, err := forwardapp.NewPublicPolicy([]forwardapp.PublicRule{{
+					Name: "public", Conditions: []forwardapp.RuleCondition{{Field: forwardapp.SourceURI, Pattern: `/api/private.*`}},
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				kernel, err := forwardapp.NewKernel(panicCoreCredential(t), panicCoreSession(t), policy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler := newCoreTestHandlerWithKernel(t, kernel)
+				handler.mappers = newTrackedSuccessMapper(t)
+				return handler
+			}(),
+			prepare: func(*http.Request) {},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := coreRequest("/forward-auth/auth?target=json&scope=galloper")
+			test.prepare(request)
+			recorder := httptest.NewRecorder()
+			test.handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/access_denied" {
+				t.Fatalf("status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+			}
+			for _, header := range []string{
+				"X-Auth-Reference", "X-Auth-Session-Id", "X-Auth-Session-Endpoint", "X-Auth-Session-Name",
+			} {
+				if value := recorder.Header().Get(header); value != "" {
+					t.Fatalf("%s = %q", header, value)
+				}
+			}
+		})
+	}
+}
+
 func TestCoreHandlerMissingOrExpiredSessionUsesSafeLoginRedirect(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -399,6 +601,53 @@ func newCoreTestHandlerWithKernel(t *testing.T, kernel *forwardapp.Kernel) *Core
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func newCoreTestHandlerWithMapper(
+	t *testing.T,
+	credentials forwardapp.CredentialAuthenticator,
+	sessions forwardapp.SessionAuthorizer,
+	mapper *SuccessMapper,
+) *CoreHandler {
+	t.Helper()
+	policy, err := forwardapp.NewPublicPolicy(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel, err := forwardapp.NewKernel(credentials, sessions, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := NewTrustedProxyResolver(TrustedProxyConfig{
+		TrustedProxyCIDRs: []string{"10.0.0.0/8"},
+		PublicOrigin:      "https://elitea.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies, err := NewCookiePolicy(CookieConfig{
+		Name:     "centry_auth_session",
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		Lifetime: 7 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewCoreHandler(kernel, resolver, cookies, CoreConfig{Mappers: mapper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
+}
+
+func newTrackedSuccessMapper(t *testing.T) *SuccessMapper {
+	t.Helper()
+	mapper, err := NewSuccessMapper(MapperContractTrackedV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mapper
 }
 
 func coreRequest(target string) *http.Request {

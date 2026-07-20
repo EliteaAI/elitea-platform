@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/http/httpguts"
 	"gopkg.in/yaml.v3"
 
+	browserapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/security/securefile"
@@ -62,6 +63,7 @@ type Config struct {
 	Cookie            CookieConfig        `yaml:"cookie"`
 	Redis             RedisConfig         `yaml:"redis"`
 	Credentials       CredentialConfig    `yaml:"credentials"`
+	Mappers           MapperConfig        `yaml:"mappers"`
 	Authorization     AuthorizationConfig `yaml:"authorization"`
 	Identity          IdentityConfig      `yaml:"identity"`
 	Provider          ProviderConfig      `yaml:"provider"`
@@ -108,6 +110,14 @@ type CredentialConfig struct {
 type CredentialHeaderConfig struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
+}
+
+// MapperConfig selects one immutable, source-evidenced projection contract.
+// It is intentionally not a second JSONPath/configuration language: fleet
+// overrides must be inventoried and receive a typed design before another
+// contract version can be accepted.
+type MapperConfig struct {
+	Contract string `yaml:"contract"`
 }
 
 // AuthorizationConfig contains only the static rules currently configured on
@@ -226,6 +236,9 @@ func (config Config) Validate() error {
 	}
 	if !validCredentials(config.Credentials) {
 		return invalid("credential policy")
+	}
+	if _, err := browserapi.NewSuccessMapper(config.Mappers.Contract); err != nil {
+		return invalid("mapper policy")
 	}
 	if !validAuthorization(config.Authorization) {
 		return invalid("authorization policy")

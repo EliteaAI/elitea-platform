@@ -458,6 +458,14 @@
       "ast_sha256": "2c636c62f72da2c21181de75411a2dacd8be56d5e23fdbeeb5ee9c78b11ec2dc",
       "line": 127
     },
+    "auth_core/rpc/roles.py#RPC.get_token_permissions": {
+      "ast_sha256": "de53175bdf0e793d4ab9310af730b93d0672ddcf1e3962dcc22422a16a64f0ef",
+      "line": 36
+    },
+    "auth_core/rpc/roles.py#RPC.get_user_permissions": {
+      "ast_sha256": "def5b8fba823726102376596b674e5ea72ffddc4ff0a95079860be9a100d0e6e",
+      "line": 327
+    },
     "auth_core/rpc/roles.py#RPC.get_user_roles": {
       "ast_sha256": "53a46ab1efb90bc2ff04c1142ab3b472520b0a7aeaa210a7fb576ee62e8d4f08",
       "line": 308
@@ -537,6 +545,10 @@
     "auth_init/rpc/processor.py#RPC.init_auth_processor": {
       "ast_sha256": "7fcc8f84e788be06ed1b29439a4927c8486a364c9454c75c21f31bc3e6a90452",
       "line": 34
+    },
+    "auth_mappers/methods/tools.py#Method.have_requirement": {
+      "ast_sha256": "0a14d78b580f81f54441ffee2d58ee7e604f7c0dec9cb46aecdb2304e5a0af7c",
+      "line": 38
     },
     "auth_mappers/module.py#Module.init": {
       "ast_sha256": "fe853032bd6778488e04c16e72cb4276e917a3d5485e64dbacbed4d93c9b31ef",
@@ -1745,7 +1757,9 @@
     "auth_init/module.py": "299e2a044e6b06b2110d00c2c46bbbe1cb826b144581c2d9122016df883b412a",
     "auth_init/rpc/processor.py": "f04b062ac99020145f272444b95735c74e555ecf5a3958196cb5c6d9d372fc65",
     "auth_mappers/config.yml": "04992f42e210dbaac008bf3cb5c0e93411dac0806426c9622729cccdedc49f70",
+    "auth_mappers/methods/tools.py": "3bb562b5e218695e9e80ba8179110b6d44d5afc7791fbce99874a2916f3621cd",
     "auth_mappers/module.py": "f9dd9cb2654913d411c11eb8566177e8af88712ed1885dd196cf9a2a43f3075f",
+    "auth_mappers/requirements.txt": "2decdc0e38d356eeb44b02c51ffad8377842fd577f035f0ba4c24c1d82d9f001",
     "auth_mappers/rpc/header.py": "c3e6c74539cb377734f086e5bc108a9683e3fd74c680ec81b80eb7b8b9feb375",
     "auth_mappers/rpc/json.py": "4b481f640dc024aeda141693ed2f232b180cf538e68660938d28eb077a55bcfd",
     "auth_mappers/rpc/noop.py": "a2655380c324757c64f141032a4e7a3f9dce167e381d5677eaa37aa26283a9d9",
@@ -1822,7 +1836,9 @@
       "auth_init/module.py",
       "auth_init/rpc/processor.py",
       "auth_mappers/config.yml",
+      "auth_mappers/methods/tools.py",
       "auth_mappers/module.py",
+      "auth_mappers/requirements.txt",
       "auth_mappers/rpc/header.py",
       "auth_mappers/rpc/json.py",
       "auth_mappers/rpc/noop.py",
@@ -1857,6 +1873,13 @@
       "ui/src/api/eliteaApi.js",
       "ui/src/routes.js"
     ],
+    "optional_runtime_configs": [
+      {
+        "contents_exported": false,
+        "path": "centry/pylon_auth/configs/auth_mappers.yml",
+        "present": false
+      }
+    ],
     "selected_config_sha256": {
       "centry/docker-compose.yml#auth_runtime_allowlist": "8cdc15266b676b65da29b3b7672628e285c1ffcd76f0208e7f53b648ca888ba6",
       "centry/envs/default.env#auth_nonsecret_allowlist": "0dc20a9ae30882d733a4567f51c834b7969a22f238e81e9a61d2f67993719545",
@@ -1884,7 +1907,24 @@
       "centry/pylon_main/pylon.yml#forward_auth_exposure_allowlist",
       "elitea_core/config.yml#public_route_allowlist",
       "runtime_interface_litellm/config.yml#public_route_allowlist"
-    ]
+    ],
+    "tracked_auth_mapper_contract": {
+      "header": {
+        "outputs": {
+          "X-WEBAUTH-USER": "'provider_attr'.'nameid'"
+        },
+        "requirements_present": false,
+        "scope": "grafana"
+      },
+      "json": {
+        "endpoint": null,
+        "outputs": {
+          "login": "'provider_attr'.'nameid'"
+        },
+        "scope": "galloper"
+      },
+      "jsonpath_dependency": "jsonpath_rw==1.4.0"
+    }
   },
   "ui_contract": {
     "api_auth_surface": {

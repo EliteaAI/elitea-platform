@@ -73,7 +73,9 @@ AUTH_IDP_RPC_FILES = (
 )
 AUTH_MAPPERS_FILES = (
     "config.yml",
+    "methods/tools.py",
     "module.py",
+    "requirements.txt",
     "rpc/header.py",
     "rpc/json.py",
     "rpc/noop.py",
@@ -133,6 +135,7 @@ CENTRY_SELECTED_FILES = (
     "pylon_main/configs/shared.yml",
     "pylon_main/pylon.yml",
 )
+OPTIONAL_RUNTIME_CONFIG_FILES = ("pylon_auth/configs/auth_mappers.yml",)
 
 EXPECTED_ROUTES = {
     "auth_core/routes/auth.py#Route.auth": ("/auth", ["GET"]),
@@ -214,6 +217,8 @@ FINGERPRINT_TARGETS = {
         ),
         "rpc/roles.py": (
             ("RPC", "assign_user_to_role"),
+            ("RPC", "get_token_permissions"),
+            ("RPC", "get_user_permissions"),
             ("RPC", "get_user_roles"),
         ),
         "rpc/user_groups.py": (("RPC", "add_user_group"),),
@@ -248,6 +253,7 @@ FINGERPRINT_TARGETS = {
         "rpc/processor.py": (("RPC", "init_auth_processor"),),
     },
     "auth_mappers": {
+        "methods/tools.py": (("Method", "have_requirement"),),
         "module.py": (("Module", "init"),),
         "rpc/header.py": (("RPC", "header_success_mapper"),),
         "rpc/json.py": (
@@ -573,6 +579,77 @@ def _yaml_list(text: str, path: str) -> list[str]:
         if not value.strip():
             stack.append((indent, key.strip()))
     return values
+
+
+def _yaml_mapping_paths_and_scalars(text: str) -> tuple[set[str], dict[str, str]]:
+    """Read only ordinary mapping paths and scalar literals from simple YAML."""
+    paths: set[str] = set()
+    scalars: dict[str, str] = {}
+    stack: list[tuple[int, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip() or line.lstrip().startswith("-"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        if ":" not in stripped:
+            continue
+        key, raw_value = stripped.split(":", 1)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        path = ".".join([item[1] for item in stack] + [key.strip()])
+        paths.add(path)
+        raw_value = raw_value.strip()
+        if not raw_value:
+            stack.append((indent, key.strip()))
+            continue
+        if raw_value.startswith('"') and raw_value.endswith('"'):
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid double-quoted YAML scalar at {path}") from exc
+        elif raw_value.startswith("'") and raw_value.endswith("'"):
+            value = raw_value[1:-1].replace("''", "'")
+        else:
+            value = raw_value
+        if not isinstance(value, str):
+            raise ValueError(f"non-string YAML scalar at {path}")
+        scalars[path] = value
+    return paths, scalars
+
+
+def _tracked_auth_mapper_contract(auth_mappers_root: Path) -> dict[str, Any]:
+    text = (auth_mappers_root / "config.yml").read_text(encoding="utf-8")
+    paths, scalars = _yaml_mapping_paths_and_scalars(text)
+    header_path = "header.scopes.grafana.headers.X-WEBAUTH-USER"
+    json_path = "json.scopes.galloper.login"
+    if header_path not in scalars or json_path not in scalars:
+        raise ValueError("tracked auth mapper projection is incomplete")
+
+    requirements = [
+        line.strip()
+        for line in (auth_mappers_root / "requirements.txt").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    jsonpath = [line for line in requirements if line.startswith("jsonpath_rw")]
+    if len(jsonpath) != 1:
+        raise ValueError("tracked auth mapper JSONPath dependency is ambiguous")
+
+    return {
+        "header": {
+            "outputs": {"X-WEBAUTH-USER": scalars[header_path]},
+            "requirements_present": "header.scopes.grafana.require" in paths,
+            "scope": "grafana",
+        },
+        "json": {
+            "endpoint": scalars.get("json.endpoint"),
+            "outputs": {"login": scalars[json_path]},
+            "scope": "galloper",
+        },
+        "jsonpath_dependency": jsonpath[0],
+    }
 
 
 def _env_allowlist(text: str, names: tuple[str, ...]) -> dict[str, str]:
@@ -1403,6 +1480,18 @@ def _ref_source_hashes(
         f"{label}/{relative}": _sha256(_ref_bytes(repo, ref, relative))
         for relative in relative_files
     }
+
+
+def _optional_runtime_config_inventory(centry_root: Path) -> list[dict[str, Any]]:
+    """Record only whether optional runtime overrides exist, never their bytes."""
+    return [
+        {
+            "contents_exported": False,
+            "path": f"centry/{relative}",
+            "present": (centry_root / relative).is_file(),
+        }
+        for relative in OPTIONAL_RUNTIME_CONFIG_FILES
+    ]
 
 
 def _behavior_contracts() -> list[dict[str, Any]]:
@@ -2264,6 +2353,12 @@ def build_catalog(
 
     source_inventory = {
         "full_byte_sources": sorted(source_hashes),
+        "optional_runtime_configs": _optional_runtime_config_inventory(
+            roots["centry"]
+        ),
+        "tracked_auth_mapper_contract": _tracked_auth_mapper_contract(
+            roots["auth_mappers"]
+        ),
         "selected_config_sources": [
             "centry/docker-compose.yml#auth_runtime_allowlist",
             "centry/envs/default.env#auth_nonsecret_allowlist",

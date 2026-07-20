@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -14,7 +15,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import export_browser_auth_http_baseline as exporter  # noqa: E402
-from check_browser_auth_http_baseline import check_catalog  # noqa: E402
+from check_browser_auth_http_baseline import (  # noqa: E402
+    EXPECTED_TRACKED_AUTH_MAPPER_CONTRACT,
+    check_catalog,
+)
 
 
 CATALOG = Path(__file__).resolve().parents[2] / "testdata/baseline/browser-auth-http-contracts.json"
@@ -198,12 +202,62 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
         ] = "waitress"
         selected_sources = changed["source_inventory"]["selected_config_sources"]
         selected_sources.append(selected_sources[0])
+        changed["source_inventory"]["optional_runtime_configs"][0]["present"] = True
 
         failures = check_catalog(changed)
         self.assertIn("pinned browser-auth framework contract changed", failures)
         self.assertIn("pylon_repo source ref changed", failures)
         self.assertIn("tracked Pylon image/runtime composition changed", failures)
         self.assertIn("selected non-secret configuration source set changed", failures)
+        self.assertIn("optional runtime configuration presence changed", failures)
+
+    def test_fixture_pins_auth_mapper_permission_evidence(self) -> None:
+        sources = self.catalog["source_files_sha256"]
+        for source in (
+            "auth_mappers/methods/tools.py",
+            "auth_mappers/requirements.txt",
+        ):
+            self.assertIn(source, sources)
+
+        fingerprints = self.catalog["behavior_fingerprints"]
+        for fingerprint in (
+            "auth_core/rpc/roles.py#RPC.get_token_permissions",
+            "auth_core/rpc/roles.py#RPC.get_user_permissions",
+            "auth_mappers/methods/tools.py#Method.have_requirement",
+        ):
+            self.assertIn(fingerprint, fingerprints)
+
+        self.assertEqual(
+            self.catalog["source_inventory"]["tracked_auth_mapper_contract"],
+            EXPECTED_TRACKED_AUTH_MAPPER_CONTRACT,
+        )
+
+    def test_optional_auth_mapper_runtime_config_inventory_never_reads_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            centry_root = Path(temp_dir)
+            config_path = centry_root / "pylon_auth/configs/auth_mappers.yml"
+
+            absent = exporter._optional_runtime_config_inventory(centry_root)
+            self.assertEqual(absent[0]["present"], False)
+
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                "credential: SYNTHETIC_SECRET_MUST_NOT_APPEAR\n", encoding="utf-8"
+            )
+            present = exporter._optional_runtime_config_inventory(centry_root)
+
+            self.assertEqual(present[0]["present"], True)
+            self.assertEqual(present[0]["contents_exported"], False)
+        self.assertNotIn("SYNTHETIC_SECRET_MUST_NOT_APPEAR", json.dumps(present))
+
+    def test_checker_rejects_tracked_auth_mapper_semantic_mutation(self) -> None:
+        changed = deepcopy(self.catalog)
+        changed["source_inventory"]["tracked_auth_mapper_contract"]["header"][
+            "requirements_present"
+        ] = True
+        self.assertIn(
+            "tracked auth mapper semantic contract changed", check_catalog(changed)
+        )
 
     def test_checker_rejects_main_public_rule_ownership_order_and_value_mutations(self) -> None:
         changed = deepcopy(self.catalog)

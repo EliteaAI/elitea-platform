@@ -26,18 +26,25 @@ type CredentialHeader struct {
 type CoreConfig struct {
 	CredentialHeaders  []CredentialHeader
 	AccessDeniedTarget string
+	// Mappers contains only sanitized, already-authorized projections. Nil
+	// preserves the built-in no-op and RPC targets and disables optional
+	// targets. In particular it never enables the current raw /info transport.
+	Mappers *SuccessMapper
 }
 
 // CoreHandler implements the unversioned Auth Core /auth slice. Provider
-// login/logout routes are separate, and header/JSON mappers plus a secured
-// replacement for /info remain deferred. This slice stays unmounted until
-// production Redis/PostgreSQL, proxy, and rate-limit composition is verified.
+// login/logout routes are separate. The tracked header mapper is supported;
+// the tracked JSON mapping remains evidence-only until a workload-authenticated
+// consumer transport replaces the current raw session-reference /info contract.
+// This slice stays unmounted until production Redis/PostgreSQL, proxy, and
+// rate-limit composition is verified.
 type CoreHandler struct {
 	kernel             *forwardapp.Kernel
 	sources            *TrustedProxyResolver
 	cookies            *CookiePolicy
 	credentialHeaders  []CredentialHeader
 	accessDeniedTarget string
+	mappers            *SuccessMapper
 }
 
 func NewCoreHandler(
@@ -77,6 +84,7 @@ func NewCoreHandler(
 		cookies:            cookies,
 		credentialHeaders:  headers,
 		accessDeniedTarget: config.AccessDeniedTarget,
+		mappers:            config.Mappers,
 	}, nil
 }
 
@@ -150,8 +158,14 @@ func (h *CoreHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 	switch decision.Kind {
 	case forwardapp.DecisionAllow:
-		if !h.writeSuccess(writer, decision) {
+		switch h.writeSuccess(writer, decision) {
+		case successWritten:
+		case successDenied:
 			h.writeDenied(writer, request)
+		case successInvalidAuthorizedData:
+			writeProblem(writer, http.StatusServiceUnavailable)
+		default:
+			writeProblem(writer, http.StatusServiceUnavailable)
 		}
 	case forwardapp.DecisionDeny:
 		h.writeDenied(writer, request)
@@ -195,35 +209,60 @@ func (h *CoreHandler) credentials(headers http.Header) []forwardapp.CredentialIn
 	return credentials
 }
 
-func (h *CoreHandler) writeSuccess(writer http.ResponseWriter, decision forwardapp.Decision) bool {
+type successDisposition uint8
+
+const (
+	successInvalidAuthorizedData successDisposition = iota
+	successWritten
+	successDenied
+)
+
+func (h *CoreHandler) writeSuccess(writer http.ResponseWriter, decision forwardapp.Decision) successDisposition {
 	if !decision.Source.TargetPresent {
 		writeForwardAuthOK(writer)
-		return true
-	}
-	if decision.Source.Target != "rpc" {
-		return false
+		return successWritten
 	}
 
-	switch decision.Authentication.Type {
-	case forwardapp.AuthenticationToken:
-		writer.Header().Set("X-Auth-Type", "token")
-		writer.Header().Set("X-Auth-ID", decision.Authentication.Principal.TokenID)
-		writer.Header().Set("X-Auth-User-ID", decision.Authentication.Principal.UserID)
-		writer.Header().Set("X-Auth-Reference", "-")
-	case forwardapp.AuthenticationUser:
-		writer.Header().Set("X-Auth-Type", "user")
-		writer.Header().Set("X-Auth-ID", decision.Authentication.Principal.UserID)
-		writer.Header().Set("X-Auth-User-ID", decision.Authentication.Principal.UserID)
-		writer.Header().Set("X-Auth-Reference", "-")
-	case forwardapp.AuthenticationPublic:
-		writer.Header().Set("X-Auth-Type", "public")
-		writer.Header().Set("X-Auth-ID", "-")
-		writer.Header().Set("X-Auth-Reference", "-")
+	switch decision.Source.Target {
+	case "rpc":
+		switch decision.Authentication.Type {
+		case forwardapp.AuthenticationToken:
+			writer.Header().Set("X-Auth-Type", "token")
+			writer.Header().Set("X-Auth-ID", decision.Authentication.Principal.TokenID)
+			writer.Header().Set("X-Auth-User-ID", decision.Authentication.Principal.UserID)
+			writer.Header().Set("X-Auth-Reference", "-")
+		case forwardapp.AuthenticationUser:
+			writer.Header().Set("X-Auth-Type", "user")
+			writer.Header().Set("X-Auth-ID", decision.Authentication.Principal.UserID)
+			writer.Header().Set("X-Auth-User-ID", decision.Authentication.Principal.UserID)
+			writer.Header().Set("X-Auth-Reference", "-")
+		case forwardapp.AuthenticationPublic:
+			writer.Header().Set("X-Auth-Type", "public")
+			writer.Header().Set("X-Auth-ID", "-")
+			writer.Header().Set("X-Auth-Reference", "-")
+		default:
+			return successInvalidAuthorizedData
+		}
+	case "header":
+		header, disposition := h.mappers.Header(decision)
+		switch disposition {
+		case MappingApplied:
+			writer.Header().Set(header.Name, header.Value)
+		case MappingNotApplicable:
+			return successDenied
+		case MappingInvalidAuthorizedData:
+			return successInvalidAuthorizedData
+		default:
+			return successInvalidAuthorizedData
+		}
 	default:
-		return false
+		// Exposing the tracked JSON mapping through the current endpoint/session-ID
+		// protocol would recreate a reusable browser bearer on an unauthenticated
+		// data path.
+		return successDenied
 	}
 	writeForwardAuthOK(writer)
-	return true
+	return successWritten
 }
 
 func (h *CoreHandler) writeDenied(writer http.ResponseWriter, request *http.Request) {

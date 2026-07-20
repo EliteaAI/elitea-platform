@@ -13,11 +13,11 @@ from typing import Any
 
 
 EXPECTED_SCHEMA_VERSION = 1
-EXPECTED_CATALOG_SHA256 = "f929e8184ee15a748bd3f216f1777b2bfc0ddf6e3aff173c143e4427cecba363"
-EXPECTED_SOURCE_COUNT = 74
-EXPECTED_SOURCE_KEYSET_SHA256 = "de7ed3a85c17c859247e4d0e863ffe4ff1320ad0e595e08eeb5ff172b10be326"
-EXPECTED_FINGERPRINT_COUNT = 112
-EXPECTED_FINGERPRINT_KEYSET_SHA256 = "305c7c96ea3d8ac284cec7bfddb8be3b6d9966bc95be7021b08c0cea58f03b56"
+EXPECTED_CATALOG_SHA256 = "1520aee717b79c56b9dd04fbec4d2e823a5fa2d34723de53ba4df53bfb3730ec"
+EXPECTED_SOURCE_COUNT = 76
+EXPECTED_SOURCE_KEYSET_SHA256 = "c00841b461e065afca773f7159b69c1aa0f55e26892709d9f04d49c2f22d3f84"
+EXPECTED_FINGERPRINT_COUNT = 115
+EXPECTED_FINGERPRINT_KEYSET_SHA256 = "3538a5d3d43a3d9bd939694d2b6e53c872e00504a1f7f9d34cdef5f602e1c427"
 EXPECTED_TOP_LEVEL_KEYS = {
     "behavior_contracts",
     "behavior_fingerprints",
@@ -258,6 +258,26 @@ EXPECTED_SELECTED_CONFIG_SOURCES = [
     "elitea_core/config.yml#public_route_allowlist",
     "runtime_interface_litellm/config.yml#public_route_allowlist",
 ]
+EXPECTED_OPTIONAL_RUNTIME_CONFIGS = [
+    {
+        "contents_exported": False,
+        "path": "centry/pylon_auth/configs/auth_mappers.yml",
+        "present": False,
+    }
+]
+EXPECTED_TRACKED_AUTH_MAPPER_CONTRACT = {
+    "header": {
+        "outputs": {"X-WEBAUTH-USER": "'provider_attr'.'nameid'"},
+        "requirements_present": False,
+        "scope": "grafana",
+    },
+    "json": {
+        "endpoint": None,
+        "outputs": {"login": "'provider_attr'.'nameid'"},
+        "scope": "galloper",
+    },
+    "jsonpath_dependency": "jsonpath_rw==1.4.0",
+}
 
 EXPECTED_CONFIGURED_PUBLIC_RULES = [
     {
@@ -1016,7 +1036,13 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
 
     source_inventory = _check_exact_keys(
         catalog.get("source_inventory"),
-        {"full_byte_sources", "selected_config_sha256", "selected_config_sources"},
+        {
+            "full_byte_sources",
+            "optional_runtime_configs",
+            "selected_config_sha256",
+            "selected_config_sources",
+            "tracked_auth_mapper_contract",
+        },
         "source_inventory",
         failures,
     )
@@ -1026,6 +1052,10 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:
         failures.append("source inventory does not exactly match full-byte source hashes")
     if source_inventory.get("selected_config_sources") != EXPECTED_SELECTED_CONFIG_SOURCES:
         failures.append("selected non-secret configuration source set changed")
+    if source_inventory.get("optional_runtime_configs") != EXPECTED_OPTIONAL_RUNTIME_CONFIGS:
+        failures.append("optional runtime configuration presence changed")
+    if source_inventory.get("tracked_auth_mapper_contract") != EXPECTED_TRACKED_AUTH_MAPPER_CONTRACT:
+        failures.append("tracked auth mapper semantic contract changed")
     selected_hashes = source_inventory.get("selected_config_sha256")
     if not isinstance(selected_hashes, dict) or set(selected_hashes) != set(
         EXPECTED_SELECTED_CONFIG_SOURCES

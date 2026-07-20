@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	browserapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 )
 
@@ -19,7 +20,7 @@ func TestParseAcceptsOneCompleteFormSnapshot(t *testing.T) {
 		config.Provider.Form == nil || config.Provider.Form.UsersJSONFile != "/run/secrets/auth/form-users.json" ||
 		config.Credentials.PATSigningKeyFile != "/run/secrets/auth/pat-hs512-key" ||
 		len(config.TrustedProxyCIDRs) != 2 || config.Cookie.LifetimeSeconds != 604800 ||
-		config.Credentials.Headers == nil ||
+		config.Credentials.Headers == nil || config.Mappers.Contract != browserapi.MapperContractTrackedV1 ||
 		len(config.Authorization.MainConfiguredPublicRules) != 4 ||
 		config.Identity.InitialGlobalAdmins == nil ||
 		config.Identity.ProjectEnrollment == nil ||
@@ -243,7 +244,9 @@ func TestConfigValidateRejectsUnsafeOrIncompleteValues(t *testing.T) {
 		"credential type": func(config *Config) {
 			config.Credentials.Headers = []CredentialHeaderConfig{{Name: "X-Token", Type: "cookie"}}
 		},
-		"implicit public rules": func(config *Config) { config.Authorization.MainConfiguredPublicRules = nil },
+		"missing mapper contract": func(config *Config) { config.Mappers.Contract = "" },
+		"unknown mapper contract": func(config *Config) { config.Mappers.Contract = "elitea.auth_mappers.custom.v1" },
+		"implicit public rules":   func(config *Config) { config.Authorization.MainConfiguredPublicRules = nil },
 		"duplicate public rule name": func(config *Config) {
 			config.Authorization.MainConfiguredPublicRules[1].Name = config.Authorization.MainConfiguredPublicRules[0].Name
 		},
@@ -341,6 +344,8 @@ redis:
 credentials:
   pat_signing_key_file: /run/secrets/auth/pat-hs512-key
   credential_headers: []
+mappers:
+  contract: elitea.auth_mappers.tracked.v1
 authorization:
   main_configured_public_rules:
     - name: config.forward_auth

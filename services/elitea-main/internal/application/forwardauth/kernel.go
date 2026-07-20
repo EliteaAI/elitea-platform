@@ -3,6 +3,7 @@ package forwardauth
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 
 	browserapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/browserauth"
@@ -10,6 +11,21 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
 	sessionstate "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/session"
 )
+
+// AuthorizedBrowser returns a detached authorization only for a coherent
+// browser-session allow decision produced by this kernel. Presentation-layer
+// mappers use this accessor instead of trusting the exported diagnostic fields
+// independently or re-reading a session by bearer reference.
+func (decision Decision) AuthorizedBrowser() (browserapp.Authorization, bool) {
+	if decision.Kind != DecisionAllow || decision.Reason != ReasonBrowserSessionAccepted ||
+		decision.Authentication.Type != AuthenticationUser ||
+		!requiredBoundedText(decision.Authentication.Reference, MaxBrowserReferenceBytes) ||
+		!validBrowserAuthorization(decision.Authentication.BrowserAuthorization) ||
+		!sameUser(decision.Authentication.Principal, decision.Authentication.BrowserAuthorization.Principal) {
+		return browserapp.Authorization{}, false
+	}
+	return cloneBrowserAuthorization(decision.Authentication.BrowserAuthorization), true
+}
 
 type Kernel struct {
 	credentials CredentialAuthenticator
@@ -160,6 +176,12 @@ func positiveID(value string) (int64, bool) {
 func emptyUser(user auth.User) bool {
 	return user.ID == "" && user.UserID == "" && user.TokenID == "" && user.Email == "" &&
 		len(user.Roles) == 0 && len(user.Permissions) == 0 && user.ProjectID == "" && user.AuthType == ""
+}
+
+func sameUser(left, right auth.User) bool {
+	return left.ID == right.ID && left.UserID == right.UserID && left.TokenID == right.TokenID &&
+		left.Email == right.Email && left.ProjectID == right.ProjectID && left.AuthType == right.AuthType &&
+		slices.Equal(left.Roles, right.Roles) && slices.Equal(left.Permissions, right.Permissions)
 }
 
 func browserSessionUnavailable(err error) bool {

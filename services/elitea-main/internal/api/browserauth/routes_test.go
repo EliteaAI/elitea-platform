@@ -177,6 +177,7 @@ func TestFormRoutesDoNotExposeUnselectedOrUnknownChildren(t *testing.T) {
 	for _, path := range []string{
 		BasePath + OIDCLoginPath,
 		BasePath + OIDCLoginCallbackPath,
+		BasePath + "/info",
 		BasePath + "/unknown",
 	} {
 		recorder := httptest.NewRecorder()
@@ -189,6 +190,19 @@ func TestFormRoutesDoNotExposeUnselectedOrUnknownChildren(t *testing.T) {
 		dependencies.flow.logoutCalls != 0 || dependencies.admitter.calls != 0 ||
 		len(*dependencies.events) != 0 {
 		t.Fatal("unknown route reached Form dependencies")
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodOptions} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(method, BasePath+"/info?target=json&scope=galloper", nil))
+		if recorder.Code != http.StatusNotFound || recorder.Header().Get("Allow") != "" {
+			t.Fatalf("%s /info status=%d Allow=%q", method, recorder.Code, recorder.Header().Get("Allow"))
+		}
+		for _, header := range []string{"X-Auth-Session-Id", "X-Auth-Session-Endpoint", "X-Auth-Session-Name"} {
+			if value := recorder.Header().Get(header); value != "" {
+				t.Fatalf("%s /info emitted %s=%q", method, header, value)
+			}
+		}
 	}
 }
 
