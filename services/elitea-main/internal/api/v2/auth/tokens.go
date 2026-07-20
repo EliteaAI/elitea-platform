@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"time"
@@ -293,7 +294,15 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxTokenRequestBodyBytes)
 	var request tokenCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&request); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
+	// Flask's current request.json contract consumes one complete JSON
+	// document. Requiring EOF preserves that behavior and prevents ambiguous
+	// first-document parsing across clients and language implementations.
+	if err := requireJSONDocumentEOF(decoder); err != nil {
 		apierr.Write(w, apierr.BadRequest("invalid request body"))
 		return
 	}
@@ -328,6 +337,17 @@ func (h *Handler) TokenCreate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, token)
+}
+
+func requireJSONDocumentEOF(decoder *json.Decoder) error {
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body contains more than one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) TokenDelete(w http.ResponseWriter, r *http.Request) {

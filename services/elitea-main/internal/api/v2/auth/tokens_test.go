@@ -39,7 +39,7 @@ func (s tokenRepositoryStub) DeleteOwned(ctx context.Context, userID int64, toke
 	return s.deleteFunc(ctx, userID, tokenUUID)
 }
 
-func TestTokenCreatePersistsLegacyContractForOwningUser(t *testing.T) {
+func TestTokenCreatePersistsCurrentBaselineContractForOwningUser(t *testing.T) {
 	const tokenUUID = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
 	secret := []byte("test-secret")
 	var gotOwnerID int64
@@ -82,12 +82,12 @@ func TestTokenCreatePersistsLegacyContractForOwningUser(t *testing.T) {
 	}
 	for _, required := range []string{"id", "uuid", "expires", "user_id", "name", "token"} {
 		if _, ok := response[required]; !ok {
-			t.Fatalf("response is missing legacy field %q: %v", required, response)
+			t.Fatalf("response is missing current-baseline field %q: %v", required, response)
 		}
 	}
 	for _, obsolete := range []string{"created_at", "prefix"} {
 		if _, ok := response[obsolete]; ok {
-			t.Fatalf("response contains non-legacy field %q", obsolete)
+			t.Fatalf("response contains non-baseline field %q", obsolete)
 		}
 	}
 	var encoded string
@@ -101,11 +101,35 @@ func TestTokenCreatePersistsLegacyContractForOwningUser(t *testing.T) {
 		return secret, nil
 	})
 	if err != nil || !parsed.Valid {
-		t.Fatalf("created token is not a valid legacy HS512 JWT: valid=%v err=%v", parsed.Valid, err)
+		t.Fatalf("created token is not a valid current-baseline HS512 JWT: valid=%v err=%v", parsed.Valid, err)
 	}
 	claims := parsed.Claims.(*baselineTokenClaims)
 	if claims.UUID != tokenUUID || claims.Expires == nil {
 		t.Fatalf("claims = %+v", claims)
+	}
+}
+
+func TestTokenCreateRejectsTrailingJSONDocument(t *testing.T) {
+	createCalls := 0
+	handler := &Handler{
+		tokenSigningKey: []byte("test-secret"),
+		tokens: tokenRepositoryStub{
+			createFunc: func(context.Context, int64, string, *time.Time) (tokenRecord, error) {
+				createCalls++
+				return tokenRecord{}, nil
+			},
+		},
+	}
+
+	req := authenticatedTokenRequest(http.MethodPost, "/token/", `{"name":"first"}{"name":"second"}`)
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if createCalls != 0 {
+		t.Fatalf("repository create calls = %d, want 0", createCalls)
 	}
 }
 

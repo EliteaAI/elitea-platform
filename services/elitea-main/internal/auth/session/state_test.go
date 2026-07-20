@@ -104,6 +104,18 @@ func TestStateValidateRejectsInvalidOrUnboundedState(t *testing.T) {
 			state.ProviderAttributes = json.RawMessage("[]")
 			return state
 		},
+		"duplicate identity at root": func(state State) State {
+			state.ProviderAttributes = json.RawMessage(`{"nameid":"first","nameid":"second"}`)
+			return state
+		},
+		"duplicate nested email claim": func(state State) State {
+			state.ProviderAttributes = json.RawMessage(`{"attributes":{"email":"first@example.com","email":"second@example.com"}}`)
+			return state
+		},
+		"duplicate identity inside array": func(state State) State {
+			state.ProviderAttributes = json.RawMessage(`{"claims":[{"sessionindex":"first","sessionindex":"second"}]}`)
+			return state
+		},
 		"invalid UTF-8 attributes": func(state State) State {
 			state.ProviderAttributes = json.RawMessage{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'}
 			return state
@@ -132,5 +144,19 @@ func TestStateValidateRejectsInvalidOrUnboundedState(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidState)
 			}
 		})
+	}
+}
+
+func TestStateValidateAllowsSameMemberNameInDistinctObjects(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		SchemaVersion: CurrentSchemaVersion,
+		ProviderAttributes: json.RawMessage(
+			`{"primary":{"email":"first@example.com"},"secondary":{"email":"second@example.com"}}`,
+		),
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("valid distinct object members: %v", err)
 	}
 }
