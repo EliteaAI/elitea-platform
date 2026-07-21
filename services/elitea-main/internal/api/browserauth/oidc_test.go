@@ -2,6 +2,8 @@ package browserauth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/net/html"
 
 	browserapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/browserauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/identity"
@@ -21,7 +24,7 @@ import (
 	sessionstate "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/session"
 )
 
-func TestOIDCBeginAdmitsBeforeAllocatingBoundState(t *testing.T) {
+func TestOIDCBeginDefaultsToBoundedPostAfterAdmissionAndStateAllocation(t *testing.T) {
 	handler, dependencies := newTestOIDCHandler(t)
 	request := httptest.NewRequest(
 		http.MethodGet,
@@ -32,18 +35,48 @@ func TestOIDCBeginAdmitsBeforeAllocatingBoundState(t *testing.T) {
 
 	mountOIDC(handler).ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusFound {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
 	}
-	location, err := url.Parse(recorder.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
+	if recorder.Header().Get("Location") != "" ||
+		recorder.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("location=%q content-type=%q", recorder.Header().Get("Location"), recorder.Header().Get("Content-Type"))
 	}
-	if location.Scheme != "https" || location.Host != "issuer.example" ||
-		location.Query().Get("state") != dependencies.flow.beginResult.TransactionID {
-		t.Fatalf("authorization redirect = %q", location.String())
+	action, method, parameters := parseOIDCAuthorizationForm(t, recorder.Body.String())
+	if action != "https://issuer.example/authorize" || method != "post" ||
+		len(parameters) != 8 {
+		t.Fatalf("action=%q method=%q parameters=%v", action, method, parameters)
 	}
-	if strings.Join(*dependencies.events, ",") != "client-key,admit,new-authorization,begin,authorization-url" {
+	expectedParameters := map[string]string{
+		"response_type":         "code",
+		"client_id":             "elitea",
+		"redirect_uri":          "https://elitea.example/forward-auth/auth_oidc/login_callback",
+		"scope":                 "openid profile email",
+		"state":                 dependencies.flow.beginResult.TransactionID,
+		"nonce":                 dependencies.protocol.authorization.Correlation.Nonce,
+		"code_challenge":        dependencies.protocol.authorizationRequest.CodeChallenge,
+		"code_challenge_method": OIDCPKCEChallengeS256,
+	}
+	for name, want := range expectedParameters {
+		if values := parameters[name]; len(values) != 1 || values[0] != want {
+			t.Fatalf("parameter %s = %v, want %q", name, values, want)
+		}
+	}
+	script := oidcAuthorizationScript(t, recorder.Body.String())
+	scriptDigest := sha256.Sum256([]byte(script))
+	if "sha256-"+base64.StdEncoding.EncodeToString(scriptDigest[:]) != oidcAutoSubmitScriptHash {
+		t.Fatalf("script hash changed for %q", script)
+	}
+	if strings.Contains(recorder.Body.String(), dependencies.protocol.authorization.ProviderState.PKCEVerifier) ||
+		script != "document.getElementById(\"oidc-authorization\").submit();" ||
+		!strings.Contains(recorder.Body.String(), `enctype="application/x-www-form-urlencoded"`) ||
+		!strings.Contains(recorder.Body.String(), `accept-charset="UTF-8"`) ||
+		!strings.Contains(recorder.Body.String(), "<noscript>") ||
+		strings.Contains(recorder.Body.String(), "target_to") ||
+		strings.Contains(recorder.Body.String(), "/projects/7?tab=artifacts") {
+		t.Fatalf("unsafe or incomplete form body = %q", recorder.Body.String())
+	}
+	if strings.Join(*dependencies.events, ",") != "client-key,admit,new-authorization,begin,authorization-request" {
 		t.Fatalf("events = %v", *dependencies.events)
 	}
 	if dependencies.admitter.attempt != (BrowserAttempt{
@@ -65,7 +98,193 @@ func TestOIDCBeginAdmitsBeforeAllocatingBoundState(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Value != CookieValuePrefix+dependencies.flow.beginResult.SessionID {
 		t.Fatalf("cookies = %+v", cookies)
 	}
+	requireOIDCPostSecurityHeaders(t, recorder.Header(), "https://issuer.example")
+}
+
+func TestOIDCBeginRevokesExistingSessionBeforeAllocatingReplacement(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	oldSessionID := canonicalSessionID(6)
+	request := httptest.NewRequest(http.MethodGet, BasePath+OIDCLoginPath, nil)
+	request.AddCookie(sessionCookie(oldSessionID))
+	recorder := httptest.NewRecorder()
+
+	mountOIDC(handler).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || dependencies.flow.logoutCalls != 1 ||
+		dependencies.flow.logoutID != oldSessionID {
+		t.Fatalf("status=%d logout=%d id=%q", recorder.Code, dependencies.flow.logoutCalls, dependencies.flow.logoutID)
+	}
+	if events := strings.Join(*dependencies.events, ","); events != "client-key,admit,new-authorization,logout,begin,authorization-request" {
+		t.Fatalf("events = %s", events)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Value != CookieValuePrefix+dependencies.flow.beginResult.SessionID {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+}
+
+func TestOIDCBeginExplicitGETRedirectsWithEquivalentBoundParameters(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	dependencies.protocol.authorizationRequest.Transport = OIDCAuthorizationGET
+	dependencies.protocol.authorizationRequest.Endpoint += "?prompt=login"
+	recorder := httptest.NewRecorder()
+
+	mountOIDC(handler).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, BasePath+OIDCLoginPath, nil),
+	)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	location, err := url.Parse(recorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameters := location.Query()
+	if location.Scheme != "https" || location.Host != "issuer.example" ||
+		parameters.Get("prompt") != "login" || parameters.Get("response_type") != "code" ||
+		parameters.Get("client_id") != "elitea" ||
+		parameters.Get("redirect_uri") != "https://elitea.example/forward-auth/auth_oidc/login_callback" ||
+		parameters.Get("scope") != "openid profile email" ||
+		parameters.Get("state") != dependencies.flow.beginResult.TransactionID ||
+		parameters.Get("nonce") != dependencies.protocol.authorization.Correlation.Nonce ||
+		parameters.Get("code_challenge") != dependencies.protocol.authorizationRequest.CodeChallenge ||
+		parameters.Get("code_challenge_method") != OIDCPKCEChallengeS256 || len(parameters) != 9 {
+		t.Fatalf("authorization redirect = %q", location.String())
+	}
+	if len(recorder.Result().Cookies()) != 1 {
+		t.Fatalf("cookies = %+v", recorder.Result().Cookies())
+	}
 	requireSecurityHeaders(t, recorder.Header())
+}
+
+func TestOIDCPostFormEscapesProviderConfigurationAsData(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	dependencies.protocol.authorizationRequest.Endpoint += "?tenant=%22%3E%3Cform%20action%3Dhttps%3A%2F%2Fattacker.example%3E"
+	dependencies.protocol.authorizationRequest.ClientID = `"><img/src=x>`
+	dependencies.protocol.authorizationRequest.RedirectURI = "https://elitea.example/callback?next=%22%3E%3Cscript%3E"
+	dependencies.protocol.authorizationRequest.Scope = "openid </script><script>TEST_ONLY"
+	recorder := httptest.NewRecorder()
+
+	mountOIDC(handler).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, BasePath+OIDCLoginPath, nil),
+	)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	action, _, parameters := parseOIDCAuthorizationForm(t, recorder.Body.String())
+	if action != dependencies.protocol.authorizationRequest.Endpoint ||
+		parameters.Get("client_id") != dependencies.protocol.authorizationRequest.ClientID ||
+		parameters.Get("scope") != dependencies.protocol.authorizationRequest.Scope ||
+		strings.Contains(recorder.Body.String(), "<img") ||
+		strings.Contains(recorder.Body.String(), "</script><script>") {
+		t.Fatalf("unsafe rendered form = %q", recorder.Body.String())
+	}
+	if script := oidcAuthorizationScript(t, recorder.Body.String()); script != "document.getElementById(\"oidc-authorization\").submit();" {
+		t.Fatalf("script = %q", script)
+	}
+	requireOIDCPostSecurityHeaders(t, recorder.Header(), "https://issuer.example")
+}
+
+func TestOIDCBeginRejectsMalformedProtocolOutputAndRevokesStartedSession(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*OIDCAuthorizationRequest)
+	}{
+		{name: "unknown transport", mutate: func(request *OIDCAuthorizationRequest) { request.Transport = "put" }},
+		{name: "insecure endpoint", mutate: func(request *OIDCAuthorizationRequest) { request.Endpoint = "http://issuer.example/authorize" }},
+		{name: "reserved endpoint query", mutate: func(request *OIDCAuthorizationRequest) { request.Endpoint += "?state=configured" }},
+		{name: "duplicate endpoint query", mutate: func(request *OIDCAuthorizationRequest) { request.Endpoint += "?prompt=login&prompt=consent" }},
+		{name: "secret endpoint query", mutate: func(request *OIDCAuthorizationRequest) { request.Endpoint += "?client_secret=TEST_ONLY_SECRET" }},
+		{name: "unsafe CSP host", mutate: func(request *OIDCAuthorizationRequest) { request.Endpoint = "https://issuer.exämple/authorize" }},
+		{name: "wrong response type", mutate: func(request *OIDCAuthorizationRequest) { request.ResponseType = "id_token" }},
+		{name: "wrong state", mutate: func(request *OIDCAuthorizationRequest) { request.State = canonicalSessionID(7) }},
+		{name: "wrong nonce", mutate: func(request *OIDCAuthorizationRequest) { request.Nonce = canonicalSessionID(8) }},
+		{name: "wrong challenge", mutate: func(request *OIDCAuthorizationRequest) { request.CodeChallenge = strings.Repeat("A", 43) }},
+		{name: "control client", mutate: func(request *OIDCAuthorizationRequest) { request.ClientID = "TEST_ONLY\nCLIENT" }},
+		{name: "oversized client", mutate: func(request *OIDCAuthorizationRequest) {
+			request.ClientID = strings.Repeat("x", maxOIDCAuthorizationValue+1)
+		}},
+		{name: "scope without openid", mutate: func(request *OIDCAuthorizationRequest) { request.Scope = "profile email" }},
+		{name: "insecure redirect", mutate: func(request *OIDCAuthorizationRequest) { request.RedirectURI = "http://elitea.example/callback" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler, dependencies := newTestOIDCHandler(t)
+			test.mutate(&dependencies.protocol.authorizationRequest)
+			recorder := httptest.NewRecorder()
+
+			mountOIDC(handler).ServeHTTP(
+				recorder,
+				httptest.NewRequest(http.MethodGet, BasePath+OIDCLoginPath, nil),
+			)
+
+			if recorder.Code != http.StatusServiceUnavailable ||
+				recorder.Body.String() != http.StatusText(http.StatusServiceUnavailable) ||
+				strings.Contains(recorder.Body.String(), "TEST_ONLY") {
+				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+			if dependencies.protocol.authorizationRequestCalls != 1 || dependencies.flow.logoutCalls != 1 ||
+				dependencies.flow.logoutID != dependencies.flow.beginResult.SessionID {
+				t.Fatalf("request=%d logout=%d id=%q", dependencies.protocol.authorizationRequestCalls, dependencies.flow.logoutCalls, dependencies.flow.logoutID)
+			}
+			cookies := recorder.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].Value != "" || cookies[0].MaxAge >= 0 {
+				t.Fatalf("cookies = %+v", cookies)
+			}
+		})
+	}
+}
+
+func TestOIDCBeginBoundsQueryBeforeProtocolAndStateAllocation(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		BasePath+OIDCLoginPath+"?target_to=/"+strings.Repeat("x", maxOIDCBeginQueryBytes),
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+
+	mountOIDC(handler).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusRequestURITooLong || dependencies.protocol.newAuthorizationCalls != 0 ||
+		dependencies.flow.beginCalls != 0 || dependencies.flow.logoutCalls != 0 {
+		t.Fatalf("status=%d protocol=%d begin=%d logout=%d", recorder.Code, dependencies.protocol.newAuthorizationCalls, dependencies.flow.beginCalls, dependencies.flow.logoutCalls)
+	}
+}
+
+func TestOIDCPostFormEnforcesAggregateRenderedBound(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	request, err := dependencies.protocol.AuthorizationRequest(
+		dependencies.flow.beginResult.TransactionID,
+		dependencies.protocol.authorization,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointPrefix := "https://issuer.example/"
+	request.Endpoint = endpointPrefix + strings.Repeat("x", maxOIDCAuthorizationURL-len(endpointPrefix))
+	request.ClientID = strings.Repeat(`"`, maxOIDCAuthorizationValue)
+	redirectPrefix := "https://elitea.example/"
+	request.RedirectURI = redirectPrefix + strings.Repeat(`"`, maxOIDCAuthorizationValue-len(redirectPrefix))
+	scopeParts := []string{"openid"}
+	for len(scopeParts) < 16 {
+		scopeParts = append(scopeParts, strings.Repeat(`"`, 256))
+	}
+	request.Scope = strings.Join(scopeParts, " ")
+	if !validOIDCAuthorizationRequest(
+		request,
+		dependencies.flow.beginResult.TransactionID,
+		dependencies.protocol.authorization,
+	) {
+		t.Fatal("aggregate-bound fixture must pass field validation")
+	}
+	if _, _, err := handler.renderOIDCAuthorizationForm(request); err == nil {
+		t.Fatal("oversized rendered authorization form was accepted")
+	}
 }
 
 func TestOIDCBeginAdmissionFailureHasNoProtocolOrStateEffects(t *testing.T) {
@@ -316,6 +535,24 @@ func TestOIDCCallbackMapsAuthenticationAndDependencyFailures(t *testing.T) {
 	}
 }
 
+func TestOIDCCallbackRevokesInvalidRotatedSessionBeforeClearingCookie(t *testing.T) {
+	handler, dependencies := newTestOIDCHandler(t)
+	dependencies.flow.completeResult.ReturnTarget = "https://attacker.example"
+	recorder := httptest.NewRecorder()
+
+	mountOIDC(handler).ServeHTTP(recorder, callbackRequest(dependencies, "authorization-code"))
+
+	if recorder.Code != http.StatusServiceUnavailable ||
+		dependencies.flow.logoutCalls != 1 ||
+		dependencies.flow.logoutID != dependencies.flow.completeResult.SessionID {
+		t.Fatalf("status=%d logout=%d id=%q", recorder.Code, dependencies.flow.logoutCalls, dependencies.flow.logoutID)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Value != "" || cookies[0].MaxAge >= 0 {
+		t.Fatalf("cookies = %+v", cookies)
+	}
+}
+
 func TestOIDCRoutesPreservePathsAndRejectMutatingHEADWithoutProductionMount(t *testing.T) {
 	handler, dependencies := newTestOIDCHandler(t)
 	for path, allow := range map[string]string{
@@ -404,15 +641,15 @@ func TestOIDCLifecycleAcrossRealHTTPAndApplicationBoundaries(t *testing.T) {
 		beginRecorder,
 		httptest.NewRequest(http.MethodGet, BasePath+OIDCLoginPath+"?target_to=%2Fafter", nil),
 	)
-	if beginRecorder.Code != http.StatusFound {
+	if beginRecorder.Code != http.StatusOK {
 		t.Fatalf("begin status = %d", beginRecorder.Code)
 	}
 	beginCookies := beginRecorder.Result().Cookies()
-	location, err := url.Parse(beginRecorder.Header().Get("Location"))
-	if err != nil || len(beginCookies) != 1 {
-		t.Fatalf("begin location=%q cookies=%d err=%v", beginRecorder.Header().Get("Location"), len(beginCookies), err)
+	_, _, beginParameters := parseOIDCAuthorizationForm(t, beginRecorder.Body.String())
+	if len(beginCookies) != 1 {
+		t.Fatalf("begin cookies=%d", len(beginCookies))
 	}
-	transactionID := location.Query().Get("state")
+	transactionID := beginParameters.Get("state")
 	if browserflow.ValidateTransactionID(transactionID) != nil {
 		t.Fatalf("transaction ID = %q", transactionID)
 	}
@@ -458,6 +695,13 @@ func TestOIDCLifecycleAcrossRealHTTPAndApplicationBoundaries(t *testing.T) {
 
 func TestNewOIDCHandlerRejectsIncompleteOrUnsafeConfiguration(t *testing.T) {
 	_, dependencies := newTestOIDCHandler(t)
+	strictCookies, err := NewCookiePolicy(CookieConfig{
+		Name: "strict_session", Secure: true,
+		SameSite: http.SameSiteStrictMode, Lifetime: 7 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	valid := OIDCHandlerConfig{DefaultLoginTarget: "/", MaxCallbackBytes: 4096}
 	tests := []struct {
 		name       string
@@ -473,6 +717,7 @@ func TestNewOIDCHandlerRejectsIncompleteOrUnsafeConfiguration(t *testing.T) {
 		{name: "missing admission", flow: dependencies.flow, protocol: dependencies.protocol, clientKeys: dependencies.resolver, cookies: dependencies.cookies, config: valid},
 		{name: "missing client policy", flow: dependencies.flow, protocol: dependencies.protocol, attempts: dependencies.admitter, cookies: dependencies.cookies, config: valid},
 		{name: "missing cookie policy", flow: dependencies.flow, protocol: dependencies.protocol, attempts: dependencies.admitter, clientKeys: dependencies.resolver, config: valid},
+		{name: "strict callback cookie", flow: dependencies.flow, protocol: dependencies.protocol, attempts: dependencies.admitter, clientKeys: dependencies.resolver, cookies: strictCookies, config: valid},
 		{name: "external target", flow: dependencies.flow, protocol: dependencies.protocol, attempts: dependencies.admitter, clientKeys: dependencies.resolver, cookies: dependencies.cookies, config: OIDCHandlerConfig{DefaultLoginTarget: "https://attacker.example", MaxCallbackBytes: 4096}},
 		{name: "unbounded callback", flow: dependencies.flow, protocol: dependencies.protocol, attempts: dependencies.admitter, clientKeys: dependencies.resolver, cookies: dependencies.cookies, config: OIDCHandlerConfig{DefaultLoginTarget: "/", MaxCallbackBytes: maxMaxOIDCCallbackBytes + 1}},
 	}
@@ -493,6 +738,39 @@ type oidcTestDependencies struct {
 	resolver *clientKeyResolverStub
 	cookies  *CookiePolicy
 	events   *[]string
+}
+
+func FuzzOIDCAuthorizationEndpointValidation(f *testing.F) {
+	for _, seed := range []string{
+		"https://issuer.example/authorize",
+		"https://issuer.example/authorize?prompt=login",
+		"http://issuer.example/authorize",
+		"https://issuer.example/authorize?state=configured",
+		"https://issuer.example/authorize?client_secret=TEST_ONLY_SECRET",
+		"https://issuer.example/authorize?prompt=%zz",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, value string) {
+		parsed, origin, ok := parseOIDCAuthorizationEndpoint(value)
+		if !ok {
+			return
+		}
+		if parsed.Scheme != "https" || parsed.Host == "" || origin != "https://"+parsed.Host ||
+			strings.ContainsAny(origin, " \t\r\n;,'\"") {
+			t.Fatalf("unsafe accepted endpoint=%q origin=%q", parsed.String(), origin)
+		}
+		parameters, err := url.ParseQuery(parsed.RawQuery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for key, values := range parameters {
+			if isOIDCAuthorizationParameter(key) || forbiddenOIDCAuthorizationEndpointParameter(key) ||
+				len(values) != 1 {
+				t.Fatalf("ambiguous accepted query = %v", parameters)
+			}
+		}
+	})
 }
 
 func newTestOIDCHandler(t *testing.T) (*OIDCHandler, *oidcTestDependencies) {
@@ -538,6 +816,107 @@ func mountOIDC(handler *OIDCHandler) http.Handler {
 	return router
 }
 
+func parseOIDCAuthorizationForm(t *testing.T, body string) (string, string, url.Values) {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var form *html.Node
+	var findForm func(*html.Node)
+	findForm = func(node *html.Node) {
+		if form != nil {
+			return
+		}
+		if node.Type == html.ElementNode && node.Data == "form" {
+			form = node
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			findForm(child)
+		}
+	}
+	findForm(document)
+	if form == nil {
+		t.Fatal("OIDC authorization form is absent")
+	}
+	action := htmlAttribute(form, "action")
+	method := htmlAttribute(form, "method")
+	parameters := make(url.Values)
+	var collectInputs func(*html.Node)
+	collectInputs = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "input" && htmlAttribute(node, "type") == "hidden" {
+			parameters.Add(htmlAttribute(node, "name"), htmlAttribute(node, "value"))
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			collectInputs(child)
+		}
+	}
+	collectInputs(form)
+	return action, method, parameters
+}
+
+func htmlAttribute(node *html.Node, name string) string {
+	for _, attribute := range node.Attr {
+		if attribute.Key == name {
+			return attribute.Val
+		}
+	}
+	return ""
+}
+
+func oidcAuthorizationScript(t *testing.T, body string) string {
+	t.Helper()
+	document, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := make([]string, 0, 1)
+	var visit func(*html.Node)
+	visit = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "script" {
+			text := ""
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if child.Type == html.TextNode {
+					text += child.Data
+				}
+			}
+			scripts = append(scripts, text)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(document)
+	if len(scripts) != 1 {
+		t.Fatalf("scripts = %v", scripts)
+	}
+	return scripts[0]
+}
+
+func requireOIDCPostSecurityHeaders(t *testing.T, headers http.Header, origin string) {
+	t.Helper()
+	for name, expected := range map[string]string{
+		"Cache-Control":          "no-store",
+		"Pragma":                 "no-cache",
+		"Referrer-Policy":        "no-referrer",
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Server":                 "Centry",
+	} {
+		if got := headers.Get(name); got != expected {
+			t.Fatalf("%s = %q, want %q", name, got, expected)
+		}
+	}
+	csp := headers.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'none'") ||
+		!strings.Contains(csp, "form-action "+origin) ||
+		!strings.Contains(csp, "script-src '"+oidcAutoSubmitScriptHash+"'") ||
+		strings.Contains(csp, "unsafe-inline") {
+		t.Fatalf("CSP = %q", csp)
+	}
+}
+
 func callbackRequest(dependencies *oidcTestDependencies, code string) *http.Request {
 	request := httptest.NewRequest(
 		http.MethodGet,
@@ -552,28 +931,40 @@ func callbackRequest(dependencies *oidcTestDependencies, code string) *http.Requ
 }
 
 type oidcProtocolStub struct {
-	events                 *[]string
-	authorization          OIDCAuthorization
-	authorizationErr       error
-	authorizationURLErr    error
-	unsafeAuthorizationURL string
-	code                   string
-	verification           browserflow.VerificationContext
-	verify                 func(context.Context, browserflow.VerificationContext, string) (browserflow.VerifiedAssertion, error)
-	newAuthorizationCalls  int
-	authorizationURLCalls  int
-	newVerifierCalls       int
+	events                    *[]string
+	authorization             OIDCAuthorization
+	authorizationRequest      OIDCAuthorizationRequest
+	authorizationErr          error
+	authorizationRequestErr   error
+	code                      string
+	verification              browserflow.VerificationContext
+	verify                    func(context.Context, browserflow.VerificationContext, string) (browserflow.VerifiedAssertion, error)
+	newAuthorizationCalls     int
+	authorizationRequestCalls int
+	newVerifierCalls          int
 }
 
 func newOIDCProtocolStub(events *[]string) *oidcProtocolStub {
-	return &oidcProtocolStub{
+	stub := &oidcProtocolStub{
 		events: events,
 		authorization: OIDCAuthorization{
 			Correlation:         browserflow.ProtocolCorrelation{Nonce: canonicalSessionID(9)},
 			ProviderState:       browserflow.ProviderState{PKCEVerifier: strings.Repeat("v", browserflow.MinPKCEVerifierBytes)},
 			PKCEChallengeMethod: OIDCPKCEChallengeS256,
 		},
+		authorizationRequest: OIDCAuthorizationRequest{
+			Transport:           OIDCAuthorizationPOST,
+			Endpoint:            "https://issuer.example/authorize",
+			ResponseType:        "code",
+			ClientID:            "elitea",
+			RedirectURI:         "https://elitea.example/forward-auth/auth_oidc/login_callback",
+			Scope:               "openid profile email",
+			CodeChallengeMethod: OIDCPKCEChallengeS256,
+		},
 	}
+	challenge := sha256.Sum256([]byte(stub.authorization.ProviderState.PKCEVerifier))
+	stub.authorizationRequest.CodeChallenge = base64.RawURLEncoding.EncodeToString(challenge[:])
+	return stub
 }
 
 func (stub *oidcProtocolStub) NewAuthorization(context.Context) (OIDCAuthorization, error) {
@@ -582,18 +973,24 @@ func (stub *oidcProtocolStub) NewAuthorization(context.Context) (OIDCAuthorizati
 	return stub.authorization, stub.authorizationErr
 }
 
-func (stub *oidcProtocolStub) AuthorizationURL(state string, _ OIDCAuthorization) (string, error) {
-	stub.authorizationURLCalls++
-	*stub.events = append(*stub.events, "authorization-url")
-	if stub.unsafeAuthorizationURL != "" {
-		return stub.unsafeAuthorizationURL, stub.authorizationURLErr
+func (stub *oidcProtocolStub) AuthorizationRequest(
+	state string,
+	authorization OIDCAuthorization,
+) (OIDCAuthorizationRequest, error) {
+	stub.authorizationRequestCalls++
+	*stub.events = append(*stub.events, "authorization-request")
+	result := stub.authorizationRequest
+	if result.State == "" {
+		result.State = state
 	}
-	return "https://issuer.example/authorize?" + url.Values{
-		"client_id":             {"elitea"},
-		"code_challenge_method": {OIDCPKCEChallengeS256},
-		"nonce":                 {stub.authorization.Correlation.Nonce},
-		"state":                 {state},
-	}.Encode(), stub.authorizationURLErr
+	if result.Nonce == "" {
+		result.Nonce = authorization.Correlation.Nonce
+	}
+	if result.CodeChallenge == "" {
+		challenge := sha256.Sum256([]byte(authorization.ProviderState.PKCEVerifier))
+		result.CodeChallenge = base64.RawURLEncoding.EncodeToString(challenge[:])
+	}
+	return result, stub.authorizationRequestErr
 }
 
 func (stub *oidcProtocolStub) NewVerifier(code string) browserapp.AssertionVerifier {

@@ -69,6 +69,9 @@ tasks:
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_browser_auth_http_baseline.py --auth-core-root ../centry/pylon_auth/plugins/auth_core --auth-form-root ../centry/pylon_auth/plugins/auth_form --auth-idp-rpc-root ../centry/pylon_auth/plugins/auth_idp_rpc --auth-init-root ../centry/pylon_auth/plugins/auth_init --auth-mappers-root ../centry/pylon_auth/plugins/auth_mappers --main-auth-root ../centry/pylon_main/plugins/auth --admin-ui-root ../centry/pylon_main/plugins/admin_ui --centry-root ../centry --pylon-root ../pylon --ui-root ../EliteaUI --check
       - python3 scripts/security/check_browser_auth_http_baseline.py
       - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/check_form_snapshot_bridge.py --auth-form-root ../centry/pylon_auth/plugins/auth_form
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/test_federated_auth_baseline.py
+      - PYTHONDONTWRITEBYTECODE=1 python3 scripts/security/export_federated_auth_baseline.py --check
+      - python3 scripts/security/check_federated_auth_baseline.py
       - python3 scripts/security/check_legacy_rbac_drift.py
 
   baseline:auth:refresh:

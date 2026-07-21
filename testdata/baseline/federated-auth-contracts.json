@@ -405,10 +405,10 @@
       "source": "pylon/pylon/core/tools/module/descriptor.py"
     },
     "social/api/v2/author.py#ProjectApi.get": {
-      "ast_sha256": "7f6eb088859cfcde7f351cd9245a7a49af2100ae38f77fef69f13fdfbf5cc2cb",
+      "ast_sha256": "9737f7cc7a09962c911fa61d8fe06ec2573810918d37d73fde3cb2081a184533",
       "class": "ProjectApi",
       "function": "get",
-      "line": 18,
+      "line": 38,
       "source": "social/api/v2/author.py"
     },
     "social/events/social.py#Event.add_social_user_data": {
@@ -656,7 +656,7 @@
     "elitea_core_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
-      "pinned_head": "2b713350aa73af770164ac023cc88b4cb83667e1",
+      "pinned_head": "83cd27bd34dc41b30a9696ea5128da4e939b676e",
       "source_root": "centry/pylon_main/plugins/elitea_core"
     },
     "main_auth_repo": {
@@ -716,13 +716,13 @@
     "social_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
-      "pinned_head": "1f4c6294545228ecbcf4d0344be1b46895c8af39",
+      "pinned_head": "52ab70413ab0ca54e23e67326217c35135e71128",
       "source_root": "centry/pylon_main/plugins/social"
     },
     "ui_repo": {
       "contract_source_dirty_paths": [],
       "contract_sources_reconstructable_from_pinned_head": true,
-      "pinned_head": "53812f63c722512a225fe5fd27f895cd743555db",
+      "pinned_head": "4c43287cd5321785d280ae02eb597f2e260eeb8d",
       "source_root": "EliteaUI"
     }
   },
@@ -1009,13 +1009,13 @@
     "pylon/pylon/core/tools/module/descriptor.py": "021fb237ff254cb54ca91aa40dc4080b1a573468030066329f862f525f0d8a22",
     "pylon/pylon/core/tools/session.py": "12a08c3e025efcdfc36b84bba8e03d1f2346d36458fbe5934e1ada8229c31d22",
     "pylon/requirements.txt": "17b66334289a5f6329491fb512fcce35587349734b7885dcab8c592fdbe4ed57",
-    "social/api/v2/author.py": "dbb57318968a7784ba842bf9f29ca61b5c7b9c40410908ef0f005540d3feb745",
+    "social/api/v2/author.py": "885db52504184714017377f4d145b733d690050c19861ceb3f0773cded5a7d3e",
     "social/events/social.py": "6c7eac38a11c0812bf8830ced2452e6eeb8490fe4417ae5f0e967ca9f3304d86",
     "ui/src/[fsd]/features/auth/lib/helpers/authPopup.helpers.js": "8f5837bc14b3b7a64cc8c99144c8519cbe7e3ebc51348cab56cb9115ef18bf8b",
-    "ui/src/[fsd]/pages/settings/index.jsx": "6ce08ded6e41d68d158eab9b6ec1357fa7eee19c975c11cb9134b5b213aacc5b",
+    "ui/src/[fsd]/pages/settings/index.jsx": "5026da628be8a79ec3e7151e7fe488f303ce0f904650e2d908377a4173a5e49b",
     "ui/src/[fsd]/widgets/sidebar-root/ui/button/UserButton.jsx": "a3b70270f73bef856cca6d357ddfe025e54d3bf8c27645805d9156dd682c44e4",
     "ui/src/api/eliteaApi.js": "2fde3c46c3f386ff0b7e730edb63047135d85cf8c5e23dfeb995c213df08baa2",
-    "ui/src/routes.js": "2b6b3f9a212fde5087feb8147bacfdc3abdc5f470a7365bc522ed111989cecb4"
+    "ui/src/routes.js": "86b3481438cfe806190fcd9401ac78bc777ffb643cf01b72948a4c2209350229"
   },
   "source_inventory": {
     "full_byte_sources": [

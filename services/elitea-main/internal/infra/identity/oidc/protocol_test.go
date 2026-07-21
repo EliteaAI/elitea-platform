@@ -54,23 +54,21 @@ func TestProtocolRunsSignedAuthorizationCodeFlow(t *testing.T) {
 		t.Fatalf("authorization = %+v", authorization)
 	}
 	state := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, browserflow.TransactionIDRandomBytes))
-	authorizationURL, err := protocol.AuthorizationURL(state, authorization)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := url.Parse(authorizationURL)
+	authorizationRequest, err := protocol.AuthorizationRequest(state, authorization)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expectedChallengeBytes := sha256.Sum256([]byte(authorization.ProviderState.PKCEVerifier))
 	expectedChallenge := base64.RawURLEncoding.EncodeToString(expectedChallengeBytes[:])
-	if parsed.Scheme != "https" || parsed.Host != "issuer.example" ||
-		parsed.Query().Get("response_type") != "code" || parsed.Query().Get("state") != state ||
-		parsed.Query().Get("nonce") != authorization.Correlation.Nonce ||
-		parsed.Query().Get("code_challenge_method") != browserapp.OIDCPKCEChallengeS256 ||
-		parsed.Query().Get("code_challenge") != expectedChallenge ||
-		parsed.Query().Get("scope") != "openid profile email" {
-		t.Fatalf("authorization URL = %q", authorizationURL)
+	if authorizationRequest.Transport != browserapp.OIDCAuthorizationPOST ||
+		authorizationRequest.Endpoint != "https://issuer.example/authorize" ||
+		authorizationRequest.ResponseType != "code" || authorizationRequest.ClientID != "elitea-client" ||
+		authorizationRequest.RedirectURI != "https://elitea.example/forward-auth/auth_oidc/login_callback" ||
+		authorizationRequest.Scope != "openid profile email" || authorizationRequest.State != state ||
+		authorizationRequest.Nonce != authorization.Correlation.Nonce ||
+		authorizationRequest.CodeChallengeMethod != browserapp.OIDCPKCEChallengeS256 ||
+		authorizationRequest.CodeChallenge != expectedChallenge {
+		t.Fatalf("authorization request = %+v", authorizationRequest)
 	}
 
 	emailVerified := true
@@ -413,6 +411,10 @@ func TestOIDCConstructorsRejectTLSBypassWeakAlgorithmsAndFalseBounds(t *testing.
 	protocolTests := []func(*Config){
 		func(config *Config) { config.Issuer = "http://issuer.example" },
 		func(config *Config) { config.AuthorizationEndpoint = "http://issuer.example/authorize" },
+		func(config *Config) { config.AuthorizationEndpoint += "?state=configured" },
+		func(config *Config) { config.AuthorizationEndpoint = "https://issuer.exämple/authorize" },
+		func(config *Config) { config.LoginMode = "GET" },
+		func(config *Config) { config.LoginMode = " post" },
 		func(config *Config) { config.RedirectURI = "http://elitea.example/callback" },
 		func(config *Config) { config.SupportedSigningAlgorithms = []string{"none"} },
 		func(config *Config) { config.SupportedSigningAlgorithms = []string{"HS256"} },
@@ -437,6 +439,73 @@ func TestOIDCConstructorsRejectTLSBypassWeakAlgorithmsAndFalseBounds(t *testing.
 		if _, err := NewOAuth2CodeExchanger(config, &roundTripperStub{}); !errors.Is(err, ErrInvalidConfiguration) {
 			t.Fatalf("exchanger case %d error = %v", index, err)
 		}
+	}
+}
+
+func TestProtocolPreservesEndpointQueryAndSelectsStrictInitiationTransport(t *testing.T) {
+	tests := []struct {
+		name string
+		mode browserapp.OIDCAuthorizationTransport
+		want browserapp.OIDCAuthorizationTransport
+	}{
+		{name: "default post", want: browserapp.OIDCAuthorizationPOST},
+		{name: "explicit post", mode: browserapp.OIDCAuthorizationPOST, want: browserapp.OIDCAuthorizationPOST},
+		{name: "explicit get", mode: browserapp.OIDCAuthorizationGET, want: browserapp.OIDCAuthorizationGET},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validProtocolConfig()
+			config.LoginMode = test.mode
+			config.AuthorizationEndpoint += "?prompt=login&tenant=elitea"
+			protocol, err := NewProtocol(config, &exchangeStub{}, failingKeySet{err: ErrProviderUnavailable})
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorization, err := protocol.NewAuthorization(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, browserflow.TransactionIDRandomBytes))
+			request, err := protocol.AuthorizationRequest(state, authorization)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.Transport != test.want ||
+				request.Endpoint != "https://issuer.example/authorize?prompt=login&tenant=elitea" {
+				t.Fatalf("authorization request = %+v", request)
+			}
+		})
+	}
+}
+
+func TestProtocolRejectsAmbiguousOrSensitiveAuthorizationEndpointQuery(t *testing.T) {
+	controlled := []string{
+		"response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
+		"code_challenge", "code_challenge_method", "client_secret", "code_verifier",
+		"access_token", "refresh_token", "id_token",
+	}
+	for _, key := range controlled {
+		t.Run(key, func(t *testing.T) {
+			config := validProtocolConfig()
+			config.AuthorizationEndpoint += "?" + key + "=configured"
+			if _, err := NewProtocol(config, &exchangeStub{}, failingKeySet{err: ErrProviderUnavailable}); !errors.Is(err, ErrInvalidConfiguration) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+	for name, query := range map[string]string{
+		"duplicate extension": "prompt=login&prompt=consent",
+		"malformed escape":    "prompt=%zz",
+		"control value":       "prompt=%0Ainjected",
+		"too many":            "a=1&b=1&c=1&d=1&e=1&f=1&g=1&h=1&i=1&j=1&k=1&l=1&m=1&n=1&o=1&p=1&q=1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := validProtocolConfig()
+			config.AuthorizationEndpoint += "?" + query
+			if _, err := NewProtocol(config, &exchangeStub{}, failingKeySet{err: ErrProviderUnavailable}); !errors.Is(err, ErrInvalidConfiguration) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 

@@ -77,9 +77,11 @@ class FederatedAuthBaselineTest(unittest.TestCase):
         callback["validation"] = "always verified"
         callback["claim_mapping"]["provider_reference"] = "issuer/sub"
         contracts["oidc.login"]["current"]["pending_state_growth"] = "bounded"
+        contracts["oidc.login"]["current"]["response"] = "redirect only"
 
         failures = check_catalog(changed)
         self.assertIn("OIDC abandoned-state growth risk is no longer explicit", failures)
+        self.assertIn("OIDC initiation transport and field contract changed", failures)
         self.assertIn("OIDC one-time state consumption ordering changed", failures)
         self.assertIn("OIDC unverified-token baseline risk is no longer explicit", failures)
         self.assertIn("OIDC provider-reference mapping changed", failures)

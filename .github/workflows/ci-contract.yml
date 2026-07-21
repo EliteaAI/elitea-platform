@@ -117,6 +117,15 @@ jobs:
           python scripts/security/check_browser_auth_http_baseline.py
           python scripts/security/check_form_snapshot_bridge.py --help
 
+      # Federated sibling sources are absent in this checkout. The release
+      # workspace reproduces them; CI mutation-checks the reviewed fixture.
+      - name: Check OIDC and SAML evidence integrity
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python scripts/security/test_federated_auth_baseline.py
+          python scripts/security/check_federated_auth_baseline.py
+
       - name: Test generated Go module
         working-directory: libs/proto/gen/go
         run: |

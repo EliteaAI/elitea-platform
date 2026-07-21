@@ -13,18 +13,18 @@ from typing import Any
 
 
 EXPECTED_SCHEMA_VERSION = 1
-EXPECTED_CATALOG_SHA256 = "d17e65bd06b64ece231fca5328257b586a6b0ba5873d95291de56fac53c22036"
+EXPECTED_CATALOG_SHA256 = "ac7b130940024faea2cebc4bd4f06e836477d62f9baa30531d9403e60bbc98e3"
 EXPECTED_SOURCE_COUNT = 47
 EXPECTED_SOURCE_KEYSET_SHA256 = "89ee769351815bb9d7086c8d8d5493512bc78a15066edf51a4304a146f4b5009"
-EXPECTED_SOURCE_MAP_SHA256 = "7fb0e894da4ef2efd26e982920417f6cb1d66e823e78f271d5994b301600fb40"
+EXPECTED_SOURCE_MAP_SHA256 = "c5f5281068eecb90dd86b312144ba98bfb3794b3d0462d74ce774bbb88921e9b"
 EXPECTED_FINGERPRINT_COUNT = 45
 EXPECTED_FINGERPRINT_KEYSET_SHA256 = "0e5d50c8883d792d145e2e59dffdf91d8412143f28963674936fb12d8b43f9f6"
-EXPECTED_FINGERPRINT_MAP_SHA256 = "b30515f7d919054f68fb286830a6bae6d34ad8b5d274967d865c6338586722e8"
+EXPECTED_FINGERPRINT_MAP_SHA256 = "2bd5c8a903c59e05ddd7ffa6b53c73fd27b3e9195d9bf98a8e4186624185b79d"
 EXPECTED_SELECTED_CONFIG_SHA256 = "82dd413e3753df0c931a0cf4a6c675d4308f59088b7c16bec14ab449639f8d57"
 EXPECTED_BEHAVIOR_SHA256 = "d1f0c3c183acc1662ac165052cd6e8226d0ccecdb1b47f6430178ee49b35f144"
 EXPECTED_CONSUMER_SHA256 = "fefde40ba7587c31318650e499415bd7bee97a899ce00dbf413c75aee0b56502"
 EXPECTED_DISPOSITION_SHA256 = "2bb2d91ed804772958aa087f6d3c1a4705719b47bdfb5fe0aec5e758fdde995b"
-EXPECTED_PROVENANCE_SHA256 = "cf261bbebe408c9bc30b500993894ed88f54fbf32800ad162a3ecfd9249bf6bd"
+EXPECTED_PROVENANCE_SHA256 = "9e285db72e0030b2069edc5e137ead3dfad83faf1aa2fff5c4eb943e125bb348"
 
 EXPECTED_TOP_LEVEL_KEYS = {
     "behavior_contracts",
@@ -132,12 +132,12 @@ EXPECTED_PROVENANCE = {
     "auth_oidc_repo": ("902a5c413e994e9a7ee5f27a46c255bde323a59b", "centry/pylon_auth/plugins/auth_oidc"),
     "auth_saml_repo": ("636009c0c1cf61ec0ad9a84d08934e6ecf07583f", "centry/pylon_auth/plugins/auth_saml"),
     "bootstrap_repo": ("a8cdbd31a90544fda9d2b96e3f936bba3594a22d", "centry/pylon_auth/plugins/bootstrap"),
-    "elitea_core_repo": ("2b713350aa73af770164ac023cc88b4cb83667e1", "centry/pylon_main/plugins/elitea_core"),
+    "elitea_core_repo": ("83cd27bd34dc41b30a9696ea5128da4e939b676e", "centry/pylon_main/plugins/elitea_core"),
     "main_auth_repo": ("ff02d66a8858604e6947bb3a52bda8543dbe0e76", "centry/pylon_main/plugins/auth"),
     "pylon_repo": ("6cc508803adffcb0f38573eda7a1ad45e2d4ca39", "pylon"),
     "runtime_config_repo": ("6b3e59f7f41e41c9d5f1dcf7ca6e870d7391986c", "centry"),
-    "social_repo": ("1f4c6294545228ecbcf4d0344be1b46895c8af39", "centry/pylon_main/plugins/social"),
-    "ui_repo": ("53812f63c722512a225fe5fd27f895cd743555db", "EliteaUI"),
+    "social_repo": ("52ab70413ab0ca54e23e67326217c35135e71128", "centry/pylon_main/plugins/social"),
+    "ui_repo": ("4c43287cd5321785d280ae02eb597f2e260eeb8d", "EliteaUI"),
 }
 
 EXPECTED_OIDC_DEFAULTS = {
@@ -320,6 +320,17 @@ def check_catalog(catalog: dict[str, Any]) -> list[str]:  # pylint: disable=R091
     oidc_login = contracts.get("oidc.login", {}).get("current", {})
     if not _contains(oidc_login.get("pending_state_growth", ""), "no explicit bound", "TTL"):
         failures.append("OIDC abandoned-state growth risk is no longer explicit")
+    if not _contains(
+        oidc_login.get("response", ""),
+        "login_mode=get",
+        "200 auto-submit HTML POST",
+        "response_type",
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "state",
+    ):
+        failures.append("OIDC initiation transport and field contract changed")
     oidc_callback = contracts.get("oidc.callback", {}).get("current", {})
     if not _contains(oidc_callback.get("state", ""), "pop member before", "provisioning"):
         failures.append("OIDC one-time state consumption ordering changed")

@@ -1,12 +1,13 @@
 // Package oidc implements the OpenID Connect authorization-code boundary used
 // by browser authentication. It rejects the current implicit/direct-id-token
-// compatibility mode. Discovery reload, current login_mode=post auto-submit,
+// compatibility mode. Discovery reload, resolved configuration composition,
 // and federated logout remain explicit production-mount gates.
 package oidc
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -38,6 +39,7 @@ const (
 	maxScopes              = 16
 	maxScopeBytes          = 256
 	maxSigningAlgorithms   = 8
+	maxEndpointParameters  = 16
 	maxExpirationOverride  = 30 * 24 * time.Hour
 	maxFutureIssuedAtSkew  = 5 * time.Minute
 )
@@ -61,6 +63,7 @@ var allowedSigningAlgorithms = map[string]struct{}{
 type Config struct {
 	Issuer                     string
 	AuthorizationEndpoint      string
+	LoginMode                  browserapp.OIDCAuthorizationTransport
 	ClientID                   string
 	RedirectURI                string
 	Scopes                     []string
@@ -86,16 +89,17 @@ type CodeExchanger interface {
 }
 
 type Protocol struct {
-	oauthConfig          oauth2.Config
-	issuer               string
-	signingAlgorithms    []string
-	requireEmailVerified bool
-	expirationOverride   time.Duration
-	exchanger            CodeExchanger
-	keySet               coreoidc.KeySet
-	random               io.Reader
-	now                  func() time.Time
-	randomMu             sync.Mutex
+	oauthConfig            oauth2.Config
+	authorizationTransport browserapp.OIDCAuthorizationTransport
+	issuer                 string
+	signingAlgorithms      []string
+	requireEmailVerified   bool
+	expirationOverride     time.Duration
+	exchanger              CodeExchanger
+	keySet                 coreoidc.KeySet
+	random                 io.Reader
+	now                    func() time.Time
+	randomMu               sync.Mutex
 }
 
 func NewProtocol(config Config, exchanger CodeExchanger, keySet coreoidc.KeySet) (*Protocol, error) {
@@ -109,8 +113,9 @@ func newProtocol(
 	randomReader io.Reader,
 	now func() time.Time,
 ) (*Protocol, error) {
+	transport, ok := normalizedAuthorizationTransport(config.LoginMode)
 	if exchanger == nil || keySet == nil || randomReader == nil || now == nil ||
-		!validIssuer(config.Issuer) || !validHTTPSURL(config.AuthorizationEndpoint) ||
+		!ok || !validIssuer(config.Issuer) || !validAuthorizationEndpoint(config.AuthorizationEndpoint) ||
 		!validHTTPSURL(config.RedirectURI) || !validConfigurationText(config.ClientID) ||
 		config.ExpirationOverride < 0 || config.ExpirationOverride > maxExpirationOverride ||
 		(config.ExpirationOverride > 0 && config.ExpirationOverride < time.Second) {
@@ -133,14 +138,15 @@ func newProtocol(
 				AuthURL: config.AuthorizationEndpoint,
 			},
 		},
-		issuer:               config.Issuer,
-		signingAlgorithms:    algorithms,
-		requireEmailVerified: config.RequireEmailVerified,
-		expirationOverride:   config.ExpirationOverride,
-		exchanger:            exchanger,
-		keySet:               keySet,
-		random:               randomReader,
-		now:                  now,
+		authorizationTransport: transport,
+		issuer:                 config.Issuer,
+		signingAlgorithms:      algorithms,
+		requireEmailVerified:   config.RequireEmailVerified,
+		expirationOverride:     config.ExpirationOverride,
+		exchanger:              exchanger,
+		keySet:                 keySet,
+		random:                 randomReader,
+		now:                    now,
 	}, nil
 }
 
@@ -163,23 +169,27 @@ func (p *Protocol) NewAuthorization(ctx context.Context) (browserapp.OIDCAuthori
 	}, nil
 }
 
-func (p *Protocol) AuthorizationURL(
+func (p *Protocol) AuthorizationRequest(
 	state string,
 	authorization browserapp.OIDCAuthorization,
-) (string, error) {
+) (browserapp.OIDCAuthorizationRequest, error) {
 	if browserflow.ValidateTransactionID(state) != nil ||
 		!validAuthorization(authorization) {
-		return "", ErrAssertionRejected
+		return browserapp.OIDCAuthorizationRequest{}, ErrAssertionRejected
 	}
-	// This slice composes the standard authorization redirect. The current
-	// pylon_auth auto-submitted POST mode needs a separately bounded HTML form
-	// response before production mount; silently pretending GET is parity is not
-	// acceptable.
-	return p.oauthConfig.AuthCodeURL(
-		state,
-		coreoidc.Nonce(authorization.Correlation.Nonce),
-		oauth2.S256ChallengeOption(authorization.ProviderState.PKCEVerifier),
-	), nil
+	challengeBytes := sha256.Sum256([]byte(authorization.ProviderState.PKCEVerifier))
+	return browserapp.OIDCAuthorizationRequest{
+		Transport:           p.authorizationTransport,
+		Endpoint:            p.oauthConfig.Endpoint.AuthURL,
+		ResponseType:        "code",
+		ClientID:            p.oauthConfig.ClientID,
+		RedirectURI:         p.oauthConfig.RedirectURL,
+		Scope:               strings.Join(p.oauthConfig.Scopes, " "),
+		State:               state,
+		Nonce:               authorization.Correlation.Nonce,
+		CodeChallenge:       base64.RawURLEncoding.EncodeToString(challengeBytes[:]),
+		CodeChallengeMethod: browserapp.OIDCPKCEChallengeS256,
+	}, nil
 }
 
 func (p *Protocol) NewVerifier(code string) browserapp.AssertionVerifier {
@@ -415,6 +425,79 @@ func normalizedSigningAlgorithms(configured []string) ([]string, bool) {
 func validIssuer(raw string) bool {
 	parsed, err := url.Parse(raw)
 	return err == nil && validHTTPSURL(raw) && parsed.RawQuery == ""
+}
+
+func normalizedAuthorizationTransport(
+	configured browserapp.OIDCAuthorizationTransport,
+) (browserapp.OIDCAuthorizationTransport, bool) {
+	switch configured {
+	case "", browserapp.OIDCAuthorizationPOST:
+		return browserapp.OIDCAuthorizationPOST, true
+	case browserapp.OIDCAuthorizationGET:
+		return browserapp.OIDCAuthorizationGET, true
+	default:
+		return "", false
+	}
+}
+
+func validAuthorizationEndpoint(raw string) bool {
+	if !validHTTPSURL(raw) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !headerSafeAuthorizationHost(parsed.Host) {
+		return false
+	}
+	parameters, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return false
+	}
+	count := 0
+	for key, values := range parameters {
+		if reservedAuthorizationParameter(key) || forbiddenAuthorizationEndpointParameter(key) ||
+			!validConfigurationText(key) || len(values) != 1 {
+			return false
+		}
+		count += len(values)
+		for _, value := range values {
+			if len(value) > maxConfigurationString || !utf8.ValidString(value) ||
+				strings.ContainsFunc(value, unicode.IsControl) {
+				return false
+			}
+		}
+	}
+	return count <= maxEndpointParameters
+}
+
+func forbiddenAuthorizationEndpointParameter(name string) bool {
+	switch strings.ToLower(name) {
+	case "client_secret", "code_verifier", "access_token", "refresh_token", "id_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func headerSafeAuthorizationHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for index := 0; index < len(host); index++ {
+		if host[index] <= 0x20 || host[index] >= 0x7f || strings.ContainsRune(";,'\"", rune(host[index])) {
+			return false
+		}
+	}
+	return true
+}
+
+func reservedAuthorizationParameter(name string) bool {
+	switch name {
+	case "response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
+		"code_challenge", "code_challenge_method":
+		return true
+	default:
+		return false
+	}
 }
 
 func validHTTPSURL(raw string) bool {

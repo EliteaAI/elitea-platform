@@ -1,8 +1,13 @@
 package browserauth
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/base64"
 	"errors"
+	"html/template"
 	"mime"
 	"net/http"
 	"net/url"
@@ -22,17 +27,30 @@ const (
 	OIDCPKCEChallengeS256 = browserapp.OIDCPKCEChallengeS256
 
 	DefaultMaxOIDCCallbackBytes = int64(8 << 10)
+	maxOIDCBeginQueryBytes      = 8 << 10
 	maxMaxOIDCCallbackBytes     = int64(64 << 10)
 	maxOIDCCallbackParameters   = 16
 	maxOIDCCallbackKeyBytes     = 128
 	maxOIDCCallbackValueBytes   = 4096
 	maxOIDCAuthorizationURL     = 16 << 10
+	maxOIDCAuthorizationValue   = 4096
+	maxOIDCAuthorizationForm    = 64 << 10
+	oidcAutoSubmitScriptHash    = "sha256-vZjApXuMAArOlGLmcMVkBoEfwkeoKlzMWYxslp0fG9M="
 )
 
 var errOIDCCallbackRejected = errors.New("OIDC authorization response rejected")
 
+//go:embed templates/oidc_redirect.html
+var oidcRedirectTemplateSource string
+
 type OIDCAuthorization = browserapp.OIDCAuthorization
+type OIDCAuthorizationRequest = browserapp.OIDCAuthorizationRequest
 type OIDCProtocol = browserapp.OIDCProtocol
+
+const (
+	OIDCAuthorizationGET  = browserapp.OIDCAuthorizationGET
+	OIDCAuthorizationPOST = browserapp.OIDCAuthorizationPOST
+)
 
 type OIDCHandlerConfig struct {
 	DefaultLoginTarget string
@@ -51,6 +69,7 @@ type OIDCHandler struct {
 	cookies            *CookiePolicy
 	defaultLoginTarget string
 	maxCallbackBytes   int64
+	redirectTemplate   *template.Template
 }
 
 func NewOIDCHandler(
@@ -61,7 +80,8 @@ func NewOIDCHandler(
 	cookies *CookiePolicy,
 	config OIDCHandlerConfig,
 ) (*OIDCHandler, error) {
-	if flow == nil || protocol == nil || attempts == nil || clientKeys == nil || cookies == nil {
+	if flow == nil || protocol == nil || attempts == nil || clientKeys == nil || cookies == nil ||
+		cookies.sameSite != http.SameSiteLaxMode {
 		return nil, ErrInvalidHandlerConfiguration
 	}
 	if config.DefaultLoginTarget == "" {
@@ -76,6 +96,10 @@ func NewOIDCHandler(
 	if config.MaxCallbackBytes < 1024 || config.MaxCallbackBytes > maxMaxOIDCCallbackBytes {
 		return nil, ErrInvalidHandlerConfiguration
 	}
+	redirectTemplate, err := template.New("oidc_redirect.html").Parse(oidcRedirectTemplateSource)
+	if err != nil {
+		return nil, ErrInvalidHandlerConfiguration
+	}
 	return &OIDCHandler{
 		flow:               flow,
 		protocol:           protocol,
@@ -84,6 +108,7 @@ func NewOIDCHandler(
 		cookies:            cookies,
 		defaultLoginTarget: config.DefaultLoginTarget,
 		maxCallbackBytes:   config.MaxCallbackBytes,
+		redirectTemplate:   redirectTemplate,
 	}, nil
 }
 
@@ -123,6 +148,10 @@ func (h *OIDCHandler) beginLogin(writer http.ResponseWriter, request *http.Reque
 		writeProblem(writer, http.StatusBadRequest)
 		return
 	}
+	if len(request.URL.RawQuery) > maxOIDCBeginQueryBytes {
+		writeProblem(writer, http.StatusRequestURITooLong)
+		return
+	}
 	authorization, err := h.protocol.NewAuthorization(request.Context())
 	if err != nil || !validOIDCAuthorization(authorization) {
 		writeProblem(writer, http.StatusServiceUnavailable)
@@ -139,26 +168,64 @@ func (h *OIDCHandler) beginLogin(writer http.ResponseWriter, request *http.Reque
 		ProviderState: authorization.ProviderState,
 	})
 	if err != nil {
+		_ = h.cookies.Clear(writer)
 		writeOIDCFlowError(writer, err)
 		return
 	}
 	if browserflow.ValidateTransactionID(result.TransactionID) != nil ||
 		browserflow.ValidateOpaqueID(result.SessionID) != nil || result.ExpiresAt.IsZero() {
-		writeProblem(writer, http.StatusServiceUnavailable)
+		h.failStartedLogin(writer, request.Context(), result.SessionID)
 		return
 	}
-	authorizationURL, err := h.protocol.AuthorizationURL(result.TransactionID, authorization)
-	if err != nil || !validOIDCAuthorizationURL(authorizationURL) {
-		_, _ = h.flow.Logout(request.Context(), result.SessionID)
-		writeProblem(writer, http.StatusServiceUnavailable)
+	authorizationRequest, err := h.protocol.AuthorizationRequest(result.TransactionID, authorization)
+	if err != nil || !validOIDCAuthorizationRequest(authorizationRequest, result.TransactionID, authorization) {
+		h.failStartedLogin(writer, request.Context(), result.SessionID)
+		return
+	}
+
+	var authorizationURL string
+	var formBody []byte
+	var formOrigin string
+	switch authorizationRequest.Transport {
+	case OIDCAuthorizationGET:
+		authorizationURL, err = buildOIDCAuthorizationURL(authorizationRequest)
+	case OIDCAuthorizationPOST:
+		formBody, formOrigin, err = h.renderOIDCAuthorizationForm(authorizationRequest)
+	default:
+		err = ErrInvalidHandlerConfiguration
+	}
+	if err != nil {
+		h.failStartedLogin(writer, request.Context(), result.SessionID)
 		return
 	}
 	if err := h.cookies.Set(writer, result.SessionID); err != nil {
-		_, _ = h.flow.Logout(request.Context(), result.SessionID)
-		writeProblem(writer, http.StatusServiceUnavailable)
+		h.failStartedLogin(writer, request.Context(), result.SessionID)
 		return
 	}
-	http.Redirect(writer, request, authorizationURL, http.StatusFound)
+	if authorizationRequest.Transport == OIDCAuthorizationGET {
+		http.Redirect(writer, request, authorizationURL, http.StatusFound)
+		return
+	}
+	setOIDCPostHeaders(writer, formOrigin)
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write(formBody)
+}
+
+func (h *OIDCHandler) revokeStartedSession(ctx context.Context, sessionID string) {
+	if browserflow.ValidateOpaqueID(sessionID) == nil {
+		_, _ = h.flow.Logout(ctx, sessionID)
+	}
+}
+
+func (h *OIDCHandler) failStartedLogin(
+	writer http.ResponseWriter,
+	ctx context.Context,
+	sessionID string,
+) {
+	h.revokeStartedSession(ctx, sessionID)
+	_ = h.cookies.Clear(writer)
+	writeProblem(writer, http.StatusServiceUnavailable)
 }
 
 func (h *OIDCHandler) completeLogin(writer http.ResponseWriter, request *http.Request) {
@@ -212,11 +279,13 @@ func (h *OIDCHandler) completeLogin(writer http.ResponseWriter, request *http.Re
 	}
 	if browserflow.ValidateReturnTarget(result.ReturnTarget) != nil ||
 		result.SessionID == sessionID || browserflow.ValidateOpaqueID(result.SessionID) != nil {
+		h.revokeStartedSession(request.Context(), result.SessionID)
 		_ = h.cookies.Clear(writer)
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return
 	}
 	if err := h.cookies.Set(writer, result.SessionID); err != nil {
+		h.revokeStartedSession(request.Context(), result.SessionID)
 		_ = h.cookies.Clear(writer)
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return
@@ -327,13 +396,187 @@ func validOIDCAuthorization(authorization OIDCAuthorization) bool {
 		authorization.PKCEChallengeMethod == OIDCPKCEChallengeS256
 }
 
-func validOIDCAuthorizationURL(value string) bool {
+func validOIDCAuthorizationRequest(
+	request OIDCAuthorizationRequest,
+	state string,
+	authorization OIDCAuthorization,
+) bool {
+	if request.Transport != OIDCAuthorizationGET && request.Transport != OIDCAuthorizationPOST {
+		return false
+	}
+	if request.ResponseType != "code" || request.State != state ||
+		request.Nonce != authorization.Correlation.Nonce ||
+		request.CodeChallengeMethod != OIDCPKCEChallengeS256 {
+		return false
+	}
+	expectedChallengeBytes := sha256.Sum256([]byte(authorization.ProviderState.PKCEVerifier))
+	expectedChallenge := base64.RawURLEncoding.EncodeToString(expectedChallengeBytes[:])
+	if request.CodeChallenge != expectedChallenge ||
+		!validOIDCAuthorizationText(request.ClientID, maxOIDCAuthorizationValue) ||
+		!validOIDCAuthorizationScope(request.Scope) ||
+		!validOIDCAuthorizationURI(request.RedirectURI) {
+		return false
+	}
+	_, _, ok := parseOIDCAuthorizationEndpoint(request.Endpoint)
+	return ok
+}
+
+func buildOIDCAuthorizationURL(request OIDCAuthorizationRequest) (string, error) {
+	parsed, _, ok := parseOIDCAuthorizationEndpoint(request.Endpoint)
+	if !ok {
+		return "", ErrInvalidHandlerConfiguration
+	}
+	parameters, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", ErrInvalidHandlerConfiguration
+	}
+	for key, values := range oidcAuthorizationParameters(request) {
+		parameters[key] = values
+	}
+	parsed.RawQuery = parameters.Encode()
+	result := parsed.String()
+	if len(result) > maxOIDCAuthorizationURL {
+		return "", ErrInvalidHandlerConfiguration
+	}
+	return result, nil
+}
+
+func (h *OIDCHandler) renderOIDCAuthorizationForm(
+	request OIDCAuthorizationRequest,
+) ([]byte, string, error) {
+	parsed, origin, ok := parseOIDCAuthorizationEndpoint(request.Endpoint)
+	if !ok {
+		return nil, "", ErrInvalidHandlerConfiguration
+	}
+	request.Endpoint = parsed.String()
+	rendered := boundedOIDCBuffer{remaining: maxOIDCAuthorizationForm}
+	if err := h.redirectTemplate.Execute(&rendered, request); err != nil ||
+		rendered.buffer.Len() == 0 {
+		return nil, "", ErrInvalidHandlerConfiguration
+	}
+	return rendered.buffer.Bytes(), origin, nil
+}
+
+type boundedOIDCBuffer struct {
+	buffer    bytes.Buffer
+	remaining int
+}
+
+func (buffer *boundedOIDCBuffer) Write(value []byte) (int, error) {
+	if len(value) > buffer.remaining {
+		return 0, ErrInvalidHandlerConfiguration
+	}
+	written, err := buffer.buffer.Write(value)
+	buffer.remaining -= written
+	return written, err
+}
+
+func oidcAuthorizationParameters(request OIDCAuthorizationRequest) url.Values {
+	return url.Values{
+		"response_type":         {request.ResponseType},
+		"client_id":             {request.ClientID},
+		"redirect_uri":          {request.RedirectURI},
+		"scope":                 {request.Scope},
+		"state":                 {request.State},
+		"nonce":                 {request.Nonce},
+		"code_challenge":        {request.CodeChallenge},
+		"code_challenge_method": {request.CodeChallengeMethod},
+	}
+}
+
+func parseOIDCAuthorizationEndpoint(value string) (url.URL, string, bool) {
 	if value == "" || len(value) > maxOIDCAuthorizationURL || !utf8.ValidString(value) {
+		return url.URL{}, "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.Opaque != "" || parsed.Fragment != "" {
+		return url.URL{}, "", false
+	}
+	parameters, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil || len(parameters) > maxOIDCCallbackParameters {
+		return url.URL{}, "", false
+	}
+	parameterCount := 0
+	for key, values := range parameters {
+		if isOIDCAuthorizationParameter(key) || forbiddenOIDCAuthorizationEndpointParameter(key) ||
+			!validOIDCAuthorizationText(key, maxOIDCCallbackKeyBytes) || len(values) != 1 {
+			return url.URL{}, "", false
+		}
+		parameterCount += len(values)
+		for _, item := range values {
+			if len(item) > maxOIDCAuthorizationValue || !utf8.ValidString(item) ||
+				strings.ContainsFunc(item, unicode.IsControl) {
+				return url.URL{}, "", false
+			}
+		}
+	}
+	if parameterCount > maxOIDCCallbackParameters {
+		return url.URL{}, "", false
+	}
+	origin := parsed.Scheme + "://" + parsed.Host
+	for index := 0; index < len(origin); index++ {
+		if origin[index] <= 0x20 || origin[index] >= 0x7f || strings.ContainsRune(";,'\"", rune(origin[index])) {
+			return url.URL{}, "", false
+		}
+	}
+	return *parsed, origin, true
+}
+
+func forbiddenOIDCAuthorizationEndpointParameter(value string) bool {
+	switch strings.ToLower(value) {
+	case "client_secret", "code_verifier", "access_token", "refresh_token", "id_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOIDCAuthorizationParameter(value string) bool {
+	switch value {
+	case "response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
+		"code_challenge", "code_challenge_method":
+		return true
+	default:
+		return false
+	}
+}
+
+func validOIDCAuthorizationText(value string, maxBytes int) bool {
+	return value != "" && len(value) <= maxBytes && utf8.ValidString(value) &&
+		strings.TrimSpace(value) == value && !strings.ContainsFunc(value, unicode.IsControl)
+}
+
+func validOIDCAuthorizationScope(value string) bool {
+	parts := strings.Fields(value)
+	if len(parts) == 0 || len(parts) > 16 || strings.Join(parts, " ") != value {
+		return false
+	}
+	hasOpenID := false
+	for _, part := range parts {
+		if !validOIDCAuthorizationText(part, 256) {
+			return false
+		}
+		hasOpenID = hasOpenID || part == "openid"
+	}
+	return hasOpenID
+}
+
+func validOIDCAuthorizationURI(value string) bool {
+	if len(value) > maxOIDCAuthorizationValue || !utf8.ValidString(value) {
 		return false
 	}
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
 		parsed.Opaque == "" && parsed.Fragment == ""
+}
+
+func setOIDCPostHeaders(writer http.ResponseWriter, origin string) {
+	writer.Header().Set(
+		"Content-Security-Policy",
+		"default-src 'none'; base-uri 'none'; form-action "+origin+
+			"; frame-ancestors 'none'; script-src '"+oidcAutoSubmitScriptHash+"'",
+	)
 }
 
 func validOIDCCallbackText(value string, maxBytes int) bool {
