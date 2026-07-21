@@ -3,6 +3,7 @@ package browserauth
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -252,6 +253,55 @@ func TestFormPageRequiresBoundCookieAndEscapesErrorState(t *testing.T) {
 	mount(handler).ServeHTTP(headRecorder, headRequest)
 	if headRecorder.Code != http.StatusOK || headRecorder.Body.Len() != 0 {
 		t.Fatalf("HEAD status = %d body bytes = %d", headRecorder.Code, headRecorder.Body.Len())
+	}
+}
+
+func TestFormPageUsesSelfContainedCurrentPresentation(t *testing.T) {
+	handler, dependencies := newTestHandler(t)
+	request := httptest.NewRequest(
+		http.MethodGet,
+		BasePath+FormLoginPath+"?target_to="+dependencies.flow.beginResult.TransactionID,
+		nil,
+	)
+	request.AddCookie(sessionCookie(dependencies.flow.beginResult.SessionID))
+	recorder := httptest.NewRecorder()
+
+	mount(handler).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, marker := range []string{
+		"<title>Centry login</title>",
+		`data-auth-form="form"`,
+		`class="card card-signin"`,
+		`class="form-control"`,
+		`action="/forward-auth/auth_form/authorize"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("login page is missing current Form marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"<link", "<script", " src=", "http://", "https://", "highly-sensitive-password",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("login page contains forbidden external or secret material %q", forbidden)
+		}
+	}
+
+	styleStart := strings.Index(body, "<style>")
+	styleEnd := strings.Index(body, "</style>")
+	if styleStart < 0 || styleEnd <= styleStart {
+		t.Fatalf("login page does not contain one embedded style block")
+	}
+	style := body[styleStart+len("<style>") : styleEnd]
+	digest := sha256.Sum256([]byte(style))
+	wantSource := "'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'"
+	csp := recorder.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "style-src "+wantSource) || strings.Contains(csp, "'unsafe-inline'") {
+		t.Fatalf("CSP = %q, want exact embedded-style hash %s", csp, wantSource)
 	}
 }
 

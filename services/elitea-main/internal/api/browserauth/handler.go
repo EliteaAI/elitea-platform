@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"html/template"
 	"mime"
@@ -41,6 +42,14 @@ var (
 
 //go:embed templates/login.html
 var loginTemplateSource string
+
+//go:embed templates/login.css
+var loginStyleSource string
+
+var loginStyleCSPSource = func() string {
+	digest := sha256.Sum256([]byte(loginStyleSource))
+	return "'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'"
+}()
 
 type Flow interface {
 	Begin(context.Context, browserapp.BeginRequest) (browserapp.BeginResult, error)
@@ -133,7 +142,8 @@ func NewHandler(
 }
 
 // Routes preserves the current Form route paths and effective methods. The
-// returned router is intentionally not mounted by production composition yet.
+// production Form graph mounts this provider-only router without exposing the
+// compatibility Auth Core handler through an ordinary reverse proxy.
 func (h *Handler) Routes() chi.Router {
 	router := newRouter()
 	h.registerRoutes(router)
@@ -205,7 +215,12 @@ func (h *Handler) renderForm(writer http.ResponseWriter, request *http.Request) 
 	if err := h.loginTemplate.Execute(&body, struct {
 		Target string
 		Error  bool
-	}{Target: target, Error: hasQueryKey(request.URL.Query(), "error")}); err != nil {
+		Style  template.CSS
+	}{
+		Target: target,
+		Error:  hasQueryKey(request.URL.Query(), "error"),
+		Style:  template.CSS(loginStyleSource), // The source is compiled into this binary.
+	}); err != nil {
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return
 	}
@@ -408,7 +423,7 @@ func setRetryAfter(writer http.ResponseWriter, retryAfter time.Duration) {
 func securityHeaders(writer http.ResponseWriter) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Pragma", "no-cache")
-	writer.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	writer.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; style-src "+loginStyleCSPSource)
 	writer.Header().Set("Referrer-Policy", "no-referrer")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.Header().Set("X-Frame-Options", "DENY")

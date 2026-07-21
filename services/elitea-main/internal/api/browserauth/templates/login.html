@@ -1,22 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Elitea login</title>
+    <title>Centry login</title>
+    <style>{{.Style}}</style>
   </head>
-  <body>
-    <main>
-      <h1>Sign in</h1>
-      <form action="/forward-auth/auth_form/authorize" method="post">
-        <label for="login">Login</label>
-        <input type="text" id="login" name="login" autocomplete="username" required>
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" autocomplete="current-password" required>
-        <input type="hidden" name="target" value="{{.Target}}">
-        <button type="submit">Sign in</button>
-        {{if .Error}}<p role="alert">Invalid login or password</p>{{end}}
-      </form>
+  <body class="auth-login-page" data-auth-form="form">
+    <main class="card card-signin">
+      <div class="form-signin">
+        <h1>Sign in</h1>
+        <form action="/forward-auth/auth_form/authorize" method="post">
+          <div class="form-floating">
+            <input class="form-control" type="text" id="login" name="login" placeholder="Login" autocomplete="username" required>
+            <label for="login">Login</label>
+          </div>
+          <div class="form-floating">
+            <input class="form-control" type="password" id="password" name="password" placeholder="Password" autocomplete="current-password" required>
+            <label for="password">Password</label>
+          </div>
+          <input type="hidden" name="target" value="{{.Target}}">
+          <button class="sign-in-button" type="submit">Sign in</button>
+          {{if .Error}}<p class="login-error" role="alert">Invalid login or password</p>{{end}}
+        </form>
+      </div>
     </main>
   </body>
 </html>
