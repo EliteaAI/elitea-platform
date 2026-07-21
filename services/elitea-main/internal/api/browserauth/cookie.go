@@ -1,6 +1,6 @@
 // Package browserauth implements the unversioned browser authentication HTTP
-// boundary. It remains unmounted until its production dependencies and gateway
-// tests are complete.
+// boundary used by the production Form graph and its reviewed compatibility
+// adapters.
 package browserauth
 
 import (

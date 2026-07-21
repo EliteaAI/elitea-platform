@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
@@ -71,6 +73,41 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 	}
 
+	var productionAuth *api.ProductionAuthRoutes
+	var formGraph *authcomposition.FormGraph
+	var authReadiness health.Checker
+	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	if authEnabled {
+		if err := pool.Ping(ctx); err != nil {
+			return fmt.Errorf("verify authentication PostgreSQL dependency: %w", err)
+		}
+		authConfig, loadErr := authcomposition.Load(authConfigPath)
+		if loadErr != nil {
+			return fmt.Errorf("load production Form authentication: %w", loadErr)
+		}
+		formGraph, err = authcomposition.NewFormGraph(ctx, authConfig, authcomposition.FormGraphDependencies{
+			PostgreSQL:           pool,
+			MainRoutePublicRules: api.CurrentMainRoutePublicRules(),
+		})
+		if err != nil {
+			return fmt.Errorf("compose production Form authentication: %w", err)
+		}
+		defer func() {
+			if err := formGraph.Close(); runErr == nil && err != nil {
+				runErr = fmt.Errorf("close production Form authentication: %w", err)
+			}
+		}()
+		productionAuth, err = api.NewProductionAuthRoutes(formGraph.BrowserRoutes(), formGraph.MainForwardAuth())
+		if err != nil {
+			return fmt.Errorf("mount production Form authentication: %w", err)
+		}
+		authReadiness = formGraph
+		logger.Info("production Form authentication enabled")
+	}
+
 	runtimeConfig, err := runtimecomposition.ConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load optional runtime configuration: %w", err)
@@ -103,8 +140,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	r := api.NewRouter(api.RouterConfig{
 		HealthDeps: health.Deps{
-			DB: &poolChecker{pool: pool},
+			DB:    &poolChecker{pool: pool},
+			Redis: authReadiness,
 		},
+		ProductionAuth: productionAuth,
 	})
 
 	srv := &http.Server{
@@ -129,6 +168,22 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	slog.Info("server stopped")
 	return nil
+}
+
+const maxAuthConfigPathBytes = 4096
+
+func configuredAuthConfigPath(lookup func(string) (string, bool)) (string, bool, error) {
+	if lookup == nil {
+		return "", false, errors.New("authentication configuration environment lookup is required")
+	}
+	path, present := lookup("ELITEA_AUTH_CONFIG_FILE")
+	if !present {
+		return "", false, nil
+	}
+	if path == "" || len(path) > maxAuthConfigPathBytes || path != strings.TrimSpace(path) || strings.ContainsAny(path, "\r\n\x00") {
+		return "", false, errors.New("ELITEA_AUTH_CONFIG_FILE is invalid")
+	}
+	return path, true, nil
 }
 
 type publicServerLifecycle interface {

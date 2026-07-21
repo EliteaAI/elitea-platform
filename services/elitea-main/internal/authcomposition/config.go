@@ -1,4 +1,4 @@
-// Package authcomposition owns the unmounted production authentication graph.
+// Package authcomposition owns the production authentication graph.
 package authcomposition
 
 import (

@@ -35,16 +35,17 @@ type FormGraphDependencies struct {
 	MainRoutePublicRules []forwardapp.PublicRule
 }
 
-// FormGraph is an unmounted Form-first composition candidate. It owns only its
-// dedicated Auth Redis client; the injected PostgreSQL pool remains caller-owned.
-// cmd/elitea-main must not mount Routes until the documented production gates
-// and complete route-owned Main policy have passed.
+// FormGraph owns the Form browser routes and the separate current-Main gateway
+// authorization edge. It owns only its dedicated Auth Redis client; the
+// injected PostgreSQL pool remains caller-owned.
 type FormGraph struct {
-	routes     http.Handler
-	mainKernel *forwardapp.Kernel
-	redis      *redis.Client
-	closeOnce  sync.Once
-	closeErr   error
+	routes          http.Handler
+	browserRoutes   http.Handler
+	mainForwardAuth http.Handler
+	mainKernel      *forwardapp.Kernel
+	redis           *redis.Client
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 type redisOpener func(context.Context, Config, *materializedFiles) (*redis.Client, error)
@@ -192,6 +193,18 @@ func newFormGraph(
 	if err != nil {
 		return nil, composeError("Direct Auth handler", err)
 	}
+	mainHandler, err := browserapi.NewMainHandler(
+		mainKernel,
+		proxyResolver,
+		cookies,
+		browserapi.MainConfig{
+			CredentialHeaders:  credentialHeaders(config.Credentials.Headers),
+			AccessDeniedTarget: config.Redirects.MainAccessDenied,
+		},
+	)
+	if err != nil {
+		return nil, composeError("Main ForwardAuth handler", err)
+	}
 	formHandler, err := browserapi.NewHandler(
 		flow,
 		material.formProvider,
@@ -211,7 +224,13 @@ func newFormGraph(
 		return nil, composeError("Form routes", err)
 	}
 
-	graph := &FormGraph{routes: routes, mainKernel: mainKernel, redis: redisClient}
+	graph := &FormGraph{
+		routes:          routes,
+		browserRoutes:   formHandler.Routes(),
+		mainForwardAuth: mainHandler,
+		mainKernel:      mainKernel,
+		redis:           redisClient,
+	}
 	committed = true
 	return graph, nil
 }
@@ -221,6 +240,35 @@ func (graph *FormGraph) Routes() http.Handler {
 		return nil
 	}
 	return graph.routes
+}
+
+// BrowserRoutes returns only the browser-facing Form login/logout surface.
+// The compatibility Auth Core /auth handler requires ForwardAuth-generated
+// source metadata and must not be exposed through an ordinary reverse proxy.
+func (graph *FormGraph) BrowserRoutes() http.Handler {
+	if graph == nil {
+		return nil
+	}
+	return graph.browserRoutes
+}
+
+// MainForwardAuth returns the gateway-only current-Main authorization edge.
+// It is deliberately separate from the public Auth Core /auth route because
+// the two current-baseline credential traversal policies differ.
+func (graph *FormGraph) MainForwardAuth() http.Handler {
+	if graph == nil {
+		return nil
+	}
+	return graph.mainForwardAuth
+}
+
+// Ping reports the dedicated Auth Redis dependency to the public readiness
+// endpoint. It does not transfer client ownership to the health package.
+func (graph *FormGraph) Ping(ctx context.Context) error {
+	if graph == nil || graph.redis == nil {
+		return ErrInvalidGraph
+	}
+	return graph.redis.Ping(ctx).Err()
 }
 
 // AuthorizeMain fixes current Main traversal semantics at the composition

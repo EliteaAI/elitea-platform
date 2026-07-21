@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -143,5 +144,47 @@ func TestServeApplicationPropagatesRuntimeFailureAndSupportsDisabledRuntime(t *t
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("disabled runtime lifecycle error = %v", err)
+	}
+}
+
+func TestConfiguredAuthConfigPathIsExplicitAndBounded(t *testing.T) {
+	for name, test := range map[string]struct {
+		lookup  func(string) (string, bool)
+		path    string
+		enabled bool
+		wantErr bool
+	}{
+		"unset": {
+			lookup: func(string) (string, bool) { return "", false },
+		},
+		"explicit empty": {
+			lookup:  func(string) (string, bool) { return "", true },
+			wantErr: true,
+		},
+		"configured": {
+			lookup:  func(string) (string, bool) { return "/run/config/auth/form.yaml", true },
+			path:    "/run/config/auth/form.yaml",
+			enabled: true,
+		},
+		"whitespace": {
+			lookup:  func(string) (string, bool) { return " /run/config/auth/form.yaml", true },
+			wantErr: true,
+		},
+		"control": {
+			lookup:  func(string) (string, bool) { return "/run/config/auth/form.yaml\nspoof", true },
+			wantErr: true,
+		},
+		"oversized": {
+			lookup:  func(string) (string, bool) { return strings.Repeat("a", maxAuthConfigPathBytes+1), true },
+			wantErr: true,
+		},
+		"nil lookup": {wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path, enabled, err := configuredAuthConfigPath(test.lookup)
+			if (err != nil) != test.wantErr || path != test.path || enabled != test.enabled {
+				t.Fatalf("path=%q enabled=%v err=%v", path, enabled, err)
+			}
+		})
 	}
 }

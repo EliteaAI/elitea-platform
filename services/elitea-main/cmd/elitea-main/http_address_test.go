@@ -34,7 +34,7 @@ func TestHealthcheckURLUsesConfiguredListenerPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if endpoint != "http://localhost:18080/healthz" {
+	if endpoint != "http://localhost:18080/readyz" {
 		t.Fatalf("healthcheck URL = %q", endpoint)
 	}
 }

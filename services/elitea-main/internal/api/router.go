@@ -76,6 +76,7 @@ type RouterConfig struct {
 	// those routes unmounted.
 	InternalAdminToken string
 	RuntimeRoutes      RuntimeRoutes
+	ProductionAuth     *ProductionAuthRoutes
 }
 
 type RuntimeRoutes struct {

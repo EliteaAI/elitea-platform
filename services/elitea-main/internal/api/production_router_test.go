@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,63 @@ import (
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 )
+
+func TestProductionAuthRoutesRequireBothReviewedEdges(t *testing.T) {
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	for name, test := range map[string]struct {
+		browser http.Handler
+		main    http.Handler
+	}{
+		"missing browser": {main: handler},
+		"missing main":    {browser: handler},
+		"both missing":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewProductionAuthRoutes(test.browser, test.main); !errors.Is(err, ErrInvalidProductionAuthRoutes) {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidProductionAuthRoutes)
+			}
+		})
+	}
+}
+
+func TestProductionRouterMountsOnlyReviewedAuthEdges(t *testing.T) {
+	browser := chi.NewRouter()
+	browser.Get("/login", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	browser.Post("/auth_form/authorize", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	main := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	authRoutes, err := NewProductionAuthRoutes(browser, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{ProductionAuth: authRoutes})
+
+	for _, route := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/forward-auth/login", http.StatusNoContent},
+		{http.MethodPost, "/forward-auth/auth_form/authorize", http.StatusNoContent},
+		{http.MethodGet, "/internal/forward-auth/main", http.StatusNoContent},
+		{http.MethodGet, "/forward-auth/auth", http.StatusNotFound},
+		{http.MethodGet, "/forward-auth/info", http.StatusNotFound},
+		{http.MethodPost, "/internal/forward-auth/main", http.StatusMethodNotAllowed},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(route.method, route.path, nil))
+			if recorder.Code != route.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
+		})
+	}
+}
 
 type productionRoutePolicy struct {
 	access string

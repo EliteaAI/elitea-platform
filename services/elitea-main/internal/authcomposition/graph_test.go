@@ -43,7 +43,7 @@ func TestNewFormGraphComposesSeparateDirectAndMainPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if graph.Routes() == nil || !allZero(temporaryPAT) {
+	if graph.Routes() == nil || graph.BrowserRoutes() == nil || graph.MainForwardAuth() == nil || !allZero(temporaryPAT) {
 		t.Fatalf("graph=%+v temporary PAT cleared=%v", graph, allZero(temporaryPAT))
 	}
 
@@ -72,8 +72,26 @@ func TestNewFormGraphComposesSeparateDirectAndMainPolicies(t *testing.T) {
 		t.Fatalf("Direct response = %d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 
+	mainRequest := httptest.NewRequest(http.MethodGet, "http://auth-internal/internal/forward-auth/main", nil)
+	mainRequest.RemoteAddr = "10.1.2.3:1234"
+	mainRequest.Header.Set("X-Forwarded-For", "203.0.113.7")
+	mainRequest.Header.Set("X-Forwarded-Method", http.MethodGet)
+	mainRequest.Header.Set("X-Forwarded-Proto", "https")
+	mainRequest.Header.Set("X-Forwarded-Host", "elitea.example")
+	mainRequest.Header.Set("X-Forwarded-Uri", "/health")
+	mainResponse := httptest.NewRecorder()
+	graph.MainForwardAuth().ServeHTTP(mainResponse, mainRequest)
+	if mainResponse.Code != http.StatusOK || mainResponse.Header().Get("X-Auth-Type") != "public" ||
+		mainResponse.Header().Get("X-Auth-ID") != "-" || mainResponse.Header().Get("X-Auth-User-ID") != "-" ||
+		mainResponse.Header().Get("X-Auth-Reference") != "-" {
+		t.Fatalf("Main response = %d headers=%v body=%q", mainResponse.Code, mainResponse.Header(), mainResponse.Body.String())
+	}
+
 	if err := graph.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if err := graph.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("closed graph readiness = %v", err)
 	}
 	if err := graph.Close(); err != nil {
 		t.Fatalf("second Close() = %v", err)
@@ -241,8 +259,11 @@ func TestCookiePolicyIsHostOnlySecureAndSeparateFromMainSession(t *testing.T) {
 
 func TestNilFormGraphMethodsFailSafely(t *testing.T) {
 	var graph *FormGraph
-	if graph.Routes() != nil || graph.Close() != nil {
+	if graph.Routes() != nil || graph.BrowserRoutes() != nil || graph.MainForwardAuth() != nil || graph.Close() != nil {
 		t.Fatal("nil graph did not fail safely")
+	}
+	if err := graph.Ping(context.Background()); !errors.Is(err, ErrInvalidGraph) {
+		t.Fatalf("nil graph Ping error = %v", err)
 	}
 	if _, err := graph.AuthorizeMain(context.Background(), publicMainRequest("/health")); !errors.Is(err, ErrInvalidGraph) {
 		t.Fatalf("AuthorizeMain error = %v", err)

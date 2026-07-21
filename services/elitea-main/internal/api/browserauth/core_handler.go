@@ -179,7 +179,11 @@ func (h *CoreHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 }
 
 func (h *CoreHandler) credentials(headers http.Header) []forwardapp.CredentialInput {
-	credentials := make([]forwardapp.CredentialInput, 0, len(h.credentialHeaders)+1)
+	return credentials(headers, h.credentialHeaders)
+}
+
+func credentials(headers http.Header, configured []CredentialHeader) []forwardapp.CredentialInput {
+	credentials := make([]forwardapp.CredentialInput, 0, len(configured)+1)
 	authorization, present, valid := optionalCredentialHeader(headers, "Authorization")
 	input := forwardapp.CredentialInput{}
 	if present {
@@ -197,11 +201,11 @@ func (h *CoreHandler) credentials(headers http.Header) []forwardapp.CredentialIn
 	}
 	credentials = append(credentials, input)
 
-	for _, configured := range h.credentialHeaders {
-		value, headerPresent, headerValid := optionalCredentialHeader(headers, configured.Name)
+	for _, header := range configured {
+		value, headerPresent, headerValid := optionalCredentialHeader(headers, header.Name)
 		input = forwardapp.CredentialInput{Present: headerPresent}
 		if headerPresent && headerValid {
-			input.Type = configured.Type
+			input.Type = header.Type
 			input.Data = value
 		}
 		credentials = append(credentials, input)
