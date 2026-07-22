@@ -262,10 +262,12 @@ type currentConfigurationQueriesStub struct {
 	sharedCount  int64
 	currentRows  []sqlcgen.ListCurrentConfigurationsRow
 	sharedRows   []sqlcgen.ListCurrentSharedConfigurationsRow
+	findRow      sqlcgen.FindCurrentConfigurationByEliteaTitleRow
 	getRow       sqlcgen.GetCurrentConfigurationRow
 	insertRow    sqlcgen.InsertCurrentConfigurationRow
 	replaceRow   sqlcgen.ReplaceCurrentConfigurationRow
 	deleteID     int32
+	findErr      error
 	getErr       error
 	insertErr    error
 	replaceErr   error
@@ -275,11 +277,20 @@ type currentConfigurationQueriesStub struct {
 	countSharedParams  sqlcgen.CountCurrentSharedConfigurationsParams
 	listCurrentParams  sqlcgen.ListCurrentConfigurationsParams
 	listSharedParams   sqlcgen.ListCurrentSharedConfigurationsParams
+	findParams         sqlcgen.FindCurrentConfigurationByEliteaTitleParams
 	insertParams       sqlcgen.InsertCurrentConfigurationParams
 	replaceParams      sqlcgen.ReplaceCurrentConfigurationParams
 	deleteParams       sqlcgen.DeleteCurrentConfigurationParams
 	listCurrentCalls   int
 	listSharedCalls    int
+}
+
+func (s *currentConfigurationQueriesStub) FindCurrentConfigurationByEliteaTitle(
+	_ context.Context,
+	params sqlcgen.FindCurrentConfigurationByEliteaTitleParams,
+) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error) {
+	s.findParams = params
+	return s.findRow, s.findErr
 }
 
 func (s *currentConfigurationQueriesStub) CountCurrentConfigurations(_ context.Context, params sqlcgen.CountCurrentConfigurationsParams) (int64, error) {

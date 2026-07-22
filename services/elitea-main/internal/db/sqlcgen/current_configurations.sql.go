@@ -80,8 +80,52 @@ func (q *Queries) DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurr
 	return id, err
 }
 
-const getCurrentConfiguration = `-- name: GetCurrentConfiguration :one
+const findCurrentConfigurationByEliteaTitle = `-- name: FindCurrentConfigurationByEliteaTitle :one
 
+SELECT uuid::text AS configuration_uuid,
+       project_id,
+       type,
+       data,
+       shared
+FROM configuration
+WHERE project_id = $1::integer
+  AND elitea_title = $2::text
+  AND (NOT $3::boolean OR shared = true)
+LIMIT 1
+`
+
+type FindCurrentConfigurationByEliteaTitleParams struct {
+	ProjectID   int32  `db:"project_id" json:"project_id"`
+	EliteaTitle string `db:"elitea_title" json:"elitea_title"`
+	SharedOnly  bool   `db:"shared_only" json:"shared_only"`
+}
+
+type FindCurrentConfigurationByEliteaTitleRow struct {
+	ConfigurationUuid string `db:"configuration_uuid" json:"configuration_uuid"`
+	ProjectID         int32  `db:"project_id" json:"project_id"`
+	Type              string `db:"type" json:"type"`
+	Data              []byte `db:"data" json:"data"`
+	Shared            bool   `db:"shared" json:"shared"`
+}
+
+// These unqualified names are intentional. Every query is executed inside a
+// transaction whose local search_path is derived from the authorized project.
+// This file projects the existing 16-column tenant table; it does not define a
+// replacement configuration store.
+func (q *Queries) FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg FindCurrentConfigurationByEliteaTitleParams) (FindCurrentConfigurationByEliteaTitleRow, error) {
+	row := q.db.QueryRow(ctx, findCurrentConfigurationByEliteaTitle, arg.ProjectID, arg.EliteaTitle, arg.SharedOnly)
+	var i FindCurrentConfigurationByEliteaTitleRow
+	err := row.Scan(
+		&i.ConfigurationUuid,
+		&i.ProjectID,
+		&i.Type,
+		&i.Data,
+		&i.Shared,
+	)
+	return i, err
+}
+
+const getCurrentConfiguration = `-- name: GetCurrentConfiguration :one
 SELECT id,
        uuid::text AS configuration_uuid,
        project_id,
@@ -128,10 +172,6 @@ type GetCurrentConfigurationRow struct {
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
 }
 
-// These unqualified names are intentional. Every query is executed inside a
-// transaction whose local search_path is derived from the authorized project.
-// This file projects the existing 16-column tenant table; it does not define a
-// replacement configuration store.
 func (q *Queries) GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error) {
 	row := q.db.QueryRow(ctx, getCurrentConfiguration, arg.ConfigurationID, arg.ProjectID)
 	var i GetCurrentConfigurationRow

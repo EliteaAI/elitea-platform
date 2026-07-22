@@ -1,10 +1,12 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 )
 
 type currentConfigurationQueries interface {
+	FindCurrentConfigurationByEliteaTitle(context.Context, sqlcgen.FindCurrentConfigurationByEliteaTitleParams) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error)
 	CountCurrentConfigurations(context.Context, sqlcgen.CountCurrentConfigurationsParams) (int64, error)
 	CountCurrentSharedConfigurations(context.Context, sqlcgen.CountCurrentSharedConfigurationsParams) (int64, error)
 	ListCurrentConfigurations(context.Context, sqlcgen.ListCurrentConfigurationsParams) ([]sqlcgen.ListCurrentConfigurationsRow, error)
@@ -24,6 +27,69 @@ type currentConfigurationQueries interface {
 	InsertCurrentConfiguration(context.Context, sqlcgen.InsertCurrentConfigurationParams) (sqlcgen.InsertCurrentConfigurationRow, error)
 	ReplaceCurrentConfiguration(context.Context, sqlcgen.ReplaceCurrentConfigurationParams) (sqlcgen.ReplaceCurrentConfigurationRow, error)
 	DeleteCurrentConfiguration(context.Context, sqlcgen.DeleteCurrentConfigurationParams) (int32, error)
+}
+
+// FindByEliteaTitle performs the provider-neutral lookup used by current
+// configuration expansion. Tenant routing and the row predicate are both
+// derived from the authorized project identity; sharedOnly is used only for
+// the public-project fallback.
+func (r *CurrentConfigurationsRepository) FindByEliteaTitle(
+	ctx context.Context,
+	projectID int32,
+	eliteaTitle string,
+	sharedOnly bool,
+) (configurationapp.CurrentExpansionConfiguration, bool, error) {
+	if ctx == nil ||
+		projectID <= 0 ||
+		eliteaTitle == "" ||
+		len(eliteaTitle) > configurationapp.MaxCurrentExpansionIdentifierLength {
+		return configurationapp.CurrentExpansionConfiguration{}, false, configurationapp.ErrInvalidCurrentExpansion
+	}
+	if err := ctx.Err(); err != nil {
+		return configurationapp.CurrentExpansionConfiguration{}, false, err
+	}
+
+	var configuration configurationapp.CurrentExpansionConfiguration
+	found := false
+	err := r.projects.WithinProjectTx(ctx, int64(projectID), pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadOnly,
+	}, func(tx sqlExecutor) error {
+		queries, err := r.queries(tx)
+		if err != nil {
+			return err
+		}
+		row, err := queries.FindCurrentConfigurationByEliteaTitle(ctx, sqlcgen.FindCurrentConfigurationByEliteaTitleParams{
+			ProjectID:   projectID,
+			EliteaTitle: eliteaTitle,
+			SharedOnly:  sharedOnly,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("find current configuration row by title: %w", err)
+		}
+		if row.ProjectID != projectID || (sharedOnly && !row.Shared) {
+			return errors.New("current configuration title lookup returned a row outside its authorized scope")
+		}
+		data, err := decodeCurrentConfigurationJSON(row.Data, "expansion data")
+		if err != nil {
+			return err
+		}
+		configuration = configurationapp.CurrentExpansionConfiguration{
+			UUID:      row.ConfigurationUuid,
+			ProjectID: row.ProjectID,
+			Type:      row.Type,
+			Data:      data,
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return configurationapp.CurrentExpansionConfiguration{}, false, err
+	}
+	return configuration, found, nil
 }
 
 type currentConfigurationQueryFactory func(sqlExecutor) (currentConfigurationQueries, error)
@@ -384,9 +450,15 @@ func mapCurrentConfiguration(row sqlcgen.GetCurrentConfigurationRow) (configurat
 }
 
 func decodeCurrentConfigurationJSON(raw []byte, field string) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(append([]byte(nil), raw...)))
+	decoder.UseNumber()
 	var value map[string]any
-	if err := json.Unmarshal(append([]byte(nil), raw...), &value); err != nil {
-		return nil, fmt.Errorf("decode current configuration %s: %w", field, err)
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("decode current configuration %s: invalid JSON object", field)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("decode current configuration %s: invalid trailing data", field)
 	}
 	if value == nil {
 		return nil, fmt.Errorf("decode current configuration %s: JSON object is required", field)
@@ -402,3 +474,4 @@ func validateCurrentConfigurationRepositoryContext(ctx context.Context, projectI
 }
 
 var _ configurationapp.CurrentConfigurationRepository = (*CurrentConfigurationsRepository)(nil)
+var _ configurationapp.CurrentExpansionFinder = (*CurrentConfigurationsRepository)(nil)

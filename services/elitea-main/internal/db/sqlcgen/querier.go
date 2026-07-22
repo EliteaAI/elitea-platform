@@ -22,16 +22,17 @@ type Querier interface {
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
+	// These unqualified names are intentional. Every query is executed inside a
+	// transaction whose local search_path is derived from the authorized project.
+	// This file projects the existing 16-column tenant table; it does not define a
+	// replacement configuration store.
+	FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg FindCurrentConfigurationByEliteaTitleParams) (FindCurrentConfigurationByEliteaTitleRow, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
-	// These unqualified names are intentional. Every query is executed inside a
-	// transaction whose local search_path is derived from the authorized project.
-	// This file projects the existing 16-column tenant table; it does not define a
-	// replacement configuration store.
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.
@@ -61,6 +62,11 @@ type Querier interface {
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
+	// This is the exact current projects_get_personal_project_id decision tree:
+	// a named personal project wins only when the user has any project-role
+	// assignment; the system-user email fallback is considered only when that
+	// named project does not exist.
+	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
 }
 

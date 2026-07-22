@@ -3,6 +3,18 @@
 -- This file projects the existing 16-column tenant table; it does not define a
 -- replacement configuration store.
 
+-- name: FindCurrentConfigurationByEliteaTitle :one
+SELECT uuid::text AS configuration_uuid,
+       project_id,
+       type,
+       data,
+       shared
+FROM configuration
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND elitea_title = sqlc.arg('elitea_title')::text
+  AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
+LIMIT 1;
+
 -- name: GetCurrentConfiguration :one
 SELECT id,
        uuid::text AS configuration_uuid,
