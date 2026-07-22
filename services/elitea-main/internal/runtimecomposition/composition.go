@@ -9,6 +9,7 @@ import (
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -29,23 +30,26 @@ const (
 	capabilityVersion      = "1"
 	limitsRevision         = "elitea.runtime.limits.conformance.v1"
 
-	resourceClass       = "validation-small"
-	isolationClass      = "shared-credential-free"
-	inputClassification = "tenant-confidential"
-	inputGrantAudience  = "elitea.runtime.input.read.v1"
+	resourceClass          = "validation-small"
+	isolationClass         = "shared-credential-free"
+	inputClassification    = "tenant-confidential"
+	inputGrantAudience     = "elitea.runtime.input.read.v1"
+	indexArtifactMediaType = "application/json"
 
-	maxWorkerCommandBytes  = 32 * 1024
-	maxSignedEnvelopeBytes = 48 * 1024
-	maxRedisFieldBytes     = 48 * 1024
-	maxInputManifestBytes  = 64 * 1024
-	maxInputEntries        = 16
-	maxInputContentBytes   = 256 * 1024
-	maxOutputFrameBytes    = 64 * 1024
-	maxSafeStringBytes     = 256
-	maxGRPCRequestBytes    = 64 * 1024
-	maxGRPCResponseBytes   = 80 * 1024
-	maxContentRequests     = 16
-	claimLeaseTTL          = 30 * time.Second
+	maxWorkerCommandBytes         = 32 * 1024
+	maxSignedEnvelopeBytes        = 48 * 1024
+	maxRedisFieldBytes            = 48 * 1024
+	maxInputManifestBytes         = 64 * 1024
+	maxInputEntries               = 16
+	maxInputContentBytes          = 256 * 1024
+	maxOutputFrameBytes           = 64 * 1024
+	maxSafeStringBytes            = 256
+	maxGRPCRequestBytes           = 64 * 1024
+	maxGRPCResponseBytes          = 80 * 1024
+	maxContentRequests            = 16
+	maxIndexArtifactBytes         = 1 * 1024 * 1024
+	claimLeaseTTL                 = 30 * time.Second
+	productionIndexRedisEntrySize = (64 * 1024) - 1
 )
 
 type Dependencies struct {
@@ -198,6 +202,54 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
+	var indexPublisher publisherRunner
+	if config.IndexIngestDispatchEnabled {
+		indexLimits := limits
+		indexLimits.MaxRedisEntryBytes = productionIndexRedisEntrySize
+		indexAppender, err := redisdispatch.NewRedisStreamAppender(controlRedis, redisdispatch.RedisStreamAppenderConfig{
+			MaxEntries:    config.IndexIngestStreamMaxEntries,
+			MaxEntryBytes: productionIndexRedisEntrySize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct bounded index ingest Redis appender: %w", err)
+		}
+		indexProducer, err := redisdispatch.NewIndexIngestProducer(redisdispatch.IndexIngestProducerConfig{
+			Stream:                 config.IndexIngestCommandStream,
+			ConsumerGroup:          config.IndexIngestConsumerGroup,
+			ValidationStream:       config.CommandStream,
+			ProtocolRevision:       protocolRevision,
+			EnvelopeSchemaRevision: envelopeSchemaRevision,
+			CapabilityVersion:      capabilityVersion,
+			Limits:                 indexLimits,
+		}, signer, indexAppender)
+		if err != nil {
+			return nil, fmt.Errorf("construct index ingest Redis producer: %w", err)
+		}
+		indexOutbox, err := repos.NewCommandOutboxRepository(dependencies.AdmissionPool, config.IndexIngestCommandStream)
+		if err != nil {
+			return nil, fmt.Errorf("construct index ingest command outbox: %w", err)
+		}
+		indexDispatcher, err := indexingapp.NewIndexIngestDispatcher(indexOutbox, indexProducer)
+		if err != nil {
+			return nil, err
+		}
+		indexPublisher, err = indexingapp.NewIndexIngestOutboxPublisher(indexOutbox, indexDispatcher, executionapp.OutboxPublisherConfig{
+			PollInterval:      250 * time.Millisecond,
+			VisibilityTimeout: 30 * time.Second,
+			BatchSize:         64,
+			MaxConcurrent:     8,
+			ReportFailure: func(err error) {
+				dependencies.Logger.Error("index ingest outbox publisher cycle failed", "err", err)
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	publisherRoot, err := newConfiguredPublisherSet(config.IndexIngestDispatchEnabled, publisher, indexPublisher)
+	if err != nil {
+		return nil, err
+	}
 
 	controlSessions, err := repos.NewWorkloadSessionsRepository(dependencies.ControlPool)
 	if err != nil {
@@ -281,12 +333,30 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
-	outputServer, err := output.NewServer(output.ServerConfig{
+	outputServerConfig := output.ServerConfig{
 		OutputSchemaRevision: outputSchemaRevision,
 		MaxFrameBytes:        maxOutputFrameBytes,
 		CreditFrames:         1,
 		CreditBytes:          maxOutputFrameBytes,
-	}, outputPeerAuthorizer, validationOutput, runtimeFailures)
+	}
+	var outputServer *output.Server
+	if config.IndexIngestDispatchEnabled {
+		indexResults, err := repos.NewIndexIngestResultsRepository(dependencies.OutputPool, repos.IndexIngestOutputPolicy{
+			LimitsRevision:    limitsRevision,
+			ArtifactMediaType: indexArtifactMediaType,
+			MaxArtifactBytes:  maxIndexArtifactBytes,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct index ingest result repository: %w", err)
+		}
+		indexOutput, err := outputapp.NewIndexIngestService(indexResults, outputClaims, indexResults, indexResults)
+		if err != nil {
+			return nil, err
+		}
+		outputServer, err = output.NewServerWithIndexIngest(outputServerConfig, outputPeerAuthorizer, validationOutput, runtimeFailures, indexOutput)
+	} else {
+		outputServer, err = output.NewServer(outputServerConfig, outputPeerAuthorizer, validationOutput, runtimeFailures)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +413,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 
 	closeRedis = false
 	return &Runtime{
-		publisher:    publisher,
+		publisher:    publisherRoot,
 		private:      privateServers,
 		controlRedis: controlRedis,
 		publicRoutes: publicRoutes,

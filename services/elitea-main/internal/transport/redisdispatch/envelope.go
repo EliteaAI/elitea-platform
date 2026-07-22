@@ -6,6 +6,7 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
@@ -65,6 +66,54 @@ func validationWorkerCommand(protocolRevision string, dispatch executionapp.Vali
 	}, nil
 }
 
+func indexIngestWorkerCommand(protocolRevision string, dispatch indexingapp.IndexIngestDispatch) (*runtimev1.WorkerCommandV1, error) {
+	if protocolRevision == "" || len(protocolRevision) > 128 {
+		return nil, errors.New("invalid protocol revision")
+	}
+	if err := dispatch.Validate(); err != nil {
+		return nil, err
+	}
+	return &runtimev1.WorkerCommandV1{
+		ProtocolRevision:    protocolRevision,
+		CommandId:           dispatch.CommandID,
+		IdempotencyKey:      dispatch.OutboxID,
+		CommandType:         runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_INDEX_INGEST,
+		ExecutionId:         dispatch.ExecutionID,
+		Generation:          dispatch.Generation,
+		DispatchOrdinal:     dispatch.DispatchOrdinal,
+		RootExecutionId:     dispatch.ExecutionID,
+		TenantId:            dispatch.TenantID,
+		ResourceProjectId:   dispatch.ResourceProjectID,
+		ProjectionProjectId: dispatch.ProjectionProjectID,
+		PrincipalRef:        dispatch.PrincipalRef,
+		InputBundleRef: &runtimev1.ExecutionInputBundleReferenceV1{
+			InputBundleId:    dispatch.InputBundleID,
+			ImmutableVersion: dispatch.InputBundleVersion,
+			Digest:           digestProto(dispatch.InputBundleDigest),
+			ByteLength:       dispatch.InputBundleByteLength,
+			MediaType:        dispatch.InputBundleMediaType,
+		},
+		CapabilityId:       executiondomain.IndexIngestCapability,
+		CapabilityVersion:  dispatch.CapabilityVersion,
+		ResourceClass:      dispatch.ResourceClass,
+		IsolationClass:     dispatch.IsolationClass,
+		Priority:           dispatch.Priority,
+		DeadlineUnixMillis: dispatch.Deadline.UTC().UnixMilli(),
+		Traceparent:        dispatch.Traceparent,
+		Tracestate:         dispatch.Tracestate,
+		LimitsRevision:     dispatch.LimitsRevision,
+		CapabilityCommand: &runtimev1.WorkerCommandV1_IndexIngest{
+			IndexIngest: &runtimev1.IndexIngestCommandV1{
+				ToolkitConfigurationEntryId: dispatch.ToolkitConfigurationEntryID,
+				ToolParametersEntryId:       dispatch.ToolParametersEntryID,
+				LlmModelEntryId:             dispatch.LLMModelEntryID,
+				LlmConfigurationEntryId:     dispatch.LLMConfigurationEntryID,
+				McpTokensEntryId:            dispatch.MCPTokensEntryID,
+			},
+		},
+	}, nil
+}
+
 func digestProto(digest runtimedomain.Digest) *runtimev1.DigestV1 {
 	return &runtimev1.DigestV1{
 		Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
@@ -87,6 +136,12 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 		values = append(values,
 			validation.GetConfigurationRevisionId(), validation.GetConfigurationType(), validation.GetCatalogRevision(),
 			validation.GetSchemaId(), validation.GetSchemaRevision(), validation.GetSettingsEntryId(),
+		)
+	}
+	if index := command.GetIndexIngest(); index != nil {
+		values = append(values,
+			index.GetToolkitConfigurationEntryId(), index.GetToolParametersEntryId(), index.GetLlmModelEntryId(),
+			index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(),
 		)
 	}
 	for _, value := range values {

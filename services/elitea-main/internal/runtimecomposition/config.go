@@ -32,6 +32,11 @@ type Config struct {
 	MaxOutstanding   int64
 	StreamMaxEntries int64
 
+	IndexIngestDispatchEnabled  bool
+	IndexIngestCommandStream    string
+	IndexIngestConsumerGroup    string
+	IndexIngestStreamMaxEntries int64
+
 	RedisURL          string
 	RedisPasswordFile string
 	RedisCAFile       string
@@ -95,6 +100,28 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 	}
 	if config.StreamMaxEntries, err = integer("ELITEA_RUNTIME_STREAM_MAX_ENTRIES"); err != nil {
 		return Config{}, err
+	}
+	indexIngestEnabled, _ := lookup("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED")
+	switch indexIngestEnabled {
+	case "", "false":
+		for _, name := range []string{"ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM", "ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP", "ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"} {
+			if value, ok := lookup(name); ok && value != "" {
+				return Config{}, errors.New("runtime index ingest dispatch settings require explicit enablement")
+			}
+		}
+	case "true":
+		config.IndexIngestDispatchEnabled = true
+		if config.IndexIngestCommandStream, err = required("ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"); err != nil {
+			return Config{}, err
+		}
+		if config.IndexIngestConsumerGroup, err = required("ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"); err != nil {
+			return Config{}, err
+		}
+		if config.IndexIngestStreamMaxEntries, err = integer("ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"); err != nil {
+			return Config{}, err
+		}
+	default:
+		return Config{}, errors.New("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED must be true or false")
 	}
 	if config.RedisURL, err = required("ELITEA_RUNTIME_REDIS_URL"); err != nil {
 		return Config{}, err
@@ -174,6 +201,24 @@ func (c Config) Validate() error {
 	}
 	if c.StreamMaxEntries <= 0 || c.StreamMaxEntries > maxRuntimeStreamEntries {
 		return errors.New("runtime Redis stream capacity is invalid")
+	}
+	if c.IndexIngestDispatchEnabled {
+		if c.IndexIngestCommandStream == "" || len(c.IndexIngestCommandStream) > 256 || strings.ContainsAny(c.IndexIngestCommandStream, " \r\n\x00") {
+			return errors.New("runtime index ingest command stream is invalid")
+		}
+		if c.IndexIngestCommandStream == c.CommandStream ||
+			c.IndexIngestCommandStream == c.CommandStream+":delivery-index.v1" ||
+			c.IndexIngestCommandStream+":delivery-index.v1" == c.CommandStream {
+			return errors.New("runtime index ingest requires a dedicated command stream")
+		}
+		if c.IndexIngestConsumerGroup == "" || len(c.IndexIngestConsumerGroup) > 256 || strings.ContainsAny(c.IndexIngestConsumerGroup, " \r\n\x00") {
+			return errors.New("runtime index ingest consumer group is invalid")
+		}
+		if c.IndexIngestStreamMaxEntries <= 0 || c.IndexIngestStreamMaxEntries > maxRuntimeStreamEntries {
+			return errors.New("runtime index ingest Redis stream capacity is invalid")
+		}
+	} else if c.IndexIngestCommandStream != "" || c.IndexIngestConsumerGroup != "" || c.IndexIngestStreamMaxEntries != 0 {
+		return errors.New("runtime index ingest dispatch settings require explicit enablement")
 	}
 	if c.RedisPoolSize <= 0 || c.RedisPoolSize > maxRedisPoolSize {
 		return errors.New("runtime Redis pool size is invalid")

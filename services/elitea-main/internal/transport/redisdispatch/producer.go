@@ -11,6 +11,7 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
@@ -76,6 +77,10 @@ func (p *Producer) PrepareValidation(ctx context.Context, dispatch executionapp.
 	if err != nil {
 		return executionapp.PreparedCommandEnvelope{}, err
 	}
+	return p.prepareCommand(ctx, command)
+}
+
+func (p *Producer) prepareCommand(ctx context.Context, command *runtimev1.WorkerCommandV1) (executionapp.PreparedCommandEnvelope, error) {
 	if err := validateBoundedStrings(command, p.config.Limits.MaxStringBytes); err != nil {
 		return executionapp.PreparedCommandEnvelope{}, err
 	}
@@ -127,24 +132,47 @@ func (p *Producer) PrepareValidation(ctx context.Context, dispatch executionapp.
 // signs or re-encodes the command, so an unknown Redis success and every
 // competing publisher retry use byte-identical control-plane data.
 func (p *Producer) AppendPrepared(ctx context.Context, deliveryID string, prepared executionapp.PreparedCommandEnvelope) error {
-	if err := p.validatePrepared(prepared); err != nil {
+	command, err := p.preparedCommand(prepared)
+	if err != nil {
 		return err
 	}
-	if !validDeliveryID(deliveryID) {
+	if command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE || command.GetCapabilityId() != executiondomain.ConfigurationValidationCapability || command.GetConfigurationValidation() == nil {
 		return executionapp.ErrInvalidPreparedEnvelope
 	}
-	envelope := &runtimev1.SignedWorkerCommandEnvelopeV1{}
-	if err := proto.Unmarshal(prepared.Bytes, envelope); err != nil {
-		return executionapp.ErrInvalidPreparedEnvelope
-	}
-	command := &runtimev1.WorkerCommandV1{}
-	if err := proto.Unmarshal(envelope.GetWorkerCommandBytes(), command); err != nil || command.GetIdempotencyKey() != deliveryID {
+	return p.appendPreparedCommand(ctx, deliveryID, prepared, command)
+}
+
+func (p *Producer) appendPreparedCommand(ctx context.Context, deliveryID string, prepared executionapp.PreparedCommandEnvelope, command *runtimev1.WorkerCommandV1) error {
+	if !validDeliveryID(deliveryID) || command == nil || command.GetIdempotencyKey() != deliveryID {
 		return executionapp.ErrInvalidPreparedEnvelope
 	}
 	if _, err := p.appender.Append(ctx, p.config.Stream, redisEnvelopeField, deliveryID, append([]byte(nil), prepared.Bytes...)); err != nil {
 		return fmt.Errorf("append worker command reference: %w", err)
 	}
 	return nil
+}
+
+func (p *Producer) preparedCommand(prepared executionapp.PreparedCommandEnvelope) (*runtimev1.WorkerCommandV1, error) {
+	if err := p.validatePrepared(prepared); err != nil {
+		return nil, err
+	}
+	envelope := &runtimev1.SignedWorkerCommandEnvelopeV1{}
+	if err := proto.Unmarshal(prepared.Bytes, envelope); err != nil {
+		return nil, executionapp.ErrInvalidPreparedEnvelope
+	}
+	commandBytes := envelope.GetWorkerCommandBytes()
+	command := &runtimev1.WorkerCommandV1{}
+	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(commandBytes, command); err != nil || hasUnknownFields(command.ProtoReflect()) {
+		return nil, executionapp.ErrInvalidPreparedEnvelope
+	}
+	canonical, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	if err != nil || !bytes.Equal(canonical, commandBytes) {
+		return nil, executionapp.ErrInvalidPreparedEnvelope
+	}
+	if err := validateBoundedStrings(command, p.config.Limits.MaxStringBytes); err != nil {
+		return nil, executionapp.ErrInvalidPreparedEnvelope
+	}
+	return command, nil
 }
 
 func validDeliveryID(deliveryID string) bool {

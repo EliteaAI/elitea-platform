@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
@@ -179,6 +180,36 @@ func TestProductionRuntimeRoutesRejectDevelopmentFallback(t *testing.T) {
 	)
 	if response.Code != http.StatusUnauthorized || handlerCalls != 0 {
 		t.Fatalf("status=%d handler calls=%d body=%s", response.Code, handlerCalls, response.Body.String())
+	}
+}
+
+func TestProductionRuntimeRoutesKeepIndexStartUnmountedWithoutCompleteDataPlane(t *testing.T) {
+	handlerCalls := 0
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { handlerCalls++ })
+	routes, err := NewProductionRuntimeRoutes(
+		handler,
+		handler,
+		productionRuntimePrincipalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+			return user, nil
+		}),
+		productionRuntimePeerVerifierFunc(func(*http.Request) error { return nil }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Dispatch and output validation can run safely before worker credential
+	// redemption and artifact upload exist. The public start route cannot: it
+	// would admit work that has no authorized path to completion.
+	request := forwardedRuntimeRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/test_toolkit_tool/prompt_lib/7?await_response=false",
+		"10.0.0.8:43120",
+	)
+	response := httptest.NewRecorder()
+	NewRouter(RouterConfig{ProductionRuntime: routes}).ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || handlerCalls != 0 {
+		t.Fatalf("%s unexpectedly mounted: status=%d handler_calls=%d", indexingapi.CurrentIndexStartPath, response.Code, handlerCalls)
 	}
 }
 
