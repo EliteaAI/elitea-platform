@@ -57,6 +57,47 @@ func TestRewriteWrappedRoundTripsPythonFernetFixture(t *testing.T) {
 	assertLookup(t, vault, "hidden", "hidden-canary", true)
 }
 
+func TestRewritePreservesCurrentTypedVaultValues(t *testing.T) {
+	key, ok := decodeFernetKey([]byte(pythonProjectKey))
+	if !ok {
+		t.Fatal("fixture key is invalid")
+	}
+	original, err := encryptFernet(
+		key,
+		[]byte(`{"secrets":{"default_llm_model_project_id":7,"enabled":true,"metadata":{"source":"current"}},"hidden_secrets":{"existing":"value"}}`),
+		time.Unix(1_700_000_000, 0),
+		bytes.NewReader([]byte("0123456789abcdef")),
+	)
+	clearKey(&key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := RewriteUnwrapped(
+		[]byte(pythonProjectKey),
+		original,
+		[]Mutation{{Collection: RegularSecrets, Name: "default_llm_model_name", Value: "gpt-current"}},
+	)
+	clearBytes(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault, err := OpenUnwrapped([]byte(pythonProjectKey), updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLookup(t, vault, "default_llm_model_name", "gpt-current", false)
+	if got := string(vault.regular["default_llm_model_project_id"]); got != "7" {
+		t.Fatalf("numeric default changed: %s", got)
+	}
+	if got := string(vault.regular["enabled"]); got != "true" {
+		t.Fatalf("boolean value changed: %s", got)
+	}
+	if got := string(vault.regular["metadata"]); got != `{"source":"current"}` {
+		t.Fatalf("object value changed: %s", got)
+	}
+}
+
 func TestRewriteProducesCanonicalFernetHeaderWithInjectedClockAndEntropy(t *testing.T) {
 	key, ok := decodeFernetKey([]byte(pythonProjectKey))
 	if !ok {

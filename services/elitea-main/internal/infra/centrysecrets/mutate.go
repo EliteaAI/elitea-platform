@@ -71,8 +71,12 @@ func RewriteWrapped(masterKey, encryptedProjectKey, encryptedVault []byte, mutat
 }
 
 type mutableStoredVault struct {
-	Secrets       map[string]string `json:"secrets"`
-	HiddenSecrets map[string]string `json:"hidden_secrets"`
+	// The current Python vault stores JSON values, not only strings. Model
+	// default project IDs are numbers, for example. Preserve untouched values
+	// byte-for-byte at the JSON-value level while this mutator writes new secret
+	// values as JSON strings.
+	Secrets       map[string]json.RawMessage `json:"secrets"`
+	HiddenSecrets map[string]json.RawMessage `json:"hidden_secrets"`
 }
 
 func rewrite(
@@ -113,7 +117,11 @@ func rewrite(
 			delete(target, mutation.Name)
 			continue
 		}
-		target[mutation.Name] = mutation.Value
+		encoded, err := json.Marshal(mutation.Value)
+		if err != nil {
+			return nil, ErrInvalidMutation
+		}
+		target[mutation.Name] = encoded
 	}
 
 	updated, err := json.Marshal(stored)
@@ -212,12 +220,12 @@ func clearMutableStoredVault(stored *mutableStoredVault) {
 	if stored == nil {
 		return
 	}
-	for name := range stored.Secrets {
-		stored.Secrets[name] = ""
+	for name, value := range stored.Secrets {
+		clearBytes(value)
 		delete(stored.Secrets, name)
 	}
-	for name := range stored.HiddenSecrets {
-		stored.HiddenSecrets[name] = ""
+	for name, value := range stored.HiddenSecrets {
+		clearBytes(value)
 		delete(stored.HiddenSecrets, name)
 	}
 }
