@@ -8,6 +8,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -95,6 +96,39 @@ func TestClaimValidationRequiresExactPublishedEnvelopeBeforeLease(t *testing.T) 
 				t.Fatalf("unbound/quarantined command allocated or mutated a claim: generated=%t rows=%d execs=%d", generatorCalled, len(store.rowCalls), len(store.execCalls))
 			}
 		})
+	}
+}
+
+func TestClaimValidationScopesDurableLookupToRequestedCapability(t *testing.T) {
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{rowResults: []scriptedRow{
+		claimExecutionRow("RUNNING", "PENDING", false, nil, nil, false),
+	}}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "must-not-generate", nil },
+		func() (runtimedomain.FenceToken, error) {
+			return runtimedomain.FenceToken(runtimedomain.SHA256([]byte("must-not-generate"))), nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testClaimRequest(runtimedomain.SHA256([]byte("index-envelope")))
+	request.CapabilityID = executiondomain.IndexIngestCapability
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
+	if err != nil || decision.Disposition != executionapp.ClaimRetryLaterNoACK {
+		t.Fatalf("index capability lookup decision=%+v err=%v", decision, err)
+	}
+	if len(store.rowCalls) != 1 || len(store.rowCalls[0].args) != 3 || store.rowCalls[0].args[2] != executiondomain.IndexIngestCapability {
+		t.Fatalf("claim lookup escaped requested capability: %#v", store.rowCalls)
+	}
+
+	request.CapabilityID = "unknown.capability.v1"
+	if _, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis); !errors.Is(err, executionapp.ErrInvalidClaim) {
+		t.Fatalf("unknown capability error=%v", err)
+	}
+	if len(store.rowCalls) != 1 {
+		t.Fatal("unknown capability reached PostgreSQL")
 	}
 }
 
@@ -752,6 +786,7 @@ func testClaimRequest(digest runtimedomain.Digest) executionapp.ClaimRequest {
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: digest,
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "workload-1",
@@ -851,6 +886,7 @@ func TestExpiredClaimRecoversTerminalOutputAcrossProducerReplacement(t *testing.
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: publishedDigest,
 		WorkloadIdentity:     replacementIdentity,
 		WorkloadSessionID:    "replacement-session",

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -72,6 +73,7 @@ func TestPostgresLeaseAuthorityUsesDatabaseClockDespiteApplicationSkew(t *testin
 				OutboxID:             seed.outboxID,
 				ExecutionID:          frame.Fence.ExecutionID,
 				Generation:           frame.Fence.Generation,
+				CapabilityID:         executiondomain.ConfigurationValidationCapability,
 				SignedEnvelopeDigest: seed.envelopeDigest,
 				WorkloadIdentity:     "spiffe://elitea.test/workload/database-clock-" + test.name,
 				WorkloadSessionID:    "database-clock-session-" + test.name,

@@ -14,6 +14,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
@@ -138,6 +139,7 @@ func TestPostgresServiceBackedCancellationControlPlane(t *testing.T) {
 			OutboxID:             seed.outboxID,
 			ExecutionID:          frame.Fence.ExecutionID,
 			Generation:           frame.Fence.Generation,
+			CapabilityID:         executiondomain.ConfigurationValidationCapability,
 			SignedEnvelopeDigest: seed.envelopeDigest,
 			WorkloadIdentity:     "spiffe://elitea.test/worker/replacement",
 			WorkloadSessionID:    "session-replacement",
@@ -420,6 +422,7 @@ WHERE j.execution_id = $1 AND j.generation = 1`, fixture.frame.Fence.ExecutionID
 			OutboxID:             fixture.seed.outboxID,
 			ExecutionID:          fixture.frame.Fence.ExecutionID,
 			Generation:           1,
+			CapabilityID:         executiondomain.ConfigurationValidationCapability,
 			SignedEnvelopeDigest: fixture.seed.envelopeDigest,
 			WorkloadIdentity:     "spiffe://elitea.test/worker/retired",
 			WorkloadSessionID:    "retired-session",
@@ -483,6 +486,7 @@ WHERE j.execution_id = $1`, raceFrame.Fence.ExecutionID).Scan(&raceState, &raceD
 	decision, err := claims.ClaimValidation(ctx, executionapp.ClaimRequest{
 		CommandID: authorityFrame.Fence.CommandID, OutboxID: authoritySeed.outboxID,
 		ExecutionID: authorityFrame.Fence.ExecutionID, Generation: 1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: authoritySeed.envelopeDigest,
 		WorkloadIdentity:     "spiffe://elitea.test/worker/accepted", WorkloadSessionID: "accepted-session", ProducerID: "accepted-producer",
 	}, executionapp.MaxClaimLeaseTTLMillis)

@@ -305,11 +305,12 @@ func TestVerifyResolvedManifestBindsEveryIndexEntryExactly(t *testing.T) {
 func TestClaimCommandAcceptsBoundedIndexManifestAfterAuthorizedClaim(t *testing.T) {
 	manifest := validIndexManifest()
 	calls := []string{}
+	var claimed executionapp.ClaimRequest
 	server, err := NewServer(
 		testControlServerConfig(),
 		workloadAuthorizerStub{calls: &calls},
 		verifierSpy{calls: &calls, verifier: newTestVerifier(t)},
-		claimControllerStub{calls: &calls, lease: validLease()},
+		claimControllerStub{calls: &calls, lease: validLease(), claimRequest: &claimed},
 		inputResolverStub{calls: &calls, manifest: manifest},
 		&settlementControllerStub{calls: &calls},
 	)
@@ -326,6 +327,9 @@ func TestClaimCommandAcceptsBoundedIndexManifestAfterAuthorizedClaim(t *testing.
 	wantOrder := []string{"authorize-peer", "verify-command", "claim", "resolve-reference-manifest"}
 	if !reflect.DeepEqual(calls, wantOrder) {
 		t.Fatalf("unsafe index claim order: got %v want %v", calls, wantOrder)
+	}
+	if claimed.CapabilityID != executiondomain.IndexIngestCapability {
+		t.Fatalf("index command claimed as capability %q", claimed.CapabilityID)
 	}
 }
 

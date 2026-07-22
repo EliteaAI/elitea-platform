@@ -40,7 +40,7 @@ func newClaimsRepository(store sharedStore, newClaimID func() (string, error), n
 }
 
 func (r *ClaimsRepository) ClaimValidation(ctx context.Context, request executionapp.ClaimRequest, leaseTTL executionapp.ClaimLeaseTTLMillis) (executionapp.ClaimDecision, error) {
-	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" || !leaseTTL.Valid() {
+	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || !claimCapabilityAllowed(request.CapabilityID) || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" || !leaseTTL.Valid() {
 		return executionapp.ClaimDecision{}, executionapp.ErrInvalidClaim
 	}
 	var decision executionapp.ClaimDecision
@@ -63,8 +63,8 @@ JOIN elitea_runtime.command_outbox AS o
   ON o.execution_id = j.execution_id AND o.generation = j.generation
 WHERE j.execution_id = $1
   AND j.generation = $2
-  AND j.capability_id = 'configuration.validate.v1'
-FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation)).Scan(
+  AND j.capability_id = $3
+FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation), request.CapabilityID).Scan(
 			&commandID,
 			&desiredState,
 			&jobState,
@@ -398,6 +398,15 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 		return executionapp.ClaimDecision{}, fmt.Errorf("%w: %w", executionapp.ErrClaimDependencyUnavailable, err)
 	}
 	return decision, nil
+}
+
+func claimCapabilityAllowed(capabilityID string) bool {
+	switch capabilityID {
+	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
+		return true
+	default:
+		return false
+	}
 }
 
 func exactClaimDigest(stored []byte, requested runtimedomain.Digest) bool {

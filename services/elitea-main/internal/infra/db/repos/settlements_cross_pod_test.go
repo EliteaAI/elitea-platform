@@ -7,6 +7,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -160,6 +161,7 @@ func TestClaimRecoversPreparedSettlementAcrossProducerReplacementAfterIssuingCla
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: publishedDigest,
 		WorkloadIdentity:     "spiffe://elitea.test/workload/replacement",
 		WorkloadSessionID:    "replacement-session",

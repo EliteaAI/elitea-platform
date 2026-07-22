@@ -94,6 +94,7 @@ func (s *Server) ClaimCommand(ctx context.Context, request *runtimev1.ClaimComma
 		OutboxID:             command.GetIdempotencyKey(),
 		ExecutionID:          command.GetExecutionId(),
 		Generation:           command.GetGeneration(),
+		CapabilityID:         command.GetCapabilityId(),
 		SignedEnvelopeDigest: runtimedomain.SHA256(canonicalEnvelope),
 		WorkloadIdentity:     workloadIdentity,
 		WorkloadSessionID:    request.GetWorkloadSessionId(),

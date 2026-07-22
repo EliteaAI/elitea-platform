@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -36,12 +37,59 @@ func TestClaimServiceRequiresBoundedWholeMillisecondTTL(t *testing.T) {
 	}
 }
 
+func TestClaimServiceAcceptsOnlyImplementedCapabilities(t *testing.T) {
+	for _, capabilityID := range []string{
+		executiondomain.ConfigurationValidationCapability,
+		executiondomain.IndexIngestCapability,
+	} {
+		repository := &memoryClaimRepository{now: time.Now}
+		service, err := NewClaimService(repository, time.Now, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := ClaimRequest{
+			CommandID:            "command-1",
+			OutboxID:             "outbox-1",
+			ExecutionID:          "execution-1",
+			Generation:           1,
+			CapabilityID:         capabilityID,
+			SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
+			WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
+			WorkloadSessionID:    "session-1",
+			ProducerID:           "producer-1",
+		}
+		if _, err := service.Claim(context.Background(), request); err != nil {
+			t.Fatalf("implemented capability %q rejected: %v", capabilityID, err)
+		}
+	}
+
+	repository := &memoryClaimRepository{now: time.Now}
+	service, err := NewClaimService(repository, time.Now, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Claim(context.Background(), ClaimRequest{
+		CommandID:            "command-1",
+		OutboxID:             "outbox-1",
+		ExecutionID:          "execution-1",
+		Generation:           1,
+		CapabilityID:         "unknown.capability.v1",
+		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
+		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
+		WorkloadSessionID:    "session-1",
+		ProducerID:           "producer-1",
+	}); !errors.Is(err, ErrInvalidClaim) {
+		t.Fatalf("unknown capability error=%v", err)
+	}
+}
+
 func TestNoLeaseObsoleteDecisionIsLimitedToDurableCancellation(t *testing.T) {
 	request := ClaimRequest{
 		CommandID:            "command-1",
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "session-1",
@@ -75,6 +123,7 @@ func TestNoLeaseRetiredDecisionRequiresDeadlineReason(t *testing.T) {
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "session-1",
@@ -208,6 +257,7 @@ func TestClaimVerifierRejectsStaleFenceAndExpiredLease(t *testing.T) {
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "workload-1",
@@ -260,6 +310,7 @@ func TestClaimAbortRequiresExactFenceAndRecordsDisposition(t *testing.T) {
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "workload-1",
@@ -293,6 +344,7 @@ func TestClaimRenewRejectsRepositoryFenceRotation(t *testing.T) {
 		OutboxID:             "outbox-1",
 		ExecutionID:          "execution-1",
 		Generation:           1,
+		CapabilityID:         executiondomain.ConfigurationValidationCapability,
 		SignedEnvelopeDigest: runtimedomain.SHA256([]byte("signed-envelope")),
 		WorkloadIdentity:     "spiffe://elitea.test/workload/worker-1",
 		WorkloadSessionID:    "workload-1",

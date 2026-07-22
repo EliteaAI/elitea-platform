@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -19,6 +20,7 @@ type ClaimRequest struct {
 	OutboxID             string
 	ExecutionID          string
 	Generation           uint64
+	CapabilityID         string
 	SignedEnvelopeDigest runtimedomain.Digest
 	WorkloadIdentity     string
 	WorkloadSessionID    string
@@ -209,17 +211,26 @@ func NewClaimService(repository ClaimRepository, applicationNow func() time.Time
 }
 
 func (s *ClaimService) Claim(ctx context.Context, request ClaimRequest) (ClaimDecision, error) {
-	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" {
+	if request.CommandID == "" || request.OutboxID == "" || request.ExecutionID == "" || request.Generation == 0 || !claimCapabilityAllowed(request.CapabilityID) || request.SignedEnvelopeDigest.IsZero() || request.WorkloadIdentity == "" || request.WorkloadSessionID == "" || request.ProducerID == "" {
 		return ClaimDecision{}, ErrInvalidClaim
 	}
 	decision, err := s.repository.ClaimValidation(ctx, request, s.leaseTTL)
 	if err != nil {
-		return ClaimDecision{}, fmt.Errorf("claim validation command: %w", err)
+		return ClaimDecision{}, fmt.Errorf("claim execution command: %w", err)
 	}
 	if err := decision.validate(request, s.leaseTTL); err != nil {
 		return ClaimDecision{}, err
 	}
 	return decision, nil
+}
+
+func claimCapabilityAllowed(capabilityID string) bool {
+	switch capabilityID {
+	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *ClaimService) VerifyActive(ctx context.Context, fence runtimedomain.Fence) error {
