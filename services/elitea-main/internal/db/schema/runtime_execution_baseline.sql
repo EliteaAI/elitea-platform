@@ -1,4 +1,5 @@
--- SQLC compiler projection for the post-0036 elitea_runtime admission tables.
+-- SQLC compiler projection for the post-0037 elitea_runtime tables used by
+-- index admission and terminal-output reads.
 --
 -- This file is NOT a runtime migration. The embedded shared migration history
 -- remains the only target-schema authority.
@@ -121,4 +122,22 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     FOREIGN KEY (execution_id, generation, capability_id, input_bundle_id)
         REFERENCES elitea_runtime.execution_jobs
                    (execution_id, generation, capability_id, input_bundle_id)
+);
+
+CREATE TABLE elitea_runtime.index_result_artifacts (
+    artifact_id text NOT NULL,
+    immutable_version text NOT NULL,
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    resource_project_id integer NOT NULL REFERENCES centry.project(id),
+    media_type text NOT NULL,
+    byte_length bigint NOT NULL,
+    digest bytea NOT NULL,
+    classification text NOT NULL,
+    storage_record_id text NOT NULL UNIQUE,
+    bytes_verified_at timestamptz NOT NULL,
+    metadata_created_at timestamptz NOT NULL,
+    PRIMARY KEY (artifact_id, immutable_version),
+    FOREIGN KEY (execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
 );

@@ -13,7 +13,7 @@ func TestStartRequestValidateAndClone(t *testing.T) {
 		ProjectID:            7,
 		ActorUserID:          11,
 		ToolkitID:            19,
-		ToolParameters:       []byte(`{"index_name":"knowledge"}`),
+		ToolParameters:       []byte(`{"index_name":"docs"}`),
 		RequestedLLMModel:    &model,
 		RequestedLLMSettings: []byte(`{"temperature":0.1}`),
 		StreamID:             "stream-1",
@@ -39,11 +39,12 @@ func TestStartRequestRejectsUnboundedOrNonObjectInputs(t *testing.T) {
 		ProjectID:            1,
 		ActorUserID:          2,
 		ToolkitID:            3,
-		ToolParameters:       []byte(`{}`),
+		ToolParameters:       []byte(`{"index_name":"docs"}`),
 		RequestedLLMSettings: []byte(`{}`),
 	}
 	tests := []StartRequest{
 		func() StartRequest { value := valid; value.ProjectID = 0; return value }(),
+		func() StartRequest { value := valid; value.ToolParameters = []byte(`{}`); return value }(),
 		func() StartRequest { value := valid; value.ToolParameters = []byte(`[]`); return value }(),
 		func() StartRequest { value := valid; value.RequestedLLMSettings = []byte(`null`); return value }(),
 		func() StartRequest {
@@ -56,10 +57,36 @@ func TestStartRequestRejectsUnboundedOrNonObjectInputs(t *testing.T) {
 			value.StreamID = strings.Repeat("x", MaxClientCorrelationBytes+1)
 			return value
 		}(),
+		func() StartRequest {
+			value := valid
+			value.ToolParameters = []byte(`{"index_name":"eight888"}`)
+			return value
+		}(),
+		func() StartRequest {
+			value := valid
+			value.ToolParameters = []byte(`{"index_name":"   "}`)
+			return value
+		}(),
 	}
 	for index, request := range tests {
 		if err := request.Validate(); !errors.Is(err, ErrInvalidIndexStart) {
 			t.Fatalf("case %d error = %v, want %v", index, err, ErrInvalidIndexStart)
+		}
+	}
+}
+
+func TestStartRequestAcceptsCurrentOneToSevenRuneIndexNames(t *testing.T) {
+	valid := StartRequest{
+		ProjectID:            1,
+		ActorUserID:          2,
+		ToolkitID:            3,
+		RequestedLLMSettings: []byte(`{}`),
+	}
+	for _, name := range []string{"a", "1234567", "індекс"} {
+		request := valid
+		request.ToolParameters = []byte(`{"index_name":"` + name + `"}`)
+		if err := request.Validate(); err != nil {
+			t.Fatalf("index name %q was rejected: %v", name, err)
 		}
 	}
 }

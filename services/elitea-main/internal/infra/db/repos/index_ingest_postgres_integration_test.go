@@ -34,7 +34,7 @@ func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := postgresIndexSubmitRequest("request-1", "knowledge")
+	request := postgresIndexSubmitRequest("request-1", "docs")
 	service := newPostgresIndexAdmissionService(t, repository, "first")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -80,7 +80,7 @@ GROUP BY i.toolkit_id, i.index_name, i.initiator, o.stream_name,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if toolkitID != 19 || indexName != "knowledge" || initiator != "user" || streamName != policy.StreamName || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
+	if toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
 		t.Fatalf("unexpected durable index binding: toolkit=%d index=%s initiator=%s stream=%s validation=%d outbox_bytes=%d input_bytes=%d", toolkitID, indexName, initiator, streamName, validationColumns, preparedBytes, inputBytes)
 	}
 
@@ -92,7 +92,7 @@ GROUP BY i.toolkit_id, i.index_name, i.initiator, o.stream_name,
 	assertPostgresCount(t, ctx, pool, 2, `SELECT count(*) FROM elitea_runtime.input_bundle_entries`)
 
 	conflict := request
-	conflict.Inputs.ToolParameters = json.RawMessage(`{"index_name":"different"}`)
+	conflict.Inputs.ToolParameters = json.RawMessage(`{"index_name":"other"}`)
 	if _, err := newPostgresIndexAdmissionService(t, repository, "conflict").Submit(ctx, conflict); !errors.Is(err, executionapp.ErrIdempotencyConflict) {
 		t.Fatalf("changed request reused idempotency key: %v", err)
 	}

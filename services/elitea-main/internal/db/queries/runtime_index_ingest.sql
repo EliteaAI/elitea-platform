@@ -148,3 +148,73 @@ INSERT INTO elitea_runtime.command_outbox (
     sqlc.arg(created_at)::timestamptz,
     0
 );
+
+-- name: GetExpectedIndexIngestHeader :one
+SELECT j.tenant_id,
+       j.resource_project_id,
+       j.projection_project_id,
+       j.capability_id,
+       j.command_id,
+       j.execution_id,
+       j.generation,
+       b.input_bundle_id,
+       b.manifest_digest AS input_bundle_digest,
+       i.toolkit_configuration_entry_id,
+       i.tool_parameters_entry_id,
+       i.llm_model_entry_id,
+       i.llm_configuration_entry_id,
+       i.mcp_tokens_entry_id,
+       o.limits_revision
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.input_bundles AS b
+  ON b.input_bundle_id = j.input_bundle_id
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id
+ AND o.generation = j.generation
+WHERE j.execution_id = sqlc.arg(execution_id)::text
+  AND j.generation = sqlc.arg(generation)::bigint
+  AND j.capability_id = 'index.ingest.v1';
+
+-- name: ListExpectedIndexIngestEntries :many
+SELECT e.entry_id,
+       e.entry_version,
+       e.semantic_role,
+       e.content_digest,
+       e.classification
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.input_bundle_entries AS e
+  ON e.input_bundle_id = j.input_bundle_id
+WHERE j.execution_id = sqlc.arg(execution_id)::text
+  AND j.generation = sqlc.arg(generation)::bigint
+  AND j.capability_id = 'index.ingest.v1'
+ORDER BY e.entry_id;
+
+-- name: GetDurableIndexResultArtifact :one
+SELECT a.artifact_id,
+       a.immutable_version,
+       a.media_type,
+       a.byte_length,
+       a.digest,
+       a.classification,
+       a.storage_record_id,
+       a.bytes_verified_at
+FROM elitea_runtime.index_result_artifacts AS a
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = a.execution_id
+ AND j.generation = a.generation
+WHERE a.artifact_id = sqlc.arg(artifact_id)::text
+  AND a.immutable_version = sqlc.arg(immutable_version)::text
+  AND a.execution_id = sqlc.arg(execution_id)::text
+  AND a.generation = sqlc.arg(generation)::bigint
+  AND a.resource_project_id = sqlc.arg(resource_project_id)::integer
+  AND j.tenant_id = sqlc.arg(tenant_id)::text
+  AND j.resource_project_id = sqlc.arg(resource_project_id)::integer
+  AND j.projection_project_id = sqlc.arg(projection_project_id)::integer
+  AND j.command_id = sqlc.arg(command_id)::text
+  AND j.capability_id = 'index.ingest.v1';

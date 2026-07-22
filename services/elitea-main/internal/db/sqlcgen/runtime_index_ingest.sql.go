@@ -54,6 +54,154 @@ func (q *Queries) EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRu
 	return err
 }
 
+const getDurableIndexResultArtifact = `-- name: GetDurableIndexResultArtifact :one
+SELECT a.artifact_id,
+       a.immutable_version,
+       a.media_type,
+       a.byte_length,
+       a.digest,
+       a.classification,
+       a.storage_record_id,
+       a.bytes_verified_at
+FROM elitea_runtime.index_result_artifacts AS a
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = a.execution_id
+ AND j.generation = a.generation
+WHERE a.artifact_id = $1::text
+  AND a.immutable_version = $2::text
+  AND a.execution_id = $3::text
+  AND a.generation = $4::bigint
+  AND a.resource_project_id = $5::integer
+  AND j.tenant_id = $6::text
+  AND j.resource_project_id = $5::integer
+  AND j.projection_project_id = $7::integer
+  AND j.command_id = $8::text
+  AND j.capability_id = 'index.ingest.v1'
+`
+
+type GetDurableIndexResultArtifactParams struct {
+	ArtifactID          string `db:"artifact_id" json:"artifact_id"`
+	ImmutableVersion    string `db:"immutable_version" json:"immutable_version"`
+	ExecutionID         string `db:"execution_id" json:"execution_id"`
+	Generation          int64  `db:"generation" json:"generation"`
+	ResourceProjectID   int32  `db:"resource_project_id" json:"resource_project_id"`
+	TenantID            string `db:"tenant_id" json:"tenant_id"`
+	ProjectionProjectID int32  `db:"projection_project_id" json:"projection_project_id"`
+	CommandID           string `db:"command_id" json:"command_id"`
+}
+
+type GetDurableIndexResultArtifactRow struct {
+	ArtifactID       string             `db:"artifact_id" json:"artifact_id"`
+	ImmutableVersion string             `db:"immutable_version" json:"immutable_version"`
+	MediaType        string             `db:"media_type" json:"media_type"`
+	ByteLength       int64              `db:"byte_length" json:"byte_length"`
+	Digest           []byte             `db:"digest" json:"digest"`
+	Classification   string             `db:"classification" json:"classification"`
+	StorageRecordID  string             `db:"storage_record_id" json:"storage_record_id"`
+	BytesVerifiedAt  pgtype.Timestamptz `db:"bytes_verified_at" json:"bytes_verified_at"`
+}
+
+func (q *Queries) GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error) {
+	row := q.db.QueryRow(ctx, getDurableIndexResultArtifact,
+		arg.ArtifactID,
+		arg.ImmutableVersion,
+		arg.ExecutionID,
+		arg.Generation,
+		arg.ResourceProjectID,
+		arg.TenantID,
+		arg.ProjectionProjectID,
+		arg.CommandID,
+	)
+	var i GetDurableIndexResultArtifactRow
+	err := row.Scan(
+		&i.ArtifactID,
+		&i.ImmutableVersion,
+		&i.MediaType,
+		&i.ByteLength,
+		&i.Digest,
+		&i.Classification,
+		&i.StorageRecordID,
+		&i.BytesVerifiedAt,
+	)
+	return i, err
+}
+
+const getExpectedIndexIngestHeader = `-- name: GetExpectedIndexIngestHeader :one
+SELECT j.tenant_id,
+       j.resource_project_id,
+       j.projection_project_id,
+       j.capability_id,
+       j.command_id,
+       j.execution_id,
+       j.generation,
+       b.input_bundle_id,
+       b.manifest_digest AS input_bundle_digest,
+       i.toolkit_configuration_entry_id,
+       i.tool_parameters_entry_id,
+       i.llm_model_entry_id,
+       i.llm_configuration_entry_id,
+       i.mcp_tokens_entry_id,
+       o.limits_revision
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.input_bundles AS b
+  ON b.input_bundle_id = j.input_bundle_id
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id
+ AND o.generation = j.generation
+WHERE j.execution_id = $1::text
+  AND j.generation = $2::bigint
+  AND j.capability_id = 'index.ingest.v1'
+`
+
+type GetExpectedIndexIngestHeaderParams struct {
+	ExecutionID string `db:"execution_id" json:"execution_id"`
+	Generation  int64  `db:"generation" json:"generation"`
+}
+
+type GetExpectedIndexIngestHeaderRow struct {
+	TenantID                    string  `db:"tenant_id" json:"tenant_id"`
+	ResourceProjectID           int32   `db:"resource_project_id" json:"resource_project_id"`
+	ProjectionProjectID         int32   `db:"projection_project_id" json:"projection_project_id"`
+	CapabilityID                string  `db:"capability_id" json:"capability_id"`
+	CommandID                   string  `db:"command_id" json:"command_id"`
+	ExecutionID                 string  `db:"execution_id" json:"execution_id"`
+	Generation                  int64   `db:"generation" json:"generation"`
+	InputBundleID               string  `db:"input_bundle_id" json:"input_bundle_id"`
+	InputBundleDigest           []byte  `db:"input_bundle_digest" json:"input_bundle_digest"`
+	ToolkitConfigurationEntryID string  `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID       string  `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	LimitsRevision              string  `db:"limits_revision" json:"limits_revision"`
+}
+
+func (q *Queries) GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error) {
+	row := q.db.QueryRow(ctx, getExpectedIndexIngestHeader, arg.ExecutionID, arg.Generation)
+	var i GetExpectedIndexIngestHeaderRow
+	err := row.Scan(
+		&i.TenantID,
+		&i.ResourceProjectID,
+		&i.ProjectionProjectID,
+		&i.CapabilityID,
+		&i.CommandID,
+		&i.ExecutionID,
+		&i.Generation,
+		&i.InputBundleID,
+		&i.InputBundleDigest,
+		&i.ToolkitConfigurationEntryID,
+		&i.ToolParametersEntryID,
+		&i.LlmModelEntryID,
+		&i.LlmConfigurationEntryID,
+		&i.McpTokensEntryID,
+		&i.LimitsRevision,
+	)
+	return i, err
+}
+
 const getRuntimeAdmissionByIdempotency = `-- name: GetRuntimeAdmissionByIdempotency :one
 SELECT j.execution_id,
        j.command_id,
@@ -361,6 +509,63 @@ func (q *Queries) InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertR
 		arg.ContentBytes,
 	)
 	return err
+}
+
+const listExpectedIndexIngestEntries = `-- name: ListExpectedIndexIngestEntries :many
+SELECT e.entry_id,
+       e.entry_version,
+       e.semantic_role,
+       e.content_digest,
+       e.classification
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.input_bundle_entries AS e
+  ON e.input_bundle_id = j.input_bundle_id
+WHERE j.execution_id = $1::text
+  AND j.generation = $2::bigint
+  AND j.capability_id = 'index.ingest.v1'
+ORDER BY e.entry_id
+`
+
+type ListExpectedIndexIngestEntriesParams struct {
+	ExecutionID string `db:"execution_id" json:"execution_id"`
+	Generation  int64  `db:"generation" json:"generation"`
+}
+
+type ListExpectedIndexIngestEntriesRow struct {
+	EntryID        string `db:"entry_id" json:"entry_id"`
+	EntryVersion   string `db:"entry_version" json:"entry_version"`
+	SemanticRole   string `db:"semantic_role" json:"semantic_role"`
+	ContentDigest  []byte `db:"content_digest" json:"content_digest"`
+	Classification string `db:"classification" json:"classification"`
+}
+
+func (q *Queries) ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error) {
+	rows, err := q.db.Query(ctx, listExpectedIndexIngestEntries, arg.ExecutionID, arg.Generation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpectedIndexIngestEntriesRow{}
+	for rows.Next() {
+		var i ListExpectedIndexIngestEntriesRow
+		if err := rows.Scan(
+			&i.EntryID,
+			&i.EntryVersion,
+			&i.SemanticRole,
+			&i.ContentDigest,
+			&i.Classification,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const loadRuntimeAdmissionTiming = `-- name: LoadRuntimeAdmissionTiming :one

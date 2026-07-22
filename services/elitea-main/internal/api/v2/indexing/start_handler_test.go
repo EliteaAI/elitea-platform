@@ -41,7 +41,7 @@ func TestStartMapsCurrentAsyncShapeWithoutTrustingClientToolkitSettings(t *testi
 	body := `{
 		"toolkit_config":{"toolkit_id":"42","type":"confluence","settings":{"password":"` + canary + `"}},
 		"tool_name":"index_data",
-		"tool_params":{"index_name":"knowledge","clean_index":false},
+		"tool_params":{"index_name":"docs","clean_index":false},
 		"llm_model":"gpt-test",
 		"llm_settings":{"temperature":0.2,"max_tokens":512},
 		"stream_id":"stream-1",
@@ -69,7 +69,7 @@ func TestStartMapsCurrentAsyncShapeWithoutTrustingClientToolkitSettings(t *testi
 		ProjectID:            7,
 		ActorUserID:          11,
 		ToolkitID:            42,
-		ToolParameters:       json.RawMessage(`{"index_name":"knowledge","clean_index":false}`),
+		ToolParameters:       json.RawMessage(`{"index_name":"docs","clean_index":false}`),
 		RequestedLLMModel:    stringPointer("gpt-test"),
 		RequestedLLMSettings: json.RawMessage(`{"temperature":0.2,"max_tokens":512}`),
 		StreamID:             "stream-1",
@@ -87,19 +87,19 @@ func TestStartMapsCurrentAsyncShapeWithoutTrustingClientToolkitSettings(t *testi
 	}
 }
 
-func TestStartPreservesCurrentDefaultsAndAcceptsResolvedIDAlias(t *testing.T) {
+func TestStartPreservesCurrentLLMDefaultsAndAcceptsResolvedIDAlias(t *testing.T) {
 	useCase := &startUseCaseStub{outcome: indexingapp.StartOutcome{TaskID: "task-defaults"}}
 	start, err := handler.NewStartHandler(useCase)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	start.Start(response, currentRequest(`{"toolkit_config":{"id":9},"tool_name":"index_data"}`))
+	start.Start(response, currentRequest(`{"toolkit_config":{"id":9},"tool_name":"index_data","tool_params":{"index_name":"docs"}}`))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if useCase.request.ToolkitID != 9 || string(useCase.request.ToolParameters) != `{}` ||
+	if useCase.request.ToolkitID != 9 || string(useCase.request.ToolParameters) != `{"index_name":"docs"}` ||
 		useCase.request.RequestedLLMModel == nil || *useCase.request.RequestedLLMModel != "gpt-4o-mini" ||
 		string(useCase.request.RequestedLLMSettings) != `{"max_tokens":1024,"temperature":0.1}` {
 		t.Fatalf("current defaults were not preserved: %+v", useCase.request)
@@ -107,7 +107,7 @@ func TestStartPreservesCurrentDefaultsAndAcceptsResolvedIDAlias(t *testing.T) {
 }
 
 func TestStartRejectsUnsupportedOrMalformedCurrentRequestsBeforeUseCase(t *testing.T) {
-	valid := `{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{}}`
+	valid := `{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{"index_name":"docs"}}`
 	tests := []struct {
 		name        string
 		body        string
@@ -118,6 +118,7 @@ func TestStartRejectsUnsupportedOrMalformedCurrentRequestsBeforeUseCase(t *testi
 		{name: "synchronous", body: valid, contentType: "application/json", query: "await_response=true", status: http.StatusBadRequest},
 		{name: "other tool", body: strings.Replace(valid, "index_data", "search_index", 1), contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
 		{name: "missing toolkit id", body: `{"toolkit_config":{"settings":{}},"tool_name":"index_data"}`, contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
+		{name: "missing index name", body: `{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{}}`, contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
 		{name: "tool params array", body: `{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":[]}`, contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
 		{name: "malformed json", body: `{`, contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
 		{name: "trailing json", body: valid + `{}`, contentType: "application/json", query: "await_response=false", status: http.StatusBadRequest},
@@ -179,7 +180,7 @@ func TestStartBoundsBodyAndMapsUseCaseErrorsWithoutLeakingCauses(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			start.Start(response, currentRequest(`{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data"}`))
+			start.Start(response, currentRequest(`{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{"index_name":"docs"}}`))
 			if response.Code != test.status || strings.TrimSpace(response.Body.String()) != test.body {
 				t.Fatalf("status/body=%d %s, want %d %s", response.Code, response.Body.String(), test.status, test.body)
 			}

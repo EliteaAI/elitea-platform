@@ -15,6 +15,7 @@ const (
 	MaxToolParametersBytes    = executiondomain.MaxInputEntryContentBytes
 	MaxRequestedLLMBytes      = 128 << 10
 	MaxClientCorrelationBytes = 512
+	MaxCurrentIndexNameRunes  = 7
 )
 
 var (
@@ -45,6 +46,9 @@ func (r StartRequest) Validate() error {
 	}
 	if !validJSONObject(r.ToolParameters, MaxToolParametersBytes) ||
 		!validJSONObject(r.RequestedLLMSettings, MaxRequestedLLMBytes) {
+		return ErrInvalidIndexStart
+	}
+	if _, err := indexNameFromToolParameters(r.ToolParameters); err != nil {
 		return ErrInvalidIndexStart
 	}
 	if r.RequestedLLMModel != nil && !validOptionalText(*r.RequestedLLMModel, MaxClientCorrelationBytes) {
@@ -84,4 +88,18 @@ func validJSONObject(value []byte, limit int) bool {
 
 func validOptionalText(value string, limit int) bool {
 	return len(value) <= limit && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func indexNameFromToolParameters(parameters []byte) (string, error) {
+	var value struct {
+		IndexName string `json:"index_name"`
+	}
+	if err := json.Unmarshal(parameters, &value); err != nil {
+		return "", ErrInvalidIndexStart
+	}
+	length := utf8.RuneCountInString(value.IndexName)
+	if length < 1 || length > MaxCurrentIndexNameRunes || strings.TrimSpace(value.IndexName) == "" {
+		return "", ErrInvalidIndexStart
+	}
+	return value.IndexName, nil
 }

@@ -43,7 +43,7 @@ func TestInputBundleFactoryBuildsTypedReferenceManifestWithoutAliasing(t *testin
 	model := "gpt-test"
 	inputs := AuthoritativeInputs{
 		ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"confluence","settings":{"token":"secret-ref://42"}}`),
-		ToolParameters:       json.RawMessage(`{"index_name":"knowledge"}`),
+		ToolParameters:       json.RawMessage(`{"index_name":"docs"}`),
 		LLMModel:             &model,
 		LLMConfiguration:     json.RawMessage(`{"temperature":0.1}`),
 		MCPReferences:        json.RawMessage(`{"server":"credential-ref://7"}`),
@@ -100,7 +100,7 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 		Initiator:      executiondomain.IndexIngestInitiatorUser,
 		Inputs: AuthoritativeInputs{
 			ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"confluence"}`),
-			ToolParameters:       json.RawMessage(`{"index_name":"knowledge"}`),
+			ToolParameters:       json.RawMessage(`{"index_name":"docs"}`),
 		},
 	})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 	if !outcome.Created || outcome.ExecutionID != "execution-1" || outcome.CommandID != "command-1" {
 		t.Fatalf("unexpected admission outcome: %+v", outcome)
 	}
-	if store.admission.Record.Job.CapabilityID != executiondomain.IndexIngestCapability || store.admission.Binding.ToolkitID != 19 || store.admission.Binding.IndexName != "knowledge" || store.admission.Binding.Initiator != executiondomain.IndexIngestInitiatorUser {
+	if store.admission.Record.Job.CapabilityID != executiondomain.IndexIngestCapability || store.admission.Binding.ToolkitID != 19 || store.admission.Binding.IndexName != "docs" || store.admission.Binding.Initiator != executiondomain.IndexIngestInitiatorUser {
 		t.Fatalf("index identity was not preserved: %+v", store.admission)
 	}
 	if err := store.admission.Binding.Validate(store.admission.Record.InputBundle); err != nil {

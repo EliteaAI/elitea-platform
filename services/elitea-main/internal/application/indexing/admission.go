@@ -330,16 +330,6 @@ func (s *AdmissionService) allocateAdmissionIDs() (string, string, string, error
 	return values[0], values[1], values[2], nil
 }
 
-func indexNameFromToolParameters(parameters []byte) (string, error) {
-	var value struct {
-		IndexName string `json:"index_name"`
-	}
-	if err := json.Unmarshal(parameters, &value); err != nil || value.IndexName == "" || len(value.IndexName) > maxIndexAdmissionStringBytes {
-		return "", ErrInvalidIndexStart
-	}
-	return value.IndexName, nil
-}
-
 func indexRequestDigest(request SubmitRequest, indexName string) runtimedomain.Digest {
 	values := [][]byte{
 		[]byte(request.Identity.TenantID),

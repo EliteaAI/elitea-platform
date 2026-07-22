@@ -375,7 +375,7 @@ func canonicalCancellationOutput(source outputRecord) (outputRecord, []byte, err
 		return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
 	}
 	switch source.PayloadType {
-	case payloadTypeConfigurationValidation:
+	case payloadTypeConfigurationValidation, payloadTypeIndexIngestResult:
 		if source.SettlementOutcome != executionapp.SettlementSucceeded {
 			return outputRecord{}, nil, outputapp.ErrInvalidValidationOutput
 		}

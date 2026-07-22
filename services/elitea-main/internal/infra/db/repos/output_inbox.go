@@ -19,6 +19,7 @@ import (
 const (
 	payloadTypeConfigurationValidation = "CONFIGURATION_VALIDATION"
 	payloadTypeRuntimeFailure          = "RUNTIME_FAILURE"
+	payloadTypeIndexIngestResult       = "INDEX_INGEST_RESULT"
 )
 
 type OutputInboxRepository struct {
@@ -147,7 +148,7 @@ func (r outputRecord) validate() error {
 	if r.EventID == "" || r.LogicalOutputID == "" || r.ExecutionID == "" || r.Generation == 0 || r.TenantID == "" || r.ResourceProjectID <= 0 || r.ProjectionProjectID <= 0 || r.CommandID == "" || r.WorkloadIdentity == "" || r.WorkloadSessionID == "" || r.ProducerID == "" || r.ClaimAttempt == 0 || r.LeaseEpoch == 0 || r.FenceToken.IsZero() || r.StreamID == "" || r.Sequence == 0 || r.PayloadDigest.IsZero() || len(r.PayloadBytes) == 0 || r.SettlementProposalID == "" || r.SettlementOutcome == "" || len(r.SettlementBytes) == 0 || r.SettlementDigest.IsZero() || r.SettlementKey == "" || r.OccurredAt.IsZero() {
 		return outputapp.ErrInvalidValidationOutput
 	}
-	if r.PayloadType != payloadTypeConfigurationValidation && r.PayloadType != payloadTypeRuntimeFailure {
+	if r.PayloadType != payloadTypeConfigurationValidation && r.PayloadType != payloadTypeRuntimeFailure && r.PayloadType != payloadTypeIndexIngestResult {
 		return outputapp.ErrInvalidValidationOutput
 	}
 	// Keep the durable payload type and terminal disposition coupled even when
@@ -156,6 +157,10 @@ func (r outputRecord) validate() error {
 	// ordinary validation result into an admissible terminal output.
 	switch r.PayloadType {
 	case payloadTypeConfigurationValidation:
+		if r.SettlementOutcome != executionapp.SettlementSucceeded {
+			return outputapp.ErrInvalidValidationOutput
+		}
+	case payloadTypeIndexIngestResult:
 		if r.SettlementOutcome != executionapp.SettlementSucceeded {
 			return outputapp.ErrInvalidValidationOutput
 		}

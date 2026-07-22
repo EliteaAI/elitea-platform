@@ -67,7 +67,7 @@ func TestCurrentIndexStartRouteBindsExactPathPermissionAndSecurityBeforeBody(t *
 		t.Fatal(err)
 	}
 
-	body := &trackingBody{Reader: strings.NewReader(`{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data"}`)}
+	body := &trackingBody{Reader: strings.NewReader(`{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{"index_name":"docs"}}`)}
 	request := httptest.NewRequest(http.MethodPost, "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/7?await_response=false", nil)
 	request.Body = body
 	request.Header.Set("Content-Type", "application/json")

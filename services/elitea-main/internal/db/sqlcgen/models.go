@@ -122,6 +122,25 @@ type CentryProjectGroupAssociation struct {
 	GroupID   *int32 `db:"group_id" json:"group_id"`
 }
 
+type Configuration struct {
+	ID          int32            `db:"id" json:"id"`
+	Uuid        pgtype.UUID      `db:"uuid" json:"uuid"`
+	ProjectID   int32            `db:"project_id" json:"project_id"`
+	Label       *string          `db:"label" json:"label"`
+	EliteaTitle string           `db:"elitea_title" json:"elitea_title"`
+	Type        string           `db:"type" json:"type"`
+	Section     string           `db:"section" json:"section"`
+	Data        []byte           `db:"data" json:"data"`
+	Meta        []byte           `db:"meta" json:"meta"`
+	Shared      bool             `db:"shared" json:"shared"`
+	StatusOk    bool             `db:"status_ok" json:"status_ok"`
+	StatusLogs  *string          `db:"status_logs" json:"status_logs"`
+	Source      string           `db:"source" json:"source"`
+	AuthorID    *int32           `db:"author_id" json:"author_id"`
+	CreatedAt   pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type EliteaRuntimeCommandOutbox struct {
 	OutboxID                     string             `db:"outbox_id" json:"outbox_id"`
 	ExecutionID                  string             `db:"execution_id" json:"execution_id"`
@@ -202,6 +221,21 @@ type EliteaRuntimeIndexIngestJob struct {
 	Initiator                   string  `db:"initiator" json:"initiator"`
 }
 
+type EliteaRuntimeIndexResultArtifact struct {
+	ArtifactID        string             `db:"artifact_id" json:"artifact_id"`
+	ImmutableVersion  string             `db:"immutable_version" json:"immutable_version"`
+	ExecutionID       string             `db:"execution_id" json:"execution_id"`
+	Generation        int64              `db:"generation" json:"generation"`
+	ResourceProjectID int32              `db:"resource_project_id" json:"resource_project_id"`
+	MediaType         string             `db:"media_type" json:"media_type"`
+	ByteLength        int64              `db:"byte_length" json:"byte_length"`
+	Digest            []byte             `db:"digest" json:"digest"`
+	Classification    string             `db:"classification" json:"classification"`
+	StorageRecordID   string             `db:"storage_record_id" json:"storage_record_id"`
+	BytesVerifiedAt   pgtype.Timestamptz `db:"bytes_verified_at" json:"bytes_verified_at"`
+	MetadataCreatedAt pgtype.Timestamptz `db:"metadata_created_at" json:"metadata_created_at"`
+}
+
 type EliteaRuntimeInputBundle struct {
 	InputBundleID     string             `db:"input_bundle_id" json:"input_bundle_id"`
 	ImmutableVersion  string             `db:"immutable_version" json:"immutable_version"`
@@ -226,4 +260,18 @@ type EliteaRuntimeInputBundleEntry struct {
 	Classification        string `db:"classification" json:"classification"`
 	RequiredGrantAudience string `db:"required_grant_audience" json:"required_grant_audience"`
 	ContentBytes          []byte `db:"content_bytes" json:"content_bytes"`
+}
+
+type EliteaTool struct {
+	ID            int32            `db:"id" json:"id"`
+	CreatedAt     pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	Type          string           `db:"type" json:"type"`
+	Name          *string          `db:"name" json:"name"`
+	Description   *string          `db:"description" json:"description"`
+	Settings      []byte           `db:"settings" json:"settings"`
+	AuthorID      int32            `db:"author_id" json:"author_id"`
+	SharedOwnerID *int32           `db:"shared_owner_id" json:"shared_owner_id"`
+	SharedID      *int32           `db:"shared_id" json:"shared_id"`
+	Meta          []byte           `db:"meta" json:"meta"`
 }
