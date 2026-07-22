@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
@@ -28,10 +29,10 @@ import (
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
-	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
@@ -78,12 +79,13 @@ type RouterConfig struct {
 	WebhookRepo   webhook.Repository
 	RedisClient   *goredis.Client
 
-	Shadow         *shadow.Comparator
-	ShadowMetrics  *shadow.Metrics
-	CutoverTracker *cutover.Tracker
-	CutoverRouter  *cutover.Router
-	AdminUI        *adminui.Config
-	Storage        storage.Backend
+	Shadow           *shadow.Comparator
+	ShadowMetrics    *shadow.Metrics
+	CutoverTracker   *cutover.Tracker
+	CutoverRouter    *cutover.Router
+	AdminUI          *adminui.Config
+	Storage          storage.Backend
+	BudgetAlertStore *gateway.BudgetAlertStore
 }
 
 func NewRouter(cfg RouterConfig) chi.Router {
@@ -243,6 +245,18 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
 				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
+
+				// LLM gateway controls (global, no projectID). Governance
+				// spend-gating config is authorized server-side — the
+				// client-side required_permission only hides the UI.
+				if cfg.BudgetAlertStore == nil {
+					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
+				}
+				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
+				r.Group(func(r chi.Router) {
+					r.Use(apimw.RequirePermissions("configuration.governance"))
+					r.Mount("/gateway", budgetAlertHandler.Routes())
+				})
 			})
 
 			// === Scheduling ===
