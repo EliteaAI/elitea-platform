@@ -1,0 +1,415 @@
+package account
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// ─── test fakes ────────────────────────────────────────────────────────────
+
+// fakeVault is an in-memory vaultDecryptor for tests that do not exercise real
+// Fernet decryption (vault.go has dedicated tests for that).
+type fakeVault struct {
+	// secrets maps projectID → {{secret name}} → value.
+	secrets map[string]map[string]string
+	err     error
+}
+
+func (f *fakeVault) Resolve(_ context.Context, projectID, secretRef string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	name, isRef := parseSecretRef(secretRef)
+	if !isRef {
+		return secretRef, nil
+	}
+	if p, ok := f.secrets[projectID]; ok {
+		if v, ok := p[name]; ok {
+			return v, nil
+		}
+	}
+	return "", errors.New("secret not found")
+}
+
+// fakeDB is an in-memory rowQuerier. queryRows keyed by nothing fancy: every
+// Query returns the configured rows (tests use a single provider per case);
+// queryErr forces Query to fail.
+type fakeDB struct {
+	rows     [][]any // each row: {id string, title string, data []byte}
+	queryErr error
+	scanErr  error
+	// keyRows/dataRows feed QueryRow (vault path) — not used by account tests.
+	keyRow, dataRow []byte
+	keyErr, dataErr error
+}
+
+func (d *fakeDB) Query(_ context.Context, _ string, _ ...any) (pgxRows, error) {
+	if d.queryErr != nil {
+		return nil, d.queryErr
+	}
+	return &fakeRows{rows: d.rows, scanErr: d.scanErr}, nil
+}
+
+func (d *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgxRow {
+	if strings.Contains(sql, "secrets_key") {
+		return &fakeRow{data: d.keyRow, err: d.keyErr}
+	}
+	return &fakeRow{data: d.dataRow, err: d.dataErr}
+}
+
+type fakeRow struct {
+	data []byte
+	err  error
+}
+
+func (r *fakeRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) > 0 {
+		if p, ok := dest[0].(*[]byte); ok {
+			*p = r.data
+		}
+	}
+	return nil
+}
+
+type fakeRows struct {
+	rows    [][]any
+	i       int
+	scanErr error
+}
+
+func (r *fakeRows) Next() bool { return r.i < len(r.rows) }
+func (r *fakeRows) Err() error { return nil }
+func (r *fakeRows) Close()     {}
+func (r *fakeRows) Scan(dest ...any) error {
+	if r.scanErr != nil {
+		return r.scanErr
+	}
+	row := r.rows[r.i]
+	r.i++
+	// row layout: id string, title string, data []byte
+	if p, ok := dest[0].(*string); ok {
+		*p = row[0].(string)
+	}
+	if p, ok := dest[1].(*string); ok {
+		*p = row[1].(string)
+	}
+	if p, ok := dest[2].(*[]byte); ok {
+		*p = row[2].([]byte)
+	}
+	return nil
+}
+
+// newTestAccount builds an EliteaAccount with the given DB and vault.
+func newTestAccount(t *testing.T, db rowQuerier, vault vaultDecryptor, selfOrigins ...string) *EliteaAccount {
+	t.Helper()
+	a, err := New(Config{
+		DB:                  db,
+		Vault:               vault,
+		ProviderConcurrency: 50,
+		SelfOrigins:         selfOrigins,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return a
+}
+
+func ctxWithProject(projectID string) context.Context {
+	bc := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bc.SetValue(schemas.BifrostContextKeyVirtualKey, projectID)
+	return bc
+}
+
+// ─── New / config validation ───────────────────────────────────────────────
+
+func TestNew_RequiresDBAndVault(t *testing.T) {
+	if _, err := New(Config{Vault: &fakeVault{}}); err == nil {
+		t.Fatal("expected error when DB is nil")
+	}
+	if _, err := New(Config{DB: &fakeDB{}}); err == nil {
+		t.Fatal("expected error when Vault is nil")
+	}
+	if _, err := New(Config{DB: &fakeDB{}, Vault: &fakeVault{}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ─── GetConfiguredProviders / GetConfigForProvider ──────────────────────────
+
+func TestGetConfiguredProviders(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{})
+	got, err := a.GetConfiguredProviders()
+	if err != nil {
+		t.Fatalf("GetConfiguredProviders: %v", err)
+	}
+	if len(got) != len(supportedProviders) {
+		t.Fatalf("got %d providers, want %d", len(got), len(supportedProviders))
+	}
+	// Ensure the caller cannot mutate the package-level slice via the return.
+	got[0] = schemas.ModelProvider("mutated")
+	again, _ := a.GetConfiguredProviders()
+	if again[0] == "mutated" {
+		t.Fatal("GetConfiguredProviders returned a mutable view of the shared slice")
+	}
+}
+
+func TestGetConfigForProvider_TunesConcurrency(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{})
+	cfg, err := a.GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if cfg.ConcurrencyAndBufferSize.Concurrency != 50 {
+		t.Fatalf("Concurrency = %d, want 50", cfg.ConcurrencyAndBufferSize.Concurrency)
+	}
+}
+
+// ─── GetKeysForProvider ─────────────────────────────────────────────────────
+
+func TestGetKeysForProvider_NoProjectInContext(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{})
+	keys, err := a.GetKeysForProvider(context.Background(), schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expected zero keys with no project, got %d", len(keys))
+	}
+}
+
+func TestGetKeysForProvider_ResolvesLiteralKey(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"cfg-1", "OpenAI prod", []byte(`{"api_base":"https://api.openai.com/v1","api_key":"sk-literal"}`)},
+	}}
+	a := newTestAccount(t, db, &fakeVault{})
+
+	keys, err := a.GetKeysForProvider(ctxWithProject("42"), schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want 1", len(keys))
+	}
+	if keys[0].ID != "cfg-1" || keys[0].Name != "OpenAI prod" {
+		t.Fatalf("unexpected key identity: %+v", keys[0])
+	}
+	if keys[0].Value.Val != "sk-literal" {
+		t.Fatalf("key value = %q, want sk-literal", keys[0].Value.Val)
+	}
+	if !keys[0].Models.IsUnrestricted() {
+		t.Fatalf("expected unrestricted model whitelist, got %v", keys[0].Models)
+	}
+}
+
+func TestGetKeysForProvider_ResolvesSecretRef(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"cfg-2", "OpenAI", []byte(`{"api_base":"https://api.openai.com/v1","api_key":"{{secret.OPENAI_KEY}}"}`)},
+	}}
+	vault := &fakeVault{secrets: map[string]map[string]string{
+		"42": {"OPENAI_KEY": "sk-from-vault"},
+	}}
+	a := newTestAccount(t, db, vault)
+
+	keys, err := a.GetKeysForProvider(ctxWithProject("42"), schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "sk-from-vault" {
+		t.Fatalf("expected vault-resolved key, got %+v", keys)
+	}
+}
+
+func TestGetKeysForProvider_LegacyAPITokenFallback(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"cfg-3", "", []byte(`{"api_base":"https://api.openai.com/v1","api_token":"{{secret.TOK}}"}`)},
+	}}
+	vault := &fakeVault{secrets: map[string]map[string]string{"7": {"TOK": "tok-val"}}}
+	a := newTestAccount(t, db, vault)
+
+	keys, err := a.GetKeysForProvider(ctxWithProject("7"), schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "tok-val" {
+		t.Fatalf("expected api_token fallback resolution, got %+v", keys)
+	}
+}
+
+func TestGetKeysForProvider_OllamaCarriesURL(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"cfg-o", "local", []byte(`{"api_base":"http://ollama:11434","api_key":""}`)},
+	}}
+	a := newTestAccount(t, db, &fakeVault{})
+
+	keys, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.Ollama)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].OllamaKeyConfig == nil {
+		t.Fatalf("expected Ollama key config, got %+v", keys)
+	}
+	if keys[0].OllamaKeyConfig.URL.Val != "http://ollama:11434" {
+		t.Fatalf("Ollama URL = %q", keys[0].OllamaKeyConfig.URL.Val)
+	}
+}
+
+func TestGetKeysForProvider_AzureCarriesEndpoint(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"cfg-az", "az", []byte(`{"api_base":"https://acme.openai.azure.com","api_key":"az-key"}`)},
+	}}
+	a := newTestAccount(t, db, &fakeVault{})
+
+	keys, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.Azure)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].AzureKeyConfig == nil {
+		t.Fatalf("expected Azure key config, got %+v", keys)
+	}
+	if keys[0].AzureKeyConfig.Endpoint.Val != "https://acme.openai.azure.com" {
+		t.Fatalf("Azure endpoint = %q", keys[0].AzureKeyConfig.Endpoint.Val)
+	}
+}
+
+func TestGetKeysForProvider_UnmappedProviderYieldsNoKeys(t *testing.T) {
+	// Cohere is in no providerConfigTypes entry → loadCredentials returns nil.
+	db := &fakeDB{rows: [][]any{{"x", "y", []byte(`{}`)}}}
+	a := newTestAccount(t, db, &fakeVault{})
+	keys, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.Cohere)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("expected zero keys for unmapped provider, got %d", len(keys))
+	}
+}
+
+func TestGetKeysForProvider_SkipsMalformedRow(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"bad", "", []byte(`{not json`)},
+		{"good", "", []byte(`{"api_base":"https://api.openai.com/v1","api_key":"sk-ok"}`)},
+	}}
+	a := newTestAccount(t, db, &fakeVault{})
+	keys, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != "good" {
+		t.Fatalf("expected only the well-formed row, got %+v", keys)
+	}
+}
+
+// ─── self-referential guard ─────────────────────────────────────────────────
+
+func TestGetKeysForProvider_RejectsSelfReferential(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"loop", "", []byte(`{"api_base":"https://dev.elitea.ai/llm/v1","api_key":"sk"}`)},
+	}}
+	a := newTestAccount(t, db, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+
+	_, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.OpenAI)
+	if err == nil {
+		t.Fatal("expected self-referential rejection")
+	}
+	if !errors.Is(err, ErrSelfReferentialCredential) {
+		t.Fatalf("error %v does not wrap ErrSelfReferentialCredential", err)
+	}
+	if !strings.Contains(err.Error(), SelfReferentialCredentialReason) {
+		t.Fatalf("error %q missing reason code", err.Error())
+	}
+}
+
+func TestGetKeysForProvider_SelfReferentialGuardBeforeVault(t *testing.T) {
+	// The vault errors on any Resolve; the guard must fire before Resolve is
+	// reached, so the returned error must be the guard, not the vault.
+	db := &fakeDB{rows: [][]any{
+		{"loop", "", []byte(`{"api_base":"http://pylon_main:8080/llm/v1","api_key":"{{secret.X}}"}`)},
+	}}
+	vault := &fakeVault{err: errors.New("vault must not be called")}
+	a := newTestAccount(t, db, vault, "http://pylon_main:8080/llm/v1")
+
+	_, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.OpenAI)
+	if !errors.Is(err, ErrSelfReferentialCredential) {
+		t.Fatalf("expected guard error before vault, got %v", err)
+	}
+}
+
+func TestIsSelfReferential_PrefixMatch(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+	cases := map[string]bool{
+		"https://dev.elitea.ai/llm/v1":       true,  // exact
+		"https://dev.elitea.ai/llm/v1/":      true,  // trailing slash
+		"https://DEV.elitea.ai/llm/v1":       true,  // case-insensitive host
+		"https://dev.elitea.ai/llm":          true,  // credential is a prefix of self
+		"https://dev.elitea.ai/llm/v1/extra": true,  // self is a prefix of credential
+		"https://api.openai.com/v1":          false, // unrelated
+		"":                                   false, // empty
+		"not a url":                          false, // unparsable
+	}
+	for base, want := range cases {
+		if got := a.isSelfReferential(base); got != want {
+			t.Errorf("isSelfReferential(%q) = %v, want %v", base, got, want)
+		}
+	}
+}
+
+func TestNormaliseOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://Dev.Elitea.AI/llm/v1/": "https://dev.elitea.ai/llm/v1",
+		"HTTP://Host:8080/Path":         "http://host:8080/Path",
+		"":                              "",
+		"::::":                          "",
+	}
+	for in, want := range cases {
+		if got := normaliseOrigin(in); got != want {
+			t.Errorf("normaliseOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// ─── error propagation ──────────────────────────────────────────────────────
+
+func TestGetKeysForProvider_QueryError(t *testing.T) {
+	db := &fakeDB{queryErr: errors.New("db down")}
+	a := newTestAccount(t, db, &fakeVault{})
+	if _, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.OpenAI); err == nil {
+		t.Fatal("expected query error to propagate")
+	}
+}
+
+func TestGetKeysForProvider_VaultError(t *testing.T) {
+	db := &fakeDB{rows: [][]any{
+		{"c", "", []byte(`{"api_base":"https://api.openai.com/v1","api_key":"{{secret.MISSING}}"}`)},
+	}}
+	vault := &fakeVault{err: errors.New("vault boom")}
+	a := newTestAccount(t, db, vault)
+	if _, err := a.GetKeysForProvider(ctxWithProject("1"), schemas.OpenAI); err == nil {
+		t.Fatal("expected vault error to propagate")
+	}
+}
+
+func TestGetKeysForProvider_InvalidProjectID(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{})
+	if _, err := a.GetKeysForProvider(ctxWithProject("1; DROP TABLE"), schemas.OpenAI); err == nil {
+		t.Fatal("expected invalid project id to be rejected")
+	}
+}
+
+func TestProjectIDFromContext(t *testing.T) {
+	if got := projectIDFromContext(nil); got != "" {
+		t.Fatalf("nil ctx: got %q", got)
+	}
+	if got := projectIDFromContext(context.Background()); got != "" {
+		t.Fatalf("no value: got %q", got)
+	}
+	if got := projectIDFromContext(ctxWithProject(" 99 ")); got != "99" {
+		t.Fatalf("trimmed value: got %q", got)
+	}
+}

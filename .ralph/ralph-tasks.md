@@ -40,11 +40,11 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Spike branch: run task test/vet/lint/build for the gateway module + smoke build of the workspace to catch 1.25→1.26 regressions (gateway vet/build/test green, 100%/100%/90.9% pkg coverage; golangci-lint 0 issues; all workspace modules build clean)
   - [x] Apply pre-cutover gateway Deployment/code changes: memory >=1Gi, terminationGracePeriodSeconds >=150 + preStop, gateway `srv.Shutdown()` context >=150s, `http.Server` WriteTimeout 0 for the `/llm` SSE path, inject slog/OTel Logger, tune `BifrostConfig.InitialPoolSize` + per-provider `ProviderConfig.ConcurrencyAndBufferSize.Concurrency` (design §9.5)
 
-- [ ] BF0.2-account Implement the bifrost.Account interface in the gateway
-  - [ ] `services/elitea-llm-gateway/internal/account/account.go`: implement `GetConfiguredProviders`, `GetKeysForProvider`, `GetConfigForProvider`
-  - [ ] Read provider credentials from the Fernet vault (Postgres) per request; never surface raw keys
-  - [ ] Static self-referential-credential guard: reject any credential whose `api_base` resolves to the platform's own `/llm` origin (reason `SELF_REFERENTIAL_CREDENTIAL`)
-  - [ ] Unit tests
+- [x] BF0.2-account Implement the bifrost.Account interface in the gateway
+  - [x] `services/elitea-llm-gateway/internal/account/account.go`: implement `GetConfiguredProviders`, `GetKeysForProvider`, `GetConfigForProvider`
+  - [x] Read provider credentials from the Fernet vault (Postgres) per request; never surface raw keys
+  - [x] Static self-referential-credential guard: reject any credential whose `api_base` resolves to the platform's own `/llm` origin (reason `SELF_REFERENTIAL_CREDENTIAL`)
+  - [x] Unit tests (account pkg 92.1% coverage, real Fernet round-trip)
 
 - [ ] BF0.2a Implement elitea-main → gateway streaming reverse proxy + mTLS
   - [ ] `services/elitea-main/internal/llmproxy/proxy.go`: `httputil.ReverseProxy` with `FlushInterval < 0` (no buffering) to `elitea-llm-gateway-svc` over mTLS; disable `http.Server` WriteTimeout for `/llm`; propagate `X-Accel-Buffering: no`
