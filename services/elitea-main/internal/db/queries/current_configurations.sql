@@ -25,6 +25,25 @@ WHERE id = sqlc.arg('configuration_id')::integer
   AND project_id = sqlc.arg('project_id')::integer
 LIMIT 1;
 
+-- Raw data is intentional: the Go adapter performs type-safe, redacted
+-- decoding before applying section-specific response shaping. ID order gives
+-- duplicate candidates a deterministic baseline order.
+-- name: ListCurrentModelConfigurations :many
+SELECT id,
+       project_id,
+       label,
+       elitea_title,
+       section,
+       data,
+       shared
+FROM configuration
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND section = sqlc.arg('section')::text
+  AND status_ok = true
+  AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT sqlc.arg('limit_rows')::integer;
+
 -- name: CountCurrentConfigurations :one
 SELECT count(*)
 FROM configuration

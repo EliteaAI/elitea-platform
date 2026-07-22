@@ -402,6 +402,76 @@ func (q *Queries) ListCurrentConfigurations(ctx context.Context, arg ListCurrent
 	return items, nil
 }
 
+const listCurrentModelConfigurations = `-- name: ListCurrentModelConfigurations :many
+SELECT id,
+       project_id,
+       label,
+       elitea_title,
+       section,
+       data,
+       shared
+FROM configuration
+WHERE project_id = $1::integer
+  AND section = $2::text
+  AND status_ok = true
+  AND (NOT $3::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT $4::integer
+`
+
+type ListCurrentModelConfigurationsParams struct {
+	ProjectID  int32  `db:"project_id" json:"project_id"`
+	Section    string `db:"section" json:"section"`
+	SharedOnly bool   `db:"shared_only" json:"shared_only"`
+	LimitRows  int32  `db:"limit_rows" json:"limit_rows"`
+}
+
+type ListCurrentModelConfigurationsRow struct {
+	ID          int32   `db:"id" json:"id"`
+	ProjectID   int32   `db:"project_id" json:"project_id"`
+	Label       *string `db:"label" json:"label"`
+	EliteaTitle string  `db:"elitea_title" json:"elitea_title"`
+	Section     string  `db:"section" json:"section"`
+	Data        []byte  `db:"data" json:"data"`
+	Shared      bool    `db:"shared" json:"shared"`
+}
+
+// Raw data is intentional: the Go adapter performs type-safe, redacted
+// decoding before applying section-specific response shaping. ID order gives
+// duplicate candidates a deterministic baseline order.
+func (q *Queries) ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentModelConfigurations,
+		arg.ProjectID,
+		arg.Section,
+		arg.SharedOnly,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentModelConfigurationsRow{}
+	for rows.Next() {
+		var i ListCurrentModelConfigurationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Label,
+			&i.EliteaTitle,
+			&i.Section,
+			&i.Data,
+			&i.Shared,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCurrentSharedConfigurations = `-- name: ListCurrentSharedConfigurations :many
 SELECT id,
        uuid::text AS configuration_uuid,
