@@ -31,6 +31,7 @@ const (
 	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_RECONCILE               WorkerCommandTypeV1 = 4
 	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE  WorkerCommandTypeV1 = 5
 	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS WorkerCommandTypeV1 = 6
+	WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_INDEX_INGEST            WorkerCommandTypeV1 = 7
 )
 
 // Enum value maps for WorkerCommandTypeV1.
@@ -43,6 +44,7 @@ var (
 		4: "WORKER_COMMAND_TYPE_V1_RECONCILE",
 		5: "WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE",
 		6: "WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS",
+		7: "WORKER_COMMAND_TYPE_V1_INDEX_INGEST",
 	}
 	WorkerCommandTypeV1_value = map[string]int32{
 		"WORKER_COMMAND_TYPE_V1_UNSPECIFIED":             0,
@@ -52,6 +54,7 @@ var (
 		"WORKER_COMMAND_TYPE_V1_RECONCILE":               4,
 		"WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE":  5,
 		"WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS": 6,
+		"WORKER_COMMAND_TYPE_V1_INDEX_INGEST":            7,
 	}
 )
 
@@ -118,6 +121,7 @@ type WorkerCommandV1 struct {
 	//
 	//	*WorkerCommandV1_ConfigurationValidation
 	//	*WorkerCommandV1_ToolkitAvailableTools
+	//	*WorkerCommandV1_IndexIngest
 	CapabilityCommand isWorkerCommandV1_CapabilityCommand `protobuf_oneof:"capability_command"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -346,6 +350,15 @@ func (x *WorkerCommandV1) GetToolkitAvailableTools() *ToolkitAvailableToolsComma
 	return nil
 }
 
+func (x *WorkerCommandV1) GetIndexIngest() *IndexIngestCommandV1 {
+	if x != nil {
+		if x, ok := x.CapabilityCommand.(*WorkerCommandV1_IndexIngest); ok {
+			return x.IndexIngest
+		}
+	}
+	return nil
+}
+
 type isWorkerCommandV1_CapabilityCommand interface {
 	isWorkerCommandV1_CapabilityCommand()
 }
@@ -358,16 +371,21 @@ type WorkerCommandV1_ToolkitAvailableTools struct {
 	ToolkitAvailableTools *ToolkitAvailableToolsCommandV1 `protobuf:"bytes,33,opt,name=toolkit_available_tools,json=toolkitAvailableTools,proto3,oneof"`
 }
 
+type WorkerCommandV1_IndexIngest struct {
+	IndexIngest *IndexIngestCommandV1 `protobuf:"bytes,34,opt,name=index_ingest,json=indexIngest,proto3,oneof"`
+}
+
 func (*WorkerCommandV1_ConfigurationValidation) isWorkerCommandV1_CapabilityCommand() {}
 
 func (*WorkerCommandV1_ToolkitAvailableTools) isWorkerCommandV1_CapabilityCommand() {}
+
+func (*WorkerCommandV1_IndexIngest) isWorkerCommandV1_CapabilityCommand() {}
 
 var File_elitea_runtime_v1_command_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\n" +
-	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a\x1delitea/runtime/v1/input.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\xbc\n" +
-	"\n" +
+	"\x1felitea/runtime/v1/command.proto\x12\x11elitea.runtime.v1\x1a elitea/runtime/v1/indexing.proto\x1a\x1delitea/runtime/v1/input.proto\x1a\x1felitea/runtime/v1/toolkit.proto\x1a\"elitea/runtime/v1/validation.proto\"\x8a\v\n" +
 	"\x0fWorkerCommandV1\x12+\n" +
 	"\x11protocol_revision\x18\x01 \x01(\tR\x10protocolRevision\x12\x1d\n" +
 	"\n" +
@@ -400,8 +418,9 @@ const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"tracestate\x12'\n" +
 	"\x0flimits_revision\x18\x19 \x01(\tR\x0elimitsRevision\x12p\n" +
 	"\x18configuration_validation\x18  \x01(\v23.elitea.runtime.v1.ConfigurationValidationCommandV1H\x00R\x17configurationValidation\x12k\n" +
-	"\x17toolkit_available_tools\x18! \x01(\v21.elitea.runtime.v1.ToolkitAvailableToolsCommandV1H\x00R\x15toolkitAvailableToolsB\x14\n" +
-	"\x12capability_commandJ\x04\b\x0f\x10\x10J\x04\b\x1a\x10 J\x04\b\"\x10@R\x11grant_template_id*\xb1\x02\n" +
+	"\x17toolkit_available_tools\x18! \x01(\v21.elitea.runtime.v1.ToolkitAvailableToolsCommandV1H\x00R\x15toolkitAvailableTools\x12L\n" +
+	"\findex_ingest\x18\" \x01(\v2'.elitea.runtime.v1.IndexIngestCommandV1H\x00R\vindexIngestB\x14\n" +
+	"\x12capability_commandJ\x04\b\x0f\x10\x10J\x04\b\x1a\x10 J\x04\b#\x10@R\x11grant_template_id*\xda\x02\n" +
 	"\x13WorkerCommandTypeV1\x12&\n" +
 	"\"WORKER_COMMAND_TYPE_V1_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cWORKER_COMMAND_TYPE_V1_START\x10\x01\x12!\n" +
@@ -409,7 +428,8 @@ const file_elitea_runtime_v1_command_proto_rawDesc = "" +
 	"\x1cWORKER_COMMAND_TYPE_V1_RETRY\x10\x03\x12$\n" +
 	" WORKER_COMMAND_TYPE_V1_RECONCILE\x10\x04\x121\n" +
 	"-WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE\x10\x05\x122\n" +
-	".WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS\x10\x06BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
+	".WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS\x10\x06\x12'\n" +
+	"#WORKER_COMMAND_TYPE_V1_INDEX_INGEST\x10\aBSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
 var (
 	file_elitea_runtime_v1_command_proto_rawDescOnce sync.Once
@@ -431,17 +451,19 @@ var file_elitea_runtime_v1_command_proto_goTypes = []any{
 	(*ExecutionInputBundleReferenceV1)(nil),  // 2: elitea.runtime.v1.ExecutionInputBundleReferenceV1
 	(*ConfigurationValidationCommandV1)(nil), // 3: elitea.runtime.v1.ConfigurationValidationCommandV1
 	(*ToolkitAvailableToolsCommandV1)(nil),   // 4: elitea.runtime.v1.ToolkitAvailableToolsCommandV1
+	(*IndexIngestCommandV1)(nil),             // 5: elitea.runtime.v1.IndexIngestCommandV1
 }
 var file_elitea_runtime_v1_command_proto_depIdxs = []int32{
 	0, // 0: elitea.runtime.v1.WorkerCommandV1.command_type:type_name -> elitea.runtime.v1.WorkerCommandTypeV1
 	2, // 1: elitea.runtime.v1.WorkerCommandV1.input_bundle_ref:type_name -> elitea.runtime.v1.ExecutionInputBundleReferenceV1
 	3, // 2: elitea.runtime.v1.WorkerCommandV1.configuration_validation:type_name -> elitea.runtime.v1.ConfigurationValidationCommandV1
 	4, // 3: elitea.runtime.v1.WorkerCommandV1.toolkit_available_tools:type_name -> elitea.runtime.v1.ToolkitAvailableToolsCommandV1
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	5, // 4: elitea.runtime.v1.WorkerCommandV1.index_ingest:type_name -> elitea.runtime.v1.IndexIngestCommandV1
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_command_proto_init() }
@@ -449,12 +471,14 @@ func file_elitea_runtime_v1_command_proto_init() {
 	if File_elitea_runtime_v1_command_proto != nil {
 		return
 	}
+	file_elitea_runtime_v1_indexing_proto_init()
 	file_elitea_runtime_v1_input_proto_init()
 	file_elitea_runtime_v1_toolkit_proto_init()
 	file_elitea_runtime_v1_validation_proto_init()
 	file_elitea_runtime_v1_command_proto_msgTypes[0].OneofWrappers = []any{
 		(*WorkerCommandV1_ConfigurationValidation)(nil),
 		(*WorkerCommandV1_ToolkitAvailableTools)(nil),
+		(*WorkerCommandV1_IndexIngest)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -12,6 +12,7 @@ from elitea_worker.constants import (
     CONFIGURATION_CATALOG_SHA256,
     CONFIGURATION_TYPE,
     CONFORMANCE_OCCURRED_AT_UNIX_MILLIS,
+    INDEX_INGEST_CAPABILITY_ID,
     OPENAPI_SCHEMA_ID,
     OPENAPI_SCHEMA_REVISION,
     OPENAPI_SCHEMA_SHA256,
@@ -20,6 +21,7 @@ from elitea_worker.execution.errors import IncompatibleVersion, UnsupportedCapab
 from elitea_worker.execution.delivery import ConfigurationValidationDeliveryProcessor
 from elitea_worker.execution.registry import CapabilityRegistration, CapabilityRegistry
 from elitea_worker.fixtures.bundle import FixtureBundle
+from elitea_worker.handlers.indexing import IndexIngestHandler
 from elitea_worker.handlers.toolkit_available_tools import ToolkitAvailableToolsHandler
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
@@ -36,6 +38,7 @@ def build_static_handler_registry(
     *,
     validation: ConfigurationValidationHandler,
     toolkit_available_tools: ToolkitAvailableToolsHandler,
+    index_ingest: IndexIngestHandler,
 ) -> CapabilityRegistry:
     """Return the compile-time handler set; runtime kwargs cannot add code."""
 
@@ -47,6 +50,7 @@ def build_static_handler_registry(
                 1,
                 toolkit_available_tools.execute,
             ),
+            CapabilityRegistration(INDEX_INGEST_CAPABILITY_ID, 1, index_ingest.execute),
         )
     )
 

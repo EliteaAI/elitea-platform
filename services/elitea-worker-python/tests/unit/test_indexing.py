@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+from typing import Any
+
+import pytest
+
+from elitea.runtime.v1 import command_pb2, indexing_pb2, output_pb2
+
+from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
+from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
+from elitea_worker.execution.errors import InvalidInput
+from elitea_worker.execution.supervisor import ExecutionSupervisor
+from elitea_worker.handlers.indexing import (
+    IndexIngestHandler,
+    IndexIngestInputBinding,
+    ResolvedIndexIngestInput,
+)
+from elitea_worker.protocol.indexing import bind_result_artifact, request_from
+
+
+class _ClientStub:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def test_toolkit_tool(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        kwargs["toolkit_config"]["settings"]["space"] = "MUTATED"
+        kwargs["tool_params"]["filters"]["state"] = "MUTATED"
+        kwargs["llm_config"]["sampling"]["temperature"] = 1
+        return {"success": True, "result": "indexed"}
+
+
+class _SdkStub:
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+        self.thread_names: list[str] = []
+
+    def ingest(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        self.thread_names.append(threading.current_thread().name)
+        return self.result
+
+
+def test_adapter_invokes_current_sdk_method_once_with_exact_arguments() -> None:
+    client = _ClientStub()
+    adapter = object.__new__(EliteaSdkIndexingAdapter)
+    adapter._client = client
+    toolkit_config = {"type": "confluence", "settings": {"space": "ENG"}}
+    tool_params = {
+        "index_name": "knowledge",
+        "clean_index": False,
+        "filters": {"state": "current"},
+    }
+    runtime_config = {"callbacks": [object()]}
+    llm_config = {"sampling": {"temperature": 0}}
+    mcp_tokens = {"server": "token"}
+
+    result = adapter.ingest(
+        toolkit_config=toolkit_config,
+        tool_params=tool_params,
+        runtime_config=runtime_config,
+        llm_model="gpt-test",
+        llm_config=llm_config,
+        mcp_tokens=mcp_tokens,
+    )
+
+    assert result == {"success": True, "result": "indexed"}
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert list(call) == [
+        "toolkit_config",
+        "tool_name",
+        "tool_params",
+        "runtime_config",
+        "llm_model",
+        "llm_config",
+        "mcp_tokens",
+    ]
+    assert call["tool_name"] == "index_data"
+    assert call["toolkit_config"] is not toolkit_config
+    assert call["tool_params"] is not tool_params
+    assert call["llm_config"] is not llm_config
+    assert call["runtime_config"] is runtime_config
+    assert call["mcp_tokens"] is mcp_tokens
+    assert toolkit_config["settings"]["space"] == "ENG"
+    assert tool_params["filters"]["state"] == "current"
+    assert llm_config["sampling"]["temperature"] == 0
+
+
+def test_kernel_uses_bounded_sync_executor_and_keeps_bulk_off_wire() -> None:
+    async def run() -> None:
+        canary = "TEST_ONLY_INDEX_INGEST_SECRET_CANARY_NOT_A_SECRET"
+        sdk = _SdkStub({"success": True, "result": canary + ("x" * 1_000_000)})
+        supervisor = ExecutionSupervisor(
+            max_workers=1,
+            max_in_flight=1,
+            admission_timeout_seconds=0.1,
+            drain_timeout_seconds=2,
+        )
+        handler = IndexIngestHandler(sdk, supervisor)
+        command = indexing_pb2.IndexIngestCommandV1(
+            toolkit_configuration_entry_id="toolkit-config",
+            tool_parameters_entry_id="tool-params",
+            llm_model_entry_id="llm-model",
+            llm_configuration_entry_id="llm-config",
+        )
+        toolkit = _resolved(
+            "toolkit-config",
+            {"settings": {"password": canary}},
+            b"t" * 32,
+        )
+        params = _resolved("tool-params", {"index_name": "knowledge"}, b"p" * 32)
+        model = _resolved("llm-model", "gpt-test", b"m" * 32)
+        llm = _resolved("llm-config", {"api_key": canary}, b"l" * 32)
+        request = request_from(
+            command,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            toolkit_configuration=toolkit,
+            tool_parameters=params,
+            llm_model=model,
+            llm_configuration=llm,
+            mcp_tokens=None,
+            runtime_config={"callbacks": []},
+        )
+
+        wire_command = command_pb2.WorkerCommandV1(
+            protocol_revision="elitea.runtime.v1",
+            command_id="command-1",
+            idempotency_key="idempotency-1",
+            command_type=command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST,
+            execution_id="execution-1",
+            generation=1,
+            dispatch_ordinal=1,
+            tenant_id="tenant-1",
+            resource_project_id="project-1",
+            projection_project_id="project-1",
+            principal_ref="principal-1",
+            capability_id="index.ingest.v1",
+            capability_version="1",
+            resource_class="indexing",
+            isolation_class="shared",
+            priority=1,
+            deadline_unix_millis=1,
+            limits_revision="elitea.runtime.limits.conformance.v1",
+            index_ingest=command,
+        )
+        command_bytes = wire_command.SerializeToString(deterministic=True)
+        assert len(command_bytes) < MAX_WORKER_COMMAND_BYTES
+        assert canary.encode() not in command_bytes
+        assert b"index_name" not in command_bytes
+
+        result = await handler.execute(request)
+        assert len(sdk.calls) == 1
+        assert sdk.thread_names[0].startswith("elitea-sdk-sync")
+        assert sdk.thread_names[0] != threading.current_thread().name
+        assert result.sdk_result["result"].startswith(canary)
+
+        reference = bind_result_artifact(
+            result,
+            artifact_id="artifact-1",
+            immutable_version="1",
+            byte_length=1_000_128,
+            digest=b"r" * 32,
+        )
+        frame = output_pb2.ExecutionOutputFrameV1(
+            output_schema_revision="elitea.runtime.execution-output.v1",
+            stream_id="execution-1:1",
+            event_type=output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT,
+            index_ingest=reference,
+        )
+        frame_bytes = frame.SerializeToString(deterministic=True)
+        assert len(frame_bytes) < 1024
+        assert canary.encode() not in frame_bytes
+        assert frame.WhichOneof("payload") == "index_ingest"
+        assert not reference.HasField("mcp_tokens")
+        assert reference.result_artifact.byte_length == 1_000_128
+        assert reference.result_artifact.classification == "tenant-confidential"
+        assert (
+            reference.result_artifact.media_type
+            == "application/vnd.elitea.index-ingest-result.v1+json"
+        )
+        await supervisor.shutdown()
+
+    asyncio.run(run())
+
+
+def test_optional_reference_and_resolved_value_must_match() -> None:
+    command = indexing_pb2.IndexIngestCommandV1(
+        toolkit_configuration_entry_id="toolkit-config",
+        tool_parameters_entry_id="tool-params",
+        mcp_tokens_entry_id="mcp-tokens",
+    )
+
+    with pytest.raises(InvalidInput):
+        request_from(
+            command,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            toolkit_configuration=_resolved("toolkit-config", {}, b"t" * 32),
+            tool_parameters=_resolved("tool-params", {}, b"p" * 32),
+            llm_model=None,
+            llm_configuration=None,
+            mcp_tokens=None,
+            runtime_config={},
+        )
+
+
+def test_kernel_preserves_current_wrapper_llm_defaults_and_fallback() -> None:
+    async def run() -> None:
+        sdk = _SdkStub({"success": True})
+        supervisor = ExecutionSupervisor(
+            max_workers=1,
+            max_in_flight=1,
+            admission_timeout_seconds=0.1,
+            drain_timeout_seconds=2,
+        )
+        handler = IndexIngestHandler(sdk, supervisor)
+        command = indexing_pb2.IndexIngestCommandV1(
+            toolkit_configuration_entry_id="toolkit-config",
+            tool_parameters_entry_id="tool-params",
+            llm_configuration_entry_id="llm-config",
+        )
+        request = request_from(
+            command,
+            input_bundle_id="bundle-1",
+            input_bundle_digest=b"b" * 32,
+            toolkit_configuration=_resolved(
+                "toolkit-config", {"type": "confluence"}, b"t" * 32
+            ),
+            tool_parameters=_resolved("tool-params", {}, b"p" * 32),
+            llm_model=None,
+            llm_configuration=_resolved(
+                "llm-config", {"model_name": "fallback-model"}, b"l" * 32
+            ),
+            mcp_tokens=None,
+            runtime_config={},
+        )
+
+        await handler.execute(request)
+
+        assert len(sdk.calls) == 1
+        assert sdk.calls[0]["llm_model"] == "fallback-model"
+        assert sdk.calls[0]["llm_config"] == {"model_name": "fallback-model"}
+        assert sdk.calls[0]["mcp_tokens"] is None
+        await supervisor.shutdown()
+
+    asyncio.run(run())
+
+
+def _resolved(entry_id: str, value: Any, digest: bytes) -> ResolvedIndexIngestInput:
+    return ResolvedIndexIngestInput(
+        binding=IndexIngestInputBinding(
+            entry_id=entry_id,
+            immutable_version="1",
+            content_digest=digest,
+        ),
+        value=value,
+    )

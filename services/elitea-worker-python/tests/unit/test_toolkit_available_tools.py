@@ -6,6 +6,7 @@ from elitea.runtime.v1 import command_pb2, common_pb2, input_pb2, output_pb2
 
 from elitea_worker.app import build_static_handler_registry
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
+from elitea_worker.handlers.indexing import IndexIngestHandler
 from elitea_worker.handlers.toolkit_available_tools import (
     ToolkitAvailableToolsHandler,
     ToolkitAvailableToolsRequest,
@@ -104,13 +105,16 @@ def test_static_registry_contains_exact_versioned_handler() -> None:
     toolkit = ToolkitAvailableToolsHandler(_SdkStub({"tools": [], "args_schemas": {}}))
     validation = object.__new__(ConfigurationValidationHandler)
     validation._sdk = object()
+    index_ingest = object.__new__(IndexIngestHandler)
     registry = build_static_handler_registry(
         validation=validation,
         toolkit_available_tools=toolkit,
+        index_ingest=index_ingest,
     )
 
     assert registry.resolve("configuration.validate.v1", 1).__self__ is validation
     assert registry.resolve("toolkit.available_tools.v1", 1).__self__ is toolkit
+    assert registry.resolve("index.ingest.v1", 1).__self__ is index_ingest
 
 
 def _request(settings: dict[str, Any]) -> ToolkitAvailableToolsRequest:

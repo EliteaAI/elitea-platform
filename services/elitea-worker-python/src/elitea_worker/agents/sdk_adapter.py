@@ -13,6 +13,7 @@ import importlib
 import json
 import sys
 from contextlib import redirect_stdout
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,52 @@ class EliteaSdkToolkitAdapter:
         return self._tools_module.get_toolkit_available_tools(
             toolkit_type=toolkit_type,
             settings=settings,
+        )
+
+
+class EliteaSdkIndexingAdapter:
+    """Pinned adapter for the current ``index_data`` SDK entrypoint.
+
+    The authorized runtime composition supplies an initialized ``EliteAClient``.
+    Client construction and credential redemption are deliberately outside this
+    parity kernel. The adapter preserves the current worker's one public SDK
+    call without copying its Pylon event, logging or response-cleaning wrapper.
+    """
+
+    def __init__(self, client: Any) -> None:
+        with redirect_stdout(sys.stderr):
+            module = importlib.import_module("elitea_sdk.runtime.clients.client")
+        package_root = Path(module.__file__).resolve().parents[2]
+        if _package_tree_digest(package_root) != SDK_PACKAGE_TREE_SHA256:
+            raise DependencyUnavailable(
+                "The installed Elitea SDK artifact does not match the admitted package tree."
+            )
+        if not isinstance(client, module.EliteAClient):
+            raise TypeError(
+                "client must be an EliteAClient from the admitted SDK artifact"
+            )
+        self._client = client
+
+    def ingest(
+        self,
+        *,
+        toolkit_config: dict[str, Any],
+        tool_params: dict[str, Any],
+        runtime_config: dict[str, Any],
+        llm_model: str | None,
+        llm_config: dict[str, Any],
+        mcp_tokens: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        # Business-compatibility boundary: exactly the public SDK operation used
+        # by the current indexer worker, exactly once per kernel invocation.
+        return self._client.test_toolkit_tool(
+            toolkit_config=deepcopy(toolkit_config),
+            tool_name="index_data",
+            tool_params=deepcopy(tool_params),
+            runtime_config=runtime_config,
+            llm_model=llm_model,
+            llm_config=deepcopy(llm_config),
+            mcp_tokens=mcp_tokens,
         )
 
 
