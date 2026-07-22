@@ -55,6 +55,8 @@ func (r *PostgresContentRepository) AuthorizeContent(
 	err = r.store.QueryRow(ctx, `
 SELECT j.resource_project_id::text,
        j.input_bundle_id,
+       j.capability_id,
+       e.semantic_role,
        e.content_digest,
        e.content_size
 FROM elitea_runtime.execution_claims AS c
@@ -77,6 +79,7 @@ WHERE c.claim_id = $1
   AND ws.expires_at > clock_timestamp()
   AND ws.revoked_at IS NULL
   AND j.desired_state = 'RUNNING'
+  AND j.capability_id IN ('configuration.validate.v1', 'index.ingest.v1')
   AND e.content_reference = $6
   AND e.entry_version = $7
   AND e.required_grant_audience = $8`,
@@ -91,6 +94,8 @@ WHERE c.claim_id = $1
 	).Scan(
 		&authorization.ResourceProjectID,
 		&authorization.InputBundleID,
+		&authorization.CapabilityID,
+		&authorization.SemanticRole,
 		&digest,
 		&authorization.ExpectedLength,
 	)

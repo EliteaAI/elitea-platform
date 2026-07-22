@@ -185,6 +185,24 @@ func TestNilVaultFailsClosed(t *testing.T) {
 	if _, err := vault.Lookup("canary"); !errors.Is(err, ErrInvalidVault) {
 		t.Fatalf("error = %v, want ErrInvalidVault", err)
 	}
+	if _, err := vault.LookupRegular("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("regular lookup error = %v, want ErrInvalidVault", err)
+	}
+}
+
+func TestLookupRegularDoesNotExposeHiddenSecret(t *testing.T) {
+	vault, err := OpenUnwrapped([]byte(pythonProjectKey), []byte(pythonVaultToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLookup(t, vault, "normal", "normal-canary", false)
+	regular, err := vault.LookupRegular("normal")
+	if err != nil || regular.Value != "normal-canary" || regular.Hidden {
+		t.Fatalf("regular lookup = %+v, %v", regular, err)
+	}
+	if _, err := vault.LookupRegular("hidden"); !errors.Is(err, ErrSecretNotFound) {
+		t.Fatalf("hidden regular lookup error = %v, want ErrSecretNotFound", err)
+	}
 }
 
 func assertLookup(t *testing.T, vault *Vault, name, value string, hidden bool) {

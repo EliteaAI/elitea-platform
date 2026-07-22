@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"testing"
 
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,7 +67,14 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 			require.Equal(t, "claim-1", claim.ClaimID)
 			require.Equal(t, fence, claim.FenceToken)
 			require.Same(t, certificate, claim.PeerCertificate)
-			return ContentAuthorization{ResourceProjectID: "42", InputBundleID: "bundle-1", ExpectedDigest: digest, ExpectedLength: int64(len(data))}, nil
+			return ContentAuthorization{
+				ResourceProjectID: "42",
+				InputBundleID:     "bundle-1",
+				CapabilityID:      executiondomain.ConfigurationValidationCapability,
+				SemanticRole:      "configuration.settings",
+				ExpectedDigest:    digest,
+				ExpectedLength:    int64(len(data)),
+			}, nil
 		}),
 		contentStoreFunc(func(_ context.Context, projectID, inputBundleID, contentID, version string) (io.ReadCloser, error) {
 			require.Equal(t, "42", projectID)
@@ -90,6 +98,9 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 	require.Equal(t, data, response.Body.Bytes())
 	require.Equal(t, "private, no-store", response.Header().Get("Cache-Control"))
 	require.NotEmpty(t, response.Header().Get("Content-Digest"))
+	require.Equal(t, response.Header().Get("Content-Digest"), response.Header().Get(SourceContentDigestHeader))
+	require.Equal(t, "v1", response.Header().Get(SourceImmutableVersionHeader))
+	require.Equal(t, "22", response.Header().Get(SourceContentLengthHeader))
 }
 
 func TestContentServerDoesNotReleaseWrongDigest(t *testing.T) {
@@ -98,7 +109,14 @@ func TestContentServerDoesNotReleaseWrongDigest(t *testing.T) {
 	data := []byte(`{}`)
 	server, err := NewContentServer(
 		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
-			return ContentAuthorization{ResourceProjectID: "42", InputBundleID: "bundle-1", ExpectedDigest: sha256.Sum256([]byte("different")), ExpectedLength: int64(len(data))}, nil
+			return ContentAuthorization{
+				ResourceProjectID: "42",
+				InputBundleID:     "bundle-1",
+				CapabilityID:      executiondomain.ConfigurationValidationCapability,
+				SemanticRole:      "configuration.settings",
+				ExpectedDigest:    sha256.Sum256([]byte("different")),
+				ExpectedLength:    int64(len(data)),
+			}, nil
 		}),
 		contentStoreFunc(func(context.Context, string, string, string, string) (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(data)), nil
@@ -144,6 +162,8 @@ func TestContentServerRejectsOverLimitBeforeOpeningContent(t *testing.T) {
 			return ContentAuthorization{
 				ResourceProjectID: "42",
 				InputBundleID:     "bundle-1",
+				CapabilityID:      executiondomain.ConfigurationValidationCapability,
+				SemanticRole:      "configuration.settings",
 				ExpectedDigest:    sha256.Sum256([]byte("bounded")),
 				ExpectedLength:    9,
 			}, nil

@@ -92,12 +92,9 @@ func (v *Vault) Lookup(name string) (Secret, error) {
 		return Secret{}, ErrInvalidVault
 	}
 
-	if raw, ok := v.regular[name]; ok {
-		value, ok := decodeSecretString(raw)
-		if !ok {
-			return Secret{}, ErrInvalidSecret
-		}
-		return Secret{Value: value}, nil
+	secret, err := v.LookupRegular(name)
+	if err == nil || !errors.Is(err, ErrSecretNotFound) {
+		return secret, err
 	}
 	if raw, ok := v.hidden[name]; ok {
 		value, ok := decodeSecretString(raw)
@@ -107,6 +104,24 @@ func (v *Vault) Lookup(name string) (Secret, error) {
 		return Secret{Value: value, Hidden: true}, nil
 	}
 
+	return Secret{}, ErrSecretNotFound
+}
+
+// LookupRegular returns only an exact regular-secret match. The current
+// EngineBase exposes regular admin secrets as shared fallbacks but does not
+// expose hidden admin secrets across projects, so callers must use this method
+// for that compatibility boundary.
+func (v *Vault) LookupRegular(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+	if raw, ok := v.regular[name]; ok {
+		value, ok := decodeSecretString(raw)
+		if !ok {
+			return Secret{}, ErrInvalidSecret
+		}
+		return Secret{Value: value}, nil
+	}
 	return Secret{}, ErrSecretNotFound
 }
 
