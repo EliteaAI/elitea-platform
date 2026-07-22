@@ -13,10 +13,10 @@ import asyncio
 import hashlib
 import hmac
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from elitea.runtime.v1 import (
     command_pb2,
@@ -24,19 +24,20 @@ from elitea.runtime.v1 import (
     control_pb2,
     envelope_pb2,
     errors_pb2,
+    indexing_pb2,
     output_pb2,
 )
 
+from elitea_worker.agents.client_context import (
+    EliteaClientContext,
+    IndexExecutionClaim,
+)
+from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import (
-    CONFIGURATION_CATALOG_REVISION,
-    CONFIGURATION_CATALOG_SHA256,
-    CONFIGURATION_TYPE,
+    INDEX_INGEST_CAPABILITY_ID,
     MAX_BUNDLE_ENTRIES,
     MAX_SAFE_STRING_BYTES,
     MAX_SETTINGS_BYTES,
-    OPENAPI_SCHEMA_ID,
-    OPENAPI_SCHEMA_REVISION,
-    OPENAPI_SCHEMA_SHA256,
 )
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
@@ -44,6 +45,7 @@ from elitea_worker.execution.errors import (
     DependencyUnavailable,
     ExecutionCancelled,
     IncompatibleVersion,
+    InternalFailure,
     InvalidInput,
     OutputCancellationWon,
     OutputDeadlineWon,
@@ -55,8 +57,15 @@ from elitea_worker.execution.supervisor import ExecutionRunner
 from elitea_worker.execution.sync_executor import SyncExecutorAdmissionRejected
 from elitea_worker.fixtures.bundle import (
     FixtureContent,
+    FixtureEntry,
+    parse_json_value,
     parse_settings_json,
     project_input_manifest_entries,
+)
+from elitea_worker.handlers.indexing import (
+    IndexIngestHandler,
+    IndexIngestInputBinding,
+    ResolvedIndexIngestInput,
 )
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
@@ -67,6 +76,7 @@ from elitea_worker.protocol.codec import (
     parse_execution_input_bundle,
     validation_request_from,
 )
+from elitea_worker.protocol.indexing import bind_result_summary, request_from
 from elitea_worker.transport.input_content import (
     ClaimBoundInputReference,
     ClaimBoundInputRequestBuilder,
@@ -94,6 +104,13 @@ _KNOWN_DESIRED_STATES = frozenset(
 _DEADLINE_RETIREMENT_SAFE_MESSAGE = (
     "The execution deadline was exceeded before worker authority was granted."
 )
+
+_INDEX_TOOLKIT_CONFIGURATION_ROLE = "index.toolkit_configuration"
+_INDEX_TOOL_PARAMETERS_ROLE = "index.tool_parameters"
+_INDEX_LLM_MODEL_ROLE = "index.llm_model"
+_INDEX_LLM_CONFIGURATION_ROLE = "index.llm_configuration"
+_INDEX_MCP_TOKENS_ROLE = "index.mcp_tokens"
+_INDEX_INPUT_AUDIENCE = "elitea.runtime.input.read.v1"
 
 
 class ControlPlane(Protocol):
@@ -161,6 +178,30 @@ class _AcceptedClaim:
     content: FixtureContent
     claim_id: str
     claim_handoff_watermark: int
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedIndexClaim:
+    verified: VerifiedWorkerCommand
+    entries: tuple[FixtureEntry, ...]
+    claim_id: str
+    claim_handoff_watermark: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedIndexInputs:
+    toolkit_configuration: ResolvedIndexIngestInput
+    tool_parameters: ResolvedIndexIngestInput
+    llm_model: ResolvedIndexIngestInput | None
+    llm_configuration: ResolvedIndexIngestInput | None
+    mcp_tokens: ResolvedIndexIngestInput | None
+    client_context: EliteaClientContext
+
+
+IndexClientContextFactory = Callable[
+    [IndexExecutionClaim],
+    Awaitable[EliteaClientContext],
+]
 
 
 class _ClaimLeaseMonitor:
@@ -308,7 +349,7 @@ class ConfigurationValidationDeliveryProcessor:
         self,
         *,
         supervisor: ExecutionRunner,
-        handler: ConfigurationValidationHandler,
+        handler: ConfigurationValidationHandler | None,
         control: ControlPlane,
         command_acker: CommandSettlementAcker,
         input_client: ScopedInputContentClient,
@@ -415,7 +456,7 @@ class ConfigurationValidationDeliveryProcessor:
                 raise InvalidInput("The durable output spool state is inconsistent.")
             if pending is None:
                 return DeliveryResult(DeliveryDisposition.OWNED_ELSEWHERE_NOACK)
-            _validate_pending_output(pending, command=command, receipt=receipt)
+            self._validate_pending_output(pending, command=command, receipt=receipt)
             return await self._recover_local_output(
                 delivery=delivery,
                 frame=pending,
@@ -475,7 +516,7 @@ class ConfigurationValidationDeliveryProcessor:
 
         _require_no_recovery(receipt)
         claim_now = _runtime_now(self._clock)
-        accepted = _accepted_claim(
+        accepted = self._accept_claim(
             signed=signed,
             command=command,
             receipt=receipt,
@@ -489,7 +530,7 @@ class ConfigurationValidationDeliveryProcessor:
         if output.has_pending_replay != (pending is not None):
             raise InvalidInput("The durable output spool state is inconsistent.")
         if pending is not None:
-            _validate_pending_output(pending, command=command, receipt=receipt)
+            self._validate_pending_output(pending, command=command, receipt=receipt)
             return await self._recover_local_output(
                 delivery=delivery,
                 frame=pending,
@@ -517,21 +558,11 @@ class ConfigurationValidationDeliveryProcessor:
             else:
                 try:
                     _raise_if_execution_deadline_exceeded(command, self._clock)
-                    _validate_capability_identity(command)
-                    grant = self._input_request_builder.build(
-                        ClaimBoundInputReference(
-                            execution_id=receipt.identity.execution_id,
-                            generation=receipt.identity.generation,
-                            content_id=accepted.content.content_id,
-                            immutable_version=accepted.content.immutable_version,
-                            claim_id=accepted.claim_id,
-                            fence_token=bytes(receipt.fence.fence_token),
-                            expected_length=accepted.content.byte_length,
-                            expected_sha256=accepted.content.digest,
-                            media_type=accepted.content.media_type,
-                        )
+                    self._validate_capability_identity(command)
+                    resolved_input = await self._resolve_inputs(
+                        accepted,
+                        receipt=receipt,
                     )
-                    raw_settings = await self._input_client.fetch(grant)
                     _raise_if_execution_deadline_exceeded(command, self._clock)
                 except WorkerError as error:
                     outcome = error
@@ -542,24 +573,14 @@ class ConfigurationValidationDeliveryProcessor:
                         outcome = error
                     else:
                         try:
-                            settings = parse_settings_json(raw_settings)
-                            request = validation_request_from(
-                                accepted.verified,
-                                input_bundle_id=receipt.input_bundle.input_bundle_id,
-                                input_bundle_digest=bytes(
-                                    receipt.input_bundle_ref.digest.value
-                                ),
-                                settings_entry_version=accepted.content.immutable_version,
-                                settings_content_digest=accepted.content.digest,
-                                settings=settings,
-                            )
                             _raise_if_execution_deadline_exceeded(
                                 command,
                                 self._clock,
                             )
-                            outcome = await self._supervisor.run_sync(
-                                self._handler.execute,
-                                request,
+                            outcome = await self._execute_resolved(
+                                accepted,
+                                resolved_input,
+                                receipt=receipt,
                             )
                             # A synchronous SDK call cannot be cancelled safely.
                             # Retain claim ownership until it exits, then prevent a
@@ -619,6 +640,88 @@ class ConfigurationValidationDeliveryProcessor:
             )
         finally:
             await lease.stop()
+
+    def _accept_claim(
+        self,
+        *,
+        signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+        command: command_pb2.WorkerCommandV1,
+        receipt: control_pb2.ClaimReceiptV1,
+        workload_session_id: str,
+        producer_id: str,
+        now_unix_millis: int,
+    ) -> _AcceptedClaim:
+        return _accepted_claim(
+            signed=signed,
+            command=command,
+            receipt=receipt,
+            workload_session_id=workload_session_id,
+            producer_id=producer_id,
+            now_unix_millis=now_unix_millis,
+        )
+
+    def _validate_capability_identity(
+        self,
+        command: command_pb2.WorkerCommandV1,
+    ) -> None:
+        if self._handler is None:
+            raise InternalFailure()
+        selected = command.configuration_validation
+        self._handler.validate_binding(
+            configuration_type=selected.configuration_type,
+            catalog_revision=selected.catalog_revision,
+            catalog_digest=bytes(selected.catalog_digest.value),
+            schema_id=selected.schema_id,
+            schema_revision=selected.schema_revision,
+            schema_digest=bytes(selected.schema_digest.value),
+        )
+
+    async def _resolve_inputs(
+        self,
+        accepted: _AcceptedClaim,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> bytes:
+        grant = self._input_request_builder.build(
+            _claim_bound_reference(
+                accepted.content,
+                receipt=receipt,
+                claim_id=accepted.claim_id,
+            )
+        )
+        return await self._input_client.fetch(grant)
+
+    async def _execute_resolved(
+        self,
+        accepted: _AcceptedClaim,
+        resolved_input: object,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> Any:
+        if self._handler is None or not isinstance(resolved_input, bytes):
+            raise InternalFailure()
+        settings = parse_settings_json(resolved_input)
+        request = validation_request_from(
+            accepted.verified,
+            input_bundle_id=receipt.input_bundle.input_bundle_id,
+            input_bundle_digest=bytes(receipt.input_bundle_ref.digest.value),
+            settings_entry_version=accepted.content.immutable_version,
+            settings_content_digest=accepted.content.digest,
+            settings=settings,
+        )
+        return await self._supervisor.run_sync(
+            self._handler.execute,
+            request,
+        )
+
+    def _validate_pending_output(
+        self,
+        frame: output_pb2.ExecutionOutputFrameV1,
+        *,
+        command: command_pb2.WorkerCommandV1,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> None:
+        _validate_pending_output(frame, command=command, receipt=receipt)
 
     async def _recover_local_output(
         self,
@@ -751,6 +854,168 @@ class ConfigurationValidationDeliveryProcessor:
         raise AssertionError("bounded output session loop did not terminate")
 
 
+class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
+    """Index-specific inputs and SDK call over the shared durable lifecycle."""
+
+    def __init__(
+        self,
+        *,
+        supervisor: ExecutionRunner,
+        client_context_factory: IndexClientContextFactory | None,
+        control: ControlPlane,
+        command_acker: CommandSettlementAcker,
+        input_client: ScopedInputContentClient,
+        input_request_builder: ClaimBoundInputRequestBuilder,
+        output_session_factory: Callable[[], OutputSession],
+        signed_command_authenticator: SignedCommandAuthenticator,
+        workload_session_id: str,
+        producer_id: str,
+        clock_unix_millis: Callable[[], int],
+        output_ack_timeout_seconds: float = 15.0,
+        max_output_sessions: int = 2,
+        lease_poll_interval_seconds: float = 10.0,
+    ) -> None:
+        super().__init__(
+            supervisor=supervisor,
+            handler=None,
+            control=control,
+            command_acker=command_acker,
+            input_client=input_client,
+            input_request_builder=input_request_builder,
+            output_session_factory=output_session_factory,
+            signed_command_authenticator=signed_command_authenticator,
+            workload_session_id=workload_session_id,
+            producer_id=producer_id,
+            clock_unix_millis=clock_unix_millis,
+            output_ack_timeout_seconds=output_ack_timeout_seconds,
+            max_output_sessions=max_output_sessions,
+            lease_poll_interval_seconds=lease_poll_interval_seconds,
+        )
+        self._client_context_factory = client_context_factory
+
+    def _accept_claim(
+        self,
+        *,
+        signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+        command: command_pb2.WorkerCommandV1,
+        receipt: control_pb2.ClaimReceiptV1,
+        workload_session_id: str,
+        producer_id: str,
+        now_unix_millis: int,
+    ) -> _AcceptedIndexClaim:
+        return _accepted_index_claim(
+            signed=signed,
+            command=command,
+            receipt=receipt,
+            workload_session_id=workload_session_id,
+            producer_id=producer_id,
+            now_unix_millis=now_unix_millis,
+        )
+
+    def _validate_capability_identity(
+        self,
+        command: command_pb2.WorkerCommandV1,
+    ) -> None:
+        if (
+            command.capability_id != INDEX_INGEST_CAPABILITY_ID
+            or command.capability_version != "1"
+            or command.command_type
+            != command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST
+            or command.WhichOneof("capability_command") != "index_ingest"
+        ):
+            raise UnsupportedCapability()
+
+    async def _resolve_inputs(
+        self,
+        accepted: _AcceptedIndexClaim,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> _ResolvedIndexInputs:
+        resolved: dict[str, ResolvedIndexIngestInput] = {}
+        for entry in accepted.entries:
+            grant = self._input_request_builder.build(
+                _claim_bound_reference(
+                    entry.content,
+                    receipt=receipt,
+                    claim_id=accepted.claim_id,
+                )
+            )
+            raw = await self._input_client.fetch_materialized(
+                grant,
+                source_immutable_version=entry.immutable_version,
+            )
+            resolved[entry.semantic_role] = ResolvedIndexIngestInput(
+                binding=IndexIngestInputBinding(
+                    entry_id=entry.entry_id,
+                    immutable_version=entry.immutable_version,
+                    content_digest=entry.content.digest,
+                ),
+                value=parse_json_value(raw),
+            )
+        factory = self._client_context_factory
+        if factory is None:
+            raise DependencyUnavailable(
+                "The claim-scoped SDK client context is unavailable."
+            )
+        claim = IndexExecutionClaim(
+            execution_id=receipt.identity.execution_id,
+            generation=int(receipt.identity.generation),
+            claim_id=accepted.claim_id,
+            fence_token=bytes(receipt.fence.fence_token),
+            resource_project_id=receipt.identity.resource_project_id,
+        )
+        try:
+            context = await factory(claim)
+            if str(context.project_id) != receipt.identity.resource_project_id:
+                raise AuthorizationFailure(
+                    "The claim-scoped SDK project identity does not match the execution."
+                )
+        except WorkerError:
+            raise
+        except Exception:
+            raise InternalFailure() from None
+        return _ResolvedIndexInputs(
+            toolkit_configuration=resolved[_INDEX_TOOLKIT_CONFIGURATION_ROLE],
+            tool_parameters=resolved[_INDEX_TOOL_PARAMETERS_ROLE],
+            llm_model=resolved.get(_INDEX_LLM_MODEL_ROLE),
+            llm_configuration=resolved.get(_INDEX_LLM_CONFIGURATION_ROLE),
+            mcp_tokens=resolved.get(_INDEX_MCP_TOKENS_ROLE),
+            client_context=context,
+        )
+
+    async def _execute_resolved(
+        self,
+        accepted: _AcceptedIndexClaim,
+        resolved_input: object,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> indexing_pb2.IndexIngestResultV1:
+        if not isinstance(resolved_input, _ResolvedIndexInputs):
+            raise InternalFailure()
+        request = request_from(
+            accepted.verified.command.index_ingest,
+            input_bundle_id=receipt.input_bundle.input_bundle_id,
+            input_bundle_digest=bytes(receipt.input_bundle_ref.digest.value),
+            toolkit_configuration=resolved_input.toolkit_configuration,
+            tool_parameters=resolved_input.tool_parameters,
+            llm_model=resolved_input.llm_model,
+            llm_configuration=resolved_input.llm_configuration,
+            mcp_tokens=resolved_input.mcp_tokens,
+            runtime_config={},
+        )
+        try:
+            handler = IndexIngestHandler(
+                EliteaSdkIndexingAdapter.from_context(resolved_input.client_context),
+                self._supervisor,
+            )
+            result = await handler.execute(request)
+            return bind_result_summary(result)
+        except WorkerError:
+            raise
+        except Exception:
+            raise InternalFailure() from None
+
+
 def _claim_receipt(response: control_pb2.ClaimCommandResponseV1) -> control_pb2.ClaimReceiptV1:
     if response.HasField("rejection"):
         if response.HasField("receipt"):
@@ -770,6 +1035,96 @@ def _accepted_claim(
     producer_id: str,
     now_unix_millis: int,
 ) -> _AcceptedClaim:
+    entries = _validated_claim_entries(
+        command=command,
+        receipt=receipt,
+        workload_session_id=workload_session_id,
+        producer_id=producer_id,
+        now_unix_millis=now_unix_millis,
+    )
+    selected = [
+        entry
+        for entry in entries
+        if entry.entry_id == command.configuration_validation.settings_entry_id
+    ]
+    if len(selected) != 1:
+        raise InvalidInput("The selected settings entry is absent or ambiguous.")
+    entry = selected[0]
+    if (
+        entry.semantic_role != "configuration.settings"
+        or entry.immutable_version != entry.content.immutable_version
+        or entry.content.required_grant_audience != _INDEX_INPUT_AUDIENCE
+        or entry.content.byte_length > MAX_SETTINGS_BYTES
+    ):
+        raise InvalidInput("The selected settings entry is malformed.")
+
+    return _AcceptedClaim(
+        verified=_verified_claim_command(signed, command, receipt),
+        content=entry.content,
+        claim_id=receipt.claim_id,
+        claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+    )
+
+
+def _accepted_index_claim(
+    *,
+    signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+    command: command_pb2.WorkerCommandV1,
+    receipt: control_pb2.ClaimReceiptV1,
+    workload_session_id: str,
+    producer_id: str,
+    now_unix_millis: int,
+) -> _AcceptedIndexClaim:
+    entries = _validated_claim_entries(
+        command=command,
+        receipt=receipt,
+        workload_session_id=workload_session_id,
+        producer_id=producer_id,
+        now_unix_millis=now_unix_millis,
+    )
+    selected = command.index_ingest
+    references = (
+        (selected.toolkit_configuration_entry_id, _INDEX_TOOLKIT_CONFIGURATION_ROLE, True),
+        (selected.tool_parameters_entry_id, _INDEX_TOOL_PARAMETERS_ROLE, True),
+        (selected.llm_model_entry_id, _INDEX_LLM_MODEL_ROLE, False),
+        (selected.llm_configuration_entry_id, _INDEX_LLM_CONFIGURATION_ROLE, False),
+        (selected.mcp_tokens_entry_id, _INDEX_MCP_TOKENS_ROLE, False),
+    )
+    by_id = {entry.entry_id: entry for entry in entries}
+    accepted_entries: list[FixtureEntry] = []
+    for entry_id, role, required in references:
+        if not entry_id:
+            if required:
+                raise InvalidInput("A required index input binding is absent.")
+            continue
+        entry = by_id.get(entry_id)
+        if (
+            entry is None
+            or entry.semantic_role != role
+            or entry.immutable_version != entry.content.immutable_version
+            or entry.content.required_grant_audience != _INDEX_INPUT_AUDIENCE
+            or entry.content.byte_length > MAX_SETTINGS_BYTES
+        ):
+            raise InvalidInput("An index input binding is malformed.")
+        accepted_entries.append(entry)
+    if len(accepted_entries) != len(entries):
+        raise InvalidInput("The index input manifest contains an unbound entry.")
+    return _AcceptedIndexClaim(
+        verified=_verified_claim_command(signed, command, receipt),
+        entries=tuple(accepted_entries),
+        claim_id=receipt.claim_id,
+        claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+    )
+
+
+def _validated_claim_entries(
+    *,
+    command: command_pb2.WorkerCommandV1,
+    receipt: control_pb2.ClaimReceiptV1,
+    workload_session_id: str,
+    producer_id: str,
+    now_unix_millis: int,
+) -> tuple[FixtureEntry, ...]:
     _validate_active_fence(
         receipt,
         workload_session_id=workload_session_id,
@@ -798,28 +1153,25 @@ def _accepted_claim(
         or len(manifest.entries) > MAX_BUNDLE_ENTRIES
     ):
         raise InvalidInput("The accepted claim input manifest is malformed.")
-    entries = project_input_manifest_entries(manifest)
-    selected = [
-        entry
-        for entry in entries
-        if entry.entry_id == command.configuration_validation.settings_entry_id
-    ]
-    if len(selected) != 1:
-        raise InvalidInput("The selected settings entry is absent or ambiguous.")
-    entry = selected[0]
-    if (
-        entry.semantic_role != "configuration.settings"
-        or entry.immutable_version != entry.content.immutable_version
-        or entry.content.required_grant_audience != "elitea.runtime.input.read.v1"
-        or entry.content.byte_length > MAX_SETTINGS_BYTES
-    ):
-        raise InvalidInput("The selected settings entry is malformed.")
+    return project_input_manifest_entries(manifest)
 
-    return _AcceptedClaim(
-        verified=_verified_claim_command(signed, command, receipt),
-        content=entry.content,
-        claim_id=receipt.claim_id,
-        claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+
+def _claim_bound_reference(
+    content: FixtureContent,
+    *,
+    receipt: control_pb2.ClaimReceiptV1,
+    claim_id: str,
+) -> ClaimBoundInputReference:
+    return ClaimBoundInputReference(
+        execution_id=receipt.identity.execution_id,
+        generation=receipt.identity.generation,
+        content_id=content.content_id,
+        immutable_version=content.immutable_version,
+        claim_id=claim_id,
+        fence_token=bytes(receipt.fence.fence_token),
+        expected_length=content.byte_length,
+        expected_sha256=content.digest,
+        media_type=content.media_type,
     )
 
 
@@ -841,10 +1193,16 @@ def _validate_pending_output(
     receipt: control_pb2.ClaimReceiptV1,
 ) -> None:
     expected_stream = f"{command.execution_id}:{command.generation}"
-    expected_logical_output = (
-        "configuration-validation:"
-        f"{command.configuration_validation.configuration_revision_id}"
-    )
+    selected_capability = command.WhichOneof("capability_command")
+    if selected_capability == "configuration_validation":
+        expected_logical_output = (
+            "configuration-validation:"
+            f"{command.configuration_validation.configuration_revision_id}"
+        )
+    elif selected_capability == "index_ingest":
+        expected_logical_output = f"index-ingest:{command.execution_id}"
+    else:
+        raise UnsupportedCapability()
     proposal = frame.settlement_proposal
     if not frame.HasField("identity") or frame.identity != receipt.identity:
         raise AuthorizationFailure(
@@ -1055,20 +1413,6 @@ def _prepared_settlement_recovery(
 def _require_no_recovery(receipt: control_pb2.ClaimReceiptV1) -> None:
     if receipt.HasField("settlement_recovery"):
         raise InvalidInput("The claim disposition has unexpected recovery material.")
-
-
-def _validate_capability_identity(command: command_pb2.WorkerCommandV1) -> None:
-    selected = command.configuration_validation
-    if selected.configuration_type != CONFIGURATION_TYPE:
-        raise UnsupportedCapability("Configuration type is not supported.")
-    if (
-        selected.catalog_revision != CONFIGURATION_CATALOG_REVISION
-        or selected.catalog_digest.value.hex() != CONFIGURATION_CATALOG_SHA256
-        or selected.schema_id != OPENAPI_SCHEMA_ID
-        or selected.schema_revision != OPENAPI_SCHEMA_REVISION
-        or selected.schema_digest.value.hex() != OPENAPI_SCHEMA_SHA256
-    ):
-        raise IncompatibleVersion()
 
 
 def _settlement_receipt(

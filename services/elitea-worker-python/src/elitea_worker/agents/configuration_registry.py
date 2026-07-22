@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Protocol
 
 
@@ -21,6 +22,9 @@ class _ConfigurationModel(Protocol):
 
     @classmethod
     def model_json_schema(cls) -> dict[str, Any]: ...
+
+    @classmethod
+    def model_validate(cls, value: object) -> object: ...
 
 
 RegistryLoader = Callable[[], Mapping[str, type[_ConfigurationModel]]]
@@ -45,16 +49,21 @@ class ConfigurationRegistrySnapshot:
 class ConfigurationRegistryShadow:
     """Load the SDK registry once and retain its immutable local projection."""
 
-    __slots__ = ("_snapshot",)
+    __slots__ = ("_entries", "_models", "_snapshot")
 
     def __init__(self, loader: RegistryLoader) -> None:
         try:
-            registry = loader()
+            registry = dict(loader())
         except Exception:
             raise ConfigurationRegistryError(
                 "installed configuration registry could not be loaded"
             ) from None
-        self._snapshot = _build_snapshot(registry)
+        snapshot = _build_snapshot(registry)
+        self._models = MappingProxyType(registry)
+        self._entries = MappingProxyType(
+            {entry.type: entry for entry in snapshot.entries}
+        )
+        self._snapshot = snapshot
 
     @property
     def snapshot(self) -> ConfigurationRegistrySnapshot:
@@ -64,6 +73,16 @@ class ConfigurationRegistryShadow:
         """Compare without changing either the admitted or installed snapshot."""
 
         return self._snapshot == admitted
+
+    def entry(self, configuration_type: str) -> ConfigurationRegistryEntry | None:
+        """Return the immutable schema projection for one registered type."""
+
+        return self._entries.get(configuration_type)
+
+    def model(self, configuration_type: str) -> type[_ConfigurationModel] | None:
+        """Return the model captured in the same one-time registry load."""
+
+        return self._models.get(configuration_type)
 
 
 def _build_snapshot(

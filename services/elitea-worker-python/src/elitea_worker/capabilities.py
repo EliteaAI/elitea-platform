@@ -17,10 +17,8 @@ from elitea_worker.constants import (
     CAPABILITY_VERSION,
     CONFIGURATION_CATALOG_REVISION,
     CONFIGURATION_CATALOG_SHA256,
+    INDEX_INGEST_CAPABILITY_ID,
     LIMITS_REVISION,
-    OPENAPI_SCHEMA_ID,
-    OPENAPI_SCHEMA_REVISION,
-    OPENAPI_SCHEMA_SHA256,
     RUNTIME_IMPLEMENTATION,
     RUNTIME_VERSION,
     SDK_PACKAGE_TREE_SHA256,
@@ -94,15 +92,13 @@ def capability_message(
                 interaction_model="durable_job",
                 resource_classes=["validation-small"],
                 feature_flags=[
-                    "credential-free",
+                    "sdk-registry-validation",
+                    "per-type-schema-binding",
                     "reference-only-input",
                     "safe-validation-errors",
                 ],
                 catalog_revision=CONFIGURATION_CATALOG_REVISION,
                 catalog_digest=_digest(bytes.fromhex(CONFIGURATION_CATALOG_SHA256)),
-                schema_id=OPENAPI_SCHEMA_ID,
-                schema_revision=OPENAPI_SCHEMA_REVISION,
-                schema_digest=_digest(bytes.fromhex(OPENAPI_SCHEMA_SHA256)),
             ),
             capability_manifest_pb2.RuntimeCapabilityV1(
                 capability_id=TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID,
@@ -121,25 +117,53 @@ def capability_message(
                 interaction_model="contract_handler_parity",
                 resource_classes=["toolkit-catalog"],
                 feature_flags=[
-                    "legacy-sdk-delegate",
+                    "current-sdk-delegate",
                     "reference-only-input",
                     "artifact-reference-output",
                     "production-delivery-not-wired",
                 ],
             ),
+            capability_manifest_pb2.RuntimeCapabilityV1(
+                capability_id=INDEX_INGEST_CAPABILITY_ID,
+                capability_version="1",
+                accepted_command_types=[
+                    command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST,
+                ],
+                emitted_event_types=[
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT,
+                    output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR,
+                ],
+                # Claim/input/runtime-context/output/settlement are composed on
+                # the shared durable serve path. The current synchronous SDK
+                # call remains bounded by the worker executor.
+                interaction_model="durable_job",
+                resource_classes=["indexing"],
+                feature_flags=[
+                    "current-sdk-delegate",
+                    "reference-only-input",
+                    "claim-bound-materialization",
+                    "claim-bound-runtime-context",
+                    "bounded-sync-sdk-execution",
+                    "typed-inline-terminal-result",
+                ],
+            ),
         ],
         runtime_constraints=capability_manifest_pb2.RuntimeConstraintsV1(
-            isolation_classes=["shared-credential-free"],
+            isolation_classes=["shared-claim-scoped-authority"],
             architectures=["amd64", "arm64"],
             child_process_support=False,
-            network_egress_classes=["scoped-input-content-only"],
+            network_egress_classes=[
+                "scoped-input-content-only",
+                "claim-bound-runtime-context",
+                "sdk-toolkit-configured",
+            ],
             artifact_support=True,
             realtime_session_support=False,
         ),
         limits_profiles=capability_manifest_pb2.RuntimeLimitsProfileReferenceV1(
             limits_schema_revision="elitea.runtime.limits.v1",
             limits_revisions=[LIMITS_REVISION],
-            resource_profile_classes=["validation-small", "toolkit-catalog"],
+            resource_profile_classes=["validation-small", "toolkit-catalog", "indexing"],
         ),
     )
 

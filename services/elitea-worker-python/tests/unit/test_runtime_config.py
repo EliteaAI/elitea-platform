@@ -30,6 +30,7 @@ def _config(tmp_path: Path) -> dict[str, object]:
         "control_target": "control.internal:8443",
         "output_target": "output.internal:8444",
         "content_origin": "https://content.internal",
+        "platform_origin": "https://elitea.internal",
         "ca_path": str(tmp_path / "ca.pem"),
         "certificate_path": str(tmp_path / "worker.pem"),
         "private_key_path": str(tmp_path / "worker-key.pem"),

@@ -8,17 +8,14 @@ from elitea.runtime.v1 import output_pb2
 
 from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter
 from elitea_worker.constants import (
-    CONFIGURATION_CATALOG_REVISION,
-    CONFIGURATION_CATALOG_SHA256,
-    CONFIGURATION_TYPE,
     CONFORMANCE_OCCURRED_AT_UNIX_MILLIS,
     INDEX_INGEST_CAPABILITY_ID,
-    OPENAPI_SCHEMA_ID,
-    OPENAPI_SCHEMA_REVISION,
-    OPENAPI_SCHEMA_SHA256,
 )
-from elitea_worker.execution.errors import IncompatibleVersion, UnsupportedCapability, WorkerError
-from elitea_worker.execution.delivery import ConfigurationValidationDeliveryProcessor
+from elitea_worker.execution.delivery import (
+    ConfigurationValidationDeliveryProcessor,
+    IndexIngestDeliveryProcessor,
+)
+from elitea_worker.execution.errors import WorkerError
 from elitea_worker.execution.registry import CapabilityRegistration, CapabilityRegistry
 from elitea_worker.fixtures.bundle import FixtureBundle
 from elitea_worker.handlers.indexing import IndexIngestHandler
@@ -68,16 +65,14 @@ class OfflineValidationWorker:
             authenticator=self._authenticator,
         )
         command = verified.command.configuration_validation
-        if command.configuration_type != CONFIGURATION_TYPE:
-            raise UnsupportedCapability("Configuration type is not supported.")
-        if (
-            command.catalog_revision != CONFIGURATION_CATALOG_REVISION
-            or command.catalog_digest.value.hex() != CONFIGURATION_CATALOG_SHA256
-            or command.schema_id != OPENAPI_SCHEMA_ID
-            or command.schema_revision != OPENAPI_SCHEMA_REVISION
-            or command.schema_digest.value.hex() != OPENAPI_SCHEMA_SHA256
-        ):
-            raise IncompatibleVersion()
+        self._handler.validate_binding(
+            configuration_type=command.configuration_type,
+            catalog_revision=command.catalog_revision,
+            catalog_digest=bytes(command.catalog_digest.value),
+            schema_id=command.schema_id,
+            schema_revision=command.schema_revision,
+            schema_digest=bytes(command.schema_digest.value),
+        )
         return verified
 
     def execute(
@@ -125,6 +120,7 @@ class OfflineValidationWorker:
 
 __all__ = [
     "ConfigurationValidationDeliveryProcessor",
+    "IndexIngestDeliveryProcessor",
     "OfflineValidationWorker",
     "build_static_handler_registry",
 ]

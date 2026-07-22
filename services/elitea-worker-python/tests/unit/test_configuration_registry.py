@@ -90,12 +90,28 @@ def test_registry_is_loaded_once_and_projected_without_provider_cases() -> None:
     assert first.entries[0].validation_supported is True
     assert first.entries[0].connection_check_supported is False
     assert shadow.matches(first) is True
+    assert shadow.entry("github") is first.entries[0]
+    assert shadow.model("github") is _GithubConfiguration
+    assert shadow.entry("unknown") is None
+    assert shadow.model("unknown") is None
 
     checked = ConfigurationRegistryShadow(
         lambda: {"checked": _CheckedConfiguration}
     ).snapshot.entries[0]
     assert checked.validation_supported is True
     assert checked.connection_check_supported is True
+
+
+def test_registry_models_are_copied_with_the_same_one_time_snapshot() -> None:
+    source: dict[str, type] = {"github": _GithubConfiguration}
+    shadow = ConfigurationRegistryShadow(lambda: source)
+
+    source["github"] = _PgVectorConfiguration
+    source["pgvector"] = _PgVectorConfiguration
+
+    assert shadow.model("github") is _GithubConfiguration
+    assert shadow.entry("github") is shadow.snapshot.entries[0]
+    assert shadow.model("pgvector") is None
 
 
 def test_catalog_digest_matches_go_registry_snapshot_golden() -> None:

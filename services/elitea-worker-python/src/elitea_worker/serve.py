@@ -19,16 +19,20 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from elitea.runtime.v1 import command_pb2, control_pb2_grpc, output_pb2_grpc
 
+from elitea_worker.agents.client_context import ClaimBoundEliteaClientContextFactory
 from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter
 from elitea_worker.config import (
     RuntimeDeployConfig,
     load_deploy_config,
     validate_private_directory,
 )
+from elitea_worker.constants import INDEX_INGEST_CAPABILITY_ID
 from elitea_worker.execution.delivery import (
     ConfigurationValidationDeliveryProcessor,
     DeliveryDisposition,
     DeliveryResult,
+    IndexClientContextFactory,
+    IndexIngestDeliveryProcessor,
 )
 from elitea_worker.execution.errors import DependencyUnavailable, WorkerError
 from elitea_worker.execution.supervisor import ExecutionSupervisor
@@ -53,6 +57,7 @@ from elitea_worker.transport.redis_commands import (
     RedisCommandConsumer,
     RedisCommandDelivery,
 )
+from elitea_worker.transport.runtime_context import ClaimBoundEliteaTokenClient
 
 
 class DeliveryConsumer(Protocol):
@@ -396,6 +401,7 @@ class ProductionDeliveryProcessor:
         command_acker: RedisCommandConsumer,
         input_client: ScopedInputContentClient,
         output_stub: output_pb2_grpc.ExecutionOutputServiceStub,
+        index_client_context_factory: IndexClientContextFactory | None = None,
     ) -> None:
         self._config = config
         self._trust = trust
@@ -408,6 +414,7 @@ class ProductionDeliveryProcessor:
             origin=config.content_origin
         )
         self._output_stub = output_stub
+        self._index_client_context_factory = index_client_context_factory
         self._authenticator = Ed25519CommandAuthenticator(trust.signing_keys)
         self._spool_root = validate_private_directory(
             config.spool_root,
@@ -473,22 +480,40 @@ class ProductionDeliveryProcessor:
                 stream_deadline_seconds=limits.output_stream_deadline_millis / 1000,
             )
 
-        processor = ConfigurationValidationDeliveryProcessor(
-            supervisor=self._supervisor,
-            handler=self._handler,
-            control=self._control,
-            command_acker=self._acker,
-            input_client=self._input,
-            input_request_builder=self._input_builder,
-            output_session_factory=output_session,
-            signed_command_authenticator=self._authenticator,
-            workload_session_id=self._config.workload_session_id,
-            producer_id=self._config.producer_id,
-            clock_unix_millis=lambda: int(time.time() * 1000),
-            output_ack_timeout_seconds=limits.output_ack_timeout_millis / 1000,
-            max_output_sessions=limits.output_max_sessions,
-            lease_poll_interval_seconds=limits.lease_poll_interval_millis / 1000,
-        )
+        if command.capability_id == INDEX_INGEST_CAPABILITY_ID:
+            processor = IndexIngestDeliveryProcessor(
+                supervisor=self._supervisor,
+                client_context_factory=self._index_client_context_factory,
+                control=self._control,
+                command_acker=self._acker,
+                input_client=self._input,
+                input_request_builder=self._input_builder,
+                output_session_factory=output_session,
+                signed_command_authenticator=self._authenticator,
+                workload_session_id=self._config.workload_session_id,
+                producer_id=self._config.producer_id,
+                clock_unix_millis=lambda: int(time.time() * 1000),
+                output_ack_timeout_seconds=limits.output_ack_timeout_millis / 1000,
+                max_output_sessions=limits.output_max_sessions,
+                lease_poll_interval_seconds=limits.lease_poll_interval_millis / 1000,
+            )
+        else:
+            processor = ConfigurationValidationDeliveryProcessor(
+                supervisor=self._supervisor,
+                handler=self._handler,
+                control=self._control,
+                command_acker=self._acker,
+                input_client=self._input,
+                input_request_builder=self._input_builder,
+                output_session_factory=output_session,
+                signed_command_authenticator=self._authenticator,
+                workload_session_id=self._config.workload_session_id,
+                producer_id=self._config.producer_id,
+                clock_unix_millis=lambda: int(time.time() * 1000),
+                output_ack_timeout_seconds=limits.output_ack_timeout_millis / 1000,
+                max_output_sessions=limits.output_max_sessions,
+                lease_poll_interval_seconds=limits.lease_poll_interval_millis / 1000,
+            )
         result = await processor.process(delivery)
         if result.disposition not in {
             DeliveryDisposition.OWNED_ELSEWHERE_NOACK,
@@ -610,6 +635,15 @@ async def _serve_deployment_inner(
             timeout_seconds=limits.content_timeout_millis / 1000,
             require_http2=True,
         )
+        index_client_context_factory = ClaimBoundEliteaClientContextFactory(
+            base_url=config.platform_origin,
+            token_fetcher=ClaimBoundEliteaTokenClient(
+                http_client,
+                origin=config.content_origin,
+                timeout_seconds=limits.content_timeout_millis / 1000,
+                require_http2=True,
+            ),
+        )
         supervisor = ExecutionSupervisor(
             max_workers=limits.sync_max_workers,
             max_in_flight=limits.sync_max_in_flight,
@@ -627,6 +661,7 @@ async def _serve_deployment_inner(
             command_acker=consumer,
             input_client=content,
             output_stub=output_pb2_grpc.ExecutionOutputServiceStub(output_channel),
+            index_client_context_factory=index_client_context_factory,
         )
         runtime = WorkerServeLoop(
             consumer=consumer,

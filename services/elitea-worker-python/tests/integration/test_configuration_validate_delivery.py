@@ -58,6 +58,12 @@ def _handler() -> ConfigurationValidationHandler:
     return ConfigurationValidationHandler(EliteaSdkAdapter())
 
 
+class _BindingAwareHandler:
+    @staticmethod
+    def validate_binding(**kwargs) -> None:
+        _handler().validate_binding(**kwargs)
+
+
 class InlineSupervisor:
     """Preserves the pre-executor behavior in transport-focused tests."""
 
@@ -68,7 +74,7 @@ class InlineSupervisor:
         return operation(*args, **kwargs)
 
 
-class BlockingHandler:
+class BlockingHandler(_BindingAwareHandler):
     def __init__(self) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
@@ -461,7 +467,7 @@ class DeadlineAdvancingInput(CountingInput):
         return content
 
 
-class CountingHandler:
+class CountingHandler(_BindingAwareHandler):
     def __init__(
         self,
         *,
@@ -870,7 +876,7 @@ def test_redis_redelivery_resumes_same_fence_spool_before_input_or_sdk(
         control = ActiveLeaseControl(command, envelope, manifest)
         acker = Acker()
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("durable output recovery must not invoke the SDK")
 
@@ -966,7 +972,7 @@ def test_replacement_fence_spool_fails_closed_before_input_sdk_or_output(
         output_call = AckReplayCall()
         acker = Acker()
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("replacement-fence recovery must not invoke the SDK")
 
@@ -1032,7 +1038,7 @@ def test_active_lease_without_spool_never_reexecutes_business_logic() -> None:
         control = ActiveLeaseControl(command, envelope, manifest)
         acker = Acker()
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("an active duplicate must not invoke the SDK")
 
@@ -1102,7 +1108,7 @@ def test_slow_fetch_renews_lease_and_observes_cancellation_before_sdk() -> None:
                 await asyncio.sleep(0.04)
                 return self.content
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -1169,7 +1175,7 @@ def test_delivery_admission_saturation_before_claim_returns_retry_without_ack() 
             occupied_started.set()
             await occupied_release.wait()
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -1258,7 +1264,7 @@ def test_lease_margin_is_checked_after_observation_and_beats_cancellation() -> N
                 )
                 return response
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("an inadequately renewed lease must not execute")
 
@@ -1317,7 +1323,7 @@ def test_slow_control_calls_do_not_accumulate_lease_poll_drift() -> None:
                 await asyncio.sleep(0.03)
                 return await super().observe_desired_state(request)
 
-        class BlockingFailureHandler:
+        class BlockingFailureHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.started = threading.Event()
                 self.release = threading.Event()
@@ -1642,7 +1648,7 @@ def test_output_stream_crash_replays_exact_spooled_frame_without_business_reexec
         )
         sessions = CrashThenReplayFactory(spool)
 
-        class CountingHandler:
+        class CountingHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -1725,7 +1731,7 @@ def test_output_cancellation_winner_replaces_only_the_exact_spooled_result(
         )
         sessions = CancellationThenReplayFactory(spool)
 
-        class CountingHandler:
+        class CountingHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -1822,7 +1828,7 @@ def test_output_deadline_winner_replaces_first_success_before_durable_ack(
         )
         sessions = DeadlineThenReplayFactory(spool)
 
-        class CountingHandler:
+        class CountingHandler(_BindingAwareHandler):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -1927,7 +1933,7 @@ def test_recovery_replays_original_before_bound_cancellation_replacement(
         acker = Acker()
         forbidden_input = CountingInput(b"", forbidden=True)
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("durable recovery must not invoke the SDK")
 
@@ -2016,7 +2022,7 @@ def test_recovery_replaces_late_success_spool_after_bound_deadline_winner(
         acker = Acker()
         forbidden_input = CountingInput(b"", forbidden=True)
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("durable recovery must not invoke the SDK")
 
@@ -2218,7 +2224,7 @@ def test_recovery_replays_cancellation_frame_left_by_crash_after_atomic_cas(
         acker = Acker()
         forbidden_input = CountingInput(b"", forbidden=True)
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("post-CAS recovery must not invoke the SDK")
 
@@ -2310,7 +2316,7 @@ def test_generic_stale_output_rejection_never_rewrites_the_spool(
         control = ActiveLeaseControl(command, envelope, manifest)
         acker = Acker()
 
-        class ForbiddenHandler:
+        class ForbiddenHandler(_BindingAwareHandler):
             def execute(self, request):
                 raise AssertionError("durable recovery must not invoke the SDK")
 

@@ -2,28 +2,24 @@
 
 from __future__ import annotations
 
+import hmac
 import math
 from dataclasses import dataclass
 from typing import Any
 
 from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter, SdkValidationError
 from elitea_worker.constants import (
-    CONFIGURATION_CATALOG_REVISION,
-    CONFIGURATION_CATALOG_SHA256,
-    CONFIGURATION_TYPE,
     MAX_ISSUES,
+    MAX_JSON_DEPTH,
     MAX_STRING_BYTES,
-    OPENAPI_SCHEMA_ID,
-    OPENAPI_SCHEMA_REVISION,
-    OPENAPI_SCHEMA_SHA256,
 )
 from elitea_worker.execution.errors import (
     IncompatibleVersion,
     InternalFailure,
     InvalidInput,
     ResourceExhausted,
-    WorkerError,
     UnsupportedCapability,
+    WorkerError,
 )
 
 
@@ -80,17 +76,6 @@ _SAFE_ERRORS: dict[str, tuple[str, str]] = {
     "less_than": ("VALUE_OUT_OF_RANGE", "Value is outside the allowed range."),
     "less_than_equal": ("VALUE_OUT_OF_RANGE", "Value is outside the allowed range."),
 }
-_OPENAPI_SECRET_FIELDS = frozenset({"api_key", "client_secret"})
-_CREDENTIAL_FREE_OPENAPI_FIELDS = frozenset(
-    {
-        "auth_type",
-        "client_id",
-        "custom_header_name",
-        "method",
-        "scope",
-        "token_url",
-    }
-)
 
 
 class ConfigurationValidationHandler:
@@ -99,37 +84,14 @@ class ConfigurationValidationHandler:
 
     def execute(self, request: ConfigurationValidationRequest) -> ConfigurationValidationResult:
         self._validate_identity(request)
-        secret_fields = request.settings.keys() & _OPENAPI_SECRET_FIELDS
-        if secret_fields:
-            # This is a protocol/admission failure, intentionally not a schema
-            # issue. The admitted credential-free subset still uses the exact
-            # legacy SDK model without modification.
-            raise InvalidInput(
-                "Credential-bearing settings are not accepted by the credential-free profile."
-            )
-        if any(key not in _CREDENTIAL_FREE_OPENAPI_FIELDS for key in request.settings):
-            # The pinned SDK uses extra='allow'. Rejecting an unknown public
-            # field before model_validate is an explicit target security
-            # difference, not an accidental SDK behavior change.
-            raise InvalidInput("Unknown settings fields are not accepted by the credential-free profile.")
-        for value in request.settings.values():
-            if isinstance(value, (dict, list)):
-                raise InvalidInput(
-                    "Container settings values are not accepted by the credential-free profile."
-                )
-            if isinstance(value, str) and len(value.encode("utf-8")) > MAX_STRING_BYTES:
-                raise ResourceExhausted("A settings value exceeds the approved limit.")
-            if isinstance(value, float) and not math.isfinite(value):
-                raise InvalidInput("A settings value is not a finite JSON scalar.")
-            if value is not None and not isinstance(value, (str, int, float, bool)):
-                raise InvalidInput("A settings value is not a JSON scalar.")
+        _validate_json_value(request.settings)
 
         try:
             outcome = self._sdk.validate(request.configuration_type, request.settings)
         except WorkerError:
             raise
         except Exception:
-            # Preserve the legacy validator's terminal-error behavior while
+            # Preserve the current validator's terminal-error behavior while
             # keeping adapter, model and exception text out of the contract.
             # BaseException is intentionally not caught: process shutdown and
             # interpreter-level cancellation keep their normal semantics.
@@ -152,18 +114,7 @@ class ConfigurationValidationHandler:
             issues=issues,
         )
 
-    @staticmethod
-    def _validate_identity(request: ConfigurationValidationRequest) -> None:
-        if request.configuration_type != CONFIGURATION_TYPE:
-            raise UnsupportedCapability("Configuration type is not supported.")
-        if (
-            request.catalog_revision != CONFIGURATION_CATALOG_REVISION
-            or request.catalog_digest.hex() != CONFIGURATION_CATALOG_SHA256
-            or request.schema_id != OPENAPI_SCHEMA_ID
-            or request.schema_revision != OPENAPI_SCHEMA_REVISION
-            or request.schema_digest.hex() != OPENAPI_SCHEMA_SHA256
-        ):
-            raise IncompatibleVersion()
+    def _validate_identity(self, request: ConfigurationValidationRequest) -> None:
         required = (
             request.configuration_revision_id,
             request.input_bundle_id,
@@ -178,6 +129,83 @@ class ConfigurationValidationHandler:
         )
         if any(not value for value in required) or any(len(value) != 32 for value in digests):
             raise InvalidInput()
+        self.validate_binding(
+            configuration_type=request.configuration_type,
+            catalog_revision=request.catalog_revision,
+            catalog_digest=request.catalog_digest,
+            schema_id=request.schema_id,
+            schema_revision=request.schema_revision,
+            schema_digest=request.schema_digest,
+        )
+
+    def validate_binding(
+        self,
+        *,
+        configuration_type: str,
+        catalog_revision: str,
+        catalog_digest: bytes,
+        schema_id: str,
+        schema_revision: str,
+        schema_digest: bytes,
+    ) -> None:
+        """Bind one command to the admitted catalog and selected SDK schema."""
+
+        if (
+            not configuration_type
+            or not catalog_revision
+            or not schema_id
+            or not schema_revision
+            or len(catalog_digest) != 32
+            or len(schema_digest) != 32
+        ):
+            raise InvalidInput()
+        if catalog_revision != self._sdk.catalog_revision or not hmac.compare_digest(
+            catalog_digest,
+            self._sdk.catalog_digest,
+        ):
+            raise IncompatibleVersion()
+        binding = self._sdk.schema(configuration_type)
+        if not binding.validation_supported:
+            raise UnsupportedCapability(
+                "Validation is not supported for this configuration type."
+            )
+        if (
+            schema_id != binding.schema_id
+            or schema_revision != binding.schema_revision
+            or not hmac.compare_digest(schema_digest, binding.schema_digest)
+        ):
+            raise IncompatibleVersion()
+
+
+def _validate_json_value(value: Any, depth: int = 0) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise ResourceExhausted("The settings input exceeds the nesting limit.")
+    if value is None or isinstance(value, (bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InvalidInput("The settings input contains a non-finite number.")
+        return
+    if isinstance(value, str):
+        try:
+            length = len(value.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise InvalidInput("The settings input contains invalid text.") from None
+        if length > MAX_STRING_BYTES:
+            raise ResourceExhausted("A settings string exceeds the approved limit.")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise InvalidInput("A settings field name is not valid JSON text.")
+            _validate_json_value(key, depth)
+            _validate_json_value(item, depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item, depth + 1)
+        return
+    raise InvalidInput("The settings input is not a JSON value.")
 
 
 def _json_pointer(location: tuple[str | int, ...]) -> str:

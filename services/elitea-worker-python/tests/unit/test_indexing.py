@@ -10,14 +10,19 @@ from elitea.runtime.v1 import command_pb2, indexing_pb2, output_pb2
 
 from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
-from elitea_worker.execution.errors import InvalidInput
+from elitea_worker.execution.errors import InternalFailure, InvalidInput, ResourceExhausted
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.indexing import (
     IndexIngestHandler,
     IndexIngestInputBinding,
+    IndexIngestResult,
     ResolvedIndexIngestInput,
 )
-from elitea_worker.protocol.indexing import bind_result_artifact, request_from
+from elitea_worker.protocol.indexing import (
+    bind_result_artifact,
+    bind_result_summary,
+    request_from,
+)
 
 
 class _ClientStub:
@@ -209,6 +214,52 @@ def test_optional_reference_and_resolved_value_must_match() -> None:
         )
 
 
+def test_inline_summary_projects_only_the_nested_allowlist() -> None:
+    canary = "REDEEMED_CREDENTIAL_CANARY"
+    result = _index_result(
+        {
+            "success": True,
+            "result": {"status": "partly_indexed", "message": "Indexed with gaps"},
+            "toolkit_config": {"settings": {"token": canary}},
+            "llm_model": canary,
+            "events_dispatched": [{"secret": canary}],
+        }
+    )
+
+    bound = bind_result_summary(result)
+    encoded = bound.SerializeToString(deterministic=True)
+
+    assert bound.result_summary.status == indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED
+    assert bound.result_summary.message == "Indexed with gaps"
+    assert not bound.HasField("result_artifact")
+    assert canary.encode() not in encoded
+
+
+def test_outer_sdk_failure_becomes_safe_runtime_failure_input() -> None:
+    with pytest.raises(InternalFailure):
+        bind_result_summary(
+            _index_result(
+                {
+                    "success": False,
+                    "error": "raw endpoint and credential-adjacent detail",
+                    "toolkit_config": {"token": "secret"},
+                }
+            )
+        )
+
+
+def test_inline_summary_rejects_unbounded_sdk_message() -> None:
+    with pytest.raises(ResourceExhausted):
+        bind_result_summary(
+            _index_result(
+                {
+                    "success": True,
+                    "result": {"status": "ok", "message": "x" * (48 * 1024 + 1)},
+                }
+            )
+        )
+
+
 def test_kernel_preserves_current_wrapper_llm_defaults_and_fallback() -> None:
     async def run() -> None:
         sdk = _SdkStub({"success": True})
@@ -259,4 +310,25 @@ def _resolved(entry_id: str, value: Any, digest: bytes) -> ResolvedIndexIngestIn
             content_digest=digest,
         ),
         value=value,
+    )
+
+
+def _index_result(sdk_result: dict[str, Any]) -> IndexIngestResult:
+    return IndexIngestResult(
+        input_bundle_id="bundle-1",
+        input_bundle_digest=b"b" * 32,
+        toolkit_configuration=IndexIngestInputBinding(
+            entry_id="toolkit-config",
+            immutable_version="1",
+            content_digest=b"t" * 32,
+        ),
+        tool_parameters=IndexIngestInputBinding(
+            entry_id="tool-params",
+            immutable_version="1",
+            content_digest=b"p" * 32,
+        ),
+        llm_model=None,
+        llm_configuration=None,
+        mcp_tokens=None,
+        sdk_result=sdk_result,
     )

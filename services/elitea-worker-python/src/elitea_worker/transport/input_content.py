@@ -111,6 +111,39 @@ class ScopedInputContentClient:
         )
 
     async def fetch(self, grant: InputReadGrant) -> bytes:
+        return await self._fetch(grant, source_immutable_version=None)
+
+    async def fetch_materialized(
+        self,
+        grant: InputReadGrant,
+        *,
+        source_immutable_version: str,
+    ) -> bytes:
+        """Fetch a claim-scoped derivative bound to one immutable source.
+
+        Index inputs may contain placeholders which the content service redeems
+        only after claim authorization. The response body therefore has its own
+        digest and length, while the three source headers prove which admitted
+        manifest entry was materialized.
+        """
+
+        if (
+            not source_immutable_version
+            or len(source_immutable_version.encode("utf-8")) > 256
+            or any(character in source_immutable_version for character in ("\r", "\n", "\x00"))
+        ):
+            raise InvalidInput("The scoped content source identity is malformed.")
+        return await self._fetch(
+            grant,
+            source_immutable_version=source_immutable_version,
+        )
+
+    async def _fetch(
+        self,
+        grant: InputReadGrant,
+        *,
+        source_immutable_version: str | None,
+    ) -> bytes:
         parsed = urlsplit(grant.url)
         try:
             origin = _canonical_https_origin(f"{parsed.scheme}://{parsed.netloc}")
@@ -176,6 +209,23 @@ class ScopedInputContentClient:
                 if response.status_code < 200 or response.status_code >= 300:
                     raise DependencyUnavailable("The scoped content service did not accept the request.")
                 response_digest = _content_digest(response.headers.get("content-digest"))
+                if source_immutable_version is not None:
+                    source_digest = _content_digest(
+                        response.headers.get("x-elitea-source-content-digest")
+                    )
+                    source_length = _decimal_length(
+                        response.headers.get("x-elitea-source-content-length"),
+                        description="source content length",
+                    )
+                    if (
+                        not hmac.compare_digest(source_digest, grant.expected_sha256)
+                        or source_length != grant.expected_length
+                        or response.headers.get("x-elitea-source-immutable-version")
+                        != source_immutable_version
+                    ):
+                        raise AuthorizationFailure(
+                            "The materialized content does not match its admitted source."
+                        )
                 if (
                     response.headers.get("cache-control", "").lower().replace(" ", "")
                     != "private,no-store"
@@ -186,14 +236,23 @@ class ScopedInputContentClient:
                     raise InvalidInput("The content response media type is malformed.")
                 declared = response.headers.get("content-length")
                 if declared is not None:
-                    try:
-                        declared_length = int(declared)
-                    except ValueError as exc:
-                        raise InvalidInput("The content length is malformed.") from exc
-                    if declared_length != grant.expected_length:
+                    declared_length = _decimal_length(
+                        declared,
+                        description="content length",
+                    )
+                    if source_immutable_version is None and declared_length != grant.expected_length:
                         raise InvalidInput("The content length does not match its descriptor.")
+                    if declared_length > self._max_content_bytes:
+                        raise ResourceExhausted(
+                            "The scoped content exceeds the approved input limit."
+                        )
+                body_limit = (
+                    grant.expected_length
+                    if source_immutable_version is None
+                    else self._max_content_bytes
+                )
                 async for chunk in response.aiter_bytes():
-                    if len(result) + len(chunk) > grant.expected_length:
+                    if len(result) + len(chunk) > body_limit:
                         raise InvalidInput("The content length does not match its descriptor.")
                     result.extend(chunk)
                     digest.update(chunk)
@@ -202,10 +261,11 @@ class ScopedInputContentClient:
         except httpx.HTTPError as exc:
             raise DependencyUnavailable("The scoped content service is unavailable.") from exc
         actual_digest = digest.digest()
-        if (
+        if not result or not hmac.compare_digest(response_digest, actual_digest):
+            raise InvalidInput("The scoped content does not match its immutable descriptor.")
+        if source_immutable_version is None and (
             len(result) != grant.expected_length
             or not hmac.compare_digest(actual_digest, grant.expected_sha256)
-            or not hmac.compare_digest(response_digest, actual_digest)
         ):
             raise InvalidInput("The scoped content does not match its immutable descriptor.")
         return bytes(result)
@@ -224,6 +284,15 @@ def _content_digest(value: str | None) -> bytes:
     if len(digest) != 32:
         raise InvalidInput("The content response digest is malformed.")
     return digest
+
+
+def _decimal_length(value: str | None, *, description: str) -> int:
+    if value is None or not value or not value.isascii() or not value.isdecimal():
+        raise InvalidInput(f"The {description} is malformed.")
+    length = int(value)
+    if length < 1:
+        raise InvalidInput(f"The {description} is malformed.")
+    return length
 
 
 def _header_name(value: str) -> str:

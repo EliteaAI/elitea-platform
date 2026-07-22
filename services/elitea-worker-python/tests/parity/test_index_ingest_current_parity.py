@@ -22,10 +22,10 @@ _DISPATCH = (
 _SDK_ROOT = _PROJECTS_ROOT / "elitea-sdk"
 _SDK_CLIENT_PATH = "elitea_sdk/runtime/clients/client.py"
 _WRAPPER_SHA256 = (
-    "97ad7d13d0cadd26d74ac15f010201eb28152bbccffa97de9dbf244bbab4ba8c"
+    "2e8f82530d8fcc55a908355028bef9e6e33b4324d27589848f2151611a95635d"
 )
 _DISPATCH_SHA256 = (
-    "64581b157203aaf9e81c36a4ec557d43a60fda72fa5d15e3113b04a077e1efe1"
+    "daacfb681b1805a0570af6efee79add01c8b1694b65939689b7dcba504a832c3"
 )
 
 

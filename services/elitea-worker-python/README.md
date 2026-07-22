@@ -65,6 +65,7 @@ The current `elitea.runtime-deploy.v1` shape is:
   "control_target": "elitea-main-control.internal:8443",
   "output_target": "elitea-main-output.internal:8444",
   "content_origin": "https://elitea-main-content.internal:8445",
+  "platform_origin": "https://elitea-main.internal:8443",
   "ca_path": "/run/secrets/runtime-ca.pem",
   "certificate_path": "/run/secrets/worker-chain.pem",
   "private_key_path": "/run/secrets/worker-key.pem",
@@ -193,8 +194,9 @@ The planned async SDK phase removes that cancellation limitation.
 The repository tests include unit/component coverage and a worker CLI
 subprocess retry/SIGTERM lifecycle test with a fake unavailable Redis module;
 that test is not end to end. The opt-in harness under
-`services/elitea-main/tests/system` separately starts PostgreSQL 16, legacy and
-dedicated TLS/ACL Redis 7, the Go binaries and independent Python `serve`
+`services/elitea-main/tests/system` separately starts PostgreSQL 16, the
+current-baseline and dedicated TLS/ACL Redis 7 instances, the Go binaries and
+independent Python `serve`
 processes. It proves the small configuration-validation topology, reclaim after
 three authorization failures, settlement, retirement and SSE replay. It does
 not prove production load/soak, process failover, restart-based certificate

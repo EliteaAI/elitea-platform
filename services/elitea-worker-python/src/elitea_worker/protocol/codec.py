@@ -21,6 +21,7 @@ from elitea.runtime.v1 import (
     common_pb2,
     envelope_pb2,
     errors_pb2,
+    indexing_pb2,
     input_pb2,
     output_pb2,
     validation_pb2,
@@ -32,6 +33,7 @@ from elitea_worker.constants import (
     CONFORMANCE_HMAC_KEY,
     CONFORMANCE_HMAC_KEY_ID,
     ENVELOPE_SCHEMA_REVISION,
+    INDEX_INGEST_CAPABILITY_ID,
     LIMITS_REVISION,
     MAX_ENVELOPE_BYTES,
     MAX_MANIFEST_BYTES,
@@ -259,7 +261,7 @@ def validation_request_from(
 
 def build_output_frame(
     verified: VerifiedWorkerCommand,
-    outcome: ConfigurationValidationResult | WorkerError,
+    outcome: ConfigurationValidationResult | indexing_pb2.IndexIngestResultV1 | WorkerError,
     *,
     occurred_at_unix_millis: int,
     claim_handoff_watermark: int = 0,
@@ -267,6 +269,7 @@ def build_output_frame(
     if occurred_at_unix_millis <= 0 or claim_handoff_watermark < 0:
         raise InvalidInput("The output occurrence time is malformed.")
     command = verified.command
+    logical_output_id = _logical_output_id(command)
     frame = output_pb2.ExecutionOutputFrameV1(
         output_schema_revision=OUTPUT_SCHEMA_REVISION,
         stream_id=f"{command.execution_id}:{command.generation}",
@@ -279,24 +282,33 @@ def build_output_frame(
             generation=command.generation,
         ),
         fence=verified.envelope.fence,
-        logical_output_id=(
-            "configuration-validation:"
-            f"{command.configuration_validation.configuration_revision_id}"
-        ),
+        logical_output_id=logical_output_id,
         event_id=f"{command.command_id}:1",
         sequence=1,
         claim_handoff_watermark=claim_handoff_watermark,
         occurred_at_unix_millis=occurred_at_unix_millis,
         terminal=True,
     )
-    if isinstance(outcome, ConfigurationValidationResult):
+    selected_capability = command.WhichOneof("capability_command")
+    if (
+        isinstance(outcome, ConfigurationValidationResult)
+        and selected_capability == "configuration_validation"
+    ):
         payload = _validation_result_message(outcome)
         frame.event_type = (
             output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT
         )
         frame.configuration_validation.CopyFrom(payload)
         requested_outcome = common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
-    else:
+    elif (
+        isinstance(outcome, indexing_pb2.IndexIngestResultV1)
+        and selected_capability == "index_ingest"
+    ):
+        payload = outcome
+        frame.event_type = output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT
+        frame.index_ingest.CopyFrom(payload)
+        requested_outcome = common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
+    elif isinstance(outcome, WorkerError):
         payload = _runtime_error_message(outcome)
         frame.event_type = output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR
         frame.runtime_error.CopyFrom(payload)
@@ -305,6 +317,8 @@ def build_output_frame(
             if outcome.code == "CANCELLED"
             else common_pb2.EXECUTION_OUTCOME_V1_FAILED
         )
+    else:
+        raise InvalidInput("The terminal output does not match its capability.")
     payload_bytes = payload.SerializeToString(deterministic=True)
     payload_digest = _digest(hashlib.sha256(payload_bytes).digest())
     frame.payload_digest.CopyFrom(payload_digest)
@@ -408,12 +422,21 @@ def _runtime_error_message(error: WorkerError) -> errors_pb2.RuntimeErrorV1:
 def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
     if command.protocol_revision != PROTOCOL_REVISION or command.limits_revision != LIMITS_REVISION:
         raise IncompatibleVersion()
-    if command.capability_id != CAPABILITY_ID or command.capability_version != CAPABILITY_VERSION:
+    if command.capability_version != CAPABILITY_VERSION:
         raise UnsupportedCapability()
-    if (
-        command.command_type != command_pb2.WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE
-        or command.WhichOneof("capability_command") != "configuration_validation"
-    ):
+    selected_capability = command.WhichOneof("capability_command")
+    configuration_command = (
+        command.capability_id == CAPABILITY_ID
+        and command.command_type
+        == command_pb2.WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE
+        and selected_capability == "configuration_validation"
+    )
+    index_command = (
+        command.capability_id == INDEX_INGEST_CAPABILITY_ID
+        and command.command_type == command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST
+        and selected_capability == "index_ingest"
+    )
+    if not configuration_command and not index_command:
         raise UnsupportedCapability()
     required = (
         command.command_id,
@@ -429,13 +452,21 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
         command.input_bundle_ref.media_type,
         command.resource_class,
         command.isolation_class,
-        command.configuration_validation.configuration_revision_id,
-        command.configuration_validation.configuration_type,
-        command.configuration_validation.catalog_revision,
-        command.configuration_validation.schema_id,
-        command.configuration_validation.schema_revision,
-        command.configuration_validation.settings_entry_id,
     )
+    if configuration_command:
+        required += (
+            command.configuration_validation.configuration_revision_id,
+            command.configuration_validation.configuration_type,
+            command.configuration_validation.catalog_revision,
+            command.configuration_validation.schema_id,
+            command.configuration_validation.schema_revision,
+            command.configuration_validation.settings_entry_id,
+        )
+    else:
+        required += (
+            command.index_ingest.toolkit_configuration_entry_id,
+            command.index_ingest.tool_parameters_entry_id,
+        )
     if any(not value for value in required):
         raise InvalidInput("The worker command is missing a required reference or identity.")
     bounded = required + (
@@ -463,13 +494,40 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
     if command.input_bundle_ref.media_type != "application/x-protobuf":
         raise InvalidInput("The input bundle reference has the wrong media type.")
     _require_sha256(command.input_bundle_ref.digest, "input bundle digest")
-    _require_sha256(command.configuration_validation.catalog_digest, "catalog digest")
-    _require_sha256(command.configuration_validation.schema_digest, "schema digest")
+    if configuration_command:
+        _require_sha256(command.configuration_validation.catalog_digest, "catalog digest")
+        _require_sha256(command.configuration_validation.schema_digest, "schema digest")
+    else:
+        index_entry_ids = (
+            command.index_ingest.toolkit_configuration_entry_id,
+            command.index_ingest.tool_parameters_entry_id,
+            command.index_ingest.llm_model_entry_id,
+            command.index_ingest.llm_configuration_entry_id,
+            command.index_ingest.mcp_tokens_entry_id,
+        )
+        selected_entry_ids = tuple(value for value in index_entry_ids if value)
+        if (
+            len(selected_entry_ids) != len(set(selected_entry_ids))
+            or any(len(value.encode("utf-8")) > MAX_SAFE_STRING_BYTES for value in selected_entry_ids)
+        ):
+            raise InvalidInput("The index-ingest command bindings are malformed.")
     if (
         command.input_bundle_ref.byte_length < 1
         or command.input_bundle_ref.byte_length > MAX_MANIFEST_BYTES
     ):
         raise ResourceExhausted("The input bundle manifest exceeds the approved limit.")
+
+
+def _logical_output_id(command: command_pb2.WorkerCommandV1) -> str:
+    selected = command.WhichOneof("capability_command")
+    if selected == "configuration_validation":
+        return (
+            "configuration-validation:"
+            f"{command.configuration_validation.configuration_revision_id}"
+        )
+    if selected == "index_ingest":
+        return f"index-ingest:{command.execution_id}"
+    raise UnsupportedCapability()
 
 
 def _validate_fence(fence: common_pb2.ExecutionFenceV1) -> None:
@@ -535,19 +593,24 @@ def _scan_worker_command(raw: bytes) -> None:
         _length_field(input_fields, 3, "input bundle digest"),
         common_pb2.DigestV1.DESCRIPTOR,
     )
-    validation = _length_field(fields, 32, "configuration validation command")
-    validation_fields = _scan_message(
-        validation,
-        validation_pb2.ConfigurationValidationCommandV1.DESCRIPTOR,
-    )
-    _scan_message(
-        _length_field(validation_fields, 4, "catalog digest"),
-        common_pb2.DigestV1.DESCRIPTOR,
-    )
-    _scan_message(
-        _length_field(validation_fields, 7, "schema digest"),
-        common_pb2.DigestV1.DESCRIPTOR,
-    )
+    if 32 in fields:
+        validation_fields = _scan_message(
+            _length_field(fields, 32, "configuration validation command"),
+            validation_pb2.ConfigurationValidationCommandV1.DESCRIPTOR,
+        )
+        _scan_message(
+            _length_field(validation_fields, 4, "catalog digest"),
+            common_pb2.DigestV1.DESCRIPTOR,
+        )
+        _scan_message(
+            _length_field(validation_fields, 7, "schema digest"),
+            common_pb2.DigestV1.DESCRIPTOR,
+        )
+    elif 34 in fields:
+        _scan_message(
+            _length_field(fields, 34, "index ingest command"),
+            indexing_pb2.IndexIngestCommandV1.DESCRIPTOR,
+        )
 
 
 def _scan_message(

@@ -7,7 +7,6 @@ TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID = "toolkit.available_tools.v1"
 INDEX_INGEST_CAPABILITY_ID = "index.ingest.v1"
 # Backward-compatible name used by the first validation slice.
 CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
-CONFIGURATION_TYPE = "openapi"
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
 
@@ -24,11 +23,6 @@ SDK_PACKAGE_TREE_SHA256 = (
 CONFIGURATION_CATALOG_REVISION = SDK_SOURCE_REVISION
 CONFIGURATION_CATALOG_SHA256 = (
     "1cfe9846435f68d5ec46d6bc36992679a4fadbbe248a28879c0a312969ca6ef4"
-)
-OPENAPI_SCHEMA_ID = "elitea.configuration.openapi"
-OPENAPI_SCHEMA_REVISION = SDK_SOURCE_REVISION
-OPENAPI_SCHEMA_SHA256 = (
-    "8d72b85e9f389410a56a0dd11b5ed6a031ac5c5c677f5f8b68278bb7be638b4d"
 )
 
 JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})

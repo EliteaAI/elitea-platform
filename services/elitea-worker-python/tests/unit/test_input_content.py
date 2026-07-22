@@ -7,7 +7,11 @@ import hashlib
 import httpx
 import pytest
 
-from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput
+from elitea_worker.execution.errors import (
+    AuthorizationFailure,
+    DependencyUnavailable,
+    InvalidInput,
+)
 from elitea_worker.transport.input_content import (
     ClaimBoundInputReference,
     ClaimBoundInputRequestBuilder,
@@ -122,6 +126,96 @@ def test_claim_bound_builder_matches_internal_go_route_and_headers() -> None:
         ("X-Elitea-Claim-Id", "claim-1"),
         ("X-Elitea-Fence", "ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY"),
     )
+
+
+def test_materialized_fetch_binds_source_identity_and_response_digest() -> None:
+    async def run() -> None:
+        source = b'{"token":"{{secret.GITHUB_TOKEN}}"}'
+        materialized = b'{"token":"redeemed-in-memory-only"}'
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body_digest = base64.b64encode(
+                hashlib.sha256(materialized).digest()
+            ).decode("ascii")
+            source_digest = base64.b64encode(
+                hashlib.sha256(source).digest()
+            ).decode("ascii")
+            return httpx.Response(
+                200,
+                content=materialized,
+                request=request,
+                extensions={"http_version": b"HTTP/2"},
+                headers={
+                    "content-length": str(len(materialized)),
+                    "content-digest": f"sha-256=:{body_digest}:",
+                    "x-elitea-source-content-digest": f"sha-256=:{source_digest}:",
+                    "x-elitea-source-content-length": str(len(source)),
+                    "x-elitea-source-immutable-version": "sha256:source",
+                    "cache-control": "private, no-store",
+                    "content-type": "application/json",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ScopedInputContentClient(
+                http,
+                allowed_origins=frozenset({"https://content.internal"}),
+                max_content_bytes=1024,
+                require_http2=True,
+            )
+            result = await client.fetch_materialized(
+                InputReadGrant(
+                    url="https://content.internal/object",
+                    expected_length=len(source),
+                    expected_sha256=hashlib.sha256(source).digest(),
+                    expected_media_type="application/json",
+                ),
+                source_immutable_version="sha256:source",
+            )
+            assert result == materialized
+
+    asyncio.run(run())
+
+
+def test_materialized_fetch_rejects_wrong_admitted_source_headers() -> None:
+    async def run() -> None:
+        source = b"{}"
+        digest = base64.b64encode(hashlib.sha256(source).digest()).decode("ascii")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=source,
+                request=request,
+                headers={
+                    "content-length": str(len(source)),
+                    "content-digest": f"sha-256=:{digest}:",
+                    "x-elitea-source-content-digest": f"sha-256=:{digest}:",
+                    "x-elitea-source-content-length": str(len(source)),
+                    "x-elitea-source-immutable-version": "wrong-version",
+                    "cache-control": "private, no-store",
+                    "content-type": "application/json",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = ScopedInputContentClient(
+                http,
+                allowed_origins=frozenset({"https://content.internal"}),
+                max_content_bytes=1024,
+            )
+            with pytest.raises(AuthorizationFailure, match="admitted source"):
+                await client.fetch_materialized(
+                    InputReadGrant(
+                        url="https://content.internal/object",
+                        expected_length=len(source),
+                        expected_sha256=hashlib.sha256(source).digest(),
+                        expected_media_type="application/json",
+                    ),
+                    source_immutable_version="sha256:source",
+                )
+
+    asyncio.run(run())
 
 
 def test_rejects_unapproved_or_insecure_origin_before_request() -> None:

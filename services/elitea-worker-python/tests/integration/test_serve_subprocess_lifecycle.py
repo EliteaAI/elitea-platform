@@ -182,6 +182,7 @@ def _write_runtime_material(root: Path) -> Path:
         "control_target": "control.invalid:8443",
         "output_target": "output.invalid:8444",
         "content_origin": "https://content.invalid",
+        "platform_origin": "https://elitea.invalid",
         "ca_path": str(ca_path),
         "certificate_path": str(certificate_path),
         "private_key_path": str(private_key_path),

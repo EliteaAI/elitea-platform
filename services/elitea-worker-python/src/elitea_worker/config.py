@@ -120,6 +120,7 @@ class RuntimeDeployConfig(BaseModel):
     control_target: str = Field(min_length=1, max_length=512)
     output_target: str = Field(min_length=1, max_length=512)
     content_origin: str = Field(min_length=1, max_length=2048)
+    platform_origin: str = Field(min_length=1, max_length=2048)
     ca_path: Path
     certificate_path: Path
     private_key_path: Path
@@ -179,7 +180,7 @@ class RuntimeDeployConfig(BaseModel):
             raise ValueError("gRPC target is malformed")
         return value
 
-    @field_validator("content_origin")
+    @field_validator("content_origin", "platform_origin")
     @classmethod
     def validate_content_origin(cls, value: str) -> str:
         parsed = urlsplit(value)
@@ -192,7 +193,7 @@ class RuntimeDeployConfig(BaseModel):
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("content origin must be an HTTPS origin")
+            raise ValueError("runtime service origins must be HTTPS origins")
         return value.rstrip("/")
 
     @field_validator(

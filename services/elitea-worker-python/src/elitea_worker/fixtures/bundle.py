@@ -331,6 +331,23 @@ def parse_settings_json(raw: bytes) -> dict[str, Any]:
     return value
 
 
+def parse_json_value(raw: bytes) -> Any:
+    """Decode one bounded online JSON value without duplicate members."""
+
+    if not raw or len(raw) > MAX_SETTINGS_BYTES:
+        raise ResourceExhausted("The index input exceeds the approved limit.")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InvalidInput("The index input is malformed.") from exc
+    _check_json_limits(value)
+    return value
+
+
 def project_input_manifest_entries(
     manifest: input_pb2.ExecutionInputBundleV1,
 ) -> tuple[FixtureEntry, ...]:
