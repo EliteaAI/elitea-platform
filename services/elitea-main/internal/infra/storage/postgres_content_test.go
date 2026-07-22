@@ -36,6 +36,7 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 	wantDigest := sha256.Sum256([]byte(`{"auth_type":"Digest"}`))
 
 	store := contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {
+		require.Contains(t, query, "j.actor_id")
 		require.Contains(t, query, "e.required_grant_audience = $8")
 		require.Contains(t, query, "ws.workload_session_id = c.workload_session_id")
 		require.Contains(t, query, "ws.workload_identity = c.workload_identity")
@@ -47,13 +48,14 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 		require.Len(t, args, 8)
 		require.Equal(t, inputReadGrantAudience, args[7])
 		return contentRowFunc(func(dest ...any) error {
-			require.Len(t, dest, 6)
+			require.Len(t, dest, 7)
 			*dest[0].(*string) = "42"
-			*dest[1].(*string) = "bundle-1"
-			*dest[2].(*string) = "index.ingest.v1"
-			*dest[3].(*string) = "index.toolkit_configuration"
-			*dest[4].(*[]byte) = append([]byte(nil), wantDigest[:]...)
-			*dest[5].(*int64) = 22
+			*dest[1].(*string) = "17"
+			*dest[2].(*string) = "bundle-1"
+			*dest[3].(*string) = "index.ingest.v1"
+			*dest[4].(*string) = "index.toolkit_configuration"
+			*dest[5].(*[]byte) = append([]byte(nil), wantDigest[:]...)
+			*dest[6].(*int64) = 22
 			return nil
 		})
 	})
@@ -71,6 +73,7 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "42", authorization.ResourceProjectID)
+	require.Equal(t, "17", authorization.ActorID)
 	require.Equal(t, "bundle-1", authorization.InputBundleID)
 	require.Equal(t, "index.ingest.v1", authorization.CapabilityID)
 	require.Equal(t, "index.toolkit_configuration", authorization.SemanticRole)

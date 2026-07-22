@@ -49,11 +49,14 @@ type ContentClaim struct {
 
 type ContentAuthorization struct {
 	ResourceProjectID string
-	InputBundleID     string
-	CapabilityID      string
-	SemanticRole      string
-	ExpectedDigest    [sha256.Size]byte
-	ExpectedLength    int64
+	// ActorID is the exact durable execution_jobs.actor_id. Materializers own
+	// any capability-specific interpretation, including current user lookup.
+	ActorID        string
+	InputBundleID  string
+	CapabilityID   string
+	SemanticRole   string
+	ExpectedDigest [sha256.Size]byte
+	ExpectedLength int64
 }
 
 // ContentAuthorizer validates workload identity, claim, generation, fence,
@@ -118,6 +121,26 @@ func NewRuntimeContentServerWithLimits(
 		return nil, errors.New("runtime context is required")
 	}
 	return newContentServer(authorizer, store, nil, runtimeToken, maxBytes, maxConcurrentRequests)
+}
+
+// NewMaterializingRuntimeContentServerWithLimits composes generic
+// claim-scoped materialization and Elitea client-token compatibility on one
+// bounded private mTLS listener.
+func NewMaterializingRuntimeContentServerWithLimits(
+	authorizer ContentAuthorizer,
+	store ContentStore,
+	materializer ContentMaterializer,
+	runtimeToken *EliteaClientTokenService,
+	maxBytes int64,
+	maxConcurrentRequests int,
+) (*ContentServer, error) {
+	if materializer == nil {
+		return nil, errors.New("content materializer is required")
+	}
+	if runtimeToken == nil {
+		return nil, errors.New("runtime context is required")
+	}
+	return newContentServer(authorizer, store, materializer, runtimeToken, maxBytes, maxConcurrentRequests)
 }
 
 func newContentServer(authorizer ContentAuthorizer, store ContentStore, materializer ContentMaterializer, runtimeToken *EliteaClientTokenService, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {

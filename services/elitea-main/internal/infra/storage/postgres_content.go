@@ -54,6 +54,7 @@ func (r *PostgresContentRepository) AuthorizeContent(
 	var digest []byte
 	err = r.store.QueryRow(ctx, `
 SELECT j.resource_project_id::text,
+       j.actor_id,
        j.input_bundle_id,
        j.capability_id,
        e.semantic_role,
@@ -93,6 +94,7 @@ WHERE c.claim_id = $1
 		inputReadGrantAudience,
 	).Scan(
 		&authorization.ResourceProjectID,
+		&authorization.ActorID,
 		&authorization.InputBundleID,
 		&authorization.CapabilityID,
 		&authorization.SemanticRole,

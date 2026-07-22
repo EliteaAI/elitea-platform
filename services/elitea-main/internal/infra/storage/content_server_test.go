@@ -30,6 +30,17 @@ func (f contentStoreFunc) OpenContent(ctx context.Context, projectID, inputBundl
 	return f(ctx, projectID, inputBundleID, contentID, version)
 }
 
+type contentMaterializerFunc func(context.Context, ContentAuthorization, []byte, int64) ([]byte, error)
+
+func (f contentMaterializerFunc) MaterializeContent(
+	ctx context.Context,
+	authorization ContentAuthorization,
+	source []byte,
+	maxBytes int64,
+) ([]byte, error) {
+	return f(ctx, authorization, source, maxBytes)
+}
+
 func TestContentServerRequiresVerifiedMTLSAndClaimFence(t *testing.T) {
 	t.Parallel()
 
@@ -69,6 +80,7 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 			require.Same(t, certificate, claim.PeerCertificate)
 			return ContentAuthorization{
 				ResourceProjectID: "42",
+				ActorID:           "17",
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.ConfigurationValidationCapability,
 				SemanticRole:      "configuration.settings",
@@ -111,6 +123,7 @@ func TestContentServerDoesNotReleaseWrongDigest(t *testing.T) {
 		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
 			return ContentAuthorization{
 				ResourceProjectID: "42",
+				ActorID:           "17",
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.ConfigurationValidationCapability,
 				SemanticRole:      "configuration.settings",
@@ -161,6 +174,7 @@ func TestContentServerRejectsOverLimitBeforeOpeningContent(t *testing.T) {
 		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
 			return ContentAuthorization{
 				ResourceProjectID: "42",
+				ActorID:           "17",
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.ConfigurationValidationCapability,
 				SemanticRole:      "configuration.settings",
@@ -205,6 +219,105 @@ func TestContentServerRejectsMultiplexedWorkBeyondRequestCapacity(t *testing.T) 
 	server.Routes().ServeHTTP(response, validContentRequest(t))
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Equal(t, "1", response.Header().Get("Retry-After"))
+}
+
+func TestMaterializingRuntimeContentServerComposesBothBoundedPaths(t *testing.T) {
+	t.Parallel()
+
+	source := []byte(`{"private":true,"elitea_title":"source"}`)
+	expanded := []byte(`{"configuration_type":"confluence","private":true}`)
+	digest := sha256.Sum256(source)
+	materializerCalls := 0
+	materializer := contentMaterializerFunc(func(
+		_ context.Context,
+		authorization ContentAuthorization,
+		gotSource []byte,
+		maxBytes int64,
+	) ([]byte, error) {
+		materializerCalls++
+		require.Equal(t, "17", authorization.ActorID)
+		require.Equal(t, source, gotSource)
+		require.EqualValues(t, 1024, maxBytes)
+		return append([]byte(nil), expanded...), nil
+	})
+	runtimeToken := &EliteaClientTokenService{}
+	server, err := NewMaterializingRuntimeContentServerWithLimits(
+		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
+			return ContentAuthorization{
+				ResourceProjectID: "42",
+				ActorID:           "17",
+				InputBundleID:     "bundle-1",
+				CapabilityID:      executiondomain.IndexIngestCapability,
+				SemanticRole:      "index.toolkit_configuration",
+				ExpectedDigest:    digest,
+				ExpectedLength:    int64(len(source)),
+			}, nil
+		}),
+		contentStoreFunc(func(context.Context, string, string, string, string) (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(source)), nil
+		}),
+		materializer,
+		runtimeToken,
+		1024,
+		1,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, server.materializer)
+	require.Same(t, runtimeToken, server.runtimeToken)
+	require.Equal(t, 1, cap(server.requests))
+
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, validContentRequest(t))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, expanded, response.Body.Bytes())
+	require.Equal(t, 1, materializerCalls)
+
+	runtimeRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/executions/execution-1/generations/1/runtime-context/elitea-client-token",
+		nil,
+	)
+	response = httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, runtimeRequest)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+
+	server.requests <- struct{}{}
+	response = httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, validContentRequest(t))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	response = httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, runtimeRequest)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	<-server.requests
+}
+
+func TestMaterializingRuntimeContentServerRequiresBothServices(t *testing.T) {
+	t.Parallel()
+
+	authorizer := contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
+		return ContentAuthorization{}, nil
+	})
+	store := contentStoreFunc(func(context.Context, string, string, string, string) (io.ReadCloser, error) {
+		return nil, nil
+	})
+	materializer := contentMaterializerFunc(func(context.Context, ContentAuthorization, []byte, int64) ([]byte, error) {
+		return nil, nil
+	})
+	runtimeToken := &EliteaClientTokenService{}
+
+	_, err := NewMaterializingRuntimeContentServerWithLimits(authorizer, store, nil, runtimeToken, 1024, 1)
+	require.EqualError(t, err, "content materializer is required")
+	_, err = NewMaterializingRuntimeContentServerWithLimits(authorizer, store, materializer, nil, 1024, 1)
+	require.EqualError(t, err, "runtime context is required")
+
+	materializing, err := NewMaterializingContentServerWithLimits(authorizer, store, materializer, 1024, 1)
+	require.NoError(t, err)
+	require.NotNil(t, materializing.materializer)
+	require.Nil(t, materializing.runtimeToken)
+	runtime, err := NewRuntimeContentServerWithLimits(authorizer, store, runtimeToken, 1024, 1)
+	require.NoError(t, err)
+	require.Nil(t, runtime.materializer)
+	require.Same(t, runtimeToken, runtime.runtimeToken)
 }
 
 func validContentRequest(t *testing.T) *http.Request {
