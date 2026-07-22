@@ -270,7 +270,7 @@ func testValidationAdmission() executionapp.ValidationAdmission {
 				MediaType: executiondomain.InputBundleManifestMediaType,
 				Digest:    runtimedomain.SHA256(manifest),
 				Manifest:  manifest,
-				Entry: executiondomain.InputEntry{
+				Entries: []executiondomain.InputEntry{{
 					ID:                    "settings",
 					Version:               "revision-1",
 					SemanticRole:          "configuration.settings",
@@ -281,7 +281,7 @@ func testValidationAdmission() executionapp.ValidationAdmission {
 					ContentDigest:         runtimedomain.SHA256(settings),
 					ContentLength:         int64(len(settings)),
 					Content:               settings,
-				},
+				}},
 			},
 			Job: executiondomain.Job{
 				ID:                  "execution-1",

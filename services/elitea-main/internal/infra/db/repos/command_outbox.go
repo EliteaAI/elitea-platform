@@ -58,7 +58,7 @@ func newCommandOutboxRepository(store sharedStore, expectedStream string) (*Comm
 	return &CommandOutboxRepository{store: store, expectedStream: expectedStream}, nil
 }
 
-func insertCommandOutbox(ctx context.Context, tx sqlExecutor, policy ValidationDispatchPolicy, record executiondomain.Admission, timing admissionTiming) error {
+func insertCommandOutbox(ctx context.Context, tx sqlExecutor, policy ExecutionDispatchPolicy, record executiondomain.Admission, timing admissionTiming) error {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO elitea_runtime.command_outbox (
     outbox_id, execution_id, generation, stream_name, dispatch_ordinal,

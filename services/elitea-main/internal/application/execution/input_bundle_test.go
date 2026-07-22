@@ -25,11 +25,11 @@ func TestValidationInputBundleFactoryBindsExactManifestAndContent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bundle.Digest != runtimedomain.SHA256(bundle.Manifest) || bundle.Entry.ContentDigest != runtimedomain.SHA256(settings) {
+	if len(bundle.Entries) != 1 || bundle.Digest != runtimedomain.SHA256(bundle.Manifest) || bundle.Entries[0].ContentDigest != runtimedomain.SHA256(settings) {
 		t.Fatal("bundle did not bind exact admitted bytes")
 	}
 	settings[0] = '['
-	if string(bundle.Entry.Content) != `{"auth_type":"Digest"}` {
+	if string(bundle.Entries[0].Content) != `{"auth_type":"Digest"}` {
 		t.Fatal("bundle content aliases caller memory")
 	}
 
@@ -41,10 +41,10 @@ func TestValidationInputBundleFactoryBindsExactManifestAndContent(t *testing.T) 
 		t.Fatalf("unexpected manifest: %v", &manifest)
 	}
 	entry := manifest.GetEntries()[0]
-	if entry.GetEntryId() != bundle.Entry.ID || entry.GetContent().GetContentId() != bundle.Entry.ContentID || entry.GetContent().GetByteLength() != uint64(bundle.Entry.ContentLength) {
+	if entry.GetEntryId() != bundle.Entries[0].ID || entry.GetContent().GetContentId() != bundle.Entries[0].ContentID || entry.GetContent().GetByteLength() != uint64(bundle.Entries[0].ContentLength) {
 		t.Fatalf("manifest does not match durable entry: %v", entry)
 	}
-	if got := entry.GetContent().GetDigest().GetValue(); string(got) != string(bundle.Entry.ContentDigest[:]) {
+	if got := entry.GetContent().GetDigest().GetValue(); string(got) != string(bundle.Entries[0].ContentDigest[:]) {
 		t.Fatal("manifest content digest mismatch")
 	}
 }

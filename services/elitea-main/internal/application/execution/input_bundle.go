@@ -116,7 +116,7 @@ func (f *ValidationInputBundleFactory) BuildValidationInput(_ context.Context, c
 		MediaType: executiondomain.InputBundleManifestMediaType,
 		Digest:    runtimedomain.SHA256(manifestBytes),
 		Manifest:  manifestBytes,
-		Entry: executiondomain.InputEntry{
+		Entries: []executiondomain.InputEntry{{
 			ID:                    entryID,
 			Version:               entryVersion,
 			SemanticRole:          f.profile.SemanticRole,
@@ -127,7 +127,7 @@ func (f *ValidationInputBundleFactory) BuildValidationInput(_ context.Context, c
 			ContentDigest:         contentDigest,
 			ContentLength:         int64(len(content)),
 			Content:               content,
-		},
+		}},
 	}
 	if err := bundle.Validate(); err != nil {
 		return executiondomain.InputBundle{}, err

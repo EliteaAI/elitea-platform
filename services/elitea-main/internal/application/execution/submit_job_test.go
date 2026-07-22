@@ -65,9 +65,9 @@ func TestSubmitValidationIsAtomicIdempotentAndCopiesInput(t *testing.T) {
 		t.Fatalf("unexpected first outcome: %+v", first)
 	}
 
-	request.InputBundle.Entry.Content[0] = '['
+	request.InputBundle.Entries[0].Content[0] = '['
 	stored := onlyAdmission(t, store)
-	if got := string(stored.Record.InputBundle.Entry.Content); got != `{}` {
+	if got := string(stored.Record.InputBundle.Entries[0].Content); got != `{}` {
 		t.Fatalf("stored immutable content changed through caller alias: %q", got)
 	}
 
@@ -118,7 +118,7 @@ func TestSubmitValidationRetryIgnoresOnlyGeneratedBundleIdentity(t *testing.T) {
 
 	retry := validSubmitValidationRequest([]byte(`{}`))
 	retry.InputBundle.ID = "bundle-generated-by-retry"
-	retry.InputBundle.Entry.ContentID = "content-generated-by-retry"
+	retry.InputBundle.Entries[0].ContentID = "content-generated-by-retry"
 	retry.InputBundle.Manifest = []byte(`{"entries":["settings"],"storage_ids":"retry"}`)
 	retry.InputBundle.Digest = runtimedomain.SHA256(retry.InputBundle.Manifest)
 	second, err := service.SubmitValidation(context.Background(), retry)
@@ -130,7 +130,7 @@ func TestSubmitValidationRetryIgnoresOnlyGeneratedBundleIdentity(t *testing.T) {
 	}
 
 	changedPolicy := retry
-	changedPolicy.InputBundle.Entry.Classification = "different-policy"
+	changedPolicy.InputBundle.Entries[0].Classification = "different-policy"
 	if _, err := service.SubmitValidation(context.Background(), changedPolicy); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("semantic input policy change did not conflict: %v", err)
 	}
@@ -152,7 +152,7 @@ func validSubmitValidationRequest(settings []byte) SubmitValidationRequest {
 			MediaType: executiondomain.InputBundleManifestMediaType,
 			Digest:    runtimedomain.SHA256(manifest),
 			Manifest:  manifest,
-			Entry: executiondomain.InputEntry{
+			Entries: []executiondomain.InputEntry{{
 				ID:                    "settings",
 				Version:               "revision-1",
 				SemanticRole:          "configuration.settings",
@@ -163,7 +163,7 @@ func validSubmitValidationRequest(settings []byte) SubmitValidationRequest {
 				ContentDigest:         runtimedomain.SHA256(settings),
 				ContentLength:         int64(len(settings)),
 				Content:               settings,
-			},
+			}},
 		},
 		Command: configurationdomain.ValidationCommand{
 			ConfigurationRevisionID: "revision-1",

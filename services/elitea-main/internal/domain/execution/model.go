@@ -10,8 +10,17 @@ import (
 
 const (
 	ConfigurationValidationCapability = "configuration.validate.v1"
+	IndexIngestCapability             = "index.ingest.v1"
 	SettingsJSONMediaType             = "application/json"
 	InputBundleManifestMediaType      = "application/x-protobuf"
+	MaxInputBundleEntries             = 16
+	MaxInputEntryContentBytes         = 256 * 1024
+
+	IndexToolkitConfigurationRole = "index.toolkit_configuration"
+	IndexToolParametersRole       = "index.tool_parameters"
+	IndexLLMModelRole             = "index.llm_model"
+	IndexLLMConfigurationRole     = "index.llm_configuration"
+	IndexMCPTokensRole            = "index.mcp_tokens"
 )
 
 var (
@@ -42,7 +51,7 @@ type InputBundle struct {
 	MediaType string
 	Digest    runtimedomain.Digest
 	Manifest  []byte
-	Entry     InputEntry
+	Entries   []InputEntry
 }
 
 func (b InputBundle) Validate() error {
@@ -52,19 +61,41 @@ func (b InputBundle) Validate() error {
 	if runtimedomain.SHA256(b.Manifest) != b.Digest {
 		return fmt.Errorf("%w: manifest digest mismatch", ErrInvalidInputBundle)
 	}
-	if b.Entry.ID == "" || b.Entry.Version == "" || b.Entry.SemanticRole == "" || b.Entry.ContentID == "" || b.Entry.MediaType != SettingsJSONMediaType || b.Entry.Classification == "" || b.Entry.RequiredGrantAudience == "" || b.Entry.ContentDigest.IsZero() || b.Entry.ContentLength < 0 {
+	if len(b.Entries) == 0 || len(b.Entries) > MaxInputBundleEntries {
 		return ErrInvalidInputBundle
 	}
-	if int64(len(b.Entry.Content)) != b.Entry.ContentLength || runtimedomain.SHA256(b.Entry.Content) != b.Entry.ContentDigest {
-		return fmt.Errorf("%w: entry content mismatch", ErrInvalidInputBundle)
+	entryIDs := make(map[string]struct{}, len(b.Entries))
+	for _, entry := range b.Entries {
+		if entry.ID == "" || entry.Version == "" || entry.SemanticRole == "" || entry.ContentID == "" || entry.MediaType != SettingsJSONMediaType || entry.Classification == "" || entry.RequiredGrantAudience == "" || entry.ContentDigest.IsZero() || entry.ContentLength <= 0 {
+			return ErrInvalidInputBundle
+		}
+		if _, duplicate := entryIDs[entry.ID]; duplicate {
+			return fmt.Errorf("%w: duplicate entry ID", ErrInvalidInputBundle)
+		}
+		entryIDs[entry.ID] = struct{}{}
+		if int64(len(entry.Content)) != entry.ContentLength || runtimedomain.SHA256(entry.Content) != entry.ContentDigest {
+			return fmt.Errorf("%w: entry content mismatch", ErrInvalidInputBundle)
+		}
 	}
 	return nil
 }
 
 func (b InputBundle) Clone() InputBundle {
 	b.Manifest = append([]byte(nil), b.Manifest...)
-	b.Entry.Content = append([]byte(nil), b.Entry.Content...)
+	b.Entries = append([]InputEntry(nil), b.Entries...)
+	for index := range b.Entries {
+		b.Entries[index].Content = append([]byte(nil), b.Entries[index].Content...)
+	}
 	return b
+}
+
+func (b InputBundle) entryByID(entryID string) (InputEntry, bool) {
+	for _, entry := range b.Entries {
+		if entry.ID == entryID {
+			return entry, true
+		}
+	}
+	return InputEntry{}, false
 }
 
 type JobState string
@@ -107,8 +138,79 @@ func (j Job) Validate() error {
 	if j.ID == "" || j.CommandID == "" || j.TenantID == "" || j.ResourceProjectID == "" || j.ProjectionProjectID == "" || j.ActorID == "" {
 		return ErrInvalidJob
 	}
-	if j.CapabilityID != ConfigurationValidationCapability || j.Generation == 0 || !j.State.Valid() || j.State != JobPending || j.CreatedAt.IsZero() {
+	if (j.CapabilityID != ConfigurationValidationCapability && j.CapabilityID != IndexIngestCapability) || j.Generation == 0 || !j.State.Valid() || j.State != JobPending || j.CreatedAt.IsZero() {
 		return ErrInvalidJob
+	}
+	return nil
+}
+
+type IndexIngestInitiator string
+
+const (
+	IndexIngestInitiatorUser     IndexIngestInitiator = "user"
+	IndexIngestInitiatorLLM      IndexIngestInitiator = "llm"
+	IndexIngestInitiatorSchedule IndexIngestInitiator = "schedule"
+)
+
+func (i IndexIngestInitiator) Valid() bool {
+	switch i {
+	case IndexIngestInitiatorUser, IndexIngestInitiatorLLM, IndexIngestInitiatorSchedule:
+		return true
+	default:
+		return false
+	}
+}
+
+// IndexIngestBinding binds the current index identity and typed command entry
+// references to one immutable input bundle. Entry content stays in the input
+// data plane and is never copied into this command metadata.
+type IndexIngestBinding struct {
+	ToolkitConfigurationEntryID string
+	ToolParametersEntryID       string
+	LLMModelEntryID             string
+	LLMConfigurationEntryID     string
+	MCPTokensEntryID            string
+	ToolkitID                   int32
+	IndexName                   string
+	Initiator                   IndexIngestInitiator
+}
+
+func (b IndexIngestBinding) Validate(bundle InputBundle) error {
+	if b.ToolkitConfigurationEntryID == "" || b.ToolParametersEntryID == "" || b.ToolkitID <= 0 || b.IndexName == "" || len(b.IndexName) > 256 || !b.Initiator.Valid() {
+		return ErrInvalidInputBundle
+	}
+	references := []struct {
+		id       string
+		role     string
+		required bool
+	}{
+		{id: b.ToolkitConfigurationEntryID, role: IndexToolkitConfigurationRole, required: true},
+		{id: b.ToolParametersEntryID, role: IndexToolParametersRole, required: true},
+		{id: b.LLMModelEntryID, role: IndexLLMModelRole},
+		{id: b.LLMConfigurationEntryID, role: IndexLLMConfigurationRole},
+		{id: b.MCPTokensEntryID, role: IndexMCPTokensRole},
+	}
+	seen := make(map[string]struct{}, len(references))
+	bound := 0
+	for _, reference := range references {
+		if reference.id == "" {
+			if reference.required {
+				return ErrInvalidInputBundle
+			}
+			continue
+		}
+		if _, duplicate := seen[reference.id]; duplicate {
+			return fmt.Errorf("%w: index input entry is bound more than once", ErrInvalidInputBundle)
+		}
+		seen[reference.id] = struct{}{}
+		entry, found := bundle.entryByID(reference.id)
+		if !found || entry.SemanticRole != reference.role {
+			return fmt.Errorf("%w: index input binding mismatch", ErrInvalidInputBundle)
+		}
+		bound++
+	}
+	if bound != len(bundle.Entries) {
+		return fmt.Errorf("%w: unbound index input entry", ErrInvalidInputBundle)
 	}
 	return nil
 }

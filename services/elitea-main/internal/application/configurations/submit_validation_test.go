@@ -36,7 +36,7 @@ func (s *bundleFactoryStub) BuildValidationInput(_ context.Context, _ string, en
 		MediaType: executiondomain.InputBundleManifestMediaType,
 		Digest:    runtimedomain.SHA256(manifest),
 		Manifest:  manifest,
-		Entry: executiondomain.InputEntry{
+		Entries: []executiondomain.InputEntry{{
 			ID:                    entryID,
 			Version:               entryVersion,
 			SemanticRole:          "configuration.settings",
@@ -47,7 +47,7 @@ func (s *bundleFactoryStub) BuildValidationInput(_ context.Context, _ string, en
 			ContentDigest:         runtimedomain.SHA256(settings),
 			ContentLength:         int64(len(settings)),
 			Content:               append([]byte(nil), settings...),
-		},
+		}},
 	}, nil
 }
 

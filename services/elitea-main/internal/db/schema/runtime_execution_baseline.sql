@@ -1,0 +1,124 @@
+-- SQLC compiler projection for the post-0036 elitea_runtime admission tables.
+--
+-- This file is NOT a runtime migration. The embedded shared migration history
+-- remains the only target-schema authority.
+
+CREATE SCHEMA elitea_runtime;
+
+CREATE TABLE elitea_runtime.input_bundles (
+    input_bundle_id text PRIMARY KEY,
+    immutable_version text NOT NULL,
+    media_type text NOT NULL,
+    resource_project_id integer NOT NULL REFERENCES centry.project(id),
+    manifest_digest bytea NOT NULL,
+    manifest_size bigint NOT NULL,
+    manifest_bytes bytea NOT NULL,
+    created_by text NOT NULL,
+    created_at timestamptz NOT NULL
+);
+
+CREATE TABLE elitea_runtime.input_bundle_entries (
+    input_bundle_id text NOT NULL
+        REFERENCES elitea_runtime.input_bundles(input_bundle_id) ON DELETE CASCADE,
+    entry_id text NOT NULL,
+    entry_version text NOT NULL,
+    semantic_role text NOT NULL,
+    media_type text NOT NULL,
+    content_digest bytea NOT NULL,
+    content_size bigint NOT NULL,
+    content_reference text NOT NULL,
+    classification text NOT NULL,
+    required_grant_audience text NOT NULL,
+    content_bytes bytea NOT NULL,
+    PRIMARY KEY (input_bundle_id, entry_id)
+);
+
+CREATE TABLE elitea_runtime.execution_jobs (
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    command_id text NOT NULL UNIQUE,
+    tenant_id text NOT NULL,
+    resource_project_id integer NOT NULL REFERENCES centry.project(id),
+    projection_project_id integer NOT NULL REFERENCES centry.project(id),
+    actor_id text NOT NULL,
+    principal_ref text NOT NULL,
+    capability_id text NOT NULL,
+    capability_version text NOT NULL,
+    input_bundle_id text NOT NULL REFERENCES elitea_runtime.input_bundles(input_bundle_id),
+    request_digest bytea NOT NULL,
+    idempotency_scope text NOT NULL,
+    idempotency_key text NOT NULL,
+    configuration_revision_id text,
+    configuration_type text,
+    catalog_revision text,
+    catalog_digest bytea,
+    schema_id text,
+    schema_revision text,
+    schema_digest bytea,
+    settings_entry_id text,
+    state text NOT NULL,
+    desired_state text NOT NULL,
+    admitted_at timestamptz NOT NULL,
+    settled_at timestamptz,
+    terminal_error_code text,
+    PRIMARY KEY (execution_id, generation),
+    UNIQUE (idempotency_scope, idempotency_key),
+    UNIQUE (execution_id, generation, capability_id, input_bundle_id)
+);
+
+CREATE TABLE elitea_runtime.execution_admission_policies (
+    capability_id text PRIMARY KEY,
+    max_outstanding bigint NOT NULL,
+    created_at timestamptz NOT NULL
+);
+
+CREATE TABLE elitea_runtime.command_outbox (
+    outbox_id text PRIMARY KEY,
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    stream_name text NOT NULL,
+    dispatch_ordinal bigint NOT NULL,
+    resource_class text NOT NULL,
+    isolation_class text NOT NULL,
+    priority integer NOT NULL,
+    deadline timestamptz NOT NULL,
+    limits_revision text NOT NULL,
+    traceparent text NOT NULL,
+    tracestate text NOT NULL,
+    created_at timestamptz NOT NULL,
+    prepared_signed_envelope_bytes bytea,
+    prepared_signed_envelope_digest bytea,
+    prepared_signature_profile integer,
+    prepared_key_id text,
+    prepared_at timestamptz,
+    published_at timestamptz,
+    published_envelope_digest bytea,
+    authority_granted_at timestamptz,
+    publish_attempts integer NOT NULL,
+    last_error_code text,
+    retired_at timestamptz,
+    retirement_code text,
+    last_visibility_at timestamptz,
+    FOREIGN KEY (execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation),
+    UNIQUE (execution_id, generation)
+);
+
+CREATE TABLE elitea_runtime.index_ingest_jobs (
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    capability_id text NOT NULL,
+    input_bundle_id text NOT NULL,
+    toolkit_configuration_entry_id text NOT NULL,
+    tool_parameters_entry_id text NOT NULL,
+    llm_model_entry_id text,
+    llm_configuration_entry_id text,
+    mcp_tokens_entry_id text,
+    toolkit_id integer NOT NULL,
+    index_name text NOT NULL,
+    initiator text NOT NULL,
+    PRIMARY KEY (execution_id, generation),
+    FOREIGN KEY (execution_id, generation, capability_id, input_bundle_id)
+        REFERENCES elitea_runtime.execution_jobs
+                   (execution_id, generation, capability_id, input_bundle_id)
+);

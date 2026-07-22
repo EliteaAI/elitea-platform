@@ -125,26 +125,27 @@ INSERT INTO elitea_runtime.input_bundles (
 	); err != nil {
 		return fmt.Errorf("insert input bundle: %w", err)
 	}
-	entry := bundle.Entry
-	if _, err := tx.Exec(ctx, `
+	for _, entry := range bundle.Entries {
+		if _, err := tx.Exec(ctx, `
 INSERT INTO elitea_runtime.input_bundle_entries (
     input_bundle_id, entry_id, entry_version, semantic_role, media_type,
     content_digest, content_size, content_reference, classification,
     required_grant_audience, content_bytes
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		bundle.ID,
-		entry.ID,
-		entry.Version,
-		entry.SemanticRole,
-		entry.MediaType,
-		entry.ContentDigest[:],
-		entry.ContentLength,
-		entry.ContentID,
-		entry.Classification,
-		entry.RequiredGrantAudience,
-		entry.Content,
-	); err != nil {
-		return fmt.Errorf("insert input bundle entry: %w", err)
+			bundle.ID,
+			entry.ID,
+			entry.Version,
+			entry.SemanticRole,
+			entry.MediaType,
+			entry.ContentDigest[:],
+			entry.ContentLength,
+			entry.ContentID,
+			entry.Classification,
+			entry.RequiredGrantAudience,
+			entry.Content,
+		); err != nil {
+			return fmt.Errorf("insert input bundle entry: %w", err)
+		}
 	}
 	return nil
 }

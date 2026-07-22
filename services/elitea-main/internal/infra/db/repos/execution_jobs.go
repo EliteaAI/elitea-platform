@@ -27,7 +27,7 @@ const (
 
 var ErrAdmissionPolicyMismatch = errors.New("execution admission policy does not match persisted policy")
 
-type ValidationDispatchPolicy struct {
+type ExecutionDispatchPolicy struct {
 	StreamName        string
 	CapabilityVersion string
 	ResourceClass     string
@@ -38,13 +38,18 @@ type ValidationDispatchPolicy struct {
 	MaxOutstanding    int64
 }
 
-func (p ValidationDispatchPolicy) validate() error {
+// Capability-specific aliases keep composition explicit while sharing the
+// same bounded durable dispatch policy shape.
+type ValidationDispatchPolicy = ExecutionDispatchPolicy
+type IndexIngestDispatchPolicy = ExecutionDispatchPolicy
+
+func (p ExecutionDispatchPolicy) validate() error {
 	if p.StreamName == "" || p.CapabilityVersion == "" || p.ResourceClass == "" || p.IsolationClass == "" || p.Priority == 0 || p.Priority > math.MaxInt32 || p.DeadlineTTL < minValidationDeadlineTTL || p.DeadlineTTL > maxValidationDeadlineTTL || p.DeadlineTTL%time.Millisecond != 0 || p.LimitsRevision == "" || p.MaxOutstanding <= 0 || p.MaxOutstanding > maxSupportedOutstandingJobs {
-		return errors.New("validation dispatch policy is incomplete")
+		return errors.New("execution dispatch policy is incomplete")
 	}
 	for _, value := range []string{p.StreamName, p.CapabilityVersion, p.ResourceClass, p.IsolationClass, p.LimitsRevision} {
 		if len(value) > 256 || strings.ContainsRune(value, '\x00') {
-			return errors.New("validation dispatch policy exceeds storage bounds")
+			return errors.New("execution dispatch policy exceeds storage bounds")
 		}
 	}
 	return nil
@@ -80,7 +85,7 @@ func (r *ExecutionJobsRepository) AdmitValidation(ctx context.Context, admission
 	if err := admission.Command.Validate(); err != nil {
 		return executionapp.AdmissionOutcome{}, err
 	}
-	if admission.Record.InputBundle.Entry.ID != admission.Command.SettingsEntryID || len(admission.Record.InputBundle.Manifest) > maxStoredInputManifestBytes || len(admission.Record.InputBundle.Entry.Content) > maxStoredInputContentBytes {
+	if len(admission.Record.InputBundle.Entries) != 1 || admission.Record.InputBundle.Entries[0].ID != admission.Command.SettingsEntryID || len(admission.Record.InputBundle.Manifest) > maxStoredInputManifestBytes || len(admission.Record.InputBundle.Entries[0].Content) > maxStoredInputContentBytes {
 		return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 	}
 	if !boundedAdmissionStrings(admission) {
@@ -243,16 +248,18 @@ func boundedAdmissionStrings(admission executionapp.ValidationAdmission) bool {
 	values := []string{
 		record.IdempotencyScope, record.IdempotencyKey,
 		record.InputBundle.ID, record.InputBundle.Version, record.InputBundle.MediaType,
-		record.InputBundle.Entry.ID, record.InputBundle.Entry.Version,
-		record.InputBundle.Entry.SemanticRole, record.InputBundle.Entry.ContentID,
-		record.InputBundle.Entry.MediaType, record.InputBundle.Entry.Classification,
-		record.InputBundle.Entry.RequiredGrantAudience,
 		record.Job.ID, record.Job.CommandID, record.Job.TenantID,
 		record.Job.ResourceProjectID, record.Job.ProjectionProjectID,
 		record.Job.ActorID, record.Job.CapabilityID, record.Outbox.ID,
 		command.ConfigurationRevisionID, command.ConfigurationType,
 		command.CatalogRevision, command.SchemaID, command.SchemaRevision,
 		command.SettingsEntryID,
+	}
+	for _, entry := range record.InputBundle.Entries {
+		values = append(values,
+			entry.ID, entry.Version, entry.SemanticRole, entry.ContentID,
+			entry.MediaType, entry.Classification, entry.RequiredGrantAudience,
+		)
 	}
 	for _, value := range values {
 		if value == "" || len(value) > 256 || strings.ContainsRune(value, '\x00') {
@@ -326,7 +333,7 @@ WHERE j.idempotency_scope = $1 AND j.idempotency_key = $2`, scope, key).Scan(
 	return outcome, digest, nil
 }
 
-func insertExecutionJob(ctx context.Context, tx sqlExecutor, resourceProjectID, projectionProjectID int64, policy ValidationDispatchPolicy, admission executionapp.ValidationAdmission, admittedAt time.Time) (bool, error) {
+func insertExecutionJob(ctx context.Context, tx sqlExecutor, resourceProjectID, projectionProjectID int64, policy ExecutionDispatchPolicy, admission executionapp.ValidationAdmission, admittedAt time.Time) (bool, error) {
 	record := admission.Record
 	command := admission.Command
 	var executionID string

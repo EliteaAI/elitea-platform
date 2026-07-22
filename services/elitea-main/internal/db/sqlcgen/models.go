@@ -121,3 +121,109 @@ type CentryProjectGroupAssociation struct {
 	ProjectID *int32 `db:"project_id" json:"project_id"`
 	GroupID   *int32 `db:"group_id" json:"group_id"`
 }
+
+type EliteaRuntimeCommandOutbox struct {
+	OutboxID                     string             `db:"outbox_id" json:"outbox_id"`
+	ExecutionID                  string             `db:"execution_id" json:"execution_id"`
+	Generation                   int64              `db:"generation" json:"generation"`
+	StreamName                   string             `db:"stream_name" json:"stream_name"`
+	DispatchOrdinal              int64              `db:"dispatch_ordinal" json:"dispatch_ordinal"`
+	ResourceClass                string             `db:"resource_class" json:"resource_class"`
+	IsolationClass               string             `db:"isolation_class" json:"isolation_class"`
+	Priority                     int32              `db:"priority" json:"priority"`
+	Deadline                     pgtype.Timestamptz `db:"deadline" json:"deadline"`
+	LimitsRevision               string             `db:"limits_revision" json:"limits_revision"`
+	Traceparent                  string             `db:"traceparent" json:"traceparent"`
+	Tracestate                   string             `db:"tracestate" json:"tracestate"`
+	CreatedAt                    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	PreparedSignedEnvelopeBytes  []byte             `db:"prepared_signed_envelope_bytes" json:"prepared_signed_envelope_bytes"`
+	PreparedSignedEnvelopeDigest []byte             `db:"prepared_signed_envelope_digest" json:"prepared_signed_envelope_digest"`
+	PreparedSignatureProfile     *int32             `db:"prepared_signature_profile" json:"prepared_signature_profile"`
+	PreparedKeyID                *string            `db:"prepared_key_id" json:"prepared_key_id"`
+	PreparedAt                   pgtype.Timestamptz `db:"prepared_at" json:"prepared_at"`
+	PublishedAt                  pgtype.Timestamptz `db:"published_at" json:"published_at"`
+	PublishedEnvelopeDigest      []byte             `db:"published_envelope_digest" json:"published_envelope_digest"`
+	AuthorityGrantedAt           pgtype.Timestamptz `db:"authority_granted_at" json:"authority_granted_at"`
+	PublishAttempts              int32              `db:"publish_attempts" json:"publish_attempts"`
+	LastErrorCode                *string            `db:"last_error_code" json:"last_error_code"`
+	RetiredAt                    pgtype.Timestamptz `db:"retired_at" json:"retired_at"`
+	RetirementCode               *string            `db:"retirement_code" json:"retirement_code"`
+	LastVisibilityAt             pgtype.Timestamptz `db:"last_visibility_at" json:"last_visibility_at"`
+}
+
+type EliteaRuntimeExecutionAdmissionPolicy struct {
+	CapabilityID   string             `db:"capability_id" json:"capability_id"`
+	MaxOutstanding int64              `db:"max_outstanding" json:"max_outstanding"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+type EliteaRuntimeExecutionJob struct {
+	ExecutionID             string             `db:"execution_id" json:"execution_id"`
+	Generation              int64              `db:"generation" json:"generation"`
+	CommandID               string             `db:"command_id" json:"command_id"`
+	TenantID                string             `db:"tenant_id" json:"tenant_id"`
+	ResourceProjectID       int32              `db:"resource_project_id" json:"resource_project_id"`
+	ProjectionProjectID     int32              `db:"projection_project_id" json:"projection_project_id"`
+	ActorID                 string             `db:"actor_id" json:"actor_id"`
+	PrincipalRef            string             `db:"principal_ref" json:"principal_ref"`
+	CapabilityID            string             `db:"capability_id" json:"capability_id"`
+	CapabilityVersion       string             `db:"capability_version" json:"capability_version"`
+	InputBundleID           string             `db:"input_bundle_id" json:"input_bundle_id"`
+	RequestDigest           []byte             `db:"request_digest" json:"request_digest"`
+	IdempotencyScope        string             `db:"idempotency_scope" json:"idempotency_scope"`
+	IdempotencyKey          string             `db:"idempotency_key" json:"idempotency_key"`
+	ConfigurationRevisionID *string            `db:"configuration_revision_id" json:"configuration_revision_id"`
+	ConfigurationType       *string            `db:"configuration_type" json:"configuration_type"`
+	CatalogRevision         *string            `db:"catalog_revision" json:"catalog_revision"`
+	CatalogDigest           []byte             `db:"catalog_digest" json:"catalog_digest"`
+	SchemaID                *string            `db:"schema_id" json:"schema_id"`
+	SchemaRevision          *string            `db:"schema_revision" json:"schema_revision"`
+	SchemaDigest            []byte             `db:"schema_digest" json:"schema_digest"`
+	SettingsEntryID         *string            `db:"settings_entry_id" json:"settings_entry_id"`
+	State                   string             `db:"state" json:"state"`
+	DesiredState            string             `db:"desired_state" json:"desired_state"`
+	AdmittedAt              pgtype.Timestamptz `db:"admitted_at" json:"admitted_at"`
+	SettledAt               pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
+	TerminalErrorCode       *string            `db:"terminal_error_code" json:"terminal_error_code"`
+}
+
+type EliteaRuntimeIndexIngestJob struct {
+	ExecutionID                 string  `db:"execution_id" json:"execution_id"`
+	Generation                  int64   `db:"generation" json:"generation"`
+	CapabilityID                string  `db:"capability_id" json:"capability_id"`
+	InputBundleID               string  `db:"input_bundle_id" json:"input_bundle_id"`
+	ToolkitConfigurationEntryID string  `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID       string  `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	ToolkitID                   int32   `db:"toolkit_id" json:"toolkit_id"`
+	IndexName                   string  `db:"index_name" json:"index_name"`
+	Initiator                   string  `db:"initiator" json:"initiator"`
+}
+
+type EliteaRuntimeInputBundle struct {
+	InputBundleID     string             `db:"input_bundle_id" json:"input_bundle_id"`
+	ImmutableVersion  string             `db:"immutable_version" json:"immutable_version"`
+	MediaType         string             `db:"media_type" json:"media_type"`
+	ResourceProjectID int32              `db:"resource_project_id" json:"resource_project_id"`
+	ManifestDigest    []byte             `db:"manifest_digest" json:"manifest_digest"`
+	ManifestSize      int64              `db:"manifest_size" json:"manifest_size"`
+	ManifestBytes     []byte             `db:"manifest_bytes" json:"manifest_bytes"`
+	CreatedBy         string             `db:"created_by" json:"created_by"`
+	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+type EliteaRuntimeInputBundleEntry struct {
+	InputBundleID         string `db:"input_bundle_id" json:"input_bundle_id"`
+	EntryID               string `db:"entry_id" json:"entry_id"`
+	EntryVersion          string `db:"entry_version" json:"entry_version"`
+	SemanticRole          string `db:"semantic_role" json:"semantic_role"`
+	MediaType             string `db:"media_type" json:"media_type"`
+	ContentDigest         []byte `db:"content_digest" json:"content_digest"`
+	ContentSize           int64  `db:"content_size" json:"content_size"`
+	ContentReference      string `db:"content_reference" json:"content_reference"`
+	Classification        string `db:"classification" json:"classification"`
+	RequiredGrantAudience string `db:"required_grant_audience" json:"required_grant_audience"`
+	ContentBytes          []byte `db:"content_bytes" json:"content_bytes"`
+}

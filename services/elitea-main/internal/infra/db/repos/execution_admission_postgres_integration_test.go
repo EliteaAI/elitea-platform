@@ -268,7 +268,7 @@ func postgresCapacityAdmission(index int) executionapp.ValidationAdmission {
 	admission.Record.IdempotencyKey = "request-" + suffix
 	admission.Record.RequestDigest = runtimedomain.SHA256([]byte("request:" + suffix))
 	admission.Record.InputBundle.ID = "bundle-" + suffix
-	admission.Record.InputBundle.Entry.ContentID = "content-" + suffix
+	admission.Record.InputBundle.Entries[0].ContentID = "content-" + suffix
 	admission.Record.Job.ID = "execution-" + suffix
 	admission.Record.Job.CommandID = "command-" + suffix
 	admission.Record.Outbox.ID = "outbox-" + suffix

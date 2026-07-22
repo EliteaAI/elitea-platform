@@ -534,7 +534,7 @@ func admitAndDispatchCorpus(t *testing.T, command *runtimev1.WorkerCommandV1, ma
 		t.Fatalf("Go HTTP admission did not durably create the corpus job/outbox: outcome=%+v admission=%+v", admitted, store.admission)
 	}
 	job := store.admission.Record.Job
-	if job.TenantID != identity.TenantID || job.ResourceProjectID != identity.ResourceProjectID || job.ProjectionProjectID != identity.ProjectionProjectID || job.ActorID != identity.ActorID || store.admission.Record.Outbox.ID != command.GetIdempotencyKey() || job.State != executiondomain.JobPending || !bytes.Equal(store.admission.Record.InputBundle.Manifest, mustMarshal(t, manifest)) || !bytes.Equal(store.admission.Record.InputBundle.Entry.Content, settings) {
+	if job.TenantID != identity.TenantID || job.ResourceProjectID != identity.ResourceProjectID || job.ProjectionProjectID != identity.ProjectionProjectID || job.ActorID != identity.ActorID || store.admission.Record.Outbox.ID != command.GetIdempotencyKey() || job.State != executiondomain.JobPending || !bytes.Equal(store.admission.Record.InputBundle.Manifest, mustMarshal(t, manifest)) || len(store.admission.Record.InputBundle.Entries) != 1 || !bytes.Equal(store.admission.Record.InputBundle.Entries[0].Content, settings) {
 		t.Fatal("durable admission changed the trusted identity or immutable corpus input/job/outbox")
 	}
 
