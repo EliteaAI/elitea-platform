@@ -1,6 +1,7 @@
 package centrysecrets
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -202,6 +203,82 @@ func TestLookupRegularDoesNotExposeHiddenSecret(t *testing.T) {
 	}
 	if _, err := vault.LookupRegular("hidden"); !errors.Is(err, ErrSecretNotFound) {
 		t.Fatalf("hidden regular lookup error = %v, want ErrSecretNotFound", err)
+	}
+}
+
+func TestLookupProjectIDAcceptsCurrentStringAndIntegerEncodings(t *testing.T) {
+	vault, ok := parseVault([]byte(`{
+		"secrets": {
+			"numeric": 42,
+			"string": "0042",
+			"empty": "",
+			"regular_wins": 7
+		},
+		"hidden_secrets": {
+			"hidden": 9,
+			"regular_wins": 8
+		}
+	}`))
+	if !ok {
+		t.Fatal("current numeric/string vault shape was rejected")
+	}
+
+	tests := []struct {
+		name   string
+		value  string
+		hidden bool
+	}{
+		{name: "numeric", value: "42"},
+		{name: "string", value: "42"},
+		{name: "empty", value: ""},
+		{name: "hidden", value: "9", hidden: true},
+		{name: "regular_wins", value: "7"},
+	}
+	for _, test := range tests {
+		secret, err := vault.LookupProjectID(test.name)
+		if err != nil || secret.Value != test.value || secret.Hidden != test.hidden {
+			t.Fatalf("lookup %q = %+v, %v", test.name, secret, err)
+		}
+	}
+	if _, err := vault.LookupRegularProjectID("hidden"); !errors.Is(err, ErrSecretNotFound) {
+		t.Fatalf("regular hidden lookup error=%v", err)
+	}
+	if _, err := vault.LookupProjectID("missing"); !errors.Is(err, ErrSecretNotFound) {
+		t.Fatalf("missing lookup error=%v", err)
+	}
+}
+
+func TestLookupProjectIDRejectsInvalidShapesAndRangeWithoutLeakingValues(t *testing.T) {
+	invalid := map[string]json.RawMessage{
+		"bool-canary":      json.RawMessage(`true`),
+		"float-canary":     json.RawMessage(`1.0`),
+		"exponent-canary":  json.RawMessage(`1e2`),
+		"negative-canary":  json.RawMessage(`-1`),
+		"zero-canary":      json.RawMessage(`0`),
+		"overflow-canary":  json.RawMessage(`2147483648`),
+		"object-canary":    json.RawMessage(`{"value":1}`),
+		"array-canary":     json.RawMessage(`[1]`),
+		"null-canary":      json.RawMessage(`null`),
+		"string-float":     json.RawMessage(`"1.0"`),
+		"string-exponent":  json.RawMessage(`"1e2"`),
+		"string-negative":  json.RawMessage(`"-1"`),
+		"oversized-string": json.RawMessage(`"00000000001"`),
+	}
+	vault := &Vault{regular: invalid, hidden: map[string]json.RawMessage{}}
+	for name := range invalid {
+		_, err := vault.LookupProjectID(name)
+		if !errors.Is(err, ErrInvalidSecret) {
+			t.Fatalf("lookup %q error=%v", name, err)
+		}
+		assertNoMaterialInError(t, err, name, string(invalid[name]))
+	}
+
+	var nilVault *Vault
+	if _, err := nilVault.LookupProjectID("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("nil lookup error=%v", err)
+	}
+	if _, err := nilVault.LookupRegularProjectID("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("nil regular lookup error=%v", err)
 	}
 }
 

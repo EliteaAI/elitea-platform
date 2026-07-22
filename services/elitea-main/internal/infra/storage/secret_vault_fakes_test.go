@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
 )
@@ -29,6 +30,28 @@ func (v *fakeSecretVault) LookupRegular(name string) (centrysecrets.Secret, erro
 		return centrysecrets.Secret{Value: value}, nil
 	}
 	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (v *fakeSecretVault) LookupProjectID(name string) (centrysecrets.Secret, error) {
+	secret, err := v.Lookup(name)
+	return canonicalFakeProjectID(secret, err)
+}
+
+func (v *fakeSecretVault) LookupRegularProjectID(name string) (centrysecrets.Secret, error) {
+	secret, err := v.LookupRegular(name)
+	return canonicalFakeProjectID(secret, err)
+}
+
+func canonicalFakeProjectID(secret centrysecrets.Secret, err error) (centrysecrets.Secret, error) {
+	if err != nil || secret.Value == "" {
+		return secret, err
+	}
+	projectID, parseErr := strconv.ParseInt(secret.Value, 10, 32)
+	if parseErr != nil || projectID <= 0 {
+		return centrysecrets.Secret{}, centrysecrets.ErrInvalidSecret
+	}
+	secret.Value = strconv.FormatInt(projectID, 10)
+	return secret, nil
 }
 
 type fakeSecretVaultLoader struct {

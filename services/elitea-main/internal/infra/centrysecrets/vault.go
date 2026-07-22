@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 )
 
 const (
@@ -24,6 +25,8 @@ const (
 	fernetHeaderBytes = 1 + 8 + aes.BlockSize
 	fernetMACBytes    = sha256.Size
 	fernetMinimumRaw  = fernetHeaderBytes + aes.BlockSize + fernetMACBytes
+	maxProjectIDBytes = 10
+	maxProjectIDJSON  = 64
 )
 
 var (
@@ -126,6 +129,45 @@ func (v *Vault) LookupRegular(name string) (Secret, error) {
 	return Secret{}, ErrSecretNotFound
 }
 
+// LookupProjectID is the narrow compatibility accessor for current default-
+// model project IDs. Those values have been persisted as either JSON strings
+// or JSON integers. It returns canonical positive int32 decimal text while
+// preserving regular-over-hidden precedence. Ordinary credential reads must
+// continue to use Lookup so a numeric value cannot become a credential.
+func (v *Vault) LookupProjectID(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+
+	secret, err := v.LookupRegularProjectID(name)
+	if err == nil || !errors.Is(err, ErrSecretNotFound) {
+		return secret, err
+	}
+	if raw, ok := v.hidden[name]; ok {
+		value, ok := decodeProjectID(raw)
+		if !ok {
+			return Secret{}, ErrInvalidSecret
+		}
+		return Secret{Value: value, Hidden: true}, nil
+	}
+	return Secret{}, ErrSecretNotFound
+}
+
+// LookupRegularProjectID is LookupProjectID without hidden-secret fallback.
+func (v *Vault) LookupRegularProjectID(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+	if raw, ok := v.regular[name]; ok {
+		value, ok := decodeProjectID(raw)
+		if !ok {
+			return Secret{}, ErrInvalidSecret
+		}
+		return Secret{Value: value}, nil
+	}
+	return Secret{}, ErrSecretNotFound
+}
+
 func open(projectKey [fernetKeyBytes]byte, encryptedVault []byte) (*Vault, error) {
 	defer clearKey(&projectKey)
 
@@ -189,6 +231,36 @@ func decodeSecretString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func decodeProjectID(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || len(trimmed) > maxProjectIDJSON {
+		return "", false
+	}
+
+	value := string(trimmed)
+	if trimmed[0] == '"' {
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return "", false
+		}
+		if value == "" {
+			return "", true
+		}
+	}
+	if len(value) == 0 || len(value) > maxProjectIDBytes {
+		return "", false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < '0' || value[index] > '9' {
+			return "", false
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || parsed <= 0 {
+		return "", false
+	}
+	return strconv.FormatInt(parsed, 10), true
 }
 
 func decodeFernetKey(encoded []byte) ([fernetKeyBytes]byte, bool) {

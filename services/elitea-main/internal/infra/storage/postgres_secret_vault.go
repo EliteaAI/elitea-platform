@@ -14,12 +14,16 @@ import (
 
 const currentAdminVaultID = "admin"
 
-// SecretVault exposes only exact-name reads. LookupRegular is used for the
+// SecretVault exposes only exact-name reads. The ProjectID variants are the
+// narrow string-or-integer compatibility path for current default-model keys;
+// ordinary credential reads remain string-only. LookupRegular is used for the
 // current shared-admin fallback, which must not expose hidden admin secrets to
 // project workloads.
 type SecretVault interface {
 	Lookup(string) (centrysecrets.Secret, error)
 	LookupRegular(string) (centrysecrets.Secret, error)
+	LookupProjectID(string) (centrysecrets.Secret, error)
+	LookupRegularProjectID(string) (centrysecrets.Secret, error)
 }
 
 // SecretVaultLoader loads one current Centry vault snapshot. Implementations
