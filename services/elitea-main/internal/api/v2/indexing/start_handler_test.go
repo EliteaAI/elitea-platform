@@ -87,7 +87,7 @@ func TestStartMapsCurrentAsyncShapeWithoutTrustingClientToolkitSettings(t *testi
 	}
 }
 
-func TestStartPreservesCurrentLLMDefaultsAndAcceptsResolvedIDAlias(t *testing.T) {
+func TestStartDefersModelDefaultsToConfigurationsAndAcceptsResolvedIDAlias(t *testing.T) {
 	useCase := &startUseCaseStub{outcome: indexingapp.StartOutcome{TaskID: "task-defaults"}}
 	start, err := handler.NewStartHandler(useCase)
 	if err != nil {
@@ -100,9 +100,9 @@ func TestStartPreservesCurrentLLMDefaultsAndAcceptsResolvedIDAlias(t *testing.T)
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	if useCase.request.ToolkitID != 9 || string(useCase.request.ToolParameters) != `{"index_name":"docs"}` ||
-		useCase.request.RequestedLLMModel == nil || *useCase.request.RequestedLLMModel != "gpt-4o-mini" ||
+		useCase.request.RequestedLLMModel != nil ||
 		string(useCase.request.RequestedLLMSettings) != `{"max_tokens":1024,"temperature":0.1}` {
-		t.Fatalf("current defaults were not preserved: %+v", useCase.request)
+		t.Fatalf("model defaults leaked into the HTTP boundary: %+v", useCase.request)
 	}
 }
 

@@ -21,7 +21,6 @@ import (
 
 const (
 	MaxCurrentIndexStartBodyBytes = int64(1 << 20)
-	defaultCurrentLLMModel        = "gpt-4o-mini"
 )
 
 var defaultCurrentLLMSettings = json.RawMessage(`{"max_tokens":1024,"temperature":0.1}`)
@@ -201,8 +200,7 @@ func flexiblePositiveID(raw json.RawMessage) (int64, error) {
 
 func requestedLLMModel(raw json.RawMessage) (*string, error) {
 	if len(raw) == 0 {
-		model := defaultCurrentLLMModel
-		return &model, nil
+		return nil, nil
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, nil

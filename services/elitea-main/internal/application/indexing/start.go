@@ -15,7 +15,7 @@ const (
 	MaxToolParametersBytes    = executiondomain.MaxInputEntryContentBytes
 	MaxRequestedLLMBytes      = 128 << 10
 	MaxClientCorrelationBytes = 512
-	MaxCurrentIndexNameRunes  = 7
+	MaxCurrentIndexNameRunes  = 32
 )
 
 var (

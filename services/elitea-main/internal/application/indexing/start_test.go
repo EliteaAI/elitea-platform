@@ -59,7 +59,7 @@ func TestStartRequestRejectsUnboundedOrNonObjectInputs(t *testing.T) {
 		}(),
 		func() StartRequest {
 			value := valid
-			value.ToolParameters = []byte(`{"index_name":"eight888"}`)
+			value.ToolParameters = []byte(`{"index_name":"` + strings.Repeat("x", MaxCurrentIndexNameRunes+1) + `"}`)
 			return value
 		}(),
 		func() StartRequest {
@@ -75,14 +75,14 @@ func TestStartRequestRejectsUnboundedOrNonObjectInputs(t *testing.T) {
 	}
 }
 
-func TestStartRequestAcceptsCurrentOneToSevenRuneIndexNames(t *testing.T) {
+func TestStartRequestAcceptsCurrentOneToThirtyTwoRuneIndexNames(t *testing.T) {
 	valid := StartRequest{
 		ProjectID:            1,
 		ActorUserID:          2,
 		ToolkitID:            3,
 		RequestedLLMSettings: []byte(`{}`),
 	}
-	for _, name := range []string{"a", "1234567", "індекс"} {
+	for _, name := range []string{"a", strings.Repeat("x", MaxCurrentIndexNameRunes), "індекс"} {
 		request := valid
 		request.ToolParameters = []byte(`{"index_name":"` + name + `"}`)
 		if err := request.Validate(); err != nil {
