@@ -20,6 +20,7 @@ type fakePublisher struct {
 	calls   int
 	lastMsg *nats.Msg
 	ackVal  string
+	dup     bool // PubAck.Duplicate — models a dedup-window suppression
 	err     error
 	block   time.Duration // simulate a slow/partitioned server
 	ctxSaw  error         // records ctx.Err() observed inside the op
@@ -29,7 +30,7 @@ func (f *fakePublisher) PublishMsg(ctx context.Context, m *nats.Msg, _ ...jetstr
 	f.mu.Lock()
 	f.calls++
 	f.lastMsg = m
-	block, err, ackVal := f.block, f.err, f.ackVal
+	block, err, ackVal, dup := f.block, f.err, f.ackVal, f.dup
 	f.mu.Unlock()
 	if block > 0 {
 		select {
@@ -44,7 +45,7 @@ func (f *fakePublisher) PublishMsg(ctx context.Context, m *nats.Msg, _ ...jetstr
 	if err != nil {
 		return nil, err
 	}
-	return &jetstream.PubAck{Value: ackVal}, nil
+	return &jetstream.PubAck{Value: ackVal, Duplicate: dup}, nil
 }
 
 func (f *fakePublisher) callCount() int {
@@ -456,6 +457,10 @@ func TestEnsureAssetsConfiguresCounterStream(t *testing.T) {
 	if !prov.streamCfg.AllowMsgCounter {
 		t.Error("budget stream must set AllowMsgCounter=true")
 	}
+	// The dedup window backs recovery-replay idempotency (§8.5 step 2).
+	if prov.streamCfg.Duplicates != RecoveryDedupeWindow {
+		t.Errorf("dedup window = %v, want %v", prov.streamCfg.Duplicates, RecoveryDedupeWindow)
+	}
 	if prov.streamCfg.Name != BudgetStream {
 		t.Errorf("stream name = %q, want %q", prov.streamCfg.Name, BudgetStream)
 	}
@@ -516,6 +521,61 @@ func TestJetStreamAccessor(t *testing.T) {
 	c := &Client{}
 	if c.JetStream() != nil {
 		t.Error("nil js should return nil")
+	}
+}
+
+func TestIncrBudgetIdempotentAppliesAndReturnsTotal(t *testing.T) {
+	pub := &fakePublisher{ackVal: "2000000000"} // 2 USD nano
+	c := newTestClient(Config{}, pub, &fakeReader{}, &fakeKV{})
+	total, applied, err := c.IncrBudgetIdempotent(context.Background(),
+		"gateway.budget.counter.project.1.100", "recovery.project.1.100.500000000", 500000000)
+	if err != nil {
+		t.Fatalf("IncrBudgetIdempotent: %v", err)
+	}
+	if !applied {
+		t.Error("first apply should report applied=true")
+	}
+	if total != 2000000000 {
+		t.Errorf("total = %d, want 2000000000", total)
+	}
+	// The reused event_id MUST be set as the Nats-Msg-Id for stream dedup.
+	if got := pub.lastMsg.Header.Get(jetstream.MsgIDHeader); got != "recovery.project.1.100.500000000" {
+		t.Errorf("Nats-Msg-Id = %q, want the reused event_id", got)
+	}
+	// The delta MUST be set as the Nats-Incr header.
+	if got := pub.lastMsg.Header.Get(IncrHeader); got != "500000000" {
+		t.Errorf("Nats-Incr = %q, want 500000000", got)
+	}
+}
+
+func TestIncrBudgetIdempotentSuppressesDuplicate(t *testing.T) {
+	// A dedup-window hit returns applied=false and the caller must not re-count.
+	pub := &fakePublisher{ackVal: "0", dup: true}
+	c := newTestClient(Config{}, pub, &fakeReader{}, &fakeKV{})
+	_, applied, err := c.IncrBudgetIdempotent(context.Background(), "s", "evt-1", 100)
+	if err != nil {
+		t.Fatalf("IncrBudgetIdempotent: %v", err)
+	}
+	if applied {
+		t.Error("duplicate must report applied=false")
+	}
+}
+
+func TestIncrBudgetIdempotentMapsInfraError(t *testing.T) {
+	pub := &fakePublisher{err: nats.ErrNoResponders}
+	c := newTestClient(Config{}, pub, &fakeReader{}, &fakeKV{})
+	_, _, err := c.IncrBudgetIdempotent(context.Background(), "s", "evt-1", 100)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestIncrBudgetIdempotentBadAckIsConfigError(t *testing.T) {
+	pub := &fakePublisher{ackVal: "not-a-number"}
+	c := newTestClient(Config{}, pub, &fakeReader{}, &fakeKV{})
+	_, _, err := c.IncrBudgetIdempotent(context.Background(), "s", "evt-1", 100)
+	if err == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("bad ack should be a config error, got %v", err)
 	}
 }
 

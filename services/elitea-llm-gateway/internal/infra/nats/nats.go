@@ -40,6 +40,15 @@ const (
 	// NATS partition hangs the request instead of tripping the breaker (§8.5).
 	OpTimeout = 150 * time.Millisecond
 
+	// RecoveryDedupeWindow is the budget counter stream's duplicate window. It
+	// bounds how long a reused Nats-Msg-Id suppresses a re-applied recovery
+	// increment (§8.5 step 2: "tag each row's contribution with an event_id
+	// reused across retries … see the §8.6 dedup table"). It is set ≥ the
+	// FORCED_CLOSED ceiling (LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN, default
+	// 10m) so a crash-and-retry within a single outage cycle is always deduped
+	// rather than double-counted onto the recovered counter.
+	RecoveryDedupeWindow = 12 * time.Minute
+
 	// IncrHeader is the NATS 2.12 atomic-increment header. nats.go v1.52.0 does
 	// not define it (the KeyValue interface has no Incr), so we set it directly
 	// on the published message; the counter stream (AllowMsgCounter) applies it
@@ -238,6 +247,12 @@ func (c *Client) ensureAssets(ctx context.Context, prov assetProvisioner) error 
 		AllowMsgCounter: true,
 		// Only the running total matters; keep a single message per subject.
 		MaxMsgsPerSubject: 1,
+		// Duplicate window: recovery reconciliation (§8.5) replays outage-window
+		// spend onto the counter with a reused Nats-Msg-Id so an in-process retry
+		// (e.g. after a transient Postgres error between replay and finalize) is
+		// deduped instead of double-counted. Without a window the counter stream
+		// applies every increment unconditionally.
+		Duplicates: RecoveryDedupeWindow,
 	}); err != nil {
 		return fmt.Errorf("nats: ensure budget counter stream: %w", err)
 	}
@@ -298,6 +313,57 @@ func (c *Client) IncrBudget(ctx context.Context, subject string, deltaNano int64
 		return 0, mapErr(err)
 	}
 	return int64(v), nil
+}
+
+// IncrBudgetIdempotent atomically adds deltaNano to the counter for subject with
+// a reused Nats-Msg-Id (eventID) so a retry after a crash between the increment
+// and the recovery commit is deduped inside the stream's duplicate window rather
+// than double-applied (design §8.5 step 2, §8.6 dedup). It returns the new
+// running total and whether this call actually applied the increment (false ⇒ a
+// duplicate was suppressed, so the contribution was already counted).
+//
+// It is breaker-guarded and OpTimeout-bounded like IncrBudget. On a suppressed
+// duplicate the counter total may not be echoed in the ack, so the caller MUST
+// treat applied=false as "already reconciled" and not re-derive the total from
+// this call.
+func (c *Client) IncrBudgetIdempotent(ctx context.Context, subject, eventID string, deltaNano int64) (total int64, applied bool, err error) {
+	type result struct {
+		total   int64
+		applied bool
+	}
+	// The breaker generic is uint64; smuggle the two-field result through a
+	// closure variable so the breaker still counts failures on this path.
+	var out result
+	_, berr := c.breaker.Execute(func() (uint64, error) {
+		octx, cancel := context.WithTimeout(ctx, OpTimeout)
+		defer cancel()
+		msg := &nats.Msg{
+			Subject: subject,
+			Header: nats.Header{
+				IncrHeader:            []string{strconv.FormatInt(deltaNano, 10)},
+				jetstream.MsgIDHeader: []string{eventID},
+			},
+		}
+		ack, perr := c.pub.PublishMsg(octx, msg)
+		if perr != nil {
+			return 0, perr
+		}
+		if ack.Duplicate {
+			// Already applied within the duplicate window; do not re-count.
+			out = result{applied: false}
+			return 0, nil
+		}
+		t, cerr := strconv.ParseInt(ack.Value, 10, 64)
+		if cerr != nil {
+			return 0, fmt.Errorf("nats: counter ack %q: %w", ack.Value, cerr)
+		}
+		out = result{total: t, applied: true}
+		return 0, nil
+	})
+	if berr != nil {
+		return 0, false, mapErr(berr)
+	}
+	return out.total, out.applied, nil
 }
 
 // ReadBudget returns the current running total (int64 nano-USD) for subject, or

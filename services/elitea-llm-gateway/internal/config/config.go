@@ -43,6 +43,28 @@ const (
 	// DefaultCBOpenDuration is how long the breaker stays open before probing
 	// half-open (design §8.5, LLM_BUDGET_CB_OPEN_DURATION_SEC).
 	DefaultCBOpenDuration = 10 * time.Second
+
+	// DefaultNATSFailMode is the platform-baseline NATS-failure policy (§8.5,
+	// LLM_BUDGET_NATS_FAIL_MODE). A per-project override on
+	// gateway.project_budget.nats_fail_mode may narrow it.
+	DefaultNATSFailMode = "tiered_hybrid"
+
+	// DefaultPGFreshnessMin is how old the Postgres snapshot may be and still be
+	// trusted for the tiered-hybrid fallback (§8.5, LLM_BUDGET_PG_FRESHNESS_MIN).
+	// A snapshot older than this ⇒ NATS_DOWN_PG_STALE ⇒ 503.
+	DefaultPGFreshnessMin = 5 * time.Minute
+
+	// DefaultNATSDegradedMaxDuration is the continuous-outage ceiling; once NATS
+	// has been down longer than this the FSM forces closed (503) regardless of
+	// snapshot freshness (§8.5, LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN).
+	DefaultNATSDegradedMaxDuration = 10 * time.Minute
+
+	// DefaultNATSDegradedCapPct is the per-replica degraded-window overspend cap
+	// expressed as a percentage of hard_limit_usd when
+	// LLM_BUDGET_NATS_DEGRADED_CAP_USD is unset (§8.5, "default 10 % of
+	// hard_limit_usd"). A positive LLM_BUDGET_NATS_DEGRADED_CAP_USD overrides it
+	// with an absolute USD cap.
+	DefaultNATSDegradedCapPct = 10
 )
 
 // Config holds the resolved gateway configuration.
@@ -84,6 +106,25 @@ type Config struct {
 	// CBOpenDuration is how long the breaker stays open before probing half-open
 	// (§8.5).
 	CBOpenDuration time.Duration
+
+	// NATSFailMode is the platform-baseline tiered-hybrid fail policy (§8.5):
+	// "tiered_hybrid" (default) | "fail_open" | "fail_closed". A per-project
+	// gateway.project_budget.nats_fail_mode overrides it (NULL inherits this).
+	NATSFailMode string
+	// PGFreshnessMin bounds how stale the Postgres snapshot may be before the
+	// fallback degrades to 503 (§8.5, NATS_DOWN_PG_STALE).
+	PGFreshnessMin time.Duration
+	// NATSDegradedMaxDuration is the continuous-outage ceiling before the FSM
+	// forces closed (503) regardless of snapshot freshness (§8.5).
+	NATSDegradedMaxDuration time.Duration
+	// NATSDegradedCapUSD is an absolute per-replica degraded-window overspend cap
+	// in USD (§8.5). 0 means "use DefaultNATSDegradedCapPct % of hard_limit_usd".
+	NATSDegradedCapUSD float64
+	// ExpectedReplicas is the operator-configured replica count used for the
+	// NATS_DOWN_PG_FRESH_NEAR per-replica cap (§8.5, LLM_BUDGET_EXPECTED_REPLICAS,
+	// default 1). It reuses NATSReplicas' env var; kept distinct so the FSM reads
+	// an int replica count without re-parsing.
+	ExpectedReplicas int
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -104,6 +145,12 @@ func FromEnv() Config {
 		NATSReplicas:        intOr("LLM_BUDGET_EXPECTED_REPLICAS", DefaultNATSReplicas),
 		CBFailureThreshold:  uint32Or("LLM_BUDGET_CB_FAILURE_THRESHOLD", DefaultCBFailureThreshold),
 		CBOpenDuration:      secondsOr("LLM_BUDGET_CB_OPEN_DURATION_SEC", DefaultCBOpenDuration),
+
+		NATSFailMode:            failModeOr("LLM_BUDGET_NATS_FAIL_MODE", DefaultNATSFailMode),
+		PGFreshnessMin:          minutesOr("LLM_BUDGET_PG_FRESHNESS_MIN", DefaultPGFreshnessMin),
+		NATSDegradedMaxDuration: minutesOr("LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN", DefaultNATSDegradedMaxDuration),
+		NATSDegradedCapUSD:      floatOr("LLM_BUDGET_NATS_DEGRADED_CAP_USD", 0),
+		ExpectedReplicas:        intOr("LLM_BUDGET_EXPECTED_REPLICAS", DefaultNATSReplicas),
 	}
 }
 
@@ -151,4 +198,39 @@ func secondsOr(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// minutesOr reads an integer number of minutes from key. The §8.5 freshness /
+// max-duration knobs are surfaced as bare integer minutes
+// (LLM_BUDGET_PG_FRESHNESS_MIN, LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN).
+func minutesOr(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	return def
+}
+
+// floatOr reads a non-negative float from key (LLM_BUDGET_NATS_DEGRADED_CAP_USD,
+// a USD amount). A missing / invalid / negative value returns def.
+func floatOr(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	return def
+}
+
+// failModeOr reads the NATS fail-mode policy, accepting only the three valid
+// values (§8.5). Any other value falls back to def so a typo cannot silently
+// disable enforcement.
+func failModeOr(key, def string) string {
+	switch os.Getenv(key) {
+	case "tiered_hybrid", "fail_open", "fail_closed":
+		return os.Getenv(key)
+	default:
+		return def
+	}
 }
