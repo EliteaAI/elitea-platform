@@ -33,6 +33,9 @@ type Querier interface {
 	// This file projects the existing 16-column tenant table; it does not define a
 	// replacement configuration store.
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
+	// The unqualified table name is intentional. This query runs only inside an
+	// authorized project transaction whose local search_path is p_<project_id>.
+	GetCurrentToolkit(ctx context.Context, toolkitID int32) (EliteaTool, error)
 	GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error)
 	GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
