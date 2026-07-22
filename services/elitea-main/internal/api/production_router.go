@@ -54,6 +54,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	if cfg.CurrentProjectList != nil {
 		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
 	}
+	if cfg.ProductionRuntime != nil {
+		r.Method(http.MethodPost, "/api/v2"+runtimeValidationPath, cfg.ProductionRuntime.validation)
+		r.Method(http.MethodGet, "/api/v2"+runtimeEventsPath, cfg.ProductionRuntime.executionEvents)
+	}
 
 	return r
 }

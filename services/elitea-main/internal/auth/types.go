@@ -89,7 +89,7 @@ func RuntimePrincipalFromContext(ctx context.Context) (User, bool) {
 		return User{}, false
 	}
 	switch source {
-	case AuthenticationSourceAPIKey, AuthenticationSourceToken, AuthenticationSourceSession:
+	case AuthenticationSourceForwarded, AuthenticationSourceAPIKey, AuthenticationSourceToken, AuthenticationSourceSession:
 		return user, true
 	default:
 		return User{}, false

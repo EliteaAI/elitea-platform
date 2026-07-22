@@ -82,6 +82,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentProjectList *v2projects.CurrentProjectListRoute
 	var formGraph *authcomposition.FormGraph
 	var authReadiness health.Checker
+	var principalValidator apimw.PrincipalValidator
+	var forwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
 	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
 	if err != nil {
 		return err
@@ -110,11 +112,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("mount production Form authentication: %w", err)
 		}
+		principalValidator = authsvc.NewPrincipalValidator(pool)
+		forwardedIdentityVerifier = formGraph.ForwardedIdentityVerifier()
 		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
 			apimw.AuthConfig{
-				PrincipalValidator:        authsvc.NewPrincipalValidator(pool),
-				ForwardedIdentityVerifier: formGraph.ForwardedIdentityVerifier(),
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)
@@ -129,7 +133,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load optional runtime configuration: %w", err)
 	}
+	if runtimeConfig.Enabled && (principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_RUNTIME_ENABLED requires production authentication")
+	}
 	var runtimeRoot *runtimecomposition.Runtime
+	var productionRuntime *api.ProductionRuntimeRoutes
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -152,6 +160,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				runErr = fmt.Errorf("close optional runtime: %w", err)
 			}
 		}()
+		publicRoutes := runtimeRoot.PublicRoutes()
+		productionRuntime, err = api.NewProductionRuntimeRoutes(
+			publicRoutes.Validation,
+			publicRoutes.ExecutionEvents,
+			principalValidator,
+			forwardedIdentityVerifier,
+		)
+		if err != nil {
+			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
+		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
@@ -161,6 +179,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			Redis: authReadiness,
 		},
 		ProductionAuth:     productionAuth,
+		ProductionRuntime:  productionRuntime,
 		CurrentProjectList: currentProjectList,
 	})
 

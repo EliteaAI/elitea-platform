@@ -17,11 +17,12 @@ type publicAuthorizationQueryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-// postgresPublicAuthorizer accepts only a principal whose authentication
-// middleware provenance is a validated token/API key/session. Forwarded-header,
-// development and provenance-free contexts are rejected before PostgreSQL.
-// Membership has no permissive fallback: the user must own the project or hold
-// a persisted project role.
+// postgresPublicAuthorizer accepts only a principal with server-derived
+// authentication provenance. Forwarded identities are admitted only after the
+// opaque production route has verified the proxy peer and reloaded the active
+// principal. Development and provenance-free contexts are rejected before
+// PostgreSQL. Membership has no permissive fallback: the user must own the
+// project or hold a persisted project role.
 type postgresPublicAuthorizer struct {
 	admissionStore publicAuthorizationQueryer
 	outputStore    publicAuthorizationQueryer

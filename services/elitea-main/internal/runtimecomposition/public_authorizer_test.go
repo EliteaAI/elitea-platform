@@ -66,24 +66,38 @@ func TestPublicAuthorizerDerivesPhaseOneIdentityFromVerifiedMembership(t *testin
 	}
 }
 
-func TestPublicAuthorizerRejectsForwardedDevelopmentAndMissingMembership(t *testing.T) {
-	for _, source := range []auth.AuthenticationSource{auth.AuthenticationSourceForwarded, auth.AuthenticationSourceDevelopment} {
-		store := &authorizationStore{row: authorizationRow{active: true}}
-		authorizer, err := newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, source)
-		if _, err := authorizer.AuthorizeValidation(ctx, "42", "revision-1"); !errors.Is(err, configurationapi.ErrValidationForbidden) {
-			t.Fatalf("source %d error = %v", source, err)
-		}
-		if store.calls != 0 {
-			t.Fatalf("source %d reached database", source)
-		}
+func TestPublicAuthorizerAcceptsVerifiedForwardedMembership(t *testing.T) {
+	store := &authorizationStore{row: authorizationRow{active: true}}
+	authorizer, err := newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceForwarded)
+	identity, err := authorizer.AuthorizeValidation(ctx, "42", "revision-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.ActorID != "17" || identity.ResourceProjectID != "42" || store.calls != 1 {
+		t.Fatalf("identity=%+v membership queries=%d", identity, store.calls)
+	}
+}
+
+func TestPublicAuthorizerRejectsDevelopmentAndMissingMembership(t *testing.T) {
+	developmentStore := &authorizationStore{row: authorizationRow{active: true}}
+	authorizer, err := newPostgresPublicAuthorizer(developmentStore, &authorizationStore{row: authorizationRow{active: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	development := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceDevelopment)
+	if _, err := authorizer.AuthorizeValidation(development, "42", "revision-1"); !errors.Is(err, configurationapi.ErrValidationForbidden) {
+		t.Fatalf("development source error = %v", err)
+	}
+	if developmentStore.calls != 0 {
+		t.Fatalf("development source reached database %d times", developmentStore.calls)
 	}
 
 	store := &authorizationStore{row: authorizationRow{active: false}}
-	authorizer, err := newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
+	authorizer, err = newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -170,8 +170,8 @@ func TestAuth_TraefikHeaders(t *testing.T) {
 	if gotSource != auth.AuthenticationSourceForwarded {
 		t.Errorf("expected forwarded source, got %d", gotSource)
 	}
-	if _, ok := auth.RuntimePrincipalFromContext(auth.ContextWithAuthenticatedUser(context.Background(), gotUser, gotSource)); ok {
-		t.Fatal("forwarded principal was accepted for runtime authorization")
+	if runtimePrincipal, ok := auth.RuntimePrincipalFromContext(auth.ContextWithAuthenticatedUser(context.Background(), gotUser, gotSource)); !ok || runtimePrincipal.ID != "123" {
+		t.Fatalf("verified forwarded runtime principal = %+v, present=%v", runtimePrincipal, ok)
 	}
 }
 
