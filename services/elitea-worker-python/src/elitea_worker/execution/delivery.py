@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import math
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -25,6 +26,7 @@ from elitea.runtime.v1 import (
     envelope_pb2,
     errors_pb2,
     indexing_pb2,
+    node_event_pb2,
     output_pb2,
 )
 
@@ -63,6 +65,8 @@ from elitea_worker.fixtures.bundle import (
     project_input_manifest_entries,
 )
 from elitea_worker.handlers.indexing import (
+    CurrentIndexNodeEventCallback,
+    CurrentIndexNodeEventContext,
     IndexIngestHandler,
     IndexIngestInputBinding,
     ResolvedIndexIngestInput,
@@ -71,6 +75,7 @@ from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
     SignedCommandAuthenticator,
+    build_node_event_output_frame,
     build_output_frame,
     parse_and_verify_signed_command,
     parse_execution_input_bundle,
@@ -196,6 +201,157 @@ class _ResolvedIndexInputs:
     llm_configuration: ResolvedIndexIngestInput | None
     mcp_tokens: ResolvedIndexIngestInput | None
     client_context: EliteaClientContext
+
+
+class _IndexProgressTransportFailure(RuntimeError):
+    """Progress delivery lost its exact durable sequence authority."""
+
+
+class _IndexProgressOutput:
+    """Thread-to-async bridge for one strictly ordered index output stream."""
+
+    def __init__(
+        self,
+        *,
+        verified: VerifiedWorkerCommand,
+        initial_output: OutputSession,
+        output_session_factory: Callable[[], OutputSession],
+        clock_unix_millis: Callable[[], int],
+        claim_handoff_watermark: int,
+        output_ack_timeout_seconds: float,
+        max_output_sessions: int,
+    ) -> None:
+        if claim_handoff_watermark < 0 or claim_handoff_watermark >= (1 << 64) - 1:
+            raise InvalidInput("The index output handoff watermark is malformed.")
+        self._verified = verified
+        self._output = initial_output
+        self._output_session_factory = output_session_factory
+        self._clock = clock_unix_millis
+        self._watermark = claim_handoff_watermark
+        self._ack_timeout = output_ack_timeout_seconds
+        self._max_sessions = max_output_sessions
+        self._loop = asyncio.get_running_loop()
+        self._loop_thread_id = threading.get_ident()
+        self._publish_lock = asyncio.Lock()
+        self._next_sequence = claim_handoff_watermark + 1
+        self._started = False
+        self._rejected_frame: output_pb2.ExecutionOutputFrameV1 | None = None
+        self._fatal: _IndexProgressTransportFailure | None = None
+
+    @property
+    def terminal_sequence(self) -> int:
+        return self._next_sequence
+
+    def publish_from_sdk(self, event: node_event_pb2.NodeEventV1) -> None:
+        """Block the synchronous callback until Main durably ACKs its event."""
+
+        if threading.get_ident() == self._loop_thread_id:
+            failure = _IndexProgressTransportFailure(
+                "index progress callback ran on the output event-loop thread"
+            )
+            self._fatal = failure
+            raise failure
+        future = asyncio.run_coroutine_threadsafe(self._publish(event), self._loop)
+        try:
+            future.result()
+        except Exception:
+            # ``CurrentIndexNodeEventCallback`` records and re-raises this exact
+            # failure after the SDK call. Do not turn an uncertain sequence into
+            # an ordinary terminal result here.
+            raise
+
+    async def _publish(self, event: node_event_pb2.NodeEventV1) -> None:
+        async with self._publish_lock:
+            if self._fatal is not None:
+                raise self._fatal
+            if self._rejected_frame is not None:
+                raise _IndexProgressTransportFailure(
+                    "index progress output already has a terminal winner"
+                )
+            frame = build_node_event_output_frame(
+                self._verified,
+                event,
+                sequence=self._next_sequence,
+                occurred_at_unix_millis=_runtime_now(self._clock),
+                claim_handoff_watermark=self._watermark,
+            )
+            for attempt in range(self._max_sessions):
+                output = self._output
+                try:
+                    if not self._started:
+                        await output.start()
+                        self._started = True
+                    if output.has_pending_replay:
+                        if not output.replays(frame):
+                            raise AuthorizationFailure(
+                                "The durable output spool does not match this index progress event."
+                            )
+                    else:
+                        await output.send(frame)
+                    await output.wait_for_ack(frame.sequence, self._ack_timeout)
+                    self._next_sequence += 1
+                    return
+                except Exception as error:
+                    if _is_output_cancellation_winner(error):
+                        self._rejected_frame = frame
+                        await self._close_active()
+                        raise ExecutionCancelled() from error
+                    if _is_output_deadline_winner(error):
+                        self._rejected_frame = frame
+                        await self._close_active()
+                        raise DeadlineExceeded() from error
+                    await self._close_active()
+                    if (
+                        attempt + 1 >= self._max_sessions
+                        or not isinstance(error, (RuntimeError, TimeoutError))
+                        or not _reconnectable_output(error)
+                    ):
+                        failure = _IndexProgressTransportFailure(
+                            "index progress output could not be durably acknowledged"
+                        )
+                        self._fatal = failure
+                        raise failure from error
+                    self._output = self._output_session_factory()
+            raise AssertionError("bounded index progress session loop did not terminate")
+
+    async def prepare_terminal(
+        self,
+        frame: output_pb2.ExecutionOutputFrameV1,
+    ) -> tuple[OutputSession, bool]:
+        """Return the active stream or atomically replace a rejected progress frame."""
+
+        if self._fatal is not None:
+            raise self._fatal
+        rejected = self._rejected_frame
+        if rejected is None:
+            return self._output, self._started
+        if int(frame.sequence) != int(rejected.sequence):
+            raise AuthorizationFailure(
+                "The terminal output does not replace the rejected progress sequence."
+            )
+        replacement = self._output_session_factory()
+        pending = replacement.pending_replay_frame
+        if (
+            pending is None
+            or not replacement.has_pending_replay
+            or not replacement.replays(rejected)
+        ):
+            raise AuthorizationFailure(
+                "The rejected index progress frame disappeared before terminal replacement."
+            )
+        await replacement.replace_pending_exact(rejected, frame)
+        self._output = replacement
+        self._started = False
+        self._rejected_frame = None
+        return replacement, False
+
+    async def close(self) -> None:
+        await self._close_active()
+
+    async def _close_active(self) -> None:
+        if self._started:
+            await self._output.close()
+            self._started = False
 
 
 IndexClientContextFactory = Callable[
@@ -539,6 +695,7 @@ class ConfigurationValidationDeliveryProcessor:
                 verified=accepted.verified,
             )
 
+        progress = self._new_progress_output(accepted, output)
         lease = _ClaimLeaseMonitor(
             control=self._control,
             receipt=receipt,
@@ -581,6 +738,7 @@ class ConfigurationValidationDeliveryProcessor:
                                 accepted,
                                 resolved_input,
                                 receipt=receipt,
+                                progress=progress,
                             )
                             # A synchronous SDK call cannot be cancelled safely.
                             # Retain claim ownership until it exits, then prevent a
@@ -619,12 +777,20 @@ class ConfigurationValidationDeliveryProcessor:
                 outcome,
                 occurred_at_unix_millis=occurred_at,
                 claim_handoff_watermark=accepted.claim_handoff_watermark,
+                sequence=(progress.terminal_sequence if progress is not None else 1),
             )
+            terminal_output = output
+            terminal_output_started = False
+            if progress is not None:
+                terminal_output, terminal_output_started = (
+                    await progress.prepare_terminal(frame)
+                )
             frame = await self._publish_with_terminal_linearization(
                 frame,
                 verified=accepted.verified,
                 claim_handoff_watermark=accepted.claim_handoff_watermark,
-                initial_output=output,
+                initial_output=terminal_output,
+                initial_output_started=terminal_output_started,
             )
             # Publication returned only after a bound durable ACK. Do not apply a
             # later wall-clock deadline here: settlement must preserve and finish
@@ -639,7 +805,17 @@ class ConfigurationValidationDeliveryProcessor:
                 settlement_receipt_id=receipt_id,
             )
         finally:
+            if progress is not None:
+                await progress.close()
             await lease.stop()
+
+    def _new_progress_output(
+        self,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim,
+        output: OutputSession,
+    ) -> _IndexProgressOutput | None:
+        _ = accepted, output
+        return None
 
     def _accept_claim(
         self,
@@ -697,8 +873,13 @@ class ConfigurationValidationDeliveryProcessor:
         resolved_input: object,
         *,
         receipt: control_pb2.ClaimReceiptV1,
+        progress: _IndexProgressOutput | None,
     ) -> Any:
-        if self._handler is None or not isinstance(resolved_input, bytes):
+        if (
+            self._handler is None
+            or not isinstance(resolved_input, bytes)
+            or progress is not None
+        ):
             raise InternalFailure()
         settings = parse_settings_json(resolved_input)
         request = validation_request_from(
@@ -768,9 +949,14 @@ class ConfigurationValidationDeliveryProcessor:
         verified: VerifiedWorkerCommand,
         claim_handoff_watermark: int,
         initial_output: OutputSession,
+        initial_output_started: bool = False,
     ) -> output_pb2.ExecutionOutputFrameV1:
         try:
-            await self._publish_output(frame, initial_output=initial_output)
+            await self._publish_output(
+                frame,
+                initial_output=initial_output,
+                initial_output_started=initial_output_started,
+            )
             return frame
         except (RuntimeError, OutputCancellationWon, OutputDeadlineWon) as error:
             if _is_output_cancellation_winner(error):
@@ -791,6 +977,7 @@ class ConfigurationValidationDeliveryProcessor:
             # after the atomic spool CAS remains byte-for-byte identical.
             occurred_at_unix_millis=int(frame.occurred_at_unix_millis),
             claim_handoff_watermark=claim_handoff_watermark,
+            sequence=int(frame.sequence),
         )
         replacement_output = self._output_session_factory()
         pending = replacement_output.pending_replay_frame
@@ -829,6 +1016,7 @@ class ConfigurationValidationDeliveryProcessor:
         frame: output_pb2.ExecutionOutputFrameV1,
         *,
         initial_output: OutputSession | None = None,
+        initial_output_started: bool = False,
     ) -> None:
         for attempt in range(self._max_output_sessions):
             output = (
@@ -836,12 +1024,18 @@ class ConfigurationValidationDeliveryProcessor:
                 if attempt == 0 and initial_output is not None
                 else self._output_session_factory()
             )
+            already_started = (
+                attempt == 0
+                and initial_output is not None
+                and initial_output_started
+            )
             if output.has_pending_replay and not output.replays(frame):
                 raise AuthorizationFailure(
                     "The durable output spool does not match this execution frame."
                 )
             try:
-                await output.start()
+                if not already_started:
+                    await output.start()
                 if not output.has_pending_replay:
                     await output.send(frame)
                 await output.wait_for_ack(frame.sequence, self._output_ack_timeout)
@@ -892,6 +1086,23 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             lease_poll_interval_seconds=lease_poll_interval_seconds,
         )
         self._client_context_factory = client_context_factory
+
+    def _new_progress_output(
+        self,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim,
+        output: OutputSession,
+    ) -> _IndexProgressOutput | None:
+        if not isinstance(accepted, _AcceptedIndexClaim):
+            raise InternalFailure()
+        return _IndexProgressOutput(
+            verified=accepted.verified,
+            initial_output=output,
+            output_session_factory=self._output_session_factory,
+            clock_unix_millis=self._clock,
+            claim_handoff_watermark=accepted.claim_handoff_watermark,
+            output_ack_timeout_seconds=self._output_ack_timeout,
+            max_output_sessions=self._max_output_sessions,
+        )
 
     def _accept_claim(
         self,
@@ -989,9 +1200,27 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
         resolved_input: object,
         *,
         receipt: control_pb2.ClaimReceiptV1,
+        progress: _IndexProgressOutput | None,
     ) -> indexing_pb2.IndexIngestResultV1:
-        if not isinstance(resolved_input, _ResolvedIndexInputs):
+        if (
+            not isinstance(resolved_input, _ResolvedIndexInputs)
+            or progress is None
+        ):
             raise InternalFailure()
+        command = accepted.verified.command
+        callback = CurrentIndexNodeEventCallback(
+            CurrentIndexNodeEventContext(
+                stream_id=command.execution_id,
+                task_id=command.execution_id,
+                initiator="user",
+                project_id=_current_numeric_identity(command.resource_project_id),
+                user_id=_current_user_identity(command.principal_ref),
+                toolkit_id=_current_toolkit_id(
+                    resolved_input.toolkit_configuration.value
+                ),
+            ),
+            progress.publish_from_sdk,
+        )
         request = request_from(
             accepted.verified.command.index_ingest,
             input_bundle_id=receipt.input_bundle.input_bundle_id,
@@ -1001,7 +1230,10 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             llm_model=resolved_input.llm_model,
             llm_configuration=resolved_input.llm_configuration,
             mcp_tokens=resolved_input.mcp_tokens,
-            runtime_config={},
+            runtime_config={
+                "callbacks": [callback],
+                "metadata": {"initiator": "user"},
+            },
         )
         try:
             handler = IndexIngestHandler(
@@ -1009,11 +1241,41 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 self._supervisor,
             )
             result = await handler.execute(request)
+            callback.raise_if_failed()
             return bind_result_summary(result)
+        except _IndexProgressTransportFailure:
+            raise
         except WorkerError:
             raise
         except Exception:
             raise InternalFailure() from None
+
+
+def _current_numeric_identity(value: str) -> int | str:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return value
+    return parsed if parsed > 0 else value
+
+
+def _current_user_identity(principal_ref: str) -> int | str:
+    value = principal_ref.removeprefix("user:")
+    return _current_numeric_identity(value)
+
+
+def _current_toolkit_id(toolkit_configuration: Any) -> int | str | None:
+    if not isinstance(toolkit_configuration, dict):
+        return None
+    value = toolkit_configuration.get("id", toolkit_configuration.get("toolkit_id"))
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value:
+        parsed = _current_numeric_identity(value)
+        return parsed if parsed else None
+    return None
 
 
 def _claim_receipt(response: control_pb2.ClaimCommandResponseV1) -> control_pb2.ClaimReceiptV1:
@@ -1199,8 +1461,13 @@ def _validate_pending_output(
             "configuration-validation:"
             f"{command.configuration_validation.configuration_revision_id}"
         )
+        valid_sequence = frame.sequence == 1
     elif selected_capability == "index_ingest":
         expected_logical_output = f"index-ingest:{command.execution_id}"
+        valid_sequence = (
+            frame.sequence >= 1
+            and int(frame.claim_handoff_watermark) < int(frame.sequence)
+        )
     else:
         raise UnsupportedCapability()
     proposal = frame.settlement_proposal
@@ -1220,8 +1487,8 @@ def _validate_pending_output(
     if (
         frame.stream_id != expected_stream
         or frame.logical_output_id != expected_logical_output
-        or frame.event_id != f"{command.command_id}:1"
-        or frame.sequence != 1
+        or frame.event_id != f"{command.command_id}:{frame.sequence}"
+        or not valid_sequence
         or not frame.terminal
         or not frame.HasField("settlement_proposal")
         or proposal.proposal_id != f"{command.command_id}:settlement"

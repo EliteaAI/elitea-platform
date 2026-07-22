@@ -98,6 +98,7 @@ def _ack(
     credit_frames: int = 1,
     credit_bytes: int = 1024,
     bind_identity: bool = False,
+    frame: output_pb2.ExecutionOutputFrameV1 | None = None,
 ) -> output_pb2.ExecutionOutputAckV1:
     ack = output_pb2.ExecutionOutputAckV1(
         committed_contiguous_sequence=sequence,
@@ -106,11 +107,11 @@ def _ack(
         desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
     )
     if bind_identity:
-        frame = _frame(1)
-        ack.stream_id = frame.stream_id
-        ack.identity.CopyFrom(frame.identity)
-        ack.fence.CopyFrom(frame.fence)
-        ack.claim_handoff_watermark = frame.claim_handoff_watermark
+        binding = frame or _frame(1)
+        ack.stream_id = binding.stream_id
+        ack.identity.CopyFrom(binding.identity)
+        ack.fence.CopyFrom(binding.fence)
+        ack.claim_handoff_watermark = binding.claim_handoff_watermark
     return ack
 
 
@@ -210,6 +211,29 @@ def test_duplicate_or_noncontiguous_sequence_is_rejected(tmp_path: Path) -> None
             await session.send(_frame(1))
         with pytest.raises(InvalidInput, match="contiguous"):
             await session.send(_frame(3))
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_fresh_session_resumes_after_claim_handoff_watermark(tmp_path: Path) -> None:
+    async def run() -> None:
+        call = FakeCall()
+        call.write_gate.set()
+        session, _, _ = _session(tmp_path, call)
+        await session.start()
+        await call.controls.put(_ack(0))
+        frame = _frame(4)
+        frame.claim_handoff_watermark = 3
+        await session.send(frame)
+        skipped = _frame(6)
+        skipped.claim_handoff_watermark = 3
+        with pytest.raises(InvalidInput, match="contiguous"):
+            await session.send(skipped)
+        while not call.writes:
+            await asyncio.sleep(0)
+        await call.controls.put(_ack(4, bind_identity=True, frame=frame))
+        await session.wait_for_ack(4, 1)
         await session.close()
 
     asyncio.run(run())
@@ -436,6 +460,12 @@ def test_existing_spool_replays_exact_frame_and_clears_only_after_bound_ack(
         await call.controls.put(_ack(1, bind_identity=True))
         await session.wait_for_ack(1, 1)
         assert spool.pending() == ()
+        assert not session.has_pending_replay
+        await session.send(_frame(2))
+        while len(call.writes) < 2:
+            await asyncio.sleep(0)
+        await call.controls.put(_ack(2, bind_identity=True))
+        await session.wait_for_ack(2, 1)
         await session.close()
 
     asyncio.run(run())

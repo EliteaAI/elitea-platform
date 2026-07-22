@@ -23,6 +23,7 @@ from elitea.runtime.v1 import (
     errors_pb2,
     indexing_pb2,
     input_pb2,
+    node_event_pb2,
     output_pb2,
     validation_pb2,
 )
@@ -36,6 +37,7 @@ from elitea_worker.constants import (
     INDEX_INGEST_CAPABILITY_ID,
     LIMITS_REVISION,
     MAX_ENVELOPE_BYTES,
+    MAX_GRPC_REQUEST_BYTES,
     MAX_MANIFEST_BYTES,
     MAX_SIGNED_ENVELOPE_BYTES,
     MAX_SAFE_STRING_BYTES,
@@ -52,6 +54,7 @@ from elitea_worker.execution.errors import (
     WorkerError,
 )
 from elitea_worker.handlers.validation import ConfigurationValidationResult
+from elitea_worker.protocol.node_event import encode_current_node_event_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,8 +268,14 @@ def build_output_frame(
     *,
     occurred_at_unix_millis: int,
     claim_handoff_watermark: int = 0,
+    sequence: int = 1,
 ) -> output_pb2.ExecutionOutputFrameV1:
-    if occurred_at_unix_millis <= 0 or claim_handoff_watermark < 0:
+    if (
+        occurred_at_unix_millis <= 0
+        or claim_handoff_watermark < 0
+        or sequence < 1
+        or sequence >= 1 << 64
+    ):
         raise InvalidInput("The output occurrence time is malformed.")
     command = verified.command
     logical_output_id = _logical_output_id(command)
@@ -283,8 +292,8 @@ def build_output_frame(
         ),
         fence=verified.envelope.fence,
         logical_output_id=logical_output_id,
-        event_id=f"{command.command_id}:1",
-        sequence=1,
+        event_id=f"{command.command_id}:{sequence}",
+        sequence=sequence,
         claim_handoff_watermark=claim_handoff_watermark,
         occurred_at_unix_millis=occurred_at_unix_millis,
         terminal=True,
@@ -333,6 +342,60 @@ def build_output_frame(
             prepare_idempotency_key=f"{command.command_id}:prepare-settlement",
         )
     )
+    return frame
+
+
+def build_node_event_output_frame(
+    verified: VerifiedWorkerCommand,
+    event: node_event_pb2.NodeEventV1,
+    *,
+    sequence: int,
+    occurred_at_unix_millis: int,
+    claim_handoff_watermark: int = 0,
+) -> output_pb2.ExecutionOutputFrameV1:
+    """Bind one current NodeEvent to the claimed index output stream."""
+
+    command = verified.command
+    if (
+        command.WhichOneof("capability_command") != "index_ingest"
+        or sequence < 1
+        or sequence >= 1 << 64
+        or occurred_at_unix_millis <= 0
+        or claim_handoff_watermark < 0
+        or claim_handoff_watermark >= sequence
+    ):
+        raise InvalidInput("The index progress output identity is malformed.")
+    # Reuse the single current-contract validator before any protobuf digest is
+    # allocated. The return value is intentionally discarded; elitea-main owns
+    # the exact browser projection from the protobuf payload.
+    encode_current_node_event_json(event)
+    payload_bytes = event.SerializeToString(deterministic=True)
+    frame = output_pb2.ExecutionOutputFrameV1(
+        output_schema_revision=OUTPUT_SCHEMA_REVISION,
+        stream_id=f"{command.execution_id}:{command.generation}",
+        identity=common_pb2.ExecutionIdentityV1(
+            tenant_id=command.tenant_id,
+            resource_project_id=command.resource_project_id,
+            projection_project_id=command.projection_project_id,
+            command_id=command.command_id,
+            execution_id=command.execution_id,
+            generation=command.generation,
+        ),
+        fence=verified.envelope.fence,
+        logical_output_id=f"node-event:{command.execution_id}:{sequence}",
+        event_id=f"{command.command_id}:{sequence}",
+        sequence=sequence,
+        claim_handoff_watermark=claim_handoff_watermark,
+        event_type=output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT,
+        occurred_at_unix_millis=occurred_at_unix_millis,
+        payload_digest=_digest(hashlib.sha256(payload_bytes).digest()),
+        terminal=False,
+        node_event=event,
+    )
+    if len(frame.SerializeToString(deterministic=True)) > MAX_GRPC_REQUEST_BYTES:
+        raise ResourceExhausted(
+            "The index progress event exceeds the approved output limit."
+        )
     return frame
 
 

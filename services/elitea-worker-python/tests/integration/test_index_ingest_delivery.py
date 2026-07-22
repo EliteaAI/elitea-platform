@@ -6,6 +6,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import pytest
 from elitea.runtime.v1 import (
@@ -30,13 +31,14 @@ from elitea_worker.execution.delivery import (
     DeliveryDisposition,
     IndexIngestDeliveryProcessor,
 )
-from elitea_worker.execution.errors import InvalidInput
+from elitea_worker.execution.errors import InvalidInput, OutputCancellationWon
 from elitea_worker.protocol.codec import (
     TestOnlyConformanceHmacAuthenticator,
     VerifiedWorkerCommand,
     build_output_frame,
 )
 from elitea_worker.protocol.indexing import bind_result_summary
+from elitea_worker.protocol.node_event import encode_current_node_event_json
 from elitea_worker.handlers.indexing import IndexIngestInputBinding, IndexIngestResult
 from elitea_worker.transport.input_content import ClaimBoundInputRequestBuilder
 from elitea_worker.transport.redis_commands import RedisCommandDelivery
@@ -51,16 +53,38 @@ class InlineSupervisor:
         return await operation()
 
     async def run_sync(self, operation, /, *args, **kwargs):
-        return operation(*args, **kwargs)
+        return await asyncio.to_thread(operation, *args, **kwargs)
 
 
 class RecordingSdk:
-    def __init__(self, result: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        result: dict[str, Any],
+        *,
+        custom_events: list[tuple[str, dict[str, Any]]] | None = None,
+        catch_callback_errors: bool = False,
+    ) -> None:
         self.result = result
+        self.custom_events = custom_events or []
+        self.catch_callback_errors = catch_callback_errors
         self.calls: list[dict[str, Any]] = []
+        self.callback_errors: list[Exception] = []
 
     def ingest(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        for name, data in self.custom_events:
+            for callback in kwargs["runtime_config"]["callbacks"]:
+                try:
+                    callback.on_custom_event(
+                        name,
+                        data,
+                        run_id=UUID("00000000-0000-0000-0000-000000000007"),
+                        metadata={"source": "current-sdk"},
+                    )
+                except Exception as exc:
+                    if not self.catch_callback_errors:
+                        raise
+                    self.callback_errors.append(exc)
         return self.result
 
 
@@ -89,6 +113,7 @@ class Acker:
 class Output:
     def __init__(self, pending: output_pb2.ExecutionOutputFrameV1 | None = None) -> None:
         self.frame = pending
+        self.frames: list[output_pb2.ExecutionOutputFrameV1] = []
         self.sent = 0
         self.started = 0
 
@@ -113,19 +138,100 @@ class Output:
     async def send(self, frame: output_pb2.ExecutionOutputFrameV1) -> None:
         assert self.frame is None
         self.frame = frame
+        self.frames.append(frame)
         self.sent += 1
 
     async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
-        assert self.frame is not None and sequence == 1 and timeout_seconds > 0
+        assert (
+            self.frame is not None
+            and sequence == self.frame.sequence
+            and timeout_seconds > 0
+        )
+        self.frame = None
+
+    async def close(self) -> None:
+        return None
+
+
+class GatedOutput(Output):
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiting_for_ack = asyncio.Event()
+        self.release_ack = asyncio.Event()
+
+    async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
+        self.waiting_for_ack.set()
+        await self.release_ack.wait()
+        await super().wait_for_ack(sequence, timeout_seconds)
+
+
+@dataclass
+class SharedPendingOutput:
+    frame: output_pb2.ExecutionOutputFrameV1 | None = None
+
+
+class CancellationWinnerOutput:
+    def __init__(
+        self,
+        shared: SharedPendingOutput,
+        *,
+        reject_progress: bool,
+        frames: list[output_pb2.ExecutionOutputFrameV1],
+    ) -> None:
+        self.shared = shared
+        self.reject_progress = reject_progress
+        self.frames = frames
+
+    @property
+    def has_pending_replay(self) -> bool:
+        return self.shared.frame is not None
+
+    @property
+    def pending_replay_frame(self) -> output_pb2.ExecutionOutputFrameV1 | None:
+        return self.shared.frame
+
+    def replays(self, frame: output_pb2.ExecutionOutputFrameV1) -> bool:
+        return self.shared.frame == frame
+
+    async def replace_pending_exact(self, expected, replacement) -> None:
+        assert self.shared.frame == expected
+        self.shared.frame = replacement
+        self.frames.append(replacement)
+
+    async def start(self) -> None:
+        return None
+
+    async def send(self, frame: output_pb2.ExecutionOutputFrameV1) -> None:
+        assert self.shared.frame is None
+        self.shared.frame = frame
+        self.frames.append(frame)
+
+    async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
+        assert self.shared.frame is not None
+        assert self.shared.frame.sequence == sequence
+        assert timeout_seconds > 0
+        if self.reject_progress and self.shared.frame.HasField("node_event"):
+            try:
+                raise OutputCancellationWon()
+            except OutputCancellationWon as exc:
+                raise RuntimeError("output stream is unavailable") from exc
+        self.shared.frame = None
 
     async def close(self) -> None:
         return None
 
 
 class Control:
-    def __init__(self, case: "Case", *, active: bool = False) -> None:
+    def __init__(
+        self,
+        case: "Case",
+        *,
+        active: bool = False,
+        claim_handoff_watermark: int = 0,
+    ) -> None:
         self.case = case
         self.active = active
+        self.claim_handoff_watermark = claim_handoff_watermark
         self.settlements = 0
 
     async def claim_command(self, request):
@@ -141,7 +247,7 @@ class Control:
             fence=self.case.fence,
             lease_expires_at_unix_millis=_NOW + 120_000,
             desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
-            claim_handoff_watermark=1,
+            claim_handoff_watermark=self.claim_handoff_watermark,
         )
         if not self.active:
             receipt.input_bundle_ref.CopyFrom(self.case.command.input_bundle_ref)
@@ -246,10 +352,201 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
             assert result.output_frame.index_ingest.result_summary.status == indexing_pb2.INDEX_INGEST_STATUS_V1_OK
             assert result.output_frame.index_ingest.result_summary.message == "Indexed 3 documents"
             assert sdk.calls[0]["toolkit_config"]["settings"]["token"] == "github-secret"
-            assert sdk.calls[0]["runtime_config"] == {}
+            runtime_config = sdk.calls[0]["runtime_config"]
+            assert len(runtime_config["callbacks"]) == 1
+            assert runtime_config["metadata"] == {"initiator": "user"}
         else:
             assert result.output_frame.runtime_error.code == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
             assert result.output_frame.runtime_error.safe_message == "The runtime operation failed."
+
+    asyncio.run(run())
+
+
+def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        canary = "REDEEMED_SECRET_CANARY"
+        sdk = RecordingSdk(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "Indexed 3 documents"},
+            },
+            custom_events=[
+                (
+                    "index_data_status",
+                    {
+                        "id": "index-meta-1",
+                        "index_name": "docs",
+                        "state": "completed",
+                        "error": None,
+                        "reindex": False,
+                        "indexed": 3,
+                        "updated": 0,
+                        "created_at": 1_700_000_000.0,
+                        "updated_on": 1_700_000_010.0,
+                        "toolkit_id": 9,
+                        "credential": canary,
+                    },
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+
+        output = GatedOutput()
+        processing = asyncio.create_task(_processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=output,
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery))
+        await asyncio.wait_for(output.waiting_for_ack.wait(), timeout=1)
+        assert not processing.done()
+        assert [frame.sequence for frame in output.frames] == [1]
+        output.release_ack.set()
+        result = await processing
+
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == 2
+        assert result.output_frame.settlement_proposal.terminal_sequence == 2
+        assert [frame.sequence for frame in output.frames] == [1, 2]
+        progress, terminal = output.frames
+        assert not progress.terminal
+        assert not progress.HasField("settlement_proposal")
+        assert progress.event_type == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT
+        assert terminal == result.output_frame
+        browser_event = json.loads(encode_current_node_event_json(progress.node_event))
+        assert browser_event["type"] == "agent_index_data_status"
+        assert browser_event["stream_id"] == case.command.execution_id
+        metadata = browser_event["response_metadata"]
+        assert metadata["task_id"] == case.command.execution_id
+        assert metadata["initiator"] == "user"
+        assert metadata["project_id"] == 42
+        assert metadata["user_id"] == 7
+        assert metadata["toolkit_id"] == 9
+        assert metadata["index_name"] == "docs"
+        assert canary not in json.dumps(browser_event)
+
+    asyncio.run(run())
+
+
+def test_claim_handoff_watermark_seeds_the_next_terminal_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        sdk = RecordingSdk(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "Already resumed"},
+            }
+        )
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+
+        result = await _processor(
+            case,
+            control=Control(case, claim_handoff_watermark=3),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == 4
+        assert result.output_frame.claim_handoff_watermark == 3
+        assert result.output_frame.event_id == f"{case.command.command_id}:4"
+        assert result.output_frame.settlement_proposal.terminal_sequence == 4
+
+    asyncio.run(run())
+
+
+def test_progress_cancellation_winner_replaces_exact_sequence_and_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        sdk = RecordingSdk(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "late success"},
+            },
+            custom_events=[
+                (
+                    "index_data_status",
+                    {
+                        "index_name": "docs",
+                        "state": "in_progress",
+                        "toolkit_id": 9,
+                    },
+                )
+            ],
+            # The current BaseIndexerToolkit catches callback failures and the
+            # phase-one synchronous call remains non-preemptible.
+            catch_callback_errors=True,
+        )
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+
+        shared = SharedPendingOutput()
+        frames: list[output_pb2.ExecutionOutputFrameV1] = []
+        sessions = 0
+
+        def output_factory() -> CancellationWinnerOutput:
+            nonlocal sessions
+            sessions += 1
+            return CancellationWinnerOutput(
+                shared,
+                reject_progress=sessions == 1,
+                frames=frames,
+            )
+
+        control = Control(case)
+        acker = Acker()
+        result = await _processor(
+            case,
+            control=control,
+            input_client=InputClient(case.values, []),
+            output=None,
+            output_factory=output_factory,
+            acker=acker,
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert len(sdk.callback_errors) == 1
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == 1
+        assert result.output_frame.runtime_error.code == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        assert result.output_frame.settlement_proposal.terminal_sequence == 1
+        assert frames[0].HasField("node_event")
+        assert not frames[0].terminal
+        assert frames[1] == result.output_frame
+        assert shared.frame is None
+        assert control.settlements == 1
+        assert acker.calls == 1
 
     asyncio.run(run())
 
@@ -268,7 +565,7 @@ def test_pending_index_output_recovers_without_input_context_or_sdk(
             VerifiedWorkerCommand(envelope=envelope, command=case.command),
             safe_result,
             occurred_at_unix_millis=_NOW,
-            claim_handoff_watermark=1,
+            claim_handoff_watermark=0,
         )
         output = Output(pending)
         control = Control(case, active=True)
@@ -398,6 +695,7 @@ def _processor(
     acker,
     context_factory,
     clock=None,
+    output_factory=None,
 ):
     clock = clock or (lambda: _NOW)
     return IndexIngestDeliveryProcessor(
@@ -409,7 +707,7 @@ def _processor(
         input_request_builder=ClaimBoundInputRequestBuilder(
             origin="https://content.internal"
         ),
-        output_session_factory=lambda: output,
+        output_session_factory=output_factory or (lambda: output),
         signed_command_authenticator=TestOnlyConformanceHmacAuthenticator(),
         workload_session_id=_WORKLOAD,
         producer_id=_PRODUCER,

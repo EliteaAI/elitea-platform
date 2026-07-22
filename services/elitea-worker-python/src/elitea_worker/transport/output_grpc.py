@@ -217,12 +217,19 @@ class OutputGrpcSession:
             sequence = int(frame.sequence)
             if sequence < 1 or sequence > _MAX_SEQUENCE:
                 raise InvalidInput("Output sequence is outside the uint64 contract.")
-            if sequence != self._highest_admitted_sequence + 1:
-                raise InvalidInput("Output sequences must be contiguous and allocated exactly once.")
             encoded = frame.SerializeToString(deterministic=True)
             if len(encoded) > self._max_frame_bytes:
                 raise ResourceExhausted("The output frame exceeds the transport limit.")
             self._bind_frame_identity(frame)
+            if self._highest_admitted_sequence:
+                if sequence != self._highest_admitted_sequence + 1:
+                    raise InvalidInput(
+                        "Output sequences must be contiguous and allocated exactly once."
+                    )
+            elif sequence <= int(self._claim_handoff_watermark or 0):
+                raise InvalidInput(
+                    "Output sequences must advance beyond the claim handoff watermark."
+                )
             async with self._condition:
                 await self._condition.wait_for(
                     lambda: self._failure is not None
@@ -418,6 +425,11 @@ class OutputGrpcSession:
                 raise InvalidInput("The output ACK exceeds the highest transmitted sequence.")
         if acknowledged > self._acked_sequence:
             await asyncio.to_thread(self._spool.acknowledge_through, acknowledged)
+            self._pending_replay = tuple(
+                queued
+                for queued in self._pending_replay
+                if queued.sequence > acknowledged
+            )
         async with self._condition:
             self._acked_sequence = acknowledged
             self._credit_frames = credit_frames

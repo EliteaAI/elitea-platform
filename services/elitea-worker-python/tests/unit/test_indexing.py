@@ -1,28 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import threading
 from typing import Any
+from uuid import UUID
 
 import pytest
 
-from elitea.runtime.v1 import command_pb2, indexing_pb2, output_pb2
+from elitea.runtime.v1 import (
+    command_pb2,
+    common_pb2,
+    envelope_pb2,
+    indexing_pb2,
+    output_pb2,
+)
 
 from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
 from elitea_worker.execution.errors import InternalFailure, InvalidInput, ResourceExhausted
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.indexing import (
+    CurrentIndexNodeEventCallback,
+    CurrentIndexNodeEventContext,
     IndexIngestHandler,
     IndexIngestInputBinding,
     IndexIngestResult,
     ResolvedIndexIngestInput,
+)
+from elitea_worker.protocol.codec import (
+    VerifiedWorkerCommand,
+    build_node_event_output_frame,
 )
 from elitea_worker.protocol.indexing import (
     bind_result_artifact,
     bind_result_summary,
     request_from,
 )
+from elitea_worker.protocol.node_event import encode_current_node_event_json
 
 
 class _ClientStub:
@@ -93,6 +109,189 @@ def test_adapter_invokes_current_sdk_method_once_with_exact_arguments() -> None:
     assert toolkit_config["settings"]["space"] == "ENG"
     assert tool_params["filters"]["state"] == "current"
     assert llm_config["sampling"]["temperature"] == 0
+
+
+def test_current_index_callback_maps_state_shape_without_redeemed_configuration() -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        events.append,
+    )
+    callback.on_custom_event(
+        "index_data_status",
+        {
+            "id": "meta-1",
+            "index_name": "knowledge",
+            "state": "completed",
+            "error": None,
+            "reindex": True,
+            "indexed": 11,
+            "updated": 2,
+            "created_at": 1_700_000_000.0,
+            "updated_on": 1_700_000_100.0,
+            "toolkit_id": 9,
+            "toolkit_config": {"settings": {"token": "redeemed-secret"}},
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+        metadata={"source": "current-sdk"},
+    )
+    callback.raise_if_failed()
+
+    assert len(events) == 1
+    current = json.loads(encode_current_node_event_json(events[0]))
+    assert set(current) == {
+        "type",
+        "stream_id",
+        "message_id",
+        "question_id",
+        "content",
+        "thinking",
+        "response_metadata",
+        "references",
+        "sio_event",
+        "created_at",
+        "parent_message_id",
+        "agent_name",
+        "execution_generation",
+    }
+    assert current["type"] == "agent_index_data_status"
+    assert current["stream_id"] == "execution-1"
+    assert current["content"] is None
+    metadata = current["response_metadata"]
+    assert metadata["name"] == "index_data_status"
+    assert metadata["run_id"] == "00000000-0000-0000-0000-000000000001"
+    assert metadata["tool_run_id"] == metadata["run_id"]
+    assert metadata["task_id"] == "execution-1"
+    assert metadata["initiator"] == "user"
+    assert metadata["project_id"] == 42
+    assert metadata["user_id"] == 7
+    assert metadata["toolkit_id"] == 9
+    assert metadata["state"] == "completed"
+    assert "toolkit_config" not in metadata
+    assert "redeemed-secret" not in json.dumps(current)
+
+
+def test_current_index_callback_rejects_an_oversized_status() -> None:
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        lambda event: None,
+    )
+
+    with pytest.raises(ResourceExhausted):
+        callback.on_custom_event(
+            "index_data_status",
+            {
+                "index_name": "knowledge",
+                "state": "failed",
+                "error": "x" * (48 * 1024),
+            },
+            run_id=UUID("00000000-0000-0000-0000-000000000001"),
+        )
+    with pytest.raises(ResourceExhausted):
+        callback.raise_if_failed()
+
+
+def test_current_index_callback_maps_index_removed_shape() -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        events.append,
+    )
+
+    callback.on_custom_event(
+        "index_data_removed",
+        {"index_name": "knowledge", "toolkit_id": 9, "project_id": 42},
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+
+    current = json.loads(encode_current_node_event_json(events[0]))
+    assert current["type"] == "agent_index_data_removed"
+    assert current["response_metadata"]["index_name"] == "knowledge"
+    assert current["response_metadata"]["toolkit_id"] == 9
+    assert current["response_metadata"]["project_id"] == 42
+
+
+def test_node_event_frame_reuses_claim_identity_digest_and_handoff_sequence() -> None:
+    command = command_pb2.WorkerCommandV1(
+        command_id="command-1",
+        execution_id="execution-1",
+        generation=2,
+        tenant_id="tenant-1",
+        resource_project_id="42",
+        projection_project_id="42",
+        index_ingest=indexing_pb2.IndexIngestCommandV1(
+            toolkit_configuration_entry_id="toolkit",
+            tool_parameters_entry_id="parameters",
+        ),
+    )
+    fence = common_pb2.ExecutionFenceV1(
+        workload_session_id="worker-session",
+        producer_id="worker-1",
+        claim_attempt=3,
+        lease_epoch=4,
+        fence_token=b"f" * 32,
+    )
+    verified = VerifiedWorkerCommand(
+        envelope=envelope_pb2.WorkerExecutionEnvelopeV1(fence=fence),
+        command=command,
+    )
+    event = []
+    CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        event.append,
+    ).on_custom_event(
+        "index_data_status",
+        {"index_name": "knowledge", "state": "in_progress", "toolkit_id": 9},
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+
+    frame = build_node_event_output_frame(
+        verified,
+        event[0],
+        sequence=4,
+        occurred_at_unix_millis=1_700_000_000_000,
+        claim_handoff_watermark=3,
+    )
+
+    payload = event[0].SerializeToString(deterministic=True)
+    assert frame.sequence == 4
+    assert frame.event_id == "command-1:4"
+    assert frame.logical_output_id == "node-event:execution-1:4"
+    assert frame.stream_id == "execution-1:2"
+    assert frame.identity.command_id == command.command_id
+    assert frame.fence == fence
+    assert frame.claim_handoff_watermark == 3
+    assert bytes(frame.payload_digest.value) == hashlib.sha256(payload).digest()
+    assert not frame.terminal
+    assert not frame.HasField("settlement_proposal")
 
 
 def test_kernel_uses_bounded_sync_executor_and_keeps_bulk_off_wire() -> None:

@@ -8,13 +8,184 @@ for its thread to exit under ``ExecutionSupervisor.run_sync`` semantics.
 
 from __future__ import annotations
 
+import json
+import threading
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from elitea.runtime.v1 import node_event_pb2
+from langchain_core.callbacks import BaseCallbackHandler
 
 from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import MAX_SAFE_STRING_BYTES
-from elitea_worker.execution.errors import InvalidInput
+from elitea_worker.execution.errors import InvalidInput, ResourceExhausted
 from elitea_worker.execution.supervisor import ExecutionRunner
+from elitea_worker.protocol.node_event import (
+    MAX_CURRENT_NODE_EVENT_JSON_BYTES,
+    InvalidCurrentNodeEvent,
+    decode_current_node_event_json,
+)
+
+
+_CURRENT_INDEX_CUSTOM_EVENTS = {
+    "index_data_status": (
+        "agent_index_data_status",
+        frozenset(
+            {
+                "id",
+                "index_name",
+                "state",
+                "error",
+                "reindex",
+                "indexed",
+                "updated",
+                "created_at",
+                "updated_on",
+                "toolkit_id",
+            }
+        ),
+    ),
+    "index_data_removed": (
+        "agent_index_data_removed",
+        frozenset({"index_name", "toolkit_id", "project_id"}),
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentIndexNodeEventContext:
+    """Current index-status fields derived from the claimed execution."""
+
+    stream_id: str
+    task_id: str
+    initiator: str
+    project_id: int | str
+    user_id: int | str
+    toolkit_id: int | str | None
+
+
+class CurrentIndexNodeEventCallback(BaseCallbackHandler):
+    """Map current SDK index custom callbacks to bounded ``NodeEventV1``.
+
+    The current Pylon callback also copied the whole materialized toolkit and
+    tool-parameter dictionaries into response metadata. Those dictionaries can
+    contain redeemed credentials and are not required to identify an index
+    status. The language-neutral runtime instead carries the authoritative
+    execution, project, user and toolkit identities while the SDK-owned status
+    fields remain byte-for-byte JSON values.
+    """
+
+    def __init__(
+        self,
+        context: CurrentIndexNodeEventContext,
+        publish: Callable[[node_event_pb2.NodeEventV1], None],
+    ) -> None:
+        super().__init__()
+        self._context = context
+        self._publish = publish
+        self._failure: Exception | None = None
+        self._failure_lock = threading.Lock()
+
+    def on_custom_event(
+        self,
+        name: str,
+        data: Any,
+        *,
+        run_id: Any,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Handle the two state-bearing callbacks emitted by index toolkits."""
+
+        _ = tags, kwargs
+        selected = _CURRENT_INDEX_CUSTOM_EVENTS.get(name)
+        if selected is None:
+            return
+        try:
+            if not isinstance(data, dict):
+                raise InvalidInput("The index progress callback is malformed.")
+            event_type, fields = selected
+            now = datetime.now(tz=timezone.utc).isoformat()
+            payload = {
+                "name": name,
+                "run_id": str(run_id),
+                "tool_run_id": str(run_id),
+                "metadata": _current_json_value(metadata),
+                "datetime": now,
+                **{
+                    field: _current_json_value(data[field])
+                    for field in sorted(fields)
+                    if field in data
+                },
+            }
+            if name == "index_data_status":
+                payload.update(
+                    {
+                        "task_id": self._context.task_id,
+                        "initiator": self._context.initiator,
+                        "project_id": self._context.project_id,
+                        "user_id": self._context.user_id,
+                    }
+                )
+            elif "project_id" not in payload:
+                payload["project_id"] = self._context.project_id
+            if not payload.get("toolkit_id") and self._context.toolkit_id is not None:
+                payload["toolkit_id"] = self._context.toolkit_id
+
+            raw = json.dumps(
+                {
+                    "type": event_type,
+                    "stream_id": self._context.stream_id,
+                    "content": None,
+                    "response_metadata": payload,
+                    "references": [],
+                    "created_at": now,
+                },
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES:
+                raise ResourceExhausted(
+                    "The index progress event exceeds the approved output limit."
+                )
+            try:
+                event = decode_current_node_event_json(raw)
+            except InvalidCurrentNodeEvent as exc:
+                raise InvalidInput("The index progress callback is malformed.") from exc
+            self._publish(event)
+        except Exception as exc:
+            with self._failure_lock:
+                if self._failure is None:
+                    self._failure = exc
+            raise
+
+    def raise_if_failed(self) -> None:
+        """Surface callback errors that the synchronous SDK deliberately catches."""
+
+        with self._failure_lock:
+            failure = self._failure
+        if failure is not None:
+            raise failure
+
+
+def _current_json_value(value: Any) -> Any:
+    """Apply the current callback's JSON conversion without allowing NaN."""
+
+    try:
+        return json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                default=lambda item: str(item),
+                separators=(",", ":"),
+            )
+        )
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+        raise InvalidInput("The index progress callback is malformed.") from exc
 
 
 @dataclass(frozen=True, slots=True)

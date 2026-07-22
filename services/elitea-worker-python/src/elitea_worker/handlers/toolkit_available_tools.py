@@ -53,7 +53,7 @@ class ToolkitAvailableToolsResult:
 
 
 class ToolkitAvailableToolsHandler:
-    """Preserve the legacy wrapper's returned values and escaping errors."""
+    """Preserve the current-baseline wrapper's returned values and escaping errors."""
 
     def __init__(self, sdk: EliteaSdkToolkitAdapter) -> None:
         self._sdk = sdk
@@ -67,8 +67,8 @@ class ToolkitAvailableToolsHandler:
                 toolkit_type=request.toolkit_type,
                 settings=request.settings,
             )
-        except Exception as error:  # noqa: BLE001 - exact legacy response semantics
-            # The legacy Pylon wrapper catches Exception and returns this exact
+        except Exception as error:  # noqa: BLE001 - exact current-baseline response semantics
+            # The current Pylon wrapper catches Exception and returns this exact
             # value shape. We intentionally omit its exception log: exception
             # text is protected result data and must not become a log side
             # channel. BaseException retains normal shutdown semantics.
