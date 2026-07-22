@@ -60,6 +60,10 @@ type fakeRouter struct {
 
 	// lastVK captures the virtual-key value seen on the context.
 	lastVK string
+	// lastResponsesReq captures the decoded Responses-API request so tests can
+	// assert the wire body (e.g. response_format) survived decode +
+	// ToBifrostResponsesRequest into the core request struct.
+	lastResponsesReq *schemas.BifrostResponsesRequest
 }
 
 func (f *fakeRouter) captureVK(ctx *schemas.BifrostContext) {
@@ -86,7 +90,8 @@ func (f *fakeRouter) EmbeddingRequest(_ *schemas.BifrostContext, _ *schemas.Bifr
 	return f.embResp, f.embErr
 }
 
-func (f *fakeRouter) ResponsesRequest(_ *schemas.BifrostContext, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+func (f *fakeRouter) ResponsesRequest(_ *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	f.lastResponsesReq = req
 	return f.respResp, f.respErr
 }
 
