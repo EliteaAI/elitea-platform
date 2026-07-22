@@ -27,11 +27,11 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Confirm no per-project cutover tracker and no `/admin/llmcutover` routes are built
   - [x] Run validator: `python .ralph/validate.py --phase phase-bifrost-build`
 
-- [ ] BF0.1 Implement middleware.Project project resolution
-  - [ ] Replace the pass-through stub in `services/elitea-main/internal/api/middleware/project.go`
-  - [ ] Port token→project_id derivation (PROJECT_USER_NAME_PREFIX + personal-project RPC)
-  - [ ] Expose `ProjectFromContext` and `resolveProjectID`; remove all TODO/FIXME/NotImplemented
-  - [ ] Unit tests (>=85% coverage)
+- [x] BF0.1 Implement middleware.Project project resolution
+  - [x] Replace the pass-through stub in `services/elitea-main/internal/api/middleware/project.go`
+  - [x] Port token→project_id derivation (PROJECT_USER_NAME_PREFIX + personal-project RPC)
+  - [x] Expose `ProjectFromContext` and `resolveProjectID`; remove all TODO/FIXME/NotImplemented
+  - [x] Unit tests (>=85% coverage)
 
 - [ ] BF0.2 Stand up the elitea-llm-gateway module on Go 1.26.4
   - [ ] Create `services/elitea-llm-gateway/` with `go 1.26.4` in its go.mod and `FROM golang:1.26.4` in its Containerfile; bump the CI runner image used to build it

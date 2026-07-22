@@ -118,6 +118,7 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 	return auth.User{
 		ID:          fmt.Sprintf("%d", userID),
 		Email:       email,
+		Name:        name,
 		AuthType:    "token",
 		Roles:       roles,
 		Permissions: permissions,

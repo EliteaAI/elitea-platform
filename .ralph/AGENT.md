@@ -281,6 +281,16 @@ test('health check returns ok for all pods', async ({ request }) => {
 
 ## Learnings Log
 
+### 2026-07-22: BF0.1 — `middleware.Project` project resolution
+- **The authoritative derivation semantics live in pylon, NOT the design doc.** Ported from `runtime_interface_litellm/methods/proxy.py::prepare_request` + `projects/rpc/poc.py::get_personal_project_id` + `projects/constants.py`. The design doc only said "PROJECT_USER_NAME_PREFIX + personal-project RPC"; pylon source gave the exact colon-split and email-fallback rules. Two-branch resolution:
+  1. System project-user name `":system:project:<id>:"` → parse id directly. Trailing colon means id is the **second-to-last** colon field (`name.split(":")[-2]`), so `strings.Split` + `parts[len(parts)-2]`.
+  2. Otherwise → personal-project DB lookup: `SELECT id FROM centry.project WHERE name='project_user_<uid>'`; if found **and** user is a member (`auth_core__project_user_role` EXISTS) return it; else / if missing → email fallback `system_user_<n>@centry.user` → `<n>`.
+- **Signature change was safe:** `middleware.Project` had ZERO callers (grep-confirmed), so switching `Project(next http.Handler)` → `Project(cfg ProjectConfig) func(http.Handler) http.Handler` broke nothing. BF0.2a will wire it into the `/llm` proxy chain.
+- **Added `Name` to `auth.User`** (`internal/auth/types.go`) and populated it in BOTH validators (`authsvc/local_validator.go` already SELECTed `name` but discarded it; `authsvc/rpc.go` needed the `name` JSON field added to `validateTokenResponse`). The primary derivation path keys off the token/user name.
+- **Testability pattern for pgx code:** `*pgxpool.Pool.QueryRow` panics on a nil receiver, so nil-pool tests can't exercise DB paths (see `v2/projects/handler_test.go` which skips them). Fix: define a tiny `rowQuerier` interface (`QueryRow(ctx, sql, args...) pgx.Row`) that `*pgxpool.Pool` already satisfies, store that in the resolver instead of the concrete `*Pool`, and hand-roll a `fakeRow`/`fakeQuerier` in tests keyed on a SQL substring. No new mock dependency needed. Got `project.go`+`project_resolver.go` to 93.4% statement coverage.
+- Behaviour matches pylon: unresolvable project (id<=0 or resolver error) → **HTTP 400**; unauthenticated request passes through (Auth middleware owns rejection). `PublicProjectID` falls back to `AI_PROJECT_ID` env → default 1.
+- Coverage note: `go test -cover` reports package-wide % (18.7% before, 69.8% after); to prove the 85% subtask, filter the coverprofile to the two files and sum statements — that's the meaningful metric.
+
 ### 2026-07-22: BF0.0 — Global soft-alert emission (`PUT /admin/gateway/budget-alerts`)
 - New package `services/elitea-main/internal/api/gateway/`; handler `budget_alerts.go` (GET+PUT), 100% test coverage.
 - **`middleware.RequirePermissions` was previously UNWIRED** — grep confirmed zero non-test callers before this task. BF0.0 is its first real usage, matching the known "admin routes have Auth but no server-side RequirePermissions" RBAC-baseline gap. Gated with `RequirePermissions("configuration.governance")` (permission naming follows existing `configuration.*` convention; `configuration.litellm` is the litellm predecessor).
