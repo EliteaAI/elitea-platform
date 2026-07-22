@@ -166,6 +166,21 @@ func (r *TrustedProxyResolver) ResolveClientKey(request *http.Request) (string, 
 	return clientIP.String(), nil
 }
 
+// VerifyForwardedIdentityPeer proves only that the immediate socket peer is a
+// configured, header-stripping proxy. ForwardAuth has already produced the
+// identity projection; ordinary product requests do not need to replay its
+// X-Forwarded-* source contract before Auth can consume that projection.
+func (r *TrustedProxyResolver) VerifyForwardedIdentityPeer(request *http.Request) error {
+	if r == nil || request == nil {
+		return ErrInvalidForwardedRequest
+	}
+	peer, err := remoteAddress(request.RemoteAddr)
+	if err != nil || !r.isTrusted(peer) {
+		return ErrInvalidForwardedRequest
+	}
+	return nil
+}
+
 func (r *TrustedProxyResolver) resolveClientIP(request *http.Request) (netip.Addr, error) {
 	if r == nil || request == nil {
 		return netip.Addr{}, ErrInvalidForwardedRequest

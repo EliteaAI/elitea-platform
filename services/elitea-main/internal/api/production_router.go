@@ -9,6 +9,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 )
 
 var ErrInvalidProductionAuthRoutes = errors.New("invalid production authentication routes")
@@ -49,6 +50,9 @@ func NewRouter(cfg RouterConfig) chi.Router {
 		// This address is reached only by the gateway's ForwardAuth middleware;
 		// deployment routing must never expose it as a product route.
 		r.Method(http.MethodGet, browserauth.MainForwardAuthPath, cfg.ProductionAuth.main)
+	}
+	if cfg.CurrentProjectList != nil {
+		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
 	}
 
 	return r

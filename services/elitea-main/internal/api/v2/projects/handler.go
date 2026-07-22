@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -9,14 +10,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	projects CurrentProjectLister
 }
 
+const (
+	CurrentProjectListPath       = "/api/v2/projects/project/default/1"
+	CurrentProjectListMode       = auth.PermissionModeDefault
+	CurrentProjectListProjectID  = "1"
+	CurrentProjectListPermission = "projects.projects.project.view"
+)
+
 func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+	var projects CurrentProjectLister
+	if pool != nil {
+		projects = sqlcgen.New(pool)
+	}
+	return &Handler{pool: pool, projects: projects}
+}
+
+// CurrentProjectLister is the generated query surface consumed by the one
+// current-compatible project-list route. Keeping this interface at the
+// consumer makes the HTTP contract testable without replacing PostgreSQL in
+// production.
+type CurrentProjectLister interface {
+	ListCurrentUserProjects(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error)
+}
+
+func NewCurrentProjectListHandler(projects CurrentProjectLister) *Handler {
+	return &Handler{projects: projects}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -28,69 +54,123 @@ func (h *Handler) Routes() chi.Router {
 }
 
 type Project struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status"`
-	Role        string `json:"role,omitempty"`
-	Suspended   bool   `json:"suspended"`
-}
-
-type ProjectListResponse struct {
-	Items []Project `json:"items"`
-	Total int       `json:"total"`
+	ID             int32           `json:"id"`
+	Name           string          `json:"name"`
+	OwnerID        int32           `json:"owner_id"`
+	Plugins        []string        `json:"plugins"`
+	KeycloakGroups json.RawMessage `json:"keycloak_groups"`
+	CreateSuccess  bool            `json:"create_success"`
+	Suspended      bool            `json:"suspended"`
+	Groups         []Group         `json:"groups"`
 }
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
-	_, ok := auth.UserFromContext(r.Context())
+	publicProjectID, err := parseInt32(chi.URLParam(r, "projectID"))
+	if err != nil || publicProjectID <= 0 {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	h.getCurrentProjects(w, r, publicProjectID)
+}
+
+// GetCurrentProjectList owns only the exact route used by the current UI. The
+// public-project identifier is part of that compatibility contract, not a
+// caller-selected tenant scope.
+func (h *Handler) GetCurrentProjectList(w http.ResponseWriter, r *http.Request) {
+	h.getCurrentProjects(w, r, 1)
+}
+
+func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, publicProjectID int32) {
+	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-
-	projectID := chi.URLParam(r, "projectID")
-	projectIDNum, _ := strconv.Atoi(projectID)
-	ctx := r.Context()
-
-	// Return all projects as a plain array (UI Redux expects numeric IDs)
-	rows, err := h.pool.Query(ctx, `SELECT id, name, suspended FROM centry.project ORDER BY id`)
-	if err != nil {
-		writeJSON(w, http.StatusOK, []Project{{
-			ID:     projectIDNum,
-			Name:   "Project " + projectID,
-			Status: "active",
-			Role:   "owner",
-		}})
+	userID, ok := user.OwningUserID()
+	if !ok || userID > int64(^uint32(0)>>1) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	defer rows.Close()
+	if h.projects == nil {
+		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
-	var projects []Project
-	for rows.Next() {
-		var id int
-		var name string
-		var suspended bool
-		if err := rows.Scan(&id, &name, &suspended); err != nil {
+	limit, err := optionalInt32(r, "limit")
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	offset, err := optionalInt32(r, "offset")
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var search *string
+	if value := r.URL.Query().Get("search"); value != "" {
+		search = &value
+	}
+	checkPublicRole := r.URL.Query().Get("check_public_role") != ""
+	rows, err := h.projects.ListCurrentUserProjects(r.Context(), sqlcgen.ListCurrentUserProjectsParams{
+		CheckPublicRole: checkPublicRole,
+		PublicProjectID: publicProjectID,
+		UserID:          int32(userID),
+		Search:          search,
+		Offset:          offset,
+		Limit:           limit,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	projects := assembleProjects(rows)
+	writeJSON(w, http.StatusOK, projects)
+}
+
+func optionalInt32(r *http.Request, name string) (*int32, error) {
+	values, present := r.URL.Query()[name]
+	if !present {
+		return nil, nil
+	}
+	value, err := parseInt32(values[0])
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func parseInt32(value string) (int32, error) {
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	return int32(parsed), err
+}
+
+func assembleProjects(rows []sqlcgen.ListCurrentUserProjectsRow) []Project {
+	projects := make([]Project, 0)
+	for _, row := range rows {
+		if len(projects) == 0 || projects[len(projects)-1].ID != row.ID {
+			projects = append(projects, Project{
+				ID:             row.ID,
+				Name:           row.Name,
+				OwnerID:        row.OwnerID,
+				Plugins:        row.Plugins,
+				KeycloakGroups: json.RawMessage(row.KeycloakGroups),
+				CreateSuccess:  row.CreateSuccess,
+				Suspended:      row.Suspended,
+				Groups:         make([]Group, 0),
+			})
+		}
+		if row.GroupID == nil || row.GroupName == nil {
 			continue
 		}
-		status := "active"
-		if suspended {
-			status = "suspended"
+		project := &projects[len(projects)-1]
+		if len(project.Groups) != 0 && project.Groups[len(project.Groups)-1].ID == int(*row.GroupID) {
+			continue
 		}
-		projects = append(projects, Project{
-			ID:        id,
-			Name:      name,
-			Status:    status,
-			Role:      "owner",
-			Suspended: suspended,
-		})
+		project.Groups = append(project.Groups, Group{ID: int(*row.GroupID), Name: *row.GroupName})
 	}
-
-	if len(projects) == 0 {
-		projects = []Project{{ID: projectIDNum, Name: "Project " + projectID, Status: "active", Role: "owner"}}
-	}
-
-	writeJSON(w, http.StatusOK, projects)
+	return projects
 }
 
 type Group struct {

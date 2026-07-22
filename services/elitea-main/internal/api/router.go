@@ -77,6 +77,7 @@ type RouterConfig struct {
 	InternalAdminToken string
 	RuntimeRoutes      RuntimeRoutes
 	ProductionAuth     *ProductionAuthRoutes
+	CurrentProjectList *v2projects.CurrentProjectListRoute
 }
 
 type RuntimeRoutes struct {

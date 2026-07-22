@@ -100,3 +100,24 @@ type AuthCoreUserRole struct {
 	UserID int32 `db:"user_id" json:"user_id"`
 	RoleID int32 `db:"role_id" json:"role_id"`
 }
+
+type CentryProject struct {
+	ID             int32    `db:"id" json:"id"`
+	Name           string   `db:"name" json:"name"`
+	OwnerID        int32    `db:"owner_id" json:"owner_id"`
+	SecretsJson    []byte   `db:"secrets_json" json:"secrets_json"`
+	Plugins        []string `db:"plugins" json:"plugins"`
+	KeycloakGroups []byte   `db:"keycloak_groups" json:"keycloak_groups"`
+	CreateSuccess  bool     `db:"create_success" json:"create_success"`
+	Suspended      bool     `db:"suspended" json:"suspended"`
+}
+
+type CentryProjectGroup struct {
+	ID   int32  `db:"id" json:"id"`
+	Name string `db:"name" json:"name"`
+}
+
+type CentryProjectGroupAssociation struct {
+	ProjectID *int32 `db:"project_id" json:"project_id"`
+	GroupID   *int32 `db:"group_id" json:"group_id"`
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,7 +16,10 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
 func TestProductionAuthRoutesRequireBothReviewedEdges(t *testing.T) {
@@ -70,6 +74,72 @@ func TestProductionRouterMountsOnlyReviewedAuthEdges(t *testing.T) {
 			router.ServeHTTP(recorder, httptest.NewRequest(route.method, route.path, nil))
 			if recorder.Code != route.want {
 				t.Fatalf("status = %d, want %d", recorder.Code, route.want)
+			}
+		})
+	}
+}
+
+type productionProjectStore struct{}
+
+func (productionProjectStore) ListCurrentUserProjects(
+	context.Context,
+	sqlcgen.ListCurrentUserProjectsParams,
+) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+	return []sqlcgen.ListCurrentUserProjectsRow{}, nil
+}
+
+type productionProjectPrincipalValidator struct{}
+
+func (productionProjectPrincipalValidator) ValidatePrincipal(_ context.Context, user auth.User) (auth.User, error) {
+	return user, nil
+}
+
+type productionProjectPeerVerifier struct{}
+
+func (productionProjectPeerVerifier) VerifyForwardedIdentityPeer(*http.Request) error { return nil }
+
+type productionProjectPermissionResolver struct{}
+
+func (productionProjectPermissionResolver) ResolvePermissions(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error) {
+	return auth.PermissionResolution{}, nil
+}
+
+func TestProductionRouterMountsOnlyExactCurrentProjectListPath(t *testing.T) {
+	projectList, err := v2projects.NewCurrentProjectListRoute(
+		productionProjectStore{},
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionProjectPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentProjectList: projectList})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodGet, path: v2projects.CurrentProjectListPath, want: http.StatusUnauthorized},
+		{method: http.MethodPost, path: v2projects.CurrentProjectListPath, want: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: "/projects/project/default/2", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/projects/project/prompt_lib/1", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/projects/project/default/1", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/api/v2/projects/project/default/2", want: http.StatusNotFound},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(test.method, test.path, nil))
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
 			}
 		})
 	}

@@ -16,8 +16,13 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -74,6 +79,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 
 	var productionAuth *api.ProductionAuthRoutes
+	var currentProjectList *v2projects.CurrentProjectListRoute
 	var formGraph *authcomposition.FormGraph
 	var authReadiness health.Checker
 	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
@@ -103,6 +109,17 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		productionAuth, err = api.NewProductionAuthRoutes(formGraph.BrowserRoutes(), formGraph.MainForwardAuth())
 		if err != nil {
 			return fmt.Errorf("mount production Form authentication: %w", err)
+		}
+		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
+			sqlcgen.New(pool),
+			apimw.AuthConfig{
+				PrincipalValidator:        authsvc.NewPrincipalValidator(pool),
+				ForwardedIdentityVerifier: formGraph.ForwardedIdentityVerifier(),
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current project-list route: %w", err)
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
@@ -143,7 +160,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		ProductionAuth: productionAuth,
+		ProductionAuth:     productionAuth,
+		CurrentProjectList: currentProjectList,
 	})
 
 	srv := &http.Server{

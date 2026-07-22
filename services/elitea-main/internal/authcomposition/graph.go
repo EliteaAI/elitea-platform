@@ -43,6 +43,7 @@ type FormGraph struct {
 	browserRoutes   http.Handler
 	mainForwardAuth http.Handler
 	mainKernel      *forwardapp.Kernel
+	proxyResolver   *browserapi.TrustedProxyResolver
 	redis           *redis.Client
 	closeOnce       sync.Once
 	closeErr        error
@@ -229,10 +230,21 @@ func newFormGraph(
 		browserRoutes:   formHandler.Routes(),
 		mainForwardAuth: mainHandler,
 		mainKernel:      mainKernel,
+		proxyResolver:   proxyResolver,
 		redis:           redisClient,
 	}
 	committed = true
 	return graph, nil
+}
+
+// ForwardedIdentityVerifier returns the same trusted-peer policy used by the
+// browser and Main ForwardAuth edges. Production product routes must not parse
+// a second CIDR configuration or trust forwarded identity headers directly.
+func (graph *FormGraph) ForwardedIdentityVerifier() *browserapi.TrustedProxyResolver {
+	if graph == nil {
+		return nil
+	}
+	return graph.proxyResolver
 }
 
 func (graph *FormGraph) Routes() http.Handler {

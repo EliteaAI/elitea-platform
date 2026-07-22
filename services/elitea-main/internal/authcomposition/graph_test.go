@@ -44,7 +44,8 @@ func TestNewFormGraphComposesSeparateDirectAndMainPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if graph.Routes() == nil || graph.BrowserRoutes() == nil || graph.MainForwardAuth() == nil || !allZero(temporaryPAT) {
+	if graph.Routes() == nil || graph.BrowserRoutes() == nil || graph.MainForwardAuth() == nil ||
+		graph.ForwardedIdentityVerifier() == nil || !allZero(temporaryPAT) {
 		t.Fatalf("graph=%+v temporary PAT cleared=%v", graph, allZero(temporaryPAT))
 	}
 

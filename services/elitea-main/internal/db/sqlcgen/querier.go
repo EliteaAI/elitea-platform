@@ -26,6 +26,7 @@ type Querier interface {
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
+	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)

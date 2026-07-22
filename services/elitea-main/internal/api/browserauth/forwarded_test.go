@@ -71,6 +71,34 @@ func TestTrustedProxyResolverUsesNearestUntrustedForwardedHop(t *testing.T) {
 	}
 }
 
+func TestTrustedProxyResolverVerifiesOnlyConfiguredImmediatePeerForIdentity(t *testing.T) {
+	resolver := newTestTrustedProxyResolver(t)
+	trusted := httptest.NewRequest(http.MethodGet, "/projects/project/default/1", nil)
+	trusted.RemoteAddr = "10.20.30.40:43120"
+	trusted.Header.Set("X-Forwarded-For", "not-part-of-identity-peer-proof")
+	if err := resolver.VerifyForwardedIdentityPeer(trusted); err != nil {
+		t.Fatalf("trusted peer error = %v", err)
+	}
+
+	for _, request := range []*http.Request{
+		nil,
+		func() *http.Request {
+			request := trusted.Clone(trusted.Context())
+			request.RemoteAddr = "192.0.2.10:443"
+			return request
+		}(),
+		func() *http.Request {
+			request := trusted.Clone(trusted.Context())
+			request.RemoteAddr = "not-an-address"
+			return request
+		}(),
+	} {
+		if err := resolver.VerifyForwardedIdentityPeer(request); !errors.Is(err, ErrInvalidForwardedRequest) {
+			t.Fatalf("untrusted peer error = %v, want %v", err, ErrInvalidForwardedRequest)
+		}
+	}
+}
+
 func TestTrustedProxyResolverRejectsUntrustedOrAmbiguousInput(t *testing.T) {
 	tests := []struct {
 		name   string

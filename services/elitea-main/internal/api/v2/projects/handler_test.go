@@ -2,120 +2,246 @@ package projects_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
-// setupProjectRouter creates a router for the projects handler.
-// Like configurations, the projects handler takes *pgxpool.Pool directly.
-// We can test:
-//   - GetProject: returns 401 when no auth user is in context (pool never touched)
-//   - GetProject: DB error path returns a fallback 200 with a minimal project (pool == nil triggers error path)
-//   - PutProjectGroups: echoes the body, no DB access
-//   - GroupList: DB error path returns empty list (pool == nil triggers error path)
-func setupProjectRouter() *chi.Mux {
-	h := handler.NewHandler(nil) // nil pool; DB calls will fail and hit graceful fallback branches
-	r := chi.NewRouter()
-	r.Mount("/api/v2", h.Routes())
-	return r
+type projectListerFunc func(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error)
+
+func (f projectListerFunc) ListCurrentUserProjects(
+	ctx context.Context,
+	params sqlcgen.ListCurrentUserProjectsParams,
+) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+	return f(ctx, params)
 }
 
-// withUser injects an auth.User into the request context.
-func withUser(req *http.Request, u auth.User) *http.Request {
-	ctx := auth.ContextWithUser(req.Context(), u)
-	return req.WithContext(ctx)
+func setupProjectRouter(store handler.CurrentProjectLister) *chi.Mux {
+	h := handler.NewCurrentProjectListHandler(store)
+	router := chi.NewRouter()
+	router.Mount("/projects", h.Routes())
+	return router
 }
 
-// ---- GetProject -------------------------------------------------------------
+func withUser(request *http.Request, user auth.User) *http.Request {
+	return request.WithContext(auth.ContextWithUser(request.Context(), user))
+}
 
-func TestGetProject_Unauthorized(t *testing.T) {
-	r := setupProjectRouter()
+func TestGetProjectRequiresAuthenticatedOwningUser(t *testing.T) {
+	store := projectListerFunc(func(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+		t.Fatal("project query must not run")
+		return nil, nil
+	})
+	router := setupProjectRouter(store)
 
-	// No user in context → should return 401.
-	req := httptest.NewRequest(http.MethodGet, "/api/v2/project/personal/proj-1", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+	for name, user := range map[string]*auth.User{
+		"missing principal":         nil,
+		"non-numeric principal":     {ID: "not-a-user"},
+		"token without owning user": {ID: "17", TokenID: "17", AuthType: "token"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/projects/project/default/1", nil)
+			if user != nil {
+				request = withUser(request, *user)
+			}
+			recorder := httptest.NewRecorder()
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d; body: %s", rec.Code, rec.Body.String())
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+			}
+		})
 	}
 }
 
-// TestGetProject_FallbackWhenDBUnavailable is skipped because pgxpool.(*Pool).QueryRow
-// panics on a nil pool receiver before reaching the error-fallback branch in the handler.
-// The GetProject fallback path is covered by integration tests that use a real or stub pool.
-func TestGetProject_FallbackWhenDBUnavailable(t *testing.T) {
-	t.Skip("requires non-nil pgxpool.Pool; covered by integration tests")
+func TestGetProjectReportsMissingRepositoryAsUnavailable(t *testing.T) {
+	router := setupProjectRouter(nil)
+	request := withUser(
+		httptest.NewRequest(http.MethodGet, "/projects/project/default/1", nil),
+		auth.User{ID: "7", UserID: "7"},
+	)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+	}
 }
 
-// ---- GroupList --------------------------------------------------------------
+func TestGetProjectReturnsExactCurrentPlainArray(t *testing.T) {
+	groupID := int32(8)
+	groupName := "delivery"
+	store := projectListerFunc(func(_ context.Context, params sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+		want := sqlcgen.ListCurrentUserProjectsParams{
+			CheckPublicRole: true,
+			PublicProjectID: 1,
+			UserID:          7,
+		}
+		if !reflect.DeepEqual(params, want) {
+			t.Fatalf("params = %+v, want %+v", params, want)
+		}
+		return []sqlcgen.ListCurrentUserProjectsRow{
+			{
+				ID:             1,
+				Name:           "promptlib_public",
+				OwnerID:        1,
+				Plugins:        []string{"configuration", "models"},
+				KeycloakGroups: []byte(`{"platform":"public"}`),
+				CreateSuccess:  true,
+				GroupID:        &groupID,
+				GroupName:      &groupName,
+			},
+			{
+				ID:             1,
+				Name:           "promptlib_public",
+				OwnerID:        1,
+				Plugins:        []string{"configuration", "models"},
+				KeycloakGroups: []byte(`{"platform":"public"}`),
+				CreateSuccess:  true,
+				GroupID:        &groupID,
+				GroupName:      &groupName,
+			},
+			{
+				ID:             2,
+				Name:           "project_user_7",
+				OwnerID:        7,
+				Plugins:        nil,
+				KeycloakGroups: []byte(`{}`),
+				CreateSuccess:  true,
+				Suspended:      true,
+			},
+		}, nil
+	})
+	router := setupProjectRouter(store)
+	request := withUser(
+		httptest.NewRequest(http.MethodGet, "/projects/project/default/1?check_public_role=true", nil),
+		auth.User{ID: "7", UserID: "7", AuthType: "user"},
+	)
+	recorder := httptest.NewRecorder()
 
-// TestGroupList_DBError_ReturnsEmpty is skipped because pgxpool.(*Pool).Query
-// panics on a nil pool receiver before reaching the error-fallback branch.
-// The GroupList fallback path is covered by integration tests that use a real pool.
-func TestGroupList_DBError_ReturnsEmpty(t *testing.T) {
-	t.Skip("requires non-nil pgxpool.Pool; covered by integration tests")
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", contentType)
+	}
+	want := `[{"id":1,"name":"promptlib_public","owner_id":1,"plugins":["configuration","models"],"keycloak_groups":{"platform":"public"},"create_success":true,"suspended":false,"groups":[{"id":8,"name":"delivery"}]},{"id":2,"name":"project_user_7","owner_id":7,"plugins":null,"keycloak_groups":{},"create_success":true,"suspended":true,"groups":[]}]`
+	if got := strings.TrimSpace(recorder.Body.String()); got != want {
+		t.Fatalf("body = %s\nwant = %s", got, want)
+	}
+	for _, fabricated := range []string{`"items"`, `"total"`, `"status"`, `"role"`, `"description"`} {
+		if strings.Contains(recorder.Body.String(), fabricated) {
+			t.Fatalf("body contains non-baseline field %s: %s", fabricated, recorder.Body.String())
+		}
+	}
 }
 
-// ---- PutProjectGroups -------------------------------------------------------
+func TestGetProjectPreservesCurrentQuerySemantics(t *testing.T) {
+	store := projectListerFunc(func(_ context.Context, params sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+		if !params.CheckPublicRole || params.PublicProjectID != 1 || params.UserID != 7 ||
+			params.Search == nil || *params.Search != "Private" ||
+			params.Offset == nil || *params.Offset != 2 ||
+			params.Limit == nil || *params.Limit != 5 {
+			t.Fatalf("unexpected params: %+v", params)
+		}
+		return []sqlcgen.ListCurrentUserProjectsRow{}, nil
+	})
+	router := setupProjectRouter(store)
+	request := withUser(
+		httptest.NewRequest(http.MethodGet, "/projects/project/default/1?check_public_role=false&search=Private&offset=2&limit=5", nil),
+		auth.User{ID: "19", UserID: "7", TokenID: "19", AuthType: "token"},
+	)
+	recorder := httptest.NewRecorder()
 
-func TestPutProjectGroups_EchoesBody(t *testing.T) {
-	r := setupProjectRouter()
+	router.ServeHTTP(recorder, request)
 
+	if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != `[]` {
+		t.Fatalf("status/body = %d %q, want 200 []", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGetProjectDoesNotFabricateFallbackOnQueryFailure(t *testing.T) {
+	store := projectListerFunc(func(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+		return nil, errors.New("database unavailable")
+	})
+	router := setupProjectRouter(store)
+	request := withUser(
+		httptest.NewRequest(http.MethodGet, "/projects/project/default/1", nil),
+		auth.User{ID: "7", UserID: "7"},
+	)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(recorder.Body.String(), "Project 1") {
+		t.Fatalf("query failure fabricated a project: %s", recorder.Body.String())
+	}
+}
+
+func TestGetProjectRejectsUnusableNumericParametersBeforeQuery(t *testing.T) {
+	store := projectListerFunc(func(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error) {
+		t.Fatal("project query must not run")
+		return nil, nil
+	})
+	router := setupProjectRouter(store)
+
+	for _, path := range []string{
+		"/projects/project/default/not-a-project",
+		"/projects/project/default/1?limit=not-a-number",
+		"/projects/project/default/1?offset=2147483648",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := withUser(httptest.NewRequest(http.MethodGet, path, nil), auth.User{ID: "7", UserID: "7"})
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+			}
+		})
+	}
+}
+
+func TestPutProjectGroupsEchoesBody(t *testing.T) {
+	router := setupProjectRouter(nil)
 	payload := map[string]any{"group_ids": []int{1, 2, 3}}
-	b, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPut, "/api/v2/groups/prompt_lib/proj-1", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
 	}
+	request := httptest.NewRequest(http.MethodPut, "/projects/groups/prompt_lib/1", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
 
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
 	var result map[string]any
-	json.NewDecoder(rec.Body).Decode(&result)
-	ids, ok := result["group_ids"]
-	if !ok {
-		t.Error("expected 'group_ids' echoed back in response")
+	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+		t.Fatal(err)
 	}
-	_ = ids
-}
-
-func TestPutProjectGroups_EmptyBody(t *testing.T) {
-	r := setupProjectRouter()
-
-	req := httptest.NewRequest(http.MethodPut, "/api/v2/groups/prompt_lib/proj-1", bytes.NewBufferString(`{}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-}
-
-// ---- Content-Type -----------------------------------------------------------
-
-func TestProjectHandlers_ContentTypeJSON(t *testing.T) {
-	r := setupProjectRouter()
-
-	// PutProjectGroups returns JSON without touching the pool.
-	body := bytes.NewBufferString(`{"group_ids":[]}`)
-	req := httptest.NewRequest(http.MethodPut, "/api/v2/groups/prompt_lib/proj-1", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	ct := rec.Header().Get("Content-Type")
-	if ct == "" {
-		t.Error("expected Content-Type header to be set")
+	if _, ok := result["group_ids"]; !ok {
+		t.Fatalf("response = %v, want group_ids", result)
 	}
 }
