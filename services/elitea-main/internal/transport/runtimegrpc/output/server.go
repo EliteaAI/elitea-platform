@@ -442,9 +442,19 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 	if err != nil {
 		return outputapp.IndexIngestResult{}, err
 	}
-	artifact, err := indexArtifactReferenceDomain(result.GetResultArtifact())
-	if err != nil {
-		return outputapp.IndexIngestResult{}, err
+	artifact := outputapp.IndexArtifactReference{}
+	if result.GetResultArtifact() != nil {
+		artifact, err = indexArtifactReferenceDomain(result.GetResultArtifact())
+		if err != nil {
+			return outputapp.IndexIngestResult{}, err
+		}
+	}
+	resultSummary := outputapp.IndexIngestSummary{}
+	if result.GetResultSummary() != nil {
+		resultSummary, err = indexIngestSummaryDomain(result.GetResultSummary())
+		if err != nil {
+			return outputapp.IndexIngestResult{}, err
+		}
 	}
 
 	mapped := outputapp.IndexIngestResult{
@@ -458,9 +468,32 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 			MCPTokens:            mcpTokens,
 		},
 		ResultArtifact: artifact,
+		ResultSummary:  resultSummary,
 	}
 	if err := mapped.Validate(); err != nil {
 		return outputapp.IndexIngestResult{}, err
+	}
+	return mapped, nil
+}
+
+func indexIngestSummaryDomain(summary *runtimev1.IndexIngestSummaryV1) (outputapp.IndexIngestSummary, error) {
+	if summary == nil {
+		return outputapp.IndexIngestSummary{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	var status outputapp.IndexIngestStatus
+	switch summary.GetStatus() {
+	case runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_OK:
+		status = outputapp.IndexIngestStatusOK
+	case runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_PARTLY_INDEXED:
+		status = outputapp.IndexIngestStatusPartlyIndexed
+	case runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR:
+		status = outputapp.IndexIngestStatusError
+	default:
+		return outputapp.IndexIngestSummary{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	mapped := outputapp.IndexIngestSummary{Status: status, Message: summary.GetMessage()}
+	if err := mapped.Validate(); err != nil {
+		return outputapp.IndexIngestSummary{}, err
 	}
 	return mapped, nil
 }

@@ -40,9 +40,30 @@ message IndexIngestArtifactReferenceV1 {
   reserved 7 to 15;
 }
 
-// IndexIngestResultV1 binds an off-control-plane terminal result artifact to the
-// exact immutable inputs consumed by EliteAClient.test_toolkit_tool. Progress,
-// index-status and callback events require their own later typed output frames.
+// IndexIngestStatusV1 is the closed status set returned by
+// BaseIndexerToolkit.index_data. It deliberately does not model the outer
+// EliteAClient.test_toolkit_tool result, which can contain redeemed toolkit
+// configuration and other worker-local data.
+enum IndexIngestStatusV1 {
+  INDEX_INGEST_STATUS_V1_UNSPECIFIED = 0;
+  INDEX_INGEST_STATUS_V1_OK = 1;
+  INDEX_INGEST_STATUS_V1_PARTLY_INDEXED = 2;
+  INDEX_INGEST_STATUS_V1_ERROR = 3;
+}
+
+// IndexIngestSummaryV1 is the bounded, typed inline form of the current
+// index_data terminal result. It is carried only on the authenticated output
+// gRPC data plane and is forbidden on Redis and control gRPC.
+message IndexIngestSummaryV1 {
+  IndexIngestStatusV1 status = 1;
+  string message = 2;
+  reserved 3 to 15;
+}
+
+// IndexIngestResultV1 binds one terminal result to the exact immutable inputs
+// consumed by EliteAClient.test_toolkit_tool. Exactly one of result_artifact or
+// result_summary is required. Progress, index-status and callback events
+// require their own later typed output frames.
 message IndexIngestResultV1 {
   string input_bundle_id = 1;
   DigestV1 input_bundle_digest = 2;
@@ -52,5 +73,6 @@ message IndexIngestResultV1 {
   IndexIngestInputBindingV1 llm_configuration = 6;
   IndexIngestInputBindingV1 mcp_tokens = 7;
   IndexIngestArtifactReferenceV1 result_artifact = 8;
-  reserved 9 to 15;
+  IndexIngestSummaryV1 result_summary = 9;
+  reserved 10 to 15;
 }

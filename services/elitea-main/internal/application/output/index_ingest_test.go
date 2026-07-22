@@ -118,6 +118,71 @@ func TestIndexIngestRequiresDurableArtifactBeforeProjection(t *testing.T) {
 	}
 }
 
+func TestIndexIngestProjectsCurrentInlineSummaryWithoutArtifactLookup(t *testing.T) {
+	frame, expected, _ := validIndexIngestOutput()
+	frame.Result.ResultArtifact = IndexArtifactReference{}
+	frame.Result.ResultSummary = IndexIngestSummary{
+		Status:  IndexIngestStatusOK,
+		Message: "Successfully indexed 3 documents (7 chunks).",
+	}
+	rebindIndexApplicationFrame(&frame, "inline-summary")
+	bindings := &indexBindingRepositoryStub{expected: expected}
+	fences := &indexFenceVerifierStub{expected: frame.Fence}
+	artifacts := &indexArtifactVerifierStub{}
+	projector := &indexProjectorStub{}
+	service, err := NewIndexIngestService(bindings, fences, artifacts, projector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := service.IngestIndex(context.Background(), frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Inserted || len(artifacts.requests) != 0 || len(projector.projections) != 1 {
+		t.Fatalf("inline summary crossed the artifact boundary: outcome=%+v artifact_calls=%d projections=%d", outcome, len(artifacts.requests), len(projector.projections))
+	}
+	projected := projector.projections[0]
+	if projected.VerifiedArtifact != (DurableIndexArtifact{}) || projected.Frame.Result.ResultSummary != frame.Result.ResultSummary {
+		t.Fatalf("inline summary projection changed: %+v", projected)
+	}
+}
+
+func TestIndexIngestSummaryAcceptsOnlyCurrentBoundedTerminalShape(t *testing.T) {
+	valid := IndexIngestSummary{Status: IndexIngestStatusOK, Message: "No new documents to index."}
+	for _, status := range []IndexIngestStatus{IndexIngestStatusOK, IndexIngestStatusPartlyIndexed, IndexIngestStatusError} {
+		summary := valid
+		summary.Status = status
+		if err := summary.Validate(); err != nil {
+			t.Fatalf("current status %q was rejected: %v", status, err)
+		}
+	}
+
+	invalid := []IndexIngestSummary{
+		{Status: "success", Message: valid.Message},
+		{Status: IndexIngestStatusOK},
+		{Status: IndexIngestStatusOK, Message: strings.Repeat("x", MaxIndexIngestSummaryMessageBytes+1)},
+		{Status: IndexIngestStatusOK, Message: string([]byte{0xff})},
+		{Status: IndexIngestStatusOK, Message: "safe prefix\x00hidden suffix"},
+	}
+	for _, summary := range invalid {
+		if err := summary.Validate(); !errors.Is(err, ErrInvalidIndexIngestOutput) {
+			t.Fatalf("invalid summary was accepted: status=%q message_bytes=%d err=%v", summary.Status, len(summary.Message), err)
+		}
+	}
+
+	frame, _, _ := validIndexIngestOutput()
+	frame.Result.ResultSummary = valid
+	if err := frame.Result.Validate(); !errors.Is(err, ErrInvalidIndexIngestOutput) {
+		t.Fatalf("artifact and summary were accepted together: %v", err)
+	}
+	frame.Result.ResultArtifact = IndexArtifactReference{}
+	frame.Result.ResultSummary = IndexIngestSummary{}
+	if err := frame.Result.Validate(); !errors.Is(err, ErrInvalidIndexIngestOutput) {
+		t.Fatalf("missing terminal result was accepted: %v", err)
+	}
+}
+
 func TestIndexIngestRejectsWrongExtraAndMissingInputBindings(t *testing.T) {
 	tests := []struct {
 		name       string

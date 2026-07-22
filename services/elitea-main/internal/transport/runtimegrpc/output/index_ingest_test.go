@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,34 @@ func TestOutputServerMapsTypedIndexIngestResultWithoutArtifactBytes(t *testing.T
 	}
 	if len(mapped.EncodedResult) == 0 || len(mapped.EncodedResult) >= 64*1024 {
 		t.Fatalf("control/output frame does not contain bounded metadata: %d", len(mapped.EncodedResult))
+	}
+}
+
+func TestOutputServerMapsOnlyBoundedCurrentIndexSummary(t *testing.T) {
+	frame := validIndexWireFrame(t)
+	payload := frame.GetIndexIngest()
+	payload.ResultArtifact = nil
+	payload.ResultSummary = &runtimev1.IndexIngestSummaryV1{
+		Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
+		Message: "Successfully indexed 3 documents (7 chunks). Failed to index 1 chunks.",
+	}
+	rebindFramePayload(t, frame, payload)
+	indexes := &indexIngestorStub{}
+	server := newIndexOutputTestServer(t, 64*1024, &validationIngestorStub{}, &failureIngestorStub{}, indexes)
+	stream := &outputStreamStub{context: context.Background(), frames: []*runtimev1.ExecutionOutputFrameV1{frame}}
+
+	if err := server.Publish(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.acks) != 2 || stream.acks[1].GetRejection() != nil || len(indexes.frames) != 1 {
+		t.Fatalf("typed inline summary was not accepted: acks=%v frames=%d", stream.acks, len(indexes.frames))
+	}
+	result := indexes.frames[0].Result
+	if result.ResultArtifact != (outputapp.IndexArtifactReference{}) || result.ResultSummary.Status != outputapp.IndexIngestStatusPartlyIndexed || result.ResultSummary.Message != payload.ResultSummary.Message {
+		t.Fatalf("inline summary mapping changed the current result: %+v", result)
+	}
+	if len(indexes.frames[0].EncodedResult) == 0 || len(indexes.frames[0].EncodedResult) >= 64*1024 {
+		t.Fatalf("inline summary escaped the output frame bound: %d", len(indexes.frames[0].EncodedResult))
 	}
 }
 
@@ -117,10 +146,45 @@ func TestOutputServerRejectsOversizedUnknownAndIncompleteIndexFrames(t *testing.
 			},
 		},
 		{
-			name:          "missing result artifact",
+			name:          "missing terminal result",
 			maxFrameBytes: 64 * 1024,
 			mutate: func(frame *runtimev1.ExecutionOutputFrameV1) {
 				frame.GetIndexIngest().ResultArtifact = nil
+				rebindFramePayload(t, frame, frame.GetIndexIngest())
+			},
+		},
+		{
+			name:          "artifact and inline summary together",
+			maxFrameBytes: 64 * 1024,
+			mutate: func(frame *runtimev1.ExecutionOutputFrameV1) {
+				frame.GetIndexIngest().ResultSummary = &runtimev1.IndexIngestSummaryV1{
+					Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_OK,
+					Message: "No new documents to index.",
+				}
+				rebindFramePayload(t, frame, frame.GetIndexIngest())
+			},
+		},
+		{
+			name:          "unknown inline status",
+			maxFrameBytes: 64 * 1024,
+			mutate: func(frame *runtimev1.ExecutionOutputFrameV1) {
+				frame.GetIndexIngest().ResultArtifact = nil
+				frame.GetIndexIngest().ResultSummary = &runtimev1.IndexIngestSummaryV1{
+					Status:  runtimev1.IndexIngestStatusV1(99),
+					Message: "No new documents to index.",
+				}
+				rebindFramePayload(t, frame, frame.GetIndexIngest())
+			},
+		},
+		{
+			name:          "oversized inline message",
+			maxFrameBytes: 64 * 1024,
+			mutate: func(frame *runtimev1.ExecutionOutputFrameV1) {
+				frame.GetIndexIngest().ResultArtifact = nil
+				frame.GetIndexIngest().ResultSummary = &runtimev1.IndexIngestSummaryV1{
+					Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_OK,
+					Message: strings.Repeat("x", outputapp.MaxIndexIngestSummaryMessageBytes+1),
+				}
 				rebindFramePayload(t, frame, frame.GetIndexIngest())
 			},
 		},

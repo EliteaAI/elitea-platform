@@ -1,10 +1,22 @@
 from elitea.runtime.v1 import common_pb2 as _common_pb2
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from collections.abc import Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
+
+class IndexIngestStatusV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    INDEX_INGEST_STATUS_V1_UNSPECIFIED: _ClassVar[IndexIngestStatusV1]
+    INDEX_INGEST_STATUS_V1_OK: _ClassVar[IndexIngestStatusV1]
+    INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: _ClassVar[IndexIngestStatusV1]
+    INDEX_INGEST_STATUS_V1_ERROR: _ClassVar[IndexIngestStatusV1]
+INDEX_INGEST_STATUS_V1_UNSPECIFIED: IndexIngestStatusV1
+INDEX_INGEST_STATUS_V1_OK: IndexIngestStatusV1
+INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: IndexIngestStatusV1
+INDEX_INGEST_STATUS_V1_ERROR: IndexIngestStatusV1
 
 class IndexIngestCommandV1(_message.Message):
     __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id")
@@ -46,8 +58,16 @@ class IndexIngestArtifactReferenceV1(_message.Message):
     classification: str
     def __init__(self, artifact_id: _Optional[str] = ..., immutable_version: _Optional[str] = ..., media_type: _Optional[str] = ..., byte_length: _Optional[int] = ..., digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., classification: _Optional[str] = ...) -> None: ...
 
+class IndexIngestSummaryV1(_message.Message):
+    __slots__ = ("status", "message")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    status: IndexIngestStatusV1
+    message: str
+    def __init__(self, status: _Optional[_Union[IndexIngestStatusV1, str]] = ..., message: _Optional[str] = ...) -> None: ...
+
 class IndexIngestResultV1(_message.Message):
-    __slots__ = ("input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact")
+    __slots__ = ("input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact", "result_summary")
     INPUT_BUNDLE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
     TOOLKIT_CONFIGURATION_FIELD_NUMBER: _ClassVar[int]
@@ -56,6 +76,7 @@ class IndexIngestResultV1(_message.Message):
     LLM_CONFIGURATION_FIELD_NUMBER: _ClassVar[int]
     MCP_TOKENS_FIELD_NUMBER: _ClassVar[int]
     RESULT_ARTIFACT_FIELD_NUMBER: _ClassVar[int]
+    RESULT_SUMMARY_FIELD_NUMBER: _ClassVar[int]
     input_bundle_id: str
     input_bundle_digest: _common_pb2.DigestV1
     toolkit_configuration: IndexIngestInputBindingV1
@@ -64,4 +85,5 @@ class IndexIngestResultV1(_message.Message):
     llm_configuration: IndexIngestInputBindingV1
     mcp_tokens: IndexIngestInputBindingV1
     result_artifact: IndexIngestArtifactReferenceV1
-    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexIngestArtifactReferenceV1, _Mapping]] = ...) -> None: ...
+    result_summary: IndexIngestSummaryV1
+    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexIngestArtifactReferenceV1, _Mapping]] = ..., result_summary: _Optional[_Union[IndexIngestSummaryV1, _Mapping]] = ...) -> None: ...

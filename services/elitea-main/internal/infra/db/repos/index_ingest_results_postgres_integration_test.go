@@ -123,6 +123,105 @@ WHERE execution_id = $1 AND generation = 1`, expected.ExecutionID).Scan(
 	assertPostgresIndexArtifactMetadataOnly(t, ctx, pool)
 }
 
+// TestPostgresServiceBackedInlineIndexSummary proves the first GitHub
+// index_data PoV path against real PostgreSQL. The current SDK's nested
+// status/message result becomes durable without an artifact uploader, while
+// the outer SDK result and redeemed toolkit configuration never cross this
+// contract.
+func TestPostgresServiceBackedInlineIndexSummary(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+
+	dispatchPolicy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    1,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, dispatchPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := newPostgresIndexAdmissionService(t, jobs, "inline-output").Submit(
+		context.Background(),
+		postgresIndexSubmitRequest("request-inline-output", "inline"),
+	)
+	if err != nil || !admitted.Created {
+		t.Fatalf("admit inline index execution: outcome=%+v err=%v", admitted, err)
+	}
+
+	results, err := NewIndexIngestResultsRepository(pool, IndexIngestOutputPolicy{
+		LimitsRevision:    dispatchPolicy.LimitsRevision,
+		ArtifactMediaType: "application/json",
+		MaxArtifactBytes:  1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := results.ExpectedIndexIngest(context.Background(), admitted.ExecutionID, 1)
+	if err != nil {
+		t.Fatalf("load admitted inline index binding: %v", err)
+	}
+	fence := claimPostgresIndexExecution(t, pool, expected)
+	summary := outputapp.IndexIngestSummary{
+		Status:  outputapp.IndexIngestStatusOK,
+		Message: "No new documents to index.",
+	}
+	frame := postgresInlineIndexOutputFrame(t, expected, fence, summary)
+	service := newPostgresIndexOutputService(t, pool, results)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	inserted, err := service.IngestIndex(ctx, frame)
+	if err != nil || !inserted.Inserted || inserted.Cursor == 0 {
+		t.Fatalf("project inline index summary: outcome=%+v err=%v", inserted, err)
+	}
+	replayed, err := service.IngestIndex(ctx, frame)
+	if err != nil || replayed.Inserted || replayed.Cursor != inserted.Cursor {
+		t.Fatalf("replay inline index summary: first=%+v replay=%+v err=%v", inserted, replayed, err)
+	}
+
+	var artifactID, artifactVersion, storageRecordID *string
+	var status, message string
+	if err := pool.QueryRow(ctx, `
+SELECT artifact_id, artifact_immutable_version, artifact_storage_record_id,
+       completion_status, completion_message
+FROM elitea_runtime.index_ingest_results
+WHERE execution_id = $1 AND generation = 1`, expected.ExecutionID).Scan(
+		&artifactID, &artifactVersion, &storageRecordID, &status, &message,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if artifactID != nil || artifactVersion != nil || storageRecordID != nil || status != string(summary.Status) || message != summary.Message {
+		t.Fatalf("persisted terminal shape changed: artifact=%v/%v/%v status=%q message=%q", artifactID, artifactVersion, storageRecordID, status, message)
+	}
+	wantReplay := []byte(`{"status":"ok","message":"No new documents to index."}`)
+	var replayBytes []byte
+	if err := pool.QueryRow(ctx, `
+SELECT event_bytes
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1 AND generation = 1 AND event_type = 'index.ingest.completed'`, expected.ExecutionID).Scan(&replayBytes); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(replayBytes, wantReplay) {
+		t.Fatalf("durable replay differs from current nested SDK result: got=%s want=%s", replayBytes, wantReplay)
+	}
+	assertPostgresCount(t, ctx, pool, 0, `SELECT count(*) FROM elitea_runtime.index_result_artifacts`)
+
+	settlements, err := NewSettlementsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := settlements.PrepareSettlement(ctx, frame.Settlement)
+	if err != nil || receipt.ID == "" || receipt.Outcome != executionapp.SettlementSucceeded {
+		t.Fatalf("settle inline index execution: receipt=%+v err=%v", receipt, err)
+	}
+}
+
 func claimPostgresIndexExecution(t *testing.T, pool *pgxpool.Pool, expected outputapp.ExpectedIndexIngest) runtimedomain.Fence {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -281,6 +380,70 @@ func postgresIndexOutputFrame(t *testing.T, expected outputapp.ExpectedIndexInge
 		Reference:       artifactReference,
 		StorageRecordID: "storage-record-" + expected.ExecutionID,
 		VerifiedAt:      time.Now().UTC().Truncate(time.Microsecond),
+	}
+}
+
+func postgresInlineIndexOutputFrame(t *testing.T, expected outputapp.ExpectedIndexIngest, fence runtimedomain.Fence, summary outputapp.IndexIngestSummary) outputapp.IndexIngestFrame {
+	t.Helper()
+	frame, _ := postgresIndexOutputFrame(t, expected, fence)
+	frame.Result.ResultArtifact = outputapp.IndexArtifactReference{}
+	frame.Result.ResultSummary = summary
+	wireResult := &runtimev1.IndexIngestResultV1{
+		InputBundleId:        frame.Result.InputBundleID,
+		InputBundleDigest:    postgresDigestV1(frame.Result.InputBundleDigest),
+		ToolkitConfiguration: postgresIndexBindingV1(frame.Result.Bindings.ToolkitConfiguration),
+		ToolParameters:       postgresIndexBindingV1(frame.Result.Bindings.ToolParameters),
+		ResultSummary: &runtimev1.IndexIngestSummaryV1{
+			Status:  postgresIndexStatusV1(summary.Status),
+			Message: summary.Message,
+		},
+	}
+	if frame.Result.Bindings.LLMModel.Present {
+		wireResult.LlmModel = postgresIndexBindingV1(frame.Result.Bindings.LLMModel.Binding)
+	}
+	if frame.Result.Bindings.LLMConfiguration.Present {
+		wireResult.LlmConfiguration = postgresIndexBindingV1(frame.Result.Bindings.LLMConfiguration.Binding)
+	}
+	if frame.Result.Bindings.MCPTokens.Present {
+		wireResult.McpTokens = postgresIndexBindingV1(frame.Result.Bindings.MCPTokens.Binding)
+	}
+	encodedResult, err := proto.MarshalOptions{Deterministic: true}.Marshal(wireResult)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame.EncodedResult = encodedResult
+	frame.PayloadDigest = runtimedomain.SHA256(encodedResult)
+	frame.Settlement.TerminalPayloadDigest = frame.PayloadDigest
+	wireSettlement := &runtimev1.SettlementProposalV1{
+		ProposalId:              frame.Settlement.ProposalID,
+		RequestedOutcome:        runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED,
+		TerminalLogicalOutputId: frame.LogicalOutputID,
+		TerminalEventId:         frame.EventID,
+		TerminalSequence:        frame.Sequence,
+		TerminalPayloadDigest:   postgresDigestV1(frame.PayloadDigest),
+		PrepareIdempotencyKey:   frame.Settlement.IdempotencyKey,
+	}
+	frame.EncodedSettlement, err = proto.MarshalOptions{Deterministic: true}.Marshal(wireSettlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame.Settlement.ProposalDigest = runtimedomain.SHA256(frame.EncodedSettlement)
+	if err := frame.Validate(); err != nil {
+		t.Fatalf("build PostgreSQL inline index output frame: %v", err)
+	}
+	return frame
+}
+
+func postgresIndexStatusV1(status outputapp.IndexIngestStatus) runtimev1.IndexIngestStatusV1 {
+	switch status {
+	case outputapp.IndexIngestStatusOK:
+		return runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_OK
+	case outputapp.IndexIngestStatusPartlyIndexed:
+		return runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_PARTLY_INDEXED
+	case outputapp.IndexIngestStatusError:
+		return runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR
+	default:
+		return runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_UNSPECIFIED
 	}
 }
 

@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	MaxIndexIngestResultBytes   = 64 * 1024
-	maxIndexOutputMetadataBytes = 256
+	MaxIndexIngestResultBytes         = 64 * 1024
+	MaxIndexIngestSummaryMessageBytes = 48 * 1024
+	maxIndexOutputMetadataBytes       = 256
 )
 
 var (
@@ -110,6 +111,35 @@ type IndexArtifactReference struct {
 	Classification   string
 }
 
+type IndexIngestStatus string
+
+const (
+	IndexIngestStatusOK            IndexIngestStatus = "ok"
+	IndexIngestStatusPartlyIndexed IndexIngestStatus = "partly_indexed"
+	IndexIngestStatusError         IndexIngestStatus = "error"
+)
+
+// IndexIngestSummary is the exact allowlisted nested result returned by the
+// current BaseIndexerToolkit.index_data implementation. The outer SDK result
+// is intentionally not represented because it can contain redeemed
+// configuration and other worker-local fields.
+type IndexIngestSummary struct {
+	Status  IndexIngestStatus
+	Message string
+}
+
+func (s IndexIngestSummary) Validate() error {
+	switch s.Status {
+	case IndexIngestStatusOK, IndexIngestStatusPartlyIndexed, IndexIngestStatusError:
+	default:
+		return ErrInvalidIndexIngestOutput
+	}
+	if s.Message == "" || len(s.Message) > MaxIndexIngestSummaryMessageBytes || !utf8.ValidString(s.Message) || strings.ContainsRune(s.Message, '\x00') {
+		return ErrInvalidIndexIngestOutput
+	}
+	return nil
+}
+
 func (a IndexArtifactReference) Validate() error {
 	if !validIndexMetadata(a.ArtifactID) || !validIndexMetadata(a.ImmutableVersion) || !validIndexMetadata(a.MediaType) || !validIndexMetadata(a.Classification) || a.ByteLength == 0 || a.Digest.IsZero() {
 		return ErrInvalidIndexIngestOutput
@@ -144,6 +174,7 @@ type IndexIngestResult struct {
 	InputBundleDigest runtimedomain.Digest
 	Bindings          IndexIngestBindings
 	ResultArtifact    IndexArtifactReference
+	ResultSummary     IndexIngestSummary
 }
 
 func (r IndexIngestResult) Validate() error {
@@ -153,7 +184,15 @@ func (r IndexIngestResult) Validate() error {
 	if err := r.Bindings.Validate(); err != nil {
 		return err
 	}
-	return r.ResultArtifact.Validate()
+	hasArtifact := r.ResultArtifact != (IndexArtifactReference{})
+	hasSummary := r.ResultSummary != (IndexIngestSummary{})
+	if hasArtifact == hasSummary {
+		return ErrInvalidIndexIngestOutput
+	}
+	if hasArtifact {
+		return r.ResultArtifact.Validate()
+	}
+	return r.ResultSummary.Validate()
 }
 
 type IndexIngestFrame struct {
@@ -326,31 +365,35 @@ func (s *IndexIngestService) IngestIndex(ctx context.Context, frame IndexIngestF
 	if !matchesExpectedIndexIdentity(expected, frame) || expected.InputBundleID != frame.Result.InputBundleID || expected.InputBundleDigest != frame.Result.InputBundleDigest || expected.Bindings != frame.Result.Bindings {
 		return ProjectionOutcome{}, ErrIndexIngestBindingMismatch
 	}
-	if expected.ArtifactContract.MediaType != frame.Result.ResultArtifact.MediaType || expected.ArtifactContract.Classification != frame.Result.ResultArtifact.Classification || frame.Result.ResultArtifact.ByteLength > expected.ArtifactContract.MaxByteLength {
-		return ProjectionOutcome{}, ErrIndexIngestArtifactMismatch
-	}
 
-	verificationRequest := ArtifactVerificationRequest{
-		TenantID:            expected.TenantID,
-		ResourceProjectID:   expected.ResourceProjectID,
-		ProjectionProjectID: expected.ProjectionProjectID,
-		CommandID:           expected.CommandID,
-		ExecutionID:         expected.ExecutionID,
-		Generation:          expected.Generation,
-		Artifact:            frame.Result.ResultArtifact,
-	}
-	if err := verificationRequest.Validate(); err != nil {
-		return ProjectionOutcome{}, err
-	}
-	verified, err := s.artifacts.VerifyDurable(ctx, verificationRequest)
-	if err != nil {
-		return ProjectionOutcome{}, fmt.Errorf("verify durable index artifact: %w", err)
-	}
-	if err := verified.Validate(); err != nil {
-		return ProjectionOutcome{}, err
-	}
-	if verified.Reference != frame.Result.ResultArtifact {
-		return ProjectionOutcome{}, ErrIndexIngestArtifactMismatch
+	verified := DurableIndexArtifact{}
+	if frame.Result.ResultArtifact != (IndexArtifactReference{}) {
+		if expected.ArtifactContract.MediaType != frame.Result.ResultArtifact.MediaType || expected.ArtifactContract.Classification != frame.Result.ResultArtifact.Classification || frame.Result.ResultArtifact.ByteLength > expected.ArtifactContract.MaxByteLength {
+			return ProjectionOutcome{}, ErrIndexIngestArtifactMismatch
+		}
+
+		verificationRequest := ArtifactVerificationRequest{
+			TenantID:            expected.TenantID,
+			ResourceProjectID:   expected.ResourceProjectID,
+			ProjectionProjectID: expected.ProjectionProjectID,
+			CommandID:           expected.CommandID,
+			ExecutionID:         expected.ExecutionID,
+			Generation:          expected.Generation,
+			Artifact:            frame.Result.ResultArtifact,
+		}
+		if err := verificationRequest.Validate(); err != nil {
+			return ProjectionOutcome{}, err
+		}
+		verified, err = s.artifacts.VerifyDurable(ctx, verificationRequest)
+		if err != nil {
+			return ProjectionOutcome{}, fmt.Errorf("verify durable index artifact: %w", err)
+		}
+		if err := verified.Validate(); err != nil {
+			return ProjectionOutcome{}, err
+		}
+		if verified.Reference != frame.Result.ResultArtifact {
+			return ProjectionOutcome{}, ErrIndexIngestArtifactMismatch
+		}
 	}
 
 	projection := IndexIngestProjection{Frame: cloneIndexIngestFrame(frame), VerifiedArtifact: verified}

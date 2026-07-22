@@ -139,5 +139,32 @@ CREATE TABLE elitea_runtime.index_result_artifacts (
     metadata_created_at timestamptz NOT NULL,
     PRIMARY KEY (artifact_id, immutable_version),
     FOREIGN KEY (execution_id, generation)
-        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation),
+    UNIQUE (
+        artifact_id, immutable_version, execution_id, generation,
+        storage_record_id
+    )
+);
+
+CREATE TABLE elitea_runtime.index_ingest_results (
+    logical_output_id text NOT NULL,
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    input_bundle_id text NOT NULL
+        REFERENCES elitea_runtime.input_bundles(input_bundle_id),
+    input_bundle_digest bytea NOT NULL,
+    artifact_id text,
+    artifact_immutable_version text,
+    artifact_storage_record_id text,
+    completion_status text,
+    completion_message text,
+    projected_at timestamptz NOT NULL,
+    PRIMARY KEY (execution_id, generation, logical_output_id),
+    FOREIGN KEY (
+        artifact_id, artifact_immutable_version, execution_id, generation,
+        artifact_storage_record_id
+    ) REFERENCES elitea_runtime.index_result_artifacts (
+        artifact_id, immutable_version, execution_id, generation,
+        storage_record_id
+    )
 );

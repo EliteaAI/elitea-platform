@@ -249,14 +249,19 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 	if err := projection.Frame.Validate(); err != nil {
 		return outputapp.ProjectionOutcome{}, err
 	}
-	if err := projection.VerifiedArtifact.Validate(); err != nil || projection.VerifiedArtifact.Reference != projection.Frame.Result.ResultArtifact || projection.VerifiedArtifact.Reference.ByteLength > math.MaxInt64 {
+	hasArtifact := projection.Frame.Result.ResultArtifact != (outputapp.IndexArtifactReference{})
+	if hasArtifact {
+		if err := projection.VerifiedArtifact.Validate(); err != nil || projection.VerifiedArtifact.Reference != projection.Frame.Result.ResultArtifact || projection.VerifiedArtifact.Reference.ByteLength > math.MaxInt64 {
+			return outputapp.ProjectionOutcome{}, outputapp.ErrIndexIngestArtifactMismatch
+		}
+	} else if projection.VerifiedArtifact != (outputapp.DurableIndexArtifact{}) {
 		return outputapp.ProjectionOutcome{}, outputapp.ErrIndexIngestArtifactMismatch
 	}
 	record, projectID, err := indexOutputRecord(projection.Frame)
 	if err != nil {
 		return outputapp.ProjectionOutcome{}, err
 	}
-	browserData, err := indexReplayData(projection.Frame.Result.ResultArtifact)
+	browserData, err := indexReplayData(projection.Frame.Result)
 	if err != nil {
 		return outputapp.ProjectionOutcome{}, err
 	}
@@ -372,6 +377,9 @@ func indexOutputRecord(frame outputapp.IndexIngestFrame) (outputRecord, int64, e
 func insertIndexIngestProjection(ctx context.Context, tx sqlExecutor, projection outputapp.IndexIngestProjection, record outputRecord) error {
 	artifact := projection.VerifiedArtifact
 	result := projection.Frame.Result
+	if result.ResultSummary != (outputapp.IndexIngestSummary{}) {
+		return insertIndexIngestSummaryProjection(ctx, tx, result, record)
+	}
 	var logicalOutputID string
 	err := tx.QueryRow(ctx, `
 INSERT INTO elitea_runtime.index_ingest_results (
@@ -424,22 +432,64 @@ RETURNING logical_output_id`,
 	return nil
 }
 
-func indexReplayData(artifact outputapp.IndexArtifactReference) ([]byte, error) {
-	data, err := json.Marshal(struct {
-		ArtifactID       string `json:"artifact_id"`
-		ImmutableVersion string `json:"immutable_version"`
-		MediaType        string `json:"media_type"`
-		ByteLength       uint64 `json:"byte_length"`
-		Digest           string `json:"digest"`
-		Classification   string `json:"classification"`
-	}{
-		ArtifactID:       artifact.ArtifactID,
-		ImmutableVersion: artifact.ImmutableVersion,
-		MediaType:        artifact.MediaType,
-		ByteLength:       artifact.ByteLength,
-		Digest:           artifact.Digest.String(),
-		Classification:   artifact.Classification,
-	})
+func insertIndexIngestSummaryProjection(ctx context.Context, tx sqlExecutor, result outputapp.IndexIngestResult, record outputRecord) error {
+	var logicalOutputID string
+	err := tx.QueryRow(ctx, `
+INSERT INTO elitea_runtime.index_ingest_results (
+    logical_output_id, execution_id, generation, input_bundle_id,
+    input_bundle_digest, completion_status, completion_message
+)
+SELECT $1, $2, $3, b.input_bundle_id, b.manifest_digest, $6, $7
+FROM elitea_runtime.input_bundles AS b
+WHERE b.input_bundle_id = $4
+  AND b.manifest_digest = $5
+RETURNING logical_output_id`,
+		record.LogicalOutputID,
+		record.ExecutionID,
+		int64(record.Generation),
+		result.InputBundleID,
+		result.InputBundleDigest[:],
+		string(result.ResultSummary.Status),
+		result.ResultSummary.Message,
+	).Scan(&logicalOutputID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return outputapp.ErrIndexIngestBindingMismatch
+	}
+	if err != nil {
+		return fmt.Errorf("insert index ingest summary projection: %w", err)
+	}
+	if logicalOutputID != record.LogicalOutputID {
+		return outputapp.ErrIndexIngestOutputConflict
+	}
+	return nil
+}
+
+func indexReplayData(result outputapp.IndexIngestResult) ([]byte, error) {
+	var value any
+	if result.ResultSummary != (outputapp.IndexIngestSummary{}) {
+		value = struct {
+			Status  outputapp.IndexIngestStatus `json:"status"`
+			Message string                      `json:"message"`
+		}{Status: result.ResultSummary.Status, Message: result.ResultSummary.Message}
+	} else {
+		artifact := result.ResultArtifact
+		value = struct {
+			ArtifactID       string `json:"artifact_id"`
+			ImmutableVersion string `json:"immutable_version"`
+			MediaType        string `json:"media_type"`
+			ByteLength       uint64 `json:"byte_length"`
+			Digest           string `json:"digest"`
+			Classification   string `json:"classification"`
+		}{
+			ArtifactID:       artifact.ArtifactID,
+			ImmutableVersion: artifact.ImmutableVersion,
+			MediaType:        artifact.MediaType,
+			ByteLength:       artifact.ByteLength,
+			Digest:           artifact.Digest.String(),
+			Classification:   artifact.Classification,
+		}
+	}
+	data, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("encode safe index replay event: %w", err)
 	}

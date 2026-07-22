@@ -216,6 +216,52 @@ func TestIndexIngestResultsRepositoryProjectsAtomicallyAndReplaysIdempotently(t 
 	}
 }
 
+func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary(t *testing.T) {
+	frame, _ := testIndexIngestProjection(t)
+	frame.Result.ResultArtifact = outputapp.IndexArtifactReference{}
+	frame.Result.ResultSummary = outputapp.IndexIngestSummary{
+		Status:  outputapp.IndexIngestStatusOK,
+		Message: "No new documents to index.",
+	}
+	frame.EncodedResult = []byte("deterministic-inline-index-summary")
+	frame.PayloadDigest = runtimedomain.SHA256(frame.EncodedResult)
+	frame.Settlement.TerminalPayloadDigest = frame.PayloadDigest
+	frame.EncodedSettlement = []byte("deterministic-inline-index-settlement")
+	frame.Settlement.ProposalDigest = runtimedomain.SHA256(frame.EncodedSettlement)
+	if err := frame.Validate(); err != nil {
+		t.Fatalf("build inline summary projection: %v", err)
+	}
+
+	executor := &scriptedExecutor{
+		rowResults: []scriptedRow{
+			{err: pgx.ErrNoRows},
+			{err: pgx.ErrNoRows},
+			{err: pgx.ErrNoRows},
+			{values: []any{"claim-index-1", "claim-index-1", "RUNNING", false, false}},
+			{values: []any{frame.LogicalOutputID}},
+			{values: []any{int64(42)}},
+		},
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+	}
+	repository := newTestIndexResultsRepository(t, &indexIngestReadQueriesStub{}, executor)
+	outcome, err := repository.ProjectIndexIngest(context.Background(), outputapp.IndexIngestProjection{Frame: frame})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Inserted || outcome.Cursor != 42 || len(executor.rowCalls) != 6 {
+		t.Fatalf("unexpected inline projection: outcome=%+v row_calls=%d", outcome, len(executor.rowCalls))
+	}
+	projectionCall := executor.rowCalls[4]
+	if !strings.Contains(projectionCall.sql, "completion_status, completion_message") || strings.Contains(projectionCall.sql, "index_result_artifacts") || projectionCall.args[5] != "ok" || projectionCall.args[6] != frame.Result.ResultSummary.Message {
+		t.Fatalf("inline summary was not persisted as the closed typed shape: sql=%q args=%v", projectionCall.sql, projectionCall.args)
+	}
+	replayBytes, ok := executor.rowCalls[5].args[5].([]byte)
+	wantReplay := []byte(`{"status":"ok","message":"No new documents to index."}`)
+	if !ok || !bytes.Equal(replayBytes, wantReplay) {
+		t.Fatalf("inline replay differs from current nested SDK result: got=%s want=%s", replayBytes, wantReplay)
+	}
+}
+
 func newTestIndexResultsRepository(t *testing.T, queries indexIngestReadQueries, executor *scriptedExecutor) *IndexIngestResultsRepository {
 	t.Helper()
 	repository, err := newIndexIngestResultsRepository(queries, &scriptedProjectStore{scriptedExecutor: executor}, IndexIngestOutputPolicy{

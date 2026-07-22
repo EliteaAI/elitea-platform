@@ -221,6 +221,20 @@ type EliteaRuntimeIndexIngestJob struct {
 	Initiator                   string  `db:"initiator" json:"initiator"`
 }
 
+type EliteaRuntimeIndexIngestResult struct {
+	LogicalOutputID          string             `db:"logical_output_id" json:"logical_output_id"`
+	ExecutionID              string             `db:"execution_id" json:"execution_id"`
+	Generation               int64              `db:"generation" json:"generation"`
+	InputBundleID            string             `db:"input_bundle_id" json:"input_bundle_id"`
+	InputBundleDigest        []byte             `db:"input_bundle_digest" json:"input_bundle_digest"`
+	ArtifactID               *string            `db:"artifact_id" json:"artifact_id"`
+	ArtifactImmutableVersion *string            `db:"artifact_immutable_version" json:"artifact_immutable_version"`
+	ArtifactStorageRecordID  *string            `db:"artifact_storage_record_id" json:"artifact_storage_record_id"`
+	CompletionStatus         *string            `db:"completion_status" json:"completion_status"`
+	CompletionMessage        *string            `db:"completion_message" json:"completion_message"`
+	ProjectedAt              pgtype.Timestamptz `db:"projected_at" json:"projected_at"`
+}
+
 type EliteaRuntimeIndexResultArtifact struct {
 	ArtifactID        string             `db:"artifact_id" json:"artifact_id"`
 	ImmutableVersion  string             `db:"immutable_version" json:"immutable_version"`
