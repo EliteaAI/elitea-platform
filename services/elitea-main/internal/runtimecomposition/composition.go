@@ -31,7 +31,7 @@ const (
 	limitsRevision         = "elitea.runtime.limits.conformance.v1"
 
 	resourceClass          = "validation-small"
-	isolationClass         = "shared-credential-free"
+	isolationClass         = "shared-claim-scoped-authority"
 	inputClassification    = "tenant-confidential"
 	inputGrantAudience     = "elitea.runtime.input.read.v1"
 	indexArtifactMediaType = "application/json"

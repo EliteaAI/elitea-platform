@@ -52,8 +52,8 @@ func TestValidationHandlerRejectsDuplicateWrapperAndRequiresJSONMediaType(t *tes
 		status      int
 	}{
 		{name: "valid", contentType: "application/json; charset=utf-8", body: `{"settings":{}}`, status: http.StatusAccepted},
-		{name: "duplicate settings", contentType: "application/json", body: `{"settings":{},"settings":{"auth_type":"Digest"}}`, status: http.StatusBadRequest},
-		{name: "unknown wrapper", contentType: "application/json", body: `{"settings":{},"configuration_type":"openapi"}`, status: http.StatusBadRequest},
+		{name: "duplicate settings", contentType: "application/json", body: `{"settings":{},"settings":{"type":"github"}}`, status: http.StatusBadRequest},
+		{name: "unknown wrapper", contentType: "application/json", body: `{"settings":{},"configuration_type":"github"}`, status: http.StatusBadRequest},
 		{name: "missing media type", body: `{"settings":{}}`, status: http.StatusUnsupportedMediaType},
 		{name: "wrong media type", contentType: "text/plain", body: `{"settings":{}}`, status: http.StatusUnsupportedMediaType},
 	}
@@ -73,7 +73,7 @@ func TestValidationHandlerRejectsDuplicateWrapperAndRequiresJSONMediaType(t *tes
 	}
 }
 
-func TestValidationHandlerAuthorizesBeforeReadingBodyAndMapsCredentialBoundary(t *testing.T) {
+func TestValidationHandlerAuthorizesBeforeReadingBodyAndMapsInvalidAdmission(t *testing.T) {
 	authorizer := &validationAuthorizerStub{identity: validAdmissionIdentity(), err: ErrValidationForbidden}
 	submitter := &validationSubmitterStub{}
 	handler, err := NewValidationHandler(authorizer, submitter)
@@ -90,11 +90,11 @@ func TestValidationHandlerAuthorizesBeforeReadingBodyAndMapsCredentialBoundary(t
 	}
 
 	authorizer.err = nil
-	submitter.err = configurationapp.ErrCredentialBearingValidationInput
+	submitter.err = configurationapp.ErrInvalidValidationAdmission
 	response = httptest.NewRecorder()
-	handler.Submit(response, validationRequest(`{"settings":{"api_key":"secret"}}`, "application/json"))
+	handler.Submit(response, validationRequest(`{"settings":{"type":"github"}}`, "application/json"))
 	if response.Code != http.StatusBadRequest {
-		t.Fatalf("credential-free boundary mapped to %d", response.Code)
+		t.Fatalf("invalid admission mapped to %d", response.Code)
 	}
 }
 

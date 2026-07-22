@@ -86,7 +86,7 @@ func (h *ValidationHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var capacityError *executionapp.AdmissionCapacityError
 		switch {
-		case errors.Is(err, configurationapp.ErrInvalidValidationAdmission), errors.Is(err, configurationapp.ErrCredentialBearingValidationInput), errors.Is(err, executionapp.ErrInvalidAdmission):
+		case errors.Is(err, configurationapp.ErrInvalidValidationAdmission), errors.Is(err, executionapp.ErrInvalidAdmission):
 			writeValidationError(w, http.StatusBadRequest, "invalid validation request")
 		case errors.Is(err, configurationapp.ErrValidationInputLimitExceeded):
 			writeValidationError(w, http.StatusRequestEntityTooLarge, "validation input exceeds the approved limit")

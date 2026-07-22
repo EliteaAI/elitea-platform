@@ -17,7 +17,7 @@ import (
 const inputReadGrantAudience = "elitea.runtime.input.read.v1"
 
 // PostgresContentRepository is the bounded first-slice content backend. It is
-// suitable for the small credential-free configuration payload. Large files
+// suitable for small tenant-confidential configuration payloads. Large files
 // use the separately scoped artifact service and are never admitted here.
 type PostgresContentRepository struct {
 	store contentQueryer

@@ -27,11 +27,8 @@ const (
 )
 
 var (
-	ErrInvalidValidationAdmission       = errors.New("invalid configuration validation admission")
-	ErrCredentialBearingValidationInput = errors.New("credential-bearing settings are not accepted by this validation profile")
-	ErrUnknownValidationProfileField    = errors.New("settings field is not allowed by the credential-free profile")
-	ErrValidationProfileContainerValue  = errors.New("container value is not allowed by the credential-free profile")
-	ErrValidationInputLimitExceeded     = errors.New("configuration validation input exceeds the approved structural limit")
+	ErrInvalidValidationAdmission   = errors.New("invalid configuration validation admission")
+	ErrValidationInputLimitExceeded = errors.New("configuration validation input exceeds the approved structural limit")
 )
 
 type ValidationTarget struct {
@@ -106,7 +103,7 @@ func (s *SubmitValidationService) Submit(ctx context.Context, request SubmitVali
 	if request.Identity.TenantID == "" || request.Identity.ResourceProjectID == "" || request.Identity.ProjectionProjectID == "" || request.Identity.ActorID == "" {
 		return executionapp.AdmissionOutcome{}, ErrInvalidValidationAdmission
 	}
-	if err := validateCredentialFreeSettings(request.Settings); err != nil {
+	if err := validateSettingsJSON(request.Settings); err != nil {
 		return executionapp.AdmissionOutcome{}, err
 	}
 
@@ -152,8 +149,8 @@ func (s *SubmitValidationService) Submit(ctx context.Context, request SubmitVali
 	})
 }
 
-func validateCredentialFreeSettings(settings []byte) error {
-	if !utf8.Valid(settings) {
+func validateSettingsJSON(settings []byte) error {
+	if len(settings) == 0 || len(settings) > MaxValidationSettingsBytes || !utf8.Valid(settings) {
 		return ErrInvalidValidationAdmission
 	}
 	decoder := json.NewDecoder(bytes.NewReader(settings))
@@ -166,7 +163,7 @@ func validateCredentialFreeSettings(settings []byte) error {
 	if !ok || delim != '{' {
 		return ErrInvalidValidationAdmission
 	}
-	if _, err := validateJSONObject(decoder, 0); err != nil {
+	if err := validateJSONObject(decoder, 0); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
@@ -175,118 +172,85 @@ func validateCredentialFreeSettings(settings []byte) error {
 	return nil
 }
 
-func validateJSONObject(decoder *json.Decoder, depth int) (bool, error) {
+func validateJSONObject(decoder *json.Decoder, depth int) error {
 	if depth > maxValidationJSONDepth {
-		return false, ErrValidationInputLimitExceeded
+		return ErrValidationInputLimitExceeded
 	}
 	seen := make(map[string]struct{})
 	for decoder.More() {
 		keyToken, err := decoder.Token()
 		if err != nil {
-			return false, ErrInvalidValidationAdmission
+			return ErrInvalidValidationAdmission
 		}
 		key, ok := keyToken.(string)
 		if !ok || len(key) > maxValidationJSONString {
 			if ok {
-				return false, ErrValidationInputLimitExceeded
+				return ErrValidationInputLimitExceeded
 			}
-			return false, ErrInvalidValidationAdmission
+			return ErrInvalidValidationAdmission
 		}
 		if _, duplicate := seen[key]; duplicate {
-			return false, ErrInvalidValidationAdmission
+			return ErrInvalidValidationAdmission
 		}
 		seen[key] = struct{}{}
-		if depth == 0 {
-			// Presence is sufficient: null and empty model secret fields are not a
-			// credential-free escape.
-			if credentialFreeOpenAPISecretField(key) {
-				return false, ErrCredentialBearingValidationInput
-			}
-			// The pinned SDK deliberately uses extra='allow'. Narrowing the public
-			// top-level vocabulary is an explicit target security difference.
-			if !credentialFreeOpenAPIField(key) {
-				return false, fmt.Errorf("%w: %w", ErrInvalidValidationAdmission, ErrUnknownValidationProfileField)
-			}
-		}
-		container, err := validateJSONValue(decoder, depth+1)
-		if err != nil {
-			return false, err
-		}
-		if depth == 0 && container {
-			return false, fmt.Errorf("%w: %w", ErrInvalidValidationAdmission, ErrValidationProfileContainerValue)
+		if err := validateJSONValue(decoder, depth+1); err != nil {
+			return err
 		}
 	}
 	closing, err := decoder.Token()
 	if err != nil || closing != json.Delim('}') {
-		return false, ErrInvalidValidationAdmission
+		return ErrInvalidValidationAdmission
 	}
-	return len(seen) == 0, nil
+	return nil
 }
 
-func validateJSONValue(decoder *json.Decoder, depth int) (bool, error) {
+func validateJSONValue(decoder *json.Decoder, depth int) error {
 	if depth > maxValidationJSONDepth {
-		return false, ErrValidationInputLimitExceeded
+		return ErrValidationInputLimitExceeded
 	}
 	token, err := decoder.Token()
 	if err != nil {
-		return false, ErrInvalidValidationAdmission
+		return ErrInvalidValidationAdmission
 	}
 	delim, ok := token.(json.Delim)
 	if !ok {
 		switch value := token.(type) {
 		case nil:
-			return false, nil
+			return nil
+		case bool:
+			return nil
 		case string:
 			if len(value) > maxValidationJSONString {
-				return false, ErrValidationInputLimitExceeded
+				return ErrValidationInputLimitExceeded
 			}
-			return false, nil
+			return nil
 		case json.Number:
 			if strings.ContainsAny(value.String(), ".eE") {
 				parsed, err := strconv.ParseFloat(value.String(), 64)
 				if err != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) {
-					return false, ErrInvalidValidationAdmission
+					return ErrInvalidValidationAdmission
 				}
 			}
-			return false, nil
+			return nil
 		default:
-			return false, nil
+			return ErrInvalidValidationAdmission
 		}
 	}
 	switch delim {
 	case '{':
-		_, err := validateJSONObject(decoder, depth)
-		return true, err
+		return validateJSONObject(decoder, depth)
 	case '[':
 		for decoder.More() {
-			if _, err := validateJSONValue(decoder, depth+1); err != nil {
-				return false, err
+			if err := validateJSONValue(decoder, depth+1); err != nil {
+				return err
 			}
 		}
 		closing, err := decoder.Token()
 		if err != nil || closing != json.Delim(']') {
-			return false, ErrInvalidValidationAdmission
+			return ErrInvalidValidationAdmission
 		}
-		return true, nil
+		return nil
 	default:
-		return false, ErrInvalidValidationAdmission
-	}
-}
-
-func credentialFreeOpenAPISecretField(key string) bool {
-	switch key {
-	case "api_key", "client_secret":
-		return true
-	default:
-		return false
-	}
-}
-
-func credentialFreeOpenAPIField(key string) bool {
-	switch key {
-	case "auth_type", "custom_header_name", "client_id", "token_url", "scope", "method":
-		return true
-	default:
-		return false
+		return ErrInvalidValidationAdmission
 	}
 }

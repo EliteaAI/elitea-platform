@@ -20,8 +20,8 @@ const (
 var ErrInvalidValidationInputProfile = errors.New("invalid validation input profile")
 
 // ValidationInputProfile is an explicit policy input. Classification and
-// grant audience are not inferred from credential-free admission: the same
-// settings bytes can still carry tenant-confidential business data.
+// grant audience are not inferred from a configuration type: settings bytes
+// can carry tenant-confidential business data for every provider.
 type ValidationInputProfile struct {
 	SemanticRole          string
 	Classification        string

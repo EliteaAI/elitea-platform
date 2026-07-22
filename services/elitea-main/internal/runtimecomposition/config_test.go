@@ -204,7 +204,7 @@ func mapLookup(values map[string]string) LookupEnv {
 func validEnvironment() map[string]string {
 	values := map[string]string{
 		"ELITEA_RUNTIME_ENABLED":                   "true",
-		"ELITEA_RUNTIME_COMMAND_STREAM":            "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0",
+		"ELITEA_RUNTIME_COMMAND_STREAM":            "commands.v1.configuration.validate.v1.validation-small.shared-claim-scoped-authority.1.0",
 		"ELITEA_RUNTIME_MAX_OUTSTANDING":           "128",
 		"ELITEA_RUNTIME_STREAM_MAX_ENTRIES":        "256",
 		"ELITEA_RUNTIME_REDIS_URL":                 "rediss://runtime@redis.internal:6379/0",
