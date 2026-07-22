@@ -15,6 +15,7 @@ import (
 	browserapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/browserauth"
 	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 	identityapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/identity"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authattempt"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authflow"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsession"
@@ -43,6 +44,7 @@ type FormGraph struct {
 	browserRoutes   http.Handler
 	mainForwardAuth http.Handler
 	mainKernel      *forwardapp.Kernel
+	patValidator    *authsvc.LocalValidator
 	proxyResolver   *browserapi.TrustedProxyResolver
 	redis           *redis.Client
 	closeOnce       sync.Once
@@ -230,6 +232,7 @@ func newFormGraph(
 		browserRoutes:   formHandler.Routes(),
 		mainForwardAuth: mainHandler,
 		mainKernel:      mainKernel,
+		patValidator:    patValidator,
 		proxyResolver:   proxyResolver,
 		redis:           redisClient,
 	}
@@ -295,6 +298,17 @@ func (graph *FormGraph) AuthorizeMain(
 	}
 	request.Traversal = forwardapp.MainTraversal
 	return graph.mainKernel.Authorize(ctx, request)
+}
+
+// ValidateToken reuses the exact current-baseline HS512 PAT validation path
+// for private runtime consumers. It does not add a second token parser, key
+// snapshot, or authorization model; callers remain responsible for checking
+// the validated principal against their resource-specific ownership rule.
+func (graph *FormGraph) ValidateToken(ctx context.Context, token string) (auth.User, error) {
+	if graph == nil || graph.patValidator == nil {
+		return auth.User{}, ErrInvalidGraph
+	}
+	return graph.patValidator.ValidateToken(ctx, token)
 }
 
 func (graph *FormGraph) Close() error {

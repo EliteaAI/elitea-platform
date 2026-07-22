@@ -576,7 +576,7 @@ func runtimeMainEnvironment(databaseURL string, legacyRedisPort, controlRedisPor
 	}
 }
 
-func writeWorkerConfig(t *testing.T, root, name string, redisPort, controlPort, outputPort, contentPort int, redisPasswordPath string, pki runtimePKI, keyringPath, spoolRoot, spoolKeyPath string) string {
+func writeWorkerConfig(t *testing.T, root, name string, redisPort, controlPort, outputPort, contentPort, platformPort int, redisPasswordPath string, pki runtimePKI, keyringPath, spoolRoot, spoolKeyPath string) string {
 	t.Helper()
 	value := map[string]any{
 		"schema_version":       "elitea.runtime-deploy.v1",
@@ -591,6 +591,7 @@ func writeWorkerConfig(t *testing.T, root, name string, redisPort, controlPort, 
 		"control_target":       fmt.Sprintf("localhost:%d", controlPort),
 		"output_target":        fmt.Sprintf("localhost:%d", outputPort),
 		"content_origin":       fmt.Sprintf("https://localhost:%d", contentPort),
+		"platform_origin":      fmt.Sprintf("https://localhost:%d", platformPort),
 		"ca_path":              pki.caPath,
 		"certificate_path":     pki.workerCertPath,
 		"private_key_path":     pki.workerKeyPath,

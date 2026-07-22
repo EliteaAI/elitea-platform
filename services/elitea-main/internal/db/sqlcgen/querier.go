@@ -15,9 +15,11 @@ type Querier interface {
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
+	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
+	CountCurrentSharedConfigurations(ctx context.Context, arg CountCurrentSharedConfigurationsParams) (int64, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
-	CurrentIndexEmbeddingModelExists(ctx context.Context, arg CurrentIndexEmbeddingModelExistsParams) (bool, error)
+	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
@@ -26,32 +28,32 @@ type Querier interface {
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
-	GetCurrentIndexConfiguration(ctx context.Context, eliteaTitle string) (GetCurrentIndexConfigurationRow, error)
-	GetCurrentIndexLLMModel(ctx context.Context, arg GetCurrentIndexLLMModelParams) (GetCurrentIndexLLMModelRow, error)
-	// These unqualified names are intentional. The repository executes every
-	// query inside a transaction whose local search_path is the authorized
-	// p_<project_id> schema.
-	GetCurrentIndexToolkit(ctx context.Context, toolkitID int32) (GetCurrentIndexToolkitRow, error)
-	GetCurrentSharedIndexConfiguration(ctx context.Context, eliteaTitle string) (GetCurrentSharedIndexConfigurationRow, error)
+	// These unqualified names are intentional. Every query is executed inside a
+	// transaction whose local search_path is derived from the authorized project.
+	// This file projects the existing 16-column tenant table; it does not define a
+	// replacement configuration store.
+	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
 	GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error)
 	GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetRuntimeAdmissionByIdempotencyParams) (GetRuntimeAdmissionByIdempotencyRow, error)
-	GetSharedIndexLLMModel(ctx context.Context, arg GetSharedIndexLLMModelParams) (GetSharedIndexLLMModelRow, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
+	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
+	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
+	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	LoadRuntimeAdmissionTiming(ctx context.Context, deadlineTtlMillis int64) (LoadRuntimeAdmissionTimingRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
-	SharedIndexEmbeddingModelExists(ctx context.Context, arg SharedIndexEmbeddingModelExistsParams) (bool, error)
+	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
 }
 

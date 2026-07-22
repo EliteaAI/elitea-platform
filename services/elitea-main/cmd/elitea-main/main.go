@@ -145,12 +145,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		defer runtimePools.Close()
 		runtimeRoot, err = runtimecomposition.New(ctx, runtimeConfig, runtimecomposition.Dependencies{
-			AdmissionPool: runtimePools.Admission,
-			ControlPool:   runtimePools.Control,
-			OutputPool:    runtimePools.Output,
-			ReplayPool:    runtimePools.Replay,
-			ContentPool:   runtimePools.Content,
-			Logger:        logger,
+			AdmissionPool:         runtimePools.Admission,
+			ControlPool:           runtimePools.Control,
+			OutputPool:            runtimePools.Output,
+			ReplayPool:            runtimePools.Replay,
+			ContentPool:           runtimePools.Content,
+			ProjectTokenValidator: formGraph,
+			Logger:                logger,
 		})
 		if err != nil {
 			return fmt.Errorf("compose optional runtime: %w", err)

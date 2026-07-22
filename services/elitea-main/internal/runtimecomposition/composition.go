@@ -53,12 +53,13 @@ const (
 )
 
 type Dependencies struct {
-	AdmissionPool *pgxpool.Pool
-	ControlPool   *pgxpool.Pool
-	OutputPool    *pgxpool.Pool
-	ReplayPool    *pgxpool.Pool
-	ContentPool   *pgxpool.Pool
-	Logger        *slog.Logger
+	AdmissionPool         *pgxpool.Pool
+	ControlPool           *pgxpool.Pool
+	OutputPool            *pgxpool.Pool
+	ReplayPool            *pgxpool.Pool
+	ContentPool           *pgxpool.Pool
+	ProjectTokenValidator storage.ProjectTokenValidator
+	Logger                *slog.Logger
 }
 
 func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtime, error) {
@@ -73,6 +74,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	if err := validateDependencies(dependencies); err != nil {
 		return nil, err
+	}
+	if config.IndexIngestDispatchEnabled && dependencies.ProjectTokenValidator == nil {
+		return nil, errors.New("runtime index ingest project-token validator is required")
 	}
 	if err := migrate.New(dependencies.AdmissionPool, platformmigrations.Files).CheckHead(ctx, migrate.ScopeShared, "platform"); err != nil {
 		return nil, fmt.Errorf("runtime shared migration head is not applied: %w", err)
@@ -365,9 +369,30 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, fmt.Errorf("construct runtime content repository: %w", err)
 	}
-	contentServer, err := storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
-	if err != nil {
-		return nil, err
+	var contentServer *storage.ContentServer
+	if config.IndexIngestDispatchEnabled {
+		masterKey, err := loadOptionalFernetMasterKey(config.IndexIngestVaultMasterKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		vaults, vaultErr := storage.NewPostgresSecretVaultLoader(dependencies.ContentPool, masterKey)
+		clear(masterKey)
+		if vaultErr != nil {
+			return nil, fmt.Errorf("construct runtime secret-vault loader: %w", vaultErr)
+		}
+		runtimeToken, err := storage.NewEliteaClientTokenService(contentRepository, vaults, dependencies.ProjectTokenValidator)
+		if err != nil {
+			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
+		}
+		contentServer, err = storage.NewRuntimeContentServerWithLimits(contentRepository, contentRepository, runtimeToken, maxInputContentBytes, maxContentRequests)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		contentServer, err = storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
+		if err != nil {
+			return nil, err
+		}
 	}
 	privateServers, err := runtimegrpc.NewPrivateServerSet(runtimegrpc.PrivateServerConfig{
 		ControlAddress:          config.ControlAddress,

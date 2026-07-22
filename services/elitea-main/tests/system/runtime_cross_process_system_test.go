@@ -151,7 +151,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	publicBaseURL := fmt.Sprintf("http://127.0.0.1:%d", publicPort)
 	waitForMain(t, ctx, publicBaseURL, mainProcess)
 
-	badSignatureConfigPath := writeWorkerConfig(t, root, "bad-signature", controlRedisPort, controlPort, outputPort, contentPort, workerPasswordPath, pki, signing.badKeyringPath, spoolRoot, spoolKeyPath)
+	badSignatureConfigPath := writeWorkerConfig(t, root, "bad-signature", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, pki, signing.badKeyringPath, spoolRoot, spoolKeyPath)
 	badSignatureWorker := startWorker(t, python, repositoryRoot, badSignatureConfigPath, filepath.Join(root, "worker-bad-signature.log"))
 	t.Cleanup(func() { badSignatureWorker.stop(t) })
 	waitForWorkerConsumer(t, ctx, observer, "worker-bad-signature", badSignatureWorker)
@@ -166,7 +166,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	wrongIdentityPKI := pki
 	wrongIdentityPKI.workerCertPath = pki.wrongIdentityWorkerCertPath
 	wrongIdentityPKI.workerKeyPath = pki.wrongIdentityWorkerKeyPath
-	badIdentityConfigPath := writeWorkerConfig(t, root, "bad-identity", controlRedisPort, controlPort, outputPort, contentPort, workerPasswordPath, wrongIdentityPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	badIdentityConfigPath := writeWorkerConfig(t, root, "bad-identity", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, wrongIdentityPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	badIdentityWorker := startWorker(t, python, repositoryRoot, badIdentityConfigPath, filepath.Join(root, "worker-bad-identity.log"))
 	t.Cleanup(func() { badIdentityWorker.stop(t) })
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-identity", badIdentityWorker)
@@ -177,7 +177,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	untrustedPKI := pki
 	untrustedPKI.workerCertPath = pki.untrustedWorkerCertPath
 	untrustedPKI.workerKeyPath = pki.untrustedWorkerKeyPath
-	badTLSConfigPath := writeWorkerConfig(t, root, "bad-tls", controlRedisPort, controlPort, outputPort, contentPort, workerPasswordPath, untrustedPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	badTLSConfigPath := writeWorkerConfig(t, root, "bad-tls", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, untrustedPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	badTLSWorker := startWorker(t, python, repositoryRoot, badTLSConfigPath, filepath.Join(root, "worker-bad-tls.log"))
 	t.Cleanup(func() { badTLSWorker.stop(t) })
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-tls", badTLSWorker)
@@ -185,7 +185,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	badTLSWorker.stop(t)
 	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-tls")
 
-	goodConfigPath := writeWorkerConfig(t, root, "good", controlRedisPort, controlPort, outputPort, contentPort, workerPasswordPath, pki, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	goodConfigPath := writeWorkerConfig(t, root, "good", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, pki, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	goodWorker := startWorker(t, python, repositoryRoot, goodConfigPath, filepath.Join(root, "worker-good.log"))
 	t.Cleanup(func() { goodWorker.stop(t) })
 

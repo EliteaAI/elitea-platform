@@ -275,17 +275,3 @@ type EliteaRuntimeInputBundleEntry struct {
 	RequiredGrantAudience string `db:"required_grant_audience" json:"required_grant_audience"`
 	ContentBytes          []byte `db:"content_bytes" json:"content_bytes"`
 }
-
-type EliteaTool struct {
-	ID            int32            `db:"id" json:"id"`
-	CreatedAt     pgtype.Timestamp `db:"created_at" json:"created_at"`
-	UpdatedAt     pgtype.Timestamp `db:"updated_at" json:"updated_at"`
-	Type          string           `db:"type" json:"type"`
-	Name          *string          `db:"name" json:"name"`
-	Description   *string          `db:"description" json:"description"`
-	Settings      []byte           `db:"settings" json:"settings"`
-	AuthorID      int32            `db:"author_id" json:"author_id"`
-	SharedOwnerID *int32           `db:"shared_owner_id" json:"shared_owner_id"`
-	SharedID      *int32           `db:"shared_id" json:"shared_id"`
-	Meta          []byte           `db:"meta" json:"meta"`
-}

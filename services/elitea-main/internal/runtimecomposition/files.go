@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ const (
 	maxPasswordFileBytes   = 514
 	maxRedisPasswordBytes  = 512
 	maxRedisCAFileBytes    = 1 << 20
+	encodedFernetKeyBytes  = 44
 )
 
 func loadEd25519PrivateKey(path string) (ed25519.PrivateKey, error) {
@@ -39,6 +41,24 @@ func loadEd25519PrivateKey(path string) (ed25519.PrivateKey, error) {
 		return nil, errors.New("command-signing key is not Ed25519")
 	}
 	return append(ed25519.PrivateKey(nil), privateKey...), nil
+}
+
+func loadOptionalFernetMasterKey(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	contents, err := securefile.Read(path, encodedFernetKeyBytes, securefile.PrivateMaterial)
+	if err != nil {
+		return nil, fmt.Errorf("load index secret-vault master key: %w", err)
+	}
+	var decoded [33]byte
+	n, decodeErr := base64.URLEncoding.Decode(decoded[:], contents)
+	clear(decoded[:])
+	if decodeErr != nil || n != 32 || len(contents) != encodedFernetKeyBytes {
+		clear(contents)
+		return nil, errors.New("index secret-vault master key is not a Fernet key")
+	}
+	return contents, nil
 }
 
 func loadPassword(path string) (string, error) {

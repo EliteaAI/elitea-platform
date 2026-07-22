@@ -49,11 +49,12 @@ func TestConfigIndexIngestDispatchIsOptionalAndDedicated(t *testing.T) {
 	environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] = "commands.v1.index.ingest.indexing.shared.1.0"
 	environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v1"
 	environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+	environment["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] = "/run/secrets/centry-vault-master-key"
 	config, err := ConfigFromEnv(mapLookup(environment))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.IndexIngestDispatchEnabled || config.IndexIngestCommandStream != environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] || config.IndexIngestConsumerGroup != environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] || config.IndexIngestStreamMaxEntries != 64 {
+	if !config.IndexIngestDispatchEnabled || config.IndexIngestCommandStream != environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] || config.IndexIngestConsumerGroup != environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] || config.IndexIngestStreamMaxEntries != 64 || config.IndexIngestVaultMasterKeyFile != environment["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] {
 		t.Fatalf("unexpected index ingest dispatch config: %+v", config)
 	}
 
@@ -119,6 +120,18 @@ func TestConfigIndexIngestDispatchFailsClosed(t *testing.T) {
 			name: "invalid enable switch",
 			apply: func(values map[string]string) {
 				values["ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED"] = "yes"
+			},
+		},
+		{
+			name: "relative vault master key",
+			apply: func(values map[string]string) {
+				values["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] = "relative-key"
+			},
+		},
+		{
+			name: "reused vault master key file",
+			apply: func(values map[string]string) {
+				values["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] = values["ELITEA_RUNTIME_SIGNING_KEY_FILE"]
 			},
 		},
 		{

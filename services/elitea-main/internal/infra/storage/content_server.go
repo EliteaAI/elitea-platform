@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 const (
 	defaultMaxInputContentBytes  = 256 * 1024
 	defaultMaxContentRequests    = 16
+	maxRuntimeGeneration         = uint64(1<<63 - 1)
 	claimIDHeader                = "X-Elitea-Claim-Id"
 	fenceHeader                  = "X-Elitea-Fence"
 	SourceContentDigestHeader    = "X-Elitea-Source-Content-Digest"
@@ -77,6 +79,7 @@ type ContentServer struct {
 	authorizer   ContentAuthorizer
 	store        ContentStore
 	materializer ContentMaterializer
+	runtimeToken *EliteaClientTokenService
 	maxBytes     int64
 	requests     chan struct{}
 }
@@ -86,7 +89,7 @@ func NewContentServer(authorizer ContentAuthorizer, store ContentStore, maxBytes
 }
 
 func NewContentServerWithLimits(authorizer ContentAuthorizer, store ContentStore, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
-	return newContentServer(authorizer, store, nil, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, nil, nil, maxBytes, maxConcurrentRequests)
 }
 
 // NewMaterializingContentServerWithLimits extends the same private mTLS,
@@ -96,10 +99,28 @@ func NewMaterializingContentServerWithLimits(authorizer ContentAuthorizer, store
 	if materializer == nil {
 		return nil, errors.New("content materializer is required")
 	}
-	return newContentServer(authorizer, store, materializer, maxBytes, maxConcurrentRequests)
+	return newContentServer(authorizer, store, materializer, nil, maxBytes, maxConcurrentRequests)
 }
 
-func newContentServer(authorizer ContentAuthorizer, store ContentStore, materializer ContentMaterializer, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
+// NewRuntimeContentServerWithLimits enables the private Elitea client-token
+// compatibility context on the same bounded mTLS listener as immutable input
+// reads. Configuration materialization is deliberately not composed here: it
+// belongs behind the generic Configurations domain, not an index/provider
+// specific switch.
+func NewRuntimeContentServerWithLimits(
+	authorizer ContentAuthorizer,
+	store ContentStore,
+	runtimeToken *EliteaClientTokenService,
+	maxBytes int64,
+	maxConcurrentRequests int,
+) (*ContentServer, error) {
+	if runtimeToken == nil {
+		return nil, errors.New("runtime context is required")
+	}
+	return newContentServer(authorizer, store, nil, runtimeToken, maxBytes, maxConcurrentRequests)
+}
+
+func newContentServer(authorizer ContentAuthorizer, store ContentStore, materializer ContentMaterializer, runtimeToken *EliteaClientTokenService, maxBytes int64, maxConcurrentRequests int) (*ContentServer, error) {
 	if authorizer == nil || store == nil {
 		return nil, errors.New("content authorizer and store are required")
 	}
@@ -113,6 +134,7 @@ func newContentServer(authorizer ContentAuthorizer, store ContentStore, material
 		authorizer:   authorizer,
 		store:        store,
 		materializer: materializer,
+		runtimeToken: runtimeToken,
 		maxBytes:     maxBytes,
 		requests:     make(chan struct{}, maxConcurrentRequests),
 	}, nil
@@ -122,18 +144,17 @@ func newContentServer(authorizer ContentAuthorizer, store ContentStore, material
 func (s *ContentServer) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/executions/{executionID}/generations/{generation}/inputs/{contentID}/versions/{version}", s.Get)
+	if s.runtimeToken != nil {
+		r.Post("/executions/{executionID}/generations/{generation}/runtime-context/elitea-client-token", s.PostEliteaClientToken)
+	}
 	return r
 }
 
 func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
-	select {
-	case s.requests <- struct{}{}:
-		defer func() { <-s.requests }()
-	default:
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+	if !s.acquire(w) {
 		return
 	}
+	defer s.release()
 	claim, err := parseContentClaim(r)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
@@ -211,6 +232,67 @@ func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(responseData)
 }
 
+func (s *ContentServer) PostEliteaClientToken(w http.ResponseWriter, r *http.Request) {
+	setPrivateNoCacheHeaders(w.Header())
+	if !s.acquire(w) {
+		return
+	}
+	defer s.release()
+	if s.runtimeToken == nil || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+	claim, err := parseExecutionClaim(r)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+	value, err := s.runtimeToken.Resolve(r.Context(), claim)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, ErrContentUnauthorized) {
+			status = http.StatusForbidden
+		}
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) == 0 || len(encoded) > maxRuntimeContextResponseBytes {
+		clearContentBytes(encoded)
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
+	defer clearContentBytes(encoded)
+	digest := sha256.Sum256(encoded)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(encoded)))
+	w.Header().Set("Content-Digest", formatSHA256Digest(digest))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(encoded)
+}
+
+func (s *ContentServer) acquire(w http.ResponseWriter) bool {
+	select {
+	case s.requests <- struct{}{}:
+		return true
+	default:
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return false
+	}
+}
+
+func (s *ContentServer) release() {
+	<-s.requests
+}
+
+func setPrivateNoCacheHeaders(header http.Header) {
+	header.Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	header.Set("Pragma", "no-cache")
+	header.Set("Expires", "0")
+}
+
 func formatSHA256Digest(digest [sha256.Size]byte) string {
 	return "sha-256=:" + base64.StdEncoding.EncodeToString(digest[:]) + ":"
 }
@@ -222,28 +304,63 @@ func clearContentBytes(value []byte) {
 }
 
 func parseContentClaim(r *http.Request) (ContentClaim, error) {
-	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
-		return ContentClaim{}, ErrContentUnauthorized
+	claim, err := parseExecutionClaim(r)
+	if err != nil {
+		return ContentClaim{}, err
 	}
-	generation, err := strconv.ParseUint(chi.URLParam(r, "generation"), 10, 64)
-	if err != nil || generation == 0 {
-		return ContentClaim{}, ErrContentUnauthorized
-	}
-	fence, err := base64.RawURLEncoding.DecodeString(r.Header.Get(fenceHeader))
-	if err != nil || len(fence) != sha256.Size {
-		return ContentClaim{}, ErrContentUnauthorized
-	}
-	claim := ContentClaim{
-		PeerCertificate:  r.TLS.VerifiedChains[0][0],
-		ExecutionID:      chi.URLParam(r, "executionID"),
-		Generation:       generation,
-		ClaimID:          r.Header.Get(claimIDHeader),
-		FenceToken:       fence,
-		ContentID:        chi.URLParam(r, "contentID"),
-		ImmutableVersion: chi.URLParam(r, "version"),
-	}
-	if claim.ExecutionID == "" || claim.ClaimID == "" || claim.ContentID == "" || claim.ImmutableVersion == "" {
+	claim.ContentID = chi.URLParam(r, "contentID")
+	claim.ImmutableVersion = chi.URLParam(r, "version")
+	if !boundedClaimPart(claim.ContentID) || !boundedClaimPart(claim.ImmutableVersion) {
 		return ContentClaim{}, fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
 	}
 	return claim, nil
+}
+
+func parseExecutionClaim(r *http.Request) (ContentClaim, error) {
+	if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
+		return ContentClaim{}, ErrContentUnauthorized
+	}
+	generationText := chi.URLParam(r, "generation")
+	generation, err := strconv.ParseUint(generationText, 10, 64)
+	if err != nil || generation == 0 || generation > maxRuntimeGeneration || strconv.FormatUint(generation, 10) != generationText {
+		return ContentClaim{}, ErrContentUnauthorized
+	}
+	claimID, claimIDOK := singleHeader(r.Header, claimIDHeader)
+	fenceText, fenceOK := singleHeader(r.Header, fenceHeader)
+	fence, err := base64.RawURLEncoding.DecodeString(fenceText)
+	if !claimIDOK || !fenceOK || err != nil || len(fence) != sha256.Size || base64.RawURLEncoding.EncodeToString(fence) != fenceText {
+		return ContentClaim{}, ErrContentUnauthorized
+	}
+	claim := ContentClaim{
+		PeerCertificate: r.TLS.VerifiedChains[0][0],
+		ExecutionID:     chi.URLParam(r, "executionID"),
+		Generation:      generation,
+		ClaimID:         claimID,
+		FenceToken:      fence,
+	}
+	if !boundedClaimPart(claim.ExecutionID) || !boundedClaimPart(claim.ClaimID) {
+		return ContentClaim{}, fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
+	}
+	return claim, nil
+}
+
+func singleHeader(header http.Header, name string) (string, bool) {
+	values := header.Values(name)
+	if len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func boundedClaimPart(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for index := range len(value) {
+		switch value[index] {
+		case '\r', '\n', 0:
+			return false
+		}
+	}
+	return true
 }

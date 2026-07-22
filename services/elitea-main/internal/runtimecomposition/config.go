@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -32,10 +33,11 @@ type Config struct {
 	MaxOutstanding   int64
 	StreamMaxEntries int64
 
-	IndexIngestDispatchEnabled  bool
-	IndexIngestCommandStream    string
-	IndexIngestConsumerGroup    string
-	IndexIngestStreamMaxEntries int64
+	IndexIngestDispatchEnabled    bool
+	IndexIngestCommandStream      string
+	IndexIngestConsumerGroup      string
+	IndexIngestStreamMaxEntries   int64
+	IndexIngestVaultMasterKeyFile string
 
 	RedisURL          string
 	RedisPasswordFile string
@@ -104,7 +106,7 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 	indexIngestEnabled, _ := lookup("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED")
 	switch indexIngestEnabled {
 	case "", "false":
-		for _, name := range []string{"ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM", "ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP", "ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"} {
+		for _, name := range []string{"ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM", "ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP", "ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES", "ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"} {
 			if value, ok := lookup(name); ok && value != "" {
 				return Config{}, errors.New("runtime index ingest dispatch settings require explicit enablement")
 			}
@@ -120,6 +122,7 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 		if config.IndexIngestStreamMaxEntries, err = integer("ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"); err != nil {
 			return Config{}, err
 		}
+		config.IndexIngestVaultMasterKeyFile, _ = lookup("ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE")
 	default:
 		return Config{}, errors.New("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED must be true or false")
 	}
@@ -217,7 +220,10 @@ func (c Config) Validate() error {
 		if c.IndexIngestStreamMaxEntries <= 0 || c.IndexIngestStreamMaxEntries > maxRuntimeStreamEntries {
 			return errors.New("runtime index ingest Redis stream capacity is invalid")
 		}
-	} else if c.IndexIngestCommandStream != "" || c.IndexIngestConsumerGroup != "" || c.IndexIngestStreamMaxEntries != 0 {
+		if c.IndexIngestVaultMasterKeyFile != "" && !validPrivateConfigPath(c.IndexIngestVaultMasterKeyFile) {
+			return errors.New("runtime index ingest vault master-key file path is invalid")
+		}
+	} else if c.IndexIngestCommandStream != "" || c.IndexIngestConsumerGroup != "" || c.IndexIngestStreamMaxEntries != 0 || c.IndexIngestVaultMasterKeyFile != "" {
 		return errors.New("runtime index ingest dispatch settings require explicit enablement")
 	}
 	if c.RedisPoolSize <= 0 || c.RedisPoolSize > maxRedisPoolSize {
@@ -234,6 +240,13 @@ func (c Config) Validate() error {
 	} {
 		if !validConfigPath(path) {
 			return errors.New("runtime secret or TLS file path is invalid")
+		}
+	}
+	if c.IndexIngestVaultMasterKeyFile != "" {
+		for _, path := range []string{c.RedisPasswordFile, c.SigningKeyFile, c.VerificationKeyringFile, c.ControlTLS.PrivateKeyPath, c.OutputTLS.PrivateKeyPath, c.ContentTLS.PrivateKeyPath} {
+			if c.IndexIngestVaultMasterKeyFile == path {
+				return errors.New("runtime index ingest vault master-key file must be purpose-separated")
+			}
 		}
 	}
 	if c.SigningKeyID == "" || len(c.SigningKeyID) > 256 || strings.ContainsAny(c.SigningKeyID, "\r\n\x00") {
@@ -305,6 +318,10 @@ func validRedisACLUsername(username string) bool {
 
 func validConfigPath(path string) bool {
 	return path != "" && len(path) <= maxConfigPathBytes && !strings.ContainsAny(path, "\r\n\x00")
+}
+
+func validPrivateConfigPath(path string) bool {
+	return validConfigPath(path) && filepath.IsAbs(path) && filepath.Clean(path) == path
 }
 
 func validateTCPAddress(address string) error {
