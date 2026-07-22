@@ -1,0 +1,6 @@
+apiVersion: v2
+name: elitea-llm-gateway
+description: Standalone LLM gateway embedding bifrost/core (LiteLLM→Bifrost migration)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

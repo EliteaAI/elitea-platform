@@ -33,12 +33,12 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Expose `ProjectFromContext` and `resolveProjectID`; remove all TODO/FIXME/NotImplemented
   - [x] Unit tests (>=85% coverage)
 
-- [ ] BF0.2 Stand up the elitea-llm-gateway module on Go 1.26.4
-  - [ ] Create `services/elitea-llm-gateway/` with `go 1.26.4` in its go.mod and `FROM golang:1.26.4` in its Containerfile; bump the CI runner image used to build it
-  - [ ] Add `github.com/maximhq/bifrost` (pinned tag) to go.mod
-  - [ ] Run `go work sync`; confirm only the gateway module names 1.26.4 and the workspace still builds
-  - [ ] Spike branch: run task test/vet/lint/build for the gateway module + smoke build of the workspace to catch 1.25→1.26 regressions
-  - [ ] Apply pre-cutover gateway Deployment/code changes: memory >=1Gi, terminationGracePeriodSeconds >=150 + preStop, gateway `srv.Shutdown()` context >=150s, `http.Server` WriteTimeout 0 for the `/llm` SSE path, inject slog/OTel Logger, tune `BifrostConfig.InitialPoolSize` + per-provider `ProviderConfig.ConcurrencyAndBufferSize.Concurrency` (design §9.5)
+- [x] BF0.2 Stand up the elitea-llm-gateway module on Go 1.26.4
+  - [x] Create `services/elitea-llm-gateway/` with `go 1.26.4` in its go.mod and `FROM golang:1.26.4` in its Containerfile; bump the CI runner image used to build it (new `.github/workflows/ci-gateway.yml` on go-version 1.26.4)
+  - [x] Add `github.com/maximhq/bifrost` (pinned tag) to go.mod (`github.com/maximhq/bifrost/core v1.7.3`)
+  - [x] Run `go work sync`; confirm only the gateway module names 1.26.4 and the workspace still builds (gateway is kept OFF go.work: `go work sync` escalates the workspace go directive to 1.26.4, violating the elitea-main toolchain-unchanged constraint; the gateway is a standalone module built with `GOWORK=off`. Go itself rejects a 1.26.4 module in the 1.25.8 workspace. Workspace still builds; gateway is the only module naming 1.26.4.)
+  - [x] Spike branch: run task test/vet/lint/build for the gateway module + smoke build of the workspace to catch 1.25→1.26 regressions (gateway vet/build/test green, 100%/100%/90.9% pkg coverage; golangci-lint 0 issues; all workspace modules build clean)
+  - [x] Apply pre-cutover gateway Deployment/code changes: memory >=1Gi, terminationGracePeriodSeconds >=150 + preStop, gateway `srv.Shutdown()` context >=150s, `http.Server` WriteTimeout 0 for the `/llm` SSE path, inject slog/OTel Logger, tune `BifrostConfig.InitialPoolSize` + per-provider `ProviderConfig.ConcurrencyAndBufferSize.Concurrency` (design §9.5)
 
 - [ ] BF0.2-account Implement the bifrost.Account interface in the gateway
   - [ ] `services/elitea-llm-gateway/internal/account/account.go`: implement `GetConfiguredProviders`, `GetKeysForProvider`, `GetConfigForProvider`

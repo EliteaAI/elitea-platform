@@ -1,0 +1,68 @@
+# scale-1 profile (design §8.1.1): a single gateway replica. HA operators
+# override replicaCount and LLM_BUDGET_EXPECTED_REPLICAS to the real count.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/eliteaai/elitea-llm-gateway
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# §9.5: gateway memory must be >=1Gi — provider streaming buffers plus the
+# bifrost object pools inflate the process well beyond the edge's footprint.
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# §9.5: provider LLM streams can run up to ~120s. A short grace period truncates
+# in-flight streams on every rolling deploy, so terminationGracePeriodSeconds
+# MUST be >=150 and rise together with the gateway's srv.Shutdown() context
+# (GATEWAY_SHUTDOWN_TIMEOUT).
+terminationGracePeriodSeconds: 150
+
+# preStop hook (§9.5). The primary drain mechanism is the gateway's own
+# SIGTERM-driven graceful shutdown (GATEWAY_SHUTDOWN_TIMEOUT, >=150s); the
+# preStop hook adds a quiet window so kube-proxy/ingress endpoints deregister
+# before SIGTERM, keeping new connections off a draining pod.
+#
+# NOTE: the runtime image is distroless/static, which has NO shell or sleep
+# binary — an `exec` sleep would fail. `enabled: false` by default; enable it
+# only with a `command` that the deployed image can actually run (e.g. the real
+# BF0.2b image bundling a sleep binary, or an httpGet variant). When disabled,
+# the app's graceful shutdown alone drains in-flight streams.
+preStop:
+  enabled: false
+  # Rendered verbatim under container.lifecycle.preStop when enabled.
+  command: ["/bin/sleep", "15"]
+
+env:
+  DATABASE_URL: ""
+  # §9.5: keep the SSE write deadline disabled and pools tuned. These mirror the
+  # config.go defaults; set explicitly so the deployment is self-documenting.
+  GATEWAY_SHUTDOWN_TIMEOUT: "150s"
+  GATEWAY_INITIAL_POOL_SIZE: "100"
+  GATEWAY_PROVIDER_CONCURRENCY: "50"
+  GATEWAY_LOG_LEVEL: "info"
+  # scale-1 default; HA operators MUST override to the real replica count.
+  LLM_BUDGET_EXPECTED_REPLICAS: "1"
+
+probes:
+  liveness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /healthz
+    periodSeconds: 5
+    failureThreshold: 2
+
+serviceAccount:
+  create: true
+  name: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
