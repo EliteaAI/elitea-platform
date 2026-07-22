@@ -3,6 +3,7 @@ module github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway
 go 1.26.4
 
 require (
+	github.com/go-chi/chi/v5 v5.1.0
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/maximhq/bifrost/core v1.7.3
 )

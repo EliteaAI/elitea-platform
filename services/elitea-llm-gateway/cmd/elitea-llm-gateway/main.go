@@ -17,7 +17,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/config"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/server"
 )
 
@@ -32,8 +34,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Base mux with a health endpoint; the /llm chi router is mounted here by
-	// BF0.3. Passed to the server as its http.Handler.
+	// Base mux with a health endpoint. Passed to the server as its
+	// http.Handler; the /llm chi router is mounted below once the embedded
+	// bifrost client is available.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -47,6 +50,12 @@ func main() {
 		slog.Error("failed to initialise gateway", "err", err)
 		os.Exit(1)
 	}
+
+	// Mount the /llm dialect surface over the embedded bifrost/core client.
+	// ServeMux dispatches by longest-prefix match, so /healthz keeps its own
+	// handler while everything under /llm/ routes into the chi router.
+	handler := llmproxy.NewHandler(llmproxy.NewBifrostRouter(srv.Core()), logger, []byte(cfg.IdentitySecret))
+	mux.Handle("/llm/", api.NewRouter(handler))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()

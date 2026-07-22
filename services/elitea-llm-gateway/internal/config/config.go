@@ -50,6 +50,11 @@ type Config struct {
 	ServiceVersion string
 	// OTLPEndpoint is the OTel collector endpoint ("" disables export).
 	OTLPEndpoint string
+	// IdentitySecret is the HMAC key the gateway uses to verify the edge's
+	// signed identity headers (design §5.3). Empty disables verification (the
+	// mTLS transport still authenticates the hop); it MUST match elitea-main's
+	// IdentitySecret when set.
+	IdentitySecret string
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -65,6 +70,7 @@ func FromEnv() Config {
 		ServiceName:         envOr("OTEL_SERVICE_NAME", "elitea-llm-gateway"),
 		ServiceVersion:      envOr("SERVICE_VERSION", "dev"),
 		OTLPEndpoint:        os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		IdentitySecret:      os.Getenv("GATEWAY_IDENTITY_SECRET"),
 	}
 }
 
