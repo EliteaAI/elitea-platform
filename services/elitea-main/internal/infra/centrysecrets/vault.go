@@ -1,7 +1,8 @@
-// Package centrysecrets reads the encrypted vault representation used by the
-// current Centry database secret engine.
+// Package centrysecrets reads and rewrites the encrypted vault representation
+// used by the current Centry database secret engine.
 //
-// It deliberately has no environment, database, HTTP, or write capability.
+// It deliberately has no environment, database, filesystem, HTTP, or durable
+// storage capability. Persistence and authorization belong to its callers.
 package centrysecrets
 
 import (
