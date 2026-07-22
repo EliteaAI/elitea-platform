@@ -1,0 +1,44 @@
+# nats-bootstrap — creates the LLM-gateway JetStream assets as a Helm hook Job.
+
+# NATS Server 2.12.0+ image (bundles the `nats` CLI). MUST be 2.12.0+ for the
+# Nats-Incr the counters depend on, but the CLI here only creates assets.
+image:
+  repository: natsio/nats-box
+  tag: "0.18.0"
+  pullPolicy: IfNotPresent
+
+# NATS connection URL reachable from the Job pod (the upstream chart's client
+# ClusterIP service). Override per environment.
+natsUrl: "nats://nats:4222"
+
+# KV/stream replicas — MUST match the NATS profile:
+#   scale-1 -> 1 (default; HA waived)
+#   HA      -> 3 (or 5; quorum-replicated)
+# An asset created at replicas=1 on a 3-node cluster still has no quorum.
+replicas: 1
+
+# GATEWAY_ALERT_COOLDOWN bucket-level TTL (design §8.3; replaces the retired
+# Python CostAlerter's in-process 4-hour cooldown).
+alertCooldown: "4h"
+
+# GATEWAY_BUDGET_DELTAS write-behind stream tuning (design §8.6, §9.5).
+deltas:
+  # >= the consumer's worst-case redelivery span; 2m is the documented floor.
+  duplicateWindow: "2m"
+  # Retention limits bound growth if Postgres write-behind stalls (alarm before
+  # the cap). Old messages are discarded once the consumer has drained them.
+  maxAge: "72h"
+  maxBytes: 1073741824   # 1 GiB
+  maxMsgs: 5000000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# Extra args appended to every `nats` invocation (e.g. TLS/creds flags). The
+# --server flag is always injected from natsUrl.
+extraNatsArgs: ""

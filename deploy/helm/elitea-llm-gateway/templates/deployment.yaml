@@ -61,6 +61,21 @@ spec:
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.mtls.enabled }}
+          volumeMounts:
+            # Server cert (tls.crt/tls.key) + CA bundle (ca.crt) for the mTLS
+            # listener; the gateway requires-and-verifies the edge client cert
+            # against ca.crt (design §9.1).
+            - name: mtls
+              mountPath: {{ .Values.mtls.mountPath }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.mtls.enabled }}
+      volumes:
+        - name: mtls
+          secret:
+            secretName: {{ .Values.mtls.serverSecretName }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -48,6 +48,48 @@ env:
   GATEWAY_LOG_LEVEL: "info"
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
+  # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
+  # client ClusterIP service provisioned by deploy/helm/nats.
+  NATS_URL: "nats://nats:4222"
+
+# elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
+# §9.1). Named explicitly so the edge/runbook references resolve.
+service:
+  name: elitea-llm-gateway-svc
+  port: 8083
+  annotations: {}
+
+# HPA on a custom /llm SSE-connection metric (design §9.5) — CPU/memory is a poor
+# signal for I/O-bound streaming. Requires the Prometheus Adapter to surface the
+# metric; disable if that adapter is not installed (falls back to replicaCount).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Pods-metric name the Prometheus Adapter must expose (concurrent /llm SSE
+  # connections per pod). The gateway emits the underlying gauge in BF0.4/§10.
+  sseConnectionMetric: gateway_llm_sse_active_connections
+  # Scale out when average concurrent streams per pod approaches the tuned
+  # provider Concurrency budget (GATEWAY_PROVIDER_CONCURRENCY=50).
+  targetSSEConnectionsPerPod: "40"
+
+# mTLS for the elitea-main -> gateway hop (design §9.1). cert-manager issues a
+# server cert (this Deployment mounts it) and an edge client cert (elitea-main
+# mounts it) from a shared internal CA issuer.
+mtls:
+  enabled: true
+  serverSecretName: elitea-llm-gateway-server-tls
+  clientSecretName: elitea-main-gateway-client-tls
+  duration: 2160h    # 90d
+  renewBefore: 360h  # 15d
+  issuerRef:
+    # A cluster-shared internal (private-CA) issuer — NOT created by this chart.
+    name: elitea-internal-ca
+    kind: ClusterIssuer
+  # Where the server cert secret is mounted in the gateway container. The
+  # gateway serves TLS from tls.crt/tls.key and verifies client certs against
+  # ca.crt (mTLS require-and-verify).
+  mountPath: /etc/gateway/tls
 
 probes:
   liveness:

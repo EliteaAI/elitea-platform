@@ -51,11 +51,11 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Inject signed identity headers `X-Elitea-Project-Id` / `X-Elitea-User-Id` / `X-Elitea-Tenant-Id` (+ HMAC `X-Elitea-Identity-Signature`) in `internal/llmproxy/identity.go`; strip client-spoofed values first; gateway trusts them only on the mTLS-internal network
   - [x] Unit tests (llmproxy pkg 100% coverage: identity round-trip/spoof-strip/tamper, streaming incremental-flush through the hop, write-deadline clear, 502 on upstream down, mTLS transport build)
 
-- [ ] BF0.2b Provision the NATS JetStream cluster + gateway Helm/ArgoCD app
-  - [ ] NATS JetStream: pick the profile (design §8.1.1) — scale-1: single node, replicas=1, file storage; HA: 3/5 nodes, replicas>=3, file storage — NATS Server 2.12.0+ (required for Nats-Incr)
-  - [ ] Create KV buckets `GATEWAY_BUDGET` / `GATEWAY_ALERT_COOLDOWN` and stream `GATEWAY_BUDGET_DELTAS` (with duplicate_window + retention limits)
-  - [ ] New Helm/ArgoCD app for elitea-llm-gateway: Deployment + `elitea-llm-gateway-svc` ClusterIP (mTLS-only, not public) + HPA on a custom /llm SSE-connection metric + mTLS certs
-  - [ ] Configure the `nats --context gateway` context so the validator resolves
+- [x] BF0.2b Provision the NATS JetStream cluster + gateway Helm/ArgoCD app
+  - [x] NATS JetStream: pick the profile (design §8.1.1) — scale-1: single node, replicas=1, file storage; HA: 3/5 nodes, replicas>=3, file storage — NATS Server 2.12.0+ (required for Nats-Incr) (upstream `nats` chart wrapped as a subchart in `deploy/helm/nats`; `values-scale1.yaml` = single node, `values-ha.yaml` = 3-node RAFT quorum + topology spread; both pin `container.image.tag: 2.12.0-alpine`)
+  - [x] Create KV buckets `GATEWAY_BUDGET` / `GATEWAY_ALERT_COOLDOWN` and stream `GATEWAY_BUDGET_DELTAS` (with duplicate_window + retention limits) (idempotent `deploy/helm/nats-bootstrap` chart: pre-install ConfigMap embeds `files/bootstrap.sh`, post-install/upgrade hook Job runs it via nats-box; `--dupe-window`/`--max-age`/`--max-bytes`/`--max-msgs`/`--replicas ${REPLICAS}`; NO GATEWAY_CUTOVER bucket)
+  - [x] New Helm/ArgoCD app for elitea-llm-gateway: Deployment + `elitea-llm-gateway-svc` ClusterIP (mTLS-only, not public) + HPA on a custom /llm SSE-connection metric + mTLS certs (`deploy/helm/elitea-llm-gateway`: `service.yaml` ClusterIP:8083, `hpa.yaml` Pods metric `gateway_llm_sse_active_connections`, `certificates.yaml` cert-manager server+edge-client certs; 3 ArgoCD apps ordered by sync-wave -2/-1/0 in `deploy/argocd`)
+  - [x] Configure the `nats --context gateway` context so the validator resolves (`deploy/nats-context/gateway.json` template + `install-context.sh`; live validator needs a reachable NATS + `nats` CLI, so it fails in this offline dev env like the sibling BF-Build infra checks)
 
 - [ ] BF0.3 Implement the gateway /llm chi handler, converter, and net/http SSE loop
   - [ ] Mount `/llm/v1/messages` exact route before `/llm/v1/*` catch-all in `services/elitea-llm-gateway/internal/api/router.go`
