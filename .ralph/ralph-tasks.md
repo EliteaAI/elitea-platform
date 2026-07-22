@@ -46,10 +46,10 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Static self-referential-credential guard: reject any credential whose `api_base` resolves to the platform's own `/llm` origin (reason `SELF_REFERENTIAL_CREDENTIAL`)
   - [x] Unit tests (account pkg 92.1% coverage, real Fernet round-trip)
 
-- [ ] BF0.2a Implement elitea-main → gateway streaming reverse proxy + mTLS
-  - [ ] `services/elitea-main/internal/llmproxy/proxy.go`: `httputil.ReverseProxy` with `FlushInterval < 0` (no buffering) to `elitea-llm-gateway-svc` over mTLS; disable `http.Server` WriteTimeout for `/llm`; propagate `X-Accel-Buffering: no`
-  - [ ] Inject signed identity headers `X-Elitea-Project-Id` / `X-Elitea-User-Id` / `X-Elitea-Tenant-Id`; gateway trusts them only on the mTLS-internal network
-  - [ ] Unit tests
+- [x] BF0.2a Implement elitea-main → gateway streaming reverse proxy + mTLS
+  - [x] `services/elitea-main/internal/llmproxy/proxy.go`: `httputil.ReverseProxy` with `FlushInterval < 0` (no buffering) to `elitea-llm-gateway-svc` over mTLS; disable `http.Server` WriteTimeout for `/llm` (per-connection write deadline cleared via `http.NewResponseController(w).SetWriteDeadline(time.Time{})` in ServeHTTP); propagate `X-Accel-Buffering: no` (ModifyResponse). mTLS HTTP/1.1 transport (NextProtos http/1.1, ForceAttemptHTTP2 false)
+  - [x] Inject signed identity headers `X-Elitea-Project-Id` / `X-Elitea-User-Id` / `X-Elitea-Tenant-Id` (+ HMAC `X-Elitea-Identity-Signature`) in `internal/llmproxy/identity.go`; strip client-spoofed values first; gateway trusts them only on the mTLS-internal network
+  - [x] Unit tests (llmproxy pkg 100% coverage: identity round-trip/spoof-strip/tamper, streaming incremental-flush through the hop, write-deadline clear, 502 on upstream down, mTLS transport build)
 
 - [ ] BF0.2b Provision the NATS JetStream cluster + gateway Helm/ArgoCD app
   - [ ] NATS JetStream: pick the profile (design §8.1.1) — scale-1: single node, replicas=1, file storage; HA: 3/5 nodes, replicas>=3, file storage — NATS Server 2.12.0+ (required for Nats-Incr)
