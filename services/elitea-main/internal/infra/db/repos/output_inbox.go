@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
@@ -111,6 +112,81 @@ WHERE j.execution_id = $1
 	}
 	if err := expected.Validate(); err != nil {
 		return outputapp.ExpectedValidation{}, fmt.Errorf("invalid stored configuration validation binding: %w", err)
+	}
+	return expected, nil
+}
+
+func (r *OutputInboxRepository) ExpectedRuntimeFailure(ctx context.Context, executionID string, generation uint64) (outputapp.ExpectedRuntimeFailure, error) {
+	if executionID == "" || generation == 0 || generation > math.MaxInt64 {
+		return outputapp.ExpectedRuntimeFailure{}, outputapp.ErrInvalidValidationOutput
+	}
+	var expected outputapp.ExpectedRuntimeFailure
+	var storedGeneration int64
+	err := r.store.QueryRow(ctx, `
+SELECT j.tenant_id,
+       j.resource_project_id::text,
+       j.projection_project_id::text,
+       j.capability_id,
+       j.command_id,
+       j.execution_id,
+       j.generation,
+       CASE j.capability_id
+           WHEN 'configuration.validate.v1'
+               THEN 'configuration-validation:' || j.configuration_revision_id
+           WHEN 'index.ingest.v1'
+               THEN 'index-ingest:' || j.execution_id
+       END AS logical_output_id
+FROM elitea_runtime.execution_jobs AS j
+WHERE j.execution_id = $1
+  AND j.generation = $2
+  AND (
+      (
+          j.capability_id = 'configuration.validate.v1'
+          AND EXISTS (
+              SELECT 1
+              FROM elitea_runtime.input_bundles AS b
+              JOIN elitea_runtime.input_bundle_entries AS e
+                ON e.input_bundle_id = b.input_bundle_id
+               AND e.entry_id = j.settings_entry_id
+              WHERE b.input_bundle_id = j.input_bundle_id
+          )
+      )
+      OR
+      (
+          j.capability_id = 'index.ingest.v1'
+          AND EXISTS (
+              SELECT 1
+              FROM elitea_runtime.index_ingest_jobs AS i
+              JOIN elitea_runtime.input_bundles AS b
+                ON b.input_bundle_id = i.input_bundle_id
+              WHERE i.execution_id = j.execution_id
+                AND i.generation = j.generation
+                AND i.capability_id = j.capability_id
+                AND i.input_bundle_id = j.input_bundle_id
+          )
+      )
+  )`, executionID, int64(generation)).Scan(
+		&expected.TenantID,
+		&expected.ResourceProjectID,
+		&expected.ProjectionProjectID,
+		&expected.CapabilityID,
+		&expected.CommandID,
+		&expected.ExecutionID,
+		&storedGeneration,
+		&expected.LogicalOutputID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return outputapp.ExpectedRuntimeFailure{}, outputapp.ErrInvalidValidationOutput
+	}
+	if err != nil {
+		return outputapp.ExpectedRuntimeFailure{}, fmt.Errorf("load expected runtime failure: %w", err)
+	}
+	if storedGeneration <= 0 {
+		return outputapp.ExpectedRuntimeFailure{}, outputapp.ErrInvalidValidationOutput
+	}
+	expected.Generation = uint64(storedGeneration)
+	if err := expected.Validate(); err != nil {
+		return outputapp.ExpectedRuntimeFailure{}, fmt.Errorf("invalid stored runtime failure binding: %w", err)
 	}
 	return expected, nil
 }
@@ -459,3 +535,4 @@ WHERE event_id = $1`, eventID).Scan(&cursor); err != nil {
 }
 
 var _ outputapp.ValidationBindingRepository = (*OutputInboxRepository)(nil)
+var _ outputapp.RuntimeFailureBindingRepository = (*OutputInboxRepository)(nil)

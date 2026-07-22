@@ -87,7 +87,10 @@ SELECT EXISTS (
       ON p.id = j.projection_project_id
     WHERE j.execution_id = $1
       AND j.projection_project_id = $2
-      AND j.capability_id = 'configuration.validate.v1'
+      AND j.capability_id IN (
+          'configuration.validate.v1',
+          'index.ingest.v1'
+      )
       AND p.suspended = FALSE
       AND (
           p.owner_id = $3

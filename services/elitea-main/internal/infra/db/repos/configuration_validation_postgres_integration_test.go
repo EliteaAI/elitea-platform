@@ -742,7 +742,10 @@ INSERT INTO elitea_runtime.input_bundles (
 		{outboxID: "outbox-order-wrong-stream", executionID: "execution-order-wrong-stream", generation: 1, state: "PENDING", capability: "configuration.validate.v1", stream: "other:runtime:commands", createdAt: base.Add(-9 * time.Minute)},
 		{outboxID: "outbox-order-published", executionID: "execution-order-published", generation: 1, state: "PENDING", capability: "configuration.validate.v1", stream: "elitea:runtime:commands", createdAt: base.Add(-8 * time.Minute), published: true},
 		{outboxID: "outbox-order-dispatched", executionID: "execution-order-dispatched", generation: 1, state: "DISPATCHED", capability: "configuration.validate.v1", stream: "elitea:runtime:commands", createdAt: base.Add(-7 * time.Minute)},
-		{outboxID: "outbox-order-wrong-capability", executionID: "execution-order-wrong-capability", generation: 1, state: "PENDING", capability: "toolkit.validate.v1", stream: "elitea:runtime:commands", createdAt: base.Add(-6 * time.Minute)},
+		// index.ingest.v1 is the other capability admitted by the shared
+		// execution table. It is a valid row, but must never be selected by the
+		// configuration-validation outbox reader.
+		{outboxID: "outbox-order-wrong-capability", executionID: "execution-order-wrong-capability", generation: 1, state: "PENDING", capability: "index.ingest.v1", stream: "elitea:runtime:commands", createdAt: base.Add(-6 * time.Minute)},
 		{outboxID: "outbox-order-b-1", executionID: "execution-order-b", generation: 1, state: "PENDING", capability: "configuration.validate.v1", stream: "elitea:runtime:commands", createdAt: base.Add(time.Minute)},
 		{outboxID: "outbox-order-a-1", executionID: "execution-order-a", generation: 1, state: "PENDING", capability: "configuration.validate.v1", stream: "elitea:runtime:commands", createdAt: base.Add(2 * time.Minute)},
 	}
@@ -763,9 +766,15 @@ INSERT INTO elitea_runtime.execution_jobs (
     1, 1, 'actor-postgres-test', 'principal-postgres-test',
     $4, 'v1', 'bundle-outbox-order',
     $5, 'postgres-outbox-order', $3,
-    $6, 'openapi', 'catalog-postgres-v1',
-    $5, 'openapi', 'schema-postgres-v1', $5,
-    'settings-postgres-outbox-order', $7, 'RUNNING'
+    CASE WHEN $4 = 'configuration.validate.v1' THEN $6::text END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN 'openapi' END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN 'catalog-postgres-v1' END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN $5::bytea END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN 'openapi' END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN 'schema-postgres-v1' END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN $5::bytea END,
+    CASE WHEN $4 = 'configuration.validate.v1' THEN 'settings-postgres-outbox-order' END,
+    $7, 'RUNNING'
 )`,
 			fixture.executionID,
 			fixture.generation,

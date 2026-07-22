@@ -753,6 +753,22 @@ func (m *memoryRuntime) ExpectedValidation(_ context.Context, executionID string
 	return m.expected, nil
 }
 
+func (m *memoryRuntime) ExpectedRuntimeFailure(_ context.Context, executionID string, generation uint64) (outputapp.ExpectedRuntimeFailure, error) {
+	if executionID != m.expected.ExecutionID || generation != m.expected.Generation {
+		return outputapp.ExpectedRuntimeFailure{}, runtimedomain.ErrStaleFence
+	}
+	return outputapp.ExpectedRuntimeFailure{
+		TenantID:            m.expected.TenantID,
+		ResourceProjectID:   m.expected.ResourceProjectID,
+		ProjectionProjectID: m.expected.ProjectionProjectID,
+		CapabilityID:        executiondomain.ConfigurationValidationCapability,
+		CommandID:           m.expected.CommandID,
+		ExecutionID:         m.expected.ExecutionID,
+		Generation:          m.expected.Generation,
+		LogicalOutputID:     "configuration-validation:" + m.expected.Binding.Command.ConfigurationRevisionID,
+	}, nil
+}
+
 func (m *memoryRuntime) ProjectConfigurationValidation(_ context.Context, projection outputapp.ValidationProjection) (outputapp.ProjectionOutcome, error) {
 	m.validationProjections++
 	m.eventCursor++

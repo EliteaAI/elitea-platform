@@ -9,6 +9,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -81,17 +82,56 @@ type RuntimeFailureProjection struct {
 	BrowserData json.RawMessage
 }
 
+// ExpectedRuntimeFailure is the capability-specific terminal identity derived
+// from the admitted execution. Runtime-error frames deliberately carry no
+// caller-selected capability identifier, so this binding must come from the
+// durable control plane before a failure can be projected or settled.
+type ExpectedRuntimeFailure struct {
+	TenantID            string
+	ResourceProjectID   string
+	ProjectionProjectID string
+	CapabilityID        string
+	CommandID           string
+	ExecutionID         string
+	Generation          uint64
+	LogicalOutputID     string
+}
+
+func (e ExpectedRuntimeFailure) Validate() error {
+	if e.TenantID == "" || e.ResourceProjectID == "" || e.ProjectionProjectID == "" || e.CommandID == "" || e.ExecutionID == "" || e.Generation == 0 || e.LogicalOutputID == "" || strings.ContainsAny(e.LogicalOutputID, "\r\n") {
+		return ErrInvalidValidationOutput
+	}
+	switch e.CapabilityID {
+	case executiondomain.ConfigurationValidationCapability:
+		const prefix = "configuration-validation:"
+		if !strings.HasPrefix(e.LogicalOutputID, prefix) || len(e.LogicalOutputID) == len(prefix) {
+			return ErrInvalidValidationOutput
+		}
+	case executiondomain.IndexIngestCapability:
+		if e.LogicalOutputID != "index-ingest:"+e.ExecutionID {
+			return ErrInvalidValidationOutput
+		}
+	default:
+		return ErrInvalidValidationOutput
+	}
+	return nil
+}
+
+type RuntimeFailureBindingRepository interface {
+	ExpectedRuntimeFailure(ctx context.Context, executionID string, generation uint64) (ExpectedRuntimeFailure, error)
+}
+
 type RuntimeFailureProjector interface {
 	ProjectRuntimeFailure(ctx context.Context, projection RuntimeFailureProjection) (ProjectionOutcome, error)
 }
 
 type RuntimeFailureService struct {
-	bindings  ValidationBindingRepository
+	bindings  RuntimeFailureBindingRepository
 	fences    FenceVerifier
 	projector RuntimeFailureProjector
 }
 
-func NewRuntimeFailureService(bindings ValidationBindingRepository, fences FenceVerifier, projector RuntimeFailureProjector) (*RuntimeFailureService, error) {
+func NewRuntimeFailureService(bindings RuntimeFailureBindingRepository, fences FenceVerifier, projector RuntimeFailureProjector) (*RuntimeFailureService, error) {
 	if bindings == nil || fences == nil || projector == nil {
 		return nil, errors.New("runtime failure binding, fence and projector dependencies are required")
 	}
@@ -105,27 +145,15 @@ func (s *RuntimeFailureService) IngestFailure(ctx context.Context, frame Runtime
 	if err := s.fences.VerifyActive(ctx, frame.Fence); err != nil {
 		return ProjectionOutcome{}, fmt.Errorf("verify runtime failure fence: %w", err)
 	}
-	expected, err := s.bindings.ExpectedValidation(ctx, frame.Fence.ExecutionID, frame.Fence.Generation)
+	expected, err := s.bindings.ExpectedRuntimeFailure(ctx, frame.Fence.ExecutionID, frame.Fence.Generation)
 	if err != nil {
 		return ProjectionOutcome{}, fmt.Errorf("load admitted runtime failure binding: %w", err)
 	}
 	if err := expected.Validate(); err != nil {
 		return ProjectionOutcome{}, fmt.Errorf("invalid admitted runtime failure binding: %w", err)
 	}
-	if expected.TenantID != frame.TenantID || expected.ResourceProjectID != frame.ResourceProjectID || expected.ProjectionProjectID != frame.ProjectionProjectID || expected.CommandID != frame.Fence.CommandID || expected.ExecutionID != frame.Fence.ExecutionID || expected.Generation != frame.Fence.Generation {
+	if expected.TenantID != frame.TenantID || expected.ResourceProjectID != frame.ResourceProjectID || expected.ProjectionProjectID != frame.ProjectionProjectID || expected.CommandID != frame.Fence.CommandID || expected.ExecutionID != frame.Fence.ExecutionID || expected.Generation != frame.Fence.Generation || expected.LogicalOutputID != frame.LogicalOutputID {
 		return ProjectionOutcome{}, ErrValidationOutputConflict
-	}
-	if !matchesCanonicalTerminalIdentity(
-		frame.StreamID,
-		frame.EventID,
-		frame.LogicalOutputID,
-		frame.Sequence,
-		frame.Settlement.ProposalID,
-		frame.Settlement.IdempotencyKey,
-		frame.Fence,
-		expected.Binding.Command.ConfigurationRevisionID,
-	) {
-		return ProjectionOutcome{}, ErrInvalidValidationOutput
 	}
 	browserData, err := json.Marshal(struct {
 		Code        string `json:"code"`

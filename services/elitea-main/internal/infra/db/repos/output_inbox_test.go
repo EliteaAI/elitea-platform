@@ -9,9 +9,78 @@ import (
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestExpectedRuntimeFailureUsesExactCapabilitySpecificDurableBindings(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability string
+		logical    string
+	}{
+		{
+			name:       "configuration validation",
+			capability: executiondomain.ConfigurationValidationCapability,
+			logical:    "configuration-validation:revision-1",
+		},
+		{
+			name:       "index ingest",
+			capability: executiondomain.IndexIngestCapability,
+			logical:    "index-ingest:execution-1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
+				"tenant-1", "42", "42", test.capability, "command-1",
+				"execution-1", int64(1), test.logical,
+			}}}}
+			repository := newOutputInboxRepository(store)
+			expected, err := repository.ExpectedRuntimeFailure(context.Background(), "execution-1", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if expected.CapabilityID != test.capability || expected.LogicalOutputID != test.logical || expected.Generation != 1 {
+				t.Fatalf("unexpected runtime failure binding: %+v", expected)
+			}
+			if len(store.rowCalls) != 1 || len(store.rowCalls[0].args) != 2 || store.rowCalls[0].args[0] != "execution-1" || store.rowCalls[0].args[1] != int64(1) {
+				t.Fatalf("runtime failure lookup is not execution/generation bound: %+v", store.rowCalls)
+			}
+			query := store.rowCalls[0].sql
+			for _, fragment := range []string{
+				"j.capability_id = 'configuration.validate.v1'",
+				"j.capability_id = 'index.ingest.v1'",
+				"e.entry_id = j.settings_entry_id",
+				"i.capability_id = j.capability_id",
+				"i.input_bundle_id = j.input_bundle_id",
+			} {
+				if !strings.Contains(query, fragment) {
+					t.Fatalf("runtime failure binding SQL is missing %q", fragment)
+				}
+			}
+		})
+	}
+}
+
+func TestExpectedRuntimeFailureRejectsUnsupportedDurableCapability(t *testing.T) {
+	store := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
+		"tenant-1", "42", "42", "provider.execute.v1", "command-1",
+		"execution-1", int64(1), "provider:execution-1",
+	}}}}
+	repository := newOutputInboxRepository(store)
+	if _, err := repository.ExpectedRuntimeFailure(context.Background(), "execution-1", 1); !errors.Is(err, outputapp.ErrInvalidValidationOutput) {
+		t.Fatalf("unsupported capability error = %v", err)
+	}
+	emptyStore := &scriptedExecutor{}
+	if _, err := newOutputInboxRepository(emptyStore).ExpectedRuntimeFailure(context.Background(), "execution-1", ^uint64(0)); !errors.Is(err, outputapp.ErrInvalidValidationOutput) {
+		t.Fatalf("overflowing generation error = %v", err)
+	}
+	if len(emptyStore.rowCalls) != 0 {
+		t.Fatal("overflowing generation reached PostgreSQL")
+	}
+}
 
 func TestOutputRecordCouplesPayloadTypeToTerminalOutcome(t *testing.T) {
 	validation, _, err := validationOutputRecord(testValidationFrame(t))

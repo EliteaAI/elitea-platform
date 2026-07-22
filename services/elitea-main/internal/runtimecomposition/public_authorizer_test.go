@@ -107,7 +107,7 @@ func TestPublicAuthorizerRejectsDevelopmentAndMissingMembership(t *testing.T) {
 	}
 }
 
-func TestPublicAuthorizerBindsExecutionEventsToProjectionProject(t *testing.T) {
+func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *testing.T) {
 	store := &authorizationStore{row: authorizationRow{active: true}}
 	authorizer, err := newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
 	if err != nil {
@@ -120,6 +120,14 @@ func TestPublicAuthorizerBindsExecutionEventsToProjectionProject(t *testing.T) {
 	if store.calls != 1 || !strings.Contains(store.sql, "j.projection_project_id = $2") || !strings.Contains(store.sql, "j.execution_id = $1") {
 		t.Fatalf("execution authorization query is not projection-bound: %s", store.sql)
 	}
+	for _, capability := range []string{"'configuration.validate.v1'", "'index.ingest.v1'"} {
+		if !strings.Contains(store.sql, capability) {
+			t.Fatalf("execution authorization is missing allowlisted capability %s: %s", capability, store.sql)
+		}
+	}
+	if !strings.Contains(store.sql, "j.capability_id IN") {
+		t.Fatalf("execution authorization capability predicate is not closed: %s", store.sql)
+	}
 	if len(store.args) != 3 || store.args[0] != "execution-1" || store.args[1] != int64(42) || store.args[2] != int64(17) {
 		t.Fatalf("execution authorization args = %v", store.args)
 	}
@@ -128,5 +136,25 @@ func TestPublicAuthorizerBindsExecutionEventsToProjectionProject(t *testing.T) {
 	authorizer, _ = newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
 		t.Fatalf("unauthorized event error = %v", err)
+	}
+}
+
+func TestPublicAuthorizerRejectsUnverifiedExecutionEventPrincipalBeforeDatabase(t *testing.T) {
+	store := &authorizationStore{row: authorizationRow{active: true}}
+	authorizer, err := newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := []context.Context{
+		auth.ContextWithUser(context.Background(), auth.User{ID: "17"}),
+		auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceDevelopment),
+	}
+	for _, ctx := range contexts {
+		if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+			t.Fatalf("unverified principal error = %v", err)
+		}
+	}
+	if store.calls != 0 {
+		t.Fatalf("unverified principal reached execution authorization database %d times", store.calls)
 	}
 }
