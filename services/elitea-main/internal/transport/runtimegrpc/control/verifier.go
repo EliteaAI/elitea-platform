@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimegrpc "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/runtimegrpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -121,12 +122,11 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 	if command.GetProtocolRevision() != config.ProtocolRevision || command.GetLimitsRevision() != config.LimitsRevision {
 		return ErrCommandIncompatible
 	}
-	if command.GetCapabilityId() != "configuration.validate.v1" || command.GetCapabilityVersion() != config.CapabilityVersion || command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE {
+	if command.GetCapabilityVersion() != config.CapabilityVersion {
 		return ErrCommandIncompatible
 	}
-	validation := command.GetConfigurationValidation()
 	input := command.GetInputBundleRef()
-	if validation == nil || input == nil {
+	if input == nil {
 		return ErrMalformedWorkerCommand
 	}
 	values := []string{
@@ -134,8 +134,6 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 		command.GetTenantId(), command.GetResourceProjectId(), command.GetProjectionProjectId(), command.GetPrincipalRef(),
 		command.GetCapabilityId(), command.GetCapabilityVersion(), command.GetResourceClass(),
 		command.GetIsolationClass(), input.GetInputBundleId(), input.GetImmutableVersion(), input.GetMediaType(),
-		validation.GetConfigurationRevisionId(), validation.GetConfigurationType(), validation.GetCatalogRevision(),
-		validation.GetSchemaId(), validation.GetSchemaRevision(), validation.GetSettingsEntryId(),
 	}
 	for _, value := range values {
 		if value == "" || len(value) > config.MaxStringBytes {
@@ -148,8 +146,67 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 	if input.GetByteLength() == 0 || input.GetByteLength() > config.MaxInputManifestBytes {
 		return ErrMalformedWorkerCommand
 	}
-	if !validDigestMessage(input.GetDigest()) || !validDigestMessage(validation.GetCatalogDigest()) || !validDigestMessage(validation.GetSchemaDigest()) {
+	if !validDigestMessage(input.GetDigest()) {
 		return ErrMalformedWorkerCommand
+	}
+
+	switch command.GetCapabilityId() {
+	case executiondomain.ConfigurationValidationCapability:
+		return validateConfigurationCommand(command, config)
+	case executiondomain.IndexIngestCapability:
+		return validateIndexIngestCommand(command, config)
+	default:
+		return ErrCommandIncompatible
+	}
+}
+
+func validateConfigurationCommand(command *runtimev1.WorkerCommandV1, config commandValidationConfig) error {
+	if command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE {
+		return ErrCommandIncompatible
+	}
+	validation := command.GetConfigurationValidation()
+	if validation == nil {
+		return ErrMalformedWorkerCommand
+	}
+	values := []string{
+		validation.GetConfigurationRevisionId(), validation.GetConfigurationType(), validation.GetCatalogRevision(),
+		validation.GetSchemaId(), validation.GetSchemaRevision(), validation.GetSettingsEntryId(),
+	}
+	for _, value := range values {
+		if value == "" || len(value) > config.MaxStringBytes {
+			return ErrMalformedWorkerCommand
+		}
+	}
+	if !validDigestMessage(validation.GetCatalogDigest()) || !validDigestMessage(validation.GetSchemaDigest()) {
+		return ErrMalformedWorkerCommand
+	}
+	return nil
+}
+
+func validateIndexIngestCommand(command *runtimev1.WorkerCommandV1, config commandValidationConfig) error {
+	if command.GetCommandType() != runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_INDEX_INGEST {
+		return ErrCommandIncompatible
+	}
+	indexing := command.GetIndexIngest()
+	if indexing == nil || indexing.GetToolkitConfigurationEntryId() == "" || indexing.GetToolParametersEntryId() == "" {
+		return ErrMalformedWorkerCommand
+	}
+	entryIDs := []string{
+		indexing.GetToolkitConfigurationEntryId(), indexing.GetToolParametersEntryId(), indexing.GetLlmModelEntryId(),
+		indexing.GetLlmConfigurationEntryId(), indexing.GetMcpTokensEntryId(),
+	}
+	seen := make(map[string]struct{}, len(entryIDs))
+	for _, entryID := range entryIDs {
+		if entryID == "" {
+			continue
+		}
+		if len(entryID) > config.MaxStringBytes {
+			return ErrMalformedWorkerCommand
+		}
+		if _, duplicate := seen[entryID]; duplicate {
+			return ErrMalformedWorkerCommand
+		}
+		seen[entryID] = struct{}{}
 	}
 	return nil
 }

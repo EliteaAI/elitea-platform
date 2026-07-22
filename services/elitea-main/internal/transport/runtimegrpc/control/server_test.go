@@ -265,6 +265,70 @@ func TestClaimCommandRejectsResolvedManifestDigestMismatchAfterClaim(t *testing.
 	}
 }
 
+func TestVerifyResolvedManifestBindsEveryIndexEntryExactly(t *testing.T) {
+	server := &Server{config: testControlServerConfig()}
+	command := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(validRawIndexWorkerCommand(t), command); err != nil {
+		t.Fatal(err)
+	}
+	manifest := validIndexManifest()
+	if err := server.verifyResolvedManifest(inputReferenceForManifest(t, manifest), manifest, command); err != nil {
+		t.Fatalf("valid index manifest rejected: %v", err)
+	}
+
+	wrongRole := proto.Clone(manifest).(*runtimev1.ExecutionInputBundleV1)
+	wrongRole.Entries[1].SemanticRole = executiondomain.IndexToolkitConfigurationRole
+	if err := server.verifyResolvedManifest(inputReferenceForManifest(t, wrongRole), wrongRole, command); err == nil {
+		t.Fatal("index manifest with a mismatched semantic role was accepted")
+	}
+
+	extraEntry := proto.Clone(manifest).(*runtimev1.ExecutionInputBundleV1)
+	extraEntry.Entries = append(extraEntry.Entries, &runtimev1.ExecutionInputEntryV1{
+		EntryId:          "unbound",
+		ImmutableVersion: "revision-1",
+		SemanticRole:     "index.unbound",
+		Content: &runtimev1.ScopedContentReferenceV1{
+			ContentId:             "content-unbound",
+			ImmutableVersion:      "revision-1",
+			MediaType:             "application/json",
+			ByteLength:            2,
+			Digest:                testDigest([]byte(`{}`)),
+			Classification:        "synthetic",
+			RequiredGrantAudience: "elitea.runtime.input.read.v1",
+		},
+	})
+	if err := server.verifyResolvedManifest(inputReferenceForManifest(t, extraEntry), extraEntry, command); err == nil {
+		t.Fatal("index manifest with an unbound entry was accepted")
+	}
+}
+
+func TestClaimCommandAcceptsBoundedIndexManifestAfterAuthorizedClaim(t *testing.T) {
+	manifest := validIndexManifest()
+	calls := []string{}
+	server, err := NewServer(
+		testControlServerConfig(),
+		workloadAuthorizerStub{calls: &calls},
+		verifierSpy{calls: &calls, verifier: newTestVerifier(t)},
+		claimControllerStub{calls: &calls, lease: validLease()},
+		inputResolverStub{calls: &calls, manifest: manifest},
+		&settlementControllerStub{calls: &calls},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ClaimCommand(context.Background(), claimRequestForIndexManifest(t, manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetRejection() != nil || response.GetReceipt().GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_ACCEPTED || len(response.GetReceipt().GetInputBundle().GetEntries()) != 2 {
+		t.Fatalf("unexpected index claim response: %v", response)
+	}
+	wantOrder := []string{"authorize-peer", "verify-command", "claim", "resolve-reference-manifest"}
+	if !reflect.DeepEqual(calls, wantOrder) {
+		t.Fatalf("unsafe index claim order: got %v want %v", calls, wantOrder)
+	}
+}
+
 func TestClaimCommandAbortsInputResolutionFailureWithoutACKOrBusinessReceipt(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -902,6 +966,52 @@ func validManifest() *runtimev1.ExecutionInputBundleV1 {
 	}
 }
 
+func validIndexManifest() *runtimev1.ExecutionInputBundleV1 {
+	manifest := &runtimev1.ExecutionInputBundleV1{
+		InputBundleId:    "bundle-1",
+		ImmutableVersion: "bundle-v1",
+	}
+	for _, binding := range []struct {
+		entryID   string
+		role      string
+		contentID string
+	}{
+		{entryID: "toolkit-configuration", role: executiondomain.IndexToolkitConfigurationRole, contentID: "content-toolkit"},
+		{entryID: "tool-parameters", role: executiondomain.IndexToolParametersRole, contentID: "content-parameters"},
+	} {
+		manifest.Entries = append(manifest.Entries, &runtimev1.ExecutionInputEntryV1{
+			EntryId:          binding.entryID,
+			ImmutableVersion: "revision-1",
+			SemanticRole:     binding.role,
+			Content: &runtimev1.ScopedContentReferenceV1{
+				ContentId:             binding.contentID,
+				ImmutableVersion:      "revision-1",
+				MediaType:             "application/json",
+				ByteLength:            2,
+				Digest:                testDigest([]byte(`{}`)),
+				Classification:        "synthetic",
+				RequiredGrantAudience: "elitea.runtime.input.read.v1",
+			},
+		})
+	}
+	return manifest
+}
+
+func inputReferenceForManifest(t *testing.T, manifest *runtimev1.ExecutionInputBundleV1) *runtimev1.ExecutionInputBundleReferenceV1 {
+	t.Helper()
+	manifestBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runtimev1.ExecutionInputBundleReferenceV1{
+		InputBundleId:    manifest.GetInputBundleId(),
+		ImmutableVersion: manifest.GetImmutableVersion(),
+		Digest:           testDigest(manifestBytes),
+		ByteLength:       uint64(len(manifestBytes)),
+		MediaType:        executiondomain.InputBundleManifestMediaType,
+	}
+}
+
 func claimRequestForManifest(t *testing.T, manifest *runtimev1.ExecutionInputBundleV1) *runtimev1.ClaimCommandRequestV1 {
 	t.Helper()
 	manifestBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
@@ -910,6 +1020,31 @@ func claimRequestForManifest(t *testing.T, manifest *runtimev1.ExecutionInputBun
 	}
 	command := &runtimev1.WorkerCommandV1{}
 	if err := proto.Unmarshal(validRawWorkerCommand(t), command); err != nil {
+		t.Fatal(err)
+	}
+	command.InputBundleRef.InputBundleId = manifest.GetInputBundleId()
+	command.InputBundleRef.ImmutableVersion = manifest.GetImmutableVersion()
+	command.InputBundleRef.ByteLength = uint64(len(manifestBytes))
+	command.InputBundleRef.Digest = testDigest(manifestBytes)
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runtimev1.ClaimCommandRequestV1{
+		WorkloadSessionId: "workload-1",
+		ProducerId:        "worker-1",
+		SignedCommand:     signedEnvelope(raw),
+	}
+}
+
+func claimRequestForIndexManifest(t *testing.T, manifest *runtimev1.ExecutionInputBundleV1) *runtimev1.ClaimCommandRequestV1 {
+	t.Helper()
+	manifestBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(validRawIndexWorkerCommand(t), command); err != nil {
 		t.Fatal(err)
 	}
 	command.InputBundleRef.InputBundleId = manifest.GetInputBundleId()

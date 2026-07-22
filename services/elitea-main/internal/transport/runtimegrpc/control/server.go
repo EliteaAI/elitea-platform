@@ -154,7 +154,7 @@ func (s *Server) ClaimCommand(ctx context.Context, request *runtimev1.ClaimComma
 	if err != nil {
 		return s.abortInputResolution(ctx, lease.Fence, err), nil
 	}
-	if err := s.verifyResolvedManifest(command.GetInputBundleRef(), manifest, command.GetConfigurationValidation().GetSettingsEntryId()); err != nil {
+	if err := s.verifyResolvedManifest(command.GetInputBundleRef(), manifest, command); err != nil {
 		if abortErr := s.abortClaim(ctx, lease.Fence, executionapp.ClaimAbortInputManifestInvalid); abortErr != nil {
 			return claimRejectionFor(abortErr), nil
 		}
@@ -315,7 +315,7 @@ func (s *Server) PrepareSettlement(ctx context.Context, request *runtimev1.Prepa
 	}, nil
 }
 
-func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundleReferenceV1, manifest *runtimev1.ExecutionInputBundleV1, selectedEntryID string) error {
+func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundleReferenceV1, manifest *runtimev1.ExecutionInputBundleV1, command *runtimev1.WorkerCommandV1) error {
 	if reference == nil || manifest == nil || hasUnknownFields(manifest.ProtoReflect()) || len(manifest.GetEntries()) == 0 || len(manifest.GetEntries()) > s.config.MaxInputEntries {
 		return errors.New("invalid input manifest")
 	}
@@ -329,11 +329,14 @@ func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundl
 	if len(encoded) > s.config.MaxInputManifestBytes || uint64(len(encoded)) != reference.GetByteLength() || !validDigestProto(reference.GetDigest(), encoded) {
 		return errors.New("input manifest digest or length mismatch")
 	}
-	if reference.GetMediaType() != "application/x-protobuf" || selectedEntryID == "" {
+	if reference.GetMediaType() != executiondomain.InputBundleManifestMediaType {
 		return errors.New("unsupported input manifest media type or selection")
 	}
+	expectedRoles, err := expectedInputRoles(command)
+	if err != nil || len(expectedRoles) != len(manifest.GetEntries()) {
+		return errors.New("input manifest does not match the command bindings")
+	}
 	seen := make(map[string]struct{}, len(manifest.GetEntries()))
-	selected := 0
 	for _, entry := range manifest.GetEntries() {
 		if entry == nil || entry.GetEntryId() == "" || len(entry.GetEntryId()) > s.config.MaxStringBytes || entry.GetImmutableVersion() == "" || len(entry.GetImmutableVersion()) > s.config.MaxStringBytes || entry.GetSemanticRole() == "" || len(entry.GetSemanticRole()) > s.config.MaxStringBytes || entry.GetContent() == nil {
 			return errors.New("input manifest entry is malformed")
@@ -342,21 +345,58 @@ func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundl
 			return errors.New("input manifest entry ID is duplicated")
 		}
 		seen[entry.GetEntryId()] = struct{}{}
+		expectedRole, expected := expectedRoles[entry.GetEntryId()]
+		if !expected || entry.GetSemanticRole() != expectedRole {
+			return errors.New("input manifest entry has the wrong command binding")
+		}
 		content := entry.GetContent()
 		if content.GetContentId() == "" || len(content.GetContentId()) > s.config.MaxStringBytes || content.GetImmutableVersion() == "" || len(content.GetImmutableVersion()) > s.config.MaxStringBytes || content.GetImmutableVersion() != entry.GetImmutableVersion() || content.GetMediaType() != "application/json" || content.GetClassification() == "" || len(content.GetClassification()) > s.config.MaxStringBytes || content.GetRequiredGrantAudience() == "" || len(content.GetRequiredGrantAudience()) > s.config.MaxStringBytes || content.GetByteLength() == 0 || content.GetByteLength() > s.config.MaxInputContentBytes || !validDigestMessage(content.GetDigest()) {
 			return errors.New("input manifest content reference is malformed")
 		}
-		if entry.GetEntryId() == selectedEntryID {
-			selected++
-			if entry.GetSemanticRole() != "configuration.settings" {
-				return errors.New("selected settings entry has the wrong semantic role")
-			}
-		}
-	}
-	if selected != 1 {
-		return errors.New("selected settings entry is absent or ambiguous")
 	}
 	return nil
+}
+
+func expectedInputRoles(command *runtimev1.WorkerCommandV1) (map[string]string, error) {
+	if command == nil {
+		return nil, errors.New("command is required")
+	}
+	switch command.GetCapabilityId() {
+	case executiondomain.ConfigurationValidationCapability:
+		validation := command.GetConfigurationValidation()
+		if validation == nil || validation.GetSettingsEntryId() == "" {
+			return nil, errors.New("configuration settings binding is required")
+		}
+		return map[string]string{validation.GetSettingsEntryId(): "configuration.settings"}, nil
+	case executiondomain.IndexIngestCapability:
+		indexing := command.GetIndexIngest()
+		if indexing == nil || indexing.GetToolkitConfigurationEntryId() == "" || indexing.GetToolParametersEntryId() == "" {
+			return nil, errors.New("index input bindings are required")
+		}
+		bindings := []struct {
+			entryID string
+			role    string
+		}{
+			{indexing.GetToolkitConfigurationEntryId(), executiondomain.IndexToolkitConfigurationRole},
+			{indexing.GetToolParametersEntryId(), executiondomain.IndexToolParametersRole},
+			{indexing.GetLlmModelEntryId(), executiondomain.IndexLLMModelRole},
+			{indexing.GetLlmConfigurationEntryId(), executiondomain.IndexLLMConfigurationRole},
+			{indexing.GetMcpTokensEntryId(), executiondomain.IndexMCPTokensRole},
+		}
+		expected := make(map[string]string, len(bindings))
+		for _, binding := range bindings {
+			if binding.entryID == "" {
+				continue
+			}
+			if _, duplicate := expected[binding.entryID]; duplicate {
+				return nil, errors.New("index input binding is duplicated")
+			}
+			expected[binding.entryID] = binding.role
+		}
+		return expected, nil
+	default:
+		return nil, errors.New("unsupported command capability")
+	}
 }
 
 func identityProto(command *runtimev1.WorkerCommandV1) *runtimev1.ExecutionIdentityV1 {

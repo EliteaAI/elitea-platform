@@ -9,6 +9,7 @@ import (
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
@@ -64,6 +65,31 @@ func TestConformanceVerifierAuthenticatesOpaqueBytesBeforeStrictDecode(t *testin
 				t.Fatalf("expected strict wire rejection, got %v", err)
 			}
 		})
+	}
+}
+
+func TestConformanceVerifierAcceptsStrictReferenceOnlyIndexIngestCommand(t *testing.T) {
+	verifier := newTestVerifier(t)
+	raw := validRawIndexWorkerCommand(t)
+	command, err := verifier.Verify(context.Background(), signedEnvelope(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.GetCapabilityId() != executiondomain.IndexIngestCapability || command.GetIndexIngest().GetToolParametersEntryId() != "tool-parameters" {
+		t.Fatalf("unexpected verified index command: %v", command)
+	}
+
+	duplicateBinding := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(raw, duplicateBinding); err != nil {
+		t.Fatal(err)
+	}
+	duplicateBinding.GetIndexIngest().ToolParametersEntryId = duplicateBinding.GetIndexIngest().ToolkitConfigurationEntryId
+	duplicateRaw, err := proto.MarshalOptions{Deterministic: true}.Marshal(duplicateBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(context.Background(), signedEnvelope(duplicateRaw)); !errors.Is(err, ErrMalformedWorkerCommand) {
+		t.Fatalf("expected duplicate index binding rejection, got %v", err)
 	}
 }
 
@@ -165,6 +191,27 @@ func validRawWorkerCommand(t *testing.T) []byte {
 				SchemaDigest:            testDigest([]byte("schema")),
 				SettingsEntryId:         "settings",
 			},
+		},
+	}
+	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func validRawIndexWorkerCommand(t *testing.T) []byte {
+	t.Helper()
+	command := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(validRawWorkerCommand(t), command); err != nil {
+		t.Fatal(err)
+	}
+	command.CommandType = runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_INDEX_INGEST
+	command.CapabilityId = executiondomain.IndexIngestCapability
+	command.CapabilityCommand = &runtimev1.WorkerCommandV1_IndexIngest{
+		IndexIngest: &runtimev1.IndexIngestCommandV1{
+			ToolkitConfigurationEntryId: "toolkit-configuration",
+			ToolParametersEntryId:       "tool-parameters",
 		},
 	}
 	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
