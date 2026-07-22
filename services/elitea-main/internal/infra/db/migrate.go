@@ -12,29 +12,49 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// gatewayMigrations hold the LLM-gateway governance/budget/price-catalog schema
+// (BF0.4). Unlike the baseline migrations they are applied UNCONDITIONALLY —
+// they must land even on dump-loaded instances (where the p_% dump-guard skips
+// the baseline set), so every statement in them is idempotent
+// (CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
+//
+//go:embed gateway_migrations/*.sql
+var gatewayMigrations embed.FS
+
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	// Skip migrations if the database already has tenant schemas (loaded from a dump).
+	// Skip the baseline migrations if the database already has tenant schemas
+	// (loaded from a dump) — but ALWAYS run the idempotent gateway migrations
+	// afterwards so the budget/price tables exist regardless.
 	var schemaCount int
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`).Scan(&schemaCount)
 	if schemaCount > 0 {
-		slog.Info("skipping migrations — existing tenant schemas detected", "count", schemaCount)
-		return nil
+		slog.Info("skipping baseline migrations — existing tenant schemas detected", "count", schemaCount)
+	} else {
+		if err := applyMigrationDir(ctx, pool, migrations, "migrations"); err != nil {
+			return err
+		}
 	}
 
-	entries, err := migrations.ReadDir("migrations")
+	// Gateway migrations are idempotent and dump-guard-exempt (BF0.4).
+	return applyMigrationDir(ctx, pool, gatewayMigrations, "gateway_migrations")
+}
+
+// applyMigrationDir executes every *.sql file in dir (lexical order) from fsys.
+func applyMigrationDir(ctx context.Context, pool *pgxpool.Pool, fsys embed.FS, dir string) error {
+	entries, err := fsys.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("migrate: read dir: %w", err)
+		return fmt.Errorf("migrate: read dir %s: %w", dir, err)
 	}
 
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		data, err := migrations.ReadFile("migrations/" + entry.Name())
+		data, err := fsys.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
 			return fmt.Errorf("migrate: read %s: %w", entry.Name(), err)
 		}
-		slog.Info("applying migration", "file", entry.Name())
+		slog.Info("applying migration", "dir", dir, "file", entry.Name())
 		if _, err := pool.Exec(ctx, string(data)); err != nil {
 			return fmt.Errorf("migrate: exec %s: %w", entry.Name(), err)
 		}
