@@ -29,6 +29,20 @@ const (
 	// ProviderConfig.ConcurrencyAndBufferSize.Concurrency down from bifrost's
 	// 1000-worker-per-provider default (§9.5, §6.1).
 	DefaultProviderConcurrency = 50
+
+	// DefaultNATSReplicas is the KV/stream replica count the gateway requests
+	// when it provisions its assets. 1 is the scale-1 baseline; HA operators
+	// MUST override to the real replica count (≥3) — a 1-replica store has no
+	// quorum (design §9.5, LLM_BUDGET_EXPECTED_REPLICAS).
+	DefaultNATSReplicas = 1
+
+	// DefaultCBFailureThreshold trips the budget-path circuit breaker after this
+	// many consecutive NATS failures (design §8.5, LLM_BUDGET_CB_FAILURE_THRESHOLD).
+	DefaultCBFailureThreshold = 3
+
+	// DefaultCBOpenDuration is how long the breaker stays open before probing
+	// half-open (design §8.5, LLM_BUDGET_CB_OPEN_DURATION_SEC).
+	DefaultCBOpenDuration = 10 * time.Second
 )
 
 // Config holds the resolved gateway configuration.
@@ -55,6 +69,21 @@ type Config struct {
 	// mTLS transport still authenticates the hop); it MUST match elitea-main's
 	// IdentitySecret when set.
 	IdentitySecret string
+
+	// NATSURL is the NATS JetStream server URL (nats://host:4222) backing the
+	// budget-enforcement path (design §8). Empty disables NATS wiring: the
+	// gateway then serves /llm without budget enforcement (dev/test only), so
+	// startup does not hard-fail when no NATS cluster is reachable.
+	NATSURL string
+	// NATSReplicas is the KV/stream replica count the gateway requests when
+	// provisioning its assets (§9.5); ≥3 for HA quorum.
+	NATSReplicas int
+	// CBFailureThreshold trips the budget-path circuit breaker after this many
+	// consecutive NATS failures (§8.5).
+	CBFailureThreshold uint32
+	// CBOpenDuration is how long the breaker stays open before probing half-open
+	// (§8.5).
+	CBOpenDuration time.Duration
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -71,6 +100,10 @@ func FromEnv() Config {
 		ServiceVersion:      envOr("SERVICE_VERSION", "dev"),
 		OTLPEndpoint:        os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		IdentitySecret:      os.Getenv("GATEWAY_IDENTITY_SECRET"),
+		NATSURL:             os.Getenv("GATEWAY_NATS_URL"),
+		NATSReplicas:        intOr("LLM_BUDGET_EXPECTED_REPLICAS", DefaultNATSReplicas),
+		CBFailureThreshold:  uint32Or("LLM_BUDGET_CB_FAILURE_THRESHOLD", DefaultCBFailureThreshold),
+		CBOpenDuration:      secondsOr("LLM_BUDGET_CB_OPEN_DURATION_SEC", DefaultCBOpenDuration),
 	}
 }
 
@@ -94,6 +127,27 @@ func durationOr(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
+		}
+	}
+	return def
+}
+
+func uint32Or(key string, def uint32) uint32 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil && n > 0 {
+			return uint32(n)
+		}
+	}
+	return def
+}
+
+// secondsOr reads an integer number of seconds from key and returns it as a
+// time.Duration. The design surfaces the breaker open-duration knob as
+// LLM_BUDGET_CB_OPEN_DURATION_SEC (a bare integer), not a Go duration string.
+func secondsOr(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
 		}
 	}
 	return def
