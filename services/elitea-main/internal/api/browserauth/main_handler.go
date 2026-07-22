@@ -1,7 +1,9 @@
 package browserauth
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -19,7 +21,16 @@ import (
 // to the current Main during the incremental cutover.
 const MainForwardAuthPath = "/internal/forward-auth/main"
 
-const mainDecisionTimeout = 15 * time.Second
+const (
+	mainDecisionTimeout = 15 * time.Second
+	maxMainAvatarBytes  = 2 << 10
+
+	MainAvatarHeader      = "X-Auth-Avatar"
+	MainAvatarStateHeader = "X-Auth-Avatar-State"
+	mainAvatarNone        = "none"
+	mainAvatarUnavailable = "unavailable"
+	mainAvatarValue       = "value"
+)
 
 type MainAuthorizer interface {
 	Authorize(context.Context, forwardapp.Request) (forwardapp.Decision, error)
@@ -156,6 +167,17 @@ func (h *MainHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 }
 
 func writeMainIdentity(writer http.ResponseWriter, decision forwardapp.Decision) bool {
+	avatarState, avatar, ok := mainAvatarProjection(decision)
+	if !ok {
+		return false
+	}
+	// Both headers are emitted for every allow decision. This makes the
+	// ForwardAuth response authoritative over caller-supplied profile headers
+	// and distinguishes an explicit null projection from a missing/mixed-version
+	// contract.
+	writer.Header().Set(MainAvatarStateHeader, avatarState)
+	writer.Header().Set(MainAvatarHeader, avatar)
+
 	switch decision.Authentication.Type {
 	case forwardapp.AuthenticationToken:
 		writer.Header().Set("X-Auth-Type", "token")
@@ -175,4 +197,70 @@ func writeMainIdentity(writer http.ResponseWriter, decision forwardapp.Decision)
 	writer.Header().Set("X-Auth-Reference", "-")
 	writeForwardAuthOK(writer)
 	return true
+}
+
+// mainAvatarProjection exposes only the bounded scalar still consumed by the
+// current Main profile APIs. Raw provider attributes and the reusable browser
+// session reference never cross the gateway boundary.
+func mainAvatarProjection(decision forwardapp.Decision) (string, string, bool) {
+	if decision.Authentication.Type != forwardapp.AuthenticationUser {
+		return mainAvatarNone, "-", true
+	}
+	authorization, ok := decision.AuthorizedBrowser()
+	if !ok {
+		return "", "", false
+	}
+
+	var provider struct {
+		Attributes json.RawMessage `json:"attributes"`
+	}
+	if err := json.Unmarshal(authorization.ProviderAttributes, &provider); err != nil {
+		return mainAvatarUnavailable, "-", true
+	}
+	if nullJSON(provider.Attributes) {
+		return mainAvatarNone, "-", true
+	}
+
+	var attributes struct {
+		Picture json.RawMessage `json:"picture"`
+	}
+	if err := json.Unmarshal(provider.Attributes, &attributes); err != nil {
+		return mainAvatarUnavailable, "-", true
+	}
+	if nullJSON(attributes.Picture) {
+		return mainAvatarNone, "-", true
+	}
+
+	var avatar string
+	if err := json.Unmarshal(attributes.Picture, &avatar); err != nil {
+		return mainAvatarUnavailable, "-", true
+	}
+	if avatar == "" {
+		return mainAvatarNone, "-", true
+	}
+	if !validMainAvatarValue(avatar) {
+		return mainAvatarUnavailable, "-", true
+	}
+	return mainAvatarValue, avatar, true
+}
+
+func validMainAvatarValue(value string) bool {
+	if value == "" || value == "-" || len(value) > maxMainAvatarBytes ||
+		!httpguts.ValidHeaderFieldValue(value) {
+		return false
+	}
+	// Keep the raw header contract byte-stable across HTTP/2, reverse proxies,
+	// WSGI's Latin-1 decoding, and Python. Unicode values must be encoded by a
+	// future versioned contract instead of relying on intermediary behavior.
+	for index := range len(value) {
+		if value[index] < '!' || value[index] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+func nullJSON(value json.RawMessage) bool {
+	value = bytes.TrimSpace(value)
+	return len(value) == 0 || bytes.Equal(value, []byte("null"))
 }

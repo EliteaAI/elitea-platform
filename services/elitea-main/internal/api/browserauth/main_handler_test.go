@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,11 @@ func TestMainHandlerTraversesRejectedCredentialIntoBrowserSession(t *testing.T) 
 			if got != sessionID {
 				t.Fatalf("session ID = %q, want %q", got, sessionID)
 			}
-			return validCoreBrowserAuthorization(), nil
+			authorization := validCoreBrowserAuthorization()
+			authorization.ProviderAttributes = []byte(
+				`{"attributes":{"picture":"https://images.example.test/current-avatar.png"}}`,
+			)
+			return authorization, nil
 		}),
 		nil,
 	)
@@ -31,6 +36,8 @@ func TestMainHandlerTraversesRejectedCredentialIntoBrowserSession(t *testing.T) 
 	request.Header.Set("Authorization", "Bearer rejected")
 	request.Header.Set("X-Auth-Type", "user")
 	request.Header.Set("X-Auth-ID", "999999")
+	request.Header.Set(MainAvatarStateHeader, mainAvatarValue)
+	request.Header.Set(MainAvatarHeader, "https://attacker.example/forged.png")
 	request.AddCookie(&http.Cookie{Name: "centry_auth_session", Value: CookieValuePrefix + sessionID})
 	recorder := httptest.NewRecorder()
 
@@ -38,10 +45,12 @@ func TestMainHandlerTraversesRejectedCredentialIntoBrowserSession(t *testing.T) 
 
 	requireCoreOK(t, recorder)
 	requireHeaders(t, recorder.Header(), map[string]string{
-		"X-Auth-Type":      "user",
-		"X-Auth-ID":        "7",
-		"X-Auth-User-ID":   "7",
-		"X-Auth-Reference": "-",
+		"X-Auth-Type":         "user",
+		"X-Auth-ID":           "7",
+		"X-Auth-User-ID":      "7",
+		"X-Auth-Reference":    "-",
+		MainAvatarStateHeader: mainAvatarValue,
+		MainAvatarHeader:      "https://images.example.test/current-avatar.png",
 	})
 }
 
@@ -66,10 +75,12 @@ func TestMainHandlerProjectsAcceptedPATAndBoundsDecisionTime(t *testing.T) {
 
 	requireCoreOK(t, recorder)
 	requireHeaders(t, recorder.Header(), map[string]string{
-		"X-Auth-Type":      "token",
-		"X-Auth-ID":        "42",
-		"X-Auth-User-ID":   "7",
-		"X-Auth-Reference": "-",
+		"X-Auth-Type":         "token",
+		"X-Auth-ID":           "42",
+		"X-Auth-User-ID":      "7",
+		"X-Auth-Reference":    "-",
+		MainAvatarStateHeader: mainAvatarNone,
+		MainAvatarHeader:      "-",
 	})
 }
 
@@ -106,11 +117,103 @@ func TestMainHandlerEmitsCompletePublicIdentityFromExactPolicy(t *testing.T) {
 
 	requireCoreOK(t, recorder)
 	requireHeaders(t, recorder.Header(), map[string]string{
-		"X-Auth-Type":      "public",
-		"X-Auth-ID":        "-",
-		"X-Auth-User-ID":   "-",
-		"X-Auth-Reference": "-",
+		"X-Auth-Type":         "public",
+		"X-Auth-ID":           "-",
+		"X-Auth-User-ID":      "-",
+		"X-Auth-Reference":    "-",
+		MainAvatarStateHeader: mainAvatarNone,
+		MainAvatarHeader:      "-",
 	})
+}
+
+func TestMainHandlerProjectsAuthoritativeNullAvatar(t *testing.T) {
+	sessionID := canonicalSessionID(23)
+	handler := newMainTestHandler(t,
+		panicCoreCredential(t),
+		coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+			authorization := validCoreBrowserAuthorization()
+			authorization.ProviderAttributes = []byte(`{"attributes":{}}`)
+			return authorization, nil
+		}),
+		nil,
+	)
+	request := mainRequest("/api/v2/social/author")
+	request.Header.Set(MainAvatarStateHeader, mainAvatarValue)
+	request.Header.Set(MainAvatarHeader, "https://attacker.example/forged.png")
+	request.AddCookie(&http.Cookie{Name: "centry_auth_session", Value: CookieValuePrefix + sessionID})
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	requireCoreOK(t, recorder)
+	requireHeaders(t, recorder.Header(), map[string]string{
+		MainAvatarStateHeader: mainAvatarNone,
+		MainAvatarHeader:      "-",
+	})
+}
+
+func TestMainHandlerMarksUntransportableAvatarProjectionUnavailable(t *testing.T) {
+	tests := map[string]string{
+		"non scalar":     `{"attributes":{"picture":["one","two"]}}`,
+		"control":        `{"attributes":{"picture":"https://example.test/a\nb"}}`,
+		"tab":            `{"attributes":{"picture":"https://example.test/a\tb"}}`,
+		"leading space":  `{"attributes":{"picture":" https://example.test/a"}}`,
+		"trailing space": `{"attributes":{"picture":"https://example.test/a "}}`,
+		"non ASCII":      `{"attributes":{"picture":"https://example.test/аватар"}}`,
+		"sentinel":       `{"attributes":{"picture":"-"}}`,
+		"oversized":      `{"attributes":{"picture":"` + strings.Repeat("x", maxMainAvatarBytes+1) + `"}}`,
+	}
+	for name, attributes := range tests {
+		t.Run(name, func(t *testing.T) {
+			sessionID := canonicalSessionID(byte(len(name) + 40))
+			handler := newMainTestHandler(t,
+				panicCoreCredential(t),
+				coreSessionFunc(func(context.Context, string) (browserapp.Authorization, error) {
+					authorization := validCoreBrowserAuthorization()
+					authorization.ProviderAttributes = []byte(attributes)
+					return authorization, nil
+				}),
+				nil,
+			)
+			request := mainRequest("/api/v2/social/author")
+			request.AddCookie(&http.Cookie{Name: "centry_auth_session", Value: CookieValuePrefix + sessionID})
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK ||
+				recorder.Header().Get(MainAvatarStateHeader) != mainAvatarUnavailable ||
+				recorder.Header().Get(MainAvatarHeader) != "-" {
+				t.Fatalf("response = %d headers=%v", recorder.Code, recorder.Header())
+			}
+		})
+	}
+}
+
+var (
+	benchmarkAvatarState string
+	benchmarkAvatar      string
+	benchmarkAvatarOK    bool
+)
+
+func BenchmarkMainAvatarProjection(b *testing.B) {
+	tests := map[string]string{
+		"common": `{"attributes":{"picture":"https://images.example.test/avatar.png"}}`,
+		"30KiB attributes": `{"padding":"` + strings.Repeat("x", 30<<10) +
+			`","attributes":{"picture":"https://images.example.test/avatar.png"}}`,
+	}
+	for name, providerAttributes := range tests {
+		b.Run(name, func(b *testing.B) {
+			decision := validSuccessMapperDecision(providerAttributes)
+			b.SetBytes(int64(len(providerAttributes)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				benchmarkAvatarState, benchmarkAvatar, benchmarkAvatarOK =
+					mainAvatarProjection(decision)
+			}
+		})
+	}
 }
 
 func TestMainHandlerFixesRPCProjectionAndRejectsCallerQuery(t *testing.T) {

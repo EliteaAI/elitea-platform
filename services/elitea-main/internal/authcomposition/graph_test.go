@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	browserapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/forwardauth"
 )
 
@@ -83,7 +84,9 @@ func TestNewFormGraphComposesSeparateDirectAndMainPolicies(t *testing.T) {
 	graph.MainForwardAuth().ServeHTTP(mainResponse, mainRequest)
 	if mainResponse.Code != http.StatusOK || mainResponse.Header().Get("X-Auth-Type") != "public" ||
 		mainResponse.Header().Get("X-Auth-ID") != "-" || mainResponse.Header().Get("X-Auth-User-ID") != "-" ||
-		mainResponse.Header().Get("X-Auth-Reference") != "-" {
+		mainResponse.Header().Get("X-Auth-Reference") != "-" ||
+		mainResponse.Header().Get(browserapi.MainAvatarStateHeader) != "none" ||
+		mainResponse.Header().Get(browserapi.MainAvatarHeader) != "-" {
 		t.Fatalf("Main response = %d headers=%v body=%q", mainResponse.Code, mainResponse.Header(), mainResponse.Body.String())
 	}
 
