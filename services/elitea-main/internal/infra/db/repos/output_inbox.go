@@ -261,16 +261,20 @@ func insertOutputInbox(ctx context.Context, tx sqlExecutor, record outputRecord)
 	if err := record.validate(); err != nil {
 		return outputInsertResult{}, err
 	}
-	// Both events implemented by slice one are terminal. The output server closes
-	// after their durable acknowledgement, so accepting a non-first sequence
-	// would falsely claim a contiguous durable watermark.
-	if record.Sequence != 1 {
-		return outputInsertResult{}, outputapp.ErrValidationOutputConflict
+	// Keep the authority lock in its own READ COMMITTED statement. A query that
+	// waits for this lock retains its original statement snapshot; the following
+	// statement must freshly observe progress and competing terminal output.
+	locked, err := lockOutputInboxAuthority(ctx, tx, record)
+	if err != nil {
+		return outputInsertResult{}, err
+	}
+	if !locked {
+		return outputInsertResult{}, nil
 	}
 	canonicalDeadline := isCanonicalDeadlineOutput(record)
 	var insertedClaimID, authorityClaimID, desiredState string
-	var conflictExists, deadlineExpired bool
-	err := tx.QueryRow(ctx, `
+	var conflictExists, deadlineExpired, sequenceRejected bool
+	err = tx.QueryRow(ctx, `
 WITH authority AS MATERIALIZED (
     SELECT c.claim_id, j.desired_state,
            o.deadline <= clock_timestamp() AS deadline_expired
@@ -291,17 +295,34 @@ WITH authority AS MATERIALIZED (
       AND c.claim_attempt = $9
       AND c.lease_epoch = $10
       AND c.fence_token = $5
+      AND c.initial_output_watermark = $13
       AND c.released_at IS NULL
       AND c.lease_expires_at > clock_timestamp()
       AND o.retired_at IS NULL
       AND o.authority_granted_at IS NOT NULL
-    FOR UPDATE OF j, o, c
+), previous_sequence AS MATERIALIZED (
+    SELECT TRUE AS present
+    FROM elitea_runtime.execution_replay_events
+    WHERE event_id = $26 || ':' || (($12::bigint - 1)::text)
+      AND execution_id = $3
+      AND generation = $4
+      AND event_type = 'execution.node_event'
+    LIMIT 1
 ), conflicting_output AS MATERIALIZED (
     SELECT TRUE AS present
     FROM elitea_runtime.output_inbox
     WHERE event_id = $1
        OR (execution_id = $3 AND generation = $4 AND logical_output_id = $2)
        OR (execution_id = $3 AND generation = $4 AND producer_id = $8 AND sequence = $12)
+    LIMIT 1
+), sequence_conflict AS MATERIALIZED (
+    SELECT TRUE AS present
+    FROM elitea_runtime.execution_replay_events
+    WHERE event_id = $1
+    UNION ALL
+    SELECT TRUE
+    WHERE $12::bigint > 1
+      AND NOT EXISTS (SELECT 1 FROM previous_sequence)
     LIMIT 1
 ), inserted AS (
     INSERT INTO elitea_runtime.output_inbox (
@@ -317,14 +338,18 @@ WITH authority AS MATERIALIZED (
 	           $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
 	    FROM authority
 	    WHERE (
+	          (
 	           authority.desired_state = 'RUNNING'
 	           AND (NOT authority.deadline_expired OR $27)
-	       )
+	          )
 	       OR (
 	           authority.desired_state = 'CANCELLED'
 	           AND $14 = 'RUNTIME_FAILURE'
 	           AND $18 = 'CANCELLED'
-	       )
+	          )
+	      )
+	      AND NOT EXISTS (SELECT 1 FROM conflicting_output)
+	      AND NOT EXISTS (SELECT 1 FROM sequence_conflict)
 	    ON CONFLICT DO NOTHING
 	    RETURNING claim_id
 )
@@ -332,7 +357,8 @@ SELECT COALESCE((SELECT claim_id FROM inserted LIMIT 1), ''),
        COALESCE((SELECT claim_id FROM authority LIMIT 1), ''),
        COALESCE((SELECT desired_state FROM authority LIMIT 1), ''),
        COALESCE((SELECT present FROM conflicting_output LIMIT 1), FALSE),
-       COALESCE((SELECT deadline_expired FROM authority LIMIT 1), FALSE)`,
+       COALESCE((SELECT deadline_expired FROM authority LIMIT 1), FALSE),
+       COALESCE((SELECT present FROM sequence_conflict LIMIT 1), FALSE)`,
 		record.EventID,
 		record.LogicalOutputID,
 		record.ExecutionID,
@@ -360,7 +386,7 @@ SELECT COALESCE((SELECT claim_id FROM inserted LIMIT 1), ''),
 		record.ProjectionProjectID,
 		record.CommandID,
 		canonicalDeadline,
-	).Scan(&insertedClaimID, &authorityClaimID, &desiredState, &conflictExists, &deadlineExpired)
+	).Scan(&insertedClaimID, &authorityClaimID, &desiredState, &conflictExists, &deadlineExpired, &sequenceRejected)
 	if err != nil {
 		return outputInsertResult{}, fmt.Errorf("insert output inbox: %w", err)
 	}
@@ -370,9 +396,65 @@ SELECT COALESCE((SELECT claim_id FROM inserted LIMIT 1), ''),
 		}
 		return outputInsertResult{Inserted: true}, nil
 	}
+	if sequenceRejected {
+		return outputInsertResult{}, outputapp.ErrValidationOutputConflict
+	}
 	cancellationRejected := authorityClaimID != "" && desiredState == string(runtimedomain.DesiredCancelled) && !conflictExists && !(record.PayloadType == payloadTypeRuntimeFailure && record.SettlementOutcome == executionapp.SettlementCancelled)
 	deadlineRejected := authorityClaimID != "" && desiredState == string(runtimedomain.DesiredRunning) && deadlineExpired && !conflictExists && !canonicalDeadline
 	return outputInsertResult{CancellationRejected: cancellationRejected, DeadlineRejected: deadlineRejected}, nil
+}
+
+func lockOutputInboxAuthority(ctx context.Context, tx sqlExecutor, record outputRecord) (bool, error) {
+	var claimID string
+	err := tx.QueryRow(ctx, `
+SELECT c.claim_id
+FROM elitea_runtime.execution_claims AS c
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = c.execution_id AND j.generation = c.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id AND o.generation = j.generation
+WHERE c.execution_id = $1
+  AND c.generation = $2
+  AND j.tenant_id = $3
+  AND j.resource_project_id = $4
+  AND j.projection_project_id = $5
+  AND j.command_id = $6
+  AND c.workload_identity = $7
+  AND c.workload_session_id = $8
+  AND c.producer_id = $9
+  AND c.claim_attempt = $10
+  AND c.lease_epoch = $11
+  AND c.fence_token = $12
+  AND c.initial_output_watermark = $13
+  AND c.released_at IS NULL
+  AND c.lease_expires_at > clock_timestamp()
+  AND o.retired_at IS NULL
+  AND o.authority_granted_at IS NOT NULL
+FOR UPDATE OF j, o, c`,
+		record.ExecutionID,
+		int64(record.Generation),
+		record.TenantID,
+		record.ResourceProjectID,
+		record.ProjectionProjectID,
+		record.CommandID,
+		record.WorkloadIdentity,
+		record.WorkloadSessionID,
+		record.ProducerID,
+		int64(record.ClaimAttempt),
+		int64(record.LeaseEpoch),
+		record.FenceToken[:],
+		int64(record.ClaimHandoffWatermark),
+	).Scan(&claimID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock output inbox authority: %w", err)
+	}
+	if claimID == "" {
+		return false, errors.New("lock output inbox authority returned an empty claim")
+	}
+	return true, nil
 }
 
 func isCanonicalDeadlineOutput(record outputRecord) bool {

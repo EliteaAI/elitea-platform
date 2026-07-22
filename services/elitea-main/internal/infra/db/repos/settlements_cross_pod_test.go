@@ -142,7 +142,7 @@ func TestClaimRecoversPreparedSettlementAcrossProducerReplacementAfterIssuingCla
 			claimExecutionRow("RUNNING", "SUCCEEDED", true, publishedDigest[:], publishedDigest[:], true),
 			{err: pgx.ErrNoRows},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration()), int64(0)}},
 			{values: []any{"predecessor-receipt", string(executionapp.SettlementSucceeded)}},
 		},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},

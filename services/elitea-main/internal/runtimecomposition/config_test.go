@@ -50,11 +50,12 @@ func TestConfigIndexIngestDispatchIsOptionalAndDedicated(t *testing.T) {
 	environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v1"
 	environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
 	environment["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] = "/run/secrets/centry-vault-master-key"
+	environment["ELITEA_RUNTIME_AI_PROJECT_ID"] = "1"
 	config, err := ConfigFromEnv(mapLookup(environment))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.IndexIngestDispatchEnabled || config.IndexIngestCommandStream != environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] || config.IndexIngestConsumerGroup != environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] || config.IndexIngestStreamMaxEntries != 64 || config.IndexIngestVaultMasterKeyFile != environment["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] {
+	if !config.IndexIngestDispatchEnabled || config.IndexIngestCommandStream != environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] || config.IndexIngestConsumerGroup != environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] || config.IndexIngestStreamMaxEntries != 64 || config.IndexIngestVaultMasterKeyFile != environment["ELITEA_RUNTIME_INDEX_INGEST_VAULT_MASTER_KEY_FILE"] || config.PublicProjectID != 1 {
 		t.Fatalf("unexpected index ingest dispatch config: %+v", config)
 	}
 
@@ -86,6 +87,7 @@ func TestConfigIndexIngestDispatchIsOptionalAndDedicated(t *testing.T) {
 			environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] = alias.index
 			environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v1"
 			environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+			environment["ELITEA_RUNTIME_AI_PROJECT_ID"] = "1"
 			if _, err := ConfigFromEnv(mapLookup(environment)); err == nil || !strings.Contains(err.Error(), "dedicated") {
 				t.Fatalf("derived Redis key alias was accepted: %v", err)
 			}
@@ -148,6 +150,7 @@ func TestConfigIndexIngestDispatchFailsClosed(t *testing.T) {
 			environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] = "commands.v1.index.ingest.indexing.shared.1.0"
 			environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v1"
 			environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+			environment["ELITEA_RUNTIME_AI_PROJECT_ID"] = "1"
 			test.apply(environment)
 			if _, err := ConfigFromEnv(mapLookup(environment)); err == nil {
 				t.Fatal("invalid index ingest dispatch config was accepted")

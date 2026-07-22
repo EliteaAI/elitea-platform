@@ -23,9 +23,10 @@ const (
 	CredentialTypeOllama        = "ollama"
 )
 
-// Configuration is the already validated and, where explicitly required,
-// claim-time expanded current configuration projection. This adapter never
-// loads configuration rows or secrets itself.
+// Configuration is the already validated and lifecycle-expanded current
+// configuration projection used to reconcile LiteLLM. This adapter never
+// loads configuration rows or secrets itself and is not part of worker claim
+// materialization.
 type Configuration struct {
 	UUID      string
 	ProjectID int64

@@ -13,6 +13,7 @@ import (
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/runtimegrpc/nodeevent"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -37,6 +38,10 @@ type IndexIngestIngestor interface {
 	IngestIndex(ctx context.Context, frame outputapp.IndexIngestFrame) (outputapp.ProjectionOutcome, error)
 }
 
+type NodeEventIngestor interface {
+	IngestNodeEvent(ctx context.Context, frame outputapp.NodeEventFrame) (outputapp.ProjectionOutcome, error)
+}
+
 type ServerConfig struct {
 	OutputSchemaRevision string
 	MaxFrameBytes        int
@@ -52,10 +57,11 @@ type Server struct {
 	ingestor   ValidationIngestor
 	failures   RuntimeFailureIngestor
 	indexes    IndexIngestIngestor
+	nodeEvents NodeEventIngestor
 }
 
 func NewServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor) (*Server, error) {
-	return newServer(config, authorizer, ingestor, failures, nil)
+	return newServer(config, authorizer, ingestor, failures, nil, nil)
 }
 
 // NewServerWithIndexIngest adds the typed index.ingest.v1 terminal-output
@@ -65,17 +71,26 @@ func NewServerWithIndexIngest(config ServerConfig, authorizer WorkloadAuthorizer
 	if indexes == nil {
 		return nil, errors.New("index ingest output ingestor is required")
 	}
-	return newServer(config, authorizer, ingestor, failures, indexes)
+	return newServer(config, authorizer, ingestor, failures, indexes, nil)
 }
 
-func newServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor) (*Server, error) {
+// NewServerWithIndexIngestAndNodeEvents adds current-NodeEvent progress to the
+// index output stream while retaining the existing terminal result boundary.
+func NewServerWithIndexIngestAndNodeEvents(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
+	if indexes == nil || nodeEvents == nil {
+		return nil, errors.New("index ingest and node event output ingestors are required")
+	}
+	return newServer(config, authorizer, ingestor, failures, indexes, nodeEvents)
+}
+
+func newServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
 	if authorizer == nil || ingestor == nil || failures == nil {
 		return nil, errors.New("output authorizer, validation ingestor and runtime failure ingestor are required")
 	}
 	if config.OutputSchemaRevision == "" || config.MaxFrameBytes <= 0 || config.CreditFrames == 0 || config.CreditBytes == 0 {
 		return nil, errors.New("output schema and limits are required")
 	}
-	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures, indexes: indexes}, nil
+	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures, indexes: indexes, nodeEvents: nodeEvents}, nil
 }
 
 func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutputFrameV1, runtimev1.ExecutionOutputAckV1]) error {
@@ -156,10 +171,12 @@ func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutp
 		if err := stream.Send(ack); err != nil {
 			return err
 		}
-		// Supported slice-one events are terminal. Closing after the one
-		// durable terminal acknowledgement prevents a second terminal frame on
-		// the same logical stream.
-		return nil
+		if message.GetTerminal() {
+			// A durable terminal acknowledgement closes the logical stream and
+			// prevents a second terminal frame. Non-terminal NodeEvents continue
+			// under the replenished credit returned above.
+			return nil
+		}
 	}
 }
 
@@ -186,9 +203,66 @@ func (s *Server) ingestMessage(ctx context.Context, message *runtimev1.Execution
 			return outputapp.ProjectionOutcome{}, err
 		}
 		return s.indexes.IngestIndex(ctx, frame)
+	case runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT:
+		if s.nodeEvents == nil {
+			return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidNodeEventOutput
+		}
+		frame, err := s.nodeEventFrame(message, workloadIdentity)
+		if err != nil {
+			return outputapp.ProjectionOutcome{}, err
+		}
+		return s.nodeEvents.IngestNodeEvent(ctx, frame)
 	default:
 		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
 	}
+}
+
+func (s *Server) nodeEventFrame(message *runtimev1.ExecutionOutputFrameV1, workloadIdentity string) (outputapp.NodeEventFrame, error) {
+	if message == nil || message.GetOutputSchemaRevision() != s.config.OutputSchemaRevision || hasUnknown(message.ProtoReflect()) || !validStreamIdentity(message) || message.GetOccurredAtUnixMillis() <= 0 {
+		return outputapp.NodeEventFrame{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	encodedFrame, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil || len(encodedFrame) > s.config.MaxFrameBytes {
+		return outputapp.NodeEventFrame{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	if message.GetEventType() != runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT || message.GetTerminal() || message.GetSettlementProposal() != nil || message.GetNodeEvent() == nil || message.GetConfigurationValidation() != nil || message.GetRuntimeError() != nil || message.GetToolkitAvailableTools() != nil || message.GetIndexIngest() != nil {
+		return outputapp.NodeEventFrame{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	identity := message.GetIdentity()
+	fence, err := fenceDomain(identity, message.GetFence(), workloadIdentity)
+	if err != nil {
+		return outputapp.NodeEventFrame{}, err
+	}
+	payload := message.GetNodeEvent()
+	encodedEvent, err := proto.MarshalOptions{Deterministic: true}.Marshal(payload)
+	if err != nil || !matchesDigest(message.GetPayloadDigest(), encodedEvent) {
+		return outputapp.NodeEventFrame{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	browserData, err := nodeevent.EncodeCurrentJSON(payload)
+	if err != nil {
+		return outputapp.NodeEventFrame{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	frame := outputapp.NodeEventFrame{
+		StreamID:              message.GetStreamId(),
+		TenantID:              identity.GetTenantId(),
+		ResourceProjectID:     identity.GetResourceProjectId(),
+		ProjectionProjectID:   identity.GetProjectionProjectId(),
+		WorkloadSessionID:     fence.WorkloadSessionID,
+		ProducerID:            fence.ProducerID,
+		EventID:               message.GetEventId(),
+		LogicalOutputID:       message.GetLogicalOutputId(),
+		Sequence:              message.GetSequence(),
+		ClaimHandoffWatermark: message.GetClaimHandoffWatermark(),
+		OccurredAt:            time.UnixMilli(message.GetOccurredAtUnixMillis()).UTC(),
+		Fence:                 fence,
+		PayloadDigest:         runtimedomain.SHA256(encodedEvent),
+		EncodedEvent:          encodedEvent,
+		BrowserData:           browserData,
+	}
+	if err := frame.Validate(); err != nil {
+		return outputapp.NodeEventFrame{}, err
+	}
+	return frame, nil
 }
 
 func (s *Server) indexIngestFrame(message *runtimev1.ExecutionOutputFrameV1, workloadIdentity string) (outputapp.IndexIngestFrame, error) {
@@ -714,7 +788,7 @@ func safeOutputError(err error) (runtimev1.RuntimeErrorCodeV1, string, bool) {
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output identity conflicts with a durable output.", false
 	case errors.Is(err, outputapp.ErrIndexIngestOutputConflict):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The index output identity conflicts with a durable output.", false
-	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, outputapp.ErrInvalidIndexIngestOutput), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
+	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, outputapp.ErrInvalidIndexIngestOutput), errors.Is(err, outputapp.ErrInvalidNodeEventOutput), errors.Is(err, outputapp.ErrNodeEventOutputConflict), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output frame is malformed.", false
 	case errors.Is(err, context.Canceled):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_CANCELLED, "The output operation was cancelled.", false

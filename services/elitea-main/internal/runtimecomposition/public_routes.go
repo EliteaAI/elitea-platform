@@ -8,6 +8,7 @@ import (
 
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	executionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 )
@@ -15,6 +16,10 @@ import (
 type PublicRoutes struct {
 	Validation      http.Handler
 	ExecutionEvents http.Handler
+	// IndexStart is composed only when the complete index control/data plane is
+	// enabled. Main binds it to the current route's existing authentication and
+	// project-RBAC middleware before mounting it.
+	IndexStart indexingapi.StartUseCase
 }
 
 // Phase one uses durable PostgreSQL replay without a notification sidecar.
@@ -27,7 +32,7 @@ type validationSubmitter interface {
 	Submit(context.Context, configurationapp.SubmitValidationRequest) (executionapp.AdmissionOutcome, error)
 }
 
-func newPublicRoutes(authorizer *postgresPublicAuthorizer, submitter validationSubmitter, replay executionapi.EventRepository) (PublicRoutes, error) {
+func newPublicRoutes(authorizer *postgresPublicAuthorizer, submitter validationSubmitter, replay executionapi.EventRepository, indexStart indexingapi.StartUseCase) (PublicRoutes, error) {
 	validation, err := configurationapi.NewValidationHandler(authorizer, submitter)
 	if err != nil {
 		return PublicRoutes{}, err
@@ -39,6 +44,7 @@ func newPublicRoutes(authorizer *postgresPublicAuthorizer, submitter validationS
 	return PublicRoutes{
 		Validation:      http.HandlerFunc(validation.Submit),
 		ExecutionEvents: http.HandlerFunc(events.Stream),
+		IndexStart:      indexStart,
 	}, nil
 }
 

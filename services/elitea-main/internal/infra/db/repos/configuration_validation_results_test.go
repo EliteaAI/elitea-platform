@@ -28,7 +28,8 @@ func TestConfigurationValidationProjectionUsesOneTenantTransaction(t *testing.T)
 			{err: pgx.ErrNoRows}, // event identity is new
 			{err: pgx.ErrNoRows}, // logical identity is new
 			{err: pgx.ErrNoRows}, // producer sequence is new
-			{values: []any{"claim-1", "claim-1", "RUNNING", false, false}},
+			{values: []any{"claim-1"}},
+			{values: []any{"claim-1", "claim-1", "RUNNING", false, false, false}},
 			{values: []any{"revision-1"}},
 			{values: []any{int64(17)}},
 		},
@@ -52,7 +53,7 @@ func TestConfigurationValidationProjectionUsesOneTenantTransaction(t *testing.T)
 	if projects.projectID != 42 || !outcome.Inserted || outcome.Cursor != 17 || outcome.CommittedSequence != 1 {
 		t.Fatalf("unexpected projection outcome: project=%d outcome=%+v", projects.projectID, outcome)
 	}
-	if len(executor.rowCalls) != 6 || len(executor.execCalls) != 2 {
+	if len(executor.rowCalls) != 7 || len(executor.execCalls) != 2 {
 		t.Fatalf("projection escaped its atomic script: row calls=%d exec calls=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 }
@@ -63,7 +64,8 @@ func TestConfigurationValidationProjectionReturnsTypedDatabaseDeadlineWinner(t *
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"", "claim-1", "RUNNING", false, true}},
+		{values: []any{"claim-1"}},
+		{values: []any{"", "claim-1", "RUNNING", false, true, false}},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
@@ -79,7 +81,7 @@ func TestConfigurationValidationProjectionReturnsTypedDatabaseDeadlineWinner(t *
 	if !errors.Is(err, outputapp.ErrOutputDeadlineExceeded) {
 		t.Fatalf("database deadline winner was not typed: %v", err)
 	}
-	if len(executor.rowCalls) != 7 || len(executor.execCalls) != 0 {
+	if len(executor.rowCalls) != 8 || len(executor.execCalls) != 0 {
 		t.Fatalf("late success mutated a business/replay plane: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 }
@@ -98,11 +100,13 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"", "claim-1", "CANCELLED", false, false}},
+		{values: []any{"claim-1"}},
+		{values: []any{"", "claim-1", "CANCELLED", false, false, false}},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false}},
+		{values: []any{"claim-1"}},
+		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false, false}},
 		{values: []any{int64(29)}},
 	}, execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")}}
 	repository, err := newConfigurationValidationResultsRepository(&scriptedProjectStore{scriptedExecutor: executor})
@@ -116,17 +120,17 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 9 || len(executor.execCalls) != 1 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
-	insert := executor.rowCalls[7]
+	insert := executor.rowCalls[9]
 	if insert.args[13] != payloadTypeRuntimeFailure || insert.args[17] != string(executionapp.SettlementCancelled) {
 		t.Fatalf("materialized output is not canonical cancellation: payload=%v outcome=%v", insert.args[13], insert.args[17])
 	}
 	if !bytes.Equal(insert.args[15].([]byte), cancelled.PayloadBytes) || !bytes.Equal(insert.args[18].([]byte), cancelled.SettlementBytes) {
 		t.Fatal("materialized cancellation bytes differ from the canonical runtime output")
 	}
-	replay := executor.rowCalls[8]
+	replay := executor.rowCalls[10]
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
@@ -146,11 +150,13 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"", "claim-1", "CANCELLED", false, false}},
+		{values: []any{"claim-1"}},
+		{values: []any{"", "claim-1", "CANCELLED", false, false, false}},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false}},
+		{values: []any{"claim-1"}},
+		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false, false}},
 		{values: []any{int64(31)}},
 	}, execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")}}
 	repository, err := newConfigurationValidationResultsRepository(&scriptedProjectStore{scriptedExecutor: executor})
@@ -164,17 +170,17 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 9 || len(executor.execCalls) != 1 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
-	insert := executor.rowCalls[7]
+	insert := executor.rowCalls[9]
 	if insert.args[13] != payloadTypeRuntimeFailure || insert.args[17] != string(executionapp.SettlementCancelled) {
 		t.Fatalf("materialized output is not canonical cancellation: payload=%v outcome=%v", insert.args[13], insert.args[17])
 	}
 	if !bytes.Equal(insert.args[15].([]byte), cancelled.PayloadBytes) || !bytes.Equal(insert.args[18].([]byte), cancelled.SettlementBytes) {
 		t.Fatal("materialized cancellation bytes differ from the canonical runtime output")
 	}
-	replay := executor.rowCalls[8]
+	replay := executor.rowCalls[10]
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
@@ -347,7 +353,8 @@ func TestConfigurationValidationProjectionNeverMislabelsProducerSequenceConflict
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
-		{values: []any{"", "claim-1", "CANCELLED", false, false}},
+		{values: []any{"claim-1"}},
+		{values: []any{"", "claim-1", "CANCELLED", false, false, false}},
 		{err: pgx.ErrNoRows},
 		{err: pgx.ErrNoRows},
 		{values: outputRecordScanValues(conflict)},

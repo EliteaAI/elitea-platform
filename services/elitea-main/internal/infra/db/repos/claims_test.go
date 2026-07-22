@@ -282,7 +282,7 @@ func TestClaimValidationAllocatesMonotonicAttemptAndLeaseEpoch(t *testing.T) {
 			claimExecutionRow("RUNNING", "DISPATCHED", true, publishedDigest[:], publishedDigest[:], false),
 			{err: pgx.ErrNoRows},
 			{values: []any{int64(1)}},
-			{values: []any{leaseExpires, leaseObservedAt}},
+			{values: []any{leaseExpires, leaseObservedAt, int64(0)}},
 			{err: pgx.ErrNoRows},
 			{values: []any{false}},
 		},
@@ -303,11 +303,49 @@ func TestClaimValidationAllocatesMonotonicAttemptAndLeaseEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Disposition != executionapp.ClaimAccepted || decision.Lease.Fence.ClaimAttempt != 1 || decision.Lease.Fence.LeaseEpoch != 1 || decision.LeaseObservedAt != leaseObservedAt {
+	if decision.Disposition != executionapp.ClaimAccepted || decision.Lease.Fence.ClaimAttempt != 1 || decision.Lease.Fence.LeaseEpoch != 1 || decision.LeaseObservedAt != leaseObservedAt || decision.ClaimHandoffWatermark != 0 {
 		t.Fatalf("first claim did not allocate matching monotonic authority: %+v", decision)
 	}
-	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8,") || !strings.Contains(store.rowCalls[3].sql, "clock_timestamp() AS observed_at") || !strings.Contains(store.rowCalls[3].sql, "$9::bigint * interval '1 millisecond'") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
+	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8,") || !strings.Contains(store.rowCalls[3].sql, "clock_timestamp() AS observed_at") || !strings.Contains(store.rowCalls[3].sql, "$9::bigint * interval '1 millisecond'") || !strings.Contains(store.rowCalls[3].sql, "initial_output_watermark") || !strings.Contains(store.rowCalls[3].sql, "event_type = 'execution.node_event'") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
 		t.Fatal("claim insert does not derive lease_epoch from the monotonic claim attempt")
+	}
+}
+
+func TestIndexClaimPersistsDurableNodeEventHandoffWatermark(t *testing.T) {
+	publishedDigest := runtimedomain.SHA256([]byte("published-index-envelope"))
+	token := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("index-handoff-token")))
+	leaseExpires := time.Date(2030, time.July, 22, 13, 0, 0, 0, time.UTC)
+	leaseObservedAt := leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{
+		rowResults: []scriptedRow{
+			claimExecutionRow("RUNNING", "DISPATCHED", true, publishedDigest[:], publishedDigest[:], false),
+			{err: pgx.ErrNoRows},
+			{values: []any{int64(2)}},
+			{values: []any{leaseExpires, leaseObservedAt, int64(3)}},
+			{err: pgx.ErrNoRows},
+			{values: []any{false}},
+		},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("UPDATE 1"),
+		},
+	}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "claim-index-2", nil },
+		func() (runtimedomain.FenceToken, error) { return token, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testClaimRequest(publishedDigest)
+	request.CapabilityID = executiondomain.IndexIngestCapability
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Disposition != executionapp.ClaimAccepted || decision.ClaimHandoffWatermark != 3 || decision.Lease.Fence.ClaimAttempt != 2 {
+		t.Fatalf("index claim lost its durable output handoff: %+v", decision)
 	}
 }
 
@@ -557,7 +595,7 @@ func TestExpiredCancelledClaimRecoversDurableCanonicalCancellationAcrossPod(t *t
 			}},
 			{values: []any{true}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration()), int64(0)}},
 			{values: []any{
 				cancelled.SettlementProposalID,
 				string(cancelled.SettlementOutcome),
@@ -615,7 +653,7 @@ func TestCancelledRecoveryAuthorityFailsClosedWhenExactTerminalLoadMisses(t *tes
 			{err: pgx.ErrNoRows},
 			{values: []any{true}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration()), int64(0)}},
 			{err: pgx.ErrNoRows},
 		},
 		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
@@ -857,7 +895,7 @@ func TestExpiredClaimRecoversTerminalOutputAcrossProducerReplacement(t *testing.
 				time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC),
 			}},
 			{values: []any{int64(2)}},
-			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration())}},
+			{values: []any{leaseExpires, leaseExpires.Add(-executionapp.MaxClaimLeaseTTLMillis.Duration()), int64(0)}},
 			{values: []any{
 				terminalFrame.Settlement.ProposalID,
 				string(terminalFrame.Settlement.Outcome),

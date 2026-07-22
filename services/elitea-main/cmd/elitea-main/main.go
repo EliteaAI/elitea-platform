@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -138,6 +139,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	}
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
+	var currentIndexStart http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -171,6 +173,19 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
 		}
+		if publicRoutes.IndexStart != nil {
+			currentIndexStart, err = indexingapi.NewCurrentIndexStartRoute(
+				publicRoutes.IndexStart,
+				apimw.AuthConfig{
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-start route: %w", err)
+			}
+		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
@@ -182,6 +197,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ProductionAuth:     productionAuth,
 		ProductionRuntime:  productionRuntime,
 		CurrentProjectList: currentProjectList,
+		CurrentIndexStart:  currentIndexStart,
 	})
 
 	srv := &http.Server{

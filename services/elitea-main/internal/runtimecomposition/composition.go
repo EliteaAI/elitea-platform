@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
@@ -158,6 +159,16 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		IsolationClass:    isolationClass,
 		Priority:          1,
 		DeadlineTTL:       time.Minute,
+		LimitsRevision:    limitsRevision,
+		MaxOutstanding:    config.MaxOutstanding,
+	}
+	indexDispatchPolicy := repos.IndexIngestDispatchPolicy{
+		StreamName:        config.IndexIngestCommandStream,
+		CapabilityVersion: capabilityVersion,
+		ResourceClass:     indexResourceClass,
+		IsolationClass:    indexIsolationClass,
+		Priority:          1,
+		DeadlineTTL:       indexDeadlineTTL,
 		LimitsRevision:    limitsRevision,
 		MaxOutstanding:    config.MaxOutstanding,
 	}
@@ -357,7 +368,22 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, err
 		}
-		outputServer, err = output.NewServerWithIndexIngest(outputServerConfig, outputPeerAuthorizer, validationOutput, runtimeFailures, indexOutput)
+		nodeEvents, err := repos.NewNodeEventsRepository(dependencies.OutputPool)
+		if err != nil {
+			return nil, fmt.Errorf("construct node event replay repository: %w", err)
+		}
+		nodeEventOutput, err := outputapp.NewNodeEventService(outputClaims, nodeEvents)
+		if err != nil {
+			return nil, err
+		}
+		outputServer, err = output.NewServerWithIndexIngestAndNodeEvents(
+			outputServerConfig,
+			outputPeerAuthorizer,
+			validationOutput,
+			runtimeFailures,
+			indexOutput,
+			nodeEventOutput,
+		)
 	} else {
 		outputServer, err = output.NewServer(outputServerConfig, outputPeerAuthorizer, validationOutput, runtimeFailures)
 	}
@@ -370,6 +396,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		return nil, fmt.Errorf("construct runtime content repository: %w", err)
 	}
 	var contentServer *storage.ContentServer
+	var indexStart indexingapi.StartUseCase
 	if config.IndexIngestDispatchEnabled {
 		masterKey, err := loadOptionalFernetMasterKey(config.IndexIngestVaultMasterKeyFile)
 		if err != nil {
@@ -384,10 +411,22 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
 		}
-		contentServer, err = storage.NewRuntimeContentServerWithLimits(contentRepository, contentRepository, runtimeToken, maxInputContentBytes, maxContentRequests)
+		indexRuntime, err := newCurrentIndexRuntime(dependencies.AdmissionPool, vaults, config, indexDispatchPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("construct current index runtime: %w", err)
+		}
+		contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
+			contentRepository,
+			contentRepository,
+			indexRuntime.materializer,
+			runtimeToken,
+			maxInputContentBytes,
+			maxContentRequests,
+		)
 		if err != nil {
 			return nil, err
 		}
+		indexStart = indexRuntime.start
 	} else {
 		contentServer, err = storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
 		if err != nil {
@@ -431,7 +470,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
-	publicRoutes, err := newPublicRoutes(publicAuthorizer, validationSubmitter, replay)
+	publicRoutes, err := newPublicRoutes(publicAuthorizer, validationSubmitter, replay, indexStart)
 	if err != nil {
 		return nil, err
 	}

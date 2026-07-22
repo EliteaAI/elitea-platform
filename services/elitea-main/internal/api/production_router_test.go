@@ -16,6 +16,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
@@ -142,6 +143,42 @@ func TestProductionRouterMountsOnlyExactCurrentProjectListPath(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestProductionRouterMountsOnlyExactCurrentIndexStartPathWhenComposed(t *testing.T) {
+	calls := 0
+	indexStart := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if projectID := chi.URLParam(request, "projectID"); projectID != "7" {
+			t.Fatalf("projectID = %q, want 7", projectID)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentIndexStart: indexStart})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodPost, path: "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/7?await_response=false", want: http.StatusNoContent},
+		{method: http.MethodGet, path: "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/7", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/7/extra", want: http.StatusNotFound},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(test.method, test.path, nil))
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
+			}
+		})
+	}
+	if calls != 1 {
+		t.Fatalf("index start calls = %d, want 1", calls)
+	}
+	if indexingapi.CurrentIndexStartPath != "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}" {
+		t.Fatalf("current index path drifted: %s", indexingapi.CurrentIndexStartPath)
 	}
 }
 

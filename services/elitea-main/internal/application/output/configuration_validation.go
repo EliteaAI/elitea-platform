@@ -102,9 +102,9 @@ func (f ConfigurationValidationFrame) Validate() error {
 }
 
 func matchesCanonicalTerminalIdentity(streamID, eventID, logicalOutputID string, sequence uint64, proposalID, settlementKey string, fence runtimedomain.Fence, configurationRevisionID string) bool {
-	if sequence != 1 ||
+	if sequence == 0 ||
 		streamID != fence.ExecutionID+":"+strconv.FormatUint(fence.Generation, 10) ||
-		eventID != fence.CommandID+":1" ||
+		eventID != canonicalOutputEventID(fence.CommandID, sequence) ||
 		proposalID != fence.CommandID+":settlement" ||
 		settlementKey != fence.CommandID+":prepare-settlement" {
 		return false

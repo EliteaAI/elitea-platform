@@ -201,6 +201,12 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation), request.Cap
 				decision.SettlementRecovery = &executionapp.SettlementRecovery{Proposal: &proposal}
 			} else if !errors.Is(recoveryErr, pgx.ErrNoRows) {
 				return recoveryErr
+			} else if request.CapabilityID == executiondomain.IndexIngestCapability {
+				watermark, err := loadClaimHandoffWatermark(ctx, tx, existing.Fence, existing.ClaimID)
+				if err != nil {
+					return err
+				}
+				decision.ClaimHandoffWatermark = watermark
 			}
 			return nil
 		case err == nil:
@@ -303,19 +309,29 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 			return fmt.Errorf("generate execution fence token: %w", err)
 		}
 		var expiresAt, claimObservedAt time.Time
+		var initialOutputWatermark int64
 		err = tx.QueryRow(ctx, `
 WITH authority_clock AS MATERIALIZED (
     SELECT clock_timestamp() AS observed_at
+), output_watermark AS MATERIALIZED (
+    SELECT count(*) AS value
+    FROM elitea_runtime.execution_replay_events
+    WHERE execution_id = $2
+      AND generation = $3
+      AND event_type = 'execution.node_event'
 )
 INSERT INTO elitea_runtime.execution_claims (
     claim_id, execution_id, generation, workload_session_id,
     workload_identity, producer_id, claim_attempt, lease_epoch,
-    fence_token, claimed_at, lease_expires_at
+    fence_token, claimed_at, lease_expires_at, initial_output_watermark
 ) SELECT $1, $2, $3, $4, $5, $6, $7, $7, $8,
          authority_clock.observed_at,
-         authority_clock.observed_at + ($9::bigint * interval '1 millisecond')
-FROM authority_clock
-RETURNING lease_expires_at, (SELECT observed_at FROM authority_clock)`,
+         authority_clock.observed_at + ($9::bigint * interval '1 millisecond'),
+         output_watermark.value
+FROM authority_clock, output_watermark
+RETURNING lease_expires_at,
+          (SELECT observed_at FROM authority_clock),
+          initial_output_watermark`,
 			claimID,
 			request.ExecutionID,
 			int64(request.Generation),
@@ -325,7 +341,7 @@ RETURNING lease_expires_at, (SELECT observed_at FROM authority_clock)`,
 			claimAttempt,
 			token[:],
 			int64(leaseTTL),
-		).Scan(&expiresAt, &claimObservedAt)
+		).Scan(&expiresAt, &claimObservedAt, &initialOutputWatermark)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return executionapp.ErrInvalidClaim
 		}
@@ -354,7 +370,15 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 			ExpiresAt:    expiresAt.UTC(),
 			DesiredState: desired,
 		}
-		decision = executionapp.ClaimDecision{Lease: lease, LeaseObservedAt: claimObservedAt.UTC(), Disposition: executionapp.ClaimAccepted}
+		if initialOutputWatermark < 0 {
+			return executionapp.ErrInvalidClaim
+		}
+		decision = executionapp.ClaimDecision{
+			Lease:                 lease,
+			LeaseObservedAt:       claimObservedAt.UTC(),
+			Disposition:           executionapp.ClaimAccepted,
+			ClaimHandoffWatermark: uint64(initialOutputWatermark),
+		}
 		if state == executiondomain.JobSucceeded || state == executiondomain.JobFailed || state == executiondomain.JobCancelled || state == executiondomain.JobSettling {
 			receipt, settlementErr := loadSettlementForExecution(ctx, tx, request.ExecutionID, request.Generation)
 			if settlementErr == nil {
@@ -398,6 +422,44 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 		return executionapp.ClaimDecision{}, fmt.Errorf("%w: %w", executionapp.ErrClaimDependencyUnavailable, err)
 	}
 	return decision, nil
+}
+
+// loadClaimHandoffWatermark returns the immutable sequence floor captured when
+// this exact claim was created. It must not be recomputed after the claim starts:
+// later progress belongs above this handoff boundary.
+func loadClaimHandoffWatermark(ctx context.Context, tx sqlExecutor, fence runtimedomain.Fence, claimID string) (uint64, error) {
+	if err := fence.Validate(); err != nil || claimID == "" {
+		return 0, executionapp.ErrInvalidClaim
+	}
+	var watermark int64
+	if err := tx.QueryRow(ctx, `
+SELECT initial_output_watermark
+FROM elitea_runtime.execution_claims
+WHERE claim_id = $1
+  AND execution_id = $2
+  AND generation = $3
+  AND workload_identity = $4
+  AND workload_session_id = $5
+  AND producer_id = $6
+  AND claim_attempt = $7
+  AND lease_epoch = $8
+  AND fence_token = $9`,
+		claimID,
+		fence.ExecutionID,
+		int64(fence.Generation),
+		fence.WorkloadIdentity,
+		fence.WorkloadSessionID,
+		fence.ProducerID,
+		int64(fence.ClaimAttempt),
+		int64(fence.LeaseEpoch),
+		fence.Token[:],
+	).Scan(&watermark); err != nil {
+		return 0, fmt.Errorf("load claim handoff watermark: %w", err)
+	}
+	if watermark < 0 {
+		return 0, executionapp.ErrInvalidClaim
+	}
+	return uint64(watermark), nil
 }
 
 func claimCapabilityAllowed(capabilityID string) bool {

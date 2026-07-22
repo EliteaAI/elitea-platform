@@ -79,6 +79,7 @@ type RouterConfig struct {
 	ProductionAuth     *ProductionAuthRoutes
 	ProductionRuntime  *ProductionRuntimeRoutes
 	CurrentProjectList *v2projects.CurrentProjectListRoute
+	CurrentIndexStart  http.Handler
 }
 
 type RuntimeRoutes struct {

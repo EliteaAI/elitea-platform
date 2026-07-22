@@ -26,9 +26,10 @@ var (
 // StartRequest contains only caller-controlled invocation data and stable
 // server-derived identities. Toolkit settings, deployment tokens and expanded
 // secrets are deliberately absent. RequestedLLMSettings is an untrusted UI
-// preference object; the injected use case must allowlist it and resolve the
-// authoritative model configuration and credentials from project state after
-// checking toolkit visibility.
+// preference object; the injected use case must allowlist it, resolve the
+// visible/default model name and derived invocation metadata from Configurations,
+// and check toolkit visibility. AI provider credentials remain behind Main's
+// authenticated LiteLLM facade and never enter this worker command.
 type StartRequest struct {
 	ProjectID            int64
 	ActorUserID          int64

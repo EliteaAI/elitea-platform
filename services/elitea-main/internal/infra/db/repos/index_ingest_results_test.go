@@ -168,7 +168,8 @@ func TestIndexIngestResultsRepositoryProjectsAtomicallyAndReplaysIdempotently(t 
 			{err: pgx.ErrNoRows},
 			{err: pgx.ErrNoRows},
 			{err: pgx.ErrNoRows},
-			{values: []any{"claim-index-1", "claim-index-1", "RUNNING", false, false}},
+			{values: []any{"claim-index-1"}},
+			{values: []any{"claim-index-1", "claim-index-1", "RUNNING", false, false, false}},
 			{values: []any{frame.LogicalOutputID}},
 			{values: []any{int64(41)}},
 		},
@@ -182,17 +183,17 @@ func TestIndexIngestResultsRepositoryProjectsAtomicallyAndReplaysIdempotently(t 
 	if !outcome.Inserted || outcome.Cursor != 41 || outcome.CommittedSequence != frame.Sequence {
 		t.Fatalf("unexpected index projection outcome: %+v", outcome)
 	}
-	if len(executor.rowCalls) != 6 || len(executor.execCalls) != 1 {
+	if len(executor.rowCalls) != 7 || len(executor.execCalls) != 1 {
 		t.Fatalf("index projection escaped one atomic transaction script: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
-	if executor.rowCalls[3].args[13] != payloadTypeIndexIngestResult || executor.rowCalls[3].args[17] != string(executionapp.SettlementSucceeded) {
-		t.Fatalf("output inbox lost typed payload/settlement: %+v", executor.rowCalls[3].args)
+	if executor.rowCalls[4].args[13] != payloadTypeIndexIngestResult || executor.rowCalls[4].args[17] != string(executionapp.SettlementSucceeded) {
+		t.Fatalf("output inbox lost typed payload/settlement: %+v", executor.rowCalls[4].args)
 	}
-	if !strings.Contains(executor.rowCalls[4].sql, "index_ingest_results") || !strings.Contains(executor.rowCalls[4].sql, "index_result_artifacts") || executor.rowCalls[4].args[12] != verified.StorageRecordID {
+	if !strings.Contains(executor.rowCalls[5].sql, "index_ingest_results") || !strings.Contains(executor.rowCalls[5].sql, "index_result_artifacts") || executor.rowCalls[5].args[12] != verified.StorageRecordID {
 		t.Fatal("index result was not bound to durable artifact metadata")
 	}
-	replayBytes, ok := executor.rowCalls[5].args[5].([]byte)
-	if !ok || bytes.Contains(replayBytes, []byte(verified.StorageRecordID)) || executor.rowCalls[5].args[4] != replayEventIndexIngest {
+	replayBytes, ok := executor.rowCalls[6].args[5].([]byte)
+	if !ok || bytes.Contains(replayBytes, []byte(verified.StorageRecordID)) || executor.rowCalls[6].args[4] != replayEventIndexIngest {
 		t.Fatal("browser replay event exposed storage identity or used the wrong event type")
 	}
 
@@ -237,7 +238,8 @@ func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary
 			{err: pgx.ErrNoRows},
 			{err: pgx.ErrNoRows},
 			{err: pgx.ErrNoRows},
-			{values: []any{"claim-index-1", "claim-index-1", "RUNNING", false, false}},
+			{values: []any{"claim-index-1"}},
+			{values: []any{"claim-index-1", "claim-index-1", "RUNNING", false, false, false}},
 			{values: []any{frame.LogicalOutputID}},
 			{values: []any{int64(42)}},
 		},
@@ -248,14 +250,14 @@ func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.Inserted || outcome.Cursor != 42 || len(executor.rowCalls) != 6 {
+	if !outcome.Inserted || outcome.Cursor != 42 || len(executor.rowCalls) != 7 {
 		t.Fatalf("unexpected inline projection: outcome=%+v row_calls=%d", outcome, len(executor.rowCalls))
 	}
-	projectionCall := executor.rowCalls[4]
+	projectionCall := executor.rowCalls[5]
 	if !strings.Contains(projectionCall.sql, "completion_status, completion_message") || strings.Contains(projectionCall.sql, "index_result_artifacts") || projectionCall.args[5] != "ok" || projectionCall.args[6] != frame.Result.ResultSummary.Message {
 		t.Fatalf("inline summary was not persisted as the closed typed shape: sql=%q args=%v", projectionCall.sql, projectionCall.args)
 	}
-	replayBytes, ok := executor.rowCalls[5].args[5].([]byte)
+	replayBytes, ok := executor.rowCalls[6].args[5].([]byte)
 	wantReplay := []byte(`{"status":"ok","message":"No new documents to index."}`)
 	if !ok || !bytes.Equal(replayBytes, wantReplay) {
 		t.Fatalf("inline replay differs from current nested SDK result: got=%s want=%s", replayBytes, wantReplay)

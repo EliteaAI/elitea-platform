@@ -11,6 +11,7 @@ import (
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -126,7 +127,10 @@ func TestInsertOutputInboxCancellationPredicateIsNarrow(t *testing.T) {
 	cancelledFailure.PayloadType = payloadTypeRuntimeFailure
 	cancelledFailure.SettlementOutcome = executionapp.SettlementCancelled
 
-	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{"claim-1", "claim-1", "CANCELLED", false, false}}}}
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{"claim-1"}},
+		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false, false}},
+	}}
 	result, err := insertOutputInbox(context.Background(), executor, cancelledFailure)
 	if err != nil {
 		t.Fatal(err)
@@ -134,10 +138,16 @@ func TestInsertOutputInboxCancellationPredicateIsNarrow(t *testing.T) {
 	if !result.Inserted || result.CancellationRejected {
 		t.Fatal("correctly fenced cancelled runtime failure was not inserted")
 	}
-	if len(executor.rowCalls) != 1 {
+	if len(executor.rowCalls) != 2 {
 		t.Fatalf("unexpected insert query count: %d", len(executor.rowCalls))
 	}
-	call := executor.rowCalls[0]
+	lockCall := executor.rowCalls[0]
+	for _, predicate := range []string{"c.initial_output_watermark = $13", "FOR UPDATE OF j, o, c"} {
+		if !strings.Contains(lockCall.sql, predicate) {
+			t.Fatalf("output authority lock SQL is missing %q", predicate)
+		}
+	}
+	call := executor.rowCalls[1]
 	for _, predicate := range []string{
 		"authority.desired_state = 'RUNNING'",
 		"authority.desired_state = 'CANCELLED'",
@@ -147,6 +157,9 @@ func TestInsertOutputInboxCancellationPredicateIsNarrow(t *testing.T) {
 		if !strings.Contains(call.sql, predicate) {
 			t.Fatalf("output admission SQL is missing %q", predicate)
 		}
+	}
+	if strings.Contains(call.sql, "FOR UPDATE") {
+		t.Fatal("output state query shares the authority-lock statement snapshot")
 	}
 	if len(call.args) != 27 {
 		t.Fatalf("unexpected output insert argument count: %d", len(call.args))
@@ -161,7 +174,10 @@ func TestInsertOutputInboxValidationSuccessHasNoCancellationAdmissionPath(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{"", "", "", false, false}}}}
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{"claim-1"}},
+		{values: []any{"", "", "", false, false, false}},
+	}}
 	result, err := insertOutputInbox(context.Background(), executor, record)
 	if err != nil {
 		t.Fatal(err)
@@ -169,12 +185,42 @@ func TestInsertOutputInboxValidationSuccessHasNoCancellationAdmissionPath(t *tes
 	if result.Inserted || result.CancellationRejected {
 		t.Fatal("validation success was inserted without a matching running claim")
 	}
-	call := executor.rowCalls[0]
+	call := executor.rowCalls[1]
 	if call.args[13] != payloadTypeConfigurationValidation || call.args[17] != string(executionapp.SettlementSucceeded) {
 		t.Fatalf("ordinary validation unexpectedly matched the cancellation pair: payload=%v outcome=%v", call.args[13], call.args[17])
 	}
 	if !strings.Contains(call.sql, "authority.desired_state = 'CANCELLED'") || !strings.Contains(call.sql, "$14 = 'RUNTIME_FAILURE'") || !strings.Contains(call.sql, "$18 = 'CANCELLED'") {
 		t.Fatal("validation success rejection is not enforced by the cancellation predicate")
+	}
+}
+
+func TestInsertOutputInboxRequiresPriorNodeEventForLaterTerminalSequence(t *testing.T) {
+	record, _, err := validationOutputRecord(testValidationFrame(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Sequence = 2
+	record.EventID = record.CommandID + ":2"
+	record.SettlementProposalID = record.CommandID + ":settlement"
+
+	accepted := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{"claim-1"}},
+		{values: []any{"claim-1", "claim-1", "RUNNING", false, false, false}},
+	}}
+	result, err := insertOutputInbox(context.Background(), accepted, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Inserted || !strings.Contains(accepted.rowCalls[1].sql, "previous_sequence") || !strings.Contains(accepted.rowCalls[1].sql, "event_type = 'execution.node_event'") {
+		t.Fatalf("later terminal sequence was not bound to durable node progress: result=%+v", result)
+	}
+
+	rejected := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{"claim-1"}},
+		{values: []any{"", "claim-1", "RUNNING", false, false, true}},
+	}}
+	if _, err := insertOutputInbox(context.Background(), rejected, record); !errors.Is(err, outputapp.ErrValidationOutputConflict) {
+		t.Fatalf("terminal sequence gap was not rejected: %v", err)
 	}
 }
 
@@ -185,17 +231,22 @@ func TestInsertOutputInboxReturnsTypedCancellationLinearizationOnlyForExactAutho
 	}
 	tests := []struct {
 		name      string
+		lock      scriptedRow
 		row       []any
 		cancelled bool
 	}{
-		{name: "exact cancelled authority", row: []any{"", "claim-1", "CANCELLED", false, false}, cancelled: true},
-		{name: "stale authority", row: []any{"", "", "", false, false}},
-		{name: "draining authority", row: []any{"", "claim-1", "DRAINING", false, false}},
-		{name: "existing conflict", row: []any{"", "claim-1", "CANCELLED", true, false}},
+		{name: "exact cancelled authority", lock: scriptedRow{values: []any{"claim-1"}}, row: []any{"", "claim-1", "CANCELLED", false, false, false}, cancelled: true},
+		{name: "stale authority", lock: scriptedRow{err: pgx.ErrNoRows}},
+		{name: "draining authority", lock: scriptedRow{values: []any{"claim-1"}}, row: []any{"", "claim-1", "DRAINING", false, false, false}},
+		{name: "existing conflict", lock: scriptedRow{values: []any{"claim-1"}}, row: []any{"", "claim-1", "CANCELLED", true, false, false}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			executor := &scriptedExecutor{rowResults: []scriptedRow{{values: test.row}}}
+			rows := []scriptedRow{test.lock}
+			if test.row != nil {
+				rows = append(rows, scriptedRow{values: test.row})
+			}
+			executor := &scriptedExecutor{rowResults: rows}
 			result, err := insertOutputInbox(context.Background(), executor, record)
 			if err != nil {
 				t.Fatal(err)
@@ -205,6 +256,9 @@ func TestInsertOutputInboxReturnsTypedCancellationLinearizationOnlyForExactAutho
 			}
 			if !strings.Contains(executor.rowCalls[0].sql, "FOR UPDATE OF j, o, c") {
 				t.Fatal("output/cancellation decision is not serialized on the job and claim")
+			}
+			if len(executor.rowCalls) > 1 && strings.Contains(executor.rowCalls[1].sql, "FOR UPDATE") {
+				t.Fatal("output state query did not use a fresh READ COMMITTED statement snapshot")
 			}
 		})
 	}
@@ -239,24 +293,27 @@ func TestInsertOutputInboxDatabaseDeadlineAllowsOnlyCanonicalFirstFailure(t *tes
 		{
 			name:             "late success loses",
 			record:           nonDeadline,
-			row:              []any{"", "claim-1", "RUNNING", false, true},
+			row:              []any{"", "claim-1", "RUNNING", false, true, false},
 			wantDeadlineLost: true,
 		},
 		{
 			name:         "canonical deadline is admitted",
 			record:       deadline,
-			row:          []any{"claim-1", "claim-1", "RUNNING", false, true},
+			row:          []any{"claim-1", "claim-1", "RUNNING", false, true, false},
 			wantInserted: true,
 		},
 		{
 			name:   "existing output identity is not replaced",
 			record: nonDeadline,
-			row:    []any{"", "claim-1", "RUNNING", true, true},
+			row:    []any{"", "claim-1", "RUNNING", true, true, false},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			executor := &scriptedExecutor{rowResults: []scriptedRow{{values: test.row}}}
+			executor := &scriptedExecutor{rowResults: []scriptedRow{
+				{values: []any{"claim-1"}},
+				{values: test.row},
+			}}
 			result, err := insertOutputInbox(context.Background(), executor, test.record)
 			if err != nil {
 				t.Fatal(err)
@@ -264,17 +321,29 @@ func TestInsertOutputInboxDatabaseDeadlineAllowsOnlyCanonicalFirstFailure(t *tes
 			if result.Inserted != test.wantInserted || result.DeadlineRejected != test.wantDeadlineLost {
 				t.Fatalf("unexpected deadline linearization: %+v", result)
 			}
-			call := executor.rowCalls[0]
+			lockCall := executor.rowCalls[0]
+			for _, fragment := range []string{
+				"JOIN elitea_runtime.command_outbox AS o",
+				"o.authority_granted_at IS NOT NULL",
+				"FOR UPDATE OF j, o, c",
+			} {
+				if !strings.Contains(lockCall.sql, fragment) {
+					t.Fatalf("output authority lock SQL is missing %q", fragment)
+				}
+			}
+			call := executor.rowCalls[1]
 			for _, fragment := range []string{
 				"JOIN elitea_runtime.command_outbox AS o",
 				"o.authority_granted_at IS NOT NULL",
 				"o.deadline <= clock_timestamp() AS deadline_expired",
 				"NOT authority.deadline_expired OR $27",
-				"FOR UPDATE OF j, o, c",
 			} {
 				if !strings.Contains(call.sql, fragment) {
 					t.Fatalf("output deadline SQL is missing %q", fragment)
 				}
+			}
+			if strings.Contains(call.sql, "FOR UPDATE") {
+				t.Fatal("output deadline state query shares the authority-lock statement snapshot")
 			}
 			if got := call.args[26]; got != isCanonicalDeadlineOutput(test.record) {
 				t.Fatalf("canonical deadline binding changed: got=%v", got)

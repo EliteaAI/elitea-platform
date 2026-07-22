@@ -242,6 +242,17 @@ func TestConfigurationValidationFrameRejectsNonCanonicalTerminalIdentities(t *te
 	}
 }
 
+func TestConfigurationValidationFrameAllowsCanonicalTerminalAfterProgress(t *testing.T) {
+	frame, _ := validValidationOutput()
+	frame.Sequence = 2
+	frame.EventID = frame.Fence.CommandID + ":2"
+	frame.Settlement.TerminalSequence = 2
+	frame.Settlement.TerminalEventID = frame.EventID
+	if err := frame.Validate(); err != nil {
+		t.Fatalf("canonical later terminal sequence was rejected: %v", err)
+	}
+}
+
 func validValidationOutput() (ConfigurationValidationFrame, ExpectedValidation) {
 	binding := configurationdomain.ValidationBinding{
 		Command: configurationdomain.ValidationCommand{

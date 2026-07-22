@@ -18,8 +18,8 @@ const (
 var ErrInvalidCurrentIndexStartRoute = errors.New("invalid current index-start route dependencies")
 
 // CurrentIndexStartRoute binds the exact current path and method to trusted
-// authentication and project RBAC. It is deliberately not mounted by the
-// production router until durable index admission and delivery are composed.
+// authentication and project RBAC. Production composition mounts it only when
+// durable index admission and delivery are enabled together.
 type CurrentIndexStartRoute struct {
 	handler http.Handler
 }

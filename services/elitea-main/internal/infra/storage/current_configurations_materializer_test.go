@@ -1,0 +1,250 @@
+package storage
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+)
+
+type currentMaterializationUnsecreterStub struct {
+	values   map[int32]map[string]string
+	projects []int32
+	inputs   []map[string]any
+	err      error
+	fn       func(int32, map[string]any) (map[string]any, error)
+}
+
+func (s *currentMaterializationUnsecreterStub) Unsecret(
+	_ context.Context,
+	projectID int32,
+	value map[string]any,
+) (map[string]any, error) {
+	s.projects = append(s.projects, projectID)
+	s.inputs = append(s.inputs, replaceCurrentMaterializationSecrets(value, nil).(map[string]any))
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.fn != nil {
+		return s.fn(projectID, value)
+	}
+	return replaceCurrentMaterializationSecrets(value, s.values[projectID]).(map[string]any), nil
+}
+
+func TestCurrentConfigurationsMaterializerRedeemsFrozenConfigurationOwnersWithoutLookup(t *testing.T) {
+	unsecreter := &currentMaterializationUnsecreterStub{values: map[int32]map[string]string{
+		7: {
+			"PROJECT_NOTE": "project-note",
+		},
+		1: {
+			"CONFLUENCE_TOKEN": "confluence-secret",
+		},
+		700: {
+			"PGVECTOR_CONN": "postgresql://personal-vectorstore",
+		},
+	}}
+	materializer, err := NewCurrentConfigurationsMaterializer(unsecreter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source := []byte(`{"id":19,"type":"confluence","toolkit_name":"wiki","settings":{"confluence_configuration":{"elitea_title":"wiki-credential","private":false,"url":"https://wiki.example","token":"{{secret.CONFLUENCE_TOKEN}}","configuration_uuid":"configuration-confluence","configuration_project_id":1,"configuration_type":"confluence","__elitea_frozen_configuration_v1":true,"vector":{"elitea_title":"personal-vectorstore","private":true,"connection_string":"{{secret.PGVECTOR_CONN}}","configuration_uuid":"configuration-pgvector","configuration_project_id":700,"configuration_type":"pgvector","__elitea_frozen_configuration_v1":true}},"note":"{{secret.PROJECT_NOTE}}","integer_id":9007199254740993}}`)
+	result, err := materializer.MaterializeContent(context.Background(), ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.IndexIngestCapability,
+		SemanticRole:      executiondomain.IndexToolkitConfigurationRole,
+	}, source, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actual, err := decodeCurrentMaterializationObject(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := actual["settings"].(map[string]any)
+	wiki := settings["confluence_configuration"].(map[string]any)
+	vector := wiki["vector"].(map[string]any)
+	if wiki["configuration_type"] != "confluence" || wiki["configuration_project_id"] != json.Number("1") ||
+		wiki["token"] != "confluence-secret" ||
+		vector["configuration_type"] != "pgvector" || vector["configuration_project_id"] != json.Number("700") ||
+		vector["connection_string"] != "postgresql://personal-vectorstore" ||
+		settings["note"] != "project-note" || settings["integer_id"] != json.Number("9007199254740993") {
+		t.Fatalf("unexpected materialized settings: %#v", settings)
+	}
+	if !reflect.DeepEqual(unsecreter.projects, []int32{700, 1, 7}) {
+		t.Fatalf("unsecret project ownership=%v, want [700 1 7]", unsecreter.projects)
+	}
+	if encoded, marshalErr := json.Marshal(unsecreter.inputs[1]); marshalErr != nil || strings.Contains(string(encoded), "PGVECTOR_CONN") {
+		t.Fatalf("parent configuration saw nested-owner references: %s error=%v", encoded, marshalErr)
+	}
+	if encoded, marshalErr := json.Marshal(unsecreter.inputs[2]); marshalErr != nil ||
+		strings.Contains(string(encoded), "CONFLUENCE_TOKEN") || strings.Contains(string(encoded), "PGVECTOR_CONN") {
+		t.Fatalf("invoking project saw configuration-owner references: %s error=%v", encoded, marshalErr)
+	}
+	if strings.Contains(string(source), "confluence-secret") || strings.Contains(string(source), "postgresql://personal-vectorstore") {
+		t.Fatal("immutable admitted source was mutated with plaintext")
+	}
+	if strings.Contains(string(result), configurationapp.CurrentFrozenConfigurationMarker) {
+		t.Fatalf("internal frozen-owner marker reached worker output: %s", result)
+	}
+}
+
+func TestCurrentConfigurationsMaterializerRejectsIncompleteFrozenConfigurationMetadata(t *testing.T) {
+	unsecreter := &currentMaterializationUnsecreterStub{}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, unsecreter)
+	authorization := ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.IndexIngestCapability,
+		SemanticRole:      executiondomain.IndexToolkitConfigurationRole,
+	}
+
+	for name, source := range map[string]string{
+		"missing marker": `{"id":19,"type":"github","settings":{"credential":{"configuration_uuid":"uuid","configuration_project_id":7,"configuration_type":"github"}}}`,
+		"missing owner":  `{"id":19,"type":"github","settings":{"credential":{"configuration_uuid":"uuid","configuration_type":"github","__elitea_frozen_configuration_v1":true}}}`,
+		"invalid owner":  `{"id":19,"type":"github","settings":{"credential":{"configuration_uuid":"uuid","configuration_project_id":0,"configuration_type":"github","__elitea_frozen_configuration_v1":true}}}`,
+		"invalid uuid":   `{"id":19,"type":"github","settings":{"credential":{"configuration_uuid":"","configuration_project_id":7,"configuration_type":"github","__elitea_frozen_configuration_v1":true}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := materializer.MaterializeContent(context.Background(), authorization, []byte(source), 4096)
+			if !errors.Is(err, ErrContentRejected) {
+				t.Fatalf("error=%v, want rejected", err)
+			}
+		})
+	}
+	if len(unsecreter.projects) != 0 {
+		t.Fatalf("invalid snapshot reached a vault: %v", unsecreter.projects)
+	}
+}
+
+func TestCurrentConfigurationsMaterializerUnsecretsProjectInvocationObjects(t *testing.T) {
+	unsecreter := &currentMaterializationUnsecreterStub{values: map[int32]map[string]string{
+		7: {"QUERY": "resolved-query"},
+	}}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, unsecreter)
+
+	result, err := materializer.MaterializeContent(context.Background(), ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.IndexIngestCapability,
+		SemanticRole:      executiondomain.IndexToolParametersRole,
+	}, []byte(`{"index_name":"docs","query":"{{secret.QUERY}}"}`), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result) != `{"index_name":"docs","query":"resolved-query"}` {
+		t.Fatalf("result=%s", result)
+	}
+}
+
+func TestCurrentConfigurationsMaterializerPreservesNonIndexContentByteForByte(t *testing.T) {
+	materializer := newCurrentConfigurationsMaterializerForTest(t, &currentMaterializationUnsecreterStub{})
+	source := []byte(" {\n  \"token\": \"{{secret.VALUE}}\"\n}\n")
+	result, err := materializer.MaterializeContent(context.Background(), ContentAuthorization{
+		CapabilityID: "configuration.validate.v1",
+	}, source, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if &result[0] != &source[0] || string(result) != string(source) {
+		t.Fatal("non-index input did not retain its byte-for-byte content path")
+	}
+}
+
+func TestCurrentConfigurationsMaterializerFailsClosedAndClassifiesDependencies(t *testing.T) {
+	dependency := &currentMaterializationUnsecreterStub{err: errors.New("vault details must not escape")}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, dependency)
+	base := ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.IndexIngestCapability,
+		SemanticRole:      executiondomain.IndexToolParametersRole,
+	}
+
+	if _, err := materializer.MaterializeContent(context.Background(), base, []byte(`{"value":"x"}`), 1024); !errors.Is(err, ErrContentUnavailable) || strings.Contains(err.Error(), "vault details") {
+		t.Fatalf("dependency error=%v", err)
+	}
+
+	for name, mutate := range map[string]func(*ContentAuthorization){
+		"non-canonical project": func(value *ContentAuthorization) { value.ResourceProjectID = "07" },
+		"missing actor":         func(value *ContentAuthorization) { value.ActorID = "" },
+		"unknown role":          func(value *ContentAuthorization) { value.SemanticRole = "index.unknown" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			authorization := base
+			mutate(&authorization)
+			if _, err := materializer.MaterializeContent(context.Background(), authorization, []byte(`{"value":"x"}`), 1024); !errors.Is(err, ErrContentRejected) {
+				t.Fatalf("error=%v, want rejected", err)
+			}
+		})
+	}
+
+	if _, err := materializer.MaterializeContent(context.Background(), base, []byte(`[]`), 1024); !errors.Is(err, ErrContentRejected) {
+		t.Fatalf("non-object error=%v, want rejected", err)
+	}
+	if _, err := materializer.MaterializeContent(context.Background(), base, []byte(`{"value":"x"}`), 2); !errors.Is(err, ErrContentRejected) {
+		t.Fatalf("oversize error=%v, want rejected", err)
+	}
+}
+
+func TestCurrentConfigurationsMaterializerValidatesConstructionAndModelShape(t *testing.T) {
+	if _, err := NewCurrentConfigurationsMaterializer(nil); err == nil {
+		t.Fatal("expected missing unsecreter to fail")
+	}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, &currentMaterializationUnsecreterStub{})
+	authorization := ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.IndexIngestCapability,
+		SemanticRole:      executiondomain.IndexLLMModelRole,
+	}
+	if result, err := materializer.MaterializeContent(context.Background(), authorization, []byte(`"configured-model"`), 1024); err != nil || string(result) != `"configured-model"` {
+		t.Fatalf("model result=%s error=%v", result, err)
+	}
+	if _, err := materializer.MaterializeContent(context.Background(), authorization, []byte(`null`), 1024); !errors.Is(err, ErrContentRejected) {
+		t.Fatalf("invalid model error=%v", err)
+	}
+}
+
+func newCurrentConfigurationsMaterializerForTest(
+	t *testing.T,
+	unsecreter configurationapp.CurrentExpansionUnsecreter,
+) *CurrentConfigurationsMaterializer {
+	t.Helper()
+	materializer, err := NewCurrentConfigurationsMaterializer(unsecreter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return materializer
+}
+
+func replaceCurrentMaterializationSecrets(value any, secrets map[string]string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = replaceCurrentMaterializationSecrets(item, secrets)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for index, item := range typed {
+			result[index] = replaceCurrentMaterializationSecrets(item, secrets)
+		}
+		return result
+	case string:
+		for name, replacement := range secrets {
+			typed = strings.ReplaceAll(typed, "{{secret."+name+"}}", replacement)
+		}
+		return typed
+	default:
+		return typed
+	}
+}
