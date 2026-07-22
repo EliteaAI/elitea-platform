@@ -62,8 +62,9 @@ message IndexIngestSummaryV1 {
 
 // IndexIngestResultV1 binds one terminal result to the exact immutable inputs
 // consumed by EliteAClient.test_toolkit_tool. Exactly one of result_artifact or
-// result_summary is required. Progress, index-status and callback events
-// require their own later typed output frames.
+// result_summary is required. Progress, index-status and callback events use
+// non-terminal NodeEventV1 output frames; runtime composition is a separate
+// implementation slice.
 message IndexIngestResultV1 {
   string input_bundle_id = 1;
   DigestV1 input_bundle_digest = 2;

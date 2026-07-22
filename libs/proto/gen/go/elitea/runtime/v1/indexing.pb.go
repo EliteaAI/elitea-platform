@@ -362,8 +362,9 @@ func (x *IndexIngestSummaryV1) GetMessage() string {
 
 // IndexIngestResultV1 binds one terminal result to the exact immutable inputs
 // consumed by EliteAClient.test_toolkit_tool. Exactly one of result_artifact or
-// result_summary is required. Progress, index-status and callback events
-// require their own later typed output frames.
+// result_summary is required. Progress, index-status and callback events use
+// non-terminal NodeEventV1 output frames; runtime composition is a separate
+// implementation slice.
 type IndexIngestResultV1 struct {
 	state                protoimpl.MessageState          `protogen:"open.v1"`
 	InputBundleId        string                          `protobuf:"bytes,1,opt,name=input_bundle_id,json=inputBundleId,proto3" json:"input_bundle_id,omitempty"`

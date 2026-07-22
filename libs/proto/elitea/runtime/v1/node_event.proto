@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// NodeEventV1 is the language-neutral data-plane form of the current
+// pylon_indexer NodeEvent consumed by EliteaUI. Field names deliberately match
+// the current UI-facing JSON contract. Event type remains a bounded string so
+// adding a current-baseline event does not require synchronized enum releases.
+//
+// content, response_metadata and references each contain one
+// complete UTF-8 JSON value. JSON fragments preserve arbitrary current payload
+// shapes and integer values without protobuf Struct's float64 conversion. They
+// are forbidden on Redis. Producers and consumers must validate the fragments
+// and the complete output frame against the selected protocol limits before
+// transport or durable projection.
+message NodeEventV1 {
+  string type = 1;
+  optional string stream_id = 2;
+  optional string message_id = 3;
+  optional string question_id = 4;
+  bytes content = 5;
+  optional string thinking = 6;
+  bytes response_metadata = 7;
+  bytes references = 8;
+  optional string sio_event = 9;
+  // Kept as the current RFC3339 JSON string instead of google.protobuf.Timestamp
+  // so nullability and the exact browser-facing representation remain stable.
+  optional string created_at = 10;
+  optional string parent_message_id = 11;
+  optional string agent_name = 12;
+  optional string execution_generation = 13;
+  reserved 14 to 31;
+}
