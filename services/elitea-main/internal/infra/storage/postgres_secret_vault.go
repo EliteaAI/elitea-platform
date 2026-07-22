@@ -24,6 +24,7 @@ type SecretVault interface {
 	LookupRegular(string) (centrysecrets.Secret, error)
 	LookupProjectID(string) (centrysecrets.Secret, error)
 	LookupRegularProjectID(string) (centrysecrets.Secret, error)
+	LookupRegularInteger(string) (centrysecrets.Secret, error)
 }
 
 // SecretVaultLoader loads one current Centry vault snapshot. Implementations
@@ -61,6 +62,18 @@ func newPostgresSecretVaultLoader(store contentQueryer, masterKey []byte) (*Post
 	}, nil
 }
 
+// Destroy clears the process-held master key after every consumer has stopped.
+// It is a shutdown operation and must not race with LoadProjectVault or
+// LoadAdminVault.
+func (l *PostgresSecretVaultLoader) Destroy() {
+	if l == nil {
+		return
+	}
+	clearContentBytes(l.masterKey)
+	l.masterKey = nil
+	l.store = nil
+}
+
 func (l *PostgresSecretVaultLoader) LoadProjectVault(ctx context.Context, projectID int64) (SecretVault, error) {
 	if projectID <= 0 {
 		return nil, ErrContentRejected
@@ -73,6 +86,9 @@ func (l *PostgresSecretVaultLoader) LoadAdminVault(ctx context.Context) (SecretV
 }
 
 func (l *PostgresSecretVaultLoader) load(ctx context.Context, vaultID string) (SecretVault, error) {
+	if l == nil || l.store == nil {
+		return nil, ErrContentUnavailable
+	}
 	var storedProjectKey, encryptedVault []byte
 	err := l.store.QueryRow(ctx, `
 SELECT k.data, d.data

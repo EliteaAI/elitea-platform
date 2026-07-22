@@ -74,12 +74,18 @@ type RouterConfig struct {
 	// InternalAdminToken is a disabled-by-default transitional control for
 	// shadow/cutover operations, not production workload identity. Empty leaves
 	// those routes unmounted.
-	InternalAdminToken string
-	RuntimeRoutes      RuntimeRoutes
-	ProductionAuth     *ProductionAuthRoutes
-	ProductionRuntime  *ProductionRuntimeRoutes
-	CurrentProjectList *v2projects.CurrentProjectListRoute
-	CurrentIndexStart  http.Handler
+	InternalAdminToken            string
+	RuntimeRoutes                 RuntimeRoutes
+	ProductionAuth                *ProductionAuthRoutes
+	ProductionRuntime             *ProductionRuntimeRoutes
+	CurrentProjectList            *v2projects.CurrentProjectListRoute
+	CurrentConfigurationAvailable http.Handler
+	CurrentConfigurationRead      http.Handler
+	CurrentIndexStart             http.Handler
+	CurrentIndexMeta              http.Handler
+	CurrentModelCatalog           http.Handler
+	CurrentModelDefault           http.Handler
+	CurrentLLMFacade              http.Handler
 }
 
 type RuntimeRoutes struct {

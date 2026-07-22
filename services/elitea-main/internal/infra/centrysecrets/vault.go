@@ -15,7 +15,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -168,6 +170,25 @@ func (v *Vault) LookupRegularProjectID(name string) (Secret, error) {
 	return Secret{}, ErrSecretNotFound
 }
 
+// LookupRegularInteger is the narrow compatibility accessor for current vault
+// settings whose Python consumers call int(value). It accepts regular-secret
+// JSON strings and JSON numbers, returns canonical base-10 text, and never
+// falls back to hidden secrets. Credential reads must continue to use
+// LookupRegular so numeric values cannot become credentials accidentally.
+func (v *Vault) LookupRegularInteger(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+	if raw, ok := v.regular[name]; ok {
+		value, ok := decodeInteger(raw)
+		if !ok {
+			return Secret{}, ErrInvalidSecret
+		}
+		return Secret{Value: value}, nil
+	}
+	return Secret{}, ErrSecretNotFound
+}
+
 func open(projectKey [fernetKeyBytes]byte, encryptedVault []byte) (*Vault, error) {
 	defer clearKey(&projectKey)
 
@@ -261,6 +282,32 @@ func decodeProjectID(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatInt(parsed, 10), true
+}
+
+func decodeInteger(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || len(trimmed) > maxProjectIDJSON {
+		return "", false
+	}
+	value := string(trimmed)
+	if trimmed[0] == '"' {
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return "", false
+		}
+		value = strings.TrimSpace(value)
+	}
+	if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return strconv.FormatInt(parsed, 10), true
+	}
+	// Python int(JSON-number) also accepts an integral floating-point value.
+	// Keep that compatibility narrow and reject NaN, infinities, fractions, and
+	// values outside int64.
+	parsedFloat, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsedFloat) || math.IsInf(parsedFloat, 0) ||
+		math.Trunc(parsedFloat) != parsedFloat || parsedFloat < math.MinInt64 || parsedFloat >= float64(math.MaxInt64) {
+		return "", false
+	}
+	return strconv.FormatInt(int64(parsedFloat), 10), true
 }
 
 func decodeFernetKey(encoded []byte) ([fernetKeyBytes]byte, bool) {

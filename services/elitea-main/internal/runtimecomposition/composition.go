@@ -59,6 +59,7 @@ type Dependencies struct {
 	OutputPool            *pgxpool.Pool
 	ReplayPool            *pgxpool.Pool
 	ContentPool           *pgxpool.Pool
+	CurrentConfigurations *CurrentConfigurationsRuntime
 	ProjectTokenValidator storage.ProjectTokenValidator
 	Logger                *slog.Logger
 }
@@ -78,6 +79,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	if config.IndexIngestDispatchEnabled && dependencies.ProjectTokenValidator == nil {
 		return nil, errors.New("runtime index ingest project-token validator is required")
+	}
+	if config.IndexIngestDispatchEnabled && dependencies.CurrentConfigurations == nil {
+		return nil, errors.New("runtime index ingest current Configurations runtime is required")
 	}
 	if err := migrate.New(dependencies.AdmissionPool, platformmigrations.Files).CheckHead(ctx, migrate.ScopeShared, "platform"); err != nil {
 		return nil, fmt.Errorf("runtime shared migration head is not applied: %w", err)
@@ -397,28 +401,26 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	var contentServer *storage.ContentServer
 	var indexStart indexingapi.StartUseCase
+	var currentIndex *currentIndexRuntime
 	if config.IndexIngestDispatchEnabled {
-		masterKey, err := loadOptionalFernetMasterKey(config.IndexIngestVaultMasterKeyFile)
-		if err != nil {
-			return nil, err
-		}
-		vaults, vaultErr := storage.NewPostgresSecretVaultLoader(dependencies.ContentPool, masterKey)
-		clear(masterKey)
-		if vaultErr != nil {
-			return nil, fmt.Errorf("construct runtime secret-vault loader: %w", vaultErr)
-		}
+		vaults := dependencies.CurrentConfigurations.vaultLoader
 		runtimeToken, err := storage.NewEliteaClientTokenService(contentRepository, vaults, dependencies.ProjectTokenValidator)
 		if err != nil {
 			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
 		}
-		indexRuntime, err := newCurrentIndexRuntime(dependencies.AdmissionPool, vaults, config, indexDispatchPolicy)
+		currentIndex, err = newCurrentIndexRuntime(
+			dependencies.AdmissionPool,
+			dependencies.CurrentConfigurations,
+			config,
+			indexDispatchPolicy,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("construct current index runtime: %w", err)
 		}
 		contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
 			contentRepository,
 			contentRepository,
-			indexRuntime.materializer,
+			currentIndex.materializer,
 			runtimeToken,
 			maxInputContentBytes,
 			maxContentRequests,
@@ -426,7 +428,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, err
 		}
-		indexStart = indexRuntime.start
+		indexStart = currentIndex.start
 	} else {
 		contentServer, err = storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
 		if err != nil {
@@ -473,6 +475,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	publicRoutes, err := newPublicRoutes(publicAuthorizer, validationSubmitter, replay, indexStart)
 	if err != nil {
 		return nil, err
+	}
+	if currentIndex != nil {
+		publicRoutes.IndexMeta = currentIndex.indexMeta
 	}
 
 	closeRedis = false

@@ -9,6 +9,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/browserauth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 )
@@ -55,12 +56,33 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	if cfg.CurrentProjectList != nil {
 		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
 	}
+	if cfg.CurrentConfigurationAvailable != nil {
+		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)
+		r.Method(http.MethodGet, configurationapi.CurrentAvailableSlashPath, cfg.CurrentConfigurationAvailable)
+		r.Method(http.MethodGet, configurationapi.CurrentAvailableProjectPath, cfg.CurrentConfigurationAvailable)
+	}
+	if cfg.CurrentConfigurationRead != nil {
+		r.Method(http.MethodGet, configurationapi.CurrentConfigurationListPath, cfg.CurrentConfigurationRead)
+		r.Method(http.MethodGet, configurationapi.CurrentConfigurationDetailsPath, cfg.CurrentConfigurationRead)
+	}
 	if cfg.ProductionRuntime != nil {
 		r.Method(http.MethodPost, "/api/v2"+runtimeValidationPath, cfg.ProductionRuntime.validation)
 		r.Method(http.MethodGet, "/api/v2"+runtimeEventsPath, cfg.ProductionRuntime.executionEvents)
 	}
 	if cfg.CurrentIndexStart != nil {
 		r.Method(http.MethodPost, indexingapi.CurrentIndexStartPath, cfg.CurrentIndexStart)
+	}
+	if cfg.CurrentIndexMeta != nil {
+		r.Method(http.MethodGet, indexingapi.CurrentIndexMetaListPath, cfg.CurrentIndexMeta)
+	}
+	if cfg.CurrentModelCatalog != nil {
+		r.Method(http.MethodGet, configurationapi.CurrentModelCatalogPath, cfg.CurrentModelCatalog)
+	}
+	if cfg.CurrentModelDefault != nil {
+		r.Method(http.MethodPost, configurationapi.CurrentModelDefaultPath, cfg.CurrentModelDefault)
+	}
+	if cfg.CurrentLLMFacade != nil {
+		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
 
 	return r

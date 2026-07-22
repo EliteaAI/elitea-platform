@@ -16,6 +16,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -179,6 +180,157 @@ func TestProductionRouterMountsOnlyExactCurrentIndexStartPathWhenComposed(t *tes
 	}
 	if indexingapi.CurrentIndexStartPath != "/api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}" {
 		t.Fatalf("current index path drifted: %s", indexingapi.CurrentIndexStartPath)
+	}
+}
+
+func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.T) {
+	modelCalls := 0
+	modelDefaultCalls := 0
+	indexMetaCalls := 0
+	router := NewRouter(RouterConfig{
+		CurrentModelCatalog: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			modelCalls++
+			if chi.URLParam(request, "projectID") != "7" {
+				t.Fatalf("model project id = %q", chi.URLParam(request, "projectID"))
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		}),
+		CurrentModelDefault: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			modelDefaultCalls++
+			if chi.URLParam(request, "projectID") != "7" {
+				t.Fatalf("model-default project id = %q", chi.URLParam(request, "projectID"))
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		}),
+		CurrentIndexMeta: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			indexMetaCalls++
+			if chi.URLParam(request, "projectID") != "7" || chi.URLParam(request, "toolkitID") != "9" {
+				t.Fatalf("index meta params project=%q toolkit=%q", chi.URLParam(request, "projectID"), chi.URLParam(request, "toolkitID"))
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		}),
+	})
+
+	for _, target := range []string{
+		"/api/v2/configurations/models/7?section=embedding&include_shared=true",
+		"/api/v2/elitea_core/index_meta/prompt_lib/7/9",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v2/configurations/models/7", strings.NewReader(`{"name":"gpt","target_project_id":7}`)))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("POST model default status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if modelCalls != 1 || modelDefaultCalls != 1 || indexMetaCalls != 1 {
+		t.Fatalf("model calls=%d model-default calls=%d index-meta calls=%d", modelCalls, modelDefaultCalls, indexMetaCalls)
+	}
+
+	unmounted := NewRouter(RouterConfig{})
+	for _, target := range []string{
+		"/api/v2/configurations/models/7",
+		"/api/v2/elitea_core/index_meta/prompt_lib/7/9",
+	} {
+		recorder := httptest.NewRecorder()
+		unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("uncomposed GET %s status=%d", target, recorder.Code)
+		}
+	}
+	recorder = httptest.NewRecorder()
+	unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v2/configurations/models/7", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed POST model-default status=%d", recorder.Code)
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentConfigurationReadMethods(t *testing.T) {
+	calls := 0
+	reader := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentConfigurationRead: reader})
+	for _, target := range []string{
+		"/api/v2/configurations/configurations/7?include_shared=true",
+		"/api/v2/configurations/configuration/7/11",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	for _, target := range []string{
+		"/api/v2/configurations/configurations/7",
+		"/api/v2/configurations/configuration/7/11",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, target, nil))
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("read calls=%d", calls)
+	}
+}
+
+func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
+	calls := 0
+	available := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentConfigurationAvailable: available})
+	for _, target := range []string{
+		configurationapi.CurrentAvailablePath,
+		configurationapi.CurrentAvailableSlashPath,
+		"/api/v2/configurations/available/7?section=credentials",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("GET %s status=%d body=%s", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("available calls=%d", calls)
+	}
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, configurationapi.CurrentAvailableSlashPath, nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST available status=%d", recorder.Code)
+	}
+}
+
+func TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath(t *testing.T) {
+	calls := 0
+	facade := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if request.URL.Path != "/llm/v1/embeddings" || request.Method != http.MethodPost {
+			t.Fatalf("facade request = %s %s", request.Method, request.URL.Path)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentLLMFacade: facade})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(`{"model":"embed"}`)))
+	if recorder.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	}
+
+	unmounted := NewRouter(RouterConfig{})
+	recorder = httptest.NewRecorder()
+	unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed facade status=%d", recorder.Code)
 	}
 }
 

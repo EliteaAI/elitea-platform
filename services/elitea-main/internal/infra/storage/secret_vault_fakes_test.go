@@ -42,6 +42,19 @@ func (v *fakeSecretVault) LookupRegularProjectID(name string) (centrysecrets.Sec
 	return canonicalFakeProjectID(secret, err)
 }
 
+func (v *fakeSecretVault) LookupRegularInteger(name string) (centrysecrets.Secret, error) {
+	secret, err := v.LookupRegular(name)
+	if err != nil {
+		return secret, err
+	}
+	value, parseErr := strconv.ParseInt(secret.Value, 10, 64)
+	if parseErr != nil {
+		return centrysecrets.Secret{}, centrysecrets.ErrInvalidSecret
+	}
+	secret.Value = strconv.FormatInt(value, 10)
+	return secret, nil
+}
+
 func canonicalFakeProjectID(secret centrysecrets.Secret, err error) (centrysecrets.Secret, error) {
 	if err != nil || secret.Value == "" {
 		return secret, err

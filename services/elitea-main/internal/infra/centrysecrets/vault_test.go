@@ -189,6 +189,9 @@ func TestNilVaultFailsClosed(t *testing.T) {
 	if _, err := vault.LookupRegular("canary"); !errors.Is(err, ErrInvalidVault) {
 		t.Fatalf("regular lookup error = %v, want ErrInvalidVault", err)
 	}
+	if _, err := vault.LookupRegularInteger("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("regular integer lookup error = %v, want ErrInvalidVault", err)
+	}
 }
 
 func TestLookupRegularDoesNotExposeHiddenSecret(t *testing.T) {
@@ -245,6 +248,34 @@ func TestLookupProjectIDAcceptsCurrentStringAndIntegerEncodings(t *testing.T) {
 	}
 	if _, err := vault.LookupProjectID("missing"); !errors.Is(err, ErrSecretNotFound) {
 		t.Fatalf("missing lookup error=%v", err)
+	}
+}
+
+func TestLookupRegularIntegerAcceptsCurrentPythonIntShapes(t *testing.T) {
+	vault := &Vault{
+		regular: map[string]json.RawMessage{
+			"number":         json.RawMessage(`45`),
+			"string":         json.RawMessage(`" 0045 "`),
+			"zero":           json.RawMessage(`0`),
+			"negative":       json.RawMessage(`-1`),
+			"integral_float": json.RawMessage(`45.0`),
+			"invalid":        json.RawMessage(`45.5`),
+		},
+		hidden: map[string]json.RawMessage{"hidden": json.RawMessage(`12`)},
+	}
+	for name, want := range map[string]string{
+		"number": "45", "string": "45", "zero": "0", "negative": "-1", "integral_float": "45",
+	} {
+		secret, err := vault.LookupRegularInteger(name)
+		if err != nil || secret.Value != want || secret.Hidden {
+			t.Fatalf("lookup %q = %+v, %v; want %q", name, secret, err, want)
+		}
+	}
+	if _, err := vault.LookupRegularInteger("invalid"); !errors.Is(err, ErrInvalidSecret) {
+		t.Fatalf("invalid integer error=%v", err)
+	}
+	if _, err := vault.LookupRegularInteger("hidden"); !errors.Is(err, ErrSecretNotFound) {
+		t.Fatalf("hidden integer error=%v", err)
 	}
 }
 

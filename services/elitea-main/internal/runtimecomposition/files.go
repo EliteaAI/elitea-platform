@@ -49,14 +49,14 @@ func loadOptionalFernetMasterKey(path string) ([]byte, error) {
 	}
 	contents, err := securefile.Read(path, encodedFernetKeyBytes, securefile.PrivateMaterial)
 	if err != nil {
-		return nil, fmt.Errorf("load index secret-vault master key: %w", err)
+		return nil, fmt.Errorf("load current secret-vault master key: %w", err)
 	}
 	var decoded [33]byte
 	n, decodeErr := base64.URLEncoding.Decode(decoded[:], contents)
 	clear(decoded[:])
 	if decodeErr != nil || n != 32 || len(contents) != encodedFernetKeyBytes {
 		clear(contents)
-		return nil, errors.New("index secret-vault master key is not a Fernet key")
+		return nil, errors.New("current secret-vault master key is not a Fernet key")
 	}
 	return contents, nil
 }

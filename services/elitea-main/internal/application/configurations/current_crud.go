@@ -24,7 +24,7 @@ var (
 
 // CurrentConfiguration is the current p_N.configuration row plus the two
 // read-only response enrichments supplied by the social and configuration
-// registry integrations. It is an unmounted compatibility value, not a new
+// registry integrations. It is a compatibility value, not a new parallel
 // configuration domain model.
 type CurrentConfiguration struct {
 	ID          int32

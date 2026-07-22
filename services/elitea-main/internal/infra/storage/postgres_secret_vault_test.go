@@ -60,6 +60,24 @@ func TestPostgresSecretVaultLoaderRejectsInvalidMasterAndHidesStorageDetails(t *
 	require.NotContains(t, err.Error(), "database-password-canary")
 }
 
+func TestPostgresSecretVaultLoaderDestroyClearsMasterKeyAndDisablesReads(t *testing.T) {
+	loader, err := newPostgresSecretVaultLoader(
+		secretVaultQueryFixture(t, currentAdminVaultID, storagePythonWrappedKey),
+		[]byte(storagePythonMasterKey),
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, loader.masterKey)
+
+	loader.Destroy()
+	require.Nil(t, loader.masterKey)
+	require.Nil(t, loader.store)
+	_, err = loader.LoadAdminVault(context.Background())
+	require.ErrorIs(t, err, ErrContentUnavailable)
+
+	// Shutdown cleanup is intentionally idempotent.
+	loader.Destroy()
+}
+
 func secretVaultQueryFixture(t *testing.T, expectedVaultID, storedKey string) contentQueryer {
 	t.Helper()
 	return contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {

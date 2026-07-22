@@ -48,6 +48,7 @@ type Querier interface {
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
+	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
 	// Raw data is intentional: the Go adapter performs type-safe, redacted
@@ -68,6 +69,11 @@ type Querier interface {
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	// The project transaction establishes the authorized p_<project_id>
+	// search_path before this statement runs. The public PgVector bootstrap
+	// configuration is never copied into this tenant row: only the current vault
+	// reference is stored.
+	UpsertCurrentProjectPgvectorConfiguration(ctx context.Context, arg UpsertCurrentProjectPgvectorConfigurationParams) (int32, error)
 }
 
 var _ Querier = (*Queries)(nil)

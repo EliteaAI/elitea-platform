@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
@@ -118,6 +119,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
 			apimw.AuthConfig{
+				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
 			},
@@ -130,6 +132,86 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("production Form authentication enabled")
 	}
 
+	currentConfigurationsConfig, err := currentConfigurationsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current Configurations settings: %w", err)
+	}
+	if currentConfigurationsConfig.Enabled && (formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
+	}
+	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	var currentConfigurationRead http.Handler
+	var currentConfigurationAvailable http.Handler
+	var currentModelCatalog http.Handler
+	var currentModelDefault http.Handler
+	var currentLLMFacade http.Handler
+	if currentConfigurationsConfig.Enabled {
+		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
+			pool,
+			currentConfigurationsConfig.PublicProjectID,
+			currentConfigurationsConfig.VaultMasterKeyFile,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations services: %w", err)
+		}
+		defer currentConfigurationsRoot.Destroy()
+		currentAuth := apimw.AuthConfig{
+			Validator:                 formGraph,
+			PrincipalValidator:        principalValidator,
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+		}
+		currentPermissions := legacyrbac.NewPostgresResolver(pool)
+		currentConfigurationAvailable, err = configurationapi.NewCurrentAvailableRoute(
+			currentConfigurationsRoot.AvailableCatalog(),
+			currentAuth,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations available route: %w", err)
+		}
+		currentConfigurationRead, err = configurationapi.NewCurrentConfigurationReadRoute(
+			currentConfigurationsRoot.Reader(),
+			currentConfigurationsConfig.PublicProjectID,
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations read routes: %w", err)
+		}
+		currentModelCatalog, err = configurationapi.NewCurrentModelCatalogRoute(
+			currentConfigurationsRoot.ModelCatalog(),
+			currentConfigurationsConfig.PublicProjectID,
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations model route: %w", err)
+		}
+		currentModelDefault, err = configurationapi.NewCurrentModelDefaultRoute(
+			currentConfigurationsRoot.VaultWriter(),
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations model-default route: %w", err)
+		}
+		if currentConfigurationsConfig.LiteLLMBaseURL != "" {
+			currentLLMRoot, llmErr := runtimecomposition.NewCurrentLLMRuntime(
+				pool,
+				currentConfigurationsRoot,
+				runtimecomposition.CurrentLLMConfig{
+					BaseURL:       currentConfigurationsConfig.LiteLLMBaseURL,
+					MasterKeyFile: currentConfigurationsConfig.LiteLLMMasterKeyFile,
+				},
+			)
+			if llmErr != nil {
+				return fmt.Errorf("compose current LiteLLM facade: %w", llmErr)
+			}
+			defer currentLLMRoot.Close()
+			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
+		}
+		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
+	}
+
 	runtimeConfig, err := runtimecomposition.ConfigFromEnv(os.LookupEnv)
 	if err != nil {
 		return fmt.Errorf("load optional runtime configuration: %w", err)
@@ -137,9 +219,15 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if runtimeConfig.Enabled && (principalValidator == nil || forwardedIdentityVerifier == nil) {
 		return errors.New("ELITEA_RUNTIME_ENABLED requires production authentication")
 	}
+	if runtimeConfig.IndexIngestDispatchEnabled {
+		if !currentConfigurationsConfig.Enabled {
+			return errors.New("runtime index ingest requires current Configurations")
+		}
+	}
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
+	var currentIndexMeta http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -152,6 +240,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			OutputPool:            runtimePools.Output,
 			ReplayPool:            runtimePools.Replay,
 			ContentPool:           runtimePools.Content,
+			CurrentConfigurations: currentConfigurationsRoot,
 			ProjectTokenValidator: formGraph,
 			Logger:                logger,
 		})
@@ -177,6 +266,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			currentIndexStart, err = indexingapi.NewCurrentIndexStartRoute(
 				publicRoutes.IndexStart,
 				apimw.AuthConfig{
+					Validator:                 formGraph,
 					PrincipalValidator:        principalValidator,
 					ForwardedIdentityVerifier: forwardedIdentityVerifier,
 				},
@@ -184,6 +274,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			)
 			if err != nil {
 				return fmt.Errorf("compose current index-start route: %w", err)
+			}
+		}
+		if publicRoutes.IndexMeta != nil {
+			currentIndexMeta, err = indexingapi.NewCurrentIndexMetaRoute(
+				publicRoutes.IndexMeta,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-meta route: %w", err)
 			}
 		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
@@ -194,10 +298,16 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		ProductionAuth:     productionAuth,
-		ProductionRuntime:  productionRuntime,
-		CurrentProjectList: currentProjectList,
-		CurrentIndexStart:  currentIndexStart,
+		ProductionAuth:                productionAuth,
+		ProductionRuntime:             productionRuntime,
+		CurrentProjectList:            currentProjectList,
+		CurrentConfigurationAvailable: currentConfigurationAvailable,
+		CurrentConfigurationRead:      currentConfigurationRead,
+		CurrentIndexStart:             currentIndexStart,
+		CurrentIndexMeta:              currentIndexMeta,
+		CurrentModelCatalog:           currentModelCatalog,
+		CurrentModelDefault:           currentModelDefault,
+		CurrentLLMFacade:              currentLLMFacade,
 	})
 
 	srv := &http.Server{

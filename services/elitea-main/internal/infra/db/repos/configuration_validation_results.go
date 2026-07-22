@@ -19,7 +19,10 @@ import (
 
 const (
 	replayEventConfigurationValidation = "configuration.validation.completed"
-	replayEventRuntimeFailure          = "execution.runtime_failed"
+	// EliteaUI already listens for execution.failed. Keep the durable replay
+	// event compatible so a failed or cancelled indexing run cannot leave the
+	// existing UI waiting indefinitely for a terminal event.
+	replayEventRuntimeFailure = "execution.failed"
 )
 
 type ConfigurationValidationResultsRepository struct {

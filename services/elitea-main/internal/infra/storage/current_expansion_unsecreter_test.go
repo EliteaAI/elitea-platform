@@ -394,3 +394,7 @@ func (v currentUnsecretVaultStub) LookupProjectID(name string) (centrysecrets.Se
 func (v currentUnsecretVaultStub) LookupRegularProjectID(name string) (centrysecrets.Secret, error) {
 	return v.LookupRegular(name)
 }
+
+func (v currentUnsecretVaultStub) LookupRegularInteger(name string) (centrysecrets.Secret, error) {
+	return v.LookupRegular(name)
+}

@@ -10,7 +10,9 @@ import (
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,6 +26,7 @@ const (
 type currentIndexRuntime struct {
 	start        *indexingapp.StartService
 	materializer *storage.CurrentConfigurationsMaterializer
+	indexMeta    *indexmetaapp.Service
 }
 
 // newCurrentIndexRuntime composes the current index_data preparation path from
@@ -33,13 +36,16 @@ type currentIndexRuntime struct {
 // Configurations-derived model metadata that the current Python path supplies.
 func newCurrentIndexRuntime(
 	pool *pgxpool.Pool,
-	vaults storage.SecretVaultLoader,
+	configurations *CurrentConfigurationsRuntime,
 	config Config,
 	policy repos.IndexIngestDispatchPolicy,
 ) (*currentIndexRuntime, error) {
-	if pool == nil || vaults == nil || !config.IndexIngestDispatchEnabled || config.PublicProjectID <= 0 {
+	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
+		configurations.unsecreter == nil || configurations.models == nil || configurations.vaultLoader == nil ||
+		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 {
 		return nil, errors.New("current index runtime dependencies are required")
 	}
+	vaults := configurations.vaultLoader
 
 	builtInSchemas, err := LoadPinnedCurrentToolkitSchemaSnapshot()
 	if err != nil {
@@ -70,36 +76,17 @@ func newCurrentIndexRuntime(
 		return nil, err
 	}
 
-	configurationRows, err := repos.NewCurrentConfigurationsRepository(pool)
-	if err != nil {
-		return nil, fmt.Errorf("construct current configurations repository: %w", err)
-	}
-	scope, err := repos.NewCurrentExpansionScopeRepository(pool, config.PublicProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("construct current configuration scope: %w", err)
-	}
-	unsecreter, err := storage.NewCurrentVaultUnsecreter(vaults)
-	if err != nil {
-		return nil, err
-	}
-	expander, err := configurationapp.NewCurrentExpansionService(scope, configurationRows, unsecreter)
+	expander, err := configurationapp.NewCurrentExpansionService(
+		configurations.scope,
+		configurations.rows,
+		configurations.unsecreter,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	modelRows, err := repos.NewCurrentModelsRepository(pool)
-	if err != nil {
-		return nil, fmt.Errorf("construct current model repository: %w", err)
-	}
-	modelDefaults, err := storage.NewCurrentModelDefaultsReader(vaults)
-	if err != nil {
-		return nil, err
-	}
-	models, err := configurationapp.NewCurrentModelCatalogService(modelRows, modelDefaults)
-	if err != nil {
-		return nil, err
-	}
-	modelVisibility, err := NewCurrentModelVisibilityAdapter(models, config.PublicProjectID)
+	models := configurations.models
+	modelVisibility, err := NewCurrentModelVisibilityAdapter(models, configurations.publicProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +95,7 @@ func newCurrentIndexRuntime(
 		nestedToolkits,
 		expander,
 		modelVisibility,
-		unsecreter,
+		configurations.unsecreter,
 	)
 	if err != nil {
 		return nil, err
@@ -117,7 +104,7 @@ func newCurrentIndexRuntime(
 		toolkits,
 		models,
 		settings,
-		config.PublicProjectID,
+		configurations.publicProjectID,
 	)
 	if err != nil {
 		return nil, err
@@ -142,12 +129,29 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, err
 	}
-	materializer, err := storage.NewCurrentConfigurationsMaterializer(unsecreter)
+	materializer, err := storage.NewCurrentConfigurationsMaterializer(configurations.unsecreter)
+	if err != nil {
+		return nil, err
+	}
+	indexMetaTimeouts, err := storage.NewCurrentIndexMetaTimeoutResolver(vaults)
+	if err != nil {
+		return nil, err
+	}
+	indexMeta, err := indexmetaapp.NewService(
+		toolkits,
+		settings,
+		indexMetaTimeouts,
+		pgvector.NewCurrentIndexMetaReader(),
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	return &currentIndexRuntime{start: start, materializer: materializer}, nil
+	return &currentIndexRuntime{
+		start:        start,
+		materializer: materializer,
+		indexMeta:    indexMeta,
+	}, nil
 }
 
 func currentRuntimeID() (string, error) {

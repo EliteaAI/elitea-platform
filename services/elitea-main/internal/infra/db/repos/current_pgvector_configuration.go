@@ -1,0 +1,137 @@
+package repos
+
+import (
+	"context"
+	"errors"
+
+	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type currentProjectPgvectorQueries interface {
+	UpsertCurrentProjectPgvectorConfiguration(
+		context.Context,
+		sqlcgen.UpsertCurrentProjectPgvectorConfigurationParams,
+	) (int32, error)
+}
+
+type currentProjectPgvectorQueryFactory func(sqlExecutor) (currentProjectPgvectorQueries, error)
+
+// CurrentProjectPgvectorConfigurationsRepository owns the tenant transaction
+// for the exact current system PgVector row. The generated statement creates
+// the full row or updates only data.connection_string when the title already
+// exists, matching configurations_create_if_not_exists followed by
+// configurations_update(data=...).
+type CurrentProjectPgvectorConfigurationsRepository struct {
+	projects projectStore
+	queries  currentProjectPgvectorQueryFactory
+}
+
+func NewCurrentProjectPgvectorConfigurationsRepository(
+	pool *pgxpool.Pool,
+) (*CurrentProjectPgvectorConfigurationsRepository, error) {
+	projects, err := newPostgresProjectStore(pool)
+	if err != nil {
+		return nil, err
+	}
+	return newCurrentProjectPgvectorConfigurationsRepository(projects, newCurrentProjectPgvectorQueries)
+}
+
+func newCurrentProjectPgvectorConfigurationsRepository(
+	projects projectStore,
+	queries currentProjectPgvectorQueryFactory,
+) (*CurrentProjectPgvectorConfigurationsRepository, error) {
+	if projects == nil || queries == nil {
+		return nil, errors.New("current project pgvector configuration database is required")
+	}
+	return &CurrentProjectPgvectorConfigurationsRepository{projects: projects, queries: queries}, nil
+}
+
+func newCurrentProjectPgvectorQueries(executor sqlExecutor) (currentProjectPgvectorQueries, error) {
+	queryer, ok := executor.(pgxExecutor)
+	if !ok || queryer.queryer == nil {
+		return nil, errors.New("current project pgvector transaction does not support generated queries")
+	}
+	return sqlcgen.New(queryer.queryer), nil
+}
+
+func (r *CurrentProjectPgvectorConfigurationsRepository) UpsertProjectPgvectorConfiguration(
+	ctx context.Context,
+	configuration vectorstoreapp.ProjectConfiguration,
+) (int32, error) {
+	if r == nil || r.projects == nil || r.queries == nil ||
+		!validCurrentProjectPgvectorConfiguration(ctx, configuration) {
+		return 0, vectorstoreapp.ErrInvalidProjectPgvectorRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	var configurationID int32
+	err := r.projects.WithinProjectTx(
+		ctx,
+		int64(configuration.ProjectID),
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
+		func(tx sqlExecutor) error {
+			queries, err := r.queries(tx)
+			if err != nil {
+				return err
+			}
+			configurationID, err = queries.UpsertCurrentProjectPgvectorConfiguration(
+				ctx,
+				sqlcgen.UpsertCurrentProjectPgvectorConfigurationParams{
+					ConfigurationUuid: configuration.UUID,
+					ProjectID:         configuration.ProjectID,
+					Label:             cloneCurrentProjectPgvectorLabel(configuration.Label),
+					EliteaTitle:       configuration.Title,
+				},
+			)
+			return err
+		},
+	)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
+		if errors.Is(err, context.Canceled) {
+			return 0, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return 0, context.DeadlineExceeded
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, vectorstoreapp.ErrProjectPgvectorConflict
+		}
+		return 0, vectorstoreapp.ErrProjectPgvectorConfiguration
+	}
+	if configurationID <= 0 {
+		return 0, vectorstoreapp.ErrProjectPgvectorConfiguration
+	}
+	return configurationID, nil
+}
+
+func validCurrentProjectPgvectorConfiguration(
+	ctx context.Context,
+	configuration vectorstoreapp.ProjectConfiguration,
+) bool {
+	return ctx != nil &&
+		configuration.ProjectID > 0 &&
+		len(configuration.UUID) == 36 &&
+		configuration.Title != "" &&
+		configuration.Type == vectorstoreapp.ProjectPgvectorType &&
+		configuration.Section == vectorstoreapp.ProjectPgvectorSection &&
+		configuration.Source == vectorstoreapp.ProjectPgvectorSource &&
+		configuration.ConnectionStringReference == vectorstoreapp.ProjectPgvectorReference
+}
+
+func cloneCurrentProjectPgvectorLabel(label *string) *string {
+	if label == nil {
+		return nil
+	}
+	cloned := *label
+	return &cloned
+}
+
+var _ vectorstoreapp.ProjectConfigurationRepository = (*CurrentProjectPgvectorConfigurationsRepository)(nil)

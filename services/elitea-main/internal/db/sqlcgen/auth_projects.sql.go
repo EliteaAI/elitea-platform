@@ -9,6 +9,30 @@ import (
 	"context"
 )
 
+const isCurrentUserProjectMember = `-- name: IsCurrentUserProjectMember :one
+SELECT EXISTS (
+    SELECT 1
+    FROM public.auth_core__project_user_role AS assignment
+    JOIN centry.project AS project ON project.id = assignment.project_id
+    WHERE assignment.user_id = $1::integer
+      AND assignment.project_id = $2::integer
+      AND project.create_success IS TRUE
+      AND project.suspended IS FALSE
+) AS is_member
+`
+
+type IsCurrentUserProjectMemberParams struct {
+	UserID    int32 `db:"user_id" json:"user_id"`
+	ProjectID int32 `db:"project_id" json:"project_id"`
+}
+
+func (q *Queries) IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isCurrentUserProjectMember, arg.UserID, arg.ProjectID)
+	var is_member bool
+	err := row.Scan(&is_member)
+	return is_member, err
+}
+
 const listCurrentUserProjects = `-- name: ListCurrentUserProjects :many
 WITH candidate_projects AS MATERIALIZED (
     SELECT

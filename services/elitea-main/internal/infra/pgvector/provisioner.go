@@ -35,6 +35,7 @@ const (
 	maxPasswordBytes     = 4096
 	maxPostgresNameBytes = 63
 	maxHostBytes         = 1024
+	maxConnectionOptions = 4096
 	closeTimeout         = 5 * time.Second
 )
 
@@ -82,11 +83,12 @@ type Connector interface {
 // It is used only to validate names and build the current SQLAlchemy connection
 // string; Connector owns the corresponding live transport credentials.
 type AdminConnection struct {
-	User     string
-	Password string
-	Host     string
-	Port     uint16
-	Database string
+	User                    string
+	Password                string
+	Host                    string
+	Port                    uint16
+	Database                string
+	ProjectConnectionParams string
 }
 
 // Request contains one project's provisioning intent. An empty Password asks
@@ -122,6 +124,11 @@ type Provisioner struct {
 	random    io.Reader
 }
 
+// Handoff persists Result while the provisioner's per-project PostgreSQL
+// advisory lock is still held. Implementations must not retain Result and must
+// return redacted errors because it contains plaintext project material.
+type Handoff func(context.Context, Result) error
+
 // NewProvisioner creates a per-project PgVector provisioner.
 func NewProvisioner(connector Connector) (*Provisioner, error) {
 	if connector == nil {
@@ -134,6 +141,28 @@ func NewProvisioner(connector Connector) (*Provisioner, error) {
 // checks plus post-error rechecks make retries idempotent, including a
 // concurrent create that wins after this call's initial existence check.
 func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, error) {
+	return p.provision(ctx, request, nil)
+}
+
+// ProvisionWithHandoff is Provision with a cross-store convergence boundary.
+// The callback runs after the database/role or schema is ready and before the
+// administrator connection releases the per-project advisory lock. This keeps
+// concurrent successful provisioners from committing vault material out of
+// PostgreSQL role-password order. External PostgreSQL effects and a different
+// durable store still cannot be one atomic transaction; a failed handoff must
+// be retried with the same authoritative reconciliation policy.
+func (p *Provisioner) ProvisionWithHandoff(
+	ctx context.Context,
+	request Request,
+	handoff Handoff,
+) (Result, error) {
+	if handoff == nil {
+		return Result{}, ErrInvalidRequest
+	}
+	return p.provision(ctx, request, handoff)
+}
+
+func (p *Provisioner) provision(ctx context.Context, request Request, handoff Handoff) (Result, error) {
 	if ctx == nil || p == nil || p.connector == nil || p.random == nil {
 		return Result{}, ErrInvalidRequest
 	}
@@ -146,7 +175,7 @@ func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, e
 		return Result{}, err
 	}
 	if request.Mode == ModeSchema {
-		return p.provisionSchema(ctx, request, database, role)
+		return p.provisionSchema(ctx, request, database, role, handoff)
 	}
 
 	admin, err := p.connect(ctx, request.Admin.Database)
@@ -246,6 +275,12 @@ func (p *Provisioner) Provision(ctx context.Context, request Request) (Result, e
 		ProjectRole:      role,
 		User:             connectionUser,
 	}
+	if handoff != nil {
+		if err := handoff(ctx, result); err != nil {
+			closeBestEffort(ctx, admin)
+			return Result{}, handoffError(ctx, err)
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		closeBestEffort(ctx, admin)
 		return Result{}, err
@@ -263,6 +298,7 @@ func (p *Provisioner) provisionSchema(
 	request Request,
 	schema string,
 	role string,
+	handoff Handoff,
 ) (Result, error) {
 	admin, err := p.connect(ctx, request.Admin.Database)
 	if err != nil {
@@ -287,6 +323,12 @@ func (p *Provisioner) provisionSchema(
 		ProjectRole:      role,
 		User:             request.Admin.User,
 		Schema:           schema,
+	}
+	if handoff != nil {
+		if err := handoff(ctx, result); err != nil {
+			closeBestEffort(ctx, admin)
+			return Result{}, handoffError(ctx, err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		closeBestEffort(ctx, admin)
@@ -325,6 +367,7 @@ func validateRequest(request Request) (database string, role string, err error) 
 		!validPostgresName(request.Admin.Database) ||
 		!validHost(request.Admin.Host) || request.Admin.Port == 0 ||
 		!validPassword(request.Admin.Password) ||
+		!validProjectConnectionParameters(request.Admin.ProjectConnectionParams) ||
 		(request.Mode == ModeDatabaseRole && !validPassword(request.Password)) {
 		return "", "", ErrInvalidRequest
 	}
@@ -365,6 +408,112 @@ func validPassword(value string) bool {
 	return len(value) <= maxPasswordBytes && utf8.ValidString(value) && !strings.ContainsRune(value, '\x00')
 }
 
+// ProjectConnectionParametersFromURL returns a canonical, bounded subset of
+// PostgreSQL connection parameters that must remain on the project-owned DSN.
+// Unknown parameters are intentionally not copied into worker-visible material.
+func ProjectConnectionParametersFromURL(connectionString string) (string, error) {
+	if connectionString == "" || len(connectionString) > maxConnectionOptions*4 ||
+		strings.ContainsAny(connectionString, "\x00\r\n") {
+		return "", ErrInvalidRequest
+	}
+	parsed, err := url.Parse(connectionString)
+	if err != nil {
+		return "", ErrInvalidRequest
+	}
+	if parsed.Scheme == "" {
+		// pgx also accepts keyword/value DSNs. Their original TLS file paths cannot
+		// be reconstructed safely from pgx.ConnConfig, so production resolution
+		// must supply a URL when these parameters need propagation.
+		return "", nil
+	}
+	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
+		return "", ErrInvalidRequest
+	}
+
+	source, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", ErrInvalidRequest
+	}
+	filtered := make(url.Values)
+	for name, values := range source {
+		if !allowedProjectConnectionParameter(name) {
+			continue
+		}
+		if len(values) != 1 || !validProjectConnectionParameter(name, values[0]) {
+			return "", ErrInvalidRequest
+		}
+		filtered.Set(name, values[0])
+	}
+	encoded := filtered.Encode()
+	if len(encoded) > maxConnectionOptions {
+		return "", ErrInvalidRequest
+	}
+	return encoded, nil
+}
+
+func validProjectConnectionParameters(encoded string) bool {
+	if encoded == "" {
+		return true
+	}
+	if len(encoded) > maxConnectionOptions || strings.ContainsAny(encoded, "\x00\r\n") {
+		return false
+	}
+	values, err := url.ParseQuery(encoded)
+	if err != nil || len(values) == 0 {
+		return false
+	}
+	for name, entries := range values {
+		if !allowedProjectConnectionParameter(name) || len(entries) != 1 ||
+			!validProjectConnectionParameter(name, entries[0]) {
+			return false
+		}
+	}
+	return values.Encode() == encoded
+}
+
+func allowedProjectConnectionParameter(name string) bool {
+	switch name {
+	case "channel_binding", "connect_timeout", "load_balance_hosts", "sslcert",
+		"sslcrl", "sslkey", "sslmode", "sslnegotiation", "sslrootcert",
+		"target_session_attrs":
+		return true
+	default:
+		return false
+	}
+}
+
+func validProjectConnectionParameter(name string, value string) bool {
+	switch name {
+	case "sslmode":
+		return oneOf(value, "disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+	case "channel_binding":
+		return oneOf(value, "disable", "prefer", "require")
+	case "sslnegotiation":
+		return oneOf(value, "postgres", "direct")
+	case "target_session_attrs":
+		return oneOf(value, "any", "read-write", "read-only", "primary", "standby", "prefer-standby")
+	case "load_balance_hosts":
+		return oneOf(value, "disable", "random")
+	case "connect_timeout":
+		seconds, err := strconv.Atoi(value)
+		return err == nil && seconds >= 1 && seconds <= 300
+	case "sslrootcert", "sslcert", "sslkey", "sslcrl":
+		return value != "" && len(value) <= maxConnectionOptions && utf8.ValidString(value) &&
+			!strings.ContainsAny(value, "\x00\r\n")
+	default:
+		return false
+	}
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func generatePassword(reader io.Reader) (string, error) {
 	// Rejection sampling avoids modulo bias. Eight fixed-size reads bound work;
 	// exhausting them has negligible probability with crypto/rand.Reader.
@@ -402,10 +551,25 @@ func sqlalchemyURL(admin AdminConnection, user string, password string, database
 		Path:    path,
 		RawPath: "/" + url.PathEscape(database),
 	}
+	parameters, _ := url.ParseQuery(admin.ProjectConnectionParams)
+	legacySchemaOption := ""
 	if schema != "" {
 		// Preserve the current SQLAlchemy search_path query shape. Project schema
 		// names are derived exclusively from a validated positive integer.
-		parsed.RawQuery = "options=-csearch_path%3D" + schema + ",public"
+		legacySchemaOption = "-csearch_path=" + schema + ",public"
+		parameters.Set("options", legacySchemaOption)
+	}
+	parsed.RawQuery = parameters.Encode()
+	if legacySchemaOption != "" {
+		// The current Python contract leaves the search_path comma literal. Keep
+		// that byte shape while url.Values continues to encode every other value.
+		encodedOption := url.QueryEscape(legacySchemaOption)
+		parsed.RawQuery = strings.Replace(
+			parsed.RawQuery,
+			"options="+encodedOption,
+			"options="+strings.ReplaceAll(encodedOption, "%2C", ","),
+			1,
+		)
 	}
 	return parsed.String()
 }
@@ -436,4 +600,19 @@ func operationError(ctx context.Context, operation string, err error) error {
 		return context.DeadlineExceeded
 	}
 	return fmt.Errorf("%w: %s", ErrProvisioning, operation)
+}
+
+func handoffError(ctx context.Context, err error) error {
+	if ctx != nil {
+		if contextError := ctx.Err(); contextError != nil {
+			return contextError
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
 }

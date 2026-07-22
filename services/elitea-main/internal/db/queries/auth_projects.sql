@@ -37,6 +37,17 @@ SELECT project.project_id::integer AS project_id
 FROM resolved_project AS project
 LIMIT 1;
 
+-- name: IsCurrentUserProjectMember :one
+SELECT EXISTS (
+    SELECT 1
+    FROM public.auth_core__project_user_role AS assignment
+    JOIN centry.project AS project ON project.id = assignment.project_id
+    WHERE assignment.user_id = sqlc.arg('user_id')::integer
+      AND assignment.project_id = sqlc.arg('project_id')::integer
+      AND project.create_success IS TRUE
+      AND project.suspended IS FALSE
+) AS is_member;
+
 -- name: ListCurrentUserProjects :many
 WITH candidate_projects AS MATERIALIZED (
     SELECT

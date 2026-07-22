@@ -21,6 +21,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestRuntimeFailureReplayEventMatchesCurrentUIContract(t *testing.T) {
+	if replayEventRuntimeFailure != "execution.failed" {
+		t.Fatalf("runtime failure replay event = %q", replayEventRuntimeFailure)
+	}
+}
+
 func TestConfigurationValidationProjectionUsesOneTenantTransaction(t *testing.T) {
 	frame := testValidationFrame(t)
 	executor := &scriptedExecutor{

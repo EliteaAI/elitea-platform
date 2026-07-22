@@ -190,6 +190,9 @@ func (v failingCurrentModelVault) LookupProjectID(string) (centrysecrets.Secret,
 func (v failingCurrentModelVault) LookupRegularProjectID(string) (centrysecrets.Secret, error) {
 	return centrysecrets.Secret{}, v.err
 }
+func (v failingCurrentModelVault) LookupRegularInteger(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, v.err
+}
 
 func TestCurrentModelDefaultsReaderSanitizesOperationalFailures(t *testing.T) {
 	canary := errors.New("vault-database-password-canary")

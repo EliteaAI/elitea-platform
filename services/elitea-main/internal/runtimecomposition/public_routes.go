@@ -20,6 +20,9 @@ type PublicRoutes struct {
 	// enabled. Main binds it to the current route's existing authentication and
 	// project-RBAC middleware before mounting it.
 	IndexStart indexingapi.StartUseCase
+	// IndexMeta reads the current raw-array UI contract from the project-owned
+	// PgVector target resolved through the saved toolkit and Configurations.
+	IndexMeta indexingapi.CurrentIndexMetaReader
 }
 
 // Phase one uses durable PostgreSQL replay without a notification sidecar.

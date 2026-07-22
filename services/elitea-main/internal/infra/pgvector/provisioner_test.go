@@ -287,6 +287,81 @@ func TestProvisionSchemaModePreservesCurrentCompatibilityContract(t *testing.T) 
 	}
 }
 
+func TestProjectConnectionParametersFromURLKeepsOnlyBoundedTransportOptions(t *testing.T) {
+	t.Parallel()
+
+	connectionString := "postgresql://admin:password@primary:5432/vectors?" +
+		"application_name=must-not-copy&channel_binding=require&connect_timeout=15&" +
+		"load_balance_hosts=random&sslcert=%2Fetc%2Felitea%2Fclient.crt&" +
+		"sslkey=%2Fetc%2Felitea%2Fclient.key&sslmode=verify-full&" +
+		"sslnegotiation=direct&sslrootcert=%2Fetc%2Felitea%2Froot.crt&" +
+		"target_session_attrs=read-write"
+
+	got, err := ProjectConnectionParametersFromURL(connectionString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "channel_binding=require&connect_timeout=15&load_balance_hosts=random&" +
+		"sslcert=%2Fetc%2Felitea%2Fclient.crt&sslkey=%2Fetc%2Felitea%2Fclient.key&" +
+		"sslmode=verify-full&sslnegotiation=direct&" +
+		"sslrootcert=%2Fetc%2Felitea%2Froot.crt&target_session_attrs=read-write"
+	if got != want {
+		t.Fatalf("ProjectConnectionParametersFromURL() = %q, want %q", got, want)
+	}
+
+	unknownOnly, err := ProjectConnectionParametersFromURL(
+		"postgresql://admin:password@primary:5432/vectors?application_name=ignored",
+	)
+	if err != nil || unknownOnly != "" {
+		t.Fatalf("unknown parameters = %q, error = %v", unknownOnly, err)
+	}
+	keywordDSN, err := ProjectConnectionParametersFromURL(
+		"host=primary dbname=vectors sslmode=verify-full",
+	)
+	if err != nil || keywordDSN != "" {
+		t.Fatalf("keyword DSN parameters = %q, error = %v", keywordDSN, err)
+	}
+}
+
+func TestProjectConnectionParametersFromURLRejectsUnsafeRecognizedOptions(t *testing.T) {
+	t.Parallel()
+
+	invalid := []string{
+		"https://admin:password@primary/vectors?sslmode=require",
+		"postgresql://admin:password@primary/vectors?sslmode=unsafe",
+		"postgresql://admin:password@primary/vectors?sslmode=require&sslmode=verify-full",
+		"postgresql://admin:password@primary/vectors?connect_timeout=0",
+		"postgresql://admin:password@primary/vectors?sslrootcert=%00secret",
+		"postgresql://admin:password@primary/vectors?sslrootcert=%zz",
+	}
+	for _, connectionString := range invalid {
+		if _, err := ProjectConnectionParametersFromURL(connectionString); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("connection string %q error = %v", connectionString, err)
+		}
+	}
+}
+
+func TestSQLAlchemyURLPreservesProjectParametersAndSchemaOption(t *testing.T) {
+	t.Parallel()
+
+	admin := validRequest(1).Admin
+	admin.ProjectConnectionParams = "connect_timeout=15&sslmode=verify-full&target_session_attrs=read-write"
+	got := sqlalchemyURL(admin, "project_user", "project-password", "project_database", "")
+	want := "postgresql+psycopg://project_user:project-password@localhost:5432/project_database?" +
+		"connect_timeout=15&sslmode=verify-full&target_session_attrs=read-write"
+	if got != want {
+		t.Fatalf("database role URL = %q, want %q", got, want)
+	}
+
+	got = sqlalchemyURL(admin, "postgres", "admin-password", "vectors", "project_1")
+	want = "postgresql+psycopg://postgres:admin-password@localhost:5432/vectors?" +
+		"connect_timeout=15&options=-csearch_path%3Dproject_1,public&" +
+		"sslmode=verify-full&target_session_attrs=read-write"
+	if got != want {
+		t.Fatalf("schema URL = %q, want %q", got, want)
+	}
+}
+
 func TestProvisionPreservesCancellationAndClosesOwnedConnection(t *testing.T) {
 	t.Parallel()
 
@@ -397,6 +472,16 @@ func TestProvisionValidationIsBounded(t *testing.T) {
 		{name: "zero port", request: func() Request { r := validRequest(1); r.Admin.Port = 0; return r }()},
 		{name: "NUL password", request: func() Request { r := validRequest(1); r.Password = "bad\x00password"; return r }()},
 		{name: "long password", request: func() Request { r := validRequest(1); r.Password = tooLongPassword; return r }()},
+		{name: "noncanonical project parameters", request: func() Request {
+			r := validRequest(1)
+			r.Admin.ProjectConnectionParams = "sslmode=require&connect_timeout=15"
+			return r
+		}()},
+		{name: "unknown project parameter", request: func() Request {
+			r := validRequest(1)
+			r.Admin.ProjectConnectionParams = "application_name=not-allowed"
+			return r
+		}()},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -455,6 +540,105 @@ func TestPGXConnectorCopiesConfiguration(t *testing.T) {
 	config.Database = "mutated"
 	if connector.config.Database != "vectors" {
 		t.Fatalf("connector config aliases caller config")
+	}
+}
+
+func TestProvisionWithHandoffKeepsProjectLockThroughPersistence(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	admin := &scriptedConnection{
+		queryResults: []queryResult{{value: true}, {value: true}},
+		label:        "admin",
+		events:       &events,
+	}
+	project := &scriptedConnection{label: "project", events: &events}
+	provisioner, err := NewProvisioner(&scriptedConnector{connections: map[string][]Connection{
+		"vectors":   {admin},
+		"project_7": {project},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest(7)
+	request.Password = "stable-password"
+
+	result, err := provisioner.ProvisionWithHandoff(context.Background(), request, func(_ context.Context, value Result) error {
+		if admin.closeCalls != 0 || project.closeCalls != 1 {
+			t.Fatalf("handoff ran outside lock ownership: admin close=%d project close=%d", admin.closeCalls, project.closeCalls)
+		}
+		if value.Password != "stable-password" || value.ConnectionString == "" {
+			t.Fatal("handoff did not receive the completed project material")
+		}
+		events = append(events, "handoff")
+		return nil
+	})
+	if err != nil || result.Password != "stable-password" {
+		t.Fatalf("ProvisionWithHandoff() result status=%q error=%v", result.Status, err)
+	}
+	if len(events) < 3 || events[len(events)-2] != "handoff" || events[len(events)-1] != "admin:close" {
+		t.Fatalf("handoff/lock release order = %#v", events)
+	}
+}
+
+func TestProvisionWithHandoffFailureReleasesLockAndReturnsNoMaterial(t *testing.T) {
+	t.Parallel()
+
+	admin := &scriptedConnection{queryResults: []queryResult{{value: true}, {value: true}}}
+	project := &scriptedConnection{}
+	provisioner, err := NewProvisioner(&scriptedConnector{connections: map[string][]Connection{
+		"vectors":   {admin},
+		"project_9": {project},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest(9)
+	request.Password = "stable-password"
+	handoffErr := errors.New("safe handoff failure")
+
+	result, err := provisioner.ProvisionWithHandoff(context.Background(), request, func(context.Context, Result) error {
+		return handoffErr
+	})
+	if !errors.Is(err, handoffErr) || result != (Result{}) {
+		t.Fatalf("ProvisionWithHandoff() did not return a zero result with the safe handoff error: %v", err)
+	}
+	if admin.closeCalls != 1 || project.closeCalls != 1 {
+		t.Fatalf("handoff failure close calls = admin %d project %d", admin.closeCalls, project.closeCalls)
+	}
+	if _, err := provisioner.ProvisionWithHandoff(context.Background(), request, nil); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("nil handoff error = %v", err)
+	}
+}
+
+func TestProvisionWithHandoffCoversSchemaMode(t *testing.T) {
+	t.Parallel()
+
+	events := []string{}
+	admin := &scriptedConnection{
+		queryResults: []queryResult{{value: false}},
+		label:        "admin",
+		events:       &events,
+	}
+	provisioner, err := NewProvisioner(&scriptedConnector{connections: map[string][]Connection{"vectors": {admin}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest(11)
+	request.Mode = ModeSchema
+
+	_, err = provisioner.ProvisionWithHandoff(context.Background(), request, func(_ context.Context, value Result) error {
+		if value.Schema != "project_11" || admin.closeCalls != 0 {
+			t.Fatalf("schema handoff result is outside lock: schema=%q closes=%d", value.Schema, admin.closeCalls)
+		}
+		events = append(events, "handoff")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[len(events)-2] != "handoff" || events[len(events)-1] != "admin:close" {
+		t.Fatalf("schema handoff/lock release order = %#v", events)
 	}
 }
 

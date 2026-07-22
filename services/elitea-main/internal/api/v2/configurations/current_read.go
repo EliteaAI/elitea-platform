@@ -34,9 +34,9 @@ type CurrentConfigurationReader interface {
 
 var _ CurrentConfigurationReader = (*configurationapp.CurrentCRUDService)(nil)
 
-// CurrentConfigurationReadRoute is an unmounted cutover candidate for the two
-// current read endpoints. Construction binds trusted authentication and
-// project-scoped RBAC before either service method can run.
+// CurrentConfigurationReadRoute owns the two exact current read endpoints when
+// the standalone Configurations graph is enabled. Construction binds trusted
+// authentication and project-scoped RBAC before either service method can run.
 type CurrentConfigurationReadRoute struct {
 	handler http.Handler
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"time"
 )
 
@@ -29,10 +30,11 @@ const (
 // Mutation is one exact-name update to the current encrypted vault shape.
 // Delete ignores Value. Callers must keep Value out of logs and traces.
 type Mutation struct {
-	Collection SecretCollection
-	Name       string
-	Value      string
-	Delete     bool
+	Collection   SecretCollection
+	Name         string
+	Value        string
+	IntegerValue *int64
+	Delete       bool
 }
 
 // RewriteUnwrapped applies mutations and returns a new Python-compatible
@@ -117,9 +119,15 @@ func rewrite(
 			delete(target, mutation.Name)
 			continue
 		}
-		encoded, err := json.Marshal(mutation.Value)
-		if err != nil {
-			return nil, ErrInvalidMutation
+		var encoded []byte
+		if mutation.IntegerValue != nil {
+			encoded = strconv.AppendInt(nil, *mutation.IntegerValue, 10)
+		} else {
+			var err error
+			encoded, err = json.Marshal(mutation.Value)
+			if err != nil {
+				return nil, ErrInvalidMutation
+			}
 		}
 		target[mutation.Name] = encoded
 	}
@@ -147,6 +155,9 @@ func validMutations(mutations []Mutation) bool {
 			return false
 		}
 		if !validSecretName(mutation.Name) {
+			return false
+		}
+		if mutation.IntegerValue != nil && mutation.Value != "" {
 			return false
 		}
 		identity := mutationIdentity{collection: mutation.Collection, name: mutation.Name}
