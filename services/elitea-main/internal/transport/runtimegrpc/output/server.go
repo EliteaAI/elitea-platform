@@ -33,6 +33,10 @@ type RuntimeFailureIngestor interface {
 	IngestFailure(ctx context.Context, frame outputapp.RuntimeFailureFrame) (outputapp.ProjectionOutcome, error)
 }
 
+type IndexIngestIngestor interface {
+	IngestIndex(ctx context.Context, frame outputapp.IndexIngestFrame) (outputapp.ProjectionOutcome, error)
+}
+
 type ServerConfig struct {
 	OutputSchemaRevision string
 	MaxFrameBytes        int
@@ -47,16 +51,31 @@ type Server struct {
 	authorizer WorkloadAuthorizer
 	ingestor   ValidationIngestor
 	failures   RuntimeFailureIngestor
+	indexes    IndexIngestIngestor
 }
 
 func NewServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor) (*Server, error) {
+	return newServer(config, authorizer, ingestor, failures, nil)
+}
+
+// NewServerWithIndexIngest adds the typed index.ingest.v1 terminal-output
+// boundary. The original constructor remains available so production
+// composition can be migrated separately and explicitly.
+func NewServerWithIndexIngest(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor) (*Server, error) {
+	if indexes == nil {
+		return nil, errors.New("index ingest output ingestor is required")
+	}
+	return newServer(config, authorizer, ingestor, failures, indexes)
+}
+
+func newServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor) (*Server, error) {
 	if authorizer == nil || ingestor == nil || failures == nil {
 		return nil, errors.New("output authorizer, validation ingestor and runtime failure ingestor are required")
 	}
 	if config.OutputSchemaRevision == "" || config.MaxFrameBytes <= 0 || config.CreditFrames == 0 || config.CreditBytes == 0 {
 		return nil, errors.New("output schema and limits are required")
 	}
-	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures}, nil
+	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures, indexes: indexes}, nil
 }
 
 func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutputFrameV1, runtimev1.ExecutionOutputAckV1]) error {
@@ -137,7 +156,7 @@ func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutp
 		if err := stream.Send(ack); err != nil {
 			return err
 		}
-		// Both supported slice-one events are terminal. Closing after the one
+		// Supported slice-one events are terminal. Closing after the one
 		// durable terminal acknowledgement prevents a second terminal frame on
 		// the same logical stream.
 		return nil
@@ -158,9 +177,73 @@ func (s *Server) ingestMessage(ctx context.Context, message *runtimev1.Execution
 			return outputapp.ProjectionOutcome{}, err
 		}
 		return s.failures.IngestFailure(ctx, frame)
+	case runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT:
+		if s.indexes == nil {
+			return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidIndexIngestOutput
+		}
+		frame, err := s.indexIngestFrame(message, workloadIdentity)
+		if err != nil {
+			return outputapp.ProjectionOutcome{}, err
+		}
+		return s.indexes.IngestIndex(ctx, frame)
 	default:
 		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
 	}
+}
+
+func (s *Server) indexIngestFrame(message *runtimev1.ExecutionOutputFrameV1, workloadIdentity string) (outputapp.IndexIngestFrame, error) {
+	if message == nil || message.GetOutputSchemaRevision() != s.config.OutputSchemaRevision || hasUnknown(message.ProtoReflect()) || !validStreamIdentity(message) || message.GetOccurredAtUnixMillis() <= 0 {
+		return outputapp.IndexIngestFrame{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	encodedFrame, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil || len(encodedFrame) > s.config.MaxFrameBytes {
+		return outputapp.IndexIngestFrame{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	if message.GetEventType() != runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT || !message.GetTerminal() || message.GetIndexIngest() == nil || message.GetConfigurationValidation() != nil || message.GetRuntimeError() != nil || message.GetToolkitAvailableTools() != nil {
+		return outputapp.IndexIngestFrame{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	identity := message.GetIdentity()
+	fence, err := fenceDomain(identity, message.GetFence(), workloadIdentity)
+	if err != nil {
+		return outputapp.IndexIngestFrame{}, err
+	}
+	payload := message.GetIndexIngest()
+	encodedResult, err := proto.MarshalOptions{Deterministic: true}.Marshal(payload)
+	if err != nil || !matchesDigest(message.GetPayloadDigest(), encodedResult) {
+		return outputapp.IndexIngestFrame{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	settlement, encodedSettlement, err := s.settlementProposalDomain(message, fence, encodedResult, executionapp.SettlementSucceeded)
+	if err != nil {
+		return outputapp.IndexIngestFrame{}, err
+	}
+	result, err := indexIngestResultDomain(payload)
+	if err != nil {
+		return outputapp.IndexIngestFrame{}, err
+	}
+
+	frame := outputapp.IndexIngestFrame{
+		StreamID:              message.GetStreamId(),
+		TenantID:              identity.GetTenantId(),
+		ResourceProjectID:     identity.GetResourceProjectId(),
+		ProjectionProjectID:   identity.GetProjectionProjectId(),
+		WorkloadSessionID:     fence.WorkloadSessionID,
+		ProducerID:            fence.ProducerID,
+		EventID:               message.GetEventId(),
+		LogicalOutputID:       message.GetLogicalOutputId(),
+		Sequence:              message.GetSequence(),
+		ClaimHandoffWatermark: message.GetClaimHandoffWatermark(),
+		OccurredAt:            time.UnixMilli(message.GetOccurredAtUnixMillis()).UTC(),
+		Fence:                 fence,
+		PayloadDigest:         runtimedomain.SHA256(encodedResult),
+		EncodedResult:         encodedResult,
+		Settlement:            settlement,
+		EncodedSettlement:     encodedSettlement,
+		Result:                result,
+	}
+	if err := frame.Validate(); err != nil {
+		return outputapp.IndexIngestFrame{}, err
+	}
+	return frame, nil
 }
 
 func (s *Server) validationFrame(message *runtimev1.ExecutionOutputFrameV1, workloadIdentity string) (outputapp.ConfigurationValidationFrame, error) {
@@ -331,6 +414,109 @@ func validationResultDomain(result *runtimev1.ConfigurationValidationResultV1) (
 	return mapped, nil
 }
 
+func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.IndexIngestResult, error) {
+	if result == nil {
+		return outputapp.IndexIngestResult{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	bundleDigest, err := digestDomain(result.GetInputBundleDigest())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	toolkitConfiguration, err := indexInputBindingDomain(result.GetToolkitConfiguration())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	toolParameters, err := indexInputBindingDomain(result.GetToolParameters())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	llmModel, err := optionalIndexInputBindingDomain(result.GetLlmModel())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	llmConfiguration, err := optionalIndexInputBindingDomain(result.GetLlmConfiguration())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	mcpTokens, err := optionalIndexInputBindingDomain(result.GetMcpTokens())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	artifact, err := indexArtifactReferenceDomain(result.GetResultArtifact())
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+
+	mapped := outputapp.IndexIngestResult{
+		InputBundleID:     result.GetInputBundleId(),
+		InputBundleDigest: bundleDigest,
+		Bindings: outputapp.IndexIngestBindings{
+			ToolkitConfiguration: toolkitConfiguration,
+			ToolParameters:       toolParameters,
+			LLMModel:             llmModel,
+			LLMConfiguration:     llmConfiguration,
+			MCPTokens:            mcpTokens,
+		},
+		ResultArtifact: artifact,
+	}
+	if err := mapped.Validate(); err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
+	return mapped, nil
+}
+
+func indexInputBindingDomain(binding *runtimev1.IndexIngestInputBindingV1) (outputapp.IndexInputBinding, error) {
+	if binding == nil {
+		return outputapp.IndexInputBinding{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	digest, err := digestDomain(binding.GetContentDigest())
+	if err != nil {
+		return outputapp.IndexInputBinding{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	mapped := outputapp.IndexInputBinding{
+		EntryID:          binding.GetEntryId(),
+		ImmutableVersion: binding.GetImmutableVersion(),
+		ContentDigest:    digest,
+	}
+	if err := mapped.Validate(); err != nil {
+		return outputapp.IndexInputBinding{}, err
+	}
+	return mapped, nil
+}
+
+func optionalIndexInputBindingDomain(binding *runtimev1.IndexIngestInputBindingV1) (outputapp.OptionalIndexInputBinding, error) {
+	if binding == nil {
+		return outputapp.OptionalIndexInputBinding{}, nil
+	}
+	mapped, err := indexInputBindingDomain(binding)
+	if err != nil {
+		return outputapp.OptionalIndexInputBinding{}, err
+	}
+	return outputapp.OptionalIndexInputBinding{Present: true, Binding: mapped}, nil
+}
+
+func indexArtifactReferenceDomain(artifact *runtimev1.IndexIngestArtifactReferenceV1) (outputapp.IndexArtifactReference, error) {
+	if artifact == nil {
+		return outputapp.IndexArtifactReference{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	digest, err := digestDomain(artifact.GetDigest())
+	if err != nil {
+		return outputapp.IndexArtifactReference{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	mapped := outputapp.IndexArtifactReference{
+		ArtifactID:       artifact.GetArtifactId(),
+		ImmutableVersion: artifact.GetImmutableVersion(),
+		MediaType:        artifact.GetMediaType(),
+		ByteLength:       artifact.GetByteLength(),
+		Digest:           digest,
+		Classification:   artifact.GetClassification(),
+	}
+	if err := mapped.Validate(); err != nil {
+		return outputapp.IndexArtifactReference{}, err
+	}
+	return mapped, nil
+}
+
 func (s *Server) settlementProposalDomain(frame *runtimev1.ExecutionOutputFrameV1, fence runtimedomain.Fence, encodedPayload []byte, expectedOutcome executionapp.SettlementOutcome) (executionapp.SettlementProposal, []byte, error) {
 	proposal := frame.GetSettlementProposal()
 	wireOutcome := settlementOutcomeProto(expectedOutcome)
@@ -485,9 +671,17 @@ func safeOutputError(err error) (runtimev1.RuntimeErrorCodeV1, string, bool) {
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_STALE_FENCE, "The output fence is no longer current.", false
 	case errors.Is(err, configurationdomain.ErrValidationBindingMismatch):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The output does not match the admitted validation input.", false
+	case errors.Is(err, outputapp.ErrIndexIngestBindingMismatch):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The output does not match the admitted index input.", false
+	case errors.Is(err, outputapp.ErrIndexIngestArtifactUnavailable):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE, "The referenced index artifact is not durably available.", true
+	case errors.Is(err, outputapp.ErrIndexIngestArtifactMismatch):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The index artifact metadata is not accepted.", false
 	case errors.Is(err, outputapp.ErrValidationOutputConflict):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output identity conflicts with a durable output.", false
-	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
+	case errors.Is(err, outputapp.ErrIndexIngestOutputConflict):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The index output identity conflicts with a durable output.", false
+	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, outputapp.ErrInvalidIndexIngestOutput), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output frame is malformed.", false
 	case errors.Is(err, context.Canceled):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_CANCELLED, "The output operation was cancelled.", false
