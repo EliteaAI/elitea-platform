@@ -14,6 +14,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/health"
+	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/pricesync"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/rpc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/scheduler"
 )
@@ -70,6 +71,26 @@ func main() {
 
 	slog.Info("starting scheduler", "instance", cfg.InstanceID, "rpc_channel", cfg.RPCChannel)
 	go sched.Run(ctx)
+
+	// Price-catalog sync worker (design §8.8): refreshes gateway.gateway_models
+	// from ordered PriceSources on a ~24h cadence, off the /llm hot path.
+	if cfg.PriceSyncEnabled {
+		var sources []pricesync.PriceSource
+		if cfg.PriceSyncLiteLLM {
+			sources = append(sources, pricesync.NewLiteLLMSource(cfg.PriceSyncURL, nil))
+		}
+		if cfg.PriceSyncSeed {
+			sources = append(sources, pricesync.NewSeedSource())
+		}
+		if len(sources) == 0 {
+			slog.Warn("price-sync enabled but no sources configured; skipping worker")
+		} else {
+			syncer := pricesync.NewSyncer(pricesync.NewPoolDB(pool), sources, logger)
+			worker := pricesync.NewWorker(syncer, cfg.PriceSyncInterval, logger)
+			slog.Info("starting price-sync worker", "interval", cfg.PriceSyncInterval, "sources", len(sources))
+			go worker.Run(ctx)
+		}
+	}
 
 	<-ctx.Done()
 	slog.Info("shutting down")
