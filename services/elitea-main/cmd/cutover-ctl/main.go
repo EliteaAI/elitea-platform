@@ -51,6 +51,8 @@ func main() {
 		cmdSSEFlushCheck(os.Args[2:])
 	case "cost-parity":
 		cmdCostParity(os.Args[2:])
+	case "models-parity":
+		cmdModelsParity(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -70,12 +72,16 @@ Commands:
   budget-status-audit  Scan --paths for budget/quota call sites that handle 429 but not 402
   sse-flush-check      Assert the gateway streams SSE incrementally for both dialects
   cost-parity          Assert gateway nano-USD cost math matches the pylon CostCalculator
+  models-parity        Assert gateway /llm/v1/models set-equivalent to legacy for N projects (p99 < M ms)
 
 Options:
   --force              Skip readiness gate checks
   --paths <roots>      (budget-status-audit) comma-separated roots to scan
   --gateway-url <url>  (sse-flush-check) gateway base URL (default http://localhost:8083)
   --against <ref>      (cost-parity) reference cost model to compare against (default pylon)
+  --min-projects <N>   (models-parity) minimum projects to check (default 5)
+  --max-p99-ms <M>     (models-parity) maximum acceptable p99 gateway /v1/models latency (default 200)
+  --projects-file <f>  (models-parity) path to the seeded projects fixture (JSON array)
 
 Environment:
   ELITEA_URL           Base URL of elitea-main (default: http://localhost:8080)
