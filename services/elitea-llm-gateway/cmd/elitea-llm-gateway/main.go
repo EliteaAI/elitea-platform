@@ -18,6 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
@@ -52,10 +54,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Open the Postgres pool backing the synthetic /llm/v1/models resolver
+	// (design §4.2). A configured-but-unreachable database is non-fatal — the
+	// /v1/models surface then reports an empty set — so a DB blip cannot stop
+	// the gateway from serving inference (which resolves credentials lazily).
+	var modelResolver *llmproxy.ModelResolver
+	if pool, perr := pgxpool.New(ctx, cfg.DatabaseURL); perr != nil {
+		logger.Warn("models resolver disabled: database pool unavailable", "err", perr)
+	} else {
+		defer pool.Close()
+		modelResolver = llmproxy.NewModelResolver(llmproxy.ModelResolverConfig{
+			DB:     llmproxy.NewModelPoolQuerier(pool),
+			Logger: logger,
+		})
+	}
+
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
 	// ServeMux dispatches by longest-prefix match, so /healthz keeps its own
 	// handler while everything under /llm/ routes into the chi router.
-	handler := llmproxy.NewHandler(llmproxy.NewBifrostRouter(srv.Core()), logger, []byte(cfg.IdentitySecret))
+	handler := llmproxy.NewHandler(llmproxy.NewBifrostRouter(srv.Core()), logger, []byte(cfg.IdentitySecret),
+		llmproxy.WithModelResolver(modelResolver))
 	mux.Handle("/llm/", api.NewRouter(handler))
 
 	errCh := make(chan error, 1)

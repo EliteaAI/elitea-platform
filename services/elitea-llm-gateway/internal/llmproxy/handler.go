@@ -1,9 +1,12 @@
 package llmproxy
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -24,16 +27,36 @@ type Handler struct {
 	// secret disables verification (the mTLS transport still authenticates the
 	// hop) — matching the edge, which only signs when a secret is configured.
 	identitySecret []byte
+	// models synthesises the per-project /llm/v1/models set from Postgres
+	// (design §4.2, §3.4). nil when the gateway is booted without a database:
+	// the /v1/models surface then reports an empty set rather than erroring.
+	models *ModelResolver
+}
+
+// HandlerOption customises Handler construction. It keeps NewHandler's core
+// signature stable (router/logger/identitySecret) while letting later features
+// — the models resolver — be wired in without churning existing call sites.
+type HandlerOption func(*Handler)
+
+// WithModelResolver wires the synthetic /llm/v1/models resolver. A nil resolver
+// leaves the models surface reporting an empty set.
+func WithModelResolver(r *ModelResolver) HandlerOption {
+	return func(h *Handler) { h.models = r }
 }
 
 // NewHandler builds a /llm Handler over the given router. logger may be nil
 // (a discarding logger is substituted). identitySecret may be empty to disable
-// HMAC verification of the forwarded identity headers.
-func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte) *Handler {
+// HMAC verification of the forwarded identity headers. Optional features (the
+// models resolver) are supplied via HandlerOption.
+func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, opts ...HandlerOption) *Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(discard{}, nil))
 	}
-	return &Handler{router: router, logger: logger, identitySecret: identitySecret}
+	h := &Handler{router: router, logger: logger, identitySecret: identitySecret}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // discard is an io.Writer that drops everything; used for the nil-logger case.
@@ -226,6 +249,81 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 // being misrouted to the OpenAI catch-all.
 func (h *Handler) MessagesSubPath(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "invalid_request_error", "unknown messages sub-path", "")
+}
+
+// ---- synthetic models surface (GET /llm/v1/models, not routed through core) ----
+
+// Models handles GET /llm/v1/models. The set is synthesised from the calling
+// project's Postgres configuration (section 'llm'), NOT routed through
+// bifrost/core (design §4.2, §3.4). Response is the OpenAI list envelope.
+func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := h.modelsProjectID(w, r)
+	if !ok {
+		return
+	}
+	list := modelsList{Object: modelsListType, Data: h.modelList(r.Context(), projectID)}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// Model handles GET /llm/v1/models/{name}: a single-model lookup returning 200
+// with the model object when the calling project has it, else 404.
+func (h *Handler) Model(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := h.modelsProjectID(w, r)
+	if !ok {
+		return
+	}
+	name := modelNameFromPath(r.URL.Path)
+	if name == "" {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "unknown model", "")
+		return
+	}
+	if h.models == nil {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "unknown model", "")
+		return
+	}
+	mo, found := h.models.Get(r.Context(), projectID, name)
+	if !found {
+		writeError(w, http.StatusNotFound, "invalid_request_error", "unknown model", "")
+		return
+	}
+	writeJSON(w, http.StatusOK, mo)
+}
+
+// modelsProjectID verifies the edge's signed identity and returns the resolved
+// projectID. It writes a 403 and returns ok=false on an invalid signature
+// (matching newContext); a missing project id resolves to "" (an empty model
+// set), never an error.
+func (h *Handler) modelsProjectID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !verifySignature(r.Header, h.identitySecret) {
+		writeError(w, http.StatusForbidden, "permission_error", "invalid identity signature", "")
+		return "", false
+	}
+	return identityFromHeaders(r.Header).projectID, true
+}
+
+// modelList resolves the project's synthesised model set, tolerating a nil
+// resolver (gateway booted without a database ⇒ empty set).
+func (h *Handler) modelList(ctx context.Context, projectID string) []modelObject {
+	if h.models == nil {
+		return []modelObject{}
+	}
+	return h.models.List(ctx, projectID)
+}
+
+// modelNameFromPath extracts the {name} segment from a /llm/v1/models/{name}
+// path. Model ids may themselves contain slashes (e.g. "openai/gpt-4o"), so the
+// whole remainder after the "/models/" prefix is the id, URL-unescaped.
+func modelNameFromPath(path string) string {
+	const prefix = "/llm/v1/models/"
+	i := strings.Index(path, prefix)
+	if i < 0 {
+		return ""
+	}
+	name := path[i+len(prefix):]
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
+	return strings.Trim(name, "/")
 }
 
 // NotFound writes an OpenAI-shaped 404 for any unmounted /llm path so the

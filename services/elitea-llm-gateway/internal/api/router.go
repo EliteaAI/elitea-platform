@@ -43,6 +43,13 @@ func NewRouter(h *llmproxy.Handler) http.Handler {
 		r.Post("/completions", h.TextCompletion)
 		r.Post("/embeddings", h.Embeddings)
 		r.Post("/responses", h.Responses)
+
+		// Synthetic models surface — resolved from Postgres per project, NOT
+		// routed through core (design §4.2, §3.4). The exact /models route is
+		// the list; /models/* is a single-model lookup (the wildcard lets model
+		// ids contain slashes, e.g. "openai/gpt-4o").
+		r.Get("/models", h.Models)
+		r.Get("/models/*", h.Model)
 	})
 
 	return r
