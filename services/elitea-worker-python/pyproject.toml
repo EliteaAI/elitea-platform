@@ -9,11 +9,17 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=44,<47",
-  "elitea-sdk @ git+https://github.com/EliteaAI/elitea-sdk.git@2cb85480260a92207f3b3d6d3a84149e10de7949",
+  "elitea-sdk==0.8.26",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",
   "httpx>=0.27,<1",
+  # Imported by the worker's callback boundary and by the SDK configuration
+  # registry's lightweight tools package initializer. Keep these aligned with
+  # the pinned SDK runtime extra without installing the full indexing stack in
+  # the configuration-validation worker image.
+  "langchain-core==1.2.7",
+  "langgraph==1.0.7",
   "protobuf>=5.29,<7",
   "pydantic>=2.10,<3",
   "redis>=6.2,<6.3",
@@ -29,6 +35,9 @@ elitea-worker = "elitea_worker.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/elitea_worker"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 addopts = "-q"

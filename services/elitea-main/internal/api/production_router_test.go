@@ -183,6 +183,61 @@ func TestProductionRouterMountsOnlyExactCurrentIndexStartPathWhenComposed(t *tes
 	}
 }
 
+func TestProductionRouterMountsOnlyExactCurrentIndexCancelPathWhenComposed(t *testing.T) {
+	calls := 0
+	indexCancel := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		for parameter, want := range map[string]string{
+			"projectID": "7",
+			"toolkitID": "9",
+			"indexName": "docs",
+			"taskID":    "0123456789abcdef0123456789abcdef",
+		} {
+			if got := chi.URLParam(request, parameter); got != want {
+				t.Fatalf("%s = %q, want %q", parameter, got, want)
+			}
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentIndexCancel: indexCancel})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/docs/0123456789abcdef0123456789abcdef",
+			want:   http.StatusNoContent,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/docs/0123456789abcdef0123456789abcdef",
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/docs/0123456789abcdef0123456789abcdef/extra",
+			want:   http.StatusNotFound,
+		},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(test.method, test.path, nil))
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
+			}
+		})
+	}
+	if calls != 1 {
+		t.Fatalf("index cancel calls = %d, want 1", calls)
+	}
+	if indexingapi.CurrentIndexCancelPath != "/api/v2/elitea_core/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}" {
+		t.Fatalf("current index cancel path drifted: %s", indexingapi.CurrentIndexCancelPath)
+	}
+}
+
 func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.T) {
 	modelCalls := 0
 	modelDefaultCalls := 0
@@ -277,6 +332,123 @@ func TestProductionRouterMountsOnlyCurrentConfigurationReadMethods(t *testing.T)
 	}
 	if calls != 2 {
 		t.Fatalf("read calls=%d", calls)
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentConfigurationTypesMethod(t *testing.T) {
+	calls := 0
+	types := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if chi.URLParam(request, "projectID") != "7" {
+			t.Fatalf("projectID=%q", chi.URLParam(request, "projectID"))
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentConfigurationTypes: types})
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet,
+		"/api/v2/configurations/types/7?section=credentials",
+		nil,
+	))
+	if response.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("GET status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodPost, path: "/api/v2/configurations/types/7", want: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: "/api/v2/configurations/types/7/extra", want: http.StatusNotFound},
+	} {
+		response = httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.want {
+			t.Fatalf("%s %s status=%d, want %d", test.method, test.path, response.Code, test.want)
+		}
+	}
+
+	unmounted := NewRouter(RouterConfig{})
+	response = httptest.NewRecorder()
+	unmounted.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v2/configurations/types/7", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d", response.Code)
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentConfigurationMutationMethods(t *testing.T) {
+	calls := make(map[string]int)
+	mutation := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls[request.Method+" "+request.URL.Path]++
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentConfigurationMutation: mutation})
+	for _, target := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/api/v2/configurations/configurations/7"},
+		{method: http.MethodPut, path: "/api/v2/configurations/configuration/7/11"},
+		{method: http.MethodDelete, path: "/api/v2/configurations/configuration/7/11"},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(target.method, target.path, nil))
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("%s %s status=%d body=%s", target.method, target.path, recorder.Code, recorder.Body.String())
+		}
+		if calls[target.method+" "+target.path] != 1 {
+			t.Fatalf("%s %s calls=%d", target.method, target.path, calls[target.method+" "+target.path])
+		}
+	}
+
+	for _, target := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodGet, path: "/api/v2/configurations/configurations/7", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPatch, path: "/api/v2/configurations/configuration/7/11", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/api/v2/configurations/configuration/7/11", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/api/v2/configurations/configurations/7/extra", want: http.StatusNotFound},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(target.method, target.path, nil))
+		if recorder.Code != target.want {
+			t.Fatalf("%s %s status=%d, want %d", target.method, target.path, recorder.Code, target.want)
+		}
+	}
+}
+
+func TestProductionRouterComposesConfigurationReadAndMutationOnSameCurrentPaths(t *testing.T) {
+	reader := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	mutation := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{
+		CurrentConfigurationRead:     reader,
+		CurrentConfigurationMutation: mutation,
+	})
+	for _, target := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodGet, path: "/api/v2/configurations/configurations/7", want: http.StatusOK},
+		{method: http.MethodGet, path: "/api/v2/configurations/configuration/7/11", want: http.StatusOK},
+		{method: http.MethodPost, path: "/api/v2/configurations/configurations/7", want: http.StatusNoContent},
+		{method: http.MethodPut, path: "/api/v2/configurations/configuration/7/11", want: http.StatusNoContent},
+		{method: http.MethodDelete, path: "/api/v2/configurations/configuration/7/11", want: http.StatusNoContent},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(target.method, target.path, nil))
+		if recorder.Code != target.want {
+			t.Fatalf("%s %s status=%d, want %d", target.method, target.path, recorder.Code, target.want)
+		}
 	}
 }
 

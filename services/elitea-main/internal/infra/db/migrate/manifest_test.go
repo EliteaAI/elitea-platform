@@ -94,9 +94,9 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	require.EqualValues(t, 39, Head(shared))
+	require.EqualValues(t, 42, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
-	require.EqualValues(t, 120, Head(tenant))
+	require.EqualValues(t, 121, Head(tenant))
 }

@@ -59,3 +59,19 @@ JOIN public.auth_core__user AS owner ON owner.id = token.user_id
 WHERE token.uuid = sqlc.arg(uuid)::text
   AND owner.suspended = false
   AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'));
+
+-- name: GetActivePATForUser :one
+SELECT
+    token.id AS token_id,
+    token.uuid,
+    token.expires,
+    owner.id AS user_id,
+    COALESCE(owner.email, '')::text AS email
+FROM public.auth_core__token AS token
+JOIN public.auth_core__user AS owner ON owner.id = token.user_id
+WHERE owner.id = sqlc.arg(user_id)::integer
+  AND owner.suspended = false
+  AND token.uuid IS NOT NULL
+  AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
+ORDER BY token.id
+LIMIT 1;

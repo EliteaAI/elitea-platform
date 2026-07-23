@@ -31,7 +31,11 @@ from elitea_worker.execution.delivery import (
     DeliveryDisposition,
     IndexIngestDeliveryProcessor,
 )
-from elitea_worker.execution.errors import InvalidInput, OutputCancellationWon
+from elitea_worker.execution.errors import (
+    InternalFailure,
+    InvalidInput,
+    OutputCancellationWon,
+)
 from elitea_worker.protocol.codec import (
     TestOnlyConformanceHmacAuthenticator,
     VerifiedWorkerCommand,
@@ -86,6 +90,21 @@ class RecordingSdk:
                         raise
                     self.callback_errors.append(exc)
         return self.result
+
+
+class InputContextDiagnosticError(RuntimeError):
+    pass
+
+
+class ExecuteDiagnosticError(RuntimeError):
+    pass
+
+
+def _raise_execute_diagnostic(depth: int, message: str) -> None:
+    if depth > 0:
+        _raise_execute_diagnostic(depth - 1, message)
+        return
+    raise ExecuteDiagnosticError(message)
 
 
 class InputClient:
@@ -293,11 +312,13 @@ class Case:
 @pytest.mark.parametrize("sdk_success", [True, False])
 def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     sdk_success: bool,
 ) -> None:
+    case = _case()
+    canary = "REDEEMED_SECRET_CANARY"
+
     async def run() -> None:
-        case = _case()
-        canary = "REDEEMED_SECRET_CANARY"
         sdk_result = (
             {
                 "success": True,
@@ -322,7 +343,7 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
         async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
             sequence.append("context")
             assert claim.resource_project_id == "42"
-            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
 
         output = Output()
         control = Control(case)
@@ -360,6 +381,136 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
             assert result.output_frame.runtime_error.safe_message == "The runtime operation failed."
 
     asyncio.run(run())
+    captured = capsys.readouterr()
+    if not sdk_success:
+        diagnostic = _single_index_internal_failure(captured.err)
+        assert diagnostic["stage"] == "result_projection"
+        assert diagnostic["execution_id"] == case.command.execution_id
+        assert diagnostic["exception_module"] == InternalFailure.__module__
+        assert diagnostic["exception_name"] == InternalFailure.__name__
+        assert diagnostic["sdk_failure_category"] == "unclassified_failure"
+        _assert_safe_diagnostic_frames(diagnostic["frames"])
+        assert any(
+            frame["function"] == "bind_result_summary"
+            for frame in diagnostic["frames"]
+        )
+        assert canary not in captured.err
+
+
+def test_input_context_internal_failure_emits_credential_safe_diagnostic(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = _case()
+    canary = "INPUT_CONTEXT_SECRET_CANARY"
+
+    async def run() -> None:
+        async def context_factory(
+            claim: IndexExecutionClaim,
+        ) -> EliteaClientContext:
+            raise InputContextDiagnosticError(canary)
+
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        )
+        assert (
+            result.output_frame.runtime_error.safe_message
+            == "The runtime operation failed."
+        )
+        assert canary.encode() not in result.output_frame.SerializeToString(
+            deterministic=True
+        )
+
+    asyncio.run(run())
+
+    captured = capsys.readouterr()
+    diagnostic = _single_index_internal_failure(captured.err)
+    assert diagnostic["stage"] == "input_context"
+    assert diagnostic["execution_id"] == case.command.execution_id
+    assert diagnostic["exception_module"] == InputContextDiagnosticError.__module__
+    assert diagnostic["exception_name"] == InputContextDiagnosticError.__name__
+    _assert_safe_diagnostic_frames(diagnostic["frames"])
+    assert any(
+        frame["function"] == "context_factory" for frame in diagnostic["frames"]
+    )
+    assert canary not in captured.err
+
+
+def test_execute_internal_failure_emits_bounded_credential_safe_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = _case()
+    canary = "EXECUTE_SECRET_CANARY"
+
+    class RaisingSdk:
+        def ingest(self, **kwargs: Any) -> dict[str, Any]:
+            _raise_execute_diagnostic(16, canary)
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: RaisingSdk()),
+    )
+
+    async def run() -> None:
+        async def context_factory(
+            claim: IndexExecutionClaim,
+        ) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        )
+        assert (
+            result.output_frame.runtime_error.safe_message
+            == "The runtime operation failed."
+        )
+        assert canary.encode() not in result.output_frame.SerializeToString(
+            deterministic=True
+        )
+
+    asyncio.run(run())
+
+    captured = capsys.readouterr()
+    diagnostic = _single_index_internal_failure(captured.err)
+    assert diagnostic["stage"] == "execute"
+    assert diagnostic["execution_id"] == case.command.execution_id
+    assert diagnostic["exception_module"] == ExecuteDiagnosticError.__module__
+    assert diagnostic["exception_name"] == ExecuteDiagnosticError.__name__
+    _assert_safe_diagnostic_frames(diagnostic["frames"])
+    assert len(diagnostic["frames"]) == 8
+    assert any(
+        frame["function"] == "_execute_resolved"
+        for frame in diagnostic["frames"]
+    )
+    assert any(
+        frame["function"] == "_raise_execute_diagnostic"
+        for frame in diagnostic["frames"]
+    )
+    assert canary not in captured.err
 
 
 def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
@@ -399,7 +550,7 @@ def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
         )
 
         async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
-            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
 
         output = GatedOutput()
         processing = asyncio.create_task(_processor(
@@ -458,7 +609,7 @@ def test_claim_handoff_watermark_seeds_the_next_terminal_sequence(
         )
 
         async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
-            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
 
         result = await _processor(
             case,
@@ -509,7 +660,7 @@ def test_progress_cancellation_winner_replaces_exact_sequence_and_settles(
         )
 
         async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
-            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
 
         shared = SharedPendingOutput()
         frames: list[output_pb2.ExecutionOutputFrameV1] = []
@@ -613,7 +764,7 @@ def test_deadline_during_context_acquisition_prevents_sdk_execution(
         async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
             sequence.append("context")
             clock[0] = int(case.command.deadline_unix_millis)
-            return EliteaClientContext(42, "https://elitea.internal", "system-pat")
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
 
         monkeypatch.setattr(
             EliteaSdkIndexingAdapter,
@@ -714,6 +865,42 @@ def _processor(
         clock_unix_millis=clock,
         lease_poll_interval_seconds=10,
     )
+
+
+def _single_index_internal_failure(stderr: str) -> dict[str, Any]:
+    lines = [line for line in stderr.splitlines() if line]
+    assert len(lines) == 1
+    diagnostic = json.loads(lines[0])
+    assert set(diagnostic) in ({
+        "event",
+        "stage",
+        "execution_id",
+        "exception_module",
+        "exception_name",
+        "frames",
+    }, {
+        "event",
+        "stage",
+        "execution_id",
+        "exception_module",
+        "exception_name",
+        "frames",
+        "sdk_failure_category",
+    })
+    assert diagnostic["event"] == "index_ingest_internal_failure"
+    return diagnostic
+
+
+def _assert_safe_diagnostic_frames(frames: object) -> None:
+    assert isinstance(frames, list)
+    assert 0 < len(frames) <= 8
+    for frame in frames:
+        assert isinstance(frame, dict)
+        assert set(frame) == {"file", "function", "line"}
+        assert "/" not in frame["file"]
+        assert "\\" not in frame["file"]
+        assert isinstance(frame["function"], str)
+        assert isinstance(frame["line"], int)
 
 
 def _case() -> Case:

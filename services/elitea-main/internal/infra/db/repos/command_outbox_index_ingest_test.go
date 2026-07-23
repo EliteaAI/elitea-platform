@@ -44,6 +44,12 @@ func TestListPendingIndexIngestIDsIsCapabilityAndStreamScoped(t *testing.T) {
 			t.Fatalf("index pending query is missing %q", fragment)
 		}
 	}
+	if strings.Count(call.sql, "i.index_meta_initialized_at IS NOT NULL") != 2 {
+		t.Fatal("both unpublished and visibility-redelivery arms must require initialized index metadata")
+	}
+	if strings.Count(call.sql, "j.desired_state = 'RUNNING'") != 2 {
+		t.Fatal("both unpublished and visibility-redelivery arms must reject cancelled index work")
+	}
 	if strings.Contains(call.sql, "configuration.validate.v1") || !reflect.DeepEqual(call.args, []any{"runtime:index:commands", int32(1), int64(time.Minute.Milliseconds())}) {
 		t.Fatalf("index pending query crossed capability/stream boundary: args=%#v", call.args)
 	}
@@ -76,6 +82,8 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 		"JOIN elitea_runtime.input_bundles AS b",
 		"i.input_bundle_id = j.input_bundle_id",
 		"j.capability_id = 'index.ingest.v1'",
+		"j.desired_state = 'RUNNING'",
+		"i.index_meta_initialized_at IS NOT NULL",
 	} {
 		if !strings.Contains(query, fragment) {
 			t.Fatalf("index dispatch query is missing %q", fragment)
@@ -108,7 +116,11 @@ func TestStorePreparedIndexIngestReturnsCompetingCASWinner(t *testing.T) {
 		t.Fatalf("repository did not return index CAS winner: %+v", selected)
 	}
 	query := executor.rowCalls[0].sql
-	if !strings.Contains(query, "j.capability_id = 'index.ingest.v1'") || !strings.Contains(query, "FOR UPDATE OF j, o") || strings.Contains(query, "configuration.validate.v1") {
+	if !strings.Contains(query, "j.capability_id = 'index.ingest.v1'") ||
+		!strings.Contains(query, "j.desired_state = 'RUNNING'") ||
+		!strings.Contains(query, "i.index_meta_initialized_at IS NOT NULL") ||
+		!strings.Contains(query, "FOR UPDATE OF j, o") ||
+		strings.Contains(query, "configuration.validate.v1") {
 		t.Fatal("prepared index CAS is not capability-scoped and locked")
 	}
 }
@@ -147,6 +159,10 @@ func TestLoadPreparedIndexIngestDoesNotRedeliverAfterAuthority(t *testing.T) {
 	}
 	if _, err := repository.LoadPreparedIndexIngest(context.Background(), "index-outbox-1"); !errors.Is(err, executionapp.ErrDispatchRetired) {
 		t.Fatalf("authorized prepared command error=%v, want retired no-op", err)
+	}
+	if !strings.Contains(executor.rowCalls[0].sql, "i.index_meta_initialized_at IS NOT NULL") ||
+		!strings.Contains(executor.rowCalls[0].sql, "j.desired_state = 'RUNNING'") {
+		t.Fatal("prepared-envelope reload bypasses metadata initialization or cancellation")
 	}
 }
 

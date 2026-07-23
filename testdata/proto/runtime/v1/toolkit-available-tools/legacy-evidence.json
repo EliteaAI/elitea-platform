@@ -7,11 +7,11 @@
     "semantics": "Call elitea_sdk.tools.get_toolkit_available_tools exactly once with toolkit_type and settings keyword arguments; on escaping Exception return tools=[], args_schemas={}, error=str(exception)."
   },
   "sdk": {
-    "revision": "2cb85480260a92207f3b3d6d3a84149e10de7949",
+    "revision": "a78d3654f99d8ff89ca7233f20a66d676e564f79",
     "entrypoint": "elitea_sdk/tools/__init__.py:get_toolkit_available_tools",
-    "evidence_lines": "367-400",
+    "evidence_lines": "368-401",
     "openapi_enumerator": "elitea_sdk/tools/openapi/__init__.py:get_toolkit_available_tools",
-    "openapi_evidence_lines": "234-310"
+    "openapi_evidence_lines": "358-440"
   },
   "intentional_transport_difference": "Settings and canonical JSON results are protected data-plane content. Redis carries only the bounded protobuf command and immutable input-bundle reference; the output frame carries only an immutable result-artifact reference."
 }

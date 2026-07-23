@@ -1,20 +1,20 @@
 {
   "distribution": "elitea-sdk",
-  "distribution_version": "0.8.17",
+  "distribution_version": "0.8.26",
   "source": {
     "repository": "https://github.com/EliteaAI/elitea-sdk.git",
-    "revision": "2cb85480260a92207f3b3d6d3a84149e10de7949",
-    "git_archive_sha256": "f3f4d0ddccb2948b13bef1e11a2633c1ec437981014dae35095f7cae54c090c9"
+    "revision": "a78d3654f99d8ff89ca7233f20a66d676e564f79",
+    "git_archive_sha256": "5b68b5cbcf9a767e92c31e1eb2e810499e103457af77a249ea574d0c3404d93a"
   },
   "installed_package_tree": {
     "algorithm": "sha256 over sorted elitea_sdk/**/*.py: uint32be path length, UTF-8 relative path, uint64be content length, content bytes",
-    "file_count": 469,
-    "sha256": "bf20296bd31a909302845d44fe5fa5ca390a0e285b5ce57bc17e11ac806fb11f"
+    "file_count": 473,
+    "sha256": "f644b2d439075ec85265c3426f67ec18feadb8a5262edde5d717939ff8794315"
   },
   "validated_models": {
     "openapi": {
       "schema_canonicalization": "UTF-8 compact sorted-key JSON without trailing LF",
-      "schema_sha256": "8d72b85e9f389410a56a0dd11b5ed6a031ac5c5c677f5f8b68278bb7be638b4d"
+      "schema_sha256": "1c43c41a5304c6f73c68deebd37ba70f8c2266a59dfd4f9d4fa20b819e7ab3f1"
     }
   }
 }

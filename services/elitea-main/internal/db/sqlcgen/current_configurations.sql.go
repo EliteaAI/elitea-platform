@@ -126,31 +126,38 @@ func (q *Queries) FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg
 }
 
 const getCurrentConfiguration = `-- name: GetCurrentConfiguration :one
-SELECT id,
-       uuid::text AS configuration_uuid,
-       project_id,
-       label,
-       elitea_title,
-       type,
-       section,
-       data,
-       meta,
-       shared,
-       status_ok,
-       status_logs,
-       source,
-       author_id,
-       created_at,
-       updated_at
+SELECT configuration.id,
+       configuration.uuid::text AS configuration_uuid,
+       configuration.project_id,
+       configuration.label,
+       configuration.elitea_title,
+       configuration.type,
+       configuration.section,
+       configuration.data,
+       configuration.meta,
+       configuration.shared,
+       configuration.status_ok,
+       configuration.status_logs,
+       configuration.source,
+       configuration.author_id,
+       configuration.created_at,
+       configuration.updated_at,
+       EXISTS (
+           SELECT 1
+           FROM centry.social_pins
+           WHERE social_pins.entity = 'configuration'
+             AND social_pins.project_id = $1::integer
+             AND social_pins.entity_id = configuration.id
+       ) AS is_pinned
 FROM configuration
-WHERE id = $1::integer
-  AND project_id = $2::integer
+WHERE configuration.id = $2::integer
+  AND configuration.project_id = $1::integer
 LIMIT 1
 `
 
 type GetCurrentConfigurationParams struct {
-	ConfigurationID int32 `db:"configuration_id" json:"configuration_id"`
 	ProjectID       int32 `db:"project_id" json:"project_id"`
+	ConfigurationID int32 `db:"configuration_id" json:"configuration_id"`
 }
 
 type GetCurrentConfigurationRow struct {
@@ -170,10 +177,11 @@ type GetCurrentConfigurationRow struct {
 	AuthorID          *int32           `db:"author_id" json:"author_id"`
 	CreatedAt         pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	IsPinned          bool             `db:"is_pinned" json:"is_pinned"`
 }
 
 func (q *Queries) GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error) {
-	row := q.db.QueryRow(ctx, getCurrentConfiguration, arg.ConfigurationID, arg.ProjectID)
+	row := q.db.QueryRow(ctx, getCurrentConfiguration, arg.ProjectID, arg.ConfigurationID)
 	var i GetCurrentConfigurationRow
 	err := row.Scan(
 		&i.ID,
@@ -192,6 +200,7 @@ func (q *Queries) GetCurrentConfiguration(ctx context.Context, arg GetCurrentCon
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsPinned,
 	)
 	return i, err
 }
@@ -230,7 +239,8 @@ RETURNING id,
           source,
           author_id,
           created_at,
-          updated_at
+          updated_at,
+          false AS is_pinned
 `
 
 type InsertCurrentConfigurationParams struct {
@@ -266,6 +276,7 @@ type InsertCurrentConfigurationRow struct {
 	AuthorID          *int32           `db:"author_id" json:"author_id"`
 	CreatedAt         pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	IsPinned          bool             `db:"is_pinned" json:"is_pinned"`
 }
 
 func (q *Queries) InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error) {
@@ -302,66 +313,188 @@ func (q *Queries) InsertCurrentConfiguration(ctx context.Context, arg InsertCurr
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsPinned,
 	)
 	return i, err
 }
 
-const listCurrentConfigurations = `-- name: ListCurrentConfigurations :many
-SELECT id,
-       uuid::text AS configuration_uuid,
-       project_id,
+const listCurrentConfigurationOptionCandidates = `-- name: ListCurrentConfigurationOptionCandidates :many
+SELECT elitea_title,
        label,
-       elitea_title,
        type,
        section,
-       data,
-       meta,
        shared,
-       status_ok,
-       status_logs,
-       source,
-       author_id,
-       created_at,
-       updated_at
+       project_id
 FROM configuration
 WHERE project_id = $1::integer
-  AND (COALESCE(cardinality($2::text[]), 0) = 0 OR type = ANY($2::text[]))
-  AND (COALESCE(cardinality($3::text[]), 0) = 0 OR section = ANY($3::text[]))
-  AND ($4::text = '' OR label ILIKE ('%' || $4::text || '%'))
+  AND (
+      (
+          COALESCE(cardinality($2::text[]), 0) > 0
+          AND type = ANY($2::text[])
+      )
+      OR (
+          COALESCE(cardinality($3::text[]), 0) > 0
+          AND section = ANY($3::text[])
+      )
+  )
+  AND (NOT $4::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT $5::integer
+`
+
+type ListCurrentConfigurationOptionCandidatesParams struct {
+	ProjectID  int32    `db:"project_id" json:"project_id"`
+	Types      []string `db:"types" json:"types"`
+	Sections   []string `db:"sections" json:"sections"`
+	SharedOnly bool     `db:"shared_only" json:"shared_only"`
+	LimitRows  int32    `db:"limit_rows" json:"limit_rows"`
+}
+
+type ListCurrentConfigurationOptionCandidatesRow struct {
+	EliteaTitle string  `db:"elitea_title" json:"elitea_title"`
+	Label       *string `db:"label" json:"label"`
+	Type        string  `db:"type" json:"type"`
+	Section     string  `db:"section" json:"section"`
+	Shared      bool    `db:"shared" json:"shared"`
+	ProjectID   int32   `db:"project_id" json:"project_id"`
+}
+
+// This deliberately projects only the six fields exposed by nested
+// configuration options. The same bounded query is run first in the current
+// project and, when requested, in the public project with shared_only=true.
+func (q *Queries) ListCurrentConfigurationOptionCandidates(ctx context.Context, arg ListCurrentConfigurationOptionCandidatesParams) ([]ListCurrentConfigurationOptionCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentConfigurationOptionCandidates,
+		arg.ProjectID,
+		arg.Types,
+		arg.Sections,
+		arg.SharedOnly,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentConfigurationOptionCandidatesRow{}
+	for rows.Next() {
+		var i ListCurrentConfigurationOptionCandidatesRow
+		if err := rows.Scan(
+			&i.EliteaTitle,
+			&i.Label,
+			&i.Type,
+			&i.Section,
+			&i.Shared,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCurrentConfigurationTypes = `-- name: ListCurrentConfigurationTypes :many
+SELECT DISTINCT type
+FROM configuration
+WHERE project_id = $1::integer
+  AND ($2::text = '' OR section = $2::text)
+ORDER BY type ASC
+LIMIT $3::integer
+`
+
+type ListCurrentConfigurationTypesParams struct {
+	ProjectID int32  `db:"project_id" json:"project_id"`
+	Section   string `db:"section" json:"section"`
+	LimitRows int32  `db:"limit_rows" json:"limit_rows"`
+}
+
+// Empty section intentionally disables the section predicate for the exact
+// current UI contract. The caller caps limit_rows at the 257-row sentinel.
+func (q *Queries) ListCurrentConfigurationTypes(ctx context.Context, arg ListCurrentConfigurationTypesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listCurrentConfigurationTypes, arg.ProjectID, arg.Section, arg.LimitRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var type_ string
+		if err := rows.Scan(&type_); err != nil {
+			return nil, err
+		}
+		items = append(items, type_)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCurrentConfigurations = `-- name: ListCurrentConfigurations :many
+SELECT configuration.id,
+       configuration.uuid::text AS configuration_uuid,
+       configuration.project_id,
+       configuration.label,
+       configuration.elitea_title,
+       configuration.type,
+       configuration.section,
+       configuration.data,
+       configuration.meta,
+       configuration.shared,
+       configuration.status_ok,
+       configuration.status_logs,
+       configuration.source,
+       configuration.author_id,
+       configuration.created_at,
+       configuration.updated_at,
+       COALESCE(social_pins.id IS NOT NULL, false)::boolean AS is_pinned
+FROM configuration
+LEFT JOIN centry.social_pins
+  ON social_pins.entity = 'configuration'
+ AND social_pins.project_id = $1::integer
+ AND social_pins.entity_id = configuration.id
+WHERE configuration.project_id = $1::integer
+  AND (COALESCE(cardinality($2::text[]), 0) = 0 OR configuration.type = ANY($2::text[]))
+  AND (COALESCE(cardinality($3::text[]), 0) = 0 OR configuration.section = ANY($3::text[]))
+  AND ($4::text = '' OR configuration.label ILIKE ('%' || $4::text || '%'))
 ORDER BY
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'id'            THEN id END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'id'            THEN id END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'uuid'          THEN uuid END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'uuid'          THEN uuid END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'project_id'    THEN project_id END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'project_id'    THEN project_id END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'label'         THEN label END ASC NULLS LAST,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'label'         THEN label END DESC NULLS LAST,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'elitea_title'  THEN elitea_title END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'elitea_title'  THEN elitea_title END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'type'          THEN type END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'type'          THEN type END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'section'       THEN section END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'section'       THEN section END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'data'          THEN data END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'data'          THEN data END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'meta'          THEN meta END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'meta'          THEN meta END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'shared'        THEN shared END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'shared'        THEN shared END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'status_ok'     THEN status_ok END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'status_ok'     THEN status_ok END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'status_logs'   THEN status_logs END ASC NULLS LAST,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'status_logs'   THEN status_logs END DESC NULLS LAST,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'source'        THEN source END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'source'        THEN source END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'author_id'     THEN author_id END ASC NULLS LAST,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'author_id'     THEN author_id END DESC NULLS LAST,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'created_at'    THEN created_at END ASC,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'created_at'    THEN created_at END DESC,
-  CASE WHEN $5::text = 'asc'  AND $6::text = 'updated_at'    THEN updated_at END ASC NULLS LAST,
-  CASE WHEN $5::text = 'desc' AND $6::text = 'updated_at'    THEN updated_at END DESC NULLS LAST,
-  id ASC
+  (social_pins.id IS NOT NULL) DESC,
+  social_pins.updated_at DESC NULLS LAST,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'id'            THEN configuration.id END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'id'            THEN configuration.id END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'uuid'          THEN configuration.uuid END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'uuid'          THEN configuration.uuid END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'project_id'    THEN configuration.project_id END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'project_id'    THEN configuration.project_id END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'label'         THEN configuration.label END ASC NULLS LAST,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'label'         THEN configuration.label END DESC NULLS LAST,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'elitea_title'  THEN configuration.elitea_title END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'elitea_title'  THEN configuration.elitea_title END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'type'          THEN configuration.type END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'type'          THEN configuration.type END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'section'       THEN configuration.section END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'section'       THEN configuration.section END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'data'          THEN configuration.data END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'data'          THEN configuration.data END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'meta'          THEN configuration.meta END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'meta'          THEN configuration.meta END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'shared'        THEN configuration.shared END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'shared'        THEN configuration.shared END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'status_ok'     THEN configuration.status_ok END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'status_ok'     THEN configuration.status_ok END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'status_logs'   THEN configuration.status_logs END ASC NULLS LAST,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'status_logs'   THEN configuration.status_logs END DESC NULLS LAST,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'source'        THEN configuration.source END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'source'        THEN configuration.source END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'author_id'     THEN configuration.author_id END ASC NULLS LAST,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'author_id'     THEN configuration.author_id END DESC NULLS LAST,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'created_at'    THEN configuration.created_at END ASC,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'created_at'    THEN configuration.created_at END DESC,
+  CASE WHEN $5::text = 'asc'  AND $6::text = 'updated_at'    THEN configuration.updated_at END ASC NULLS LAST,
+  CASE WHEN $5::text = 'desc' AND $6::text = 'updated_at'    THEN configuration.updated_at END DESC NULLS LAST,
+  configuration.id ASC
 LIMIT $8::integer
 OFFSET $7::integer
 `
@@ -394,6 +527,7 @@ type ListCurrentConfigurationsRow struct {
 	AuthorID          *int32           `db:"author_id" json:"author_id"`
 	CreatedAt         pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	IsPinned          bool             `db:"is_pinned" json:"is_pinned"`
 }
 
 func (q *Queries) ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error) {
@@ -431,6 +565,7 @@ func (q *Queries) ListCurrentConfigurations(ctx context.Context, arg ListCurrent
 			&i.AuthorID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsPinned,
 		); err != nil {
 			return nil, err
 		}
@@ -528,7 +663,8 @@ SELECT id,
        source,
        author_id,
        created_at,
-       updated_at
+       updated_at,
+       false AS is_pinned
 FROM configuration
 WHERE project_id = $1::integer
   AND shared = true
@@ -599,6 +735,7 @@ type ListCurrentSharedConfigurationsRow struct {
 	AuthorID          *int32           `db:"author_id" json:"author_id"`
 	CreatedAt         pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	IsPinned          bool             `db:"is_pinned" json:"is_pinned"`
 }
 
 func (q *Queries) ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error) {
@@ -635,6 +772,7 @@ func (q *Queries) ListCurrentSharedConfigurations(ctx context.Context, arg ListC
 			&i.AuthorID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IsPinned,
 		); err != nil {
 			return nil, err
 		}
@@ -673,7 +811,8 @@ RETURNING id,
           source,
           author_id,
           created_at,
-          updated_at
+          updated_at,
+          false AS is_pinned
 `
 
 type ReplaceCurrentConfigurationParams struct {
@@ -705,6 +844,7 @@ type ReplaceCurrentConfigurationRow struct {
 	AuthorID          *int32           `db:"author_id" json:"author_id"`
 	CreatedAt         pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt         pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	IsPinned          bool             `db:"is_pinned" json:"is_pinned"`
 }
 
 func (q *Queries) ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error) {
@@ -737,6 +877,7 @@ func (q *Queries) ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCu
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsPinned,
 	)
 	return i, err
 }

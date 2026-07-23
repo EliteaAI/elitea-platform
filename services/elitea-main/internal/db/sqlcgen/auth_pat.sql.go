@@ -75,6 +75,44 @@ func (q *Queries) DeletePATByID(ctx context.Context, id int32) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const getActivePATForUser = `-- name: GetActivePATForUser :one
+SELECT
+    token.id AS token_id,
+    token.uuid,
+    token.expires,
+    owner.id AS user_id,
+    COALESCE(owner.email, '')::text AS email
+FROM public.auth_core__token AS token
+JOIN public.auth_core__user AS owner ON owner.id = token.user_id
+WHERE owner.id = $1::integer
+  AND owner.suspended = false
+  AND token.uuid IS NOT NULL
+  AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
+ORDER BY token.id
+LIMIT 1
+`
+
+type GetActivePATForUserRow struct {
+	TokenID int32            `db:"token_id" json:"token_id"`
+	Uuid    *string          `db:"uuid" json:"uuid"`
+	Expires pgtype.Timestamp `db:"expires" json:"expires"`
+	UserID  int32            `db:"user_id" json:"user_id"`
+	Email   string           `db:"email" json:"email"`
+}
+
+func (q *Queries) GetActivePATForUser(ctx context.Context, userID int32) (GetActivePATForUserRow, error) {
+	row := q.db.QueryRow(ctx, getActivePATForUser, userID)
+	var i GetActivePATForUserRow
+	err := row.Scan(
+		&i.TokenID,
+		&i.Uuid,
+		&i.Expires,
+		&i.UserID,
+		&i.Email,
+	)
+	return i, err
+}
+
 const getActivePATPrincipalByUUID = `-- name: GetActivePATPrincipalByUUID :one
 SELECT
     token.id AS token_id,

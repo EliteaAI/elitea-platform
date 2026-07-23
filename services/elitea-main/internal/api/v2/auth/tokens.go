@@ -18,6 +18,7 @@ import (
 
 	identity "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -435,19 +436,7 @@ type baselineTokenClaims struct {
 }
 
 func signBaselineToken(secret []byte, record tokenRecord) (string, error) {
-	if len(secret) == 0 {
-		return "", errors.New("token signing key is empty")
-	}
-	var expires *string
-	if record.Expires != nil {
-		value := record.Expires.Format("2006-01-02T15:04")
-		expires = &value
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS512, baselineTokenClaims{
-		UUID:    record.UUID,
-		Expires: expires,
-	})
-	return token.SignedString(secret)
+	return authsvc.SignBaselinePAT(secret, record.UUID, record.Expires)
 }
 
 func (expiration *tokenExpiration) resolve(now time.Time) (*time.Time, error) {

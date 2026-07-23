@@ -25,7 +25,8 @@ func TestCurrentConfigurationDTOUsesExactCurrentNamesAndNulls(t *testing.T) {
 		`"id":9`, `"uuid":"00000000-0000-4000-8000-000000000009"`,
 		`"project_id":7`, `"elitea_title":"elitea-pgvector"`, `"label":null`,
 		`"data":{}`, `"meta":{}`, `"status_logs":null`, `"author_id":null`,
-		`"updated_at":null`, `"is_pinned":false`,
+		`"created_at":"2026-07-22T10:00:00"`, `"updated_at":null`,
+		`"is_pinned":false`,
 	} {
 		if !strings.Contains(text, field) {
 			t.Fatalf("payload %s does not contain %s", text, field)
@@ -33,6 +34,30 @@ func TestCurrentConfigurationDTOUsesExactCurrentNamesAndNulls(t *testing.T) {
 	}
 	if strings.Contains(text, `"name"`) || strings.Contains(text, `"options"`) {
 		t.Fatalf("payload contains prototype or absent optional fields: %s", text)
+	}
+}
+
+func TestCurrentConfigurationDTOUsesNaivePythonMicrosecondTimestampContract(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 22, 10, 0, 0, 123000000, time.UTC)
+	updatedAt := time.Date(2026, time.July, 22, 10, 1, 2, 4000, time.UTC)
+	payload, err := json.Marshal(newCurrentConfigurationDTO(configurationapp.CurrentConfiguration{
+		CreatedAt: createdAt,
+		UpdatedAt: &updatedAt,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	for _, expected := range []string{
+		`"created_at":"2026-07-22T10:00:00.123000"`,
+		`"updated_at":"2026-07-22T10:01:02.000004"`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("payload %s does not contain %s", text, expected)
+		}
+	}
+	if strings.Contains(text, "Z") || strings.Contains(text, "+00:00") {
+		t.Fatalf("timestamp gained a synthetic timezone: %s", text)
 	}
 }
 

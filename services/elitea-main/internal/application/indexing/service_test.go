@@ -29,12 +29,12 @@ func (s *startResolverStub) Resolve(_ context.Context, request StartRequest) (Au
 
 type startAdmissionStub struct {
 	request SubmitRequest
-	outcome executionapp.AdmissionOutcome
+	outcome AdmissionOutcome
 	err     error
 	calls   int
 }
 
-func (s *startAdmissionStub) Submit(_ context.Context, request SubmitRequest) (executionapp.AdmissionOutcome, error) {
+func (s *startAdmissionStub) Submit(_ context.Context, request SubmitRequest) (AdmissionOutcome, error) {
 	s.calls++
 	s.request = request
 	return s.outcome, s.err
@@ -45,12 +45,18 @@ func TestStartServiceResolvesThenAdmitsCurrentUserRequest(t *testing.T) {
 	request := validStartServiceRequest()
 	inputs := validStartServiceInputs()
 	resolver := &startResolverStub{inputs: inputs}
-	admissions := &startAdmissionStub{outcome: executionapp.AdmissionOutcome{
-		ExecutionID: "execution-1",
-		CommandID:   "command-1",
-		Created:     true,
-		AdmittedAt:  now,
-		Deadline:    now.Add(time.Hour),
+	admissions := &startAdmissionStub{outcome: AdmissionOutcome{
+		AdmissionOutcome: executionapp.AdmissionOutcome{
+			ExecutionID: "execution-1",
+			CommandID:   "command-1",
+			Created:     true,
+			AdmittedAt:  now,
+			Deadline:    now.Add(time.Hour),
+		},
+		Generation:             1,
+		IndexMetaID:            "index-meta-1",
+		IndexMetaCorrelationID: "message-1",
+		IndexMetaInitializedAt: timePointer(now),
 	}}
 	generated := 0
 	service, err := NewStartService(resolver, admissions, func() (string, error) {
@@ -76,6 +82,7 @@ func TestStartServiceResolvesThenAdmitsCurrentUserRequest(t *testing.T) {
 	}
 	if admissions.request.Identity != wantIdentity || admissions.request.ToolkitID != 42 ||
 		admissions.request.Initiator != executiondomain.IndexIngestInitiatorUser ||
+		admissions.request.CorrelationID != request.MessageID ||
 		!reflect.DeepEqual(admissions.request.Inputs, inputs) {
 		t.Fatalf("admission request=%+v", admissions.request)
 	}
@@ -115,6 +122,9 @@ func TestStartServiceUsesGeneratedCorrelationOnlyWhenCurrentIDsAreAbsent(t *test
 	}
 	if generated != 2 || first == admissions.request.IdempotencyKey {
 		t.Fatalf("generated=%d first=%q second=%q", generated, first, admissions.request.IdempotencyKey)
+	}
+	if admissions.request.CorrelationID != "generated-correlation-2" {
+		t.Fatalf("generated correlation=%q", admissions.request.CorrelationID)
 	}
 }
 
@@ -191,6 +201,20 @@ func TestStartServiceFailsClosedOnMissingCorrelationOrInvalidOutcome(t *testing.
 	if _, err := service.StartIndexData(context.Background(), request); err == nil {
 		t.Fatal("invalid durable admission outcome was accepted")
 	}
+
+	uninitialized := validStartAdmissionOutcome()
+	uninitialized.IndexMetaInitializedAt = nil
+	service, err = NewStartService(
+		resolver,
+		&startAdmissionStub{outcome: uninitialized},
+		func() (string, error) { return "id", nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartIndexData(context.Background(), request); err == nil {
+		t.Fatal("HTTP start accepted an admission before PgVector metadata initialization")
+	}
 }
 
 func TestNewStartServiceRequiresDependencies(t *testing.T) {
@@ -235,12 +259,20 @@ func validStartServiceInputs() AuthoritativeInputs {
 	}
 }
 
-func validStartAdmissionOutcome() executionapp.AdmissionOutcome {
+func validStartAdmissionOutcome() AdmissionOutcome {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
-	return executionapp.AdmissionOutcome{
-		ExecutionID: "execution-1",
-		CommandID:   "command-1",
-		AdmittedAt:  now,
-		Deadline:    now.Add(time.Hour),
+	return AdmissionOutcome{
+		AdmissionOutcome: executionapp.AdmissionOutcome{
+			ExecutionID: "execution-1",
+			CommandID:   "command-1",
+			AdmittedAt:  now,
+			Deadline:    now.Add(time.Hour),
+		},
+		Generation:             1,
+		IndexMetaID:            "index-meta-1",
+		IndexMetaCorrelationID: "message-1",
+		IndexMetaInitializedAt: timePointer(now),
 	}
 }
+
+func timePointer(value time.Time) *time.Time { return &value }

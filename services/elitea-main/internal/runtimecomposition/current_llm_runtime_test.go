@@ -48,6 +48,9 @@ func TestCurrentLLMRuntimeComposesProviderNeutralFacade(t *testing.T) {
 	if runtime.Handler() == nil || runtime.transport == nil || runtime.masterKey == nil {
 		t.Fatalf("incomplete current LLM runtime: %+v", runtime)
 	}
+	if effects, err := runtime.NewConfigurationEffects(nil); effects != nil || err == nil {
+		t.Fatalf("effects=%+v err=%v", effects, err)
+	}
 	runtime.Close()
 	if _, err := runtime.masterKey.MasterKey(context.Background()); err == nil {
 		t.Fatal("runtime close retained the LiteLLM master key")

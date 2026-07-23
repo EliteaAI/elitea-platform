@@ -111,6 +111,53 @@ def test_adapter_invokes_current_sdk_method_once_with_exact_arguments() -> None:
     assert llm_config["sampling"]["temperature"] == 0
 
 
+@pytest.mark.parametrize(
+    ("selected_tools", "expected"),
+    [
+        (
+            ["index_data", "list_collections", "search_index"],
+            ["index_data", "search_index", "list_indexes"],
+        ),
+        (
+            ["index_data", "list_collections", "list_indexes"],
+            ["index_data", "list_indexes"],
+        ),
+        (
+            ["index_data", "unknown_tool"],
+            ["index_data", "unknown_tool"],
+        ),
+        ("list_collections", "list_collections"),
+    ],
+)
+def test_adapter_applies_only_current_index_tool_name_compatibility(
+    selected_tools: object,
+    expected: object,
+) -> None:
+    client = _ClientStub()
+    adapter = object.__new__(EliteaSdkIndexingAdapter)
+    adapter._client = client
+    toolkit_config = {
+        "type": "github",
+        "settings": {
+            "repository": "owner/repository",
+            "selected_tools": selected_tools,
+        },
+    }
+
+    adapter.ingest(
+        toolkit_config=toolkit_config,
+        tool_params={"filters": {"state": "current"}},
+        runtime_config={},
+        llm_model=None,
+        llm_config={"sampling": {"temperature": 0}},
+        mcp_tokens=None,
+    )
+
+    assert toolkit_config["settings"]["selected_tools"] == selected_tools
+    assert client.calls[0]["toolkit_config"]["settings"]["selected_tools"] == expected
+    assert client.calls[0]["toolkit_config"]["settings"]["repository"] == "owner/repository"
+
+
 def test_current_index_callback_maps_state_shape_without_redeemed_configuration() -> None:
     events = []
     callback = CurrentIndexNodeEventCallback(

@@ -1,0 +1,19 @@
+-- name: RequestCurrentIndexIngestCancellation :one
+WITH transitioned AS (
+    UPDATE elitea_runtime.execution_jobs AS job
+    SET desired_state = 'CANCELLED'
+    FROM elitea_runtime.index_ingest_jobs AS ingest
+    WHERE job.execution_id = sqlc.arg(execution_id)::text
+      AND job.resource_project_id = sqlc.arg(resource_project_id)::integer
+      AND job.projection_project_id = sqlc.arg(resource_project_id)::integer
+      AND job.capability_id = 'index.ingest.v1'
+      AND job.desired_state = 'RUNNING'
+      AND job.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
+      AND ingest.execution_id = job.execution_id
+      AND ingest.generation = job.generation
+      AND ingest.capability_id = job.capability_id
+      AND ingest.toolkit_id = sqlc.arg(toolkit_id)::integer
+      AND ingest.index_name = sqlc.arg(index_name)::text
+    RETURNING job.execution_id
+)
+SELECT EXISTS (SELECT 1 FROM transitioned) AS transitioned;

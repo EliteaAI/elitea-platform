@@ -41,6 +41,18 @@ type AuthoritativeInputs struct {
 	MCPReferences        json.RawMessage
 }
 
+func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
+	i.ToolkitConfiguration = append(json.RawMessage(nil), i.ToolkitConfiguration...)
+	i.ToolParameters = append(json.RawMessage(nil), i.ToolParameters...)
+	i.LLMConfiguration = append(json.RawMessage(nil), i.LLMConfiguration...)
+	i.MCPReferences = append(json.RawMessage(nil), i.MCPReferences...)
+	if i.LLMModel != nil {
+		value := *i.LLMModel
+		i.LLMModel = &value
+	}
+	return i
+}
+
 func (i AuthoritativeInputs) validate() error {
 	if !validBoundedJSONObject(i.ToolkitConfiguration) || !validBoundedJSONObject(i.ToolParameters) {
 		return ErrInvalidAuthoritativeIndexInput
@@ -219,6 +231,7 @@ func indexDigestProto(digest runtimedomain.Digest) *runtimev1.DigestV1 {
 type SubmitRequest struct {
 	Identity       executionapp.AdmissionIdentity
 	IdempotencyKey string
+	CorrelationID  string
 	ToolkitID      int32
 	Initiator      executiondomain.IndexIngestInitiator
 	Inputs         AuthoritativeInputs
@@ -229,8 +242,47 @@ type Admission struct {
 	Binding executiondomain.IndexIngestBinding
 }
 
+// AdmissionOutcome includes the stable logical metadata identity needed to
+// replay the external initialization effect without allocating a second row.
+type AdmissionOutcome struct {
+	executionapp.AdmissionOutcome
+	Generation             uint64
+	IndexMetaID            string
+	IndexMetaCorrelationID string
+	IndexMetaInitializedAt *time.Time
+}
+
 type AtomicAdmissionStore interface {
-	AdmitIndexIngest(context.Context, Admission) (executionapp.AdmissionOutcome, error)
+	AdmitIndexIngest(context.Context, Admission) (AdmissionOutcome, error)
+}
+
+var ErrIndexMetaInitializationMismatch = errors.New("index metadata initialization identity mismatch")
+
+// IndexMetaInitialization identifies the logical PgVector metadata generation
+// that must already exist before its durable command becomes dispatchable.
+// Replaying the same transition preserves the first database-owned timestamp.
+type IndexMetaInitialization struct {
+	ExecutionID   string
+	Generation    uint64
+	MetaID        string
+	CorrelationID string
+}
+
+func (i IndexMetaInitialization) Validate() error {
+	if i.ExecutionID == "" || i.Generation == 0 ||
+		!validOptionalText(i.MetaID, executiondomain.MaxIndexMetaIDBytes) ||
+		!validOptionalText(i.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) ||
+		i.MetaID == "" || i.CorrelationID == "" {
+		return ErrIndexMetaInitializationMismatch
+	}
+	return nil
+}
+
+// IndexMetaInitializationStore owns only the durable ready transition. The
+// caller must first idempotently materialize the exact metadata row in the
+// project-owned PgVector store; this interface cannot manufacture that effect.
+type IndexMetaInitializationStore interface {
+	MarkIndexMetaInitialized(context.Context, IndexMetaInitialization) (time.Time, error)
 }
 
 type AdmissionService struct {
@@ -250,31 +302,35 @@ func NewAdmissionService(store AtomicAdmissionStore, factory *InputBundleFactory
 	return &AdmissionService{store: store, factory: factory, now: now, newID: newID}, nil
 }
 
-func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (executionapp.AdmissionOutcome, error) {
-	if request.Identity.TenantID == "" || request.Identity.ResourceProjectID == "" || request.Identity.ProjectionProjectID == "" || request.Identity.ActorID == "" || request.IdempotencyKey == "" || len(request.IdempotencyKey) > 200 || request.ToolkitID <= 0 || !request.Initiator.Valid() {
-		return executionapp.AdmissionOutcome{}, ErrInvalidIndexStart
+func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (AdmissionOutcome, error) {
+	if request.Identity.TenantID == "" || request.Identity.ResourceProjectID == "" || request.Identity.ProjectionProjectID == "" || request.Identity.ActorID == "" ||
+		request.IdempotencyKey == "" || len(request.IdempotencyKey) > 200 ||
+		request.CorrelationID == "" || !validOptionalText(request.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) ||
+		request.ToolkitID <= 0 || !request.Initiator.Valid() {
+		return AdmissionOutcome{}, ErrInvalidIndexStart
 	}
 	if err := request.Inputs.validate(); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
+		return AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
 	}
 	indexName, err := indexNameFromToolParameters(request.Inputs.ToolParameters)
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return AdmissionOutcome{}, err
 	}
 	bundle, binding, err := s.factory.Build(ctx, request.Inputs)
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return AdmissionOutcome{}, err
 	}
 	binding.ToolkitID = request.ToolkitID
 	binding.IndexName = indexName
 	binding.Initiator = request.Initiator
-	if err := binding.Validate(bundle); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
-	}
-
-	executionID, commandID, outboxID, err := s.allocateAdmissionIDs()
+	executionID, commandID, outboxID, indexMetaID, err := s.allocateAdmissionIDs()
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return AdmissionOutcome{}, err
+	}
+	binding.IndexMetaID = indexMetaID
+	binding.IndexMetaCorrelationID = request.CorrelationID
+	if err := binding.Validate(bundle); err != nil {
+		return AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
 	}
 	createdAt := s.now().UTC()
 	record := executiondomain.Admission{
@@ -303,31 +359,36 @@ func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (e
 		},
 	}
 	if err := record.Validate(); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
+		return AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
 	}
 	outcome, err := s.store.AdmitIndexIngest(ctx, Admission{Record: record, Binding: binding})
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("admit index ingest: %w", err)
+		return AdmissionOutcome{}, fmt.Errorf("admit index ingest: %w", err)
 	}
-	if outcome.ExecutionID == "" || outcome.CommandID == "" || outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
-		return executionapp.AdmissionOutcome{}, errors.New("index admission store returned invalid durable outcome")
+	if outcome.ExecutionID == "" || outcome.CommandID == "" ||
+		outcome.Generation == 0 ||
+		outcome.IndexMetaID == "" || outcome.IndexMetaCorrelationID == "" ||
+		outcome.IndexMetaCorrelationID != request.CorrelationID ||
+		(outcome.Created && outcome.IndexMetaID != binding.IndexMetaID) ||
+		outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
+		return AdmissionOutcome{}, errors.New("index admission store returned invalid durable outcome")
 	}
 	return outcome, nil
 }
 
-func (s *AdmissionService) allocateAdmissionIDs() (string, string, string, error) {
-	values := make([]string, 3)
+func (s *AdmissionService) allocateAdmissionIDs() (string, string, string, string, error) {
+	values := make([]string, 4)
 	for index := range values {
 		value, err := s.newID()
 		if err != nil {
-			return "", "", "", fmt.Errorf("generate index admission ID: %w", err)
+			return "", "", "", "", fmt.Errorf("generate index admission ID: %w", err)
 		}
 		if value == "" {
-			return "", "", "", errors.New("index admission ID generator returned an empty ID")
+			return "", "", "", "", errors.New("index admission ID generator returned an empty ID")
 		}
 		values[index] = value
 	}
-	return values[0], values[1], values[2], nil
+	return values[0], values[1], values[2], values[3], nil
 }
 
 func indexRequestDigest(request SubmitRequest, indexName string) runtimedomain.Digest {
@@ -337,6 +398,7 @@ func indexRequestDigest(request SubmitRequest, indexName string) runtimedomain.D
 		[]byte(request.Identity.ProjectionProjectID),
 		[]byte(request.Identity.ActorID),
 		[]byte(strconv.FormatInt(int64(request.ToolkitID), 10)),
+		[]byte(request.CorrelationID),
 		[]byte(indexName),
 		[]byte(request.Initiator),
 		request.Inputs.ToolkitConfiguration,

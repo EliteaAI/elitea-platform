@@ -22,6 +22,7 @@ const (
 	currentDynamicSourceEmpty         = "current_source_returns_empty"
 	currentMCPEmptySourceRevision     = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 	currentMCPConfigurationTypePrefix = "mcp_"
+	currentSDKValidationFunction      = "applications_configuration_validator"
 )
 
 var (
@@ -46,12 +47,20 @@ type CurrentAvailableConfigurationType struct {
 	CheckConnectionFunc  *string
 }
 
+// UsesSDKValidation identifies the current generic configuration boundary.
+// The function name is the registry contract used by the Configurations
+// plugin; provider names are deliberately not duplicated in Go.
+func (entry CurrentAvailableConfigurationType) UsesSDKValidation() bool {
+	return entry.ValidationFunc != nil && *entry.ValidationFunc == currentSDKValidationFunction
+}
+
 // CurrentAvailableCatalog is the pinned, deterministic part of the current
 // registry. Complete is false until the deployment-specific indexer MCP
 // configuration snapshot is reconciled; callers must not expose a partial
 // catalog as the production /configurations/available response.
 type CurrentAvailableCatalog struct {
 	entries                []CurrentAvailableConfigurationType
+	entryIndexes           map[string]int
 	sourceRevisions        map[string]string
 	dynamicSourceRevisions map[string]string
 	complete               bool
@@ -108,6 +117,7 @@ func LoadCurrentAvailableCatalog(raw []byte) (*CurrentAvailableCatalog, error) {
 
 	definitions := make([]configurationdomain.RegistryEntryDefinition, len(document.Entries))
 	entries := make([]CurrentAvailableConfigurationType, len(document.Entries))
+	entryIndexes := make(map[string]int, len(document.Entries))
 	for index, entry := range document.Entries {
 		if !validCurrentAvailableOptionalString(entry.CheckConnectionLabel) ||
 			!validCurrentAvailableOptionalString(entry.ValidationFunc) ||
@@ -130,6 +140,7 @@ func LoadCurrentAvailableCatalog(raw []byte) (*CurrentAvailableCatalog, error) {
 			ValidationFunc:       cloneCurrentAvailableString(entry.ValidationFunc),
 			CheckConnectionFunc:  cloneCurrentAvailableString(entry.CheckConnectionFunc),
 		}
+		entryIndexes[entry.Type] = index
 	}
 	if _, err := configurationdomain.NewRegistrySnapshot(definitions); err != nil {
 		return nil, ErrInvalidCurrentAvailableSnapshot
@@ -137,10 +148,56 @@ func LoadCurrentAvailableCatalog(raw []byte) (*CurrentAvailableCatalog, error) {
 
 	return &CurrentAvailableCatalog{
 		entries:                entries,
+		entryIndexes:           entryIndexes,
 		sourceRevisions:        cloneCurrentAvailableSources(document.Sources),
 		dynamicSourceRevisions: cloneCurrentAvailableSources(document.DynamicSources),
 		complete:               document.DynamicSources[currentMCPDynamicSource] == currentMCPEmptySourceRevision,
 	}, nil
+}
+
+// EntryByType returns a defensive copy of one immutable registry entry. Type
+// lookup is exact because the current registry is keyed by its lowercase type
+// identifiers; callers must not silently normalize an unknown type into a
+// different registered contract.
+func (catalog *CurrentAvailableCatalog) EntryByType(typeName string) (CurrentAvailableConfigurationType, bool) {
+	if catalog == nil {
+		return CurrentAvailableConfigurationType{}, false
+	}
+	index, ok := catalog.entryIndexes[typeName]
+	if !ok {
+		return CurrentAvailableConfigurationType{}, false
+	}
+	return cloneCurrentAvailableEntry(catalog.entries[index]), true
+}
+
+// DataSchemaByType returns a defensive copy of the data schema embedded in the
+// current ConfigurationCreateBase schema. The second result distinguishes an
+// unknown type or a catalog entry without a usable object data schema.
+func (catalog *CurrentAvailableCatalog) DataSchemaByType(typeName string) (map[string]any, bool) {
+	entry, ok := catalog.EntryByType(typeName)
+	if !ok {
+		return nil, false
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(entry.ConfigSchema, &schema); err != nil {
+		return nil, false
+	}
+	rawData, ok := schema.Properties["data"]
+	if !ok {
+		return nil, false
+	}
+	var dataSchema map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(rawData))
+	decoder.UseNumber()
+	if err := decoder.Decode(&dataSchema); err != nil || dataSchema == nil {
+		return nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return cloneCurrentJSONObject(dataSchema), true
 }
 
 // PinnedEntries returns a defensive copy of the pinned registry entries. An

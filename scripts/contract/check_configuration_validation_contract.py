@@ -315,10 +315,10 @@ def check_catalog_snapshot() -> None:
     assert canonical_json_no_lf(json.loads(catalog_bytes)) == catalog_bytes
     assert digest_bytes(catalog_bytes) == CATALOG_DIGEST
     catalog = json.loads(catalog_bytes)
-    assert catalog["revision"] == SDK_REVISION
-    assert catalog["configurations"]["openapi"]["schema_digest"] == (
-        f"sha256:{SCHEMA_DIGEST.hex()}"
-    )
+    assert len(catalog["entries"]) == 32
+    openapi = next(entry for entry in catalog["entries"] if entry["type"] == "openapi")
+    assert digest_bytes(canonical_json_no_lf(openapi["schema"])) == SCHEMA_DIGEST
+    assert openapi["validation_supported"] is True
 
 
 def check_credential_free_profile_and_legacy_matrix() -> None:
@@ -330,8 +330,10 @@ def check_credential_free_profile_and_legacy_matrix() -> None:
     assert profile["top_level_field_policy"]["allowed_non_secret_fields"] == [
         "auth_type",
         "client_id",
+        "configuration_uuid",
         "custom_header_name",
         "method",
+        "oauth_discovery_endpoint",
         "scope",
         "token_url",
     ]
@@ -367,6 +369,8 @@ def check_credential_free_profile_and_legacy_matrix() -> None:
         "method_basic_literal",
         "method_lowercase_basic",
         "partial_oauth_client_id",
+        "delegated_oauth_discovery_without_client",
+        "runtime_configuration_uuid",
         "null_non_secret_fields",
         "custom_header_string_not_coerced",
         "custom_header_name_x_api_key_is_non_secret_value",

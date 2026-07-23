@@ -12,17 +12,17 @@ RUNTIME_VERSION = "0.1.0"
 
 # The business-compatibility oracle for the first slice. The distribution must
 # replace the source checkout with an artifact pinned to this revision.
-SDK_SOURCE_REVISION = "2cb85480260a92207f3b3d6d3a84149e10de7949"
-SDK_DISTRIBUTION_VERSION = "0.8.17"
+SDK_SOURCE_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
+SDK_DISTRIBUTION_VERSION = "0.8.26"
 SDK_SOURCE_ARCHIVE_SHA256 = (
-    "f3f4d0ddccb2948b13bef1e11a2633c1ec437981014dae35095f7cae54c090c9"
+    "5b68b5cbcf9a767e92c31e1eb2e810499e103457af77a249ea574d0c3404d93a"
 )
 SDK_PACKAGE_TREE_SHA256 = (
-    "bf20296bd31a909302845d44fe5fa5ca390a0e285b5ce57bc17e11ac806fb11f"
+    "f644b2d439075ec85265c3426f67ec18feadb8a5262edde5d717939ff8794315"
 )
 CONFIGURATION_CATALOG_REVISION = SDK_SOURCE_REVISION
 CONFIGURATION_CATALOG_SHA256 = (
-    "1cfe9846435f68d5ec46d6bc36992679a4fadbbe248a28879c0a312969ca6ef4"
+    "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
 )
 
 JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})

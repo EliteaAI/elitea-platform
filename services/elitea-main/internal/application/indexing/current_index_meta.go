@@ -1,0 +1,307 @@
+package indexing
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"strconv"
+	"strings"
+	"time"
+
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+)
+
+const (
+	MaxCurrentIndexMetaConnectionStringBytes = 16 << 10
+	MaxCurrentInitialIndexMetaBytes          = 1 << 20
+)
+
+var (
+	ErrCurrentIndexMetaInitializationInvalid      = errors.New("current index metadata initialization is invalid")
+	ErrCurrentIndexMetaTargetUnavailable          = errors.New("current index metadata target is unavailable")
+	ErrCurrentIndexMetaMaterializationUnavailable = errors.New("current index metadata materialization is unavailable")
+	ErrCurrentIndexMetaConflict                   = errors.New("another index execution is already active")
+)
+
+// FrozenToolkitConfigurationClaim selects the exact immutable toolkit bytes
+// already admitted for one execution. Implementations may redeem the frozen
+// secret references, but must not resolve a mutable toolkit/configuration title
+// again or retain the returned plaintext.
+type FrozenToolkitConfigurationClaim struct {
+	ResourceProjectID    int32
+	ActorUserID          int32
+	ToolkitConfiguration json.RawMessage
+}
+
+type FrozenToolkitConfigurationClaimer interface {
+	ClaimFrozenToolkitConfiguration(context.Context, FrozenToolkitConfigurationClaim) (json.RawMessage, error)
+}
+
+// CurrentIndexMetaTarget exists only for the synchronous external write. The
+// connection string is never part of an execution input, output, or error.
+type CurrentIndexMetaTarget struct {
+	ConnectionString string
+	SchemaID         int32
+}
+
+// CurrentInitialIndexMeta is the exact initial current-baseline metadata
+// generation. InitialMetadata intentionally excludes history: the external
+// writer owns the serialized read/append/write transaction for existing rows.
+type CurrentInitialIndexMeta struct {
+	MetaID          string
+	ExecutionID     string
+	CorrelationID   string
+	Generation      uint64
+	IndexName       string
+	ToolkitID       int32
+	Document        string
+	InitialMetadata json.RawMessage
+}
+
+func (m CurrentInitialIndexMeta) Validate() error {
+	if !validOptionalText(m.MetaID, executiondomain.MaxIndexMetaIDBytes) || m.MetaID == "" ||
+		!validOptionalText(m.ExecutionID, maxIndexAdmissionStringBytes) || m.ExecutionID == "" ||
+		!validOptionalText(m.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) || m.CorrelationID == "" ||
+		m.Generation == 0 || m.ToolkitID <= 0 ||
+		m.IndexName == "" || len(m.IndexName) > maxIndexAdmissionStringBytes ||
+		m.Document != "index_meta_"+m.IndexName ||
+		len(m.InitialMetadata) == 0 || len(m.InitialMetadata) > MaxCurrentInitialIndexMetaBytes ||
+		!validBoundedJSONObject(m.InitialMetadata) {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	return nil
+}
+
+// CurrentIndexMetaWriter atomically creates, recovers, or starts a new
+// generation in the already-resolved project PgVector target.
+type CurrentIndexMetaWriter interface {
+	MaterializeInitial(context.Context, CurrentIndexMetaTarget, CurrentInitialIndexMeta) error
+}
+
+// CurrentIndexMetaInitializer ports the current reset_or_create metadata
+// boundary. It resolves only the admitted frozen toolkit snapshot and writes
+// the external row; InitializingAdmissionSubmitter opens the durable dispatch
+// gate afterwards.
+type CurrentIndexMetaInitializer struct {
+	toolkits FrozenToolkitConfigurationClaimer
+	writer   CurrentIndexMetaWriter
+}
+
+func NewCurrentIndexMetaInitializer(
+	toolkits FrozenToolkitConfigurationClaimer,
+	writer CurrentIndexMetaWriter,
+) (*CurrentIndexMetaInitializer, error) {
+	if toolkits == nil || writer == nil {
+		return nil, errors.New("current index metadata initializer dependencies are required")
+	}
+	return &CurrentIndexMetaInitializer{toolkits: toolkits, writer: writer}, nil
+}
+
+func (i *CurrentIndexMetaInitializer) MaterializeInitialIndexMeta(
+	ctx context.Context,
+	request SubmitRequest,
+	outcome AdmissionOutcome,
+) error {
+	if ctx == nil || i == nil || i.toolkits == nil || i.writer == nil {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if request.ToolkitID <= 0 || request.Inputs.validate() != nil ||
+		request.Identity.TenantID != request.Identity.ResourceProjectID ||
+		request.Identity.ProjectionProjectID != request.Identity.ResourceProjectID ||
+		outcome.ExecutionID == "" || outcome.Generation == 0 ||
+		outcome.IndexMetaID == "" || outcome.IndexMetaCorrelationID == "" ||
+		outcome.IndexMetaCorrelationID != request.CorrelationID ||
+		outcome.AdmittedAt.IsZero() {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	projectID, ok := currentIndexMetaIdentityID(request.Identity.ResourceProjectID)
+	if !ok {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	actorID, ok := currentIndexMetaIdentityID(request.Identity.ActorID)
+	if !ok {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+
+	claimed, err := i.toolkits.ClaimFrozenToolkitConfiguration(ctx, FrozenToolkitConfigurationClaim{
+		ResourceProjectID:    projectID,
+		ActorUserID:          actorID,
+		ToolkitConfiguration: bytes.Clone(request.Inputs.ToolkitConfiguration),
+	})
+	if err != nil {
+		return currentIndexMetaInitializationError(ctx, err)
+	}
+	target, err := currentIndexMetaTarget(claimed, request.ToolkitID, projectID)
+	if err != nil {
+		return err
+	}
+	indexName, err := indexNameFromToolParameters(request.Inputs.ToolParameters)
+	if err != nil {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	indexConfiguration, err := decodeCurrentIndexMetaObject(request.Inputs.ToolParameters)
+	if err != nil {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	createdOn := currentIndexMetaUnixSeconds(outcome.AdmittedAt)
+	initial := map[string]any{
+		"collection":           indexName,
+		"type":                 "index_meta",
+		"indexed":              0,
+		"updated":              0,
+		"state":                "in_progress",
+		"index_configuration":  indexConfiguration,
+		"created_on":           createdOn,
+		"updated_on":           createdOn,
+		"task_id":              outcome.ExecutionID,
+		"conversation_id":      nil,
+		"toolkit_id":           request.ToolkitID,
+		"execution_id":         outcome.ExecutionID,
+		"execution_generation": outcome.Generation,
+		"index_meta_id":        outcome.IndexMetaID,
+		"correlation_id":       outcome.IndexMetaCorrelationID,
+	}
+	encoded, err := json.Marshal(initial)
+	if err != nil || len(encoded) == 0 || len(encoded) > MaxCurrentInitialIndexMetaBytes {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	record := CurrentInitialIndexMeta{
+		MetaID:          outcome.IndexMetaID,
+		ExecutionID:     outcome.ExecutionID,
+		CorrelationID:   outcome.IndexMetaCorrelationID,
+		Generation:      outcome.Generation,
+		IndexName:       indexName,
+		ToolkitID:       request.ToolkitID,
+		Document:        "index_meta_" + indexName,
+		InitialMetadata: encoded,
+	}
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	if err := i.writer.MaterializeInitial(ctx, target, record); err != nil {
+		return currentIndexMetaInitializationError(ctx, err)
+	}
+	return nil
+}
+
+func currentIndexMetaTarget(
+	raw json.RawMessage,
+	toolkitID int32,
+	projectID int32,
+) (CurrentIndexMetaTarget, error) {
+	toolkit, err := decodeCurrentIndexMetaObject(raw)
+	if err != nil {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	storedToolkitID, ok := currentIndexMetaInteger(toolkit["id"])
+	if !ok || storedToolkitID != int64(toolkitID) {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	if toolkitType, ok := toolkit["type"].(string); !ok || toolkitType == "" ||
+		len(toolkitType) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
+		strings.ContainsAny(toolkitType, "\x00\r\n") {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	settings, ok := toolkit["settings"].(map[string]any)
+	if !ok || settings == nil {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	pgvectorConfiguration, ok := settings["pgvector_configuration"].(map[string]any)
+	if !ok || pgvectorConfiguration == nil ||
+		pgvectorConfiguration[configurationapp.CurrentFrozenConfigurationMarker] != nil {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	configurationType, typeOK := pgvectorConfiguration["configuration_type"].(string)
+	configurationProjectID, projectOK := currentIndexMetaInteger(pgvectorConfiguration["configuration_project_id"])
+	connectionString, connectionOK := pgvectorConfiguration["connection_string"].(string)
+	if !typeOK || configurationType != "pgvector" ||
+		!projectOK || configurationProjectID != int64(projectID) ||
+		!connectionOK || connectionString == "" ||
+		len(connectionString) > MaxCurrentIndexMetaConnectionStringBytes ||
+		strings.ContainsAny(connectionString, "\x00\r\n") {
+		return CurrentIndexMetaTarget{}, ErrCurrentIndexMetaTargetUnavailable
+	}
+	return CurrentIndexMetaTarget{
+		ConnectionString: connectionString,
+		SchemaID:         toolkitID,
+	}, nil
+}
+
+func decodeCurrentIndexMetaObject(raw []byte) (map[string]any, error) {
+	if len(raw) == 0 || len(raw) > MaxCurrentInitialIndexMetaBytes {
+		return nil, ErrCurrentIndexMetaInitializationInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return nil, ErrCurrentIndexMetaInitializationInvalid
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, ErrCurrentIndexMetaInitializationInvalid
+	}
+	return object, nil
+}
+
+func currentIndexMetaIdentityID(value string) (int32, bool) {
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	return int32(parsed), err == nil && parsed > 0 && strconv.FormatInt(parsed, 10) == value
+}
+
+func currentIndexMetaInteger(value any) (int64, bool) {
+	switch value := value.(type) {
+	case json.Number:
+		parsed, err := strconv.ParseInt(string(value), 10, 64)
+		return parsed, err == nil
+	case int:
+		return int64(value), true
+	case int32:
+		return int64(value), true
+	case int64:
+		return value, true
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value ||
+			value < math.MinInt64 || value > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(value), true
+	default:
+		return 0, false
+	}
+}
+
+func currentIndexMetaUnixSeconds(value time.Time) float64 {
+	value = value.UTC()
+	return float64(value.Unix()) + float64(value.Nanosecond())/float64(time.Second)
+}
+
+func currentIndexMetaInitializationError(ctx context.Context, cause error) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if errors.Is(cause, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if errors.Is(cause, ErrCurrentIndexMetaConflict) {
+		return ErrCurrentIndexMetaConflict
+	}
+	if errors.Is(cause, ErrCurrentIndexMetaTargetUnavailable) {
+		return ErrCurrentIndexMetaTargetUnavailable
+	}
+	return ErrCurrentIndexMetaMaterializationUnavailable
+}
+
+var _ IndexMetaMaterializer = (*CurrentIndexMetaInitializer)(nil)

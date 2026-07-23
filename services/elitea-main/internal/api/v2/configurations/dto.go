@@ -25,8 +25,8 @@ type CurrentConfigurationDTO struct {
 	StatusLogs  *string         `json:"status_logs"`
 	Source      string          `json:"source"`
 	AuthorID    *int32          `json:"author_id"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   *time.Time      `json:"updated_at"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   *string         `json:"updated_at"`
 	IsPinned    bool            `json:"is_pinned"`
 	Options     *map[string]any `json:"options,omitempty"`
 }
@@ -62,8 +62,8 @@ func newCurrentConfigurationDTO(configuration configurationapp.CurrentConfigurat
 		StatusLogs:  configuration.StatusLogs,
 		Source:      configuration.Source,
 		AuthorID:    configuration.AuthorID,
-		CreatedAt:   configuration.CreatedAt,
-		UpdatedAt:   configuration.UpdatedAt,
+		CreatedAt:   currentConfigurationTimestamp(configuration.CreatedAt),
+		UpdatedAt:   currentConfigurationOptionalTimestamp(configuration.UpdatedAt),
 		IsPinned:    configuration.IsPinned,
 		Options:     configuration.Options,
 	}
@@ -100,4 +100,25 @@ func nonNilCurrentJSONObject(value map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return value
+}
+
+// Current PostgreSQL columns are timestamp without time zone. Pydantic's JSON
+// mode serializes those Python datetimes as naive ISO-8601 values: seconds
+// only when microseconds are zero, otherwise exactly six fractional digits.
+// Formatting the pgx time value explicitly avoids adding a synthetic trailing
+// "Z" that is absent from the current HTTP contract.
+func currentConfigurationTimestamp(value time.Time) string {
+	const secondsLayout = "2006-01-02T15:04:05"
+	if value.Nanosecond() == 0 {
+		return value.Format(secondsLayout)
+	}
+	return value.Format(secondsLayout + ".000000")
+}
+
+func currentConfigurationOptionalTimestamp(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := currentConfigurationTimestamp(*value)
+	return &formatted
 }

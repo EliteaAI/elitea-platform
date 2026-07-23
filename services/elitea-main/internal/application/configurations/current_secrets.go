@@ -14,6 +14,8 @@ var ErrInvalidCurrentConfigurationSecrets = errors.New("invalid current configur
 // authorized project's hidden-secret store. Callers own the returned values
 // and must not log or place them in ordinary configuration snapshots.
 type HiddenSecretMutation struct {
+	Field string
+	Path  []string
 	Name  string
 	Value string
 }
@@ -70,7 +72,7 @@ func ExtractCurrentConfigurationSecrets(
 		existingIDs:       make(map[string]struct{}),
 		generatedIDs:      make(map[string]struct{}),
 	}
-	sanitized, err := extractor.object(ctx, data, properties, "", true)
+	sanitized, err := extractor.object(ctx, data, properties, "", nil, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,6 +92,7 @@ func (e *currentSecretExtractor) object(
 	data map[string]any,
 	properties map[string]any,
 	parentPath string,
+	parentSegments []string,
 	rejectUnknown bool,
 ) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
@@ -117,6 +120,7 @@ func (e *currentSecretExtractor) object(
 		}
 
 		path := currentSecretFieldPath(parentPath, key)
+		pathSegments := appendCurrentSecretFieldSegment(parentSegments, key)
 		rawSchema, known := properties[key]
 		if !known {
 			sanitized[key] = cloneCurrentJSONValue(data[key])
@@ -128,7 +132,7 @@ func (e *currentSecretExtractor) object(
 			sanitized[key] = cloneCurrentJSONValue(data[key])
 			continue
 		}
-		value, err := e.value(ctx, data[key], fieldSchema, path)
+		value, err := e.value(ctx, data[key], fieldSchema, path, pathSegments)
 		if err != nil {
 			return nil, err
 		}
@@ -137,13 +141,19 @@ func (e *currentSecretExtractor) object(
 	return sanitized, nil
 }
 
-func (e *currentSecretExtractor) value(ctx context.Context, value any, schema map[string]any, path string) (any, error) {
+func (e *currentSecretExtractor) value(
+	ctx context.Context,
+	value any,
+	schema map[string]any,
+	path string,
+	pathSegments []string,
+) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	if currentSchemaIsPassword(schema) {
-		return e.password(ctx, value, path)
+		return e.password(ctx, value, path, pathSegments)
 	}
 
 	object, isObject := value.(map[string]any)
@@ -154,10 +164,15 @@ func (e *currentSecretExtractor) value(ctx context.Context, value any, schema ma
 	if !hasProperties {
 		return cloneCurrentJSONValue(value), nil
 	}
-	return e.object(ctx, object, properties, path, false)
+	return e.object(ctx, object, properties, path, pathSegments, false)
 }
 
-func (e *currentSecretExtractor) password(ctx context.Context, value any, path string) (any, error) {
+func (e *currentSecretExtractor) password(
+	ctx context.Context,
+	value any,
+	path string,
+	pathSegments []string,
+) (any, error) {
 	if value == nil {
 		return nil, nil
 	}
@@ -197,7 +212,12 @@ func (e *currentSecretExtractor) password(ctx context.Context, value any, path s
 	}
 
 	e.generatedIDs[name] = struct{}{}
-	e.mutations = append(e.mutations, HiddenSecretMutation{Name: name, Value: plaintext})
+	e.mutations = append(e.mutations, HiddenSecretMutation{
+		Field: path,
+		Path:  append([]string(nil), pathSegments...),
+		Name:  name,
+		Value: plaintext,
+	})
 	return "{{secret." + name + "}}", nil
 }
 
@@ -289,4 +309,11 @@ func currentSecretFieldPath(parent, field string) string {
 		return field
 	}
 	return parent + "." + field
+}
+
+func appendCurrentSecretFieldSegment(parent []string, field string) []string {
+	path := make([]string, len(parent)+1)
+	copy(path, parent)
+	path[len(parent)] = field
+	return path
 }

@@ -20,6 +20,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
@@ -142,9 +143,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
 	var currentConfigurationRead http.Handler
 	var currentConfigurationAvailable http.Handler
+	var currentConfigurationTypes http.Handler
+	var currentConfigurationMutation http.Handler
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
 	var currentLLMFacade http.Handler
+	var currentLLMRoot *runtimecomposition.CurrentLLMRuntime
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
 			pool,
@@ -177,6 +181,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose current Configurations read routes: %w", err)
 		}
+		currentConfigurationTypes, err = configurationapi.NewCurrentConfigurationTypesRoute(
+			currentConfigurationsRoot.Types(),
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations types route: %w", err)
+		}
 		currentModelCatalog, err = configurationapi.NewCurrentModelCatalogRoute(
 			currentConfigurationsRoot.ModelCatalog(),
 			currentConfigurationsConfig.PublicProjectID,
@@ -195,7 +207,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose current Configurations model-default route: %w", err)
 		}
 		if currentConfigurationsConfig.LiteLLMBaseURL != "" {
-			currentLLMRoot, llmErr := runtimecomposition.NewCurrentLLMRuntime(
+			currentLLMRoot, err = runtimecomposition.NewCurrentLLMRuntime(
 				pool,
 				currentConfigurationsRoot,
 				runtimecomposition.CurrentLLMConfig{
@@ -203,8 +215,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 					MasterKeyFile: currentConfigurationsConfig.LiteLLMMasterKeyFile,
 				},
 			)
-			if llmErr != nil {
-				return fmt.Errorf("compose current LiteLLM facade: %w", llmErr)
+			if err != nil {
+				return fmt.Errorf("compose current LiteLLM facade: %w", err)
 			}
 			defer currentLLMRoot.Close()
 			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
@@ -219,14 +231,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if runtimeConfig.Enabled && (principalValidator == nil || forwardedIdentityVerifier == nil) {
 		return errors.New("ELITEA_RUNTIME_ENABLED requires production authentication")
 	}
-	if runtimeConfig.IndexIngestDispatchEnabled {
-		if !currentConfigurationsConfig.Enabled {
-			return errors.New("runtime index ingest requires current Configurations")
-		}
+	if err := validateRuntimeComposition(currentConfigurationsConfig, runtimeConfig); err != nil {
+		return err
 	}
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
+	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
@@ -234,15 +245,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return openErr
 		}
 		defer runtimePools.Close()
+		var configurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
+		if currentConfigurationsConfig.MutationEnabled {
+			configurationLifecycleReconciler, err = runtimecomposition.NewCurrentConfigurationLifecycleReconciler(
+				runtimePools.Control,
+				currentConfigurationsRoot,
+				currentLLMRoot,
+				currentConfigurationsConfig.AllowProjectOwnLLMs,
+			)
+			if err != nil {
+				return fmt.Errorf("compose current Configurations lifecycle: %w", err)
+			}
+		}
 		runtimeRoot, err = runtimecomposition.New(ctx, runtimeConfig, runtimecomposition.Dependencies{
-			AdmissionPool:         runtimePools.Admission,
-			ControlPool:           runtimePools.Control,
-			OutputPool:            runtimePools.Output,
-			ReplayPool:            runtimePools.Replay,
-			ContentPool:           runtimePools.Content,
-			CurrentConfigurations: currentConfigurationsRoot,
-			ProjectTokenValidator: formGraph,
-			Logger:                logger,
+			AdmissionPool:                    runtimePools.Admission,
+			ControlPool:                      runtimePools.Control,
+			OutputPool:                       runtimePools.Output,
+			ReplayPool:                       runtimePools.Replay,
+			ContentPool:                      runtimePools.Content,
+			CurrentConfigurations:            currentConfigurationsRoot,
+			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
+			ActorTokenIssuer:                 formGraph,
+			ProjectTokenValidator:            formGraph,
+			Logger:                           logger,
 		})
 		if err != nil {
 			return fmt.Errorf("compose optional runtime: %w", err)
@@ -252,6 +277,26 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				runErr = fmt.Errorf("close optional runtime: %w", err)
 			}
 		}()
+		if currentConfigurationsConfig.MutationEnabled {
+			mutationService, mutationErr := currentConfigurationsRoot.NewMutationService(
+				runtimeRoot.CurrentSDKConfigurationValidator(),
+			)
+			if mutationErr != nil {
+				return fmt.Errorf("compose current Configurations mutation service: %w", mutationErr)
+			}
+			currentConfigurationMutation, mutationErr = configurationapi.NewCurrentConfigurationMutationRoute(
+				mutationService,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if mutationErr != nil {
+				return fmt.Errorf("compose current Configurations mutation routes: %w", mutationErr)
+			}
+		}
 		publicRoutes := runtimeRoot.PublicRoutes()
 		productionRuntime, err = api.NewProductionRuntimeRoutes(
 			publicRoutes.Validation,
@@ -274,6 +319,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			)
 			if err != nil {
 				return fmt.Errorf("compose current index-start route: %w", err)
+			}
+		}
+		if publicRoutes.IndexCancel != nil {
+			currentIndexCancel, err = indexingapi.NewCurrentIndexCancelRoute(
+				publicRoutes.IndexCancel,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-cancel route: %w", err)
 			}
 		}
 		if publicRoutes.IndexMeta != nil {
@@ -303,7 +362,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentProjectList:            currentProjectList,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
 		CurrentConfigurationRead:      currentConfigurationRead,
+		CurrentConfigurationTypes:     currentConfigurationTypes,
+		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
+		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,

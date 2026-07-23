@@ -66,7 +66,8 @@ class EliteaSdkAdapter:
             # SDK package initializers discover optional integrations and may
             # print diagnostics. Keep stdout reserved for the worker protocol.
             with redirect_stdout(sys.stderr):
-                module = importlib.import_module("elitea_sdk.configurations")
+                module = _import_sdk_configurations()
+                _require_complete_configuration_registry(module)
                 package_root = Path(module.__file__).resolve().parents[1]
                 if _package_tree_digest(package_root) != SDK_PACKAGE_TREE_SHA256:
                     raise DependencyUnavailable(
@@ -161,7 +162,7 @@ class EliteaSdkToolkitAdapter:
     - ``centry/pylon_indexer/plugins/indexer_worker/methods/``
       ``indexer_toolkit_available_tools.py:32-39`` delegates to this SDK API
       and maps an escaping ``Exception`` to the current response shape.
-    - ``elitea_sdk/tools/__init__.py:367-400`` owns type normalization,
+    - ``elitea_sdk/tools/__init__.py:368-401`` owns type normalization,
       enumerator lookup, result values and toolkit error strings.
 
     This adapter deliberately performs one keyword call and no normalization,
@@ -233,10 +234,13 @@ class EliteaSdkIndexingAdapter:
         llm_config: dict[str, Any],
         mcp_tokens: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        invocation_toolkit_config = _current_index_tool_name_compatibility(
+            toolkit_config
+        )
         # Business-compatibility boundary: exactly the public SDK operation used
         # by the current indexer worker, exactly once per kernel invocation.
         return self._client.test_toolkit_tool(
-            toolkit_config=deepcopy(toolkit_config),
+            toolkit_config=invocation_toolkit_config,
             tool_name="index_data",
             tool_params=deepcopy(tool_params),
             runtime_config=runtime_config,
@@ -244,6 +248,26 @@ class EliteaSdkIndexingAdapter:
             llm_config=deepcopy(llm_config),
             mcp_tokens=mcp_tokens,
         )
+
+
+def _current_index_tool_name_compatibility(
+    toolkit_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the current R-2.0.5 index-tool rename on an invocation-only copy."""
+
+    result = deepcopy(toolkit_config)
+    settings = result.get("settings")
+    if not isinstance(settings, dict):
+        return result
+    selected_tools = settings.get("selected_tools")
+    if not isinstance(selected_tools, list) or "list_collections" not in selected_tools:
+        return result
+    migrated = list(selected_tools)
+    migrated.remove("list_collections")
+    if "list_indexes" not in migrated:
+        migrated.append("list_indexes")
+    settings["selected_tools"] = migrated
+    return result
 
 
 def _package_tree_digest(root: Path) -> str:
@@ -257,6 +281,32 @@ def _package_tree_digest(root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _require_complete_configuration_registry(module: Any) -> None:
+    """Reject an SDK registry whose guarded imports were incomplete."""
+
+    failed_imports = getattr(module, "FAILED_IMPORTS", None)
+    if not isinstance(failed_imports, dict) or failed_imports:
+        raise DependencyUnavailable(
+            "The installed Elitea SDK configuration registry is incomplete."
+        )
+
+
+def _import_sdk_configurations() -> Any:
+    """Load the current SDK registries in their only complete import order.
+
+    SDK 0.8.26's GitHub configuration imports ``elitea_sdk.tools.utils``.
+    Importing Configurations first therefore initializes the Tools package
+    while the GitHub configuration module is only partially defined, and the
+    SDK permanently records GitHub as a failed tool in that process. Loading
+    Tools first lets the same SDK finish both registries without changing any
+    provider behavior. Remove this ordering shim after the SDK breaks that
+    package-initializer cycle.
+    """
+
+    importlib.import_module("elitea_sdk.tools")
+    return importlib.import_module("elitea_sdk.configurations")
 
 
 @lru_cache(maxsize=1)

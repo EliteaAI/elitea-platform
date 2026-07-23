@@ -12,10 +12,12 @@ const maxCurrentConfigurationsPathBytes = 4096
 
 type currentConfigurationsConfig struct {
 	Enabled              bool
+	MutationEnabled      bool
 	PublicProjectID      int32
 	VaultMasterKeyFile   string
 	LiteLLMBaseURL       string
 	LiteLLMMasterKeyFile string
+	AllowProjectOwnLLMs  bool
 }
 
 func currentConfigurationsConfigFromEnv(
@@ -27,7 +29,16 @@ func currentConfigurationsConfigFromEnv(
 	enabled, _ := lookup("ELITEA_CONFIGURATIONS_ENABLED")
 	switch enabled {
 	case "", "false":
-		for _, name := range []string{"ELITEA_AI_PROJECT_ID", "ELITEA_VAULT_MASTER_KEY_FILE", "ELITEA_LITELLM_BASE_URL", "ELITEA_LITELLM_MASTER_KEY_FILE"} {
+		if value, present := lookup("ELITEA_CONFIGURATIONS_MUTATION_ENABLED"); present && value != "" && value != "false" {
+			return currentConfigurationsConfig{}, errors.New("current Configurations settings require explicit enablement")
+		}
+		for _, name := range []string{
+			"ELITEA_AI_PROJECT_ID",
+			"ELITEA_VAULT_MASTER_KEY_FILE",
+			"ELITEA_LITELLM_BASE_URL",
+			"ELITEA_LITELLM_MASTER_KEY_FILE",
+			"ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS",
+		} {
 			if value, present := lookup(name); present && value != "" {
 				return currentConfigurationsConfig{}, errors.New("current Configurations settings require explicit enablement")
 			}
@@ -36,6 +47,16 @@ func currentConfigurationsConfigFromEnv(
 	case "true":
 	default:
 		return currentConfigurationsConfig{}, errors.New("ELITEA_CONFIGURATIONS_ENABLED must be true or false")
+	}
+
+	mutationEnabledValue, _ := lookup("ELITEA_CONFIGURATIONS_MUTATION_ENABLED")
+	mutationEnabled := false
+	switch mutationEnabledValue {
+	case "", "false":
+	case "true":
+		mutationEnabled = true
+	default:
+		return currentConfigurationsConfig{}, errors.New("ELITEA_CONFIGURATIONS_MUTATION_ENABLED must be true or false")
 	}
 
 	publicProject, present := lookup("ELITEA_AI_PROJECT_ID")
@@ -55,6 +76,16 @@ func currentConfigurationsConfigFromEnv(
 	}
 	liteLLMBaseURL, _ := lookup("ELITEA_LITELLM_BASE_URL")
 	liteLLMMasterKeyFile, _ := lookup("ELITEA_LITELLM_MASTER_KEY_FILE")
+	allowProjectOwnLLMs := true
+	if value, present := lookup("ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS"); present {
+		switch value {
+		case "true":
+		case "false":
+			allowProjectOwnLLMs = false
+		default:
+			return currentConfigurationsConfig{}, errors.New("ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS must be true or false")
+		}
+	}
 	if (liteLLMBaseURL == "") != (liteLLMMasterKeyFile == "") {
 		return currentConfigurationsConfig{}, errors.New("LiteLLM base URL and master-key file must be configured together")
 	}
@@ -63,11 +94,16 @@ func currentConfigurationsConfigFromEnv(
 		strings.ContainsAny(liteLLMMasterKeyFile, "\x00\r\n") || liteLLMMasterKeyFile == masterKeyFile) {
 		return currentConfigurationsConfig{}, errors.New("ELITEA_LITELLM_MASTER_KEY_FILE is invalid")
 	}
+	if mutationEnabled && (liteLLMBaseURL == "" || liteLLMMasterKeyFile == "") {
+		return currentConfigurationsConfig{}, errors.New("configuration mutation requires LiteLLM lifecycle settings")
+	}
 	return currentConfigurationsConfig{
 		Enabled:              true,
+		MutationEnabled:      mutationEnabled,
 		PublicProjectID:      int32(parsed),
 		VaultMasterKeyFile:   masterKeyFile,
 		LiteLLMBaseURL:       liteLLMBaseURL,
 		LiteLLMMasterKeyFile: liteLLMMasterKeyFile,
+		AllowProjectOwnLLMs:  allowProjectOwnLLMs,
 	}, nil
 }

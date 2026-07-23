@@ -52,7 +52,7 @@ ClaimBoundTokenFetcher = Callable[[IndexExecutionClaim], Awaitable[str]]
 
 
 class ClaimBoundEliteaClientContextFactory:
-    """Combine trusted nonsecret origin with a fresh per-claim system PAT."""
+    """Combine trusted nonsecret origin with a claim-bound execution actor PAT."""
 
     def __init__(
         self,

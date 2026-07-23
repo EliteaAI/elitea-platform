@@ -102,6 +102,46 @@ def test_production_content_client_rejects_http11_negotiation() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (401, "content claim"),
+        (403, "content grant"),
+    ],
+)
+def test_content_client_reports_safe_authorization_boundary(
+    status_code: int,
+    message: str,
+) -> None:
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    status_code,
+                    request=request,
+                    extensions={"http_version": b"HTTP/2"},
+                )
+            )
+        ) as http:
+            client = ScopedInputContentClient(
+                http,
+                allowed_origins=frozenset({"https://content.internal"}),
+                max_content_bytes=1024,
+                require_http2=True,
+            )
+            with pytest.raises(AuthorizationFailure, match=message):
+                await client.fetch(
+                    InputReadGrant(
+                        url="https://content.internal/object",
+                        expected_length=2,
+                        expected_sha256=hashlib.sha256(b"{}").digest(),
+                        expected_media_type="application/json",
+                    )
+                )
+
+    asyncio.run(run())
+
+
 def test_claim_bound_builder_matches_internal_go_route_and_headers() -> None:
     content = b"{}\n"
     grant = ClaimBoundInputRequestBuilder(origin="https://content.internal").build(

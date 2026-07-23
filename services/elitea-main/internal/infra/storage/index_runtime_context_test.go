@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -30,19 +32,19 @@ func (f projectTokenValidatorFunc) ValidateToken(ctx context.Context, token stri
 	return f(ctx, token)
 }
 
-func TestIndexRuntimeContextReturnsOnlyClaimProjectSystemToken(t *testing.T) {
+type actorTokenIssuerFunc func(context.Context, int64) (string, error)
+
+func (f actorTokenIssuerFunc) IssueToken(ctx context.Context, userID int64) (string, error) {
+	return f(ctx, userID)
+}
+
+func TestIndexRuntimeContextReturnsOnlyClaimActorToken(t *testing.T) {
 	t.Parallel()
 
 	const token = "header.payload.signature"
 	fence := bytes.Repeat([]byte{4}, sha256.Size)
 	certificate := &x509.Certificate{}
-	vaults := &fakeSecretVaultLoader{
-		projects: map[int64]SecretVault{
-			42: &fakeSecretVault{regular: map[string]string{projectAuthTokenSecretName: token}},
-		},
-		admin:        &fakeSecretVault{regular: map[string]string{projectAuthTokenSecretName: "admin-token"}},
-		projectLoads: map[int64]int{},
-	}
+	issueCalls := 0
 	service, err := NewEliteaClientTokenService(
 		runtimeContextAuthorizerFunc(func(_ context.Context, claim ContentClaim) (RuntimeContextAuthorization, error) {
 			require.Equal(t, "execution-1", claim.ExecutionID)
@@ -52,14 +54,22 @@ func TestIndexRuntimeContextReturnsOnlyClaimProjectSystemToken(t *testing.T) {
 			require.Same(t, certificate, claim.PeerCertificate)
 			require.Empty(t, claim.ContentID)
 			require.Empty(t, claim.ImmutableVersion)
-			return RuntimeContextAuthorization{ResourceProjectID: 42}, nil
+			return RuntimeContextAuthorization{
+				ResourceProjectID: 42,
+				ActorID:           "900",
+				Initiator:         runtimeContextInitiatorUser,
+			}, nil
 		}),
-		vaults,
+		actorTokenIssuerFunc(func(_ context.Context, actorID int64) (string, error) {
+			issueCalls++
+			require.EqualValues(t, 900, actorID)
+			return token, nil
+		}),
 		projectTokenValidatorFunc(func(_ context.Context, got string) (auth.User, error) {
 			require.Equal(t, token, got)
 			return auth.User{
 				ID: "900", UserID: "900", TokenID: "901",
-				Email: "system_user_42@centry.user", AuthType: "token",
+				Email: "actor@example.test", AuthType: "token",
 			}, nil
 		}),
 	)
@@ -88,48 +98,83 @@ func TestIndexRuntimeContextReturnsOnlyClaimProjectSystemToken(t *testing.T) {
 	require.Equal(t, EliteaClientTokenSchemaVersion, value.SchemaVersion)
 	require.EqualValues(t, 42, value.ProjectID)
 	require.Equal(t, token, value.Token)
-	require.Equal(t, 1, vaults.projectLoads[42])
-	require.Zero(t, vaults.adminLoads)
+	require.Equal(t, 1, issueCalls)
 }
 
-func TestIndexRuntimeContextFailsClosedWithoutAdminFallbackOrOwnedPAT(t *testing.T) {
+func TestIndexRuntimeContextFailsClosedWithoutPrincipalFallback(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		project   SecretVault
-		principal auth.User
-		validate  error
+		name          string
+		authorization RuntimeContextAuthorization
+		token         string
+		issue         error
+		principal     auth.User
+		validate      error
+		expectedStage string
 	}{
 		{
-			name:      "missing project token",
-			project:   &fakeSecretVault{regular: map[string]string{}},
-			principal: validProjectTokenPrincipal(),
+			name:          "missing project",
+			authorization: validRuntimeContextAuthorization(),
+			token:         "actor-token",
+			principal:     validActorTokenPrincipal(),
+			expectedStage: runtimeContextStageProjectIdentity,
 		},
 		{
-			name:      "wrong project system user",
-			project:   &fakeSecretVault{regular: map[string]string{projectAuthTokenSecretName: "project-canary"}},
-			principal: auth.User{ID: "900", UserID: "900", TokenID: "901", Email: "system_user_7@centry.user", AuthType: "token"},
+			name: "noncanonical actor",
+			authorization: RuntimeContextAuthorization{
+				ResourceProjectID: 42, ActorID: "0900", Initiator: runtimeContextInitiatorUser,
+			},
+			token:         "actor-token",
+			principal:     validActorTokenPrincipal(),
+			expectedStage: runtimeContextStageExecutionActor,
 		},
 		{
-			name:      "inactive PAT",
-			project:   &fakeSecretVault{regular: map[string]string{projectAuthTokenSecretName: "project-canary"}},
-			principal: validProjectTokenPrincipal(),
-			validate:  errors.New("inactive token details must not escape"),
+			name: "scheduled execution",
+			authorization: RuntimeContextAuthorization{
+				ResourceProjectID: 42, ActorID: "900", Initiator: "schedule",
+			},
+			token:         "actor-token",
+			principal:     validActorTokenPrincipal(),
+			expectedStage: runtimeContextStageExecutionMode,
+		},
+		{
+			name:          "missing actor PAT",
+			authorization: validRuntimeContextAuthorization(),
+			issue:         errors.New("PAT details must not escape"),
+			principal:     validActorTokenPrincipal(),
+			expectedStage: runtimeContextStageActorPATIssuance,
+		},
+		{
+			name:          "inactive PAT",
+			authorization: validRuntimeContextAuthorization(),
+			token:         "actor-token",
+			principal:     validActorTokenPrincipal(),
+			validate:      errors.New("inactive token details must not escape"),
+			expectedStage: runtimeContextStagePATValidation,
+		},
+		{
+			name:          "different principal",
+			authorization: validRuntimeContextAuthorization(),
+			token:         "actor-token",
+			principal: auth.User{
+				ID: "901", UserID: "901", TokenID: "902", Email: "other@example.test", AuthType: "token",
+			},
+			expectedStage: runtimeContextStagePrincipalBinding,
 		},
 	}
+	tests[0].authorization.ResourceProjectID = 0
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			vaults := &fakeSecretVaultLoader{
-				projects:     map[int64]SecretVault{42: test.project},
-				admin:        &fakeSecretVault{regular: map[string]string{projectAuthTokenSecretName: "admin-canary"}},
-				projectLoads: map[int64]int{},
-			}
+			issueCalls := 0
 			service, err := NewEliteaClientTokenService(
 				runtimeContextAuthorizerFunc(func(context.Context, ContentClaim) (RuntimeContextAuthorization, error) {
-					return RuntimeContextAuthorization{ResourceProjectID: 42}, nil
+					return test.authorization, nil
 				}),
-				vaults,
+				actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+					issueCalls++
+					return test.token, test.issue
+				}),
 				projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
 					return test.principal, test.validate
 				}),
@@ -138,8 +183,55 @@ func TestIndexRuntimeContextFailsClosedWithoutAdminFallbackOrOwnedPAT(t *testing
 
 			_, err = service.Resolve(context.Background(), ContentClaim{})
 			require.ErrorIs(t, err, ErrContentUnavailable)
+			require.Equal(t, test.expectedStage, runtimeContextUnavailableStage(err))
+			require.NotContains(t, err.Error(), "PAT details")
+			if test.expectedStage == runtimeContextStageProjectIdentity ||
+				test.expectedStage == runtimeContextStageExecutionActor ||
+				test.expectedStage == runtimeContextStageExecutionMode {
+				require.Zero(t, issueCalls)
+			}
+		})
+	}
+}
+
+func TestIndexRuntimeContextDistinguishesClaimDenialFromDependencyFailure(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		authorize error
+		want      error
+		stage     string
+	}{
+		"claim mismatch": {
+			authorize: ErrContentUnauthorized,
+			want:      ErrContentUnauthorized,
+			stage:     "unknown",
+		},
+		"claim store unavailable": {
+			authorize: errors.New("claim-store-canary"),
+			want:      ErrContentUnavailable,
+			stage:     runtimeContextStageClaimAuthorize,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, err := NewEliteaClientTokenService(
+				runtimeContextAuthorizerFunc(func(context.Context, ContentClaim) (RuntimeContextAuthorization, error) {
+					return RuntimeContextAuthorization{}, test.authorize
+				}),
+				actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+					t.Fatal("issuer must not be called")
+					return "", nil
+				}),
+				projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
+					t.Fatal("validator must not be called")
+					return auth.User{}, nil
+				}),
+			)
+			require.NoError(t, err)
+			_, err = service.Resolve(context.Background(), ContentClaim{})
+			require.ErrorIs(t, err, test.want)
+			require.Equal(t, test.stage, runtimeContextUnavailableStage(err))
 			require.NotContains(t, err.Error(), "canary")
-			require.Zero(t, vaults.adminLoads)
 		})
 	}
 }
@@ -153,7 +245,10 @@ func TestIndexRuntimeContextRouteRejectsUntrustedOrNonEmptyRequests(t *testing.T
 			calls++
 			return RuntimeContextAuthorization{}, ErrContentUnauthorized
 		}),
-		&fakeSecretVaultLoader{projectLoads: map[int64]int{}},
+		actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+			t.Fatal("issuer must not be called")
+			return "", nil
+		}),
 		projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
 			t.Fatal("validator must not be called")
 			return auth.User{}, nil
@@ -207,7 +302,10 @@ func TestIndexRuntimeContextRouteSharesContentCapacityAndIsNotMountedByDefault(t
 			t.Fatal("saturated request must not authorize")
 			return RuntimeContextAuthorization{}, nil
 		}),
-		&fakeSecretVaultLoader{projectLoads: map[int64]int{}},
+		actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+			t.Fatal("saturated request must not issue")
+			return "", nil
+		}),
 		projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
 			t.Fatal("saturated request must not validate")
 			return auth.User{}, nil
@@ -235,6 +333,42 @@ func TestIndexRuntimeContextRouteSharesContentCapacityAndIsNotMountedByDefault(t
 	response = httptest.NewRecorder()
 	ordinary.Routes().ServeHTTP(response, validRuntimeContextRequest(t, nil))
 	require.Equal(t, http.StatusNotFound, response.Code)
+}
+
+func TestIndexRuntimeContextFailureLogContainsOnlyOneBoundedStage(t *testing.T) {
+	t.Parallel()
+
+	service, err := NewEliteaClientTokenService(
+		runtimeContextAuthorizerFunc(func(context.Context, ContentClaim) (RuntimeContextAuthorization, error) {
+			return validRuntimeContextAuthorization(), nil
+		}),
+		actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+			return "", errors.New("issuer-secret-canary")
+		}),
+		projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
+			t.Fatal("validator must not be called")
+			return auth.User{}, nil
+		}),
+	)
+	require.NoError(t, err)
+	server := newIndexRuntimeContextTestServer(t, service)
+	var logs bytes.Buffer
+	server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, validRuntimeContextRequest(t, nil))
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.NotContains(t, response.Body.String(), "canary")
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	require.Len(t, lines, 1)
+	require.Contains(t, lines[0], `"msg":"runtime context unavailable"`)
+	require.Contains(t, lines[0], `"stage":"actor_pat_issuance"`)
+	require.NotContains(t, lines[0], "issuer-secret-canary")
+	require.NotContains(t, lines[0], "execution-1")
+
+	unknown := runtimeContextUnavailable("untrusted-stage-canary")
+	require.Equal(t, "unknown", runtimeContextUnavailableStage(unknown))
 }
 
 func newIndexRuntimeContextTestServer(t *testing.T, service *EliteaClientTokenService) *ContentServer {
@@ -265,9 +399,17 @@ func validRuntimeContextRequest(t *testing.T, body io.Reader) *http.Request {
 	return request
 }
 
-func validProjectTokenPrincipal() auth.User {
+func validRuntimeContextAuthorization() RuntimeContextAuthorization {
+	return RuntimeContextAuthorization{
+		ResourceProjectID: 42,
+		ActorID:           "900",
+		Initiator:         runtimeContextInitiatorUser,
+	}
+}
+
+func validActorTokenPrincipal() auth.User {
 	return auth.User{
 		ID: "900", UserID: "900", TokenID: "901",
-		Email: "system_user_42@centry.user", AuthType: "token",
+		Email: "actor@example.test", AuthType: "token",
 	}
 }

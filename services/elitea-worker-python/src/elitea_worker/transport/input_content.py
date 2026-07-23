@@ -204,7 +204,11 @@ class ScopedInputContentClient:
                     raise InvalidInput("The scoped content response changed origin.") from exc
                 if response_origin != origin:
                     raise InvalidInput("The scoped content response changed origin.")
-                if response.status_code in (401, 403):
+                if response.status_code == 401:
+                    raise AuthorizationFailure(
+                        "The scoped content claim was rejected."
+                    )
+                if response.status_code == 403:
                     raise AuthorizationFailure("The scoped content grant was rejected.")
                 if response.status_code < 200 or response.status_code >= 300:
                     raise DependencyUnavailable("The scoped content service did not accept the request.")

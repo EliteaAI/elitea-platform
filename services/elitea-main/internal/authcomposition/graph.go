@@ -44,6 +44,7 @@ type FormGraph struct {
 	browserRoutes   http.Handler
 	mainForwardAuth http.Handler
 	mainKernel      *forwardapp.Kernel
+	patIssuer       *authsvc.LocalIssuer
 	patValidator    *authsvc.LocalValidator
 	proxyResolver   *browserapi.TrustedProxyResolver
 	redis           *redis.Client
@@ -143,6 +144,7 @@ func newFormGraph(
 	}
 
 	patValidator := authsvc.NewLocalValidatorBytes(dependencies.PostgreSQL, material.patSigningKey)
+	patIssuer := authsvc.NewLocalIssuerBytes(dependencies.PostgreSQL, material.patSigningKey)
 	credentials, err := forwardapp.NewTokenCredentialAuthenticator(patValidator)
 	if err != nil {
 		return nil, composeError("credential authenticator", err)
@@ -232,6 +234,7 @@ func newFormGraph(
 		browserRoutes:   formHandler.Routes(),
 		mainForwardAuth: mainHandler,
 		mainKernel:      mainKernel,
+		patIssuer:       patIssuer,
 		patValidator:    patValidator,
 		proxyResolver:   proxyResolver,
 		redis:           redisClient,
@@ -309,6 +312,15 @@ func (graph *FormGraph) ValidateToken(ctx context.Context, token string) (auth.U
 		return auth.User{}, ErrInvalidGraph
 	}
 	return graph.patValidator.ValidateToken(ctx, token)
+}
+
+// IssueToken recreates the current-baseline bearer representation for the
+// selected active PAT of one trusted durable execution actor.
+func (graph *FormGraph) IssueToken(ctx context.Context, userID int64) (string, error) {
+	if graph == nil || graph.patIssuer == nil {
+		return "", ErrInvalidGraph
+	}
+	return graph.patIssuer.IssueToken(ctx, userID)
 }
 
 func (graph *FormGraph) Close() error {

@@ -36,6 +36,7 @@ type currentModelCatalogStub struct {
 	err      error
 	calls    int
 	query    configurationapp.CurrentModelCatalogQuery
+	get      func(configurationapp.CurrentModelCatalogQuery) (configurationapp.CurrentModelCatalogResponse, error)
 }
 
 type currentToolkitSettingsValidatorStub struct {
@@ -70,6 +71,9 @@ func (s *currentModelCatalogStub) Get(
 ) (configurationapp.CurrentModelCatalogResponse, error) {
 	s.calls++
 	s.query = query
+	if s.get != nil {
+		return s.get(query)
+	}
 	return s.response, s.err
 }
 
@@ -201,6 +205,67 @@ func TestCurrentAuthoritativeInputResolverUsesConfigurationsDefaultWithoutCopyin
 	settings, _ := decodeCurrentResolverObject(inputs.LLMConfiguration)
 	if settings["openai_compatible"] != false || len(settings) != 1 {
 		t.Fatalf("settings=%#v", settings)
+	}
+}
+
+func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(t *testing.T) {
+	defaultEmbedding := "configured-embedding"
+	toolkits := validCurrentToolkitReader()
+	toolkits.toolkit.Settings["embedding_model"] = ""
+	var sections []configurationapp.CurrentModelSection
+	models := &currentModelCatalogStub{get: func(
+		query configurationapp.CurrentModelCatalogQuery,
+	) (configurationapp.CurrentModelCatalogResponse, error) {
+		sections = append(sections, query.Section)
+		if query.Section == configurationapp.CurrentModelSectionEmbedding {
+			return configurationapp.CurrentModelCatalogResponse{
+				DefaultModelName: &defaultEmbedding,
+			}, nil
+		}
+		return configurationapp.CurrentModelCatalogResponse{}, nil
+	}}
+	resolver := newCurrentAuthoritativeResolverForTest(t, toolkits, models)
+
+	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolkit, err := decodeCurrentResolverObject(inputs.ToolkitConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := toolkit["settings"].(map[string]any)
+	if settings["embedding_model"] != defaultEmbedding {
+		t.Fatalf("embedding_model=%#v, want Configurations default", settings["embedding_model"])
+	}
+	if !reflect.DeepEqual(sections, []configurationapp.CurrentModelSection{
+		configurationapp.CurrentModelSectionEmbedding,
+		configurationapp.CurrentModelSectionLLM,
+	}) {
+		t.Fatalf("catalog sections=%v", sections)
+	}
+}
+
+func TestCurrentAuthoritativeInputResolverPreservesExplicitEmbeddingModel(t *testing.T) {
+	toolkits := validCurrentToolkitReader()
+	toolkits.toolkit.Settings["embedding_model"] = "saved-embedding"
+	models := &currentModelCatalogStub{}
+	resolver := newCurrentAuthoritativeResolverForTest(t, toolkits, models)
+
+	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolkit, err := decodeCurrentResolverObject(inputs.ToolkitConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := toolkit["settings"].(map[string]any)
+	if settings["embedding_model"] != "saved-embedding" {
+		t.Fatalf("embedding_model=%#v, want saved value", settings["embedding_model"])
+	}
+	if models.calls != 1 || models.query.Section != configurationapp.CurrentModelSectionLLM {
+		t.Fatalf("unexpected model catalog calls=%d query=%+v", models.calls, models.query)
 	}
 }
 

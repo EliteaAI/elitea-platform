@@ -373,7 +373,7 @@ class WorkerServeLoop:
             key = (delivery.stream, delivery.entry_id)
             try:
                 result = await self._process(delivery)
-                self._event_sink(result.disposition.value, None)
+                self._event_sink(result.disposition.value, result.execution_error)
             except asyncio.CancelledError:
                 raise
             except WorkerError as exc:

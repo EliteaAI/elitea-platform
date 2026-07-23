@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -85,6 +87,7 @@ type ContentServer struct {
 	runtimeToken *EliteaClientTokenService
 	maxBytes     int64
 	requests     chan struct{}
+	logger       *slog.Logger
 }
 
 func NewContentServer(authorizer ContentAuthorizer, store ContentStore, maxBytes int64) (*ContentServer, error) {
@@ -160,6 +163,7 @@ func newContentServer(authorizer ContentAuthorizer, store ContentStore, material
 		runtimeToken: runtimeToken,
 		maxBytes:     maxBytes,
 		requests:     make(chan struct{}, maxConcurrentRequests),
+		logger:       slog.Default(),
 	}, nil
 }
 
@@ -275,6 +279,13 @@ func (s *ContentServer) PostEliteaClientToken(w http.ResponseWriter, r *http.Req
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, ErrContentUnauthorized) {
 			status = http.StatusForbidden
+		} else if errors.Is(err, ErrContentUnavailable) {
+			s.logger.WarnContext(
+				r.Context(),
+				"runtime context unavailable",
+				"stage",
+				runtimeContextUnavailableStage(err),
+			)
 		}
 		http.Error(w, http.StatusText(status), status)
 		return
@@ -331,9 +342,12 @@ func parseContentClaim(r *http.Request) (ContentClaim, error) {
 	if err != nil {
 		return ContentClaim{}, err
 	}
-	claim.ContentID = chi.URLParam(r, "contentID")
-	claim.ImmutableVersion = chi.URLParam(r, "version")
-	if !boundedClaimPart(claim.ContentID) || !boundedClaimPart(claim.ImmutableVersion) {
+	claim.ContentID, err = claimPathPart(r, "contentID")
+	if err != nil {
+		return ContentClaim{}, err
+	}
+	claim.ImmutableVersion, err = claimPathPart(r, "version")
+	if err != nil {
 		return ContentClaim{}, fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
 	}
 	return claim, nil
@@ -354,17 +368,28 @@ func parseExecutionClaim(r *http.Request) (ContentClaim, error) {
 	if !claimIDOK || !fenceOK || err != nil || len(fence) != sha256.Size || base64.RawURLEncoding.EncodeToString(fence) != fenceText {
 		return ContentClaim{}, ErrContentUnauthorized
 	}
-	claim := ContentClaim{
+	if !boundedClaimPart(claimID) {
+		return ContentClaim{}, fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
+	}
+	executionID, err := claimPathPart(r, "executionID")
+	if err != nil {
+		return ContentClaim{}, err
+	}
+	return ContentClaim{
 		PeerCertificate: r.TLS.VerifiedChains[0][0],
-		ExecutionID:     chi.URLParam(r, "executionID"),
+		ExecutionID:     executionID,
 		Generation:      generation,
 		ClaimID:         claimID,
 		FenceToken:      fence,
+	}, nil
+}
+
+func claimPathPart(r *http.Request, name string) (string, error) {
+	value, err := url.PathUnescape(chi.URLParam(r, name))
+	if err != nil || !boundedClaimPart(value) {
+		return "", fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
 	}
-	if !boundedClaimPart(claim.ExecutionID) || !boundedClaimPart(claim.ClaimID) {
-		return ContentClaim{}, fmt.Errorf("%w: incomplete claim", ErrContentUnauthorized)
-	}
-	return claim, nil
+	return value, nil
 }
 
 func singleHeader(header http.Header, name string) (string, bool) {

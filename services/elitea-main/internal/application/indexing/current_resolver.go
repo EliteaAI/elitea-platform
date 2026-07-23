@@ -123,6 +123,13 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 	if expandedSettings == nil {
 		return AuthoritativeInputs{}, ErrInvalidAuthoritativeIndexInput
 	}
+	if err := r.applyCurrentEmbeddingModelDefault(
+		ctx,
+		int32(request.ProjectID),
+		expandedSettings,
+	); err != nil {
+		return AuthoritativeInputs{}, err
+	}
 
 	toolkitConfiguration, err := json.Marshal(map[string]any{
 		"id":           toolkit.ID,
@@ -153,6 +160,40 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 		LLMModel:             requestedModel,
 		LLMConfiguration:     llmConfiguration,
 	}, nil
+}
+
+func (r *CurrentAuthoritativeInputResolver) applyCurrentEmbeddingModelDefault(
+	ctx context.Context,
+	projectID int32,
+	settings map[string]any,
+) error {
+	value, present := settings["embedding_model"]
+	if !present {
+		return nil
+	}
+	model, ok := value.(string)
+	if !ok {
+		return ErrInvalidAuthoritativeIndexInput
+	}
+	if model != "" {
+		return nil
+	}
+	catalog, err := r.models.Get(ctx, configurationapp.CurrentModelCatalogQuery{
+		Section:         configurationapp.CurrentModelSectionEmbedding,
+		ProjectID:       projectID,
+		PublicProjectID: r.publicProjectID,
+		IncludeShared:   true,
+	})
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		return ErrCurrentModelResolutionUnavailable
+	}
+	if catalog.DefaultModelName != nil && *catalog.DefaultModelName != "" {
+		settings["embedding_model"] = *catalog.DefaultModelName
+	}
+	return nil
 }
 
 func (r *CurrentAuthoritativeInputResolver) resolveCurrentModelMetadata(

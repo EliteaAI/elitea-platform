@@ -33,6 +33,7 @@ type CurrentConfigurationReader interface {
 }
 
 var _ CurrentConfigurationReader = (*configurationapp.CurrentCRUDService)(nil)
+var _ CurrentConfigurationReader = (*configurationapp.CurrentConfigurationReadService)(nil)
 
 // CurrentConfigurationReadRoute owns the two exact current read endpoints when
 // the standalone Configurations graph is enabled. Construction binds trusted

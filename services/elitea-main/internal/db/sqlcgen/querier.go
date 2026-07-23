@@ -6,6 +6,8 @@ package sqlcgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -13,6 +15,14 @@ type Querier interface {
 	AddNewAuthUserToRootGroup(ctx context.Context, userID int32) (int64, error)
 	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
+	// Claim only the oldest unfinished revision for each configuration. A lower
+	// pending, retrying, processing, or dead revision remains an explicit ordering
+	// barrier. Expired processing rows are reclaimed with a new caller-owned lease
+	// token. Expired rows already at the attempt cap are retired in a bounded
+	// batch and remain dead ordering barriers. The transaction ends with this
+	// statement; reconciliation happens outside the database transaction.
+	ClaimConfigurationLifecycleEvents(ctx context.Context, arg ClaimConfigurationLifecycleEventsParams) ([]ClaimConfigurationLifecycleEventsRow, error)
+	CompareAndSwapCurrentConfigurationRenameToolkit(ctx context.Context, arg CompareAndSwapCurrentConfigurationRenameToolkitParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
@@ -27,6 +37,7 @@ type Querier interface {
 	// This file projects the existing 16-column tenant table; it does not define a
 	// replacement configuration store.
 	FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg FindCurrentConfigurationByEliteaTitleParams) (FindCurrentConfigurationByEliteaTitleRow, error)
+	GetActivePATForUser(ctx context.Context, userID int32) (GetActivePATForUserRow, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
@@ -34,14 +45,21 @@ type Querier interface {
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
+	GetCurrentConfigurationRenameToolkit(ctx context.Context, arg GetCurrentConfigurationRenameToolkitParams) (GetCurrentConfigurationRenameToolkitRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.
 	GetCurrentToolkit(ctx context.Context, toolkitID int32) (EliteaTool, error)
 	GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error)
 	GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error)
+	// The project vault row serializes configuration mutations for one project,
+	// so selecting the last indexed revision is sufficient inside the same
+	// transaction. The unique key remains the final integrity fence.
+	GetLatestConfigurationLifecycleRevision(ctx context.Context, arg GetLatestConfigurationLifecycleRevisionParams) (int64, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetRuntimeAdmissionByIdempotencyParams) (GetRuntimeAdmissionByIdempotencyRow, error)
+	HasActiveIndexIngestTarget(ctx context.Context, arg HasActiveIndexIngestTargetParams) (bool, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
+	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
@@ -50,6 +68,15 @@ type Querier interface {
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
+	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
+	// This deliberately projects only the six fields exposed by nested
+	// configuration options. The same bounded query is run first in the current
+	// project and, when requested, in the public project with shared_only=true.
+	ListCurrentConfigurationOptionCandidates(ctx context.Context, arg ListCurrentConfigurationOptionCandidatesParams) ([]ListCurrentConfigurationOptionCandidatesRow, error)
+	ListCurrentConfigurationRenameToolkits(ctx context.Context, arg ListCurrentConfigurationRenameToolkitsParams) ([]ListCurrentConfigurationRenameToolkitsRow, error)
+	// Empty section intentionally disables the section predicate for the exact
+	// current UI contract. The caller caps limit_rows at the 257-row sentinel.
+	ListCurrentConfigurationTypes(ctx context.Context, arg ListCurrentConfigurationTypesParams) ([]string, error)
 	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
 	// Raw data is intentional: the Go adapter performs type-safe, redacted
 	// decoding before applying section-specific response shaping. ID order gives
@@ -60,14 +87,28 @@ type Querier interface {
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	LoadRuntimeAdmissionTiming(ctx context.Context, deadlineTtlMillis int64) (LoadRuntimeAdmissionTimingRow, error)
+	// The unqualified configuration relation is intentional. These queries run
+	// only inside a tenant transaction whose local search_path was derived from an
+	// already authorized positive project identity.
+	LockCurrentConfigurationForMutation(ctx context.Context, arg LockCurrentConfigurationForMutationParams) (LockCurrentConfigurationForMutationRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
+	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
+	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
+	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
+	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
+	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
+	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
 	// assignment; the system-user email fallback is considered only when that
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
+	// Configuration lifecycle internal effects. Unqualified tenant tables are
+	// intentional: every such statement runs inside an authorized project
+	// transaction whose local search_path is p_<project_id>.
+	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap

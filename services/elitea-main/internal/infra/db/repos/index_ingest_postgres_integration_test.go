@@ -50,11 +50,14 @@ func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
 	assertPostgresCount(t, ctx, pool, 1, `SELECT count(*) FROM elitea_runtime.command_outbox WHERE stream_name = $1`, policy.StreamName)
 
 	var toolkitID int32
-	var indexName, initiator, streamName string
+	var indexName, initiator, streamName, indexMetaID, indexMetaCorrelationID string
+	var indexMetaInitialized bool
 	var validationColumns int
 	var preparedBytes, inputBytes int64
 	if err := pool.QueryRow(ctx, `
 SELECT i.toolkit_id, i.index_name, i.initiator, o.stream_name,
+       i.index_meta_id, i.index_meta_correlation_id,
+       i.index_meta_initialized_at IS NOT NULL,
        num_nonnulls(
            j.configuration_revision_id, j.configuration_type,
            j.catalog_revision, j.catalog_digest, j.schema_id,
@@ -71,21 +74,109 @@ JOIN elitea_runtime.input_bundle_entries AS e
   ON e.input_bundle_id = j.input_bundle_id
 WHERE j.execution_id = $1
 GROUP BY i.toolkit_id, i.index_name, i.initiator, o.stream_name,
+         i.index_meta_id, i.index_meta_correlation_id,
+         i.index_meta_initialized_at,
          j.configuration_revision_id, j.configuration_type,
          j.catalog_revision, j.catalog_digest, j.schema_id,
          j.schema_revision, j.schema_digest, j.settings_entry_id,
          o.prepared_signed_envelope_bytes`, created.ExecutionID).Scan(
 		&toolkitID, &indexName, &initiator, &streamName,
+		&indexMetaID, &indexMetaCorrelationID, &indexMetaInitialized,
 		&validationColumns, &preparedBytes, &inputBytes,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
-		t.Fatalf("unexpected durable index binding: toolkit=%d index=%s initiator=%s stream=%s validation=%d outbox_bytes=%d input_bytes=%d", toolkitID, indexName, initiator, streamName, validationColumns, preparedBytes, inputBytes)
+	if toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName ||
+		indexMetaID != created.IndexMetaID || indexMetaCorrelationID != created.IndexMetaCorrelationID ||
+		indexMetaInitialized || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
+		t.Fatalf(
+			"unexpected durable index binding: toolkit=%d index=%s initiator=%s stream=%s meta=%s correlation=%s initialized=%v validation=%d outbox_bytes=%d input_bytes=%d",
+			toolkitID,
+			indexName,
+			initiator,
+			streamName,
+			indexMetaID,
+			indexMetaCorrelationID,
+			indexMetaInitialized,
+			validationColumns,
+			preparedBytes,
+			inputBytes,
+		)
+	}
+
+	outbox, err := NewCommandOutboxRepository(pool, policy.StreamName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := outbox.ListPendingIndexIngestIDs(ctx, 16, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAdmissionID(pending, "first-outbox") {
+		t.Fatalf("uninitialized metadata became dispatchable: %v", pending)
+	}
+	signer := &postgresIndexDispatchSigner{keyID: "must-not-sign"}
+	appender := &postgresIndexDispatchAppender{}
+	producer := newPostgresIndexProducer(t, policy, signer, appender)
+	dispatcher, err := indexingapp.NewIndexIngestDispatcher(outbox, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.Dispatch(ctx, "first-outbox"); !errors.Is(err, ErrPendingIndexIngestDispatchNotFound) {
+		t.Fatalf("uninitialized direct dispatch error=%v", err)
+	}
+	if signer.callCount() != 0 || appender.callCount() != 0 {
+		t.Fatal("uninitialized admission reached signing or Redis append")
+	}
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.command_outbox
+WHERE outbox_id = 'first-outbox'
+  AND (
+      prepared_signed_envelope_bytes IS NOT NULL
+      OR published_at IS NOT NULL
+  )`)
+	if _, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   created.ExecutionID,
+		Generation:    created.Generation,
+		MetaID:        created.IndexMetaID,
+		CorrelationID: "wrong-correlation",
+	}); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
+		t.Fatalf("mismatched metadata transition error=%v", err)
+	}
+	initializedAt, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   created.ExecutionID,
+		Generation:    created.Generation,
+		MetaID:        created.IndexMetaID,
+		CorrelationID: created.IndexMetaCorrelationID,
+	})
+	if err != nil || initializedAt.IsZero() {
+		t.Fatalf("initialize index metadata: at=%v err=%v", initializedAt, err)
+	}
+	replayedInitialization, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   created.ExecutionID,
+		Generation:    created.Generation,
+		MetaID:        created.IndexMetaID,
+		CorrelationID: created.IndexMetaCorrelationID,
+	})
+	if err != nil || !replayedInitialization.Equal(initializedAt) {
+		t.Fatalf("replayed metadata initialization changed timestamp: first=%v replay=%v err=%v", initializedAt, replayedInitialization, err)
+	}
+	pending, err = outbox.ListPendingIndexIngestIDs(ctx, 16, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAdmissionID(pending, "first-outbox") {
+		t.Fatalf("initialized metadata did not open dispatch gate: %v", pending)
 	}
 
 	replayed, err := newPostgresIndexAdmissionService(t, repository, "replay").Submit(ctx, request)
-	if err != nil || replayed.Created || replayed.ExecutionID != created.ExecutionID || replayed.CommandID != created.CommandID || !replayed.AdmittedAt.Equal(created.AdmittedAt) || !replayed.Deadline.Equal(created.Deadline) {
+	if err != nil || replayed.Created ||
+		replayed.ExecutionID != created.ExecutionID || replayed.CommandID != created.CommandID ||
+		replayed.Generation != created.Generation ||
+		replayed.IndexMetaID != created.IndexMetaID || replayed.IndexMetaCorrelationID != created.IndexMetaCorrelationID ||
+		replayed.IndexMetaInitializedAt == nil || !replayed.IndexMetaInitializedAt.Equal(initializedAt) ||
+		!replayed.AdmittedAt.Equal(created.AdmittedAt) || !replayed.Deadline.Equal(created.Deadline) {
 		t.Fatalf("exact replay changed durable identity: created=%+v replay=%+v err=%v", created, replayed, err)
 	}
 	assertPostgresCount(t, ctx, pool, 1, `SELECT count(*) FROM elitea_runtime.execution_jobs`)
@@ -126,6 +217,135 @@ WHERE execution_id = $1`, created.ExecutionID); err == nil {
 	}
 }
 
+func TestPostgresIndexIngestSameTargetAdmissionExclusion(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    16,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	request := postgresIndexSubmitRequest("same-target-first", "shared-index")
+	first, err := newPostgresIndexAdmissionService(t, jobs, "same-target-first").Submit(ctx, request)
+	if err != nil || !first.Created {
+		t.Fatalf("first target admission: outcome=%+v err=%v", first, err)
+	}
+	replayed, err := newPostgresIndexAdmissionService(t, jobs, "same-target-replay").Submit(ctx, request)
+	if err != nil || replayed.Created || replayed.ExecutionID != first.ExecutionID {
+		t.Fatalf("same-key replay changed execution: first=%+v replay=%+v err=%v", first, replayed, err)
+	}
+
+	conflict := postgresIndexSubmitRequest("same-target-conflict", "shared-index")
+	if _, err := newPostgresIndexAdmissionService(t, jobs, "same-target-conflict").Submit(ctx, conflict); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+		t.Fatalf("different key admitted the active target: %v", err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs
+WHERE toolkit_id = 19
+  AND index_name = 'shared-index'`)
+
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET state = 'SUCCEEDED',
+    settled_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2`,
+		first.ExecutionID,
+		int64(first.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	afterTerminal := postgresIndexSubmitRequest("same-target-after-terminal", "shared-index")
+	admitted, err := newPostgresIndexAdmissionService(t, jobs, "same-target-after-terminal").Submit(ctx, afterTerminal)
+	if err != nil || !admitted.Created || admitted.ExecutionID == first.ExecutionID {
+		t.Fatalf("terminal target did not permit a new execution: first=%+v admitted=%+v err=%v", first, admitted, err)
+	}
+	assertPostgresCount(t, ctx, pool, 2, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs
+WHERE toolkit_id = 19
+  AND index_name = 'shared-index'`)
+}
+
+func TestPostgresIndexMetaInitializationRejectsCancelledAdmission(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    16,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := NewCommandOutboxRepository(pool, policy.StreamName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	admitted, err := newPostgresIndexAdmissionService(t, jobs, "cancel-before-init").Submit(
+		ctx,
+		postgresIndexSubmitRequest("request-cancel-before-init", "cancelled"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET desired_state = 'CANCELLED'
+WHERE execution_id = $1
+  AND generation = $2
+  AND state = 'PENDING'`,
+		admitted.ExecutionID,
+		int64(admitted.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   admitted.ExecutionID,
+		Generation:    admitted.Generation,
+		MetaID:        admitted.IndexMetaID,
+		CorrelationID: admitted.IndexMetaCorrelationID,
+	}); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
+		t.Fatalf("cancelled metadata transition error=%v", err)
+	}
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs
+WHERE execution_id = $1
+  AND index_meta_initialized_at IS NOT NULL`, admitted.ExecutionID)
+	pending, err := outbox.ListPendingIndexIngestIDs(ctx, 16, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAdmissionID(pending, "cancel-before-init-outbox") {
+		t.Fatalf("cancelled admission became dispatchable: %v", pending)
+	}
+	if _, err := outbox.LoadPendingIndexIngest(ctx, "cancel-before-init-outbox"); !errors.Is(err, ErrPendingIndexIngestDispatchNotFound) {
+		t.Fatalf("cancelled direct dispatch load=%v", err)
+	}
+}
+
 func postgresIndexSubmitRequest(idempotencyKey, indexName string) indexingapp.SubmitRequest {
 	return indexingapp.SubmitRequest{
 		Identity: executionapp.AdmissionIdentity{
@@ -135,6 +355,7 @@ func postgresIndexSubmitRequest(idempotencyKey, indexName string) indexingapp.Su
 			ActorID:             "7",
 		},
 		IdempotencyKey: idempotencyKey,
+		CorrelationID:  "message-" + idempotencyKey,
 		ToolkitID:      19,
 		Initiator:      executiondomain.IndexIngestInitiatorUser,
 		Inputs: indexingapp.AuthoritativeInputs{
@@ -153,7 +374,12 @@ func newPostgresIndexAdmissionService(t *testing.T, repository *IndexIngestJobsR
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := indexingapp.NewAdmissionService(repository, factory, time.Now, postgresIndexIDs(prefix+"-execution", prefix+"-command", prefix+"-outbox"))
+	service, err := indexingapp.NewAdmissionService(repository, factory, time.Now, postgresIndexIDs(
+		prefix+"-execution",
+		prefix+"-command",
+		prefix+"-outbox",
+		prefix+"-index-meta",
+	))
 	if err != nil {
 		t.Fatal(err)
 	}

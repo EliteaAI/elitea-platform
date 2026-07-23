@@ -81,7 +81,10 @@ type RouterConfig struct {
 	CurrentProjectList            *v2projects.CurrentProjectListRoute
 	CurrentConfigurationAvailable http.Handler
 	CurrentConfigurationRead      http.Handler
+	CurrentConfigurationTypes     http.Handler
+	CurrentConfigurationMutation  http.Handler
 	CurrentIndexStart             http.Handler
+	CurrentIndexCancel            http.Handler
 	CurrentIndexMeta              http.Handler
 	CurrentModelCatalog           http.Handler
 	CurrentModelDefault           http.Handler

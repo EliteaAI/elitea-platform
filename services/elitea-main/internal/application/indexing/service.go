@@ -21,7 +21,7 @@ type AuthoritativeInputResolver interface {
 }
 
 type IndexAdmissionSubmitter interface {
-	Submit(context.Context, SubmitRequest) (executionapp.AdmissionOutcome, error)
+	Submit(context.Context, SubmitRequest) (AdmissionOutcome, error)
 }
 
 // StartService is the application boundary between the current UI request and
@@ -59,7 +59,7 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 	if err != nil {
 		return StartOutcome{}, err
 	}
-	idempotencyKey, err := s.idempotencyKey(request)
+	idempotencyKey, correlationID, err := s.admissionCorrelation(request)
 	if err != nil {
 		return StartOutcome{}, err
 	}
@@ -77,6 +77,7 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 			ActorID:             actorID,
 		},
 		IdempotencyKey: idempotencyKey,
+		CorrelationID:  correlationID,
 		ToolkitID:      int32(request.ToolkitID),
 		Initiator:      executiondomain.IndexIngestInitiatorUser,
 		Inputs:         inputs,
@@ -84,32 +85,43 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 	if err != nil {
 		return StartOutcome{}, err
 	}
-	if outcome.ExecutionID == "" || outcome.CommandID == "" || outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
+	// The current HTTP contract returns a task only after its initial PgVector
+	// metadata is visible. A production submitter must therefore compose the
+	// external idempotent materializer and durable ready transition around the
+	// bare AdmissionService before it is injected here.
+	if outcome.ExecutionID == "" || outcome.CommandID == "" ||
+		outcome.IndexMetaInitializedAt == nil || outcome.IndexMetaInitializedAt.IsZero() ||
+		outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
 		return StartOutcome{}, errors.New("index admission returned an invalid outcome")
 	}
 	return StartOutcome{TaskID: outcome.ExecutionID}, nil
 }
 
-func (s *StartService) idempotencyKey(request StartRequest) (string, error) {
-	correlation := []byte(request.StreamID + "\x00" + request.MessageID)
+func (s *StartService) admissionCorrelation(request StartRequest) (string, string, error) {
+	correlation := request.MessageID
+	if correlation == "" {
+		correlation = request.StreamID
+	}
+	idempotencyCorrelation := request.StreamID + "\x00" + request.MessageID
 	if request.StreamID == "" && request.MessageID == "" {
 		nonce, err := s.newID()
 		if err != nil {
-			return "", fmt.Errorf("generate index start correlation: %w", err)
+			return "", "", fmt.Errorf("generate index start correlation: %w", err)
 		}
 		if nonce == "" {
-			return "", errors.New("index start correlation generator returned an empty ID")
+			return "", "", errors.New("index start correlation generator returned an empty ID")
 		}
-		correlation = []byte(nonce)
+		correlation = nonce
+		idempotencyCorrelation = nonce
 	}
 
-	material := make([]byte, 0, len(correlation)+64)
+	material := make([]byte, 0, len(idempotencyCorrelation)+64)
 	material = appendLengthPrefixed(material, strconv.FormatInt(request.ProjectID, 10))
 	material = appendLengthPrefixed(material, strconv.FormatInt(request.ActorUserID, 10))
 	material = appendLengthPrefixed(material, strconv.FormatInt(request.ToolkitID, 10))
-	material = appendLengthPrefixed(material, string(correlation))
+	material = appendLengthPrefixed(material, idempotencyCorrelation)
 	digest := sha256.Sum256(material)
-	return indexStartIdempotencyPrefix + hex.EncodeToString(digest[:]), nil
+	return indexStartIdempotencyPrefix + hex.EncodeToString(digest[:]), correlation, nil
 }
 
 func appendLengthPrefixed(target []byte, value string) []byte {

@@ -191,11 +191,19 @@ func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
 	})
 }
 
-func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIngestJobsRepository, prefix string) (executionapp.AdmissionOutcome, string) {
+func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIngestJobsRepository, prefix string) (indexingapp.AdmissionOutcome, string) {
 	t.Helper()
 	outcome, err := newPostgresIndexAdmissionService(t, jobs, prefix).Submit(ctx, postgresIndexSubmitRequest("request-"+prefix, "idx"))
 	if err != nil || !outcome.Created {
 		t.Fatalf("admit %s index dispatch: outcome=%+v err=%v", prefix, outcome, err)
+	}
+	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   outcome.ExecutionID,
+		Generation:    outcome.Generation,
+		MetaID:        outcome.IndexMetaID,
+		CorrelationID: outcome.IndexMetaCorrelationID,
+	}); err != nil {
+		t.Fatalf("initialize %s index metadata: %v", prefix, err)
 	}
 	return outcome, prefix + "-outbox"
 }

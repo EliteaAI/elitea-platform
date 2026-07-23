@@ -253,6 +253,8 @@ func (h *StartHandler) writeStartError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "Toolkit not found")
 	case errors.Is(err, indexingapp.ErrInvalidIndexStart):
 		writeError(w, http.StatusBadRequest, "Invalid index_data request")
+	case errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict):
+		writeError(w, http.StatusConflict, "Indexing is already in progress for this index")
 	case errors.As(err, &capacity):
 		retryAfter := boundedRetrySeconds(capacity.RetryAfter())
 		w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))

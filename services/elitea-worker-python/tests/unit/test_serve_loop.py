@@ -11,7 +11,11 @@ from elitea_worker.execution.delivery import (
     DeliveryDisposition,
     DeliveryResult,
 )
-from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput
+from elitea_worker.execution.errors import (
+    AuthorizationFailure,
+    DependencyUnavailable,
+    InvalidInput,
+)
 from elitea_worker.serve import (
     WorkerServeLoop,
     _ShutdownBudget,
@@ -119,6 +123,43 @@ def test_serve_loop_bounds_workers_and_drains() -> None:
 
         assert sorted(processed) == ["1-0", "2-0", "3-0"]
         assert peak == 2
+
+    asyncio.run(run())
+
+
+def test_serve_loop_reports_settled_execution_error_to_event_sink() -> None:
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        stop = asyncio.Event()
+        events: list[tuple[str, object]] = []
+        failure = AuthorizationFailure("The scoped content grant was rejected.")
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            stop.set()
+            return DeliveryResult(
+                DeliveryDisposition.EXECUTED_SETTLED_ACKED,
+                execution_error=failure,
+            )
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1_000,
+            reclaim_interval_millis=100,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1_000,
+            event_sink=lambda event, error: events.append((event, error)),
+        )
+        await asyncio.wait_for(runtime.run(stop), timeout=0.2)
+
+        assert events == [("executed_settled_acked", failure)]
 
     asyncio.run(run())
 

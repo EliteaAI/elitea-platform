@@ -30,3 +30,14 @@ CREATE TABLE centry.project_group_association (
         REFERENCES centry.project_group (id)
         ON DELETE CASCADE
 );
+
+CREATE TABLE centry.social_pins (
+    id serial PRIMARY KEY,
+    entity varchar NOT NULL,
+    user_id integer NOT NULL,
+    project_id integer,
+    entity_id integer NOT NULL,
+    created_at timestamp NOT NULL DEFAULT now(),
+    updated_at timestamp NOT NULL DEFAULT now(),
+    UNIQUE (entity, project_id, entity_id)
+);

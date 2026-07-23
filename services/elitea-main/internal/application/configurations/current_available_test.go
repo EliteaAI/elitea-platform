@@ -39,6 +39,7 @@ func TestPinnedCurrentAvailableCatalogMatchesCurrentFixedRegistry(t *testing.T) 
 		"azure_search", "delta_lake", "bigquery", "xray", "zephyr", "zephyr_enterprise",
 		"zephyr_essential", "figma", "rally", "sonar", "sql", "google_places", "salesforce",
 		"sharepoint", "carrier", "report_portal", "testio", "openapi", "langfuse",
+		"aha",
 	}
 	gotTypes := make([]string, len(entries))
 	for index, entry := range entries {
@@ -51,6 +52,9 @@ func TestPinnedCurrentAvailableCatalogMatchesCurrentFixedRegistry(t *testing.T) 
 	assertCurrentAvailableEntry(t, entries, "llm_model", func(t *testing.T, entry CurrentAvailableConfigurationType) {
 		if entry.Section != "llm" || entry.HasTestConnection || entry.ValidationFunc != nil || entry.CheckConnectionFunc != nil {
 			t.Fatalf("llm_model contract = %+v", entry)
+		}
+		if entry.UsesSDKValidation() {
+			t.Fatal("llm_model was classified as an SDK-owned configuration")
 		}
 		assertCurrentAvailableSchema(t, entry, "LLM model", "ai_credentials")
 	})
@@ -72,6 +76,9 @@ func TestPinnedCurrentAvailableCatalogMatchesCurrentFixedRegistry(t *testing.T) 
 			entry.CheckConnectionFunc == nil || *entry.CheckConnectionFunc != "applications_configuration_check_connection" {
 			t.Fatalf("github contract = %+v", entry)
 		}
+		if !entry.UsesSDKValidation() {
+			t.Fatal("github was not classified through its registry validator")
+		}
 		assertCurrentAvailableSchema(t, entry, "GitHub", "base_url")
 	})
 	assertCurrentAvailableEntry(t, entries, "s3", func(t *testing.T, entry CurrentAvailableConfigurationType) {
@@ -80,13 +87,25 @@ func TestPinnedCurrentAvailableCatalogMatchesCurrentFixedRegistry(t *testing.T) 
 		}
 		assertCurrentAvailableSchema(t, entry, "S3 Storage", "storage_url")
 	})
+	assertCurrentAvailableEntry(t, entries, "openapi", func(t *testing.T, entry CurrentAvailableConfigurationType) {
+		assertCurrentAvailableDataProperties(t, entry, "oauth_discovery_endpoint", "configuration_uuid")
+	})
+	assertCurrentAvailableEntry(t, entries, "aha", func(t *testing.T, entry CurrentAvailableConfigurationType) {
+		if entry.Section != "credentials" || !entry.HasTestConnection ||
+			entry.ValidationFunc == nil || *entry.ValidationFunc != "applications_configuration_validator" ||
+			entry.CheckConnectionFunc == nil || *entry.CheckConnectionFunc != "applications_configuration_check_connection" {
+			t.Fatalf("aha contract = %+v", entry)
+		}
+		assertCurrentAvailableSchema(t, entry, "Aha!", "api_key")
+		assertCurrentAvailableDataProperties(t, entry, "base_url", "api_key")
+	})
 
 	sources := catalog.SourceRevisions()
-	if got := sources["elitea_sdk"]; got != "2cb85480260a92207f3b3d6d3a84149e10de7949" {
+	if got := sources["elitea_sdk"]; got != "a78d3654f99d8ff89ca7233f20a66d676e564f79" {
 		t.Fatalf("elitea_sdk revision = %q", got)
 	}
 	sources["elitea_sdk"] = "changed"
-	if got := catalog.SourceRevisions()["elitea_sdk"]; got != "2cb85480260a92207f3b3d6d3a84149e10de7949" {
+	if got := catalog.SourceRevisions()["elitea_sdk"]; got != "a78d3654f99d8ff89ca7233f20a66d676e564f79" {
 		t.Fatalf("SourceRevisions() aliased caller mutation: %q", got)
 	}
 
@@ -269,6 +288,25 @@ func assertCurrentAvailableSchema(t *testing.T, entry CurrentAvailableConfigurat
 	}
 	if !slices.Contains(schema.Properties.Data.Required, requiredDataField) {
 		t.Fatalf("%s data required = %v, want %q", entry.Type, schema.Properties.Data.Required, requiredDataField)
+	}
+}
+
+func assertCurrentAvailableDataProperties(t *testing.T, entry CurrentAvailableConfigurationType, names ...string) {
+	t.Helper()
+	var schema struct {
+		Properties struct {
+			Data struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"data"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(entry.ConfigSchema, &schema); err != nil {
+		t.Fatalf("decode %s schema: %v", entry.Type, err)
+	}
+	for _, name := range names {
+		if _, ok := schema.Properties.Data.Properties[name]; !ok {
+			t.Fatalf("%s data property %q is missing", entry.Type, name)
+		}
 	}
 }
 

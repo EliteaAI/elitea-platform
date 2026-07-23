@@ -78,7 +78,7 @@ func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
 	}
 
 	companionLabel := "project-two-confluence"
-	if _, err := repository.Create(ctx, configurationapp.CurrentConfigurationCreate{
+	companion, err := repository.Create(ctx, configurationapp.CurrentConfigurationCreate{
 		UUID:        "00000000-0000-0000-0000-000000000202",
 		ProjectID:   2,
 		Label:       &companionLabel,
@@ -90,8 +90,23 @@ func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
 		Shared:      false,
 		StatusOK:    false,
 		Source:      "user",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create companion configuration: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO centry.social_pins (
+    entity, user_id, project_id, entity_id, updated_at
+) VALUES ('configuration', 77, 2, $1, clock_timestamp())`, companion.ID); err != nil {
+		t.Fatalf("pin companion configuration: %v", err)
+	}
+	pinnedCompanion, err := repository.Get(ctx, 2, companion.ID)
+	if err != nil || !pinnedCompanion.IsPinned {
+		t.Fatalf("pinned detail=%#v err=%v", pinnedCompanion, err)
+	}
+	sameIDInPublicProject, err := repository.Get(ctx, 1, companion.ID)
+	if err != nil || sameIDInPublicProject.IsPinned {
+		t.Fatalf("project-two pin crossed tenant boundary: detail=%#v err=%v", sameIDInPublicProject, err)
 	}
 
 	nilFilter := configurationapp.CurrentConfigurationListFilter{
@@ -109,9 +124,20 @@ func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list with nil filters: %v", err)
 	}
-	if total != 2 || len(items) != 2 || items[0].EliteaTitle != "project_two_github" ||
-		items[1].EliteaTitle != "project_two_confluence" || !items[0].Shared || items[1].Shared {
+	if total != 2 || len(items) != 2 || items[0].EliteaTitle != "project_two_confluence" ||
+		items[1].EliteaTitle != "project_two_github" || !items[0].IsPinned || items[1].IsPinned ||
+		items[0].Shared || !items[1].Shared {
 		t.Fatalf("current project page total=%d items=%#v", total, items)
+	}
+	pinnedPage, err := repository.List(ctx, configurationapp.CurrentConfigurationListFilter{
+		ProjectID: 2,
+		Offset:    0,
+		Limit:     1,
+		SortBy:    "id",
+		SortOrder: "asc",
+	})
+	if err != nil || len(pinnedPage) != 1 || pinnedPage[0].ID != companion.ID || !pinnedPage[0].IsPinned {
+		t.Fatalf("pinned-first page=%#v err=%v", pinnedPage, err)
 	}
 
 	publicSharedFilter := configurationapp.CurrentConfigurationListFilter{
@@ -193,6 +219,39 @@ func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
 	if err != nil || remaining != 1 {
 		t.Fatalf("remaining project-two rows=%d err=%v", remaining, err)
 	}
+
+	if _, err := repository.Create(ctx, configurationapp.CurrentConfigurationCreate{
+		UUID:        "00000000-0000-0000-0000-000000000203",
+		ProjectID:   2,
+		EliteaTitle: "project_two_openai_model",
+		Type:        "openai",
+		Section:     "llm",
+		Data:        map[string]any{},
+		Meta:        map[string]any{},
+		Source:      "user",
+	}); err != nil {
+		t.Fatalf("create cross-section configuration: %v", err)
+	}
+	typesFilter := configurationapp.CurrentConfigurationTypesFilter{
+		ProjectID: 2,
+		Section:   "credentials",
+		MaxRows:   configurationapp.MaxCurrentConfigurationTypes + 1,
+	}
+	credentialTypes, err := repository.ListDistinctTypes(ctx, typesFilter)
+	if err != nil || !reflect.DeepEqual(credentialTypes, []string{"confluence"}) {
+		t.Fatalf("project-two credential types=%v err=%v", credentialTypes, err)
+	}
+	typesFilter.Section = ""
+	allTypes, err := repository.ListDistinctTypes(ctx, typesFilter)
+	if err != nil || !reflect.DeepEqual(allTypes, []string{"confluence", "openai"}) {
+		t.Fatalf("project-two all types=%v err=%v", allTypes, err)
+	}
+	typesFilter.ProjectID = 1
+	typesFilter.Section = "credentials"
+	projectOneTypes, err := repository.ListDistinctTypes(ctx, typesFilter)
+	if err != nil || !reflect.DeepEqual(projectOneTypes, []string{"github"}) {
+		t.Fatalf("project-one credential types=%v err=%v", projectOneTypes, err)
+	}
 }
 
 func prepareCurrentConfigurationsProjectTwo(t *testing.T, pool *pgxpool.Pool) {
@@ -200,6 +259,16 @@ func prepareCurrentConfigurationsProjectTwo(t *testing.T, pool *pgxpool.Pool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `
+CREATE TABLE centry.social_pins (
+    id SERIAL PRIMARY KEY,
+    entity VARCHAR NOT NULL,
+    user_id INTEGER NOT NULL,
+    project_id INTEGER,
+    entity_id INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    UNIQUE (entity, project_id, entity_id)
+);
 INSERT INTO centry.project (id) VALUES (2);
 CREATE SCHEMA p_2;
 CREATE TABLE p_2.configuration (

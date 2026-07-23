@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +18,13 @@ import (
 )
 
 func TestCurrentConfigurationsRepositoryRoutesCurrentAndSharedLists(t *testing.T) {
+	pinnedCurrentRow := sqlcgen.ListCurrentConfigurationsRow(currentConfigurationRow(7, 11))
+	pinnedCurrentRow.IsPinned = true
 	queries := &currentConfigurationQueriesStub{
 		currentCount: 2,
 		sharedCount:  1,
 		currentRows: []sqlcgen.ListCurrentConfigurationsRow{
-			sqlcgen.ListCurrentConfigurationsRow(currentConfigurationRow(7, 11)),
+			pinnedCurrentRow,
 		},
 		sharedRows: []sqlcgen.ListCurrentSharedConfigurationsRow{
 			sqlcgen.ListCurrentSharedConfigurationsRow(currentConfigurationRow(1, 12)),
@@ -39,7 +42,7 @@ func TestCurrentConfigurationsRepositoryRoutesCurrentAndSharedLists(t *testing.T
 		t.Fatalf("current count=%d err=%v", total, err)
 	}
 	items, err := repository.List(context.Background(), currentFilter)
-	if err != nil || len(items) != 1 || items[0].ProjectID != 7 {
+	if err != nil || len(items) != 1 || items[0].ProjectID != 7 || !items[0].IsPinned {
 		t.Fatalf("current items=%#v err=%v", items, err)
 	}
 	if queries.countCurrentParams.LabelQuery != "team" || queries.listCurrentParams.OffsetRows != 3 || queries.listCurrentParams.LimitRows != 25 {
@@ -77,8 +80,89 @@ func TestCurrentConfigurationsRepositoryRoutesCurrentAndSharedLists(t *testing.T
 	}
 }
 
+func TestCurrentConfigurationsRepositoryListsBoundedTypesInAuthorizedTenant(t *testing.T) {
+	queries := &currentConfigurationQueriesStub{typesRows: []string{"github", "gitlab"}}
+	store := &currentConfigurationProjectStore{}
+	repository := newCurrentConfigurationsRepositoryForTest(t, store, queries)
+
+	rows, err := repository.ListDistinctTypes(context.Background(), configurationapp.CurrentConfigurationTypesFilter{
+		ProjectID: 7,
+		Section:   "credentials",
+		MaxRows:   configurationapp.MaxCurrentConfigurationTypes + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rows, []string{"github", "gitlab"}) {
+		t.Fatalf("types=%v", rows)
+	}
+	wantParams := sqlcgen.ListCurrentConfigurationTypesParams{
+		ProjectID: 7,
+		Section:   "credentials",
+		LimitRows: configurationapp.MaxCurrentConfigurationTypes + 1,
+	}
+	if queries.typesCalls != 1 || !reflect.DeepEqual(queries.typesParams, wantParams) {
+		t.Fatalf("query calls=%d params=%#v", queries.typesCalls, queries.typesParams)
+	}
+	if !reflect.DeepEqual(store.projectIDs, []int64{7}) || len(store.options) != 1 ||
+		store.options[0].IsoLevel != pgx.ReadCommitted || store.options[0].AccessMode != pgx.ReadOnly {
+		t.Fatalf("project transaction ids=%v options=%#v", store.projectIDs, store.options)
+	}
+}
+
+func TestCurrentConfigurationsRepositoryRejectsInvalidTypesFilterBeforeTenantRouting(t *testing.T) {
+	queries := &currentConfigurationQueriesStub{}
+	store := &currentConfigurationProjectStore{}
+	repository := newCurrentConfigurationsRepositoryForTest(t, store, queries)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []configurationapp.CurrentConfigurationTypesFilter{
+		{ProjectID: 7, MaxRows: 1},
+		{ProjectID: 0, MaxRows: 1},
+		{ProjectID: 7, MaxRows: 0},
+		{ProjectID: 7, Section: strings.Repeat("x", configurationapp.MaxCurrentConfigurationTypeLength+1), MaxRows: 1},
+		{ProjectID: 7, MaxRows: configurationapp.MaxCurrentConfigurationTypes + 2},
+	}
+	for index, filter := range tests {
+		ctx := context.Background()
+		if index == 0 {
+			ctx = nil
+		}
+		if _, err := repository.ListDistinctTypes(ctx, filter); !errors.Is(err, configurationapp.ErrInvalidCurrentConfigurationTypesRequest) {
+			t.Fatalf("filter %d error=%v", index, err)
+		}
+	}
+	if _, err := repository.ListDistinctTypes(canceled, configurationapp.CurrentConfigurationTypesFilter{
+		ProjectID: 7,
+		MaxRows:   1,
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled error=%v", err)
+	}
+	if len(store.projectIDs) != 0 || queries.typesCalls != 0 {
+		t.Fatalf("invalid input reached tenant store: projects=%v calls=%d", store.projectIDs, queries.typesCalls)
+	}
+}
+
+func TestCurrentConfigurationsRepositoryFailsClosedOnTypesQueryErrorsAndBounds(t *testing.T) {
+	queryFailure := errors.New("database failure")
+	queries := &currentConfigurationQueriesStub{typesErr: queryFailure}
+	repository := newCurrentConfigurationsRepositoryForTest(t, &currentConfigurationProjectStore{}, queries)
+	filter := configurationapp.CurrentConfigurationTypesFilter{ProjectID: 7, MaxRows: 1}
+	if _, err := repository.ListDistinctTypes(context.Background(), filter); !errors.Is(err, queryFailure) {
+		t.Fatalf("query error identity lost: %v", err)
+	}
+
+	queries = &currentConfigurationQueriesStub{typesRows: []string{"a", "b"}}
+	repository = newCurrentConfigurationsRepositoryForTest(t, &currentConfigurationProjectStore{}, queries)
+	if _, err := repository.ListDistinctTypes(context.Background(), filter); err == nil {
+		t.Fatal("expected repository result-bound failure")
+	}
+}
+
 func TestCurrentConfigurationsRepositoryMapsAllCurrentColumnsAndCopiesJSON(t *testing.T) {
 	row := currentConfigurationRow(7, 11)
+	row.IsPinned = true
 	queries := &currentConfigurationQueriesStub{getRow: row}
 	repository := newCurrentConfigurationsRepositoryForTest(t, &currentConfigurationProjectStore{}, queries)
 
@@ -91,11 +175,12 @@ func TestCurrentConfigurationsRepositoryMapsAllCurrentColumnsAndCopiesJSON(t *te
 		configuration.Type != row.Type || configuration.Section != row.Section || configuration.Shared != row.Shared ||
 		configuration.StatusOK != row.StatusOk || configuration.StatusLogs == nil || *configuration.StatusLogs != *row.StatusLogs ||
 		configuration.Source != row.Source || configuration.AuthorID == nil || *configuration.AuthorID != *row.AuthorID ||
+		!configuration.IsPinned ||
 		!configuration.CreatedAt.Equal(row.CreatedAt.Time) || configuration.UpdatedAt == nil || !configuration.UpdatedAt.Equal(row.UpdatedAt.Time) {
 		t.Fatalf("mapped configuration=%#v", configuration)
 	}
-	if configuration.IsPinned || configuration.Options != nil {
-		t.Fatalf("read-only enrichments must remain unset: %#v", configuration)
+	if configuration.Options != nil {
+		t.Fatalf("options enrichment must remain unset: %#v", configuration)
 	}
 
 	queries.getRow.Data[2] = 'X'
@@ -258,20 +343,24 @@ func (s *currentConfigurationProjectStore) WithinProjectTx(ctx context.Context, 
 }
 
 type currentConfigurationQueriesStub struct {
-	currentCount int64
-	sharedCount  int64
-	currentRows  []sqlcgen.ListCurrentConfigurationsRow
-	sharedRows   []sqlcgen.ListCurrentSharedConfigurationsRow
-	findRow      sqlcgen.FindCurrentConfigurationByEliteaTitleRow
-	getRow       sqlcgen.GetCurrentConfigurationRow
-	insertRow    sqlcgen.InsertCurrentConfigurationRow
-	replaceRow   sqlcgen.ReplaceCurrentConfigurationRow
-	deleteID     int32
-	findErr      error
-	getErr       error
-	insertErr    error
-	replaceErr   error
-	deleteErr    error
+	currentCount     int64
+	sharedCount      int64
+	typesRows        []string
+	optionRowsByCall [][]sqlcgen.ListCurrentConfigurationOptionCandidatesRow
+	currentRows      []sqlcgen.ListCurrentConfigurationsRow
+	sharedRows       []sqlcgen.ListCurrentSharedConfigurationsRow
+	findRow          sqlcgen.FindCurrentConfigurationByEliteaTitleRow
+	getRow           sqlcgen.GetCurrentConfigurationRow
+	insertRow        sqlcgen.InsertCurrentConfigurationRow
+	replaceRow       sqlcgen.ReplaceCurrentConfigurationRow
+	deleteID         int32
+	findErr          error
+	getErr           error
+	insertErr        error
+	replaceErr       error
+	deleteErr        error
+	typesErr         error
+	optionErr        error
 
 	countCurrentParams sqlcgen.CountCurrentConfigurationsParams
 	countSharedParams  sqlcgen.CountCurrentSharedConfigurationsParams
@@ -281,8 +370,11 @@ type currentConfigurationQueriesStub struct {
 	insertParams       sqlcgen.InsertCurrentConfigurationParams
 	replaceParams      sqlcgen.ReplaceCurrentConfigurationParams
 	deleteParams       sqlcgen.DeleteCurrentConfigurationParams
+	typesParams        sqlcgen.ListCurrentConfigurationTypesParams
+	optionParams       []sqlcgen.ListCurrentConfigurationOptionCandidatesParams
 	listCurrentCalls   int
 	listSharedCalls    int
+	typesCalls         int
 }
 
 func (s *currentConfigurationQueriesStub) FindCurrentConfigurationByEliteaTitle(
@@ -291,6 +383,30 @@ func (s *currentConfigurationQueriesStub) FindCurrentConfigurationByEliteaTitle(
 ) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error) {
 	s.findParams = params
 	return s.findRow, s.findErr
+}
+
+func (s *currentConfigurationQueriesStub) ListCurrentConfigurationTypes(
+	_ context.Context,
+	params sqlcgen.ListCurrentConfigurationTypesParams,
+) ([]string, error) {
+	s.typesCalls++
+	s.typesParams = params
+	return s.typesRows, s.typesErr
+}
+
+func (s *currentConfigurationQueriesStub) ListCurrentConfigurationOptionCandidates(
+	_ context.Context,
+	params sqlcgen.ListCurrentConfigurationOptionCandidatesParams,
+) ([]sqlcgen.ListCurrentConfigurationOptionCandidatesRow, error) {
+	call := len(s.optionParams)
+	s.optionParams = append(s.optionParams, params)
+	if s.optionErr != nil {
+		return nil, s.optionErr
+	}
+	if call >= len(s.optionRowsByCall) {
+		return nil, nil
+	}
+	return s.optionRowsByCall[call], nil
 }
 
 func (s *currentConfigurationQueriesStub) CountCurrentConfigurations(_ context.Context, params sqlcgen.CountCurrentConfigurationsParams) (int64, error) {

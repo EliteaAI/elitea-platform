@@ -35,37 +35,37 @@ func NewIndexIngestJobsRepository(pool *pgxpool.Pool, policy IndexIngestDispatch
 	return &IndexIngestJobsRepository{pool: pool, policy: policy}, nil
 }
 
-func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admission indexingapp.Admission) (executionapp.AdmissionOutcome, error) {
+func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admission indexingapp.Admission) (indexingapp.AdmissionOutcome, error) {
 	if err := admission.Record.Validate(); err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return indexingapp.AdmissionOutcome{}, err
 	}
 	if admission.Record.Job.CapabilityID != executiondomain.IndexIngestCapability {
-		return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		return indexingapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 	}
 	if err := admission.Binding.Validate(admission.Record.InputBundle); err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return indexingapp.AdmissionOutcome{}, err
 	}
 	if err := validateIndexInputManifest(admission.Record.InputBundle); err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return indexingapp.AdmissionOutcome{}, err
 	}
 	if len(admission.Record.InputBundle.Manifest) > maxStoredInputManifestBytes || len(admission.Record.InputBundle.Entries) > executiondomain.MaxInputBundleEntries {
-		return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		return indexingapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 	}
 	for _, entry := range admission.Record.InputBundle.Entries {
 		if len(entry.Content) > executiondomain.MaxInputEntryContentBytes {
-			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+			return indexingapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 		}
 	}
 	if !boundedIndexAdmissionStrings(admission) || admission.Record.Job.Generation > math.MaxInt64 || admission.Record.Outbox.Generation > math.MaxInt64 {
-		return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		return indexingapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 	}
 	resourceProject, err := parseProjectID(admission.Record.Job.ResourceProjectID)
 	if err != nil || resourceProject > math.MaxInt32 {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("resource project: %w", errors.New("project ID must fit the current integer schema"))
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("resource project: %w", errors.New("project ID must fit the current integer schema"))
 	}
 	projectionProject, err := parseProjectID(admission.Record.Job.ProjectionProjectID)
 	if err != nil || projectionProject > math.MaxInt32 {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("projection project: %w", errors.New("project ID must fit the current integer schema"))
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("projection project: %w", errors.New("project ID must fit the current integer schema"))
 	}
 
 	queries := sqlcgen.New(r.pool)
@@ -73,16 +73,16 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 	switch {
 	case err == nil:
 		if digest != admission.Record.RequestDigest {
-			return executionapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
+			return indexingapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
 		}
 		return existing, nil
 	case !errors.Is(err, pgx.ErrNoRows):
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("load index idempotency binding: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("load index idempotency binding: %w", err)
 	}
 
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite})
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("begin index admission transaction: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("begin index admission transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -95,29 +95,41 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		CapabilityID:   executiondomain.IndexIngestCapability,
 		MaxOutstanding: r.policy.MaxOutstanding,
 	}); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("ensure index admission policy: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("ensure index admission policy: %w", err)
 	}
 	persistedMax, err := txQueries.LockRuntimeAdmissionPolicy(ctx, executiondomain.IndexIngestCapability)
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("lock index admission policy: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("lock index admission policy: %w", err)
 	}
 	if persistedMax != r.policy.MaxOutstanding {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("%w: capability %q configured=%d persisted=%d", ErrAdmissionPolicyMismatch, executiondomain.IndexIngestCapability, r.policy.MaxOutstanding, persistedMax)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("%w: capability %q configured=%d persisted=%d", ErrAdmissionPolicyMismatch, executiondomain.IndexIngestCapability, r.policy.MaxOutstanding, persistedMax)
 	}
 
 	existing, digest, err = loadIndexAdmission(ctx, txQueries, admission.Record.IdempotencyScope, admission.Record.IdempotencyKey)
 	switch {
 	case err == nil:
 		if digest != admission.Record.RequestDigest {
-			return executionapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
+			return indexingapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return executionapp.AdmissionOutcome{}, fmt.Errorf("commit index admission replay: %w", err)
+			return indexingapp.AdmissionOutcome{}, fmt.Errorf("commit index admission replay: %w", err)
 		}
 		committed = true
 		return existing, nil
 	case !errors.Is(err, pgx.ErrNoRows):
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("reload index idempotency binding: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("reload index idempotency binding: %w", err)
+	}
+
+	targetActive, err := txQueries.HasActiveIndexIngestTarget(ctx, sqlcgen.HasActiveIndexIngestTargetParams{
+		ResourceProjectID: int32(resourceProject),
+		ToolkitID:         admission.Binding.ToolkitID,
+		IndexName:         admission.Binding.IndexName,
+	})
+	if err != nil {
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("check active index target: %w", err)
+	}
+	if targetActive {
+		return indexingapp.AdmissionOutcome{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 
 	active, err := txQueries.CountActiveRuntimeExecutionsUpTo(ctx, sqlcgen.CountActiveRuntimeExecutionsUpToParams{
@@ -125,14 +137,14 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		MaxOutstanding: r.policy.MaxOutstanding,
 	})
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("count active index executions: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("count active index executions: %w", err)
 	}
 	if active >= r.policy.MaxOutstanding {
 		if err := tx.Commit(ctx); err != nil {
-			return executionapp.AdmissionOutcome{}, fmt.Errorf("commit index admission capacity observation: %w", err)
+			return indexingapp.AdmissionOutcome{}, fmt.Errorf("commit index admission capacity observation: %w", err)
 		}
 		committed = true
-		return executionapp.AdmissionOutcome{}, &executionapp.AdmissionCapacityError{
+		return indexingapp.AdmissionOutcome{}, &executionapp.AdmissionCapacityError{
 			CapabilityID:   executiondomain.IndexIngestCapability,
 			MaxOutstanding: r.policy.MaxOutstanding,
 		}
@@ -140,14 +152,14 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 
 	timingRow, err := txQueries.LoadRuntimeAdmissionTiming(ctx, r.policy.DeadlineTTL.Milliseconds())
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("load index admission timing: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("load index admission timing: %w", err)
 	}
 	timing, err := decodeIndexAdmissionTiming(timingRow, r.policy.DeadlineTTL)
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return indexingapp.AdmissionOutcome{}, err
 	}
 	if err := insertIndexInputBundle(ctx, txQueries, int32(resourceProject), admission.Record, timing.AdmittedAt); err != nil {
-		return executionapp.AdmissionOutcome{}, err
+		return indexingapp.AdmissionOutcome{}, err
 	}
 	createdID, err := txQueries.InsertIndexIngestExecutionJob(ctx, sqlcgen.InsertIndexIngestExecutionJobParams{
 		ExecutionID:         admission.Record.Job.ID,
@@ -169,22 +181,22 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, digest, loadErr := loadIndexAdmission(ctx, txQueries, admission.Record.IdempotencyScope, admission.Record.IdempotencyKey)
 		if loadErr != nil {
-			return executionapp.AdmissionOutcome{}, fmt.Errorf("load concurrent index admission: %w", loadErr)
+			return indexingapp.AdmissionOutcome{}, fmt.Errorf("load concurrent index admission: %w", loadErr)
 		}
 		if digest != admission.Record.RequestDigest {
-			return executionapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
+			return indexingapp.AdmissionOutcome{}, executionapp.ErrIdempotencyConflict
 		}
 		if rollbackErr := tx.Rollback(context.WithoutCancel(ctx)); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
-			return executionapp.AdmissionOutcome{}, fmt.Errorf("rollback concurrent index admission: %w", rollbackErr)
+			return indexingapp.AdmissionOutcome{}, fmt.Errorf("rollback concurrent index admission: %w", rollbackErr)
 		}
 		committed = true
 		return existing, nil
 	}
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("insert index execution job: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("insert index execution job: %w", err)
 	}
 	if createdID != admission.Record.Job.ID {
-		return executionapp.AdmissionOutcome{}, errors.New("index execution job insert changed identity")
+		return indexingapp.AdmissionOutcome{}, errors.New("index execution job insert changed identity")
 	}
 	if err := txQueries.InsertIndexIngestJob(ctx, sqlcgen.InsertIndexIngestJobParams{
 		ExecutionID:                 admission.Record.Job.ID,
@@ -195,11 +207,13 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		LlmModelEntryID:             optionalString(admission.Binding.LLMModelEntryID),
 		LlmConfigurationEntryID:     optionalString(admission.Binding.LLMConfigurationEntryID),
 		McpTokensEntryID:            optionalString(admission.Binding.MCPTokensEntryID),
+		IndexMetaID:                 admission.Binding.IndexMetaID,
+		IndexMetaCorrelationID:      admission.Binding.IndexMetaCorrelationID,
 		ToolkitID:                   admission.Binding.ToolkitID,
 		IndexName:                   admission.Binding.IndexName,
 		Initiator:                   string(admission.Binding.Initiator),
 	}); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("insert index capability job: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("insert index capability job: %w", err)
 	}
 	if err := txQueries.InsertRuntimeCommandOutbox(ctx, sqlcgen.InsertRuntimeCommandOutboxParams{
 		OutboxID:       admission.Record.Outbox.ID,
@@ -213,42 +227,97 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		LimitsRevision: r.policy.LimitsRevision,
 		CreatedAt:      timestamp(timing.AdmittedAt),
 	}); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("insert index command outbox: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("insert index command outbox: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return executionapp.AdmissionOutcome{}, fmt.Errorf("commit index admission: %w", err)
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("commit index admission: %w", err)
 	}
 	committed = true
-	return executionapp.AdmissionOutcome{
-		ExecutionID: admission.Record.Job.ID,
-		CommandID:   admission.Record.Job.CommandID,
-		Created:     true,
-		AdmittedAt:  timing.AdmittedAt,
-		Deadline:    timing.Deadline,
+	return indexingapp.AdmissionOutcome{
+		AdmissionOutcome: executionapp.AdmissionOutcome{
+			ExecutionID: admission.Record.Job.ID,
+			CommandID:   admission.Record.Job.CommandID,
+			Created:     true,
+			AdmittedAt:  timing.AdmittedAt,
+			Deadline:    timing.Deadline,
+		},
+		Generation:             admission.Record.Job.Generation,
+		IndexMetaID:            admission.Binding.IndexMetaID,
+		IndexMetaCorrelationID: admission.Binding.IndexMetaCorrelationID,
 	}, nil
 }
 
-func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, key string) (executionapp.AdmissionOutcome, runtimedomain.Digest, error) {
+// MarkIndexMetaInitialized opens the dispatch gate only for the exact durable
+// execution/generation/meta identity. Repeating the same transition returns the
+// original database timestamp; a mismatched identity cannot make work visible.
+func (r *IndexIngestJobsRepository) MarkIndexMetaInitialized(
+	ctx context.Context,
+	initialization indexingapp.IndexMetaInitialization,
+) (time.Time, error) {
+	if err := initialization.Validate(); err != nil {
+		return time.Time{}, err
+	}
+	if initialization.Generation > math.MaxInt64 {
+		return time.Time{}, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	initializedAt, err := sqlcgen.New(r.pool).MarkIndexMetaInitialized(ctx, sqlcgen.MarkIndexMetaInitializedParams{
+		ExecutionID:            initialization.ExecutionID,
+		Generation:             int64(initialization.Generation),
+		IndexMetaID:            initialization.MetaID,
+		IndexMetaCorrelationID: initialization.CorrelationID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("mark index metadata initialized: %w", err)
+	}
+	if !initializedAt.Valid || initializedAt.Time.IsZero() {
+		return time.Time{}, errors.New("database returned invalid index metadata initialization time")
+	}
+	return initializedAt.Time.UTC(), nil
+}
+
+func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, key string) (indexingapp.AdmissionOutcome, runtimedomain.Digest, error) {
 	row, err := queries.GetRuntimeAdmissionByIdempotency(ctx, sqlcgen.GetRuntimeAdmissionByIdempotencyParams{
 		IdempotencyScope: scope,
 		IdempotencyKey:   key,
 	})
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, err
+		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, err
 	}
 	digest, err := storedDigest(row.RequestDigest)
 	if err != nil {
-		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, fmt.Errorf("invalid stored index request digest: %w", err)
+		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, fmt.Errorf("invalid stored index request digest: %w", err)
 	}
 	if !row.AdmittedAt.Valid || !row.Deadline.Valid || row.AdmittedAt.Time.IsZero() || !row.Deadline.Time.After(row.AdmittedAt.Time) {
-		return executionapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index admission timing is invalid")
+		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index admission timing is invalid")
 	}
-	return executionapp.AdmissionOutcome{
-		ExecutionID: row.ExecutionID,
-		CommandID:   row.CommandID,
-		Created:     false,
-		AdmittedAt:  row.AdmittedAt.Time.UTC(),
-		Deadline:    row.Deadline.Time.UTC(),
+	if row.Generation <= 0 ||
+		row.IndexMetaID == nil || *row.IndexMetaID == "" ||
+		row.IndexMetaCorrelationID == nil || *row.IndexMetaCorrelationID == "" {
+		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index metadata identity is invalid")
+	}
+	var initializedAt *time.Time
+	if row.IndexMetaInitializedAt.Valid {
+		value := row.IndexMetaInitializedAt.Time.UTC()
+		if value.IsZero() {
+			return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index metadata initialization time is invalid")
+		}
+		initializedAt = &value
+	}
+	return indexingapp.AdmissionOutcome{
+		AdmissionOutcome: executionapp.AdmissionOutcome{
+			ExecutionID: row.ExecutionID,
+			CommandID:   row.CommandID,
+			Created:     false,
+			AdmittedAt:  row.AdmittedAt.Time.UTC(),
+			Deadline:    row.Deadline.Time.UTC(),
+		},
+		Generation:             uint64(row.Generation),
+		IndexMetaID:            *row.IndexMetaID,
+		IndexMetaCorrelationID: *row.IndexMetaCorrelationID,
+		IndexMetaInitializedAt: initializedAt,
 	}, digest, nil
 }
 
@@ -309,6 +378,7 @@ func boundedIndexAdmissionStrings(admission indexingapp.Admission) bool {
 		record.Job.ResourceProjectID, record.Job.ProjectionProjectID,
 		record.Job.ActorID, record.Job.CapabilityID, record.Outbox.ID,
 		binding.ToolkitConfigurationEntryID, binding.ToolParametersEntryID,
+		binding.IndexMetaID,
 		binding.IndexName, string(binding.Initiator),
 	}
 	for _, entry := range record.InputBundle.Entries {
@@ -324,7 +394,8 @@ func boundedIndexAdmissionStrings(admission indexingapp.Admission) bool {
 			return false
 		}
 	}
-	return true
+	return len(binding.IndexMetaCorrelationID) <= executiondomain.MaxIndexMetaCorrelationBytes &&
+		!strings.ContainsRune(binding.IndexMetaCorrelationID, '\x00')
 }
 
 func validateIndexInputManifest(bundle executiondomain.InputBundle) error {
@@ -357,3 +428,4 @@ func timestamp(value time.Time) pgtype.Timestamptz {
 }
 
 var _ indexingapp.AtomicAdmissionStore = (*IndexIngestJobsRepository)(nil)
+var _ indexingapp.IndexMetaInitializationStore = (*IndexIngestJobsRepository)(nil)

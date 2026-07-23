@@ -51,6 +51,9 @@ func TestNewFormGraphComposesSeparateDirectAndMainPolicies(t *testing.T) {
 	if _, err := graph.ValidateToken(context.Background(), "not-a-token"); err == nil || errors.Is(err, ErrInvalidGraph) {
 		t.Fatalf("runtime PAT bridge did not reuse the composed validator: %v", err)
 	}
+	if _, err := graph.IssueToken(context.Background(), 7); err == nil || errors.Is(err, ErrInvalidGraph) {
+		t.Fatalf("runtime PAT bridge did not reuse the composed issuer: %v", err)
+	}
 
 	for _, uri := range []string{"/forward-auth/login", "/health"} {
 		decision, err := graph.AuthorizeMain(context.Background(), publicMainRequest(uri))
@@ -277,6 +280,9 @@ func TestNilFormGraphMethodsFailSafely(t *testing.T) {
 	}
 	if _, err := graph.ValidateToken(context.Background(), "token"); !errors.Is(err, ErrInvalidGraph) {
 		t.Fatalf("ValidateToken error = %v", err)
+	}
+	if _, err := graph.IssueToken(context.Background(), 7); !errors.Is(err, ErrInvalidGraph) {
+		t.Fatalf("IssueToken error = %v", err)
 	}
 }
 

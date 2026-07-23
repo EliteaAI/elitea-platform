@@ -22,6 +22,9 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 	fence := bytes.Repeat([]byte{7}, sha256.Size)
 	store := contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {
 		for _, predicate := range []string{
+			"j.actor_id",
+			"i.initiator",
+			"i.capability_id = j.capability_id",
 			"ws.workload_session_id = c.workload_session_id",
 			"ws.workload_identity = c.workload_identity",
 			"ws.producer_id = c.producer_id",
@@ -36,8 +39,10 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 		}
 		require.Equal(t, []any{"claim-1", "execution-1", uint64(3), identity.String(), fence}, args)
 		return contentRowFunc(func(dest ...any) error {
-			require.Len(t, dest, 1)
+			require.Len(t, dest, 3)
 			*dest[0].(*int64) = 42
+			*dest[1].(*string) = "17"
+			*dest[2].(*string) = runtimeContextInitiatorUser
 			return nil
 		})
 	})
@@ -53,6 +58,8 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 42, authorization.ResourceProjectID)
+	require.Equal(t, "17", authorization.ActorID)
+	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
 }
 
 func TestPostgresIndexRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T) {
@@ -96,8 +103,16 @@ func TestPostgresIndexRuntimeContextAuthorizationIntegration(t *testing.T) {
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
     resource_project_id INTEGER NOT NULL,
+    actor_id TEXT NOT NULL,
     desired_state TEXT NOT NULL,
     capability_id TEXT NOT NULL,
+    PRIMARY KEY (execution_id, generation)
+)`,
+		`CREATE TABLE elitea_runtime.index_ingest_jobs (
+    execution_id TEXT NOT NULL,
+    generation BIGINT NOT NULL,
+    capability_id TEXT NOT NULL,
+    initiator TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
 		`CREATE TABLE elitea_runtime.workload_sessions (
@@ -129,8 +144,13 @@ func TestPostgresIndexRuntimeContextAuthorizationIntegration(t *testing.T) {
 	require.NoError(t, err)
 	fence := bytes.Repeat([]byte{8}, sha256.Size)
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.execution_jobs
-    (execution_id, generation, resource_project_id, desired_state, capability_id)
-VALUES ('execution-1', 1, 42, 'RUNNING', 'index.ingest.v1')`); err != nil {
+    (execution_id, generation, resource_project_id, actor_id, desired_state, capability_id)
+VALUES ('execution-1', 1, 42, '17', 'RUNNING', 'index.ingest.v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.index_ingest_jobs
+    (execution_id, generation, capability_id, initiator)
+VALUES ('execution-1', 1, 'index.ingest.v1', 'user')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.workload_sessions
@@ -155,6 +175,8 @@ VALUES ('claim-1', 'execution-1', 1, 'session-1', $1, 'producer-1', $2, clock_ti
 	authorization, err := repository.AuthorizeRuntimeContext(ctx, claim)
 	require.NoError(t, err)
 	require.EqualValues(t, 42, authorization.ResourceProjectID)
+	require.Equal(t, "17", authorization.ActorID)
+	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
 
 	claim.FenceToken = bytes.Repeat([]byte{9}, sha256.Size)
 	_, err = repository.AuthorizeRuntimeContext(ctx, claim)

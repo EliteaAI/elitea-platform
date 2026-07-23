@@ -58,7 +58,9 @@ func TestExtractCurrentConfigurationSecretsPreservesCurrentFieldBehavior(t *test
 	if sanitized["reference"] != "{{secret.Existing_1}}" || sanitized["name"] != "connection" {
 		t.Fatalf("non-raw values changed: %#v", sanitized)
 	}
-	if len(mutations) != 1 || mutations[0].Name != currentSecretIDOne || mutations[0].Value != "raw-api-key" {
+	if len(mutations) != 1 || mutations[0].Field != "api_key" ||
+		!reflect.DeepEqual(mutations[0].Path, []string{"api_key"}) ||
+		mutations[0].Name != currentSecretIDOne || mutations[0].Value != "raw-api-key" {
 		t.Fatalf("unexpected mutation metadata: name=%q count=%d", mutationName(mutations), len(mutations))
 	}
 	if data["api_key"] != "raw-api-key" {
@@ -191,7 +193,15 @@ func TestExtractCurrentConfigurationSecretsRecursesThroughNestedObjectSchemas(t 
 	}
 	// Sorted field paths make ID assignment stable: connection.auth.token,
 	// connection.password, then optional.client_secret.
-	if mutations[0].Value != "nested-token" || mutations[1].Value != "nested-password" || mutations[2].Value != "optional-secret" {
+	if mutations[0].Field != "connection.auth.token" ||
+		!reflect.DeepEqual(mutations[0].Path, []string{"connection", "auth", "token"}) ||
+		mutations[0].Value != "nested-token" ||
+		mutations[1].Field != "connection.password" ||
+		!reflect.DeepEqual(mutations[1].Path, []string{"connection", "password"}) ||
+		mutations[1].Value != "nested-password" ||
+		mutations[2].Field != "optional.client_secret" ||
+		!reflect.DeepEqual(mutations[2].Path, []string{"optional", "client_secret"}) ||
+		mutations[2].Value != "optional-secret" {
 		t.Fatal("mutations are not in deterministic field-path order")
 	}
 

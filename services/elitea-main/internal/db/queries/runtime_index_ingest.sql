@@ -1,14 +1,21 @@
 -- name: GetRuntimeAdmissionByIdempotency :one
 SELECT j.execution_id,
        j.command_id,
+       j.generation,
        j.request_digest,
        j.admitted_at,
-       o.deadline
+       o.deadline,
+       i.index_meta_id,
+       i.index_meta_correlation_id,
+       i.index_meta_initialized_at
 FROM elitea_runtime.execution_jobs AS j
 JOIN elitea_runtime.command_outbox AS o
   ON o.execution_id = j.execution_id AND o.generation = j.generation
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id AND i.generation = j.generation
 WHERE j.idempotency_scope = sqlc.arg(idempotency_scope)::text
-  AND j.idempotency_key = sqlc.arg(idempotency_key)::text;
+  AND j.idempotency_key = sqlc.arg(idempotency_key)::text
+  AND j.capability_id = 'index.ingest.v1';
 
 -- name: EnsureRuntimeAdmissionPolicy :exec
 INSERT INTO elitea_runtime.execution_admission_policies (
@@ -24,6 +31,21 @@ SELECT max_outstanding
 FROM elitea_runtime.execution_admission_policies
 WHERE capability_id = sqlc.arg(capability_id)::text
 FOR UPDATE;
+
+-- name: HasActiveIndexIngestTarget :one
+SELECT EXISTS (
+    SELECT 1
+    FROM elitea_runtime.execution_jobs AS j
+    JOIN elitea_runtime.index_ingest_jobs AS i
+      ON i.execution_id = j.execution_id
+     AND i.generation = j.generation
+    WHERE j.capability_id = 'index.ingest.v1'
+      AND j.resource_project_id = sqlc.arg(resource_project_id)::integer
+      AND i.toolkit_id = sqlc.arg(toolkit_id)::integer
+      AND i.index_name = sqlc.arg(index_name)::text
+      AND j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
+    LIMIT 1
+);
 
 -- name: CountActiveRuntimeExecutionsUpTo :one
 SELECT count(*)
@@ -111,6 +133,7 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     execution_id, generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
+    index_meta_id, index_meta_correlation_id,
     toolkit_id, index_name, initiator
 ) VALUES (
     sqlc.arg(execution_id)::text,
@@ -122,10 +145,31 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     sqlc.narg(llm_model_entry_id)::text,
     sqlc.narg(llm_configuration_entry_id)::text,
     sqlc.narg(mcp_tokens_entry_id)::text,
+    sqlc.arg(index_meta_id)::text,
+    sqlc.arg(index_meta_correlation_id)::text,
     sqlc.arg(toolkit_id)::integer,
     sqlc.arg(index_name)::text,
     sqlc.arg(initiator)::text
 );
+
+-- name: MarkIndexMetaInitialized :one
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_initialized_at = COALESCE(
+    i.index_meta_initialized_at,
+    date_trunc('milliseconds', clock_timestamp())
+)
+FROM elitea_runtime.execution_jobs AS j
+WHERE i.execution_id = sqlc.arg(execution_id)::text
+  AND i.generation = sqlc.arg(generation)::bigint
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_id = sqlc.arg(index_meta_id)::text
+  AND i.index_meta_correlation_id = sqlc.arg(index_meta_correlation_id)::text
+  AND j.execution_id = i.execution_id
+  AND j.generation = i.generation
+  AND j.capability_id = i.capability_id
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+RETURNING i.index_meta_initialized_at;
 
 -- name: InsertRuntimeCommandOutbox :exec
 INSERT INTO elitea_runtime.command_outbox (

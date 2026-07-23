@@ -1,5 +1,5 @@
--- SQLC compiler projection for the post-0037 elitea_runtime tables used by
--- index admission and terminal-output reads.
+-- SQLC compiler projection for the post-0042 elitea_runtime tables used by
+-- index admission, terminal-output reads, and configuration lifecycle writes.
 --
 -- This file is NOT a runtime migration. The embedded shared migration history
 -- remains the only target-schema authority.
@@ -115,6 +115,9 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     llm_model_entry_id text,
     llm_configuration_entry_id text,
     mcp_tokens_entry_id text,
+    index_meta_id text,
+    index_meta_correlation_id text,
+    index_meta_initialized_at timestamptz,
     toolkit_id integer NOT NULL,
     index_name text NOT NULL,
     initiator text NOT NULL,
@@ -167,4 +170,27 @@ CREATE TABLE elitea_runtime.index_ingest_results (
         artifact_id, immutable_version, execution_id, generation,
         storage_record_id
     )
+);
+
+CREATE TABLE elitea_runtime.configuration_lifecycle_outbox (
+    event_id uuid PRIMARY KEY,
+    resource_project_id integer NOT NULL,
+    configuration_uuid uuid NOT NULL,
+    revision bigint NOT NULL,
+    operation text NOT NULL,
+    actor_id integer NOT NULL,
+    sanitized_snapshot json NOT NULL,
+    snapshot_digest bytea NOT NULL,
+    state text NOT NULL,
+    attempt_count integer NOT NULL,
+    available_at timestamptz NOT NULL,
+    last_attempt_at timestamptz,
+    lease_owner text,
+    lease_expires_at timestamptz,
+    delivered_at timestamptz,
+    dead_at timestamptz,
+    last_error_code text,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (resource_project_id, configuration_uuid, revision)
 );

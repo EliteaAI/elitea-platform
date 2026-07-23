@@ -19,15 +19,20 @@ type indexAdmissionStoreStub struct {
 	admission Admission
 }
 
-func (s *indexAdmissionStoreStub) AdmitIndexIngest(_ context.Context, admission Admission) (executionapp.AdmissionOutcome, error) {
+func (s *indexAdmissionStoreStub) AdmitIndexIngest(_ context.Context, admission Admission) (AdmissionOutcome, error) {
 	s.admission = admission
 	admittedAt := time.Date(2026, time.July, 22, 9, 0, 0, 0, time.UTC)
-	return executionapp.AdmissionOutcome{
-		ExecutionID: admission.Record.Job.ID,
-		CommandID:   admission.Record.Job.CommandID,
-		Created:     true,
-		AdmittedAt:  admittedAt,
-		Deadline:    admittedAt.Add(time.Hour),
+	return AdmissionOutcome{
+		AdmissionOutcome: executionapp.AdmissionOutcome{
+			ExecutionID: admission.Record.Job.ID,
+			CommandID:   admission.Record.Job.CommandID,
+			Created:     true,
+			AdmittedAt:  admittedAt,
+			Deadline:    admittedAt.Add(time.Hour),
+		},
+		Generation:             admission.Record.Job.Generation,
+		IndexMetaID:            admission.Binding.IndexMetaID,
+		IndexMetaCorrelationID: admission.Binding.IndexMetaCorrelationID,
 	}, nil
 }
 
@@ -84,7 +89,7 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 	store := &indexAdmissionStoreStub{}
 	service, err := NewAdmissionService(store, factory, func() time.Time {
 		return time.Date(2026, time.July, 22, 8, 0, 0, 0, time.UTC)
-	}, sequenceIDs("execution-1", "command-1", "outbox-1"))
+	}, sequenceIDs("execution-1", "command-1", "outbox-1", "index-meta-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +101,7 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 			ActorID:             "7",
 		},
 		IdempotencyKey: "index-request-1",
+		CorrelationID:  "message-1",
 		ToolkitID:      19,
 		Initiator:      executiondomain.IndexIngestInitiatorUser,
 		Inputs: AuthoritativeInputs{
@@ -109,7 +115,12 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 	if !outcome.Created || outcome.ExecutionID != "execution-1" || outcome.CommandID != "command-1" {
 		t.Fatalf("unexpected admission outcome: %+v", outcome)
 	}
-	if store.admission.Record.Job.CapabilityID != executiondomain.IndexIngestCapability || store.admission.Binding.ToolkitID != 19 || store.admission.Binding.IndexName != "docs" || store.admission.Binding.Initiator != executiondomain.IndexIngestInitiatorUser {
+	if store.admission.Record.Job.CapabilityID != executiondomain.IndexIngestCapability ||
+		store.admission.Binding.ToolkitID != 19 ||
+		store.admission.Binding.IndexName != "docs" ||
+		store.admission.Binding.IndexMetaID != "index-meta-1" ||
+		store.admission.Binding.IndexMetaCorrelationID != "message-1" ||
+		store.admission.Binding.Initiator != executiondomain.IndexIngestInitiatorUser {
 		t.Fatalf("index identity was not preserved: %+v", store.admission)
 	}
 	if err := store.admission.Binding.Validate(store.admission.Record.InputBundle); err != nil {
@@ -125,6 +136,40 @@ func TestIndexAdmissionRejectsContentBeyondDurableEntryLimit(t *testing.T) {
 	}
 	if err := inputs.validate(); !errors.Is(err, ErrInvalidAuthoritativeIndexInput) {
 		t.Fatalf("oversized entry error=%v, want %v", err, ErrInvalidAuthoritativeIndexInput)
+	}
+}
+
+func TestIndexMetaInitializationRequiresExactBoundedIdentity(t *testing.T) {
+	valid := IndexMetaInitialization{
+		ExecutionID:   "execution-1",
+		Generation:    1,
+		MetaID:        "index-meta-1",
+		CorrelationID: "message-1",
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tests := []IndexMetaInitialization{
+		func() IndexMetaInitialization { value := valid; value.ExecutionID = ""; return value }(),
+		func() IndexMetaInitialization { value := valid; value.Generation = 0; return value }(),
+		func() IndexMetaInitialization { value := valid; value.MetaID = ""; return value }(),
+		func() IndexMetaInitialization { value := valid; value.CorrelationID = ""; return value }(),
+		func() IndexMetaInitialization { value := valid; value.CorrelationID = "message\n2"; return value }(),
+		func() IndexMetaInitialization {
+			value := valid
+			value.MetaID = string(bytes.Repeat([]byte{'x'}, executiondomain.MaxIndexMetaIDBytes+1))
+			return value
+		}(),
+		func() IndexMetaInitialization {
+			value := valid
+			value.CorrelationID = string(bytes.Repeat([]byte{'x'}, executiondomain.MaxIndexMetaCorrelationBytes+1))
+			return value
+		}(),
+	}
+	for index, initialization := range tests {
+		if err := initialization.Validate(); !errors.Is(err, ErrIndexMetaInitializationMismatch) {
+			t.Fatalf("case %d error=%v", index, err)
+		}
 	}
 }
 

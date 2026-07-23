@@ -3,7 +3,9 @@ package execution
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
@@ -21,6 +23,8 @@ const (
 	IndexLLMModelRole             = "index.llm_model"
 	IndexLLMConfigurationRole     = "index.llm_configuration"
 	IndexMCPTokensRole            = "index.mcp_tokens"
+	MaxIndexMetaIDBytes           = 256
+	MaxIndexMetaCorrelationBytes  = 512
 )
 
 var (
@@ -170,13 +174,18 @@ type IndexIngestBinding struct {
 	LLMModelEntryID             string
 	LLMConfigurationEntryID     string
 	MCPTokensEntryID            string
+	IndexMetaID                 string
+	IndexMetaCorrelationID      string
 	ToolkitID                   int32
 	IndexName                   string
 	Initiator                   IndexIngestInitiator
 }
 
 func (b IndexIngestBinding) Validate(bundle InputBundle) error {
-	if b.ToolkitConfigurationEntryID == "" || b.ToolParametersEntryID == "" || b.ToolkitID <= 0 || b.IndexName == "" || len(b.IndexName) > 256 || !b.Initiator.Valid() {
+	if b.ToolkitConfigurationEntryID == "" || b.ToolParametersEntryID == "" ||
+		!validIndexMetaText(b.IndexMetaID, MaxIndexMetaIDBytes) ||
+		!validIndexMetaText(b.IndexMetaCorrelationID, MaxIndexMetaCorrelationBytes) ||
+		b.ToolkitID <= 0 || b.IndexName == "" || len(b.IndexName) > 256 || !b.Initiator.Valid() {
 		return ErrInvalidInputBundle
 	}
 	references := []struct {
@@ -213,6 +222,11 @@ func (b IndexIngestBinding) Validate(bundle InputBundle) error {
 		return fmt.Errorf("%w: unbound index input entry", ErrInvalidInputBundle)
 	}
 	return nil
+}
+
+func validIndexMetaText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && utf8.ValidString(value) &&
+		!strings.ContainsAny(value, "\x00\r\n")
 }
 
 type OutboxRecord struct {

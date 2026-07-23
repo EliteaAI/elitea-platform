@@ -19,7 +19,7 @@ def test_fetches_exact_claim_bound_token_context_over_http2() -> None:
             {
                 "schema_version": "elitea.runtime.elitea-client-token.v1",
                 "project_id": 42,
-                "token": "current-project-system-pat",
+                "token": "claim-bound-execution-actor-pat",
             },
             separators=(",", ":"),
         ).encode("utf-8")
@@ -53,7 +53,7 @@ def test_fetches_exact_claim_bound_token_context_over_http2() -> None:
                 origin="https://content.internal",
                 require_http2=True,
             )(claim)
-        assert token == "current-project-system-pat"
+        assert token == "claim-bound-execution-actor-pat"
 
     asyncio.run(run())
 

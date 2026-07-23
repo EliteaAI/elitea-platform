@@ -1,4 +1,4 @@
-"""Private claim-bound retrieval of the current project system PAT."""
+"""Retrieve a claim-bound execution actor PAT for user-initiated indexing."""
 
 from __future__ import annotations
 

@@ -172,8 +172,10 @@ FROM (
           AND o.authority_granted_at IS NULL
           AND o.deadline > statement_timestamp()
           AND j.state = 'PENDING'
+          AND j.desired_state = 'RUNNING'
           AND j.capability_id = 'index.ingest.v1'
           AND j.generation = 1
+          AND i.index_meta_initialized_at IS NOT NULL
         ORDER BY o.created_at ASC, o.outbox_id ASC
         LIMIT $2
     )
@@ -196,8 +198,10 @@ FROM (
           AND COALESCE(o.last_visibility_at, o.published_at)
               <= statement_timestamp() - ($3::bigint * interval '1 millisecond')
           AND j.state IN ('PENDING', 'DISPATCHED')
+          AND j.desired_state = 'RUNNING'
           AND j.capability_id = 'index.ingest.v1'
           AND j.generation = 1
+          AND i.index_meta_initialized_at IS NOT NULL
         ORDER BY COALESCE(o.last_visibility_at, o.published_at) ASC, o.outbox_id ASC
         LIMIT $2
     )
@@ -285,8 +289,10 @@ WHERE o.outbox_id = $1
   AND o.authority_granted_at IS NULL
   AND o.deadline > clock_timestamp()
   AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
   AND j.capability_id = 'index.ingest.v1'
-  AND j.generation = 1`, outboxID, r.expectedStream).Scan(
+  AND j.generation = 1
+  AND i.index_meta_initialized_at IS NOT NULL`, outboxID, r.expectedStream).Scan(
 		&dispatch.OutboxID,
 		&dispatch.CommandID,
 		&dispatch.ExecutionID,
@@ -366,7 +372,9 @@ JOIN elitea_runtime.index_ingest_jobs AS i
 WHERE o.outbox_id = $1
   AND o.stream_name = $2
   AND j.capability_id = 'index.ingest.v1'
-  AND j.generation = 1`, outboxID, r.expectedStream).Scan(
+  AND j.generation = 1
+  AND j.desired_state = 'RUNNING'
+  AND i.index_meta_initialized_at IS NOT NULL`, outboxID, r.expectedStream).Scan(
 		&envelopeBytes,
 		&envelopeDigest,
 		&signatureProfile,
@@ -432,6 +440,8 @@ WHERE o.outbox_id = $1
   AND o.stream_name = $2
   AND j.capability_id = 'index.ingest.v1'
   AND j.generation = 1
+  AND j.desired_state = 'RUNNING'
+  AND i.index_meta_initialized_at IS NOT NULL
 FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 			&envelopeBytes,
 			&envelopeDigest,
@@ -535,6 +545,8 @@ WHERE o.outbox_id = $1
   AND o.stream_name = $2
   AND j.capability_id = 'index.ingest.v1'
   AND j.generation = 1
+  AND j.desired_state = 'RUNNING'
+  AND i.index_meta_initialized_at IS NOT NULL
 FOR UPDATE OF j, o`, outboxID, r.expectedStream).Scan(
 			&executionID,
 			&generation,
@@ -627,6 +639,7 @@ SET state = 'DISPATCHED'
 WHERE execution_id = $1
   AND generation = $2
   AND capability_id = 'index.ingest.v1'
+  AND desired_state = 'RUNNING'
   AND state = 'PENDING'`, executionID, generation)
 		if err != nil {
 			return fmt.Errorf("mark index ingest execution dispatched: %w", err)

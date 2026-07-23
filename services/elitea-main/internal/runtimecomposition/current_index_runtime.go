@@ -25,6 +25,7 @@ const (
 
 type currentIndexRuntime struct {
 	start        *indexingapp.StartService
+	cancel       *indexingapp.CurrentIndexCancellationService
 	materializer *storage.CurrentConfigurationsMaterializer
 	indexMeta    *indexmetaapp.Service
 }
@@ -41,7 +42,7 @@ func newCurrentIndexRuntime(
 	policy repos.IndexIngestDispatchPolicy,
 ) (*currentIndexRuntime, error) {
 	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
-		configurations.unsecreter == nil || configurations.models == nil || configurations.vaultLoader == nil ||
+		configurations.unsecreter == nil || configurations.expander == nil || configurations.models == nil || configurations.vaultLoader == nil ||
 		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 {
 		return nil, errors.New("current index runtime dependencies are required")
 	}
@@ -76,15 +77,6 @@ func newCurrentIndexRuntime(
 		return nil, err
 	}
 
-	expander, err := configurationapp.NewCurrentExpansionService(
-		configurations.scope,
-		configurations.rows,
-		configurations.unsecreter,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	models := configurations.models
 	modelVisibility, err := NewCurrentModelVisibilityAdapter(models, configurations.publicProjectID)
 	if err != nil {
@@ -93,7 +85,7 @@ func newCurrentIndexRuntime(
 	settings, err := configurationapp.NewCurrentToolkitSettingsResolver(
 		schemas,
 		nestedToolkits,
-		expander,
+		configurations.expander,
 		modelVisibility,
 		configurations.unsecreter,
 	)
@@ -121,15 +113,45 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("construct current index admission repository: %w", err)
 	}
+	cancellations, err := repos.NewCurrentIndexCancellationRepository(pool)
+	if err != nil {
+		return nil, fmt.Errorf("construct current index cancellation repository: %w", err)
+	}
+	cancel, err := indexingapp.NewCurrentIndexCancellationService(cancellations)
+	if err != nil {
+		return nil, fmt.Errorf("construct current index cancellation service: %w", err)
+	}
 	admissions, err := indexingapp.NewAdmissionService(jobs, bundleFactory, nil, currentRuntimeID)
 	if err != nil {
 		return nil, err
 	}
-	start, err := indexingapp.NewStartService(inputs, admissions, currentRuntimeID)
+	materializer, err := storage.NewCurrentConfigurationsMaterializer(configurations.unsecreter)
 	if err != nil {
 		return nil, err
 	}
-	materializer, err := storage.NewCurrentConfigurationsMaterializer(configurations.unsecreter)
+	toolkitClaimer, err := newCurrentFrozenToolkitConfigurationClaimer(materializer)
+	if err != nil {
+		return nil, err
+	}
+	indexMetaInitializer, err := indexingapp.NewCurrentIndexMetaInitializer(
+		toolkitClaimer,
+		pgvector.NewCurrentIndexMetaWriter(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	initializedAdmissions, err := indexingapp.NewInitializingAdmissionSubmitter(
+		admissions,
+		indexMetaInitializer,
+		jobs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// HTTP success now follows both durable admission and the committed
+	// project-PgVector metadata effect. The outbox remains invisible until the
+	// exact initialization transition succeeds.
+	start, err := indexingapp.NewStartService(inputs, initializedAdmissions, currentRuntimeID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +171,7 @@ func newCurrentIndexRuntime(
 
 	return &currentIndexRuntime{
 		start:        start,
+		cancel:       cancel,
 		materializer: materializer,
 		indexMeta:    indexMeta,
 	}, nil

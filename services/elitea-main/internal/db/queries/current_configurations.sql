@@ -16,26 +16,69 @@ WHERE project_id = sqlc.arg('project_id')::integer
 LIMIT 1;
 
 -- name: GetCurrentConfiguration :one
-SELECT id,
-       uuid::text AS configuration_uuid,
-       project_id,
+SELECT configuration.id,
+       configuration.uuid::text AS configuration_uuid,
+       configuration.project_id,
+       configuration.label,
+       configuration.elitea_title,
+       configuration.type,
+       configuration.section,
+       configuration.data,
+       configuration.meta,
+       configuration.shared,
+       configuration.status_ok,
+       configuration.status_logs,
+       configuration.source,
+       configuration.author_id,
+       configuration.created_at,
+       configuration.updated_at,
+       EXISTS (
+           SELECT 1
+           FROM centry.social_pins
+           WHERE social_pins.entity = 'configuration'
+             AND social_pins.project_id = sqlc.arg('project_id')::integer
+             AND social_pins.entity_id = configuration.id
+       ) AS is_pinned
+FROM configuration
+WHERE configuration.id = sqlc.arg('configuration_id')::integer
+  AND configuration.project_id = sqlc.arg('project_id')::integer
+LIMIT 1;
+
+-- Empty section intentionally disables the section predicate for the exact
+-- current UI contract. The caller caps limit_rows at the 257-row sentinel.
+-- name: ListCurrentConfigurationTypes :many
+SELECT DISTINCT type
+FROM configuration
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND (sqlc.arg('section')::text = '' OR section = sqlc.arg('section')::text)
+ORDER BY type ASC
+LIMIT sqlc.arg('limit_rows')::integer;
+
+-- This deliberately projects only the six fields exposed by nested
+-- configuration options. The same bounded query is run first in the current
+-- project and, when requested, in the public project with shared_only=true.
+-- name: ListCurrentConfigurationOptionCandidates :many
+SELECT elitea_title,
        label,
-       elitea_title,
        type,
        section,
-       data,
-       meta,
        shared,
-       status_ok,
-       status_logs,
-       source,
-       author_id,
-       created_at,
-       updated_at
+       project_id
 FROM configuration
-WHERE id = sqlc.arg('configuration_id')::integer
-  AND project_id = sqlc.arg('project_id')::integer
-LIMIT 1;
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND (
+      (
+          COALESCE(cardinality(sqlc.arg('types')::text[]), 0) > 0
+          AND type = ANY(sqlc.arg('types')::text[])
+      )
+      OR (
+          COALESCE(cardinality(sqlc.arg('sections')::text[]), 0) > 0
+          AND section = ANY(sqlc.arg('sections')::text[])
+      )
+  )
+  AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT sqlc.arg('limit_rows')::integer;
 
 -- Raw data is intentional: the Go adapter performs type-safe, redacted
 -- decoding before applying section-specific response shaping. ID order gives
@@ -65,61 +108,68 @@ WHERE project_id = sqlc.arg('project_id')::integer
   AND (sqlc.arg('label_query')::text = '' OR label ILIKE ('%' || sqlc.arg('label_query')::text || '%'));
 
 -- name: ListCurrentConfigurations :many
-SELECT id,
-       uuid::text AS configuration_uuid,
-       project_id,
-       label,
-       elitea_title,
-       type,
-       section,
-       data,
-       meta,
-       shared,
-       status_ok,
-       status_logs,
-       source,
-       author_id,
-       created_at,
-       updated_at
+SELECT configuration.id,
+       configuration.uuid::text AS configuration_uuid,
+       configuration.project_id,
+       configuration.label,
+       configuration.elitea_title,
+       configuration.type,
+       configuration.section,
+       configuration.data,
+       configuration.meta,
+       configuration.shared,
+       configuration.status_ok,
+       configuration.status_logs,
+       configuration.source,
+       configuration.author_id,
+       configuration.created_at,
+       configuration.updated_at,
+       COALESCE(social_pins.id IS NOT NULL, false)::boolean AS is_pinned
 FROM configuration
-WHERE project_id = sqlc.arg('project_id')::integer
-  AND (COALESCE(cardinality(sqlc.arg('types')::text[]), 0) = 0 OR type = ANY(sqlc.arg('types')::text[]))
-  AND (COALESCE(cardinality(sqlc.arg('sections')::text[]), 0) = 0 OR section = ANY(sqlc.arg('sections')::text[]))
-  AND (sqlc.arg('label_query')::text = '' OR label ILIKE ('%' || sqlc.arg('label_query')::text || '%'))
+LEFT JOIN centry.social_pins
+  ON social_pins.entity = 'configuration'
+ AND social_pins.project_id = sqlc.arg('project_id')::integer
+ AND social_pins.entity_id = configuration.id
+WHERE configuration.project_id = sqlc.arg('project_id')::integer
+  AND (COALESCE(cardinality(sqlc.arg('types')::text[]), 0) = 0 OR configuration.type = ANY(sqlc.arg('types')::text[]))
+  AND (COALESCE(cardinality(sqlc.arg('sections')::text[]), 0) = 0 OR configuration.section = ANY(sqlc.arg('sections')::text[]))
+  AND (sqlc.arg('label_query')::text = '' OR configuration.label ILIKE ('%' || sqlc.arg('label_query')::text || '%'))
 ORDER BY
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'id'            THEN id END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'id'            THEN id END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'uuid'          THEN uuid END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'uuid'          THEN uuid END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'project_id'    THEN project_id END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'project_id'    THEN project_id END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'label'         THEN label END ASC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'label'         THEN label END DESC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'elitea_title'  THEN elitea_title END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'elitea_title'  THEN elitea_title END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'type'          THEN type END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'type'          THEN type END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'section'       THEN section END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'section'       THEN section END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'data'          THEN data END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'data'          THEN data END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'meta'          THEN meta END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'meta'          THEN meta END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'shared'        THEN shared END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'shared'        THEN shared END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'status_ok'     THEN status_ok END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'status_ok'     THEN status_ok END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'status_logs'   THEN status_logs END ASC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'status_logs'   THEN status_logs END DESC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'source'        THEN source END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'source'        THEN source END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'author_id'     THEN author_id END ASC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'author_id'     THEN author_id END DESC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'created_at'    THEN created_at END ASC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'created_at'    THEN created_at END DESC,
-  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'updated_at'    THEN updated_at END ASC NULLS LAST,
-  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'updated_at'    THEN updated_at END DESC NULLS LAST,
-  id ASC
+  (social_pins.id IS NOT NULL) DESC,
+  social_pins.updated_at DESC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'id'            THEN configuration.id END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'id'            THEN configuration.id END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'uuid'          THEN configuration.uuid END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'uuid'          THEN configuration.uuid END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'project_id'    THEN configuration.project_id END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'project_id'    THEN configuration.project_id END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'label'         THEN configuration.label END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'label'         THEN configuration.label END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'elitea_title'  THEN configuration.elitea_title END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'elitea_title'  THEN configuration.elitea_title END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'type'          THEN configuration.type END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'type'          THEN configuration.type END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'section'       THEN configuration.section END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'section'       THEN configuration.section END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'data'          THEN configuration.data END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'data'          THEN configuration.data END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'meta'          THEN configuration.meta END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'meta'          THEN configuration.meta END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'shared'        THEN configuration.shared END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'shared'        THEN configuration.shared END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'status_ok'     THEN configuration.status_ok END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'status_ok'     THEN configuration.status_ok END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'status_logs'   THEN configuration.status_logs END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'status_logs'   THEN configuration.status_logs END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'source'        THEN configuration.source END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'source'        THEN configuration.source END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'author_id'     THEN configuration.author_id END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'author_id'     THEN configuration.author_id END DESC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'created_at'    THEN configuration.created_at END ASC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'created_at'    THEN configuration.created_at END DESC,
+  CASE WHEN sqlc.arg('sort_order')::text = 'asc'  AND sqlc.arg('sort_by')::text = 'updated_at'    THEN configuration.updated_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg('sort_order')::text = 'desc' AND sqlc.arg('sort_by')::text = 'updated_at'    THEN configuration.updated_at END DESC NULLS LAST,
+  configuration.id ASC
 LIMIT sqlc.arg('limit_rows')::integer
 OFFSET sqlc.arg('offset_rows')::integer;
 
@@ -147,7 +197,8 @@ SELECT id,
        source,
        author_id,
        created_at,
-       updated_at
+       updated_at,
+       false AS is_pinned
 FROM configuration
 WHERE project_id = sqlc.arg('project_id')::integer
   AND shared = true
@@ -224,7 +275,8 @@ RETURNING id,
           source,
           author_id,
           created_at,
-          updated_at;
+          updated_at,
+          false AS is_pinned;
 
 -- name: ReplaceCurrentConfiguration :one
 UPDATE configuration
@@ -253,7 +305,8 @@ RETURNING id,
           source,
           author_id,
           created_at,
-          updated_at;
+          updated_at,
+          false AS is_pinned;
 
 -- name: DeleteCurrentConfiguration :one
 DELETE FROM configuration

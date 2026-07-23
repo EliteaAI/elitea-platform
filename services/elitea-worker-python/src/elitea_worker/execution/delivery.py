@@ -12,8 +12,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import math
+import sys
 import threading
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -116,6 +119,7 @@ _INDEX_LLM_MODEL_ROLE = "index.llm_model"
 _INDEX_LLM_CONFIGURATION_ROLE = "index.llm_configuration"
 _INDEX_MCP_TOKENS_ROLE = "index.mcp_tokens"
 _INDEX_INPUT_AUDIENCE = "elitea.runtime.input.read.v1"
+_INDEX_INTERNAL_FAILURE_FRAME_LIMIT = 8
 
 
 class ControlPlane(Protocol):
@@ -175,6 +179,7 @@ class DeliveryResult:
     disposition: DeliveryDisposition
     output_frame: output_pb2.ExecutionOutputFrameV1 | None = None
     settlement_receipt_id: str | None = None
+    execution_error: WorkerError | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +210,76 @@ class _ResolvedIndexInputs:
 
 class _IndexProgressTransportFailure(RuntimeError):
     """Progress delivery lost its exact durable sequence authority."""
+
+
+def _emit_index_internal_failure(
+    *,
+    stage: str,
+    execution_id: str,
+    error: Exception,
+    sdk_failure_category: str | None = None,
+) -> None:
+    head_limit = _INDEX_INTERNAL_FAILURE_FRAME_LIMIT // 2
+    tail_limit = _INDEX_INTERNAL_FAILURE_FRAME_LIMIT - head_limit
+    head: list[dict[str, object]] = []
+    tail: deque[dict[str, object]] = deque(maxlen=tail_limit)
+    traceback = error.__traceback__
+    while traceback is not None:
+        code = traceback.tb_frame.f_code
+        filename = code.co_filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        frame = {
+            "file": filename or "<unknown>",
+            "function": code.co_name,
+            "line": traceback.tb_lineno,
+        }
+        if len(head) < head_limit:
+            head.append(frame)
+        else:
+            tail.append(frame)
+        traceback = traceback.tb_next
+    error_type = type(error)
+    diagnostic = {
+        "event": "index_ingest_internal_failure",
+        "stage": stage,
+        "execution_id": execution_id,
+        "exception_module": error_type.__module__,
+        "exception_name": error_type.__name__,
+        "frames": [*head, *tail],
+    }
+    if sdk_failure_category is not None:
+        diagnostic["sdk_failure_category"] = sdk_failure_category
+    print(
+        json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _sdk_failure_category(sdk_result: object) -> str | None:
+    """Classify the SDK's flattened failure without logging its error text."""
+
+    if not isinstance(sdk_result, dict) or sdk_result.get("success") is not False:
+        return None
+    error = sdk_result.get("error")
+    if not isinstance(error, str):
+        return "malformed_failure"
+    if sdk_result.get("toolkit_config") is None:
+        return "toolkit_configuration"
+    if error.startswith("Failed to create LLM instance '"):
+        return "llm_creation"
+    if error.startswith("Failed to instantiate toolkit '"):
+        return "toolkit_instantiation"
+    if error.startswith("Tool execution failed: "):
+        return "tool_execution"
+    if error.startswith("Method execution failed: "):
+        return "method_execution"
+    if error.startswith("Tool '") and " not found in toolkit '" in error:
+        return "tool_not_found"
+    if error.startswith("Tool '") and error.endswith(" is not callable"):
+        return "tool_not_callable"
+    if isinstance(sdk_result.get("debug_error"), str):
+        return "toolkit_configuration"
+    return "unclassified_failure"
 
 
 class _IndexProgressOutput:
@@ -803,6 +878,7 @@ class ConfigurationValidationDeliveryProcessor:
                 DeliveryDisposition.EXECUTED_SETTLED_ACKED,
                 output_frame=frame,
                 settlement_receipt_id=receipt_id,
+                execution_error=outcome if isinstance(outcome, WorkerError) else None,
             )
         finally:
             if progress is not None:
@@ -1183,7 +1259,12 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 )
         except WorkerError:
             raise
-        except Exception:
+        except Exception as error:
+            _emit_index_internal_failure(
+                stage="input_context",
+                execution_id=receipt.identity.execution_id,
+                error=error,
+            )
             raise InternalFailure() from None
         return _ResolvedIndexInputs(
             toolkit_configuration=resolved[_INDEX_TOOLKIT_CONFIGURATION_ROLE],
@@ -1242,12 +1323,26 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             )
             result = await handler.execute(request)
             callback.raise_if_failed()
-            return bind_result_summary(result)
+            try:
+                return bind_result_summary(result)
+            except InternalFailure as error:
+                _emit_index_internal_failure(
+                    stage="result_projection",
+                    execution_id=receipt.identity.execution_id,
+                    error=error,
+                    sdk_failure_category=_sdk_failure_category(result.sdk_result),
+                )
+                raise
         except _IndexProgressTransportFailure:
             raise
         except WorkerError:
             raise
-        except Exception:
+        except Exception as error:
+            _emit_index_internal_failure(
+                stage="execute",
+                execution_id=receipt.identity.execution_id,
+                error=error,
+            )
             raise InternalFailure() from None
 
 

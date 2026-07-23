@@ -653,9 +653,18 @@ func applyPostgresIntegrationMigrations(t *testing.T, pool *pgxpool.Pool) {
 	defer cancel()
 	if _, err := pool.Exec(ctx, `
 CREATE SCHEMA centry;
-CREATE TABLE centry.project (id INTEGER PRIMARY KEY);
-INSERT INTO centry.project (id) VALUES (1);
+CREATE TABLE centry.project (
+    id INTEGER PRIMARY KEY,
+    create_success BOOLEAN NOT NULL,
+    suspended BOOLEAN NOT NULL
+);
+INSERT INTO centry.project (id, create_success, suspended)
+VALUES (1, TRUE, FALSE);
 CREATE SCHEMA p_1;
+CREATE TABLE p_1.application_versions (
+    id SERIAL PRIMARY KEY,
+    llm_settings JSONB NOT NULL DEFAULT '{}'::jsonb
+);
 CREATE TABLE p_1.configuration (
     id SERIAL PRIMARY KEY,
     uuid UUID NOT NULL UNIQUE,

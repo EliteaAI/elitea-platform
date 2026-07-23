@@ -29,6 +29,7 @@ type CurrentLLMRuntime struct {
 	handler   http.Handler
 	transport *http.Transport
 	masterKey *currentLiteLLMMasterKey
+	admin     *litellm.Client
 }
 
 func NewCurrentLLMRuntime(
@@ -118,7 +119,7 @@ func newCurrentLLMRuntime(
 		transport.CloseIdleConnections()
 		return nil, err
 	}
-	return &CurrentLLMRuntime{handler: proxy, transport: transport, masterKey: masterKey}, nil
+	return &CurrentLLMRuntime{handler: proxy, transport: transport, masterKey: masterKey, admin: admin}, nil
 }
 
 func (runtime *CurrentLLMRuntime) Handler() http.Handler {
@@ -126,6 +127,27 @@ func (runtime *CurrentLLMRuntime) Handler() http.Handler {
 		return nil
 	}
 	return runtime.handler
+}
+
+// NewConfigurationEffects binds the Configurations-owned expansion and vault
+// graph to the already-authenticated LiteLLM administration client. The
+// returned adapter resolves secrets only for one outbound lifecycle call and
+// retains neither configuration payloads nor provider credentials.
+func (runtime *CurrentLLMRuntime) NewConfigurationEffects(
+	configurations *CurrentConfigurationsRuntime,
+) (*litellm.CurrentConfigurationEffects, error) {
+	if runtime == nil || runtime.admin == nil || configurations == nil ||
+		configurations.expander == nil || configurations.unsecreter == nil {
+		return nil, errors.New("current LiteLLM configuration lifecycle dependencies are required")
+	}
+	materializer, err := newCurrentLiteLLMConfigurationMaterializer(
+		configurations.expander,
+		configurations.unsecreter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return litellm.NewCurrentConfigurationEffects(runtime.admin, materializer, nil)
 }
 
 func (runtime *CurrentLLMRuntime) Close() {

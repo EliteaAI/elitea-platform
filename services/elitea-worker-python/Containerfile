@@ -1,5 +1,7 @@
 FROM python:3.12.10-slim AS build
 
+ARG ELITEA_SDK_REVISION=a78d3654f99d8ff89ca7233f20a66d676e564f79
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
@@ -9,6 +11,7 @@ COPY libs/proto ./libs/proto
 COPY services/elitea-worker-python ./services/elitea-worker-python
 RUN python -m pip wheel \
     --wheel-dir /wheels \
+    "elitea-sdk @ git+https://github.com/EliteaAI/elitea-sdk.git@${ELITEA_SDK_REVISION}" \
     ./libs/proto \
     ./services/elitea-worker-python
 
@@ -28,6 +31,7 @@ RUN python -m pip install \
     --no-index \
     --find-links /wheels \
     elitea-worker-python==0.1.0 \
+    && python -m pip check \
     && rm -rf /wheels
 
 USER 10001:10001

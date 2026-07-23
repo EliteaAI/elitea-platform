@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/redis/go-redis/v9"
+
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 )
 
 type publisherRunner interface {
@@ -22,24 +24,32 @@ type privateServerRunner interface {
 // components. The caller owns Run's context, waits for Run to drain, and calls
 // Close after Run returns.
 type Runtime struct {
-	publisher    publisherRunner
-	private      privateServerRunner
-	controlRedis *redis.Client
-	publicRoutes PublicRoutes
-	closeOnce    sync.Once
-	closeErr     error
-	lifecycleMu  sync.Mutex
-	started      bool
-	stopped      bool
-	shutdown     bool
-	startReady   chan struct{}
-	publisherEnd context.CancelFunc
-	privateEnd   context.CancelFunc
-	runDone      chan struct{}
+	publisher              publisherRunner
+	private                privateServerRunner
+	controlRedis           *redis.Client
+	publicRoutes           PublicRoutes
+	configurationValidator configurationapp.CurrentSDKConfigurationValidator
+	closeOnce              sync.Once
+	closeErr               error
+	lifecycleMu            sync.Mutex
+	started                bool
+	stopped                bool
+	shutdown               bool
+	startReady             chan struct{}
+	publisherEnd           context.CancelFunc
+	privateEnd             context.CancelFunc
+	runDone                chan struct{}
 }
 
 func (r *Runtime) PublicRoutes() PublicRoutes {
 	return r.publicRoutes
+}
+
+func (r *Runtime) CurrentSDKConfigurationValidator() configurationapp.CurrentSDKConfigurationValidator {
+	if r == nil {
+		return nil
+	}
+	return r.configurationValidator
 }
 
 func (r *Runtime) Run(ctx context.Context) error {

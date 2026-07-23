@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from elitea_worker.agents.sdk_adapter import _require_complete_configuration_registry
+from elitea_worker.agents.sdk_adapter import _import_sdk_configurations
+from elitea_worker.execution.errors import DependencyUnavailable
 
 
 def test_only_sdk_adapter_imports_elitea_sdk() -> None:
@@ -47,3 +54,47 @@ def test_only_command_transport_modules_may_import_redis_client() -> None:
                 offenders.append(path.relative_to(source_root))
                 break
     assert offenders == []
+
+
+def test_sdk_configuration_import_failures_are_rejected_without_error_text() -> None:
+    canary = "password=TEST_ONLY_DO_NOT_EMIT"
+
+    with pytest.raises(DependencyUnavailable) as caught:
+        _require_complete_configuration_registry(
+            SimpleNamespace(FAILED_IMPORTS={"provider": canary})
+        )
+
+    assert canary not in str(caught.value)
+
+
+def test_sdk_tools_are_loaded_before_configurations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imported: list[str] = []
+    configurations = SimpleNamespace()
+
+    def import_module(name: str) -> object:
+        imported.append(name)
+        if name == "elitea_sdk.configurations":
+            return configurations
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "elitea_worker.agents.sdk_adapter.importlib.import_module",
+        import_module,
+    )
+
+    assert _import_sdk_configurations() is configurations
+    assert imported == ["elitea_sdk.tools", "elitea_sdk.configurations"]
+
+
+@pytest.mark.parametrize("failed_imports", [None, (), []])
+def test_sdk_configuration_failure_registry_must_be_an_explicit_empty_dict(
+    failed_imports: object,
+) -> None:
+    with pytest.raises(DependencyUnavailable):
+        _require_complete_configuration_registry(
+            SimpleNamespace(FAILED_IMPORTS=failed_imports)
+        )
+
+    _require_complete_configuration_registry(SimpleNamespace(FAILED_IMPORTS={}))

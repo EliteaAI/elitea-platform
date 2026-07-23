@@ -35,12 +35,12 @@ CORPUS_ROOT = (
     / "v1"
     / "configuration-validation"
 )
-SDK_REVISION = "2cb85480260a92207f3b3d6d3a84149e10de7949"
+SDK_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 SCHEMA_DIGEST = bytes.fromhex(
-    "8d72b85e9f389410a56a0dd11b5ed6a031ac5c5c677f5f8b68278bb7be638b4d"
+    "1c43c41a5304c6f73c68deebd37ba70f8c2266a59dfd4f9d4fa20b819e7ab3f1"
 )
 CATALOG_DIGEST = bytes.fromhex(
-    "1cfe9846435f68d5ec46d6bc36992679a4fadbbe248a28879c0a312969ca6ef4"
+    "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
 )
 TEST_KEY_ID = "elitea-runtime-v1-conformance-hmac"
 TEST_KEY = b"ELITEA_RUNTIME_V1_TEST_ONLY_NOT_A_SECRET"
@@ -70,8 +70,10 @@ OPENAPI_CREDENTIAL_FREE_PROFILE_ID = "OPENAPI_CREDENTIAL_FREE_V1"
 OPENAPI_ALLOWED_NON_SECRET_FIELDS = [
     "auth_type",
     "client_id",
+    "configuration_uuid",
     "custom_header_name",
     "method",
+    "oauth_discovery_endpoint",
     "scope",
     "token_url",
 ]
@@ -193,11 +195,25 @@ def openapi_legacy_parity_matrix() -> dict[str, object]:
             {
                 "auth_type": None,
                 "client_id": None,
+                "configuration_uuid": None,
                 "custom_header_name": None,
                 "method": None,
+                "oauth_discovery_endpoint": None,
                 "scope": None,
                 "token_url": None,
             },
+            "VALID",
+        ),
+        _parity_case(
+            "delegated_oauth_discovery_without_client",
+            {"oauth_discovery_endpoint": "https://identity.example.invalid"},
+            "INVALID",
+            error_types=["value_error"],
+            error_locations=[[]],
+        ),
+        _parity_case(
+            "runtime_configuration_uuid",
+            {"configuration_uuid": "configuration-openapi-test-only"},
             "VALID",
         ),
         _parity_case(
@@ -599,18 +615,6 @@ def all_files() -> dict[str, bytes]:
         ),
         "openapi-legacy-parity-matrix.json": canonical_json(
             openapi_legacy_parity_matrix()
-        ),
-        "configuration-catalog.json": canonical_json_no_lf(
-            {
-                "configurations": {
-                    "openapi": {
-                        "schema_digest": f"sha256:{SCHEMA_DIGEST.hex()}",
-                        "schema_id": "elitea.configuration.openapi",
-                        "schema_revision": SDK_REVISION,
-                    }
-                },
-                "revision": SDK_REVISION,
-            }
         ),
         "conformance-profile.json": canonical_json(
             {

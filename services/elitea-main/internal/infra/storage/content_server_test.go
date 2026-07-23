@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 )
 
@@ -113,6 +115,71 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 	require.Equal(t, response.Header().Get("Content-Digest"), response.Header().Get(SourceContentDigestHeader))
 	require.Equal(t, "v1", response.Header().Get(SourceImmutableVersionHeader))
 	require.Equal(t, "22", response.Header().Get(SourceContentLengthHeader))
+}
+
+func TestContentServerDecodesEscapedClaimPathParts(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"bounded":true}`)
+	digest := sha256.Sum256(data)
+	immutableVersion := "sha256:" + strings.Repeat("a", 64)
+	fence := bytes.Repeat([]byte{7}, sha256.Size)
+	certificate := &x509.Certificate{SerialNumber: nil}
+
+	server, err := NewContentServer(
+		contentAuthorizerFunc(func(_ context.Context, claim ContentClaim) (ContentAuthorization, error) {
+			require.Equal(t, "execution:one", claim.ExecutionID)
+			require.Equal(t, "settings:id", claim.ContentID)
+			require.Equal(t, immutableVersion, claim.ImmutableVersion)
+			return ContentAuthorization{
+				ResourceProjectID: "42",
+				ActorID:           "17",
+				InputBundleID:     "bundle-1",
+				CapabilityID:      executiondomain.IndexIngestCapability,
+				SemanticRole:      "index.toolkit_configuration",
+				ExpectedDigest:    digest,
+				ExpectedLength:    int64(len(data)),
+			}, nil
+		}),
+		contentStoreFunc(func(_ context.Context, projectID, inputBundleID, contentID, version string) (io.ReadCloser, error) {
+			require.Equal(t, "42", projectID)
+			require.Equal(t, "bundle-1", inputBundleID)
+			require.Equal(t, "settings:id", contentID)
+			require.Equal(t, immutableVersion, version)
+			return io.NopCloser(bytes.NewReader(data)), nil
+		}),
+		0,
+	)
+	require.NoError(t, err)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/executions/execution%3Aone/generations/1/inputs/settings%3Aid/versions/sha256%3A"+strings.Repeat("a", 64),
+		nil,
+	)
+	request.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{certificate}}}
+	request.Header.Set(claimIDHeader, "claim-1")
+	request.Header.Set(fenceHeader, base64.RawURLEncoding.EncodeToString(fence))
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, data, response.Body.Bytes())
+	require.Equal(t, immutableVersion, response.Header().Get(SourceImmutableVersionHeader))
+}
+
+func TestClaimPathPartRejectsMalformedOrNULValue(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"sha256%ZZ", "sha256%00value"} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		routeContext := chi.NewRouteContext()
+		routeContext.URLParams.Add("version", value)
+		request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+
+		_, err := claimPathPart(request, "version")
+		require.ErrorIs(t, err, ErrContentUnauthorized)
+	}
 }
 
 func TestContentServerDoesNotReleaseWrongDigest(t *testing.T) {
@@ -318,6 +385,32 @@ func TestMaterializingRuntimeContentServerRequiresBothServices(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, runtime.materializer)
 	require.Same(t, runtimeToken, runtime.runtimeToken)
+}
+
+func TestPrivateContentListenerDoesNotExposePublicLLMFacade(t *testing.T) {
+	t.Parallel()
+
+	server, err := NewRuntimeContentServerWithLimits(
+		contentAuthorizerFunc(func(context.Context, ContentClaim) (ContentAuthorization, error) {
+			t.Fatal("unknown private-listener route must not authorize content")
+			return ContentAuthorization{}, nil
+		}),
+		contentStoreFunc(func(context.Context, string, string, string, string) (io.ReadCloser, error) {
+			t.Fatal("unknown private-listener route must not open content")
+			return nil, nil
+		}),
+		&EliteaClientTokenService{},
+		1024,
+		1,
+	)
+	require.NoError(t, err)
+
+	response := httptest.NewRecorder()
+	server.Routes().ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(`{"model":"embed"}`)),
+	)
+	require.Equal(t, http.StatusNotFound, response.Code)
 }
 
 func validContentRequest(t *testing.T) *http.Request {

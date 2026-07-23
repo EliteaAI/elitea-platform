@@ -8,6 +8,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ApplicationVersion struct {
+	ID                   int32            `db:"id" json:"id"`
+	ApplicationID        int32            `db:"application_id" json:"application_id"`
+	Name                 string           `db:"name" json:"name"`
+	Status               string           `db:"status" json:"status"`
+	AuthorID             int32            `db:"author_id" json:"author_id"`
+	Uuid                 pgtype.UUID      `db:"uuid" json:"uuid"`
+	CreatedAt            pgtype.Timestamp `db:"created_at" json:"created_at"`
+	SharedOwnerID        *int32           `db:"shared_owner_id" json:"shared_owner_id"`
+	SharedID             *int32           `db:"shared_id" json:"shared_id"`
+	LlmSettings          []byte           `db:"llm_settings" json:"llm_settings"`
+	Instructions         *string          `db:"instructions" json:"instructions"`
+	ConversationStarters []byte           `db:"conversation_starters" json:"conversation_starters"`
+	WelcomeMessage       string           `db:"welcome_message" json:"welcome_message"`
+	AgentType            string           `db:"agent_type" json:"agent_type"`
+	Meta                 []byte           `db:"meta" json:"meta"`
+	PipelineSettings     []byte           `db:"pipeline_settings" json:"pipeline_settings"`
+}
+
 type AuthCoreGroup struct {
 	ID       int32   `db:"id" json:"id"`
 	ParentID *int32  `db:"parent_id" json:"parent_id"`
@@ -122,6 +141,16 @@ type CentryProjectGroupAssociation struct {
 	GroupID   *int32 `db:"group_id" json:"group_id"`
 }
 
+type CentrySocialPin struct {
+	ID        int32            `db:"id" json:"id"`
+	Entity    string           `db:"entity" json:"entity"`
+	UserID    int32            `db:"user_id" json:"user_id"`
+	ProjectID *int32           `db:"project_id" json:"project_id"`
+	EntityID  int32            `db:"entity_id" json:"entity_id"`
+	CreatedAt pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type Configuration struct {
 	ID          int32            `db:"id" json:"id"`
 	Uuid        pgtype.UUID      `db:"uuid" json:"uuid"`
@@ -170,6 +199,28 @@ type EliteaRuntimeCommandOutbox struct {
 	LastVisibilityAt             pgtype.Timestamptz `db:"last_visibility_at" json:"last_visibility_at"`
 }
 
+type EliteaRuntimeConfigurationLifecycleOutbox struct {
+	EventID           pgtype.UUID        `db:"event_id" json:"event_id"`
+	ResourceProjectID int32              `db:"resource_project_id" json:"resource_project_id"`
+	ConfigurationUuid pgtype.UUID        `db:"configuration_uuid" json:"configuration_uuid"`
+	Revision          int64              `db:"revision" json:"revision"`
+	Operation         string             `db:"operation" json:"operation"`
+	ActorID           int32              `db:"actor_id" json:"actor_id"`
+	SanitizedSnapshot []byte             `db:"sanitized_snapshot" json:"sanitized_snapshot"`
+	SnapshotDigest    []byte             `db:"snapshot_digest" json:"snapshot_digest"`
+	State             string             `db:"state" json:"state"`
+	AttemptCount      int32              `db:"attempt_count" json:"attempt_count"`
+	AvailableAt       pgtype.Timestamptz `db:"available_at" json:"available_at"`
+	LastAttemptAt     pgtype.Timestamptz `db:"last_attempt_at" json:"last_attempt_at"`
+	LeaseOwner        *string            `db:"lease_owner" json:"lease_owner"`
+	LeaseExpiresAt    pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	DeliveredAt       pgtype.Timestamptz `db:"delivered_at" json:"delivered_at"`
+	DeadAt            pgtype.Timestamptz `db:"dead_at" json:"dead_at"`
+	LastErrorCode     *string            `db:"last_error_code" json:"last_error_code"`
+	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type EliteaRuntimeExecutionAdmissionPolicy struct {
 	CapabilityID   string             `db:"capability_id" json:"capability_id"`
 	MaxOutstanding int64              `db:"max_outstanding" json:"max_outstanding"`
@@ -207,18 +258,21 @@ type EliteaRuntimeExecutionJob struct {
 }
 
 type EliteaRuntimeIndexIngestJob struct {
-	ExecutionID                 string  `db:"execution_id" json:"execution_id"`
-	Generation                  int64   `db:"generation" json:"generation"`
-	CapabilityID                string  `db:"capability_id" json:"capability_id"`
-	InputBundleID               string  `db:"input_bundle_id" json:"input_bundle_id"`
-	ToolkitConfigurationEntryID string  `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
-	ToolParametersEntryID       string  `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
-	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
-	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
-	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
-	ToolkitID                   int32   `db:"toolkit_id" json:"toolkit_id"`
-	IndexName                   string  `db:"index_name" json:"index_name"`
-	Initiator                   string  `db:"initiator" json:"initiator"`
+	ExecutionID                 string             `db:"execution_id" json:"execution_id"`
+	Generation                  int64              `db:"generation" json:"generation"`
+	CapabilityID                string             `db:"capability_id" json:"capability_id"`
+	InputBundleID               string             `db:"input_bundle_id" json:"input_bundle_id"`
+	ToolkitConfigurationEntryID string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID       string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID             *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID     *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID            *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	IndexMetaID                 *string            `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID      *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+	IndexMetaInitializedAt      pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`
+	ToolkitID                   int32              `db:"toolkit_id" json:"toolkit_id"`
+	IndexName                   string             `db:"index_name" json:"index_name"`
+	Initiator                   string             `db:"initiator" json:"initiator"`
 }
 
 type EliteaRuntimeIndexIngestResult struct {

@@ -25,7 +25,7 @@ _WRAPPER_SHA256 = (
     "2e8f82530d8fcc55a908355028bef9e6e33b4324d27589848f2151611a95635d"
 )
 _DISPATCH_SHA256 = (
-    "daacfb681b1805a0570af6efee79add01c8b1694b65939689b7dcba504a832c3"
+    "55bb1d9cbecfcb420f64591cf949f8799e23672770e2db480c23ce19bb4d87aa"
 )
 
 
@@ -140,12 +140,6 @@ def test_admitted_sdk_revision_contains_the_same_public_method() -> None:
         "llm_config",
         "mcp_tokens",
     ]
-    dependency = next(
-        line.strip()
-        for line in (_SERVICE_ROOT / "pyproject.toml").read_text().splitlines()
-        if "elitea-sdk @ git+" in line
-    )
-    assert f"@{SDK_SOURCE_REVISION}" in dependency
 
 
 def _function(path: Path, name: str) -> ast.FunctionDef:

@@ -54,14 +54,16 @@ const (
 )
 
 type Dependencies struct {
-	AdmissionPool         *pgxpool.Pool
-	ControlPool           *pgxpool.Pool
-	OutputPool            *pgxpool.Pool
-	ReplayPool            *pgxpool.Pool
-	ContentPool           *pgxpool.Pool
-	CurrentConfigurations *CurrentConfigurationsRuntime
-	ProjectTokenValidator storage.ProjectTokenValidator
-	Logger                *slog.Logger
+	AdmissionPool                    *pgxpool.Pool
+	ControlPool                      *pgxpool.Pool
+	OutputPool                       *pgxpool.Pool
+	ReplayPool                       *pgxpool.Pool
+	ContentPool                      *pgxpool.Pool
+	CurrentConfigurations            *CurrentConfigurationsRuntime
+	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
+	ActorTokenIssuer                 storage.ActorTokenIssuer
+	ProjectTokenValidator            storage.ProjectTokenValidator
+	Logger                           *slog.Logger
 }
 
 func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtime, error) {
@@ -77,11 +79,15 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err := validateDependencies(dependencies); err != nil {
 		return nil, err
 	}
-	if config.IndexIngestDispatchEnabled && dependencies.ProjectTokenValidator == nil {
-		return nil, errors.New("runtime index ingest project-token validator is required")
+	if config.IndexIngestDispatchEnabled &&
+		(dependencies.ActorTokenIssuer == nil || dependencies.ProjectTokenValidator == nil) {
+		return nil, errors.New("runtime index ingest actor-token bridge is required")
 	}
 	if config.IndexIngestDispatchEnabled && dependencies.CurrentConfigurations == nil {
 		return nil, errors.New("runtime index ingest current Configurations runtime is required")
+	}
+	if dependencies.ConfigurationLifecycleReconciler != nil && dependencies.CurrentConfigurations == nil {
+		return nil, errors.New("configuration lifecycle requires current Configurations runtime")
 	}
 	if err := migrate.New(dependencies.AdmissionPool, platformmigrations.Files).CheckHead(ctx, migrate.ScopeShared, "platform"); err != nil {
 		return nil, fmt.Errorf("runtime shared migration head is not applied: %w", err)
@@ -196,6 +202,23 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
+	var currentSDKConfigurationValidator configurationapp.CurrentSDKConfigurationValidator
+	if dependencies.CurrentConfigurations != nil {
+		validationCandidates, candidateErr := repos.NewCurrentSDKValidationCandidatesRepository(dependencies.AdmissionPool)
+		if candidateErr != nil {
+			return nil, fmt.Errorf("construct current SDK validation candidates: %w", candidateErr)
+		}
+		currentSDKConfigurationValidator, candidateErr = newCurrentSDKConfigurationValidator(
+			dependencies.CurrentConfigurations.AvailableCatalog(),
+			validationCandidates,
+			bundles,
+			jobSubmitter,
+			currentRuntimeID,
+		)
+		if candidateErr != nil {
+			return nil, fmt.Errorf("construct current SDK configuration validator: %w", candidateErr)
+		}
+	}
 	validationSubmitter, err := configurationapp.NewSubmitValidationService(targets, bundles, jobSubmitter)
 	if err != nil {
 		return nil, err
@@ -268,6 +291,20 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	publisherRoot, err := newConfiguredPublisherSet(config.IndexIngestDispatchEnabled, publisher, indexPublisher)
 	if err != nil {
 		return nil, err
+	}
+	if dependencies.ConfigurationLifecycleReconciler != nil {
+		configurationLifecycle, lifecycleErr := newCurrentConfigurationLifecyclePublisher(
+			dependencies.ControlPool,
+			dependencies.ConfigurationLifecycleReconciler,
+			dependencies.Logger,
+		)
+		if lifecycleErr != nil {
+			return nil, fmt.Errorf("construct current configuration lifecycle processor: %w", lifecycleErr)
+		}
+		publisherRoot, err = newPublisherSet(publisherRoot, configurationLifecycle)
+		if err != nil {
+			return nil, fmt.Errorf("compose current configuration lifecycle processor: %w", err)
+		}
 	}
 
 	controlSessions, err := repos.NewWorkloadSessionsRepository(dependencies.ControlPool)
@@ -403,8 +440,11 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	var indexStart indexingapi.StartUseCase
 	var currentIndex *currentIndexRuntime
 	if config.IndexIngestDispatchEnabled {
-		vaults := dependencies.CurrentConfigurations.vaultLoader
-		runtimeToken, err := storage.NewEliteaClientTokenService(contentRepository, vaults, dependencies.ProjectTokenValidator)
+		runtimeToken, err := storage.NewEliteaClientTokenService(
+			contentRepository,
+			dependencies.ActorTokenIssuer,
+			dependencies.ProjectTokenValidator,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
 		}
@@ -477,15 +517,17 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		return nil, err
 	}
 	if currentIndex != nil {
+		publicRoutes.IndexCancel = currentIndex.cancel
 		publicRoutes.IndexMeta = currentIndex.indexMeta
 	}
 
 	closeRedis = false
 	return &Runtime{
-		publisher:    publisherRoot,
-		private:      privateServers,
-		controlRedis: controlRedis,
-		publicRoutes: publicRoutes,
+		publisher:              publisherRoot,
+		private:                privateServers,
+		controlRedis:           controlRedis,
+		publicRoutes:           publicRoutes,
+		configurationValidator: currentSDKConfigurationValidator,
 	}, nil
 }
 

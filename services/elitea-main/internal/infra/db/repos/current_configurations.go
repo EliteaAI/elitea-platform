@@ -19,6 +19,8 @@ import (
 
 type currentConfigurationQueries interface {
 	FindCurrentConfigurationByEliteaTitle(context.Context, sqlcgen.FindCurrentConfigurationByEliteaTitleParams) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error)
+	ListCurrentConfigurationOptionCandidates(context.Context, sqlcgen.ListCurrentConfigurationOptionCandidatesParams) ([]sqlcgen.ListCurrentConfigurationOptionCandidatesRow, error)
+	ListCurrentConfigurationTypes(context.Context, sqlcgen.ListCurrentConfigurationTypesParams) ([]string, error)
 	CountCurrentConfigurations(context.Context, sqlcgen.CountCurrentConfigurationsParams) (int64, error)
 	CountCurrentSharedConfigurations(context.Context, sqlcgen.CountCurrentSharedConfigurationsParams) (int64, error)
 	ListCurrentConfigurations(context.Context, sqlcgen.ListCurrentConfigurationsParams) ([]sqlcgen.ListCurrentConfigurationsRow, error)
@@ -123,6 +125,47 @@ func newCurrentConfigurationQueries(tx sqlExecutor) (currentConfigurationQueries
 		return nil, errors.New("current configuration transaction does not support generated queries")
 	}
 	return sqlcgen.New(executor.queryer), nil
+}
+
+func (r *CurrentConfigurationsRepository) ListDistinctTypes(
+	ctx context.Context,
+	filter configurationapp.CurrentConfigurationTypesFilter,
+) ([]string, error) {
+	if ctx == nil || filter.ProjectID <= 0 ||
+		len(filter.Section) > configurationapp.MaxCurrentConfigurationTypeLength ||
+		filter.MaxRows <= 0 || filter.MaxRows > configurationapp.MaxCurrentConfigurationTypes+1 {
+		return nil, configurationapp.ErrInvalidCurrentConfigurationTypesRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	types := []string{}
+	err := r.projects.WithinProjectTx(ctx, int64(filter.ProjectID), pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadOnly,
+	}, func(tx sqlExecutor) error {
+		queries, err := r.queries(tx)
+		if err != nil {
+			return err
+		}
+		types, err = queries.ListCurrentConfigurationTypes(ctx, sqlcgen.ListCurrentConfigurationTypesParams{
+			ProjectID: filter.ProjectID,
+			Section:   filter.Section,
+			LimitRows: int32(filter.MaxRows),
+		})
+		if err != nil {
+			return fmt.Errorf("list current configuration types: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(types) > filter.MaxRows {
+		return nil, errors.New("current configuration types query exceeded its row bound")
+	}
+	return types, nil
 }
 
 func (r *CurrentConfigurationsRepository) Count(ctx context.Context, filter configurationapp.CurrentConfigurationListFilter) (int64, error) {
@@ -446,6 +489,7 @@ func mapCurrentConfiguration(row sqlcgen.GetCurrentConfigurationRow) (configurat
 		AuthorID:    row.AuthorID,
 		CreatedAt:   row.CreatedAt.Time,
 		UpdatedAt:   updatedAt,
+		IsPinned:    row.IsPinned,
 	}, nil
 }
 
@@ -475,3 +519,4 @@ func validateCurrentConfigurationRepositoryContext(ctx context.Context, projectI
 
 var _ configurationapp.CurrentConfigurationRepository = (*CurrentConfigurationsRepository)(nil)
 var _ configurationapp.CurrentExpansionFinder = (*CurrentConfigurationsRepository)(nil)
+var _ configurationapp.CurrentConfigurationTypesRepository = (*CurrentConfigurationsRepository)(nil)

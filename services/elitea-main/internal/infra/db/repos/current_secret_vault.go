@@ -76,44 +76,12 @@ func (r *CurrentSecretVaultRepository) mutate(ctx context.Context, vaultID strin
 	}
 
 	err := r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
-		var encryptedProjectKey, encryptedVault []byte
-		if err := tx.QueryRow(ctx, `
-SELECT k.data, d.data
-FROM centry.secrets_key AS k
-JOIN centry.secrets_data AS d ON d.id = k.id
-WHERE k.id = $1
-FOR UPDATE OF k, d`, vaultID).Scan(&encryptedProjectKey, &encryptedVault); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrCurrentVaultUnavailable
-			}
-			return fmt.Errorf("lock current secret vault: %w", ErrCurrentVaultUnavailable)
-		}
-		defer clearCurrentVaultBytes(encryptedProjectKey)
-		defer clearCurrentVaultBytes(encryptedVault)
-
-		var rewritten []byte
-		var err error
-		if len(r.masterKey) == 0 {
-			rewritten, err = centrysecrets.RewriteUnwrapped(encryptedProjectKey, encryptedVault, mutations)
-		} else {
-			rewritten, err = centrysecrets.RewriteWrapped(r.masterKey, encryptedProjectKey, encryptedVault, mutations)
-		}
-		if errors.Is(err, centrysecrets.ErrInvalidMutation) {
-			return ErrInvalidCurrentVaultMutation
-		}
+		vault, err := lockCurrentSecretVault(ctx, tx, vaultID)
 		if err != nil {
-			return ErrCurrentVaultUnavailable
+			return err
 		}
-		defer clearCurrentVaultBytes(rewritten)
-
-		tag, err := tx.Exec(ctx, `
-UPDATE centry.secrets_data
-SET data = $2
-WHERE id = $1`, vaultID, rewritten)
-		if err != nil || tag.RowsAffected() != 1 {
-			return ErrCurrentVaultUnavailable
-		}
-		return nil
+		defer vault.destroy()
+		return vault.mutate(ctx, tx, r.masterKey, mutations)
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -122,6 +90,88 @@ WHERE id = $1`, vaultID, rewritten)
 		return err
 	}
 	return nil
+}
+
+// lockedCurrentSecretVault owns the encrypted bytes selected under a qualified
+// centry row lock. It is transaction-local and must be destroyed before the
+// owning transaction callback returns.
+type lockedCurrentSecretVault struct {
+	id                  string
+	encryptedProjectKey []byte
+	encryptedVault      []byte
+}
+
+func lockCurrentSecretVault(
+	ctx context.Context,
+	tx sqlExecutor,
+	vaultID string,
+) (*lockedCurrentSecretVault, error) {
+	if ctx == nil || tx == nil || vaultID == "" {
+		return nil, ErrCurrentVaultUnavailable
+	}
+	vault := &lockedCurrentSecretVault{id: vaultID}
+	if err := tx.QueryRow(ctx, `
+SELECT k.data, d.data
+FROM centry.secrets_key AS k
+JOIN centry.secrets_data AS d ON d.id = k.id
+WHERE k.id = $1
+FOR UPDATE OF k, d`, vaultID).Scan(&vault.encryptedProjectKey, &vault.encryptedVault); err != nil {
+		vault.destroy()
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCurrentVaultUnavailable
+		}
+		return nil, fmt.Errorf("lock current secret vault: %w", ErrCurrentVaultUnavailable)
+	}
+	if len(vault.encryptedProjectKey) == 0 || len(vault.encryptedVault) == 0 {
+		vault.destroy()
+		return nil, ErrCurrentVaultUnavailable
+	}
+	return vault, nil
+}
+
+func (v *lockedCurrentSecretVault) mutate(
+	ctx context.Context,
+	tx sqlExecutor,
+	masterKey []byte,
+	mutations []centrysecrets.Mutation,
+) error {
+	if v == nil || tx == nil || v.id == "" || len(mutations) == 0 || len(mutations) > maxCurrentVaultMutations {
+		return ErrInvalidCurrentVaultMutation
+	}
+	var rewritten []byte
+	var err error
+	if len(masterKey) == 0 {
+		rewritten, err = centrysecrets.RewriteUnwrapped(v.encryptedProjectKey, v.encryptedVault, mutations)
+	} else {
+		rewritten, err = centrysecrets.RewriteWrapped(masterKey, v.encryptedProjectKey, v.encryptedVault, mutations)
+	}
+	if errors.Is(err, centrysecrets.ErrInvalidMutation) {
+		return ErrInvalidCurrentVaultMutation
+	}
+	if err != nil {
+		return ErrCurrentVaultUnavailable
+	}
+	defer clearCurrentVaultBytes(rewritten)
+
+	tag, err := tx.Exec(ctx, `
+UPDATE centry.secrets_data
+SET data = $2
+WHERE id = $1`, v.id, rewritten)
+	if err != nil || tag.RowsAffected() != 1 {
+		return ErrCurrentVaultUnavailable
+	}
+	return nil
+}
+
+func (v *lockedCurrentSecretVault) destroy() {
+	if v == nil {
+		return
+	}
+	clearCurrentVaultBytes(v.encryptedProjectKey)
+	clearCurrentVaultBytes(v.encryptedVault)
+	v.encryptedProjectKey = nil
+	v.encryptedVault = nil
+	v.id = ""
 }
 
 // Destroy clears the repository-owned master-key copy. The repository must not
