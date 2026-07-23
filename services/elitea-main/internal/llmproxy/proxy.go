@@ -3,6 +3,7 @@ package llmproxy
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -98,7 +99,9 @@ func New(cfg Config) (*Proxy, error) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error("llmproxy: upstream error", "err", err, "path", r.URL.Path)
-			http.Error(w, `{"error":"llm gateway unavailable"}`, http.StatusBadGateway)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"message":"llm gateway unavailable","type":"service_unavailable","code":"upstream_unavailable"}}`))
 		},
 	}
 
@@ -113,7 +116,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if rc := http.NewResponseController(w); rc != nil {
 		// A zero time disables the deadline. Not all ResponseWriters support it
 		// (httptest.ResponseRecorder does not); ignore ErrNotSupported.
-		if err := rc.SetWriteDeadline(time.Time{}); err != nil && err != http.ErrNotSupported {
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			p.logger.Warn("llmproxy: clear write deadline", "err", err)
 		}
 	}

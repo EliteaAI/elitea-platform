@@ -97,21 +97,32 @@ type fakeConn struct {
 func (f *fakeConn) Close()         { f.closed = true; f.closes++ }
 func (f *fakeConn) IsClosed() bool { return f.closed }
 
-// fakeProvisioner exercises ensureAssets without a live server. It records the
-// StreamConfig so the AllowMsgCounter contract can be asserted, and returns a
-// stub Stream that satisfies both jetstream.Stream and counterReader.
+// fakeProvisioner exercises ensureAssets without a live server. It records all
+// StreamConfigs so both the budget counter stream and the deltas stream
+// contracts can be asserted, and returns a stub Stream for the bind call.
 type fakeProvisioner struct {
-	streamCfg jetstream.StreamConfig
-	kvCfg     jetstream.KeyValueConfig
-	streamErr error
-	kvErr     error
-	bindErr   error
-	boundStrm jetstream.Stream
+	streamCfgs []jetstream.StreamConfig // one entry per CreateOrUpdateStream call
+	kvCfg      jetstream.KeyValueConfig
+	streamErr  error
+	kvErr      error
+	bindErr    error
+	boundStrm  jetstream.Stream
 }
 
 func (f *fakeProvisioner) CreateOrUpdateStream(_ context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
-	f.streamCfg = cfg
+	f.streamCfgs = append(f.streamCfgs, cfg)
 	return nil, f.streamErr
+}
+
+// streamCfgByName returns the StreamConfig recorded for the named stream, or
+// the zero value if it was not created.
+func (f *fakeProvisioner) streamCfgByName(name string) (jetstream.StreamConfig, bool) {
+	for _, c := range f.streamCfgs {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return jetstream.StreamConfig{}, false
 }
 
 func (f *fakeProvisioner) CreateOrUpdateKeyValue(_ context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
@@ -136,8 +147,11 @@ func newTestClient(cfg Config, pub publisher, rd counterReader, kv kvCreator) *C
 	cfg = cfg.withDefaults()
 	c := &Client{cfg: cfg, pub: pub, budget: rd, cooldown: kv}
 	c.breaker = newBreaker(cfg, func(from, to gobreaker.State) {
-		if c.onStateChange != nil {
-			c.onStateChange(from, to)
+		c.mu.RLock()
+		fn := c.onStateChange
+		c.mu.RUnlock()
+		if fn != nil {
+			fn(from, to)
 		}
 	})
 	return c
@@ -453,25 +467,95 @@ func TestEnsureAssetsConfiguresCounterStream(t *testing.T) {
 	if err := c.ensureAssets(context.Background(), prov); err != nil {
 		t.Fatalf("ensureAssets: %v", err)
 	}
+	budgetCfg, ok := prov.streamCfgByName(BudgetStream)
+	if !ok {
+		t.Fatalf("budget stream %q not created", BudgetStream)
+	}
 	// The budget stream MUST enable the atomic counter (Nats-Incr requires it).
-	if !prov.streamCfg.AllowMsgCounter {
+	if !budgetCfg.AllowMsgCounter {
 		t.Error("budget stream must set AllowMsgCounter=true")
 	}
 	// The dedup window backs recovery-replay idempotency (§8.5 step 2).
-	if prov.streamCfg.Duplicates != RecoveryDedupeWindow {
-		t.Errorf("dedup window = %v, want %v", prov.streamCfg.Duplicates, RecoveryDedupeWindow)
+	if budgetCfg.Duplicates != RecoveryDedupeWindow {
+		t.Errorf("dedup window = %v, want %v", budgetCfg.Duplicates, RecoveryDedupeWindow)
 	}
-	if prov.streamCfg.Name != BudgetStream {
-		t.Errorf("stream name = %q, want %q", prov.streamCfg.Name, BudgetStream)
-	}
-	if prov.streamCfg.Replicas != 3 {
-		t.Errorf("stream replicas = %d, want 3", prov.streamCfg.Replicas)
+	if budgetCfg.Replicas != 3 {
+		t.Errorf("stream replicas = %d, want 3", budgetCfg.Replicas)
 	}
 	if prov.kvCfg.Bucket != AlertCooldownBucket {
 		t.Errorf("kv bucket = %q, want %q", prov.kvCfg.Bucket, AlertCooldownBucket)
 	}
 	if c.cooldown == nil {
 		t.Error("cooldown KV not bound")
+	}
+}
+
+// TestEnsureAssetsCooldownKVHasTTL asserts FIX 1: the cooldown KV bucket is
+// provisioned with a non-zero TTL so keys expire and the 80% soft-alert can
+// re-fire after the cooldown window (§8.3).
+func TestEnsureAssetsCooldownKVHasTTL(t *testing.T) {
+	prov := &fakeProvisioner{}
+	c := &Client{cfg: Config{}.withDefaults()}
+	if err := c.ensureAssets(context.Background(), prov); err != nil {
+		t.Fatalf("ensureAssets: %v", err)
+	}
+	if prov.kvCfg.TTL == 0 {
+		t.Error("cooldown KV bucket TTL must be non-zero; without it cooldown keys never expire")
+	}
+}
+
+// TestEnsureAssetsDeltasStreamCreated asserts FIX 2: the write-behind deltas
+// stream GATEWAY_BUDGET_DELTAS is created in ensureAssets so PublishDelta does
+// not fail with stream-not-found at runtime (§8.6).
+func TestEnsureAssetsDeltasStreamCreated(t *testing.T) {
+	prov := &fakeProvisioner{}
+	c := &Client{cfg: Config{}.withDefaults()}
+	if err := c.ensureAssets(context.Background(), prov); err != nil {
+		t.Fatalf("ensureAssets: %v", err)
+	}
+	deltaCfg, ok := prov.streamCfgByName(DeltasStream)
+	if !ok {
+		t.Fatalf("deltas stream %q not created in ensureAssets", DeltasStream)
+	}
+	if len(deltaCfg.Subjects) == 0 {
+		t.Error("deltas stream must bind at least one subject")
+	}
+	if deltaCfg.Storage != jetstream.FileStorage {
+		t.Error("deltas stream must use FileStorage for durability")
+	}
+	if deltaCfg.Duplicates == 0 {
+		t.Error("deltas stream must have a non-zero dedup window for publish-side idempotency")
+	}
+}
+
+// TestReadBudgetNegativeTotal asserts FIX 4: a correction-overshoot that
+// produces a negative running total is returned as the correct negative int64,
+// not as a huge positive value caused by a uint64 round-trip.
+func TestReadBudgetNegativeTotal(t *testing.T) {
+	// -500 nano-USD: a correction applied that overshot the counter to negative.
+	rd := &fakeReader{raw: &jetstream.RawStreamMsg{Data: []byte("-500")}}
+	c := newTestClient(Config{}, nil, rd, nil)
+	got, err := c.ReadBudget(context.Background(), "s")
+	if err != nil {
+		t.Fatalf("ReadBudget negative total: %v", err)
+	}
+	if got != -500 {
+		t.Errorf("ReadBudget negative total = %d, want -500 (got large positive = uint64 wrap bug)", got)
+	}
+}
+
+// TestIncrBudgetNegativeTotal asserts FIX 4 for IncrBudget: a correction that
+// drives the running total negative must return the correct int64, not the
+// result of a corrupting uint64 round-trip.
+func TestIncrBudgetNegativeTotalFromAck(t *testing.T) {
+	pub := &fakePublisher{ackVal: "-250"}
+	c := newTestClient(Config{}, pub, nil, nil)
+	got, err := c.IncrBudget(context.Background(), "s", -750)
+	if err != nil {
+		t.Fatalf("IncrBudget negative ack total: %v", err)
+	}
+	if got != -250 {
+		t.Errorf("IncrBudget negative ack total = %d, want -250 (got large positive = uint64 wrap bug)", got)
 	}
 }
 

@@ -158,10 +158,27 @@ func New(cfg Config) *Calculator {
 // clamped to zero. The price is resolved from the catalog (cached), then the
 // default table, then the ultimate fallback — never erroring on an unknown
 // model, so a pricing gap never blocks the /llm response path.
+//
+// If a catalog price is so large that the multiplication overflows int64 after
+// the per-1M divide (indicating a corrupt DB row), Cost falls back to the
+// default price for the model and logs a warning rather than returning a
+// silently wrong value.
 func (c *Calculator) Cost(ctx context.Context, provider, model string, inputTokens, outputTokens int64) Cost {
 	price := c.Price(ctx, provider, model)
-	in := costNano(inputTokens, price.InputNanoPer1M)
-	out := costNano(outputTokens, price.OutputNanoPer1M)
+	in, inOK := costNano(inputTokens, price.InputNanoPer1M)
+	out, outOK := costNano(outputTokens, price.OutputNanoPer1M)
+	if !inOK || !outOK {
+		// The catalog price is pathologically large (corrupt DB row): fall back
+		// to the default price so the /llm path is never blocked or mis-billed.
+		c.logger.WarnContext(ctx, "cost: price overflows int64 after divide; falling back to default price",
+			"provider", provider, "model", model,
+			"input_nano_per_1m", price.InputNanoPer1M,
+			"output_nano_per_1m", price.OutputNanoPer1M,
+		)
+		price = defaultPrice(model)
+		in, _ = costNano(inputTokens, price.InputNanoPer1M)
+		out, _ = costNano(outputTokens, price.OutputNanoPer1M)
+	}
 	return Cost{
 		InputNanoUSD:  in,
 		OutputNanoUSD: out,
@@ -231,16 +248,22 @@ func (c *Calculator) lookupCatalog(ctx context.Context, provider, model string) 
 	return Price{InputNanoPer1M: *inputNano, OutputNanoPer1M: out, Source: "catalog"}, true
 }
 
-// costNano returns round( tokens * priceNanoPer1M / TokensPer1M ) in nano-USD.
-// The multiply uses math/big so a large token count cannot overflow int64
-// before the divide; rounding is half-up (both operands are non-negative).
-func costNano(tokens, priceNanoPer1M int64) int64 {
+// costNano returns round( tokens * priceNanoPer1M / TokensPer1M ) in nano-USD
+// and whether the result fits in int64. ok is false only when priceNanoPer1M is
+// so extreme that the final quotient does not fit in int64, which indicates a
+// corrupt DB row; the caller must fall back to a safe default in that case.
+// The multiply uses math/big so a large token count cannot overflow int64 before
+// the divide; rounding is half-up (both operands are non-negative).
+func costNano(tokens, priceNanoPer1M int64) (int64, bool) {
 	if tokens <= 0 || priceNanoPer1M <= 0 {
-		return 0
+		return 0, true
 	}
 	prod := new(big.Int).Mul(big.NewInt(tokens), big.NewInt(priceNanoPer1M))
 	// Round half-up: (prod + TokensPer1M/2) / TokensPer1M.
 	prod.Add(prod, big.NewInt(TokensPer1M/2))
 	prod.Quo(prod, big.NewInt(TokensPer1M))
-	return prod.Int64()
+	if !prod.IsInt64() {
+		return 0, false
+	}
+	return prod.Int64(), true
 }

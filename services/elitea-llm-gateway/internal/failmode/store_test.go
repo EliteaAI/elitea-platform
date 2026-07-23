@@ -268,6 +268,19 @@ func TestPersistOutageDelta_BeginError(t *testing.T) {
 	}
 }
 
+// TestOutageUpsertSQL_ResetsReconciled asserts FIX 4: the ON CONFLICT DO UPDATE
+// clause must reset reconciled=false (and reconciliation_in_progress=false) so
+// that a re-entered outage on an already-reconciled row is picked up by the
+// recovery pass rather than being silently skipped (spend lost).
+func TestOutageUpsertSQL_ResetsReconciled(t *testing.T) {
+	if !strings.Contains(outageUpsertSQL, "reconciled = false") {
+		t.Error("outageUpsertSQL ON CONFLICT clause missing 'reconciled = false'; re-entered outage would be skipped by recovery")
+	}
+	if !strings.Contains(outageUpsertSQL, "reconciliation_in_progress = false") {
+		t.Error("outageUpsertSQL ON CONFLICT clause missing 'reconciliation_in_progress = false'; stale crash-marker would persist")
+	}
+}
+
 func TestDurationFromSeconds(t *testing.T) {
 	if durationFromSeconds(1.5) != 1500*time.Millisecond {
 		t.Fatal("fractional seconds")

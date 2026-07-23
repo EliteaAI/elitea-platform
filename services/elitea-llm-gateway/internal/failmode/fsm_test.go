@@ -101,6 +101,10 @@ func TestDecide_ExplicitModes(t *testing.T) {
 		if d.Verdict != Block402 || !d.Degraded {
 			t.Fatalf("got %+v", d)
 		}
+		// State must be the policy/budget block label, not the infra-staleness one.
+		if d.State != StateDownPGFreshOver {
+			t.Fatalf("fail_closed state = %v, want StateDownPGFreshOver", d.State)
+		}
 	})
 	t.Run("fail_open allows while down", func(t *testing.T) {
 		p := tieredParams()
@@ -230,6 +234,60 @@ func TestDecide_FreshSafe_DegradedCap(t *testing.T) {
 			t.Fatalf("got %+v", d)
 		}
 	})
+}
+
+// TestDecide_SoftThresholdSmallLimit exercises FIX 1: with a limit smaller than
+// 100 nanoUSD the old limit/100*pct formula yielded 0 (integer truncation),
+// putting every request into FRESH_NEAR even with zero spend. The corrected
+// limit*pct/100 formula produces the right threshold.
+func TestDecide_SoftThresholdSmallLimit(t *testing.T) {
+	// limit=50 nanoUSD, softPct=80 → threshold should be 40 (50*80/100=40).
+	// With the OLD formula: 50/100*80 = 0*80 = 0, so accumulated=1 ≥ 0 → NEAR.
+	// With the CORRECT formula: 50*80/100 = 4000/100 = 40, so accumulated=1 < 40 → SAFE.
+	const limit int64 = 50 // 50 nanoUSD — intentionally sub-100
+	p := tieredParams()
+	snap := Snapshot{
+		HardLimitNano:   limit,
+		AccumulatedNano: 1, // 1 nanoUSD — well below the 80% threshold of 40
+		SoftAlertPct:    80,
+		Found:           true,
+	}
+	d := Decide(false, 0, 0, snap, 0, p)
+	if d.State != StateDownPGFreshSafe {
+		t.Fatalf("small-limit threshold regression: expected FRESH_SAFE got %v (accumulated=1 limit=50 pct=80 threshold=40)", d.State)
+	}
+	if d.Verdict != Allow {
+		t.Fatalf("small-limit threshold: expected Allow got %v", d.Verdict)
+	}
+
+	// Also confirm that spend at exactly the threshold (40) lands in NEAR.
+	snap.AccumulatedNano = 40
+	d = Decide(false, 0, 0, snap, 0, p)
+	if d.State != StateDownPGFreshNear {
+		t.Fatalf("at threshold (40) should be FRESH_NEAR, got %v", d.State)
+	}
+}
+
+// TestDecide_FailClosedState exercises FIX 2: ModeFailClosed must return a
+// policy/budget State constant (StateDownPGFreshOver), not the infra-staleness
+// label StateDownPGStale — which would pollute metrics and alarms.
+func TestDecide_FailClosedState(t *testing.T) {
+	p := tieredParams()
+	p.Mode = ModeFailClosed
+	snap := Snapshot{HardLimitNano: 100 * NanoUSD, Found: true}
+	d := Decide(false, 0, 0, snap, 0, p)
+	if d.Verdict != Block402 {
+		t.Fatalf("fail_closed must Block402, got %v", d.Verdict)
+	}
+	if d.State == StateDownPGStale {
+		t.Fatalf("fail_closed must NOT use StateDownPGStale (infra label); got StateDownPGStale")
+	}
+	if d.State != StateDownPGFreshOver {
+		t.Fatalf("fail_closed must use StateDownPGFreshOver (policy block), got %v", d.State)
+	}
+	if !d.Degraded {
+		t.Fatal("fail_closed decision must be marked Degraded")
+	}
 }
 
 func TestDecide_NonPositiveLimitAllows(t *testing.T) {

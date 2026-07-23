@@ -131,6 +131,11 @@ type Snapshot struct {
 	// Found reports whether an accumulator row existed. A missing row for a
 	// budgeted project means no spend yet this period (Accumulated=0, fresh).
 	Found bool
+	// NatsFailMode is the per-project nats_fail_mode override read from
+	// gateway.project_budget. Empty string means "inherit the platform baseline".
+	// The governance layer calls ResolveFailMode(snap.NatsFailMode, baseline)
+	// before invoking Decide so the per-project policy is always honoured.
+	NatsFailMode FailMode
 }
 
 // Params is the resolved configuration the FSM decision needs (from config plus
@@ -201,7 +206,9 @@ func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, sna
 	switch p.Mode {
 	case ModeFailClosed:
 		// Contractually capped tenants: block while the counter can't be trusted.
-		return Decision{Verdict: Block402, State: StateDownPGStale, Degraded: true}
+		// Use StateDownPGFreshOver (policy/budget block) — not StateDownPGStale,
+		// which is an infra-staleness label used for 503 and would pollute alarms.
+		return Decision{Verdict: Block402, State: StateDownPGFreshOver, Degraded: true}
 	case ModeFailOpen:
 		return Decision{Verdict: Allow, State: StateDownPGFreshSafe, Degraded: true}
 	}
@@ -230,7 +237,13 @@ func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, sna
 	if softPct <= 0 || softPct > 100 {
 		softPct = 80
 	}
-	softThreshold := limit / 100 * int64(softPct)
+	// Multiply before divide to preserve precision (limit/100*pct loses the
+	// remainder fraction and yields 0 for limit<100 nanoUSD, forcing every
+	// request into FRESH_NEAR regardless of actual spend).
+	// Overflow guard: limit*100 fits int64 for limits up to ~9.2e16 nanoUSD
+	// ($92 M USD). Budgets above that amount are not supported by this code path;
+	// callers must enforce a reasonable ceiling on HardLimitNano.
+	softThreshold := limit * int64(softPct) / 100
 
 	switch {
 	case accumulated >= limit:

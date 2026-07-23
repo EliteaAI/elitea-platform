@@ -79,8 +79,11 @@ func TestCostNano_PylonParityVectors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotIn := costNano(tc.inTok, usdToNano(tc.inUSD))
-			gotOut := costNano(tc.outTok, usdToNano(tc.outUSD))
+			gotIn, okIn := costNano(tc.inTok, usdToNano(tc.inUSD))
+			gotOut, okOut := costNano(tc.outTok, usdToNano(tc.outUSD))
+			if !okIn || !okOut {
+				t.Fatalf("costNano returned ok=false for realistic price vector %q", tc.name)
+			}
 			if gotIn != tc.wantInNano {
 				t.Errorf("input nano = %d, want %d", gotIn, tc.wantInNano)
 			}
@@ -104,7 +107,10 @@ func TestCostNano_ThousandXBugGuard(t *testing.T) {
 	// per-1M price of $2.50 over 1M tokens is exactly $2.50 (2.5e9 nano) — not
 	// $2500 (per-1k bug) and not $0.0000025 (per-token confusion).
 	const priceNanoPer1M = 2_500_000_000 // $2.50/1M
-	got := costNano(1_000_000, priceNanoPer1M)
+	got, ok := costNano(1_000_000, priceNanoPer1M)
+	if !ok {
+		t.Fatal("costNano returned ok=false for representable value")
+	}
 	if got != 2_500_000_000 {
 		t.Fatalf("cost for 1M tokens @ $2.50/1M = %d nano, want 2_500_000_000 ($2.50)", got)
 	}
@@ -116,14 +122,14 @@ func TestCostNano_ThousandXBugGuard(t *testing.T) {
 }
 
 func TestCostNano_NegativeAndZeroClamp(t *testing.T) {
-	if got := costNano(-5, 2_500_000_000); got != 0 {
-		t.Errorf("negative tokens: got %d, want 0", got)
+	if got, ok := costNano(-5, 2_500_000_000); got != 0 || !ok {
+		t.Errorf("negative tokens: got %d ok=%v, want 0 true", got, ok)
 	}
-	if got := costNano(1000, -1); got != 0 {
-		t.Errorf("negative price: got %d, want 0", got)
+	if got, ok := costNano(1000, -1); got != 0 || !ok {
+		t.Errorf("negative price: got %d ok=%v, want 0 true", got, ok)
 	}
-	if got := costNano(0, 2_500_000_000); got != 0 {
-		t.Errorf("zero tokens: got %d, want 0", got)
+	if got, ok := costNano(0, 2_500_000_000); got != 0 || !ok {
+		t.Errorf("zero tokens: got %d ok=%v, want 0 true", got, ok)
 	}
 }
 
@@ -132,11 +138,51 @@ func TestCostNano_NoInt64OverflowOnLargeBatch(t *testing.T) {
 	// values; math/big must keep the result exact. 10e9 tokens @ $600/1M
 	// (o1-pro output) = 6e12 USD... unrealistic, but proves no overflow/panic.
 	// tokens * priceNano = 1e10 * 6e11 = 6e21 > int64 max (9.2e18).
-	got := costNano(10_000_000_000, 600_000_000_000)
+	got, ok := costNano(10_000_000_000, 600_000_000_000)
+	if !ok {
+		t.Fatal("costNano returned ok=false for large but representable result")
+	}
 	// Expected: 1e10 * 6e11 / 1e6 = 6e15 nano-USD.
 	want := int64(6_000_000_000_000_000)
 	if got != want {
 		t.Fatalf("large-batch cost = %d, want %d (overflow?)", got, want)
+	}
+}
+
+func TestCostNano_OversizedPriceReturnsFalse(t *testing.T) {
+	// FIX 4: a corrupt DB price so large that the final int64 quotient overflows
+	// must return ok=false rather than truncating silently.
+	//
+	// Overflow condition: tokens * priceNanoPer1M / TokensPer1M > int64max.
+	// With tokens=2_000_000 and priceNanoPer1M=math.MaxInt64 (≈9.22e18):
+	//   2e6 * 9.22e18 / 1e6 = 2 * 9.22e18 = 1.844e19 > int64max (9.22e18).
+	_, ok := costNano(2_000_000, math.MaxInt64)
+	if ok {
+		t.Error("expected ok=false for oversized price that overflows int64 after divide")
+	}
+}
+
+func TestCost_OversizedCatalogPriceFallsBackToDefault(t *testing.T) {
+	// FIX 4: when a catalog price is so large that costNano overflows int64,
+	// Cost must fall back to the default price (fail-open) rather than returning
+	// a silently truncated wrong value or blocking the /llm path.
+	//
+	// Same overflow trigger: 2M tokens * math.MaxInt64 / 1e6 > int64max.
+	oversizedPrice := int64(math.MaxInt64)
+	db := &fakeDB{rows: map[string]fakeRow{
+		"openai:gpt-4o": {srcInput: &oversizedPrice, srcOutput: &oversizedPrice},
+	}}
+	c := New(Config{DB: db})
+	got := c.Cost(context.Background(), "openai", "gpt-4o", 2_000_000, 2_000_000)
+	// Must fall back to the default price for gpt-4o, not return a garbage int64.
+	defaultP := defaultPrice("gpt-4o")
+	if got.Source != defaultP.Source {
+		t.Errorf("source = %q, want %q (fallback source)", got.Source, defaultP.Source)
+	}
+	// The default input price for gpt-4o is $2.50/1M = 2_500_000_000 nano/1M.
+	// 2_000_000 tokens at that rate = 5_000_000_000 nano.
+	if got.InputNanoUSD != 5_000_000_000 {
+		t.Errorf("InputNanoUSD = %d, want 5_000_000_000 (default price for gpt-4o @ 2M tokens)", got.InputNanoUSD)
 	}
 }
 

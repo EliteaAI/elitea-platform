@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -125,9 +126,11 @@ func (f *fakeNATS) fireStateChange(from, to gobreaker.State) {
 // ─── fake failmode.DB for in-memory snapshot reads ───────────────────────────
 
 type fakeDB struct {
-	row      failmode.Snapshot
-	rowErr   error
-	beginErr error
+	row        failmode.Snapshot
+	rowErr     error
+	beginErr   error
+	beginCalls int // counts calls to Begin (proxy for PersistOutageDelta invocations)
+	mu         sync.Mutex
 }
 
 func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
@@ -141,6 +144,10 @@ func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	// nats_fail_mode must be a nil interface (not a nil *string wrapped in
 	// interface{}) so that assignVal's nil check fires correctly for a NULL column.
 	var natsFM any // nil interface ⇒ SQL NULL
+	if d.row.NatsFailMode != "" {
+		s := string(d.row.NatsFailMode)
+		natsFM = s
+	}
 	ageSeconds := d.row.Age.Seconds()
 	return scriptedRow{vals: []any{
 		d.row.IsUnlimited,
@@ -154,6 +161,9 @@ func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 }
 
 func (d *fakeDB) Begin(_ context.Context) (failmode.Tx, error) {
+	d.mu.Lock()
+	d.beginCalls++
+	d.mu.Unlock()
 	if d.beginErr != nil {
 		return nil, d.beginErr
 	}
@@ -583,15 +593,16 @@ func TestDefaultParams_Sane(t *testing.T) {
 	}
 }
 
-// TestUpdateUsage_DeltaPayloadContainsRequiredFields: verifies the JSON delta
-// payload carries all the fields the scheduler consumer expects.
-func TestUpdateUsage_DeltaPayloadContainsRequiredFields(t *testing.T) {
+// TestUpdateUsage_DeltaPayloadRoundTrip: FIX 1 — marshals a deltaPayload and
+// unmarshals it into a struct with the scheduler consumer's exact JSON keys,
+// asserting all money/period/identity fields survive round-trip intact.
+func TestUpdateUsage_DeltaPayloadRoundTrip(t *testing.T) {
 	nc := newFakeNATS()
 	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
 	gs := newStore(nc, db)
 
 	const costNano = int64(7) * failmode.NanoUSD
-	const eventID = "evt-payload-check"
+	const eventID = "evt-payload-roundtrip"
 	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, eventID, costNano, testPeriod, testPeriodEnd); err != nil {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
@@ -601,21 +612,132 @@ func TestUpdateUsage_DeltaPayloadContainsRequiredFields(t *testing.T) {
 		nc.mu.Unlock()
 		t.Fatal("no delta published")
 	}
-	payload := nc.deltas[0]
+	raw := nc.deltas[0]
 	nc.mu.Unlock()
 
-	for _, needle := range []string{
-		`"project_id"`,
-		`"scope"`,
-		`"scope_id"`,
-		`"event_id"`,
-		`"cost_nano"`,
-		`"period_start_unix"`,
-		`"period_end_unix"`,
-	} {
-		if !contains(string(payload), needle) {
-			t.Errorf("delta payload missing %s: %s", needle, payload)
+	// Consumer's expected struct (scheduler BudgetDelta JSON tags).
+	var got struct {
+		EventID      string `json:"event_id"`
+		Scope        string `json:"scope"`
+		ScopeID      string `json:"scope_id"`
+		ProjectID    int    `json:"project_id"`
+		OrgID        *int   `json:"org_id,omitempty"`
+		PeriodStart  int64  `json:"period_start"`
+		PeriodEnd    int64  `json:"period_end"`
+		DeltaNanoUSD int64  `json:"delta_nano_usd"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.EventID != eventID {
+		t.Errorf("event_id = %q, want %q", got.EventID, eventID)
+	}
+	if got.Scope != testScope {
+		t.Errorf("scope = %q, want %q", got.Scope, testScope)
+	}
+	if got.ScopeID != testScopeID {
+		t.Errorf("scope_id = %q, want %q", got.ScopeID, testScopeID)
+	}
+	if got.ProjectID != testProject {
+		t.Errorf("project_id = %d, want %d", got.ProjectID, testProject)
+	}
+	if got.DeltaNanoUSD != costNano {
+		t.Errorf("delta_nano_usd = %d, want %d", got.DeltaNanoUSD, costNano)
+	}
+	if got.PeriodStart != testPeriod {
+		t.Errorf("period_start = %d, want %d", got.PeriodStart, testPeriod)
+	}
+	if got.PeriodEnd != testPeriodEnd {
+		t.Errorf("period_end = %d, want %d", got.PeriodEnd, testPeriodEnd)
+	}
+}
+
+// TestUpdateUsage_NATSDown_PersistOutageDelta_Called: FIX 2 — on the NATS-down
+// path, PersistOutageDelta must be invoked (Begin called on the DB) so spend
+// is durably written even before the breaker recovers.
+func TestUpdateUsage_NATSDown_PersistOutageDelta_Called(t *testing.T) {
+	nc := newFakeNATS()
+	nc.incrErr = nats.ErrUnavailable
+	nc.pubErr = nats.ErrUnavailable
+
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	const costNano = int64(4) * failmode.NanoUSD
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-outage", costNano, testPeriod, testPeriodEnd); err != nil {
+		t.Fatalf("UpdateUsage must not error: %v", err)
+	}
+
+	// PersistOutageDelta runs in a goroutine; give it a short window to complete.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		db.mu.Lock()
+		calls := db.beginCalls
+		db.mu.Unlock()
+		if calls > 0 {
+			break
 		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	db.mu.Lock()
+	calls := db.beginCalls
+	db.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("PersistOutageDelta not called on NATS-down path (Begin never invoked)")
+	}
+}
+
+// TestUpdateUsage_NATSHealthy_PersistOutageDelta_NotCalled: FIX 2 — on the
+// healthy NATS path, PersistOutageDelta must NOT be called.
+func TestUpdateUsage_NATSHealthy_PersistOutageDelta_NotCalled(t *testing.T) {
+	nc := newFakeNATS() // NATS healthy: no incrErr
+	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
+	gs := newStore(nc, db)
+
+	const costNano = int64(2) * failmode.NanoUSD
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-healthy", costNano, testPeriod, testPeriodEnd); err != nil {
+		t.Fatalf("UpdateUsage: %v", err)
+	}
+
+	// Small sleep to ensure no goroutine fires asynchronously.
+	time.Sleep(50 * time.Millisecond)
+
+	db.mu.Lock()
+	calls := db.beginCalls
+	db.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("PersistOutageDelta called on healthy path (Begin invoked %d times)", calls)
+	}
+}
+
+// TestCheckBudget_PerProjectFailModeOverride: FIX 3 — a per-project fail_closed
+// override must flip the decision to Block402 even when the platform baseline is
+// tiered_hybrid and the snapshot is well within the budget.
+func TestCheckBudget_PerProjectFailModeOverride(t *testing.T) {
+	nc := newFakeNATS()
+	nc.readErr = nats.ErrUnavailable // NATS down so fail-mode is consulted
+
+	db := &fakeDB{row: failmode.Snapshot{
+		HardLimitNano:   limitNano,
+		AccumulatedNano: 10 * failmode.NanoUSD, // 10% spent — well under limit
+		SoftAlertPct:    80,
+		Found:           true,
+		Age:             1 * time.Minute,          // fresh
+		NatsFailMode:    failmode.ModeFailClosed,  // per-project override
+	}}
+	gs := newStore(nc, db) // baseline is tiered_hybrid
+
+	dec, err := gs.CheckBudget(context.Background(), testProject, testScope, testScopeID, testPeriod, failmode.NanoUSD)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// tiered_hybrid baseline + fresh snapshot would Allow; fail_closed override must Block402.
+	if dec.Verdict != failmode.Block402 {
+		t.Fatalf("per-project fail_closed override: want Block402, got %v (state=%v)", dec.Verdict, dec.State)
+	}
+	if !dec.Degraded {
+		t.Fatal("want Degraded=true on NATS-down path")
 	}
 }
 

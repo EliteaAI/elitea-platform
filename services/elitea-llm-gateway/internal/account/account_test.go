@@ -345,13 +345,19 @@ func TestIsSelfReferential_PrefixMatch(t *testing.T) {
 	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
 	cases := map[string]bool{
 		"https://dev.elitea.ai/llm/v1":       true,  // exact
-		"https://dev.elitea.ai/llm/v1/":      true,  // trailing slash
+		"https://dev.elitea.ai/llm/v1/":      true,  // trailing slash normalised
 		"https://DEV.elitea.ai/llm/v1":       true,  // case-insensitive host
-		"https://dev.elitea.ai/llm":          true,  // credential is a prefix of self
-		"https://dev.elitea.ai/llm/v1/extra": true,  // self is a prefix of credential
+		"https://dev.elitea.ai/llm":          true,  // credential is a segment prefix of self
+		"https://dev.elitea.ai/llm/v1/extra": true,  // self is a segment prefix of credential
 		"https://api.openai.com/v1":          false, // unrelated
 		"":                                   false, // empty
 		"not a url":                          false, // unparsable
+		// FIX 2: partial-segment prefix must NOT match.
+		// "/llm/v" is NOT a segment prefix of "/llm/v1".
+		"https://dev.elitea.ai/llm/v":        false,
+		// FIX 3: uppercase path must still be caught (case-insensitive comparison).
+		"https://dev.elitea.ai/LLM/V1":       true,
+		"https://dev.elitea.ai/Llm/V1/":      true,
 	}
 	for base, want := range cases {
 		if got := a.isSelfReferential(base); got != want {
@@ -360,12 +366,47 @@ func TestIsSelfReferential_PrefixMatch(t *testing.T) {
 	}
 }
 
+func TestIsSelfReferential_SegmentBoundaryEvasion(t *testing.T) {
+	// FIX 2 regression test: a credential whose normalised path is a partial
+	// segment of a self-origin path must not be caught as self-referential.
+	// "/llm/v" shares a raw string prefix with "/llm/v1" but does NOT share a
+	// segment boundary — only full-segment prefixes are loops.
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+	if a.isSelfReferential("https://dev.elitea.ai/llm/v") {
+		t.Error("partial-segment credential /llm/v must not match self /llm/v1")
+	}
+	if a.isSelfReferential("https://dev.elitea.ai/llm/v10") {
+		t.Error("partial-segment credential /llm/v10 must not match self /llm/v1 — different segment")
+	}
+	// But a full extra segment must still match.
+	if !a.isSelfReferential("https://dev.elitea.ai/llm/v1/models") {
+		t.Error("credential /llm/v1/models should match self /llm/v1 (self is segment prefix)")
+	}
+}
+
+func TestIsSelfReferential_UppercasePathBypass(t *testing.T) {
+	// FIX 3: a credential with an uppercase path must still be caught.
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+	for _, base := range []string{
+		"https://dev.elitea.ai/LLM/V1",
+		"https://dev.elitea.ai/Llm/V1",
+		"HTTPS://DEV.ELITEA.AI/LLM/V1",
+	} {
+		if !a.isSelfReferential(base) {
+			t.Errorf("uppercase-path credential %q must be caught as self-referential", base)
+		}
+	}
+}
+
 func TestNormaliseOrigin(t *testing.T) {
 	cases := map[string]string{
 		"https://Dev.Elitea.AI/llm/v1/": "https://dev.elitea.ai/llm/v1",
-		"HTTP://Host:8080/Path":         "http://host:8080/Path",
-		"":                              "",
-		"::::":                          "",
+		// Path case is preserved in the normalised form; isSelfReferential applies
+		// case-insensitive comparison at match time (FIX 3).
+		"HTTP://Host:8080/Path":   "http://host:8080/Path",
+		"HTTP://Host:8080/PATH/":  "http://host:8080/PATH",
+		"":                        "",
+		"::::":                    "",
 	}
 	for in, want := range cases {
 		if got := normaliseOrigin(in); got != want {

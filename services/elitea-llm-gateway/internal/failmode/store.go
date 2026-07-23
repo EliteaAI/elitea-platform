@@ -54,6 +54,8 @@ var outageUpsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_budget_accumulators A
 	ON CONFLICT (scope, scope_id, period_start) DO UPDATE SET
 		accumulated_cost = acc.accumulated_cost + (EXCLUDED.accumulated_cost),
 		outage_mode = true,
+		reconciled = false,
+		reconciliation_in_progress = false,
 		last_updated = now()`, NanoUSD)
 
 // ErrNoBudgetRow is returned by ReadSnapshot when the project has no
@@ -103,6 +105,11 @@ func (s *Store) ReadSnapshot(ctx context.Context, projectID int, scope, scopeID 
 	// snapshot; age is only meaningful when the row exists.
 	if accFound {
 		snap.Age = durationFromSeconds(ageSeconds)
+	}
+	// Populate the per-project fail-mode override so the caller can apply it
+	// without a second round-trip. An empty / NULL column means "inherit baseline".
+	if natsFailMode != nil {
+		snap.NatsFailMode = FailMode(*natsFailMode)
 	}
 	return snap, nil
 }

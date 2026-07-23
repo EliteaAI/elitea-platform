@@ -256,29 +256,47 @@ func buildKey(provider schemas.ModelProvider, c credential, apiKey string) schem
 }
 
 // isSelfReferential reports whether apiBase points at the platform's own /llm
-// origin. Comparison is on the normalised (scheme+host+path) origin.
+// origin. Comparison uses segment-aware, case-insensitive matching on the
+// normalised (scheme+host+path) origin so that partial-segment prefixes (e.g.
+// credential "/llm/v" vs self "/llm/v1") do not produce false positives, and a
+// credential with an uppercase path cannot evade the guard.
 func (a *EliteaAccount) isSelfReferential(apiBase string) bool {
 	n := normaliseOrigin(apiBase)
 	if n == "" {
 		return false
 	}
-	if _, ok := a.selfOrigins[n]; ok {
-		return true
-	}
-	// Also reject when the credential base is a prefix of a self origin or vice
-	// versa (e.g. api_base ".../llm" vs self ".../llm/v1"): either direction is
-	// a loop back into the gateway.
+	nLower := strings.ToLower(n)
 	for self := range a.selfOrigins {
-		if strings.HasPrefix(self, n) || strings.HasPrefix(n, self) {
+		selfLower := strings.ToLower(self)
+		if nLower == selfLower {
+			return true
+		}
+		// Reject when one is a path-segment prefix of the other so that
+		// ".../llm" matches self ".../llm/v1" and ".../llm/v1/extra" also
+		// matches — but ".../llm/v" does NOT match ".../llm/v1" (partial segment).
+		if isSegmentPrefixOf(nLower, selfLower) || isSegmentPrefixOf(selfLower, nLower) {
 			return true
 		}
 	}
 	return false
 }
 
+// isSegmentPrefixOf reports whether prefix is a path-segment prefix of s.
+// The prefix must be followed by "/" or be equal to s; this prevents a path
+// component "/llm/v" from matching "/llm/v1".
+func isSegmentPrefixOf(prefix, s string) bool {
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	rest := s[len(prefix):]
+	return rest == "" || rest[0] == '/'
+}
+
 // normaliseOrigin canonicalises a URL to scheme://host[:port]/path with any
-// trailing slash removed, lowercasing scheme and host. Non-URL or empty input
-// yields "". Used both to index selfOrigins and to compare credential bases.
+// trailing slash removed, lowercasing scheme and host. Path case is preserved
+// for the normalised form; isSelfReferential applies case-insensitive comparison
+// at match time so that uppercase paths cannot evade the guard. Non-URL or empty
+// input yields "".
 func normaliseOrigin(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

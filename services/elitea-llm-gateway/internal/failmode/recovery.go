@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sony/gobreaker/v2"
 )
+
+// runtimeStack is an alias for runtime.Stack used by the panic-recovery handler.
+var runtimeStack = runtime.Stack
 
 // Counter is the recovered-NATS side the reconciler replays onto (design §8.5
 // step 2). It is the subset of the gateway NATS client the recovery path needs;
@@ -129,6 +133,16 @@ func (r *Reconciler) HandleBreakerChange(from, to gobreaker.State) {
 
 	go func() {
 		defer func() {
+			if rec := recover(); rec != nil {
+				// A panic in runPass/reconcileScope must not crash the gateway.
+				// Log with stack and return — the running flag is cleared below so a
+				// subsequent breaker edge can launch a fresh pass.
+				buf := make([]byte, 4096)
+				n := runtimeStack(buf, false)
+				r.log.Error("failmode recovery: panic in recovery goroutine",
+					slog.Any("panic", rec),
+					slog.String("stack", string(buf[:n])))
+			}
 			r.mu.Lock()
 			r.running = false
 			r.mu.Unlock()

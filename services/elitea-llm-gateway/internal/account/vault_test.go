@@ -266,7 +266,10 @@ func TestVaultDecryptKey_RawLengthGuard(t *testing.T) {
 
 func TestNewFernetVault_NoMasterKey(t *testing.T) {
 	t.Setenv("SECRETS_MASTER_KEY", "")
-	v := NewFernetVault(&fakeDB{})
+	v, err := NewFernetVault(&fakeDB{})
+	if err != nil {
+		t.Fatalf("unexpected error with no master key: %v", err)
+	}
 	if v.masterKey != nil {
 		t.Fatal("expected nil masterKey when SECRETS_MASTER_KEY unset")
 	}
@@ -275,8 +278,31 @@ func TestNewFernetVault_NoMasterKey(t *testing.T) {
 func TestNewFernetVault_WithMasterKey(t *testing.T) {
 	raw := newTestKey()
 	t.Setenv("SECRETS_MASTER_KEY", base64.URLEncoding.EncodeToString(raw))
-	v := NewFernetVault(&fakeDB{})
+	v, err := NewFernetVault(&fakeDB{})
+	if err != nil {
+		t.Fatalf("unexpected error with valid master key: %v", err)
+	}
 	if string(v.masterKey) != string(raw) {
 		t.Fatal("expected masterKey decoded from env")
 	}
+}
+
+func TestNewFernetVault_MalformedMasterKey(t *testing.T) {
+	// A malformed SECRETS_MASTER_KEY must surface as an error, not be silently
+	// swallowed leaving the vault in a degraded single-level storage mode.
+	t.Run("invalid_base64", func(t *testing.T) {
+		t.Setenv("SECRETS_MASTER_KEY", "!!!not-valid-base64!!!")
+		_, err := NewFernetVault(&fakeDB{})
+		if err == nil {
+			t.Fatal("expected error for invalid base64 master key")
+		}
+	})
+	t.Run("wrong_length", func(t *testing.T) {
+		// Base64-encode a key that is not 32 bytes.
+		t.Setenv("SECRETS_MASTER_KEY", base64.URLEncoding.EncodeToString([]byte("tooshort")))
+		_, err := NewFernetVault(&fakeDB{})
+		if err == nil {
+			t.Fatal("expected error for wrong-length master key")
+		}
+	})
 }

@@ -41,16 +41,22 @@ type vaultData struct {
 }
 
 // NewFernetVault constructs a FernetVault. The master key is read from
-// SECRETS_MASTER_KEY (base64url 32-byte Fernet key); when unset or malformed the
-// vault treats project keys as stored unwrapped, matching the secrets handler.
-func NewFernetVault(db rowQuerier) *FernetVault {
+// SECRETS_MASTER_KEY (base64url 32-byte Fernet key); when unset the vault treats
+// project keys as stored unwrapped, matching the secrets handler. When the env
+// var is set but malformed, NewFernetVault returns an error — a decode failure is
+// a startup misconfiguration that must be surfaced loudly rather than silently
+// degrading to single-level storage (which would fail to decrypt wrapped keys at
+// runtime with no actionable signal).
+func NewFernetVault(db rowQuerier) (*FernetVault, error) {
 	v := &FernetVault{db: db}
 	if mk := os.Getenv("SECRETS_MASTER_KEY"); mk != "" {
-		if raw, err := fernetDecodeKey(mk); err == nil {
-			v.masterKey = raw
+		raw, err := fernetDecodeKey(mk)
+		if err != nil {
+			return nil, fmt.Errorf("SECRETS_MASTER_KEY decode failed: %w", err)
 		}
+		v.masterKey = raw
 	}
-	return v
+	return v, nil
 }
 
 // Resolve returns the plaintext for secretRef within projectID. When secretRef is

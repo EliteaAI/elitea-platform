@@ -157,20 +157,31 @@ func (g *GovernanceStore) CheckBudget(
 	degradedKey := nats.BudgetSubject(scope, scopeID, periodStartUnix)
 	replicaDegradedNano := g.degraded.Get(degradedKey)
 
-	return failmode.Decide(natsUp, authoritativeNano, replicaDegradedNano, snap, reqCostNano, g.params), nil
+	// Apply the per-project fail-mode override when present: the snapshot carries
+	// the nats_fail_mode column from gateway.project_budget (read by ReadSnapshot
+	// via snapshotSQL). A non-empty override replaces the platform baseline in
+	// Params so Decide uses the per-project policy.
+	params := g.params
+	if snap.NatsFailMode != "" {
+		params.Mode = failmode.ResolveFailMode(string(snap.NatsFailMode), g.params.Mode)
+	}
+
+	return failmode.Decide(natsUp, authoritativeNano, replicaDegradedNano, snap, reqCostNano, params), nil
 }
 
 // deltaPayload is the minimal JSON structure written to the GATEWAY_BUDGET_DELTAS
 // write-behind stream (design §8.6). The scheduler drains this stream into the
-// durable Postgres accumulator.
+// durable Postgres accumulator. JSON keys MUST match the scheduler consumer's
+// BudgetDelta struct exactly (services/elitea-scheduler/internal/budgetwriteback/types.go).
 type deltaPayload struct {
-	ProjectID      int    `json:"project_id"`
-	Scope          string `json:"scope"`
-	ScopeID        string `json:"scope_id"`
-	EventID        string `json:"event_id"`
-	CostNano       int64  `json:"cost_nano"`
-	PeriodStartUnix int64  `json:"period_start_unix"`
-	PeriodEndUnix   int64  `json:"period_end_unix"`
+	EventID      string `json:"event_id"`
+	Scope        string `json:"scope"`
+	ScopeID      string `json:"scope_id"`
+	ProjectID    int    `json:"project_id"`
+	OrgID        *int   `json:"org_id,omitempty"`
+	PeriodStart  int64  `json:"period_start"`
+	PeriodEnd    int64  `json:"period_end"`
+	DeltaNanoUSD int64  `json:"delta_nano_usd"`
 }
 
 // UpdateUsage records a billed increment onto the authoritative NATS counter and
@@ -204,18 +215,41 @@ func (g *GovernanceStore) UpdateUsage(
 			slog.String("subject", subject),
 			slog.Int64("cost_nano", costNano),
 		)
+		// Persist a durable outage-window delta so spend is not lost if this
+		// replica restarts before the breaker recovers. Run off the request path
+		// (bounded goroutine) so a slow Postgres write does not stall /llm.
+		outageDelta := failmode.OutageDelta{
+			ProjectID:    projectID,
+			OrgID:        nil,
+			Scope:        scope,
+			ScopeID:      scopeID,
+			PeriodStart:  periodStartUnix,
+			PeriodEnd:    periodEndUnix,
+			DeltaNanoUSD: costNano,
+		}
+		go func() {
+			ctx2, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := g.store.PersistOutageDelta(ctx2, outageDelta); err != nil {
+				g.log.Warn("governance: PersistOutageDelta failed during NATS outage",
+					slog.String("event_id", eventID),
+					slog.Any("err", err),
+				)
+			}
+		}()
 	}
 
 	// Publish a write-behind delta regardless of whether the counter increment
 	// was applied or suppressed; the scheduler is the durable accounting ground-truth.
 	payload, err := json.Marshal(deltaPayload{
-		ProjectID:       projectID,
-		Scope:           scope,
-		ScopeID:         scopeID,
-		EventID:         eventID,
-		CostNano:        costNano,
-		PeriodStartUnix: periodStartUnix,
-		PeriodEndUnix:   periodEndUnix,
+		EventID:      eventID,
+		Scope:        scope,
+		ScopeID:      scopeID,
+		ProjectID:    projectID,
+		OrgID:        nil, // org_id not available at this call site; omitted (omitempty)
+		PeriodStart:  periodStartUnix,
+		PeriodEnd:    periodEndUnix,
+		DeltaNanoUSD: costNano,
 	})
 	if err != nil {
 		// JSON marshal of a fixed struct should never fail.

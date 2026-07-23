@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -161,6 +162,9 @@ type Client struct {
 
 	// onStateChange, if set, is invoked on every breaker transition — the
 	// recovery-reconciliation goroutine (§8.5) subscribes here.
+	// mu guards onStateChange against concurrent writes from OnBreakerStateChange
+	// and reads from the gobreaker callback goroutine.
+	mu            sync.RWMutex
 	onStateChange func(from, to gobreaker.State)
 }
 
@@ -187,8 +191,11 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	c := &Client{cfg: cfg, nc: nc, js: js, pub: js}
 	c.breaker = newBreaker(cfg, func(from, to gobreaker.State) {
-		if c.onStateChange != nil {
-			c.onStateChange(from, to)
+		c.mu.RLock()
+		fn := c.onStateChange
+		c.mu.RUnlock()
+		if fn != nil {
+			fn(from, to)
 		}
 	})
 	if err := c.ensureAssets(ctx, js); err != nil {
@@ -221,9 +228,12 @@ func newBreaker(cfg Config, onChange func(from, to gobreaker.State)) *gobreaker.
 
 // OnBreakerStateChange registers a callback invoked on every breaker transition.
 // The recovery-reconciliation goroutine (§8.5) uses this to fire on the
-// open→half-open→closed edge. It MUST be called before concurrent use.
+// open→half-open→closed edge. It is safe to call concurrently with ongoing
+// operations; the callback is swapped under a write-lock.
 func (c *Client) OnBreakerStateChange(fn func(from, to gobreaker.State)) {
+	c.mu.Lock()
 	c.onStateChange = fn
+	c.mu.Unlock()
 }
 
 // BreakerState reports the current circuit-breaker state (design §8.5 FSM input).
@@ -258,16 +268,37 @@ func (c *Client) ensureAssets(ctx context.Context, prov assetProvisioner) error 
 	}
 
 	// Alert-cooldown KV bucket (real KV; SETNX via kv.Create + bucket TTL).
+	// TTL expires cooldown keys automatically so the 80% soft-alert can re-fire
+	// after the cooldown window; without a TTL the key lives forever and the
+	// alert fires at most once per scope+period (§8.3).
 	kv, err := prov.CreateOrUpdateKeyValue(sctx, jetstream.KeyValueConfig{
 		Bucket:   AlertCooldownBucket,
 		Storage:  jetstream.FileStorage,
 		Replicas: c.cfg.Replicas,
 		History:  1,
+		TTL:      4 * time.Hour,
 	})
 	if err != nil {
 		return fmt.Errorf("nats: ensure cooldown kv: %w", err)
 	}
 	c.cooldown = kv
+
+	// Write-behind deltas stream (§8.6): the scheduler consumer drains this.
+	// A dedup window matches the budget stream so a retry within the same
+	// outage window is deduplicated at the publish side. MaxMsgs/MaxBytes cap
+	// unbounded growth if the scheduler is lagging.
+	if _, err := prov.CreateOrUpdateStream(sctx, jetstream.StreamConfig{
+		Name:      DeltasStream,
+		Subjects:  []string{DeltaSubject},
+		Storage:   jetstream.FileStorage,
+		Replicas:  c.cfg.Replicas,
+		Retention: jetstream.LimitsPolicy,
+		Duplicates: RecoveryDedupeWindow,
+		MaxMsgs:   500_000,
+		MaxBytes:  512 * 1024 * 1024, // 512 MiB
+	}); err != nil {
+		return fmt.Errorf("nats: ensure deltas stream: %w", err)
+	}
 
 	// Bind the budget counter stream handle for reads/increments.
 	st, err := prov.Stream(sctx, BudgetStream)
@@ -289,8 +320,13 @@ func BudgetSubject(scope, scopeID string, periodStartUnix int64) string {
 // IncrBudget atomically adds deltaNano (int64 nano-USD, may be negative for a
 // correction) to the counter for subject and returns the new running total.
 // The whole operation is breaker-guarded and OpTimeout-bounded (design §8.5).
+//
+// The breaker generic is uint64, so the int64 total is passed out through a
+// closure variable to avoid a negative-overshoot total being corrupted by a
+// uint64 round-trip (a negative int64 cast to uint64 becomes a huge value).
 func (c *Client) IncrBudget(ctx context.Context, subject string, deltaNano int64) (int64, error) {
-	v, err := c.breaker.Execute(func() (uint64, error) {
+	var total int64
+	_, err := c.breaker.Execute(func() (uint64, error) {
 		octx, cancel := context.WithTimeout(ctx, OpTimeout)
 		defer cancel()
 		msg := &nats.Msg{
@@ -301,18 +337,19 @@ func (c *Client) IncrBudget(ctx context.Context, subject string, deltaNano int64
 		if err != nil {
 			return 0, err
 		}
-		total, perr := strconv.ParseInt(ack.Value, 10, 64)
+		t, perr := strconv.ParseInt(ack.Value, 10, 64)
 		if perr != nil {
 			// A non-counter stream (or an empty val) is a config error, not a
 			// transient one — surface it without tripping on parse noise.
 			return 0, fmt.Errorf("nats: counter ack %q: %w", ack.Value, perr)
 		}
-		return uint64(total), nil
+		total = t
+		return 0, nil
 	})
 	if err != nil {
 		return 0, mapErr(err)
 	}
-	return int64(v), nil
+	return total, nil
 }
 
 // IncrBudgetIdempotent atomically adds deltaNano to the counter for subject with
@@ -369,27 +406,34 @@ func (c *Client) IncrBudgetIdempotent(ctx context.Context, subject, eventID stri
 // ReadBudget returns the current running total (int64 nano-USD) for subject, or
 // 0 if the counter has never been incremented this period. Breaker-guarded and
 // OpTimeout-bounded.
+//
+// The breaker generic is uint64, so the int64 total is passed out through a
+// closure variable; we never cast a potentially-negative total through uint64
+// (a negative total from a correction-overshoot would become a huge wrong value).
 func (c *Client) ReadBudget(ctx context.Context, subject string) (int64, error) {
-	v, err := c.breaker.Execute(func() (uint64, error) {
+	var total int64
+	_, err := c.breaker.Execute(func() (uint64, error) {
 		octx, cancel := context.WithTimeout(ctx, OpTimeout)
 		defer cancel()
 		raw, err := c.budget.GetLastMsgForSubject(octx, subject)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrMsgNotFound) {
+				total = 0
 				return 0, nil // never incremented this period → 0
 			}
 			return 0, err
 		}
-		total, perr := counterValue(raw)
+		t, perr := counterValue(raw)
 		if perr != nil {
 			return 0, perr
 		}
-		return uint64(total), nil
+		total = t
+		return 0, nil
 	})
 	if err != nil {
 		return 0, mapErr(err)
 	}
-	return int64(v), nil
+	return total, nil
 }
 
 // counterValue extracts the running total from a counter-stream message. NATS

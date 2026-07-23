@@ -424,6 +424,41 @@ func TestHandleBreakerChange_IgnoredBeforeStart(t *testing.T) {
 	}
 }
 
+// panicCounter panics on the first ReadBudget call to simulate an unrecoverable
+// dependency failure inside the recovery goroutine (FIX 3 regression test).
+type panicCounter struct{ *fakeCounter }
+
+func (c *panicCounter) ReadBudget(_ context.Context, _ string) (int64, error) {
+	panic("injected panic from ReadBudget")
+}
+
+// TestReconcile_PanicInGoroutineDoesNotCrash asserts that a panic inside the
+// recovery goroutine (runPass → reconcileAll → reconcileScope) is caught by the
+// deferred recover() and does NOT propagate — the process remains alive and the
+// running flag is cleared so a future breaker edge can launch a fresh pass.
+func TestReconcile_PanicInGoroutineDoesNotCrash(t *testing.T) {
+	db := &recDB{
+		rows:          []outageRow{{id: "r1", scope: "project", scopeID: "7", periodStartUnix: 1000, accumulatedNano: 50}},
+		perScopeAccum: map[string]int64{"r1": 50},
+	}
+	c := &panicCounter{fakeCounter: newFakeCounter()}
+	dc := NewDegradedCounters()
+	r := startedReconciler(db, c, dc)
+
+	// HandleBreakerChange spawns the goroutine; waitIdle confirms it exited
+	// cleanly (running=false) rather than crashing the test process.
+	r.HandleBreakerChange(gobreaker.StateOpen, gobreaker.StateClosed)
+	waitIdle(t, r)
+
+	// The running flag must be cleared so a subsequent recovery edge is accepted.
+	r.mu.Lock()
+	still := r.running
+	r.mu.Unlock()
+	if still {
+		t.Fatal("running flag not cleared after panic recovery")
+	}
+}
+
 func TestRecoveryEventID_StableAndAmountKeyed(t *testing.T) {
 	a := recoveryEventID("project", "7", 1000, 20)
 	b := recoveryEventID("project", "7", 1000, 20)
