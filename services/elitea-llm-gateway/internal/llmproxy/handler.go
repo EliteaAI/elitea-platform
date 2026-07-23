@@ -31,6 +31,13 @@ type Handler struct {
 	// (design §4.2, §3.4). nil when the gateway is booted without a database:
 	// the /v1/models surface then reports an empty set rather than erroring.
 	models *ModelResolver
+	// budgetGate is the pre-LLM admission gate (design §8.5, BF0.9b).
+	// nil means the gate is disabled — skip all budget enforcement. This keeps
+	// existing tests that build a Handler without governance wired up passing.
+	budgetGate BudgetChecker
+	// costCalc estimates request cost in nano-USD. Required when budgetGate is
+	// non-nil; ignored (and may be nil) when budgetGate is nil.
+	costCalc CostEstimator
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -42,6 +49,20 @@ type HandlerOption func(*Handler)
 // leaves the models surface reporting an empty set.
 func WithModelResolver(r *ModelResolver) HandlerOption {
 	return func(h *Handler) { h.models = r }
+}
+
+// WithBudgetGate wires the pre-LLM budget enforcement gate. When gate is nil
+// the option is a no-op (enforcement is skipped). calc must be non-nil when
+// gate is non-nil — the cost Calculator is used for pre-flight estimation and
+// for post-completion billing.
+func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
+	return func(h *Handler) {
+		if gate == nil {
+			return
+		}
+		h.budgetGate = gate
+		h.costCalc = calc
+	}
 }
 
 // NewHandler builds a /llm Handler over the given router. logger may be nil
@@ -115,12 +136,28 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostChatRequest(ctx)
 
+	provider, model := providerModelFromChatReq(bifReq)
+	// Pre-flight budget check. promptTokenEst=0 is safe here — the Chat wire
+	// format does not expose a pre-counted prompt token count. The FSM uses
+	// reqCostNano only for the FRESH_NEAR per-replica cap; 0 never over-gates.
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	if isStream(req.Stream) {
 		ch, bErr := h.router.ChatCompletionStreamRequest(ctx, bifReq)
 		h.streamOpenAI(w, ch, bErr)
+		// Streaming usage is not available synchronously (chunks arrive async);
+		// post-completion billing for streaming paths is deferred to BF0.9c
+		// (the pylon side tracks cumulative stream usage). The gate admission
+		// above is still enforced.
 		return
 	}
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
+	if bErr == nil && resp != nil {
+		in, out := usageFromChatResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 	h.writeUnary(w, resp, bErr)
 }
 
@@ -211,9 +248,16 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	provider, model := providerModelFromResponsesReq(bifReq)
+	// Pre-flight budget check. promptTokenEst=0 (see Chat handler comment).
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	if isStream(req.Stream) {
 		ch, bErr := h.router.ResponsesStreamRequest(ctx, bifReq)
 		h.streamAnthropic(w, ctx, ch, bErr)
+		// Streaming: post-completion billing deferred (see Chat handler comment).
 		return
 	}
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
@@ -221,6 +265,8 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		h.writeAnthropicError(w, bErr)
 		return
 	}
+	in, out := usageFromResponsesResponse(resp)
+	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
 	writeJSON(w, http.StatusOK, anthropic.ToAnthropicResponsesResponse(ctx, resp))
 }
 

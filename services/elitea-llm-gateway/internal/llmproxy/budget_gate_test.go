@@ -1,0 +1,412 @@
+package llmproxy
+
+// budget_gate_test.go — tests for the pre-LLM budget admission gate wired into
+// the /llm handlers (design §8.5, BF0.9b).
+//
+// Test matrix:
+//   - over-budget (Block402) → HTTP 402, provider NOT called.
+//   - NATS unavailable (Block503) → HTTP 503, provider NOT called.
+//   - under-budget (Allow) → provider called, UpdateUsage invoked.
+//   - gate nil (disabled) → provider called as normal.
+//   - anonymous project (no project-id header) → provider called (no budget row = unlimited).
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
+)
+
+// ── fakes ────────────────────────────────────────────────────────────────────
+
+// fakeBudgetChecker implements BudgetChecker for tests. It records all calls
+// and returns configured verdicts.
+type fakeBudgetChecker struct {
+	// checkVerdict is the failmode.Decision returned by CheckBudget.
+	checkVerdict failmode.Decision
+	// checkErr is the error returned by CheckBudget (nil normally).
+	checkErr error
+
+	// updateErr is the error returned by UpdateUsage (nil normally).
+	updateErr error
+
+	// atomic counters so tests can assert call counts.
+	checkCalls  atomic.Int64
+	updateCalls atomic.Int64
+
+	// last UpdateUsage arguments (for assertion).
+	lastUpdateCostNano int64
+	lastUpdateProjectID int
+}
+
+func (f *fakeBudgetChecker) CheckBudget(_ context.Context, projectID int, _, _ string, _, _ int64) (failmode.Decision, error) {
+	f.checkCalls.Add(1)
+	return f.checkVerdict, f.checkErr
+}
+
+func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, _, _, _ string, costNano, _, _ int64) error {
+	f.updateCalls.Add(1)
+	f.lastUpdateProjectID = projectID
+	f.lastUpdateCostNano = costNano
+	return f.updateErr
+}
+
+// fakeCostEstimator returns a fixed per-request cost.
+type fakeCostEstimator struct {
+	totalNano int64
+}
+
+func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, _, _ int64) cost.Cost {
+	return cost.Cost{TotalNanoUSD: f.totalNano}
+}
+
+// trackingRouter wraps fakeRouter and records whether any LLM method was called.
+type trackingRouter struct {
+	fakeRouter
+	called atomic.Bool
+}
+
+func (t *trackingRouter) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.ChatCompletionRequest(ctx, req)
+}
+
+func (t *trackingRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.ChatCompletionStreamRequest(ctx, req)
+}
+
+func (t *trackingRouter) ResponsesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.ResponsesRequest(ctx, req)
+}
+
+func (t *trackingRouter) ResponsesStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.ResponsesStreamRequest(ctx, req)
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// chatReqWithProject builds an httptest.Request for /llm/v1/chat/completions
+// with the given project-id header set. A zero projectID omits the header.
+func chatReqWithProject(t *testing.T, projectID string, stream bool) *http.Request {
+	t.Helper()
+	streamVal := "false"
+	if stream {
+		streamVal = "true"
+	}
+	body := fmt.Sprintf(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":%s}`, streamVal)
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if projectID != "" {
+		req.Header.Set(headerProjectID, projectID)
+	}
+	return req
+}
+
+// messagesReqWithProject builds an httptest.Request for /llm/v1/messages.
+func messagesReqWithProject(t *testing.T, projectID string) *http.Request {
+	t.Helper()
+	body := `{"model":"anthropic/claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if projectID != "" {
+		req.Header.Set(headerProjectID, projectID)
+	}
+	return req
+}
+
+// newBudgetHandler builds a Handler with the given tracking router and budget
+// fake wired via WithBudgetGate.
+func newBudgetHandler(router *trackingRouter, gate *fakeBudgetChecker, costNano int64) *Handler {
+	calc := &fakeCostEstimator{totalNano: costNano}
+	return NewHandler(router, nil, nil, WithBudgetGate(gate, calc))
+}
+
+// ── test cases ────────────────────────────────────────────────────────────────
+
+// TestBudgetGate_Block402_ProviderNotCalled verifies that an over-budget project
+// (Block402 verdict) receives HTTP 402 and the provider is never invoked.
+func TestBudgetGate_Block402_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	h := newBudgetHandler(router, gate, 500_000)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 (budget_exceeded)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block402 verdict — gate did not block")
+	}
+	// Verify error body shape.
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if out.Error.Type != "budget_exceeded" {
+		t.Errorf("error.type = %q, want budget_exceeded", out.Error.Type)
+	}
+	if out.Error.Code != "insufficient_quota" {
+		t.Errorf("error.code = %q, want insufficient_quota", out.Error.Code)
+	}
+}
+
+// TestBudgetGate_Block503_ProviderNotCalled verifies that an infrastructure
+// failure (Block503 verdict) receives HTTP 503 and the provider is never called.
+func TestBudgetGate_Block503_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block503, State: failmode.StateDownPGStale, Degraded: true}}
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "99", false))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (service_unavailable)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block503 verdict")
+	}
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if out.Error.Type != "service_unavailable" {
+		t.Errorf("error.type = %q, want service_unavailable", out.Error.Type)
+	}
+	if out.Error.Code != "nats_unavailable" {
+		t.Errorf("error.code = %q, want nats_unavailable", out.Error.Code)
+	}
+}
+
+// TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked is the sunny-path test:
+// an under-budget project (Allow verdict) causes the provider to be called and
+// UpdateUsage is invoked with the actual response cost.
+func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
+	const wantCostNano = 1_500_000 // what fakeCostEstimator returns
+
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}}
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-ok",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20},
+	}
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !router.called.Load() {
+		t.Error("provider was NOT called despite Allow verdict")
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage was NOT called after a successful completion")
+	}
+	if gate.lastUpdateCostNano != wantCostNano {
+		t.Errorf("UpdateUsage costNano = %d, want %d", gate.lastUpdateCostNano, wantCostNano)
+	}
+	if gate.lastUpdateProjectID != 42 {
+		t.Errorf("UpdateUsage projectID = %d, want 42", gate.lastUpdateProjectID)
+	}
+}
+
+// TestBudgetGate_Disabled_NoInterference verifies that a Handler built without
+// WithBudgetGate (nil gate) calls the provider and never touches the gate.
+func TestBudgetGate_Disabled_NoInterference(t *testing.T) {
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
+	// No budget gate wired.
+	h := NewHandler(router, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !router.called.Load() {
+		t.Error("provider was NOT called when gate is disabled")
+	}
+}
+
+// TestBudgetGate_AnonymousProject_Allowed verifies that a request with no
+// project-id header is allowed when the gate is wired (no ID ⇒ no budget row ⇒
+// unlimited — consistent with GovernanceStore's ErrNoBudgetRow path).
+func TestBudgetGate_AnonymousProject_Allowed(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}} // would block if called
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "anon"}
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	// No project-id header.
+	h.Chat(rec, chatReqWithProject(t, "", false))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (anonymous project bypasses gate)", rec.Code)
+	}
+	if router.called.Load() == false {
+		t.Error("provider was NOT called for anonymous project")
+	}
+	// Gate's CheckBudget must NOT have been called — the handler skips it for anonymous.
+	if gate.checkCalls.Load() > 0 {
+		t.Error("CheckBudget was called for an anonymous project — should be skipped")
+	}
+}
+
+// TestBudgetGate_Messages_Block402 tests the Anthropic /v1/messages path for
+// over-budget → 402 with the Anthropic error format, provider not called.
+func TestBudgetGate_Messages_Block402_AnthropicDialect(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	router := &trackingRouter{}
+	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Messages(rec, messagesReqWithProject(t, "7"))
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block402 verdict on /messages path")
+	}
+	// The Messages handler writes OpenAI-shaped errors for its pre-route errors
+	// (the gate writes before ToAnthropicResponsesResponse runs).
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if out.Error.Type != "budget_exceeded" {
+		t.Errorf("error.type = %q, want budget_exceeded", out.Error.Type)
+	}
+}
+
+// TestBudgetGate_Messages_Allow_UpdateUsageInvoked is the sunny-path for the
+// Anthropic /v1/messages unary path.
+func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
+	const wantCostNano = 2_000_000
+
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{
+		ID:    strPtr("resp-ok"),
+		Model: "anthropic/claude-3-5-sonnet",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 15, OutputTokens: 25},
+	}
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	rec := httptest.NewRecorder()
+	h.Messages(rec, messagesReqWithProject(t, "55"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !router.called.Load() {
+		t.Error("provider NOT called despite Allow verdict")
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after successful /messages completion")
+	}
+	if gate.lastUpdateProjectID != 55 {
+		t.Errorf("UpdateUsage projectID = %d, want 55", gate.lastUpdateProjectID)
+	}
+}
+
+// TestBudgetGate_ChatStream_Block402_ProviderNotCalled verifies that a streaming
+// Chat request is blocked at 402 before the provider is ever called.
+func TestBudgetGate_ChatStream_Block402_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	router := &trackingRouter{}
+	router.fakeRouter.streamChan = newChunkChan()
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "11", true /* stream */))
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 (streaming blocked before provider)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("streaming provider was called despite Block402 verdict")
+	}
+}
+
+// TestBudgetGate_CheckBudgetError_Returns503 verifies that a hard error from
+// CheckBudget (unexpected infra failure) causes a 503 and blocks the provider.
+func TestBudgetGate_CheckBudgetError_Returns503(t *testing.T) {
+	gate := &fakeBudgetChecker{checkErr: fmt.Errorf("simulated gate panic")}
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "1", false))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 on gate error", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called after a gate error")
+	}
+}
+
+// TestBudgetGate_ZeroCost_SkipsUpdateUsage verifies that when the cost
+// Calculator returns 0 (e.g. for a response with no usage tokens), UpdateUsage
+// is NOT called — there is nothing to bill.
+func TestBudgetGate_ZeroCost_SkipsUpdateUsage(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+		ID:    "zero-usage",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0},
+	}
+	// costNano=0 means the calculator always returns 0 total.
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "3", false))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gate.updateCalls.Load() > 0 {
+		t.Error("UpdateUsage called despite zero-cost completion — should be skipped")
+	}
+}
+
+// TestBillingPeriodHelpers verifies that billingPeriodStart / billingPeriodEnd
+// produce correct Unix timestamps for a known date.
+func TestBillingPeriodHelpers(t *testing.T) {
+	// 2026-07-15 14:30:00 UTC — mid-month.
+	mid := time.Date(2026, 7, 15, 14, 30, 0, 0, time.UTC)
+	wantStart := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Unix()
+	wantEnd := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).Unix() - 1
+
+	if got := billingPeriodStart(mid); got != wantStart {
+		t.Errorf("billingPeriodStart = %d, want %d", got, wantStart)
+	}
+	if got := billingPeriodEnd(mid); got != wantEnd {
+		t.Errorf("billingPeriodEnd = %d, want %d", got, wantEnd)
+	}
+}

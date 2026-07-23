@@ -12,9 +12,36 @@
 package llmproxy
 
 import (
+	"context"
+
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 )
+
+// BudgetChecker is the pre-LLM admission gate. *governance.GovernanceStore
+// satisfies it; tests inject a stub so no live NATS is needed.
+type BudgetChecker interface {
+	// CheckBudget performs the pre-flight budget check. projectID is the
+	// numeric Elitea project ID; scope + scopeID identify the budget tier
+	// (typically "project" + numeric project ID string). periodStartUnix is
+	// the current billing-period start in Unix seconds. reqCostNano is the
+	// pre-estimated request cost (0 is valid for a pure admission check).
+	CheckBudget(ctx context.Context, projectID int, scope, scopeID string, periodStartUnix, reqCostNano int64) (failmode.Decision, error)
+
+	// UpdateUsage records a billed completion onto the authoritative counter
+	// and publishes a write-behind delta. eventID must be unique per billed
+	// completion (UUID or similar) to guarantee idempotent increments.
+	UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano int64, periodStartUnix, periodEndUnix int64) error
+}
+
+// CostEstimator resolves per-request LLM cost in int64 nano-USD.
+// *cost.Calculator satisfies it; tests may inject a zero-cost stub.
+type CostEstimator interface {
+	Cost(ctx context.Context, provider, model string, inputTokens, outputTokens int64) cost.Cost
+}
 
 // LLMRouter is the seam over the embedded bifrost/core client. The handler
 // depends on this interface (not the concrete *bifrost.Bifrost) so the SSE
@@ -109,6 +136,7 @@ func (r *bifrostLLMRouter) ImageVariationRequest(ctx *schemas.BifrostContext, re
 // and the default wrapper satisfy LLMRouter. The first guards against upstream
 // signature drift at the pinned tag; the second guards the wrapper.
 var (
-	_ LLMRouter = (*bifrost.Bifrost)(nil)
-	_ LLMRouter = (*bifrostLLMRouter)(nil)
+	_ LLMRouter    = (*bifrost.Bifrost)(nil)
+	_ LLMRouter    = (*bifrostLLMRouter)(nil)
+	_ CostEstimator = (*cost.Calculator)(nil)
 )
