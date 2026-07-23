@@ -1,1 +1,7 @@
 /coverage.out
+
+# Generated coverage artifacts (scripts/coverage.sh). The cobertura coverage.xml
+# is consumed by the BF0.6t validator but is a generated file, not committed —
+# regenerate with scripts/coverage.sh or via ci-gateway.yml.
+internal/**/coverage.out
+internal/**/coverage.xml

@@ -65,11 +65,19 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Generate llmproxy cobertura coverage (BF0.6t gate)
+        # Emits internal/llmproxy/coverage.xml consumed by the BF0.6t
+        # `type: coverage` validator (>=85%). Uses a pinned go-run tool so the
+        # gateway go.mod is not modified.
+        run: ./scripts/coverage.sh
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
           name: gateway-coverage
-          path: services/elitea-llm-gateway/coverage.out
+          path: |
+            services/elitea-llm-gateway/coverage.out
+            services/elitea-llm-gateway/internal/llmproxy/coverage.xml
 
   build:
     name: Build

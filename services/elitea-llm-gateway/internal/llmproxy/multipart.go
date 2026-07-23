@@ -230,7 +230,7 @@ func readFileHeader(fh *multipart.FileHeader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
 }
 
