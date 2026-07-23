@@ -45,6 +45,8 @@ func main() {
 		cmdPromoteAll(client, baseURL, force)
 	case "decommission-check":
 		cmdDecommissionCheck(client, baseURL)
+	case "budget-status-audit":
+		cmdBudgetStatusAudit(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -61,9 +63,11 @@ Commands:
   promote-all          Advance ALL eligible endpoints to next state
   rollback <pattern>   Move endpoint back one state (go→canary→shadow→legacy)
   decommission-check   Verify all endpoints are in "go" state for decommission
+  budget-status-audit  Scan --paths for budget/quota call sites that handle 429 but not 402
 
 Options:
   --force              Skip readiness gate checks
+  --paths <roots>      (budget-status-audit) comma-separated roots to scan
 
 Environment:
   ELITEA_URL           Base URL of elitea-main (default: http://localhost:8080)
