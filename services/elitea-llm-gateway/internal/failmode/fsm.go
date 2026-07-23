@@ -152,8 +152,15 @@ type Params struct {
 	// nano-USD (§8.5). Resolved from LLM_BUDGET_NATS_DEGRADED_CAP_USD or, when 0,
 	// 10% of HardLimitNano by the caller.
 	DegradedCapNano int64
+	// DegradedMaxDuration is the continuous-outage ceiling: once the NATS
+	// circuit breaker has been open longer than this the GovernanceStore sets
+	// OutageExceededMax=true before calling Decide, forcing FORCED_CLOSED (§8.5,
+	// LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN, default 10m). 0 disables the
+	// ceiling (tests and configs that do not set the duration).
+	DegradedMaxDuration time.Duration
 	// OutageExceededMax reports the breaker has been open longer than
-	// LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN — forces closed (§8.5).
+	// DegradedMaxDuration — forces closed (§8.5). Set by GovernanceStore per
+	// request; never set by external callers of Decide directly.
 	OutageExceededMax bool
 }
 

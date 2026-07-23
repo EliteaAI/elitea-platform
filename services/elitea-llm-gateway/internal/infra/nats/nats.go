@@ -499,6 +499,14 @@ func (c *Client) PublishDelta(ctx context.Context, eventID string, payload []byt
 // write-behind consumer wiring (§8.6). The gateway itself does not consume.
 func (c *Client) JetStream() jetstream.JetStream { return c.js }
 
+// BudgetSubject exposes the package-level BudgetSubject formula as a method so
+// *Client satisfies the failmode.Counter interface and the server.NATSClient
+// interface (both require a BudgetSubject method). The implementation delegates
+// to the package function so the formula stays a single source of truth.
+func (c *Client) BudgetSubject(scope, scopeID string, periodStartUnix int64) string {
+	return BudgetSubject(scope, scopeID, periodStartUnix)
+}
+
 // Close tears down the NATS connection.
 func (c *Client) Close() {
 	if c.nc != nil && !c.nc.IsClosed() {

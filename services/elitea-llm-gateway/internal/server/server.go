@@ -8,13 +8,17 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/sony/gobreaker/v2"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/bifrostlog"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/config"
@@ -22,15 +26,27 @@ import (
 )
 
 // NATSClient is the budget-path surface the gateway server owns and hands to
-// downstream governance wiring (the GovernanceStore + tiered-hybrid FSM added
-// by later BF0.4 subtasks). *nats.Client satisfies it; defining it here as an
-// interface is the seam that lets server tests inject a fake without a live
-// NATS server, exactly like the nats package's own operation seams.
+// downstream governance wiring (the GovernanceStore + tiered-hybrid FSM).
+// *nats.Client satisfies it; defining it here as an interface is the seam that
+// lets server tests inject a fake without a live NATS server.
+//
+// The interface includes all methods that governance.GovernanceStore and
+// failmode.Reconciler need so main.go can pass srv.NATS() directly:
+//   - IncrBudgetIdempotent: idempotent counter increment (governance + reconciler)
+//   - OnBreakerStateChange: breaker-edge wiring (governance, reconciler)
+//   - BreakerState: current breaker state (governance)
+//   - BudgetSubject: subject formatter used by the reconciler (failmode.Counter)
 type NATSClient interface {
 	IncrBudget(ctx context.Context, subject string, deltaNano int64) (int64, error)
+	IncrBudgetIdempotent(ctx context.Context, subject, eventID string, deltaNano int64) (total int64, applied bool, err error)
 	ReadBudget(ctx context.Context, subject string) (int64, error)
 	TryAlertCooldown(ctx context.Context, key string) (bool, error)
 	PublishDelta(ctx context.Context, eventID string, payload []byte) error
+	OnBreakerStateChange(fn func(from, to gobreaker.State))
+	BreakerState() gobreaker.State
+	// BudgetSubject builds the counter subject for a scope/period key. It must
+	// match the formula used by the NATS client when writing counters.
+	BudgetSubject(scope, scopeID string, periodStartUnix int64) string
 	Close()
 }
 
@@ -154,13 +170,51 @@ func (s *Server) Core() *bifrost.Bifrost { return s.core }
 // nil when NATS is disabled or was unreachable at startup; callers MUST nil-check.
 func (s *Server) NATS() NATSClient { return s.nats }
 
-// ListenAndServe starts the HTTP server. It returns nil on graceful shutdown.
+// ListenAndServe starts the HTTP server. When TLSCertFile and TLSKeyFile are
+// both configured it switches to TLS; if TLSCAFile is also set the server
+// requires and verifies client certificates (mTLS). Falls back to plain HTTP
+// when the cert/key paths are unset (local/dev).
+//
+// FIX #10: wire GATEWAY_TLS_CERT_FILE / GATEWAY_TLS_KEY_FILE / GATEWAY_TLS_CA_FILE.
 func (s *Server) ListenAndServe() error {
 	s.logger.Info("gateway listening", "addr", s.cfg.HTTPAddr)
+	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+		tlsCfg, err := buildTLSConfig(s.cfg)
+		if err != nil {
+			return fmt.Errorf("gateway tls config: %w", err)
+		}
+		s.http.TLSConfig = tlsCfg
+		s.logger.Info("gateway TLS enabled", "cert", s.cfg.TLSCertFile, "mtls", s.cfg.TLSCAFile != "")
+		if err := s.http.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
+	}
 	if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+// buildTLSConfig builds a *tls.Config for the server. When cfg.TLSCAFile is
+// set the server requires and verifies client certificates (mTLS).
+func buildTLSConfig(cfg config.Config) (*tls.Config, error) {
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	if cfg.TLSCAFile != "" {
+		caBytes, err := os.ReadFile(cfg.TLSCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caBytes) {
+			return nil, fmt.Errorf("no valid certificates found in CA file %q", cfg.TLSCAFile)
+		}
+		tlsCfg.ClientCAs = pool
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return tlsCfg, nil
 }
 
 // Shutdown drains in-flight streams and releases resources.

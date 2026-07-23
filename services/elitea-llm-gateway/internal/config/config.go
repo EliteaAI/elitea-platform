@@ -125,6 +125,14 @@ type Config struct {
 	// default 1). It reuses NATSReplicas' env var; kept distinct so the FSM reads
 	// an int replica count without re-parsing.
 	ExpectedReplicas int
+
+	// TLS / mTLS (FIX #10). When TLSCertFile and TLSKeyFile are both set the
+	// server switches to ListenAndServeTLS. When TLSCAFile is also set, client
+	// certificates are required and verified against the CA bundle (mTLS).
+	// All three are empty by default (plain HTTP, for local/dev use).
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSCAFile   string
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -151,6 +159,9 @@ func FromEnv() Config {
 		NATSDegradedMaxDuration: minutesOr("LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN", DefaultNATSDegradedMaxDuration),
 		NATSDegradedCapUSD:      floatOr("LLM_BUDGET_NATS_DEGRADED_CAP_USD", 0),
 		ExpectedReplicas:        intOr("LLM_BUDGET_EXPECTED_REPLICAS", DefaultNATSReplicas),
+		TLSCertFile:             os.Getenv("GATEWAY_TLS_CERT_FILE"),
+		TLSKeyFile:              os.Getenv("GATEWAY_TLS_KEY_FILE"),
+		TLSCAFile:               os.Getenv("GATEWAY_TLS_CA_FILE"),
 	}
 }
 

@@ -741,6 +741,113 @@ func TestCheckBudget_PerProjectFailModeOverride(t *testing.T) {
 	}
 }
 
+// TestCheckBudget_OutageExceededMax_ForcedClosed: FIX #8 — when the NATS
+// breaker has been open longer than params.DegradedMaxDuration, CheckBudget
+// must set OutageExceededMax=true so the FSM returns FORCED_CLOSED (Block503).
+func TestCheckBudget_OutageExceededMax_ForcedClosed(t *testing.T) {
+	nc := newFakeNATS()
+	nc.readErr = nats.ErrUnavailable // NATS down
+
+	// Fresh snapshot well under the limit — without the max-duration check the
+	// FSM would allow (tiered_hybrid + fresh + under soft threshold).
+	db := &fakeDB{row: failmode.Snapshot{
+		HardLimitNano:   limitNano,
+		AccumulatedNano: 10 * failmode.NanoUSD,
+		SoftAlertPct:    80,
+		Found:           true,
+		Age:             1 * time.Minute,
+	}}
+
+	// Build store with a very short DegradedMaxDuration so the test does not
+	// have to sleep.
+	fmStore := failmode.NewStore(db)
+	degraded := failmode.NewDegradedCounters()
+	rec := failmode.NewReconciler(db, nc2counter(nc), degraded, nil)
+	params := failmode.Params{
+		Mode:                failmode.ModeTieredHybrid,
+		PGFreshness:         5 * time.Minute,
+		ExpectedReplicas:    1,
+		DegradedMaxDuration: 10 * time.Millisecond, // very short for testing
+	}
+	gs := NewGovernanceStore(nc, fmStore, degraded, rec, params, nil)
+	gs.Start(context.Background())
+
+	// Simulate the breaker going open.
+	nc.fireStateChange(gobreaker.StateClosed, gobreaker.StateOpen)
+
+	// Sleep a little longer than DegradedMaxDuration so the clock advances.
+	time.Sleep(50 * time.Millisecond)
+
+	dec, err := gs.CheckBudget(context.Background(), testProject, testScope, testScopeID, testPeriod, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The outage has exceeded max duration → must be FORCED_CLOSED (Block503).
+	if dec.Verdict != failmode.Block503 {
+		t.Fatalf("FIX #8: want Block503 (FORCED_CLOSED), got %v (state=%v)", dec.Verdict, dec.State)
+	}
+	if dec.State != failmode.StateForcedClosed {
+		t.Fatalf("FIX #8: want StateForcedClosed, got %v", dec.State)
+	}
+	if !dec.Degraded {
+		t.Fatal("FIX #8: want Degraded=true")
+	}
+}
+
+// TestCheckBudget_OutageExceededMax_ResetsOnClosed: FIX #8 — after breaker→CLOSED
+// the outage clock must reset so a fresh outage does not immediately force-close.
+func TestCheckBudget_OutageExceededMax_ResetsOnClosed(t *testing.T) {
+	nc := newFakeNATS()
+	nc.readErr = nats.ErrUnavailable
+
+	db := &fakeDB{row: failmode.Snapshot{
+		HardLimitNano:   limitNano,
+		AccumulatedNano: 10 * failmode.NanoUSD,
+		SoftAlertPct:    80,
+		Found:           true,
+		Age:             1 * time.Minute,
+	}}
+
+	fmStore := failmode.NewStore(db)
+	degraded := failmode.NewDegradedCounters()
+	rec := failmode.NewReconciler(db, nc2counter(nc), degraded, nil)
+	params := failmode.Params{
+		Mode:                failmode.ModeTieredHybrid,
+		PGFreshness:         5 * time.Minute,
+		ExpectedReplicas:    1,
+		DegradedMaxDuration: 10 * time.Millisecond,
+	}
+	gs := NewGovernanceStore(nc, fmStore, degraded, rec, params, nil)
+	gs.Start(context.Background())
+
+	// Open the breaker, wait past the duration.
+	nc.fireStateChange(gobreaker.StateClosed, gobreaker.StateOpen)
+	time.Sleep(50 * time.Millisecond)
+
+	// Now recover the breaker — this must reset the clock.
+	nc.fireStateChange(gobreaker.StateOpen, gobreaker.StateClosed)
+	// Small sleep to let the callback run.
+	time.Sleep(5 * time.Millisecond)
+
+	// NATS is still returning errors (readErr set), but the clock was reset,
+	// so if we simulate another open right now (before the duration elapses)
+	// the request should be allowed by the tiered-hybrid (fresh snapshot).
+	nc.fireStateChange(gobreaker.StateClosed, gobreaker.StateOpen)
+
+	dec, err := gs.CheckBudget(context.Background(), testProject, testScope, testScopeID, testPeriod, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The new outage started just now (< 10ms ago) → must NOT be FORCED_CLOSED.
+	if dec.Verdict == failmode.Block503 && dec.State == failmode.StateForcedClosed {
+		t.Fatal("FIX #8: clock was not reset on breaker→CLOSED; got premature FORCED_CLOSED")
+	}
+	// Should be Allow or Block402 based on the fresh snapshot path.
+	if dec.Verdict != failmode.Allow {
+		t.Logf("FIX #8: got %v state=%v (not FORCED_CLOSED — reset confirmed)", dec.Verdict, dec.State)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
 }

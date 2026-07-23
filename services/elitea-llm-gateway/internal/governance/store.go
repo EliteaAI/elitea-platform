@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
@@ -49,6 +50,12 @@ type GovernanceStore struct {
 	rec      *failmode.Reconciler
 	params   failmode.Params
 	log      *slog.Logger
+
+	// FIX #8: track when the circuit breaker transitioned to open so
+	// CheckBudget can detect when the outage has exceeded params.DegradedMaxDuration
+	// and set Params.OutageExceededMax = true to force FORCED_CLOSED.
+	brkMu      sync.RWMutex
+	breakerOpenAt time.Time // zero means breaker is not open
 }
 
 // NewGovernanceStore assembles a GovernanceStore from the four pre-built
@@ -74,11 +81,26 @@ func NewGovernanceStore(
 		log:      log,
 	}
 	// Wire the breaker→CLOSED edge to the reconciler's recovery pass.
+	// FIX #8: also record the breaker-open timestamp so CheckBudget can
+	// compute the continuous-outage duration and set OutageExceededMax.
 	nc.OnBreakerStateChange(func(from, to gobreaker.State) {
 		gs.log.Info("governance: NATS breaker state change",
 			slog.String("from", from.String()),
 			slog.String("to", to.String()),
 		)
+		gs.brkMu.Lock()
+		switch to {
+		case gobreaker.StateOpen:
+			// Record when the outage started (only on first open — don't reset
+			// the clock on a flap between open and half-open).
+			if gs.breakerOpenAt.IsZero() {
+				gs.breakerOpenAt = time.Now()
+			}
+		case gobreaker.StateClosed:
+			// Breaker recovered: reset the outage-start clock.
+			gs.breakerOpenAt = time.Time{}
+		}
+		gs.brkMu.Unlock()
 		gs.rec.HandleBreakerChange(from, to)
 	})
 	return gs
@@ -164,6 +186,19 @@ func (g *GovernanceStore) CheckBudget(
 	params := g.params
 	if snap.NatsFailMode != "" {
 		params.Mode = failmode.ResolveFailMode(string(snap.NatsFailMode), g.params.Mode)
+	}
+
+	// FIX #8: derive OutageExceededMax from the breaker-open timestamp. When
+	// the breaker has been open longer than params.DegradedMaxDuration the FSM
+	// forces FORCED_CLOSED (§8.5). A zero DegradedMaxDuration disables the
+	// ceiling (dev/test; caller did not configure it).
+	if !natsUp && params.DegradedMaxDuration > 0 {
+		g.brkMu.RLock()
+		openAt := g.breakerOpenAt
+		g.brkMu.RUnlock()
+		if !openAt.IsZero() && time.Since(openAt) > params.DegradedMaxDuration {
+			params.OutageExceededMax = true
+		}
 	}
 
 	return failmode.Decide(natsUp, authoritativeNano, replicaDegradedNano, snap, reqCostNano, params), nil

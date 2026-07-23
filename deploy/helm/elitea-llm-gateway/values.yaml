@@ -50,7 +50,24 @@ env:
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
   # client ClusterIP service provisioned by deploy/helm/nats.
-  NATS_URL: "nats://nats:4222"
+  # Must match the env var name the binary reads: GATEWAY_NATS_URL (config.go).
+  GATEWAY_NATS_URL: "nats://nats:4222"
+  # FIX #9: HMAC key verifying edge identity headers (design §5.3).
+  # REQUIRED when GATEWAY_NATS_URL is set (budget enforcement on). Set from a
+  # Kubernetes Secret — do NOT hard-code the value here.
+  # Example secretRef wiring (add to container env in deployment.yaml):
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: elitea-llm-gateway-secrets
+  #       key: identity-secret
+  GATEWAY_IDENTITY_SECRET: ""   # override via secretRef in production
+  # FIX #10: mTLS server cert/key/CA paths (mounted from mtls.serverSecretName).
+  # When GATEWAY_TLS_CERT_FILE and GATEWAY_TLS_KEY_FILE are both set the server
+  # switches to TLS; adding GATEWAY_TLS_CA_FILE enables mTLS (require+verify
+  # client cert). Leave empty for plain HTTP (local/dev only).
+  GATEWAY_TLS_CERT_FILE: ""    # e.g. /etc/gateway/tls/tls.crt
+  GATEWAY_TLS_KEY_FILE: ""     # e.g. /etc/gateway/tls/tls.key
+  GATEWAY_TLS_CA_FILE: ""      # e.g. /etc/gateway/tls/ca.crt — enables mTLS
 
 # elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
 # §9.1). Named explicitly so the edge/runbook references resolve.
