@@ -47,6 +47,8 @@ func main() {
 		cmdDecommissionCheck(client, baseURL)
 	case "budget-status-audit":
 		cmdBudgetStatusAudit(os.Args[2:])
+	case "sse-flush-check":
+		cmdSSEFlushCheck(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -64,10 +66,12 @@ Commands:
   rollback <pattern>   Move endpoint back one state (go→canary→shadow→legacy)
   decommission-check   Verify all endpoints are in "go" state for decommission
   budget-status-audit  Scan --paths for budget/quota call sites that handle 429 but not 402
+  sse-flush-check      Assert the gateway streams SSE incrementally for both dialects
 
 Options:
   --force              Skip readiness gate checks
   --paths <roots>      (budget-status-audit) comma-separated roots to scan
+  --gateway-url <url>  (sse-flush-check) gateway base URL (default http://localhost:8083)
 
 Environment:
   ELITEA_URL           Base URL of elitea-main (default: http://localhost:8080)
