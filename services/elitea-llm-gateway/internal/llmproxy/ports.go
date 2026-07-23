@@ -35,6 +35,13 @@ type BudgetChecker interface {
 	// and publishes a write-behind delta. eventID must be unique per billed
 	// completion (UUID or similar) to guarantee idempotent increments.
 	UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano int64, periodStartUnix, periodEndUnix int64) error
+
+	// TryAlertCooldown checks and claims the soft-alert cooldown for the
+	// given scope/scopeID/period. Returns true when the soft-alert should
+	// fire (first crossing within the cooldown window), false when it is
+	// already on cooldown. Errors are treated as "do not fire" to keep the
+	// soft-alert path non-fatal.
+	TryAlertCooldown(ctx context.Context, scope, scopeID string, periodStartUnix int64) (bool, error)
 }
 
 // CostEstimator resolves per-request LLM cost in int64 nano-USD.

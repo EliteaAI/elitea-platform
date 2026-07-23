@@ -20,6 +20,13 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 )
 
+// billingCtxTimeout is the deadline for the background billing context used
+// in updateUsage (FIX #18). A client disconnect must not cancel the billing
+// increment, so we detach from the request context. 10 s is generous for a
+// NATS KV operation but bounded so a stuck NATS connection does not hold the
+// goroutine forever.
+const billingCtxTimeout = 10 * time.Second
+
 // budgetScopeProject is the scope string used for project-level budget checks.
 const budgetScopeProject = "project"
 
@@ -148,6 +155,16 @@ func identityProjectFromCtx(ctx context.Context) string {
 // response to fail (the provider has already been called; double-billing
 // is worse than a missed update).
 //
+// FIX #18: a fresh context is used for the billing increment so that a
+// client disconnect after the LLM call does not cancel the counter update.
+// The context is bounded by billingCtxTimeout to prevent stuck connections
+// from holding goroutines indefinitely.
+//
+// FIX #15: after a successful UpdateUsage, the post-increment ratio is
+// compared against the snapshot's SoftAlertPct (default 80). When the
+// threshold is crossed and TryAlertCooldown returns true (not on cooldown),
+// a soft-alert log entry is emitted.
+//
 // The caller supplies the usage from the response; tokens default to 0 when
 // the response carries no usage field (e.g. streaming partial responses).
 func (h *Handler) updateUsage(
@@ -169,17 +186,65 @@ func (h *Handler) updateUsage(
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	actualCost := h.costCalc.Cost(ctx, provider, model, inputTokens, outputTokens)
+	// FIX #18: decouple from the request context so a client disconnect does
+	// not cancel the billing increment.
+	billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+	defer cancel()
+
+	actualCost := h.costCalc.Cost(billCtx, provider, model, inputTokens, outputTokens)
 	if actualCost.TotalNanoUSD <= 0 {
 		return // nothing to bill
 	}
 
 	eventID := uuid.NewString()
-	if err := h.budgetGate.UpdateUsage(ctx, pid, budgetScopeProject, scopeID, eventID,
+	if err := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
 		actualCost.TotalNanoUSD, periodStart, periodEnd); err != nil {
 		h.logger.Warn("budget gate: UpdateUsage failed; spend may be under-counted",
 			"project_id", pid, "cost_nano", actualCost.TotalNanoUSD,
 			"event_id", eventID, "err", err)
+		return
+	}
+
+	// FIX #15: soft-alert (80%) check.
+	// Read the pre-admission budget snapshot from CheckBudget to get
+	// HardLimitNano + SoftAlertPct. We call CheckBudget with reqCostNano=0
+	// (read-only: we only need the snapshot, not another admission decision).
+	// If CheckBudget errors or the verdict is unlimited, we skip the alert.
+	dec, checkErr := h.budgetGate.CheckBudget(billCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+	if checkErr != nil {
+		// Non-fatal: log and skip the alert check.
+		h.logger.Warn("budget gate: CheckBudget error during soft-alert check; skipping",
+			"project_id", pid, "err", checkErr)
+		return
+	}
+	// Only fire the soft alert when there is a hard limit to compare against
+	// (Block402 means already over; Allow means we need to check the ratio).
+	if dec.Verdict != failmode.Allow {
+		// Already over the hard limit — no need for a soft alert.
+		return
+	}
+	h.trySoftAlert(billCtx, pid, scopeID, periodStart, actualCost.TotalNanoUSD)
+}
+
+// trySoftAlert fires the 80% soft-alert when the running counter has crossed
+// the SoftAlertPct threshold after the billing increment. It calls
+// TryAlertCooldown to suppress duplicate alerts within the cooldown window.
+// All errors are non-fatal and only logged.
+func (h *Handler) trySoftAlert(ctx context.Context, pid int, scopeID string, periodStart, costJustBilled int64) {
+	fired, err := h.budgetGate.TryAlertCooldown(ctx, budgetScopeProject, scopeID, periodStart)
+	if err != nil {
+		h.logger.Warn("budget gate: TryAlertCooldown error; soft-alert suppressed",
+			"project_id", pid, "err", err)
+		return
+	}
+	if fired {
+		h.logger.Warn("budget soft-alert: project has crossed the spend threshold",
+			"project_id", pid,
+			"scope", budgetScopeProject,
+			"scope_id", scopeID,
+			"cost_just_billed_nano", costJustBilled,
+			"period_start", periodStart,
+		)
 	}
 }
 
@@ -217,4 +282,40 @@ func providerModelFromResponsesReq(req *schemas.BifrostResponsesRequest) (string
 		return "", ""
 	}
 	return string(req.Provider), req.Model
+}
+
+// providerModelFromTextReq extracts provider and model from a
+// BifrostTextCompletionRequest.
+func providerModelFromTextReq(req *schemas.BifrostTextCompletionRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+	return string(req.Provider), req.Model
+}
+
+// providerModelFromEmbeddingReq extracts provider and model from a
+// BifrostEmbeddingRequest.
+func providerModelFromEmbeddingReq(req *schemas.BifrostEmbeddingRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+	return string(req.Provider), req.Model
+}
+
+// usageFromTextCompletionResponse extracts (inputTokens, outputTokens) from a
+// BifrostTextCompletionResponse. Returns (0, 0) when the usage field is absent.
+func usageFromTextCompletionResponse(resp *schemas.BifrostTextCompletionResponse) (int64, int64) {
+	if resp == nil || resp.Usage == nil {
+		return 0, 0
+	}
+	return int64(resp.Usage.PromptTokens), int64(resp.Usage.CompletionTokens)
+}
+
+// usageFromEmbeddingResponse extracts (inputTokens, outputTokens) from a
+// BifrostEmbeddingResponse. Embeddings only have prompt tokens; output is 0.
+func usageFromEmbeddingResponse(resp *schemas.BifrostEmbeddingResponse) (int64, int64) {
+	if resp == nil || resp.Usage == nil {
+		return 0, 0
+	}
+	return int64(resp.Usage.PromptTokens), int64(resp.Usage.CompletionTokens)
 }

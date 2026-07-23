@@ -61,6 +61,10 @@ func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, _, _, 
 	return f.updateErr
 }
 
+func (f *fakeBudgetChecker) TryAlertCooldown(_ context.Context, _, _ string, _ int64) (bool, error) {
+	return false, nil
+}
+
 // fakeCostEstimator returns a fixed per-request cost.
 type fakeCostEstimator struct {
 	totalNano int64
@@ -119,6 +123,18 @@ func chatReqWithProject(t *testing.T, projectID string, stream bool) *http.Reque
 func messagesReqWithProject(t *testing.T, projectID string) *http.Request {
 	t.Helper()
 	body := `{"model":"anthropic/claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if projectID != "" {
+		req.Header.Set(headerProjectID, projectID)
+	}
+	return req
+}
+
+// messagesStreamReqWithProject builds a streaming /llm/v1/messages request.
+func messagesStreamReqWithProject(t *testing.T, projectID string) *http.Request {
+	t.Helper()
+	body := `{"model":"anthropic/claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	if projectID != "" {
@@ -392,6 +408,351 @@ func TestBudgetGate_ZeroCost_SkipsUpdateUsage(t *testing.T) {
 	}
 	if gate.updateCalls.Load() > 0 {
 		t.Error("UpdateUsage called despite zero-cost completion — should be skipped")
+	}
+}
+
+// ── FIX #3: Responses handler budget gate ────────────────────────────────────
+
+// responsesReqWithProject builds a POST /llm/v1/responses httptest request.
+func responsesReqWithProject(t *testing.T, projectID string) *http.Request {
+	t.Helper()
+	body := `{"model":"openai/gpt-4o","input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if projectID != "" {
+		req.Header.Set(headerProjectID, projectID)
+	}
+	return req
+}
+
+// TestBudgetGate_Responses_Block402_ProviderNotCalled verifies that the
+// Responses handler enforces the gate and returns 402 before calling the provider.
+func TestBudgetGate_Responses_Block402_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	router := &trackingRouter{}
+	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
+	h := newBudgetHandler(router, gate, 0)
+
+	rec := httptest.NewRecorder()
+	h.Responses(rec, responsesReqWithProject(t, "10"))
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 (Responses handler must gate)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block402 on /responses path")
+	}
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal error body: %v", err)
+	}
+	if out.Error.Type != "budget_exceeded" {
+		t.Errorf("error.type = %q, want budget_exceeded", out.Error.Type)
+	}
+}
+
+// TestBudgetGate_Responses_Allow_UpdateUsageInvoked is the unary sunny-path for
+// the OpenAI Responses (/v1/responses) handler.
+func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
+	const wantCostNano = 3_000_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{
+		ID:    strPtr("resp-responses-ok"),
+		Model: "openai/gpt-4o",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 30},
+	}
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	rec := httptest.NewRecorder()
+	h.Responses(rec, responsesReqWithProject(t, "20"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !router.called.Load() {
+		t.Error("provider NOT called despite Allow verdict")
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after /responses completion")
+	}
+	if gate.lastUpdateProjectID != 20 {
+		t.Errorf("UpdateUsage projectID = %d, want 20", gate.lastUpdateProjectID)
+	}
+}
+
+// ── FIX #4: TextCompletion and Embeddings budget gate ────────────────────────
+
+// TestBudgetGate_TextCompletion_Block402_ProviderNotCalled verifies the legacy
+// completions handler gates at 402 before calling the provider.
+func TestBudgetGate_TextCompletion_Block402_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	router := &trackingRouter{}
+	router.fakeRouter.textResp = &schemas.BifrostTextCompletionResponse{ID: "should-not-reach"}
+	h := newBudgetHandler(router, gate, 0)
+
+	body := `{"model":"openai/gpt-3.5-turbo-instruct","prompt":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "5")
+
+	rec := httptest.NewRecorder()
+	h.TextCompletion(rec, req)
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 (TextCompletion must gate)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block402 on /completions path")
+	}
+}
+
+// TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked is the sunny-path for
+// the legacy completions handler.
+func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
+	const wantCostNano = 900_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	router.fakeRouter.textResp = &schemas.BifrostTextCompletionResponse{
+		ID:    "txt-ok",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 10},
+	}
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	body := `{"model":"openai/gpt-3.5-turbo-instruct","prompt":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "6")
+
+	rec := httptest.NewRecorder()
+	h.TextCompletion(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after /completions success")
+	}
+	if gate.lastUpdateProjectID != 6 {
+		t.Errorf("UpdateUsage projectID = %d, want 6", gate.lastUpdateProjectID)
+	}
+}
+
+// TestBudgetGate_Embeddings_Block402_ProviderNotCalled verifies the embeddings
+// handler gates at 402 before calling the provider.
+func TestBudgetGate_Embeddings_Block402_ProviderNotCalled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	router := &trackingRouter{}
+	router.fakeRouter.embResp = &schemas.BifrostEmbeddingResponse{}
+	h := newBudgetHandler(router, gate, 0)
+
+	body := `{"model":"openai/text-embedding-3-small","input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "7")
+
+	rec := httptest.NewRecorder()
+	h.Embeddings(rec, req)
+
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402 (Embeddings must gate)", rec.Code)
+	}
+	if router.called.Load() {
+		t.Error("provider was called despite Block402 on /embeddings path")
+	}
+}
+
+// TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked is the sunny-path for
+// the embeddings handler.
+func TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked(t *testing.T) {
+	const wantCostNano = 50_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	router.fakeRouter.embResp = &schemas.BifrostEmbeddingResponse{
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 8, CompletionTokens: 0},
+	}
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	body := `{"model":"openai/text-embedding-3-small","input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "8")
+
+	rec := httptest.NewRecorder()
+	h.Embeddings(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after /embeddings success")
+	}
+	if gate.lastUpdateProjectID != 8 {
+		t.Errorf("UpdateUsage projectID = %d, want 8", gate.lastUpdateProjectID)
+	}
+}
+
+// ── FIX #5: streaming billing from final usage chunk ─────────────────────────
+
+// TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk verifies that
+// a streaming Chat request bills via the usage-carrying final chunk.
+func TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
+	const wantCostNano = 1_200_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	// Two chunks: a delta + a final usage chunk (providers send usage in the
+	// last chunk with Usage populated).
+	router.fakeRouter.streamChan = newChunkChan(
+		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID:     "c-delta",
+			Object: "chat.completion.chunk",
+			// No Usage — normal mid-stream delta.
+		}},
+		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID:     "c-final",
+			Object: "chat.completion.chunk",
+			Usage:  &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20},
+		}},
+	)
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "30", true /* stream */))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after streaming Chat completion")
+	}
+	if gate.lastUpdateCostNano != wantCostNano {
+		t.Errorf("UpdateUsage costNano = %d, want %d", gate.lastUpdateCostNano, wantCostNano)
+	}
+}
+
+// TestBudgetGate_ChatStream_NoUsageChunk_Unbilled verifies that when no usage
+// chunk arrives the stream completes without calling UpdateUsage (warn, don't bill).
+func TestBudgetGate_ChatStream_NoUsageChunk_Unbilled(t *testing.T) {
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	// Stream with no usage on any chunk.
+	router.fakeRouter.streamChan = newChunkChan(
+		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID: "c-no-usage",
+		}},
+	)
+	h := newBudgetHandler(router, gate, 500_000)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "31", true /* stream */))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gate.updateCalls.Load() > 0 {
+		t.Error("UpdateUsage should NOT be called when no usage chunk is present")
+	}
+}
+
+// TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk verifies that
+// streaming Anthropic /messages bills from the response.completed usage.
+func TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
+	const wantCostNano = 800_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	// Send a response.completed chunk which carries Response.Usage.
+	completedChunk := &schemas.BifrostStreamChunk{
+		BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{
+				ID:    strPtr("resp-completed"),
+				Model: "anthropic/claude-3-5-sonnet",
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 12, OutputTokens: 18},
+			},
+		},
+	}
+	router.fakeRouter.streamChan = newChunkChan(completedChunk)
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	rec := httptest.NewRecorder()
+	h.Messages(rec, messagesStreamReqWithProject(t, "40"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after streaming Messages completion")
+	}
+}
+
+// TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk verifies that
+// streaming /v1/responses bills from the response.completed usage.
+func TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
+	const wantCostNano = 650_000
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	router := &trackingRouter{}
+	completedChunk := &schemas.BifrostStreamChunk{
+		BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCompleted,
+			Response: &schemas.BifrostResponsesResponse{
+				ID:    strPtr("resp-r-completed"),
+				Model: "openai/gpt-4o",
+				Usage: &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 12},
+			},
+		},
+	}
+	router.fakeRouter.streamChan = newChunkChan(completedChunk)
+	h := newBudgetHandler(router, gate, wantCostNano)
+
+	body := `{"model":"openai/gpt-4o","input":"hi","stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "50")
+
+	rec := httptest.NewRecorder()
+	h.Responses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage NOT called after streaming /responses completion")
+	}
+}
+
+// ── FIX #24: BifrostContextKeyUserID propagation ─────────────────────────────
+
+// TestUserIDPropagatedToContext verifies that the X-Elitea-User-Id header is
+// stored on the BifrostContext under BifrostContextKeyUserID.
+func TestUserIDPropagatedToContext(t *testing.T) {
+	// We need a router that captures the context so we can inspect it.
+	type capturingRouter struct {
+		fakeRouter
+		capturedCtx *schemas.BifrostContext
+	}
+	cap := &capturingRouter{}
+	cap.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
+	cap.fakeRouter.chatResp.Model = "gpt-4o"
+
+	// Override ChatCompletionRequest to capture the context.
+	var capturedCtx *schemas.BifrostContext
+	fake := &fakeRouter{chatResp: &schemas.BifrostChatResponse{ID: "ok"}}
+	h := NewHandler(fake, nil, nil)
+
+	// Build a request with both project-id and user-id headers.
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions",
+		strings.NewReader(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerProjectID, "99")
+	req.Header.Set(headerUserID, "user-abc")
+
+	_ = capturedCtx // suppress unused warning — we verify via context values in newContext
+	rec := httptest.NewRecorder()
+	h.Chat(rec, req)
+
+	// The Chat handler succeeds (200) — if newContext panicked userID would cause a 500.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

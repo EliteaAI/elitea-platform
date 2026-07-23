@@ -102,8 +102,14 @@ func (h *Handler) newContext(w http.ResponseWriter, r *http.Request) (*schemas.B
 	// vk = the resolved projectID handle (never the raw key). Only set when
 	// present; a missing project is fatal at the gateway only when
 	// IsVkMandatory is on (governance, BF0.4), not here.
+	//
+	// FIX #24: also propagate the caller's user ID so usage attribution and
+	// audit trails carry the originating user, not just the project.
 	if id := identityFromHeaders(r.Header); id.projectID != "" {
 		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, id.projectID)
+		if id.userID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyUserID, id.userID)
+		}
 	}
 	return ctx, true
 }
@@ -146,11 +152,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 
 	if isStream(req.Stream) {
 		ch, bErr := h.router.ChatCompletionStreamRequest(ctx, bifReq)
-		h.streamOpenAI(w, ch, bErr)
-		// Streaming usage is not available synchronously (chunks arrive async);
-		// post-completion billing for streaming paths is deferred to BF0.9c
-		// (the pylon side tracks cumulative stream usage). The gate admission
-		// above is still enforced.
+		// FIX #5: pass billing context so streamOpenAI can call updateUsage
+		// after the channel drains with the final usage-carrying chunk.
+		h.streamOpenAI(w, ctx, provider, model, ch, bErr)
 		return
 	}
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
@@ -172,7 +176,18 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostTextCompletionRequest(ctx)
+
+	// FIX #4: enforce the budget gate before calling the provider.
+	provider, model := providerModelFromTextReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	resp, bErr := h.router.TextCompletionRequest(ctx, bifReq)
+	if bErr == nil && resp != nil {
+		in, out := usageFromTextCompletionResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 	h.writeUnary(w, resp, bErr)
 }
 
@@ -187,7 +202,18 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostEmbeddingRequest(ctx)
+
+	// FIX #4: enforce the budget gate before calling the provider.
+	provider, model := providerModelFromEmbeddingReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	resp, bErr := h.router.EmbeddingRequest(ctx, bifReq)
+	if bErr == nil && resp != nil {
+		in, out := usageFromEmbeddingResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 	h.writeUnary(w, resp, bErr)
 }
 
@@ -204,14 +230,25 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
+	provider, model := providerModelFromResponsesReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	if isStream(req.Stream) {
 		ch, bErr := h.router.ResponsesStreamRequest(ctx, bifReq)
-		// The Responses API signals completion by closing the stream (no
-		// [DONE] marker), and frames carry their own event types.
-		h.streamResponses(w, ch, bErr, false)
+		// FIX #5: pass billing context so streamResponses can call updateUsage
+		// after the channel drains with the final usage chunk.
+		h.streamResponses(w, ctx, provider, model, ch, bErr, false)
 		return
 	}
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
+	// FIX #3: bill the unary response after a successful completion.
+	if bErr == nil && resp != nil {
+		in, out := usageFromResponsesResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 	h.writeUnary(w, resp, bErr)
 }
 
@@ -256,8 +293,9 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 
 	if isStream(req.Stream) {
 		ch, bErr := h.router.ResponsesStreamRequest(ctx, bifReq)
-		h.streamAnthropic(w, ctx, ch, bErr)
-		// Streaming: post-completion billing deferred (see Chat handler comment).
+		// FIX #5: pass billing context so streamAnthropic can call updateUsage
+		// after the channel drains with the final usage-carrying chunk.
+		h.streamAnthropic(w, ctx, provider, model, ch, bErr)
 		return
 	}
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
@@ -400,7 +438,17 @@ func (h *Handler) writeUnary(w http.ResponseWriter, resp interface{}, bErr *sche
 // then a terminal "data: [DONE]" marker on normal completion. A mid-stream
 // error is emitted as a data frame carrying the OpenAI-shaped error and ends
 // the stream (no [DONE]).
-func (h *Handler) streamOpenAI(w http.ResponseWriter, ch chan *schemas.BifrostStreamChunk, bErr *schemas.BifrostError) {
+//
+// FIX #5: the final usage-carrying chunk (BifrostChatResponse.Usage != nil)
+// is captured; after the channel drains updateUsage is called with the real
+// streamed token counts. If no usage chunk appears a warning is logged.
+func (h *Handler) streamOpenAI(
+	w http.ResponseWriter,
+	ctx *schemas.BifrostContext,
+	provider, model string,
+	ch chan *schemas.BifrostStreamChunk,
+	bErr *schemas.BifrostError,
+) {
 	if bErr != nil {
 		h.writeOpenAIError(w, bErr)
 		return
@@ -409,6 +457,11 @@ func (h *Handler) streamOpenAI(w http.ResponseWriter, ch chan *schemas.BifrostSt
 	if err != nil {
 		return
 	}
+	var (
+		streamedIn, streamedOut int64
+		gotUsage                bool
+		streamOK                = true // false if the stream ended with a mid-stream error
+	)
 	for chunk := range ch {
 		if chunk == nil {
 			continue
@@ -416,7 +469,14 @@ func (h *Handler) streamOpenAI(w http.ResponseWriter, ch chan *schemas.BifrostSt
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Data(string(data))
+			streamOK = false
 			return
+		}
+		// Capture usage from the final usage-carrying chunk (providers send
+		// usage in the last chunk before [DONE]; earlier chunks have Usage=nil).
+		if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+			streamedIn, streamedOut = usageFromChatResponse(chunk.BifrostChatResponse)
+			gotUsage = true
 		}
 		data, mErr := json.Marshal(chunk)
 		if mErr != nil {
@@ -424,16 +484,37 @@ func (h *Handler) streamOpenAI(w http.ResponseWriter, ch chan *schemas.BifrostSt
 			continue
 		}
 		if writeErr := sw.Data(string(data)); writeErr != nil {
+			streamOK = false
 			return // client disconnected
 		}
 	}
 	_ = sw.Data("[DONE]")
+	if !streamOK {
+		return
+	}
+	// Bill after the channel drains successfully.
+	if gotUsage {
+		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
+	} else {
+		h.logger.Warn("streamOpenAI: no usage chunk in stream; response unbilled",
+			"provider", provider, "model", model)
+	}
 }
 
 // streamResponses writes the OpenAI Responses-API SSE framing: each chunk
 // carries its own event type (resp.Type) and no [DONE] marker. sendDone is
 // kept for symmetry but is false for the Responses API.
-func (h *Handler) streamResponses(w http.ResponseWriter, ch chan *schemas.BifrostStreamChunk, bErr *schemas.BifrostError, sendDone bool) {
+//
+// FIX #5: the "response.completed" event carries Response.Usage; usage is
+// captured from that chunk and updateUsage is called after the channel drains.
+func (h *Handler) streamResponses(
+	w http.ResponseWriter,
+	ctx *schemas.BifrostContext,
+	provider, model string,
+	ch chan *schemas.BifrostStreamChunk,
+	bErr *schemas.BifrostError,
+	sendDone bool,
+) {
 	if bErr != nil {
 		h.writeOpenAIError(w, bErr)
 		return
@@ -442,6 +523,11 @@ func (h *Handler) streamResponses(w http.ResponseWriter, ch chan *schemas.Bifros
 	if err != nil {
 		return
 	}
+	var (
+		streamedIn, streamedOut int64
+		gotUsage                bool
+		streamOK                = true
+	)
 	for chunk := range ch {
 		if chunk == nil {
 			continue
@@ -449,23 +535,41 @@ func (h *Handler) streamResponses(w http.ResponseWriter, ch chan *schemas.Bifros
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Event("error", string(data))
+			streamOK = false
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
 			continue
 		}
-		event := string(chunk.BifrostResponsesStreamResponse.Type)
-		data, mErr := json.Marshal(chunk.BifrostResponsesStreamResponse)
+		// Capture usage from the response.completed event (carries Response.Usage).
+		sr := chunk.BifrostResponsesStreamResponse
+		if sr.Response != nil && sr.Response.Usage != nil {
+			streamedIn, streamedOut = usageFromResponsesResponse(sr.Response)
+			gotUsage = true
+		}
+		event := string(sr.Type)
+		data, mErr := json.Marshal(sr)
 		if mErr != nil {
 			h.logger.Warn("marshal responses chunk", "err", mErr)
 			continue
 		}
 		if writeErr := sw.Event(event, string(data)); writeErr != nil {
+			streamOK = false
 			return
 		}
 	}
 	if sendDone {
 		_ = sw.Data("[DONE]")
+	}
+	if !streamOK {
+		return
+	}
+	// Bill after the channel drains successfully.
+	if gotUsage {
+		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
+	} else {
+		h.logger.Warn("streamResponses: no usage in stream; response unbilled",
+			"provider", provider, "model", model)
 	}
 }
 
@@ -473,7 +577,16 @@ func (h *Handler) streamResponses(w http.ResponseWriter, ch chan *schemas.Bifros
 // is converted to one or more AnthropicStreamEvents ("event: <type>\ndata:
 // ...") with NO [DONE] marker. A mid-stream error is emitted as the Anthropic
 // "event: error" frame and ends the stream.
-func (h *Handler) streamAnthropic(w http.ResponseWriter, ctx *schemas.BifrostContext, ch chan *schemas.BifrostStreamChunk, bErr *schemas.BifrostError) {
+//
+// FIX #5: usage is captured from the response.completed event (Response.Usage)
+// and updateUsage is called after the channel drains successfully.
+func (h *Handler) streamAnthropic(
+	w http.ResponseWriter,
+	ctx *schemas.BifrostContext,
+	provider, model string,
+	ch chan *schemas.BifrostStreamChunk,
+	bErr *schemas.BifrostError,
+) {
 	if bErr != nil {
 		h.writeAnthropicError(w, bErr)
 		return
@@ -482,6 +595,11 @@ func (h *Handler) streamAnthropic(w http.ResponseWriter, ctx *schemas.BifrostCon
 	if err != nil {
 		return
 	}
+	var (
+		streamedIn, streamedOut int64
+		gotUsage                bool
+		streamOK                = true
+	)
 	for chunk := range ch {
 		if chunk == nil {
 			continue
@@ -490,12 +608,19 @@ func (h *Handler) streamAnthropic(w http.ResponseWriter, ctx *schemas.BifrostCon
 			// ToAnthropicResponsesStreamError returns a complete
 			// "event: error\ndata: ...\n\n" frame.
 			_ = sw.Raw(anthropic.ToAnthropicResponsesStreamError(chunk.BifrostError))
+			streamOK = false
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
 			continue
 		}
-		events := anthropic.ToAnthropicResponsesStreamResponse(ctx, chunk.BifrostResponsesStreamResponse)
+		// Capture usage from the response.completed event.
+		sr := chunk.BifrostResponsesStreamResponse
+		if sr.Response != nil && sr.Response.Usage != nil {
+			streamedIn, streamedOut = usageFromResponsesResponse(sr.Response)
+			gotUsage = true
+		}
+		events := anthropic.ToAnthropicResponsesStreamResponse(ctx, sr)
 		for _, ev := range events {
 			if ev == nil {
 				continue
@@ -506,9 +631,20 @@ func (h *Handler) streamAnthropic(w http.ResponseWriter, ctx *schemas.BifrostCon
 				continue
 			}
 			if writeErr := sw.Event(string(ev.Type), string(data)); writeErr != nil {
+				streamOK = false
 				return
 			}
 		}
+	}
+	if !streamOK {
+		return
+	}
+	// Bill after the channel drains successfully.
+	if gotUsage {
+		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
+	} else {
+		h.logger.Warn("streamAnthropic: no usage in stream; response unbilled",
+			"provider", provider, "model", model)
 	}
 }
 
