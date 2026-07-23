@@ -1,0 +1,296 @@
+// Package governance composes the NATS JetStream client and the tiered-hybrid
+// fail-mode FSM into a budget-enforcement engine (design §8.5, BF0.9a).
+//
+// GovernanceStore is the Elitea-native budget engine (design Option E). Bifrost
+// does not expose an InitFromStore entrypoint in any imported package path; the
+// governance plugin coupling is therefore intentionally absent. The
+// GovernanceStore owns the full CheckBudget/UpdateUsage loop, and the handler
+// layer (BF0.9b/c) will wire it in via the llmproxy.BudgetChecker port.
+package governance
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/sony/gobreaker/v2"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
+)
+
+// natsClient is the minimal NATS surface the GovernanceStore needs. *nats.Client
+// satisfies it; tests inject a fake so no live NATS is required.
+type natsClient interface {
+	IncrBudget(ctx context.Context, subject string, deltaNano int64) (int64, error)
+	IncrBudgetIdempotent(ctx context.Context, subject, eventID string, deltaNano int64) (total int64, applied bool, err error)
+	ReadBudget(ctx context.Context, subject string) (int64, error)
+	PublishDelta(ctx context.Context, eventID string, payload []byte) error
+	TryAlertCooldown(ctx context.Context, key string) (bool, error)
+	OnBreakerStateChange(fn func(from, to gobreaker.State))
+	BreakerState() gobreaker.State
+}
+
+// GovernanceStore is the budget-enforcement engine. It composes:
+//   - A hardened NATS JetStream client (authoritative counter + write-behind).
+//   - A failmode.Store (Postgres snapshot tier).
+//   - A failmode.DegradedCounters (per-replica overspend cap while NATS is down).
+//   - A failmode.Reconciler (recovery reconciliation on breaker→CLOSED).
+//   - failmode.Params (the resolved enforcement configuration).
+//
+// All money amounts are int64 nano-USD. GovernanceStore is safe for concurrent use.
+type GovernanceStore struct {
+	nc       natsClient
+	store    *failmode.Store
+	degraded *failmode.DegradedCounters
+	rec      *failmode.Reconciler
+	params   failmode.Params
+	log      *slog.Logger
+}
+
+// NewGovernanceStore assembles a GovernanceStore from the four pre-built
+// primitives and a resolved Params. Call Start before serving to bind the
+// service-lifetime context to the reconciler.
+func NewGovernanceStore(
+	nc natsClient,
+	store *failmode.Store,
+	degraded *failmode.DegradedCounters,
+	rec *failmode.Reconciler,
+	params failmode.Params,
+	log *slog.Logger,
+) *GovernanceStore {
+	if log == nil {
+		log = slog.Default()
+	}
+	gs := &GovernanceStore{
+		nc:       nc,
+		store:    store,
+		degraded: degraded,
+		rec:      rec,
+		params:   params,
+		log:      log,
+	}
+	// Wire the breaker→CLOSED edge to the reconciler's recovery pass.
+	nc.OnBreakerStateChange(func(from, to gobreaker.State) {
+		gs.log.Info("governance: NATS breaker state change",
+			slog.String("from", from.String()),
+			slog.String("to", to.String()),
+		)
+		gs.rec.HandleBreakerChange(from, to)
+	})
+	return gs
+}
+
+// Start binds the service-lifetime context to the recovery reconciler. It
+// MUST be called before the gateway starts serving (i.e. before concurrent
+// CheckBudget / UpdateUsage calls), so that the reconciler can derive a
+// properly-bounded context for its recovery passes.
+func (g *GovernanceStore) Start(ctx context.Context) {
+	g.rec.Start(ctx)
+}
+
+// CheckBudget is the pre-LLM admission check (design §8.5). It:
+//  1. Attempts to read the authoritative counter from NATS.
+//  2. Reads the Postgres snapshot (for the FSM's fallback tier or HEALTHY snap).
+//  3. Invokes Decide with the resolved inputs and returns the Decision.
+//
+// When the NATS breaker is open or the read fails, natsUp=false and the FSM
+// falls back to the Postgres snapshot (tiered_hybrid / fail_open / fail_closed).
+// ErrNoBudgetRow from the snapshot is treated as an unlimited project (no
+// config row ⇒ nothing to enforce).
+//
+// periodStartUnix is the current billing-period start (Unix seconds). reqCostNano
+// is the pre-estimated cost of the request in nano-USD (may be 0 for a pure check).
+func (g *GovernanceStore) CheckBudget(
+	ctx context.Context,
+	projectID int,
+	scope, scopeID string,
+	periodStartUnix, reqCostNano int64,
+) (failmode.Decision, error) {
+	subject := nats.BudgetSubject(scope, scopeID, periodStartUnix)
+
+	// Attempt the authoritative NATS read (breaker-guarded, OpTimeout-bounded).
+	authoritativeNano, natsErr := g.nc.ReadBudget(ctx, subject)
+	natsUp := natsErr == nil
+
+	if natsErr != nil && !errors.Is(natsErr, nats.ErrUnavailable) {
+		// A non-infrastructure error (parse/config) is worth logging but still
+		// falls back via the FSM rather than hard-failing the request.
+		g.log.Warn("governance: ReadBudget non-infra error; treating as unavailable",
+			slog.String("subject", subject),
+			slog.Any("err", natsErr),
+		)
+	}
+
+	// Read the Postgres snapshot. A missing budget row is treated as unlimited.
+	snap, snapErr := g.store.ReadSnapshot(ctx, projectID, scope, scopeID, periodStartUnix)
+	if snapErr != nil {
+		if errors.Is(snapErr, failmode.ErrNoBudgetRow) {
+			// No budget config ⇒ unlimited; always allow (except FORCED_CLOSED).
+			snap = failmode.Snapshot{IsUnlimited: true}
+		} else {
+			// PG read failed and NATS is also down ⇒ Block503 (no data).
+			if !natsUp {
+				g.log.Error("governance: snapshot read failed and NATS unavailable",
+					slog.Int("project_id", projectID),
+					slog.Any("err", snapErr),
+				)
+				return failmode.Decision{
+					Verdict:  failmode.Block503,
+					State:    failmode.StateDownPGStale,
+					Degraded: true,
+				}, nil
+			}
+			// NATS is up but snapshot failed: log and proceed with a zero snap
+			// (NATS_HEALTHY decision does not use the snapshot).
+			g.log.Warn("governance: snapshot read failed; using zero snap for NATS_HEALTHY path",
+				slog.Int("project_id", projectID),
+				slog.Any("err", snapErr),
+			)
+			snap = failmode.Snapshot{}
+		}
+	}
+
+	degradedKey := nats.BudgetSubject(scope, scopeID, periodStartUnix)
+	replicaDegradedNano := g.degraded.Get(degradedKey)
+
+	return failmode.Decide(natsUp, authoritativeNano, replicaDegradedNano, snap, reqCostNano, g.params), nil
+}
+
+// deltaPayload is the minimal JSON structure written to the GATEWAY_BUDGET_DELTAS
+// write-behind stream (design §8.6). The scheduler drains this stream into the
+// durable Postgres accumulator.
+type deltaPayload struct {
+	ProjectID      int    `json:"project_id"`
+	Scope          string `json:"scope"`
+	ScopeID        string `json:"scope_id"`
+	EventID        string `json:"event_id"`
+	CostNano       int64  `json:"cost_nano"`
+	PeriodStartUnix int64  `json:"period_start_unix"`
+	PeriodEndUnix   int64  `json:"period_end_unix"`
+}
+
+// UpdateUsage records a billed increment onto the authoritative NATS counter and
+// publishes a write-behind delta for durable accumulation (design §8.6).
+//
+// It calls IncrBudgetIdempotent (idempotent via Nats-Msg-Id=eventID) so a retry
+// after a crash between the increment and the delta publish does not double-count
+// the counter. If the increment was a suppressed duplicate (applied=false) the
+// delta publish is still attempted so the write-behind consumer can reconcile.
+//
+// periodEndUnix is the current period's end (Unix seconds) used only by the
+// delta payload; it is not required for counter enforcement.
+func (g *GovernanceStore) UpdateUsage(
+	ctx context.Context,
+	projectID int,
+	scope, scopeID, eventID string,
+	costNano int64,
+	periodStartUnix, periodEndUnix int64,
+) error {
+	subject := nats.BudgetSubject(scope, scopeID, periodStartUnix)
+
+	_, _, incrErr := g.nc.IncrBudgetIdempotent(ctx, subject, eventID, costNano)
+	if incrErr != nil && !errors.Is(incrErr, nats.ErrUnavailable) {
+		return fmt.Errorf("governance: IncrBudgetIdempotent: %w", incrErr)
+	}
+	if incrErr != nil {
+		// NATS is down; accumulate onto the per-replica degraded counter so the
+		// FSM cap keeps gating further requests during the outage window.
+		g.degraded.Add(subject, costNano)
+		g.log.Warn("governance: NATS unavailable during UpdateUsage; degraded counter updated",
+			slog.String("subject", subject),
+			slog.Int64("cost_nano", costNano),
+		)
+	}
+
+	// Publish a write-behind delta regardless of whether the counter increment
+	// was applied or suppressed; the scheduler is the durable accounting ground-truth.
+	payload, err := json.Marshal(deltaPayload{
+		ProjectID:       projectID,
+		Scope:           scope,
+		ScopeID:         scopeID,
+		EventID:         eventID,
+		CostNano:        costNano,
+		PeriodStartUnix: periodStartUnix,
+		PeriodEndUnix:   periodEndUnix,
+	})
+	if err != nil {
+		// JSON marshal of a fixed struct should never fail.
+		return fmt.Errorf("governance: marshal delta payload: %w", err)
+	}
+	if pubErr := g.nc.PublishDelta(ctx, eventID, payload); pubErr != nil {
+		// A failed delta publish is logged but not fatal: the NATS counter was
+		// already incremented (or the degraded counter was updated), so the
+		// immediate enforcement decision is correct. The write-behind consumer
+		// operates on an at-least-once basis; missing deltas are reconciled via
+		// the outage-recovery path on the next breaker→CLOSED edge.
+		g.log.Warn("governance: PublishDelta failed; delta will be reconciled on recovery",
+			slog.String("event_id", eventID),
+			slog.Any("err", pubErr),
+		)
+	}
+
+	return nil
+}
+
+// DumpTotal returns the current in-process degraded total for a scope/period.
+// When NATS is healthy this is 0 (the authoritative counter is the ground-truth);
+// during an outage it reflects this replica's billed spend since NATS went down.
+func (g *GovernanceStore) DumpTotal(scope, scopeID string, periodStartUnix int64) int64 {
+	return g.degraded.Get(nats.BudgetSubject(scope, scopeID, periodStartUnix))
+}
+
+// ResetExpired is a no-op stub. Period rollover is handled automatically: the
+// NATS counter subjects are keyed by period_start (BudgetSubject includes the
+// unix timestamp), so a new period produces a new subject and the old one is
+// subject to the GATEWAY_BUDGET stream's MaxMsgsPerSubject=1 retention. The
+// per-replica DegradedCounters are reset on the breaker→CLOSED reconciliation
+// edge (see recovery.go); they otherwise reset on pod restart.
+//
+// If a future design requires explicit TTL-driven reset (e.g., for very long-lived
+// replicas spanning multiple billing periods), the caller should invoke
+// DegradedCounters.Reset with the old subject.
+func (g *GovernanceStore) ResetExpired(_ context.Context) error {
+	// No-op: period rollover is handled by counter TTL (subject-keyed periods).
+	return nil
+}
+
+// alertCooldownKey builds the KV key for the 80% soft-alert cooldown for a given
+// scope. The key is scoped by subject so different scopes have independent
+// cooldowns.
+func alertCooldownKey(subject string) string {
+	return "alert." + subject
+}
+
+// TryAlertCooldown is a thin forward to the NATS client's TryAlertCooldown for
+// the 80% soft-alert path (§8.3). It is exposed so the handler layer can call it
+// without holding a reference to the raw NATS client.
+func (g *GovernanceStore) TryAlertCooldown(ctx context.Context, scope, scopeID string, periodStartUnix int64) (bool, error) {
+	key := alertCooldownKey(nats.BudgetSubject(scope, scopeID, periodStartUnix))
+	return g.nc.TryAlertCooldown(ctx, key)
+}
+
+// natsUnavailable reports whether the NATS circuit breaker is currently open
+// (i.e., the last several operations failed). Exposed for observability.
+func (g *GovernanceStore) NATSUnavailable() bool {
+	return g.nc.BreakerState() != gobreaker.StateClosed
+}
+
+// pgFreshnessDefault is the failmode.Params.PGFreshness default used by
+// DefaultParams if the caller does not supply one.
+const pgFreshnessDefault = 5 * time.Minute
+
+// DefaultParams returns a sensible Params baseline for production use.
+// The caller should override individual fields (e.g. DegradedCapNano from config)
+// rather than using this verbatim.
+func DefaultParams() failmode.Params {
+	return failmode.Params{
+		Mode:             failmode.ModeTieredHybrid,
+		PGFreshness:      pgFreshnessDefault,
+		ExpectedReplicas: 1,
+		DegradedCapNano:  0, // 0 ⇒ FSM derives 10% of HardLimitNano
+	}
+}
