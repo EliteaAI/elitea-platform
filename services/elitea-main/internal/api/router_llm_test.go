@@ -1,0 +1,210 @@
+package api_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+)
+
+// --- stubs -------------------------------------------------------------------
+
+// stubTokenValidator satisfies apimw.TokenValidator, returning a fixed user.
+type stubTokenValidator struct {
+	user auth.User
+}
+
+func (s *stubTokenValidator) ValidateToken(_ context.Context, _ string) (auth.User, error) {
+	return s.user, nil
+}
+
+// stubProjectResolver satisfies apimw.PersonalProjectResolver.
+type stubProjectResolver struct {
+	id     int
+	called bool
+}
+
+func (s *stubProjectResolver) PersonalProjectID(_ context.Context, _ string) (int, error) {
+	s.called = true
+	return s.id, nil
+}
+
+// recordingHandler captures whether it was reached and what project context it
+// saw, then writes 200 OK. Used as the stub LLMProxy.
+type recordingHandler struct {
+	reached bool
+	project apimw.ProjectContext
+}
+
+func (h *recordingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.reached = true
+	if pc, ok := apimw.ProjectFromContext(r.Context()); ok {
+		h.project = pc
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// newTestAuthClient returns an authsvc.Client backed by an in-process miniredis
+// so auth middleware cache calls don't panic on a nil client.
+func newTestAuthClient(t *testing.T) *authsvc.Client {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	return authsvc.New(rdb)
+}
+
+// buildMinimalRouterConfig returns a RouterConfig with the minimum deps needed
+// to exercise the /llm route (Auth + Project + LLMProxy). All other optional
+// fields are left nil so we don't need a live DB, Redis, etc.
+func buildMinimalRouterConfig(t *testing.T, validator apimw.TokenValidator, resolver apimw.PersonalProjectResolver, llmProxy http.Handler) api.RouterConfig {
+	t.Helper()
+	return api.RouterConfig{
+		Auth: api.AuthDeps{
+			// Client is backed by miniredis so GetCached/SetCached don't panic.
+			// Validator is non-nil so token validation never falls back to the
+			// RPC path.
+			Client:    newTestAuthClient(t),
+			Validator: validator,
+		},
+		LLMProxy:           llmProxy,
+		LLMProjectResolver: resolver,
+	}
+}
+
+// --- tests -------------------------------------------------------------------
+
+// TestLLMRoute_NotMountedWhenProxyNil verifies that when LLMProxy is nil the
+// /llm path returns 404 so existing deployments are unaffected.
+func TestLLMRoute_NotMountedWhenProxyNil(t *testing.T) {
+	cfg := buildMinimalRouterConfig(t, nil, nil, nil)
+	r := api.NewRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when LLMProxy is nil, got %d", rec.Code)
+	}
+}
+
+// TestLLMRoute_UnauthenticatedReturns401 verifies that /llm is behind Auth and
+// rejects callers without credentials.
+func TestLLMRoute_UnauthenticatedReturns401(t *testing.T) {
+	proxy := &recordingHandler{}
+	cfg := buildMinimalRouterConfig(t, nil, nil, proxy)
+	r := api.NewRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated /llm request, got %d", rec.Code)
+	}
+	if proxy.reached {
+		t.Error("proxy must not be reached for unauthenticated requests")
+	}
+}
+
+// TestLLMRoute_SystemProjectUser verifies the happy path with a system
+// project-user token: the Project middleware extracts the project id from the
+// name (no DB call), sets ProjectContext, and the proxy is reached.
+func TestLLMRoute_SystemProjectUser(t *testing.T) {
+	// System project-user name encodes project id 42 directly.
+	systemUser := auth.User{
+		ID:       "100",
+		Name:     ":system:project:42:",
+		AuthType: "token",
+	}
+	validator := &stubTokenValidator{user: systemUser}
+	resolver := &stubProjectResolver{id: 999} // must NOT be consulted for system names
+	proxy := &recordingHandler{}
+
+	cfg := buildMinimalRouterConfig(t, validator, resolver, proxy)
+	r := api.NewRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer test-system-token")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !proxy.reached {
+		t.Fatal("proxy was not reached for authenticated /llm request")
+	}
+	if resolver.called {
+		t.Error("personal project resolver must not be consulted for system project-user names")
+	}
+	if proxy.project.ProjectID != 42 {
+		t.Errorf("expected ProjectID 42 in proxy context, got %d", proxy.project.ProjectID)
+	}
+}
+
+// TestLLMRoute_PersonalProjectFallback verifies that for a regular (non-system)
+// user the Project middleware consults the resolver and injects the returned id.
+func TestLLMRoute_PersonalProjectFallback(t *testing.T) {
+	regularUser := auth.User{
+		ID:       "55",
+		Name:     "alice@example.com",
+		AuthType: "token",
+	}
+	validator := &stubTokenValidator{user: regularUser}
+	resolver := &stubProjectResolver{id: 77}
+	proxy := &recordingHandler{}
+
+	cfg := buildMinimalRouterConfig(t, validator, resolver, proxy)
+	r := api.NewRouter(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer test-regular-token")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !proxy.reached {
+		t.Fatal("proxy was not reached")
+	}
+	if !resolver.called {
+		t.Error("personal project resolver should be called for non-system user")
+	}
+	if proxy.project.ProjectID != 77 {
+		t.Errorf("expected ProjectID 77 in proxy context, got %d", proxy.project.ProjectID)
+	}
+}
+
+// TestLLMRoute_SubpathPreserved verifies that a request to /llm/v1/models
+// reaches the proxy (chi Mount strips the /llm prefix; we just check the proxy
+// is reached regardless of sub-path).
+func TestLLMRoute_SubpathPreserved(t *testing.T) {
+	user := auth.User{ID: "1", Name: ":system:project:5:"}
+	validator := &stubTokenValidator{user: user}
+	proxy := &recordingHandler{}
+
+	cfg := buildMinimalRouterConfig(t, validator, nil, proxy)
+	r := api.NewRouter(cfg)
+
+	for _, path := range []string{"/llm/v1/models", "/llm/v1/chat/completions", "/llm/v1/embeddings"} {
+		proxy.reached = false
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if !proxy.reached {
+			t.Errorf("proxy not reached for path %s (status %d)", path, rec.Code)
+		}
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	sioserver "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/socketio"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
@@ -30,6 +31,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
 )
 
 func main() {
@@ -203,6 +205,33 @@ func main() {
 		os.Exit(1)
 	}
 
+	// LLM gateway proxy (BF0.9c): optional — only wired when GATEWAY_HTTP_ADDR is
+	// set. Existing deployments without the gateway env var start normally.
+	var (
+		llmProxy           *llmproxy.Proxy
+		llmProjectResolver apimw.PersonalProjectResolver
+	)
+	if gatewayAddr := os.Getenv("GATEWAY_HTTP_ADDR"); gatewayAddr != "" {
+		proxyCfg := llmproxy.Config{
+			TargetURL:      gatewayAddr,
+			IdentitySecret: os.Getenv("GATEWAY_IDENTITY_SECRET"),
+			ClientCertFile: os.Getenv("GATEWAY_CLIENT_CERT_FILE"),
+			ClientKeyFile:  os.Getenv("GATEWAY_CLIENT_KEY_FILE"),
+			CAFile:         os.Getenv("GATEWAY_CA_FILE"),
+			ServerName:     os.Getenv("GATEWAY_SERVER_NAME"),
+		}
+		p, perr := llmproxy.New(proxyCfg)
+		if perr != nil {
+			slog.Error("llmproxy: failed to construct gateway proxy, /llm will not be mounted", "err", perr)
+		} else {
+			llmProxy = p
+			llmProjectResolver = apimw.NewDBPersonalProjectResolver(pool)
+			slog.Info("llmproxy: /llm mounted → gateway", "target", gatewayAddr)
+		}
+	} else {
+		slog.Info("llmproxy: GATEWAY_HTTP_ADDR not set, /llm route disabled")
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		Auth: api.AuthDeps{
 			Client:         authClient,
@@ -237,8 +266,10 @@ func main() {
 		ShadowMetrics:  shadowMetrics,
 		CutoverTracker: cutoverTracker,
 		CutoverRouter:  cutoverRouter,
-		AdminUI:        adminUIConfig(),
-		Storage:        storageBackend,
+		AdminUI:            adminUIConfig(),
+		Storage:            storageBackend,
+		LLMProxy:           llmProxy,
+		LLMProjectResolver: llmProjectResolver,
 	})
 
 	// Combine chi router + Socket.IO on one port

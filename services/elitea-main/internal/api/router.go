@@ -90,6 +90,17 @@ type RouterConfig struct {
 	AdminUI          *adminui.Config
 	Storage          storage.Backend
 	BudgetAlertStore *gateway.BudgetAlertStore
+
+	// LLMProxy, when set, is mounted at /llm and proxies to elitea-llm-gateway.
+	// It is constructed in main.go from GATEWAY_HTTP_ADDR. When nil, the /llm
+	// route is not registered so existing deployments without the gateway are
+	// unaffected (BF0.9c graceful/optional wiring).
+	LLMProxy http.Handler
+	// LLMProjectResolver resolves the caller's personal project id for the
+	// Project middleware applied on the /llm path. When LLMProxy is set but
+	// LLMProjectResolver is nil, the middleware still handles system project-user
+	// names (which need no DB lookup); only DB-backed resolution is skipped.
+	LLMProjectResolver apimw.PersonalProjectResolver
 }
 
 func NewRouter(cfg RouterConfig) chi.Router {
@@ -621,6 +632,20 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			}
 		})
 	})
+
+	// /llm — edge → gateway streaming proxy (BF0.9c).
+	// Only mounted when LLMProxy is configured (GATEWAY_HTTP_ADDR set in main.go).
+	// The Auth middleware already wraps the group below; /llm sits inside it so
+	// callers must present a valid token. After auth, the Project middleware
+	// resolves the caller's project id and injects it into the context before the
+	// proxy adds signed identity headers.
+	if cfg.LLMProxy != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret}))
+			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.LLMProjectResolver}))
+			r.Mount("/llm", cfg.LLMProxy)
+		})
+	}
 
 	return r
 }
