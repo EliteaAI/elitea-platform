@@ -49,6 +49,8 @@ func main() {
 		cmdBudgetStatusAudit(os.Args[2:])
 	case "sse-flush-check":
 		cmdSSEFlushCheck(os.Args[2:])
+	case "cost-parity":
+		cmdCostParity(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -67,11 +69,13 @@ Commands:
   decommission-check   Verify all endpoints are in "go" state for decommission
   budget-status-audit  Scan --paths for budget/quota call sites that handle 429 but not 402
   sse-flush-check      Assert the gateway streams SSE incrementally for both dialects
+  cost-parity          Assert gateway nano-USD cost math matches the pylon CostCalculator
 
 Options:
   --force              Skip readiness gate checks
   --paths <roots>      (budget-status-audit) comma-separated roots to scan
   --gateway-url <url>  (sse-flush-check) gateway base URL (default http://localhost:8083)
+  --against <ref>      (cost-parity) reference cost model to compare against (default pylon)
 
 Environment:
   ELITEA_URL           Base URL of elitea-main (default: http://localhost:8080)
