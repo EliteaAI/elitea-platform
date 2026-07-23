@@ -88,11 +88,11 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] `services/elitea-llm-gateway/internal/llmproxy/models.go`: resolve from `p_{projectID}.configuration` (section `llm`, field `llm_model`), 60s TTL cache; NOT routed through core
   - [x] Single-model `/v1/models/{name}` returns 200/404
 
-- [ ] BF0.6 Governance config-authoring surface (gates the full-feature CEL/per-model/MCP items)
-  - [ ] Add `governanceSection()` to `services/elitea-main/internal/api/v2/admin/config_schemas.go` (enum rate_policy, number budget limits, integer rate limits, array MCP allowlist, enum_source project/team/model pickers)
-  - [ ] Global governance config table + CRUD (reuse configurations/handler.go JSONB pattern; NOT p_{projectID} scope); the gateway GovernanceStore reads these rows → Bifrost Table* at load
-  - [ ] Server-side RBAC (baseline): wrap ALL governance read/write/CRUD endpoints with `RequirePermissions("configuration.governance")` via middleware/rbac.go — the authorization boundary is the server; the section's client-side required_permission only hides the UI
-  - [ ] CEL routing rules: build `admin_ui/src/SchemaForm/RoutingRuleEditor.jsx` (CEL field w/ highlighting + weighted-target table w/ inline Σ=1.0 + scope/priority); server MUST compile CEL + re-verify weights==1.0 on save (also a type:action "Validate CEL" control)
+- [x] BF0.6 Governance config-authoring surface (gates the full-feature CEL/per-model/MCP items)
+  - [x] Add `governanceSection()` to `services/elitea-main/internal/api/v2/admin/config_schemas.go` (enum rate_policy, number budget limits, integer rate limits, array MCP allowlist, enum_source project/team/model pickers)
+  - [x] Global governance config table + CRUD (reuse configurations/handler.go JSONB pattern; NOT p_{projectID} scope); the gateway GovernanceStore reads these rows → Bifrost Table* at load
+  - [x] Server-side RBAC (baseline): wrap ALL governance read/write/CRUD endpoints with `RequirePermissions("configuration.governance")` via middleware/rbac.go — the authorization boundary is the server; the section's client-side required_permission only hides the UI
+  - [x] CEL routing rules: build `admin_ui/src/SchemaForm/RoutingRuleEditor.jsx` (CEL field w/ highlighting + weighted-target table w/ inline Σ=1.0 + scope/priority); server MUST compile CEL + re-verify weights==1.0 on save (also a type:action "Validate CEL" control)
 
 - [ ] BF0.6t Gateway llmproxy package coverage gate
   - [ ] `services/elitea-llm-gateway/internal/llmproxy` >= 85% coverage (handler, SSE loop, GovernanceStore, models synthesis)

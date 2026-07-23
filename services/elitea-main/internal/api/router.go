@@ -257,9 +257,13 @@ func NewRouter(cfg RouterConfig) chi.Router {
 					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
 				}
 				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
+				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)
 				r.Group(func(r chi.Router) {
 					r.Use(apimw.RequirePermissions("configuration.governance"))
-					r.Mount("/gateway", budgetAlertHandler.Routes())
+					r.Route("/gateway", func(r chi.Router) {
+						r.Mount("/", budgetAlertHandler.Routes())
+						governanceHandler.Register(r)
+					})
 				})
 			})
 
