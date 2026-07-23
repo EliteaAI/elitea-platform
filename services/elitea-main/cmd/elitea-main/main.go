@@ -19,12 +19,14 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	sioserver "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/socketio"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/natsbus"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
@@ -105,7 +107,29 @@ func main() {
 		}
 		slog.Info("auth: OIDC enabled", "issuer", oidcCfg.IssuerURL)
 	}
-	eventBus := redis.NewEventBus(rdb, "elitea-main")
+	// EventBus: NATS gateway.events.* when GATEWAY_NATS_URL is set (design §8.1
+	// re-points the platform event stream off Redis pub/sub), else Redis
+	// pub/sub. A NATS dial failure at boot is non-fatal — elitea-main falls back
+	// to Redis rather than refusing to start, matching the gateway's
+	// non-fatal-NATS-boot policy.
+	redisEventBus := redis.NewEventBus(rdb, "elitea-main")
+	var (
+		eventBus    eventSubscriber = redisEventBus
+		healthPing  health.Checker  = redisEventBus
+		eventSource v2events.EventSource
+	)
+	if natsURL := os.Getenv("GATEWAY_NATS_URL"); natsURL != "" {
+		nb, nerr := natsbus.Connect(natsURL, "elitea-main", "elitea-main")
+		if nerr != nil {
+			slog.Warn("eventbus: NATS connect failed, falling back to Redis pub/sub", "err", nerr, "url", natsURL)
+		} else {
+			slog.Info("eventbus: using NATS gateway.events.*", "url", natsURL)
+			eventBus = nb
+			healthPing = nb
+			eventSource = nb
+			defer nb.Close()
+		}
+	}
 
 	// Repositories (declared early so dispatcher can reference webhookRepo)
 	appsRepo := repos.NewApplicationsRepo(pool)
@@ -198,7 +222,7 @@ func main() {
 		Pool: pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
-			Redis: eventBus,
+			Redis: healthPing,
 		},
 		AppsRepo:       appsRepo,
 		SkillsRepo:     skillsRepo,
@@ -208,6 +232,7 @@ func main() {
 		ConvsRepo:      convsRepo,
 		WebhookRepo:    webhookRepo,
 		RedisClient:    rdb,
+		EventSource:    eventSource,
 		Shadow:         comparator,
 		ShadowMetrics:  shadowMetrics,
 		CutoverTracker: cutoverTracker,
@@ -281,4 +306,12 @@ type poolChecker struct {
 
 func (p *poolChecker) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
+}
+
+// eventSubscriber is the subset of the EventBus main.go needs: subscribing the
+// webhook dispatcher to platform events. Both transports satisfy it —
+// redis.EventBus and natsbus.EventBus share Subscribe(ctx, channel,
+// redis.EventHandler).
+type eventSubscriber interface {
+	Subscribe(ctx context.Context, channel string, handler redis.EventHandler)
 }

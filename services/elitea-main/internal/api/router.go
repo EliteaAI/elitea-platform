@@ -78,6 +78,10 @@ type RouterConfig struct {
 	ConvsRepo     v2convs.Repository
 	WebhookRepo   webhook.Repository
 	RedisClient   *goredis.Client
+	// EventSource, when set, backs the project SSE stream (and takes precedence
+	// over RedisClient). It is the NATS EventBus when the platform event stream
+	// is re-pointed to gateway.events.* (design §8.1).
+	EventSource v2events.EventSource
 
 	Shadow           *shadow.Comparator
 	ShadowMetrics    *shadow.Metrics
@@ -602,7 +606,13 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			}
 
 			// === Events (SSE) ===
-			if cfg.RedisClient != nil {
+			// Prefer an explicit EventSource (NATS EventBus when the platform
+			// event stream is re-pointed to gateway.events.*; design §8.1); fall
+			// back to raw Redis pub/sub otherwise.
+			switch {
+			case cfg.EventSource != nil:
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(cfg.EventSource).Routes())
+			case cfg.RedisClient != nil:
 				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(cfg.RedisClient).Routes())
 			}
 		})
