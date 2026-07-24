@@ -35,11 +35,14 @@ code_required="$(grep -rhoE 'os\.Getenv\("[A-Z][A-Z0-9_]+"' \
                  | sed -E 's/.*\("//; s/"$//' | sort -u)"
 
 # --- 2. env vars the CHART can set --------------------------------------------
-# a) keys of the .Values.env map; b) hard-coded names in template conditionals.
+# a) keys of the .Values.env map (plaintext); b) keys of the .Values.secrets map
+# (rendered as valueFrom.secretKeyRef); c) hard-coded names in template blocks
+# (e.g. the mtls TLS paths). All three are legitimate ways the chart sets an env.
 chart_env="$(yq -r '.env // {} | keys | .[]' "$CHART/values.yaml" 2>/dev/null | sort -u)"
+chart_secrets="$(yq -r '.secrets // {} | keys | .[]' "$CHART/values.yaml" 2>/dev/null | sort -u)"
 chart_tmpl="$(grep -rhoE 'name: [A-Z][A-Z0-9_]+' "$CHART/templates" 2>/dev/null \
               | sed -E 's/name: //' | sort -u)"
-chart_all="$(printf '%s\n%s\n' "$chart_env" "$chart_tmpl" | sort -u | sed '/^$/d')"
+chart_all="$(printf '%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" | sort -u | sed '/^$/d')"
 
 allow="$(grep -vE '^\s*#|^\s*$' "$ALLOW" 2>/dev/null | sort -u || true)"
 

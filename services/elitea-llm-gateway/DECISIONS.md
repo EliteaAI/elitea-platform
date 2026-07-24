@@ -47,11 +47,17 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   3. **Coverage floor** (`scripts/coverage-floor.sh`) — enforcement packages must
      not regress below current coverage.
 
+## Resolved follow-ups
+- ✅ `SECRETS_MASTER_KEY` + `GATEWAY_IDENTITY_SECRET` now wired via the chart's
+  `secrets:` block (valueFrom.secretKeyRef, optional:true default) — provision the
+  `elitea-llm-gateway-secrets` Secret out-of-band. env-drift gate updated to read
+  `.secrets` keys; allowlist entries removed.
+- ✅ `internal/llmproxy` coverage raised 84.2% → 91.5% (coverage_boost_test.go);
+  coverage-floor bumped to 85.
+
 ## Known follow-ups (not blocking, need a human)
-- `SECRETS_MASTER_KEY` has no Helm secretRef wiring (external-secrets vs values is
-  an ops decision). It's allowlisted in env-drift so the gate documents it rather
-  than failing.
-- `internal/llmproxy` coverage is 84.2% (floor temporarily 84); raise tests +
-  floor back to 85.
+- Set `secrets.*.optional: false` in a production values overlay so a missing
+  Secret fails the pod instead of running degraded (identity HMAC bypassable /
+  vault single-level). Left `true` in the base chart for local/dev.
 - elitea-main env-drift is WARN-only (chart sets 7, code reads 30+ via external
   secrets); tightening it is a separate effort.
