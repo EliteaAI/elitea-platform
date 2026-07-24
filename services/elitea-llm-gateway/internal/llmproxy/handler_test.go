@@ -609,6 +609,17 @@ func TestUnaryErrorPaths_OpenAIDialects(t *testing.T) {
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", rec.Code)
 			}
+			// Assert OpenAI-shaped error body: error.message non-empty and error.type set.
+			var out openAIError
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("unmarshal error body: %v — body=%s; must be OpenAI-shaped {error:{...}}", err, rec.Body.String())
+			}
+			if out.Error.Message == "" {
+				t.Errorf("error.message is empty; %s must emit OpenAI-shaped errors with non-empty message", tc.name)
+			}
+			if out.Error.Type == "" {
+				t.Errorf("error.type is empty; %s must emit OpenAI-shaped errors with non-empty type", tc.name)
+			}
 		})
 	}
 }

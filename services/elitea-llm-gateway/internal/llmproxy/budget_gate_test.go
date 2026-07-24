@@ -184,6 +184,11 @@ func (t *trackingRouter) ResponsesStreamRequest(ctx *schemas.BifrostContext, req
 	return t.fakeRouter.ResponsesStreamRequest(ctx, req)
 }
 
+func (t *trackingRouter) CountTokensRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.CountTokensRequest(ctx, req)
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // chatReqWithProject builds an httptest.Request for /llm/v1/chat/completions
@@ -1053,6 +1058,77 @@ func TestDrainBilling_WaitsForInFlightGoroutine(t *testing.T) {
 	if got := slow.getLastUpdateCostNano(); got != wantCostNano {
 		t.Errorf("UpdateUsage costNano = %d, want %d — wrong spend recorded", got, wantCostNano)
 	}
+}
+
+// ── CountTokens budget gate ───────────────────────────────────────────────────
+
+// countTokensReqWithProject builds a POST /llm/v1/messages/count_tokens request
+// in Anthropic count-tokens format with the given project-id header.
+func countTokensReqWithProject(t *testing.T, projectID string) *http.Request {
+	t.Helper()
+	body := `{"model":"anthropic/claude-3-5-sonnet","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages/count_tokens", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if projectID != "" {
+		req.Header.Set(headerProjectID, projectID)
+	}
+	return req
+}
+
+// TestBudgetGate_CountTokens_Block402_ProviderNotCalled verifies that an
+// over-budget project receives HTTP 402 on the /messages/count_tokens path and
+// that the router's CountTokensRequest is never invoked.  Also verifies the
+// Allow (under-budget) case: CountTokensRequest IS called and 200 is returned.
+func TestBudgetGate_CountTokens_Block402_ProviderNotCalled(t *testing.T) {
+	t.Run("block402 → 402, CountTokensRequest not called", func(t *testing.T) {
+		gate := &fakeBudgetChecker{
+			checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy},
+			updated:      make(chan struct{}),
+		}
+		router := &trackingRouter{}
+		router.countResp = &schemas.BifrostCountTokensResponse{}
+		h := newBudgetHandler(router, gate, 0)
+
+		rec := httptest.NewRecorder()
+		h.CountTokens(rec, countTokensReqWithProject(t, "42"))
+
+		if rec.Code != http.StatusPaymentRequired {
+			t.Fatalf("status = %d, want 402 (count_tokens must be gated)", rec.Code)
+		}
+		if router.called.Load() {
+			t.Error("CountTokensRequest was called despite Block402 verdict — gate did not block")
+		}
+		var out openAIError
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal error body: %v", err)
+		}
+		if out.Error.Type != "budget_exceeded" {
+			t.Errorf("error.type = %q, want budget_exceeded", out.Error.Type)
+		}
+		if out.Error.Code != "insufficient_quota" {
+			t.Errorf("error.code = %q, want insufficient_quota", out.Error.Code)
+		}
+	})
+
+	t.Run("allow → CountTokensRequest called, 200", func(t *testing.T) {
+		gate := &fakeBudgetChecker{
+			checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy},
+			updated:      make(chan struct{}),
+		}
+		router := &trackingRouter{}
+		router.countResp = &schemas.BifrostCountTokensResponse{}
+		h := newBudgetHandler(router, gate, 0)
+
+		rec := httptest.NewRecorder()
+		h.CountTokens(rec, countTokensReqWithProject(t, "42"))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if !router.called.Load() {
+			t.Error("CountTokensRequest was NOT called despite Allow verdict")
+		}
+	})
 }
 
 // TestDrainBilling_NewRequestsRejectedAfterDrain verifies that billing goroutines

@@ -46,6 +46,10 @@ env:
   GATEWAY_INITIAL_POOL_SIZE: "100"
   GATEWAY_PROVIDER_CONCURRENCY: "50"
   GATEWAY_LOG_LEVEL: "info"
+  # NATS budget-path circuit breaker (§8.5). Trip after N consecutive failures;
+  # probe again after the open-duration. Mirror config.go defaults.
+  LLM_BUDGET_CB_FAILURE_THRESHOLD: "3"
+  LLM_BUDGET_CB_OPEN_DURATION_SEC: "10"
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS

@@ -25,7 +25,7 @@ ALLOW="$ROOT/scripts/env-drift-allowlist.txt"
 # --- 1. env vars the code READS, split by whether they have a default ---------
 # os.Getenv("X")  -> required (no default)  -> FAIL tier if unset by chart
 # *Or("X", ...)   -> defaulted              -> WARN tier if unset by chart
-code_all="$(grep -rhoE '(os\.Getenv|[a-zA-Z]+Or)\("[A-Z][A-Z0-9_]+"' \
+code_all="$(grep -rhoE '(os\.Getenv|[a-zA-Z0-9]+Or)\("[A-Z][A-Z0-9_]+"' \
               "$ROOT/internal" --include='*.go' 2>/dev/null \
             | grep -v '_test.go' \
             | sed -E 's/.*\("//; s/"$//' | sort -u)"
