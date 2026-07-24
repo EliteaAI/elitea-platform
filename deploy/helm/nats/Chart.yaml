@@ -1,0 +1,16 @@
+apiVersion: v2
+name: nats
+description: >-
+  NATS JetStream coordination substrate for elitea-llm-gateway (BF0.2b).
+  Wraps the upstream nats chart; profiles select scale-1 (replicas=1, HA waived)
+  or HA (replicas>=3, RAFT quorum). NATS Server 2.12.0+ (required for Nats-Incr).
+type: application
+version: 0.1.0
+# appVersion pins the NATS Server line: 2.12.0+ is REQUIRED for the atomic
+# Nats-Incr KV operation the budget counters depend on (design §8.1.1, ADR-49).
+appVersion: "2.12.0"
+dependencies:
+  - name: nats
+    # Pinned upstream chart version that ships a NATS Server 2.12.x image.
+    version: "1.3.9"
+    repository: "https://nats-io.github.io/k8s/helm/charts/"

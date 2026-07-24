@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,18 +17,22 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	sioserver "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/socketio"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/natsbus"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
 )
 
 func main() {
@@ -105,7 +110,29 @@ func main() {
 		}
 		slog.Info("auth: OIDC enabled", "issuer", oidcCfg.IssuerURL)
 	}
-	eventBus := redis.NewEventBus(rdb, "elitea-main")
+	// EventBus: NATS gateway.events.* when GATEWAY_NATS_URL is set (design §8.1
+	// re-points the platform event stream off Redis pub/sub), else Redis
+	// pub/sub. A NATS dial failure at boot is non-fatal — elitea-main falls back
+	// to Redis rather than refusing to start, matching the gateway's
+	// non-fatal-NATS-boot policy.
+	redisEventBus := redis.NewEventBus(rdb, "elitea-main")
+	var (
+		eventBus    eventSubscriber = redisEventBus
+		healthPing  health.Checker  = redisEventBus
+		eventSource v2events.EventSource
+	)
+	if natsURL := os.Getenv("GATEWAY_NATS_URL"); natsURL != "" {
+		nb, nerr := natsbus.Connect(natsURL, "elitea-main", "elitea-main")
+		if nerr != nil {
+			slog.Warn("eventbus: NATS connect failed, falling back to Redis pub/sub", "err", nerr, "url", natsURL)
+		} else {
+			slog.Info("eventbus: using NATS gateway.events.*", "url", natsURL)
+			eventBus = nb
+			healthPing = nb
+			eventSource = nb
+			defer nb.Close()
+		}
+	}
 
 	// Repositories (declared early so dispatcher can reference webhookRepo)
 	appsRepo := repos.NewApplicationsRepo(pool)
@@ -179,13 +206,51 @@ func main() {
 		os.Exit(1)
 	}
 
+	// LLM gateway proxy (BF0.9c): optional — only wired when GATEWAY_HTTP_ADDR is
+	// set. Existing deployments without the gateway env var start normally.
+	var (
+		llmProxy           *llmproxy.Proxy
+		llmProjectResolver apimw.PersonalProjectResolver
+	)
+	if gatewayAddr := os.Getenv("GATEWAY_HTTP_ADDR"); gatewayAddr != "" {
+		proxyCfg := llmproxy.Config{
+			TargetURL:      gatewayAddr,
+			IdentitySecret: os.Getenv("GATEWAY_IDENTITY_SECRET"),
+			ClientCertFile: os.Getenv("GATEWAY_CLIENT_CERT_FILE"),
+			ClientKeyFile:  os.Getenv("GATEWAY_CLIENT_KEY_FILE"),
+			CAFile:         os.Getenv("GATEWAY_CA_FILE"),
+			ServerName:     os.Getenv("GATEWAY_SERVER_NAME"),
+		}
+		p, perr := llmproxy.New(proxyCfg)
+		if perr != nil {
+			slog.Error("llmproxy: failed to construct gateway proxy, /llm will not be mounted", "err", perr)
+		} else {
+			llmProxy = p
+			llmProjectResolver = apimw.NewDBPersonalProjectResolver(pool)
+			slog.Info("llmproxy: /llm mounted → gateway", "target", gatewayAddr)
+		}
+	} else {
+		slog.Info("llmproxy: GATEWAY_HTTP_ADDR not set, /llm route disabled")
+	}
+
+	// Fix round-3 #5: resolve TrustedProxyCIDRs once and pass them into AuthDeps
+	// so BOTH AuthConfig{} constructions in api.NewRouter receive the same list.
+	// Relying on the env-fallback inside apimw.Auth() would work but makes the
+	// router's behaviour invisible at the call site and breaks tests that set the
+	// CIDRs programmatically rather than via the environment.
+	var trustedProxyCIDRs []string
+	if raw := os.Getenv("TRUSTED_PROXY_CIDRS"); raw != "" {
+		trustedProxyCIDRs = strings.Split(raw, ",")
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		Auth: api.AuthDeps{
-			Client:         authClient,
-			Validator:      localValidator,
-			SessionHandler: sessionHandler,
-			OIDCHandler:    oidcHandler,
-			SessionSecret:  jwtSecret,
+			Client:            authClient,
+			Validator:         localValidator,
+			SessionHandler:    sessionHandler,
+			OIDCHandler:       oidcHandler,
+			SessionSecret:     jwtSecret,
+			TrustedProxyCIDRs: trustedProxyCIDRs,
 		},
 		Indexer: api.IndexerDeps{
 			Predictor:      indexerClient,
@@ -198,7 +263,7 @@ func main() {
 		Pool: pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
-			Redis: eventBus,
+			Redis: healthPing,
 		},
 		AppsRepo:       appsRepo,
 		SkillsRepo:     skillsRepo,
@@ -208,12 +273,15 @@ func main() {
 		ConvsRepo:      convsRepo,
 		WebhookRepo:    webhookRepo,
 		RedisClient:    rdb,
+		EventSource:    eventSource,
 		Shadow:         comparator,
 		ShadowMetrics:  shadowMetrics,
 		CutoverTracker: cutoverTracker,
 		CutoverRouter:  cutoverRouter,
-		AdminUI:        adminUIConfig(),
-		Storage:        storageBackend,
+		AdminUI:            adminUIConfig(),
+		Storage:            storageBackend,
+		LLMProxy:           llmProxy,
+		LLMProjectResolver: llmProjectResolver,
 	})
 
 	// Combine chi router + Socket.IO on one port
@@ -281,4 +349,12 @@ type poolChecker struct {
 
 func (p *poolChecker) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
+}
+
+// eventSubscriber is the subset of the EventBus main.go needs: subscribing the
+// webhook dispatcher to platform events. Both transports satisfy it —
+// redis.EventBus and natsbus.EventBus share Subscribe(ctx, channel,
+// redis.EventHandler).
+type eventSubscriber interface {
+	Subscribe(ctx context.Context, channel string, handler redis.EventHandler)
 }

@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nats-bootstrap.fullname" . }}
+  labels:
+    {{- include "nats-bootstrap.labels" . | nindent 4 }}
+  annotations:
+    # Runs after NATS is up (post-install/upgrade); idempotent so re-runs on
+    # every upgrade are safe. Deleted before the next hook so the Job name is
+    # reusable across releases.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  # Bounded so a wedged Job (e.g. NATS never comes up) does not hang the release.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "nats-bootstrap.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: nats-bootstrap
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/scripts/bootstrap.sh"]
+          env:
+            # The bootstrap script reaches NATS via NATS_ARGS --server; using an
+            # explicit URL avoids depending on an in-pod nats context.
+            - name: NATS_ARGS
+              value: "--server {{ .Values.natsUrl }} {{ .Values.extraNatsArgs }}"
+            - name: NATS_REPLICAS
+              value: {{ .Values.replicas | quote }}
+            - name: NATS_ALERT_COOLDOWN
+              value: {{ .Values.alertCooldown | quote }}
+            - name: NATS_DELTAS_DUPE_WINDOW
+              value: {{ .Values.deltas.duplicateWindow | quote }}
+            - name: NATS_DELTAS_MAX_AGE
+              value: {{ .Values.deltas.maxAge | quote }}
+            - name: NATS_DELTAS_MAX_BYTES
+              value: {{ .Values.deltas.maxBytes | quote }}
+            - name: NATS_DELTAS_MAX_MSGS
+              value: {{ .Values.deltas.maxMsgs | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "nats-bootstrap.fullname" . }}
+            defaultMode: 0755

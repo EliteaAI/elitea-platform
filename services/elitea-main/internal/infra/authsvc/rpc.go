@@ -62,6 +62,7 @@ type validateTokenPayload struct {
 type validateTokenResponse struct {
 	UserID      string   `json:"user_id"`
 	Email       string   `json:"email"`
+	Name        string   `json:"name"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 }
@@ -112,6 +113,7 @@ func (c *Client) ValidateToken(ctx context.Context, token string) (auth.User, er
 		return auth.User{
 			ID:          data.UserID,
 			Email:       data.Email,
+			Name:        data.Name,
 			Roles:       data.Roles,
 			Permissions: data.Permissions,
 		}, nil

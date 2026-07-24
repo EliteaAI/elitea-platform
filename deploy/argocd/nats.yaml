@@ -1,0 +1,34 @@
+# ArgoCD Application: NATS JetStream coordination substrate (BF0.2b).
+# Sync-wave -2 so NATS is healthy before the bootstrap Job (-1) and the gateway
+# (0). Defaults to the scale-1 profile; HA deployments swap the values file to
+# values-ha.yaml and set nats-bootstrap replicas=3.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elitea-nats
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eliteaai/elitea-platform
+    targetRevision: main
+    path: deploy/helm/nats
+    helm:
+      valueFiles:
+        # scale-1 profile (design §8.1.1). HA: swap to values-ha.yaml.
+        - values-scale1.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elitea-gateway
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The upstream nats chart is a dependency; ArgoCD must build it.
+      - ServerSideApply=true
