@@ -50,6 +50,18 @@ class GatewayServiceServicer:
         """ChatCompletions is a server-streaming RPC that relays a multi-model chat
         request to the underlying LLM provider and streams token chunks back to
         the caller until the response is complete.
+
+        DEPRECATED (BF0.7 / ADR-0015 §9.4): this RPC was designed for the retired
+        Python LiteLLM adapter. The elitea-main → gateway internal hop is an mTLS
+        HTTP/1.1 streaming reverse proxy, NOT gRPC, so this RPC is stranded. A
+        deterministic usage audit across pylon_indexer and elitea-sdk found NO live
+        caller (only the generated stubs reference it), so per spec-bifrost-migration
+        §6 it is marked deprecated. The RPC and its request/response are retained
+        (deleting them would break the FILE breaking-rule baseline) but must not be
+        used. Their unused field-number tails are `reserved` below to freeze the
+        contract. If a typed internal transport is ever preferred over the reverse
+        proxy (the deferred §9.4 option), lift those reservations and rename this
+        RPC to InternalAgentStream.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

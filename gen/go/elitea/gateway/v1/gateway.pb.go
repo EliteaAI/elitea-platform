@@ -23,6 +23,11 @@ const (
 
 // ChatCompletionsRequest mirrors the OpenAI Chat Completions API request body,
 // augmented with Elitea-specific multi-tenant fields.
+//
+// DEPRECATED (BF0.7): request type of the stranded ChatCompletions RPC. Not
+// used by any live caller; retained for FILE breaking-rule compatibility.
+//
+// Deprecated: Marked as deprecated in elitea/gateway/v1/gateway.proto.
 type ChatCompletionsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// project_id scopes model access rules to the calling tenant project.
@@ -141,6 +146,10 @@ func (x *ChatCompletionsRequest) GetRequestId() string {
 }
 
 // ChatMessage is a single turn in the conversation history.
+//
+// DEPRECATED (BF0.7): only referenced by the stranded ChatCompletionsRequest.
+//
+// Deprecated: Marked as deprecated in elitea/gateway/v1/gateway.proto.
 type ChatMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// role is "system", "user", "assistant", or "tool".
@@ -215,6 +224,11 @@ func (x *ChatMessage) GetToolCallId() string {
 
 // ChatCompletionsChunk is a single server-streaming chunk from the LLM.
 // The stream terminates with a chunk where finish_reason is non-empty.
+//
+// DEPRECATED (BF0.7): response type of the stranded ChatCompletions RPC. Not
+// used by any live caller; retained for FILE breaking-rule compatibility.
+//
+// Deprecated: Marked as deprecated in elitea/gateway/v1/gateway.proto.
 type ChatCompletionsChunk struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// id is the provider-assigned completion ID (same across all chunks).
@@ -299,6 +313,10 @@ func (x *ChatCompletionsChunk) GetModel() string {
 }
 
 // TokenUsage reports token consumption for billing and analytics.
+//
+// DEPRECATED (BF0.7): only referenced by the stranded ChatCompletionsChunk.
+//
+// Deprecated: Marked as deprecated in elitea/gateway/v1/gateway.proto.
 type TokenUsage struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	PromptTokens     int32                  `protobuf:"varint,1,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
@@ -614,7 +632,7 @@ var File_elitea_gateway_v1_gateway_proto protoreflect.FileDescriptor
 
 const file_elitea_gateway_v1_gateway_proto_rawDesc = "" +
 	"\n" +
-	"\x1felitea/gateway/v1/gateway.proto\x12\x11elitea.gateway.v1\"\xc2\x02\n" +
+	"\x1felitea/gateway/v1/gateway.proto\x12\x11elitea.gateway.v1\"\xd0\x02\n" +
 	"\x16ChatCompletionsRequest\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x14\n" +
@@ -627,24 +645,25 @@ const file_elitea_gateway_v1_gateway_proto_rawDesc = "" +
 	"\x05top_p\x18\a \x01(\x02R\x04topP\x12*\n" +
 	"\x11extra_params_json\x18\b \x01(\tR\x0fextraParamsJson\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\t \x01(\tR\trequestId\"q\n" +
+	"request_id\x18\t \x01(\tR\trequestId:\x02\x18\x01J\b\b\n" +
+	"\x10\x80\x80\x80\x80\x02\"\x7f\n" +
 	"\vChatMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12 \n" +
 	"\ftool_call_id\x18\x04 \x01(\tR\n" +
-	"toolCallId\"\xbb\x01\n" +
+	"toolCallId:\x02\x18\x01J\b\b\x05\x10\x80\x80\x80\x80\x02\"\xc9\x01\n" +
 	"\x14ChatCompletionsChunk\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
 	"\rdelta_content\x18\x02 \x01(\tR\fdeltaContent\x12#\n" +
 	"\rfinish_reason\x18\x03 \x01(\tR\ffinishReason\x123\n" +
 	"\x05usage\x18\x04 \x01(\v2\x1d.elitea.gateway.v1.TokenUsageR\x05usage\x12\x14\n" +
-	"\x05model\x18\x05 \x01(\tR\x05model\"\x81\x01\n" +
+	"\x05model\x18\x05 \x01(\tR\x05model:\x02\x18\x01J\b\b\x06\x10\x80\x80\x80\x80\x02\"\x8f\x01\n" +
 	"\n" +
 	"TokenUsage\x12#\n" +
 	"\rprompt_tokens\x18\x01 \x01(\x05R\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x02 \x01(\x05R\x10completionTokens\x12!\n" +
-	"\ftotal_tokens\x18\x03 \x01(\x05R\vtotalTokens\"2\n" +
+	"\ftotal_tokens\x18\x03 \x01(\x05R\vtotalTokens:\x02\x18\x01J\b\b\x04\x10\x80\x80\x80\x80\x02\"2\n" +
 	"\x11ListModelsRequest\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\"J\n" +
@@ -658,9 +677,9 @@ const file_elitea_gateway_v1_gateway_proto_rawDesc = "" +
 	"\x12supports_streaming\x18\x05 \x01(\bR\x11supportsStreaming\"\x0f\n" +
 	"\rHealthRequest\"(\n" +
 	"\x0eHealthResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status2\xa3\x02\n" +
-	"\x0eGatewayService\x12g\n" +
-	"\x0fChatCompletions\x12).elitea.gateway.v1.ChatCompletionsRequest\x1a'.elitea.gateway.v1.ChatCompletionsChunk0\x01\x12Y\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status2\xa8\x02\n" +
+	"\x0eGatewayService\x12l\n" +
+	"\x0fChatCompletions\x12).elitea.gateway.v1.ChatCompletionsRequest\x1a'.elitea.gateway.v1.ChatCompletionsChunk\"\x03\x88\x02\x010\x01\x12Y\n" +
 	"\n" +
 	"ListModels\x12$.elitea.gateway.v1.ListModelsRequest\x1a%.elitea.gateway.v1.ListModelsResponse\x12M\n" +
 	"\x06Health\x12 .elitea.gateway.v1.HealthRequest\x1a!.elitea.gateway.v1.HealthResponseB\xd3\x01\n" +

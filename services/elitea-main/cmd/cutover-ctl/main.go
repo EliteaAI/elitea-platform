@@ -45,6 +45,20 @@ func main() {
 		cmdPromoteAll(client, baseURL, force)
 	case "decommission-check":
 		cmdDecommissionCheck(client, baseURL)
+	case "budget-status-audit":
+		cmdBudgetStatusAudit(os.Args[2:])
+	case "sse-flush-check":
+		cmdSSEFlushCheck(os.Args[2:])
+	case "cost-parity":
+		cmdCostParity(os.Args[2:])
+	case "models-parity":
+		cmdModelsParity(os.Args[2:])
+	case "overhead-check":
+		cmdOverheadCheck(os.Args[2:])
+	case "budget-check":
+		cmdBudgetCheck(os.Args[2:])
+	case "cutover-verify":
+		cmdCutoverVerify(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -61,9 +75,31 @@ Commands:
   promote-all          Advance ALL eligible endpoints to next state
   rollback <pattern>   Move endpoint back one state (go→canary→shadow→legacy)
   decommission-check   Verify all endpoints are in "go" state for decommission
+  budget-status-audit  Scan --paths for budget/quota call sites that handle 429 but not 402
+  sse-flush-check      Assert the gateway streams SSE incrementally for both dialects
+  cost-parity          Assert gateway nano-USD cost math matches the pylon CostCalculator
+  models-parity        Assert gateway /llm/v1/models set-equivalent to legacy for N projects (p99 < M ms)
+  overhead-check       Assert gateway-hop p99 latency < threshold from a k6 --summary-export JSON
+  budget-check         Assert over-budget returns 402 type=budget_exceeded/code=insufficient_quota + soft-alert within latency window
+  cutover-verify       Post-cutover gate BFC.9: assert zero 5xx, no litellm subprocess, zero legacy traffic, 402 block confirmed
 
 Options:
   --force              Skip readiness gate checks
+  --paths <roots>      (budget-status-audit) comma-separated roots to scan
+  --gateway-url <url>  (sse-flush-check) gateway base URL (default http://localhost:8083)
+  --against <ref>      (cost-parity) reference cost model to compare against (default pylon)
+  --min-projects <N>   (models-parity) minimum projects to check (default 5)
+  --max-p99-ms <M>     (models-parity) maximum acceptable p99 gateway /v1/models latency (default 200)
+  --projects-file <f>        (models-parity) path to the seeded projects fixture (JSON array)
+  --max-p99-overhead-ms <N>  (overhead-check) maximum acceptable gateway-hop p99 latency in ms (default 50)
+  --summary <path>           (overhead-check) path to the k6 --summary-export JSON file (required)
+  --alert-latency-s <N>      (budget-check) max seconds from 80%% crossing to soft-alert observation (default 10)
+  --project-id <N>           (budget-check) test project ID for live mode (integer, required for live check)
+  --deploy <name>            (cutover-verify) deployment name to inspect (live mode, default elitea-main)
+  --port <N>                 (cutover-verify) gateway port for HTTP probe (live mode, default 8083)
+  --litellm-svc <addr>       (cutover-verify) legacy LiteLLM service address (live mode, default litellm-svc:4000)
+  --window-m <N>             (cutover-verify) Prometheus observation window in minutes (default 15)
+  --fixture <path>           (cutover-verify) JSON cutoverState fixture file for hermetic verification (skips live cluster queries)
 
 Environment:
   ELITEA_URL           Base URL of elitea-main (default: http://localhost:8080)

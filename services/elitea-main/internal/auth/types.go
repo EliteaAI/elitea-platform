@@ -9,6 +9,7 @@ const ctxKeyUser ctxKey = "auth.user"
 type User struct {
 	ID          string   `json:"id"`
 	Email       string   `json:"email"`
+	Name        string   `json:"name,omitempty"`
 	Roles       []string `json:"roles"`
 	Permissions []string `json:"permissions"`
 	ProjectID   string   `json:"project_id,omitempty"`

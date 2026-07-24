@@ -1,0 +1,143 @@
+# scale-1 profile (design §8.1.1): a single gateway replica. HA operators
+# override replicaCount and LLM_BUDGET_EXPECTED_REPLICAS to the real count.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/eliteaai/elitea-llm-gateway
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# §9.5: gateway memory must be >=1Gi — provider streaming buffers plus the
+# bifrost object pools inflate the process well beyond the edge's footprint.
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# §9.5: provider LLM streams can run up to ~120s. A short grace period truncates
+# in-flight streams on every rolling deploy, so terminationGracePeriodSeconds
+# MUST be >=150 and rise together with the gateway's srv.Shutdown() context
+# (GATEWAY_SHUTDOWN_TIMEOUT).
+terminationGracePeriodSeconds: 150
+
+# preStop hook (§9.5). The primary drain mechanism is the gateway's own
+# SIGTERM-driven graceful shutdown (GATEWAY_SHUTDOWN_TIMEOUT, >=150s); the
+# preStop hook adds a quiet window so kube-proxy/ingress endpoints deregister
+# before SIGTERM, keeping new connections off a draining pod.
+#
+# NOTE: the runtime image is distroless/static, which has NO shell or sleep
+# binary — an `exec` sleep would fail. `enabled: false` by default; enable it
+# only with a `command` that the deployed image can actually run (e.g. the real
+# BF0.2b image bundling a sleep binary, or an httpGet variant). When disabled,
+# the app's graceful shutdown alone drains in-flight streams.
+preStop:
+  enabled: false
+  # Rendered verbatim under container.lifecycle.preStop when enabled.
+  command: ["/bin/sleep", "15"]
+
+env:
+  DATABASE_URL: ""
+  # §9.5: keep the SSE write deadline disabled and pools tuned. These mirror the
+  # config.go defaults; set explicitly so the deployment is self-documenting.
+  GATEWAY_SHUTDOWN_TIMEOUT: "150s"
+  GATEWAY_INITIAL_POOL_SIZE: "100"
+  GATEWAY_PROVIDER_CONCURRENCY: "50"
+  GATEWAY_LOG_LEVEL: "info"
+  # scale-1 default; HA operators MUST override to the real replica count.
+  LLM_BUDGET_EXPECTED_REPLICAS: "1"
+  # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
+  # client ClusterIP service provisioned by deploy/helm/nats.
+  # Must match the env var name the binary reads: GATEWAY_NATS_URL (config.go).
+  GATEWAY_NATS_URL: "nats://nats:4222"
+  # FIX #9: HMAC key verifying edge identity headers (design §5.3).
+  # REQUIRED when GATEWAY_NATS_URL is set (budget enforcement on). Set from a
+  # Kubernetes Secret — do NOT hard-code the value here.
+  # Example secretRef wiring (add to container env in deployment.yaml):
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: elitea-llm-gateway-secrets
+  #       key: identity-secret
+  GATEWAY_IDENTITY_SECRET: ""   # override via secretRef in production
+  # NOTE: GATEWAY_TLS_CERT_FILE / GATEWAY_TLS_KEY_FILE / GATEWAY_TLS_CA_FILE are
+  # NOT configured here. When mtls.enabled=true the chart injects these env vars
+  # automatically (deployment.yaml) pointing at the mtls.mountPath volume. Keeping
+  # them out of this map avoids duplicates and prevents operators from accidentally
+  # supplying conflicting paths.
+
+  # FIX 2 (MEDIUM): budget/NATS operational env vars — absent from round-1/round-2,
+  # so operators couldn't configure them and they silently took code defaults.
+  # Values below mirror config.go defaults (§8.5); override as needed.
+  #
+  # Platform-baseline NATS-failure policy (§8.5).
+  # "tiered_hybrid" (default) | "fail_open" | "fail_closed".
+  # A per-project gateway.project_budget.nats_fail_mode overrides this at runtime.
+  LLM_BUDGET_NATS_FAIL_MODE: "tiered_hybrid"
+  # How old (integer minutes) the Postgres snapshot may be before the tiered-hybrid
+  # fallback degrades to 503 (NATS_DOWN_PG_STALE). Default: 5.
+  LLM_BUDGET_PG_FRESHNESS_MIN: "5"
+  # Absolute per-replica degraded-window overspend cap in USD (§8.5).
+  # 0 = use 10 % of the project hard_limit_usd instead of a fixed cap.
+  LLM_BUDGET_NATS_DEGRADED_CAP_USD: "0"
+  # Continuous NATS outage ceiling (integer minutes). Once NATS has been down longer
+  # than this the FSM forces closed (503) regardless of snapshot freshness. Default: 10.
+  LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN: "10"
+
+# elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
+# §9.1). Named explicitly so the edge/runbook references resolve.
+service:
+  name: elitea-llm-gateway-svc
+  port: 8083
+  annotations: {}
+
+# HPA on a custom /llm SSE-connection metric (design §9.5) — CPU/memory is a poor
+# signal for I/O-bound streaming. Requires the Prometheus Adapter to surface the
+# metric; disable if that adapter is not installed (falls back to replicaCount).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Pods-metric name the Prometheus Adapter must expose (concurrent /llm SSE
+  # connections per pod). The gateway emits the underlying gauge in BF0.4/§10.
+  sseConnectionMetric: gateway_llm_sse_active_connections
+  # Scale out when average concurrent streams per pod approaches the tuned
+  # provider Concurrency budget (GATEWAY_PROVIDER_CONCURRENCY=50).
+  targetSSEConnectionsPerPod: "40"
+
+# mTLS for the elitea-main -> gateway hop (design §9.1). cert-manager issues a
+# server cert (this Deployment mounts it) and an edge client cert (elitea-main
+# mounts it) from a shared internal CA issuer.
+mtls:
+  enabled: true
+  serverSecretName: elitea-llm-gateway-server-tls
+  clientSecretName: elitea-main-gateway-client-tls
+  duration: 2160h    # 90d
+  renewBefore: 360h  # 15d
+  issuerRef:
+    # A cluster-shared internal (private-CA) issuer — NOT created by this chart.
+    name: elitea-internal-ca
+    kind: ClusterIssuer
+  # Where the server cert secret is mounted in the gateway container. The
+  # gateway serves TLS from tls.crt/tls.key and verifies client certs against
+  # ca.crt (mTLS require-and-verify).
+  mountPath: /etc/gateway/tls
+
+probes:
+  liveness:
+    path: /healthz
+    periodSeconds: 10
+    failureThreshold: 3
+  readiness:
+    path: /healthz
+    periodSeconds: 5
+    failureThreshold: 2
+
+serviceAccount:
+  create: true
+  name: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -14,7 +14,21 @@ service GatewayService {
   // ChatCompletions is a server-streaming RPC that relays a multi-model chat
   // request to the underlying LLM provider and streams token chunks back to
   // the caller until the response is complete.
-  rpc ChatCompletions(ChatCompletionsRequest) returns (stream ChatCompletionsChunk);
+  //
+  // DEPRECATED (BF0.7 / ADR-0015 §9.4): this RPC was designed for the retired
+  // Python LiteLLM adapter. The elitea-main → gateway internal hop is an mTLS
+  // HTTP/1.1 streaming reverse proxy, NOT gRPC, so this RPC is stranded. A
+  // deterministic usage audit across pylon_indexer and elitea-sdk found NO live
+  // caller (only the generated stubs reference it), so per spec-bifrost-migration
+  // §6 it is marked deprecated. The RPC and its request/response are retained
+  // (deleting them would break the FILE breaking-rule baseline) but must not be
+  // used. Their unused field-number tails are `reserved` below to freeze the
+  // contract. If a typed internal transport is ever preferred over the reverse
+  // proxy (the deferred §9.4 option), lift those reservations and rename this
+  // RPC to InternalAgentStream.
+  rpc ChatCompletions(ChatCompletionsRequest) returns (stream ChatCompletionsChunk) {
+    option deprecated = true;
+  }
 
   // ListModels returns the set of LLM models available to the calling project.
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
@@ -25,7 +39,17 @@ service GatewayService {
 
 // ChatCompletionsRequest mirrors the OpenAI Chat Completions API request body,
 // augmented with Elitea-specific multi-tenant fields.
+//
+// DEPRECATED (BF0.7): request type of the stranded ChatCompletions RPC. Not
+// used by any live caller; retained for FILE breaking-rule compatibility.
 message ChatCompletionsRequest {
+  option deprecated = true;
+
+  // Field numbers 10+ are reserved to freeze the deprecated surface (BF0.7).
+  // The §9.4 deferred option reserved field 10 for a per-request
+  // ProviderCredential; do not reuse these numbers for anything else.
+  reserved 10 to max;
+
   // project_id scopes model access rules to the calling tenant project.
   string project_id = 1;
 
@@ -55,7 +79,13 @@ message ChatCompletionsRequest {
 }
 
 // ChatMessage is a single turn in the conversation history.
+//
+// DEPRECATED (BF0.7): only referenced by the stranded ChatCompletionsRequest.
 message ChatMessage {
+  option deprecated = true;
+
+  reserved 5 to max;
+
   // role is "system", "user", "assistant", or "tool".
   string role = 1;
 
@@ -71,7 +101,15 @@ message ChatMessage {
 
 // ChatCompletionsChunk is a single server-streaming chunk from the LLM.
 // The stream terminates with a chunk where finish_reason is non-empty.
+//
+// DEPRECATED (BF0.7): response type of the stranded ChatCompletions RPC. Not
+// used by any live caller; retained for FILE breaking-rule compatibility.
 message ChatCompletionsChunk {
+  option deprecated = true;
+
+  // Field numbers 6+ are reserved to freeze the deprecated surface (BF0.7).
+  reserved 6 to max;
+
   // id is the provider-assigned completion ID (same across all chunks).
   string id = 1;
 
@@ -91,7 +129,13 @@ message ChatCompletionsChunk {
 }
 
 // TokenUsage reports token consumption for billing and analytics.
+//
+// DEPRECATED (BF0.7): only referenced by the stranded ChatCompletionsChunk.
 message TokenUsage {
+  option deprecated = true;
+
+  reserved 4 to max;
+
   int32 prompt_tokens = 1;
   int32 completion_tokens = 2;
   int32 total_tokens = 3;

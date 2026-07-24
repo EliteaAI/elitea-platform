@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
@@ -28,10 +29,10 @@ import (
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
-	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
@@ -50,6 +51,15 @@ type AuthDeps struct {
 	SessionHandler *v2auth.SessionHandler
 	OIDCHandler    *v2auth.OIDCHandler
 	SessionSecret  string
+
+	// TrustedProxyCIDRs is the list of CIDR ranges from which Traefik
+	// forward-auth headers (X-Auth-Type / X-Auth-Id / X-Auth-Reference) are
+	// accepted. When empty, the Auth middleware falls back to the
+	// TRUSTED_PROXY_CIDRS environment variable. Populate this from the
+	// TRUSTED_PROXY_CIDRS env var in main.go so both AuthConfig{} construction
+	// sites receive the same list rather than relying on the env fallback at
+	// middleware construction time (Fix round-3 #5).
+	TrustedProxyCIDRs []string
 }
 
 // IndexerDeps groups indexer/predict dependencies (future: gRPC client to elitea-indexer).
@@ -77,13 +87,29 @@ type RouterConfig struct {
 	ConvsRepo     v2convs.Repository
 	WebhookRepo   webhook.Repository
 	RedisClient   *goredis.Client
+	// EventSource, when set, backs the project SSE stream (and takes precedence
+	// over RedisClient). It is the NATS EventBus when the platform event stream
+	// is re-pointed to gateway.events.* (design §8.1).
+	EventSource v2events.EventSource
 
-	Shadow         *shadow.Comparator
-	ShadowMetrics  *shadow.Metrics
-	CutoverTracker *cutover.Tracker
-	CutoverRouter  *cutover.Router
-	AdminUI        *adminui.Config
-	Storage        storage.Backend
+	Shadow           *shadow.Comparator
+	ShadowMetrics    *shadow.Metrics
+	CutoverTracker   *cutover.Tracker
+	CutoverRouter    *cutover.Router
+	AdminUI          *adminui.Config
+	Storage          storage.Backend
+	BudgetAlertStore *gateway.BudgetAlertStore
+
+	// LLMProxy, when set, is mounted at /llm and proxies to elitea-llm-gateway.
+	// It is constructed in main.go from GATEWAY_HTTP_ADDR. When nil, the /llm
+	// route is not registered so existing deployments without the gateway are
+	// unaffected (BF0.9c graceful/optional wiring).
+	LLMProxy http.Handler
+	// LLMProjectResolver resolves the caller's personal project id for the
+	// Project middleware applied on the /llm path. When LLMProxy is set but
+	// LLMProjectResolver is nil, the middleware still handles system project-user
+	// names (which need no DB lookup); only DB-backed resolution is skipped.
+	LLMProjectResolver apimw.PersonalProjectResolver
 }
 
 func NewRouter(cfg RouterConfig) chi.Router {
@@ -176,7 +202,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret}))
+		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret, TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs}))
 
 		if cfg.CutoverRouter != nil {
 			r.Use(cfg.CutoverRouter.Middleware)
@@ -243,6 +269,22 @@ func NewRouter(cfg RouterConfig) chi.Router {
 				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
 				r.Get("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
 				r.Post("/moderation_status/{mode}/{projectID}/{entityID}", coreHandler.ModerationStatus)
+
+				// LLM gateway controls (global, no projectID). Governance
+				// spend-gating config is authorized server-side — the
+				// client-side required_permission only hides the UI.
+				if cfg.BudgetAlertStore == nil {
+					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
+				}
+				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
+				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)
+				r.Group(func(r chi.Router) {
+					r.Use(apimw.RequirePermissions("configuration.governance"))
+					r.Route("/gateway", func(r chi.Router) {
+						r.Mount("/", budgetAlertHandler.Routes())
+						governanceHandler.Register(r)
+					})
+				})
 			})
 
 			// === Scheduling ===
@@ -588,11 +630,31 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			}
 
 			// === Events (SSE) ===
-			if cfg.RedisClient != nil {
+			// Prefer an explicit EventSource (NATS EventBus when the platform
+			// event stream is re-pointed to gateway.events.*; design §8.1); fall
+			// back to raw Redis pub/sub otherwise.
+			switch {
+			case cfg.EventSource != nil:
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(cfg.EventSource).Routes())
+			case cfg.RedisClient != nil:
 				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(cfg.RedisClient).Routes())
 			}
 		})
 	})
+
+	// /llm — edge → gateway streaming proxy (BF0.9c).
+	// Only mounted when LLMProxy is configured (GATEWAY_HTTP_ADDR set in main.go).
+	// The Auth middleware already wraps the group below; /llm sits inside it so
+	// callers must present a valid token. After auth, the Project middleware
+	// resolves the caller's project id and injects it into the context before the
+	// proxy adds signed identity headers.
+	if cfg.LLMProxy != nil {
+		r.Group(func(r chi.Router) {
+			r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret, TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs}))
+			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.LLMProjectResolver}))
+			r.Mount("/llm", cfg.LLMProxy)
+		})
+	}
 
 	return r
 }

@@ -7,11 +7,11 @@ variable "REGISTRY" {
 }
 
 group "default" {
-  targets = ["elitea-main", "elitea-ui", "pylon-indexer", "elitea-scheduler"]
+  targets = ["elitea-main", "elitea-ui", "pylon-indexer", "elitea-scheduler", "elitea-llm-gateway"]
 }
 
 group "go" {
-  targets = ["elitea-main", "elitea-scheduler"]
+  targets = ["elitea-main", "elitea-scheduler", "elitea-llm-gateway"]
 }
 
 group "scheduler" {
@@ -61,5 +61,17 @@ target "pylon-indexer" {
   args       = { PYLON_VERSION = "1.2.25" }
   cache-from = ["type=gha,scope=pylon-indexer"]
   cache-to   = ["type=gha,mode=max,scope=pylon-indexer"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
+
+# Standalone module pinned to Go 1.26.4 (bifrost/core). The Containerfile pins
+# golang:1.26.4 internally, so the correct toolchain is used regardless of the
+# build runner. Context is the module directory (self-contained, off go.work).
+target "elitea-llm-gateway" {
+  context    = "./services/elitea-llm-gateway"
+  dockerfile = "Containerfile"
+  tags       = ["${REGISTRY}/elitea-llm-gateway:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-llm-gateway"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-llm-gateway"]
   platforms  = ["linux/amd64", "linux/arm64"]
 }

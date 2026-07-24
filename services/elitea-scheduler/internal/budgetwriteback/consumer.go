@@ -1,0 +1,258 @@
+package budgetwriteback
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+const (
+	// defaultBatchSize is the max messages a single Fetch pulls (§8.6: "up to
+	// 500 messages or a short block timeout").
+	defaultBatchSize = 500
+	// defaultFetchWait bounds a Fetch that finds fewer than batchSize messages,
+	// so an idle stream doesn't block the loop forever.
+	defaultFetchWait = 5 * time.Second
+	// defaultAckWait is how long JetStream waits for an ACK before redelivering
+	// (§8.6 at-least-once). Must exceed a worst-case batch apply time.
+	defaultAckWait = 30 * time.Second
+	// defaultMaxDeliver bounds redelivery attempts for a message that keeps
+	// failing to apply (§8.6). A poison delta is Term()'d earlier by validate().
+	defaultMaxDeliver = 10
+)
+
+// Message is the minimal ack surface of a JetStream message the consumer drains.
+// jetstream.Msg satisfies it (Data/Ack/Nak/Term), so the real batch adapter
+// passes messages straight through and tests inject fakes with no live server.
+type Message interface {
+	Data() []byte
+	Ack() error
+	Nak() error
+	Term() error
+}
+
+// Fetcher pulls the next batch of messages. The real implementation wraps a
+// jetstream.Consumer.Fetch; tests inject a fake to drive the drain loop offline.
+type Fetcher interface {
+	// Fetch returns up to the configured batch size, blocking at most the
+	// configured wait. An empty slice with a nil error means the stream was
+	// idle — the loop simply fetches again.
+	Fetch(ctx context.Context) ([]Message, error)
+}
+
+// Config tunes the write-back consumer. Zero values fall back to §8.6 defaults.
+type Config struct {
+	BatchSize  int
+	FetchWait  time.Duration
+	AckWait    time.Duration
+	MaxDeliver int
+}
+
+func (c Config) withDefaults() Config {
+	if c.BatchSize <= 0 {
+		c.BatchSize = defaultBatchSize
+	}
+	if c.FetchWait <= 0 {
+		c.FetchWait = defaultFetchWait
+	}
+	if c.AckWait <= 0 {
+		c.AckWait = defaultAckWait
+	}
+	if c.MaxDeliver <= 0 {
+		c.MaxDeliver = defaultMaxDeliver
+	}
+	return c
+}
+
+// Consumer drains GATEWAY_BUDGET_DELTAS and lazily persists deltas to the
+// durable accumulator tier (design §8.6). It is a single-goroutine drain loop;
+// a durable pull consumer gives multi-replica safety at the JetStream tier.
+type Consumer struct {
+	fetch  Fetcher
+	store  *Store
+	logger *slog.Logger
+}
+
+// NewConsumer builds a write-back Consumer over a message Fetcher and a Store.
+func NewConsumer(fetch Fetcher, store *Store, logger *slog.Logger) *Consumer {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Consumer{fetch: fetch, store: store, logger: logger}
+}
+
+// Run drains the stream until ctx is cancelled. Each pass fetches a batch,
+// coalesces per (scope, scope_id, period_start), and applies each key-group in
+// its own transaction; messages are ACK'd only after their group's transaction
+// commits (§8.6). A fetch error is logged and retried after a short backoff so a
+// transient JetStream blip doesn't kill the loop.
+func (c *Consumer) Run(ctx context.Context) {
+	c.logger.Info("budgetwriteback: consumer started")
+	for {
+		if ctx.Err() != nil {
+			c.logger.Info("budgetwriteback: consumer stopping")
+			return
+		}
+		msgs, err := c.fetch.Fetch(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				c.logger.Info("budgetwriteback: consumer stopping")
+				return
+			}
+			c.logger.Warn("budgetwriteback: fetch failed; retrying", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		if len(msgs) == 0 {
+			continue
+		}
+		c.processBatch(ctx, msgs)
+	}
+}
+
+// decoded pairs a parsed delta with its source message so the message can be
+// ACK'd/NAK'd after its group's outcome is known.
+type decoded struct {
+	delta BudgetDelta
+	msg   Message
+}
+
+// processBatch decodes, coalesces, and applies one fetched batch. Poison
+// messages (bad JSON or failing validation) are Term()'d immediately so they are
+// not redelivered forever. Valid messages are grouped by key; each group is
+// applied in one transaction and its messages ACK'd on commit or NAK'd on a
+// transient failure / outage deferral.
+func (c *Consumer) processBatch(ctx context.Context, msgs []Message) {
+	groups := map[deltaKey][]decoded{}
+	var order []deltaKey
+
+	for _, m := range msgs {
+		var d BudgetDelta
+		if err := json.Unmarshal(m.Data(), &d); err != nil {
+			c.logger.Error("budgetwriteback: undecodable delta; terminating", "err", err)
+			c.term(m)
+			continue
+		}
+		if err := d.validate(); err != nil {
+			c.logger.Error("budgetwriteback: invalid delta; terminating",
+				"event_id", d.EventID, "err", err)
+			c.term(m)
+			continue
+		}
+		k := d.key()
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], decoded{delta: d, msg: m})
+	}
+
+	for _, k := range order {
+		c.applyGroup(ctx, groups[k])
+	}
+}
+
+// applyGroup applies one coalesced key-group and settles its messages.
+func (c *Consumer) applyGroup(ctx context.Context, items []decoded) {
+	deltas := make([]BudgetDelta, len(items))
+	for i, it := range items {
+		deltas[i] = it.delta
+	}
+
+	outcome, err := c.store.Apply(ctx, deltas)
+	switch {
+	case err != nil:
+		// Transient DB failure: NAK for redelivery (§8.6 at-least-once). The
+		// same-transaction dedup guarantees the retry does not double-apply.
+		c.logger.Warn("budgetwriteback: apply failed; will redeliver",
+			"scope", items[0].delta.Scope, "scope_id", items[0].delta.ScopeID, "err", err)
+		c.nakAll(items)
+	case outcome == outcomeDeferred:
+		// Row is outage-owned by the gateway recovery goroutine; nothing was
+		// persisted. NAK so the delta is redelivered after recovery clears the
+		// outage flag (§8.5).
+		c.logger.Info("budgetwriteback: accumulator in outage state; deferring",
+			"scope", items[0].delta.Scope, "scope_id", items[0].delta.ScopeID)
+		c.nakAll(items)
+	default:
+		c.ackAll(items)
+	}
+}
+
+func (c *Consumer) ackAll(items []decoded) {
+	for _, it := range items {
+		if err := it.msg.Ack(); err != nil {
+			c.logger.Warn("budgetwriteback: ack failed", "event_id", it.delta.EventID, "err", err)
+		}
+	}
+}
+
+func (c *Consumer) nakAll(items []decoded) {
+	for _, it := range items {
+		if err := it.msg.Nak(); err != nil {
+			c.logger.Warn("budgetwriteback: nak failed", "event_id", it.delta.EventID, "err", err)
+		}
+	}
+}
+
+func (c *Consumer) term(m Message) {
+	if err := m.Term(); err != nil {
+		c.logger.Warn("budgetwriteback: term failed", "err", err)
+	}
+}
+
+// consumerConfig builds the durable pull-consumer config from Config (§8.6).
+func consumerConfig(cfg Config) jetstream.ConsumerConfig {
+	return jetstream.ConsumerConfig{
+		Durable:       DurableName,
+		FilterSubject: DeltaSubject,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       cfg.AckWait,
+		MaxDeliver:    cfg.MaxDeliver,
+	}
+}
+
+// jsFetcher adapts a jetstream.Consumer to the Fetcher seam.
+type jsFetcher struct {
+	cons  jetstream.Consumer
+	batch int
+	wait  time.Duration
+}
+
+// Fetch pulls one batch and converts the jetstream messages to the Message
+// seam. A batch-level error (after draining whatever messages arrived) is
+// returned so the loop can back off; individual jetstream.Msg values already
+// satisfy Message so no per-message wrapping is needed.
+func (f *jsFetcher) Fetch(ctx context.Context) ([]Message, error) {
+	mb, err := f.cons.Fetch(f.batch, jetstream.FetchMaxWait(f.wait))
+	if err != nil {
+		return nil, err
+	}
+	var out []Message
+	for m := range mb.Messages() {
+		out = append(out, m)
+	}
+	if berr := mb.Error(); berr != nil && !errors.Is(berr, context.DeadlineExceeded) {
+		return out, berr
+	}
+	return out, nil
+}
+
+// Bind creates (idempotently) the durable pull consumer on GATEWAY_BUDGET_DELTAS
+// and returns a Consumer ready to Run. js is the scheduler's JetStream handle.
+func Bind(ctx context.Context, js jetstream.JetStream, db DB, cfg Config, logger *slog.Logger) (*Consumer, error) {
+	cfg = cfg.withDefaults()
+	cons, err := js.CreateOrUpdateConsumer(ctx, DeltasStream, consumerConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	fetcher := &jsFetcher{cons: cons, batch: cfg.BatchSize, wait: cfg.FetchWait}
+	return NewConsumer(fetcher, NewStore(db), logger), nil
+}

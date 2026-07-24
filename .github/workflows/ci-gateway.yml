@@ -1,0 +1,115 @@
+name: CI — Gateway
+
+# elitea-llm-gateway is a STANDALONE Go module on Go 1.26.4 (required by
+# bifrost/core), deliberately excluded from the root go.work (which stays on
+# 1.25.8 for elitea-main/elitea-scheduler). It therefore needs its own CI job on
+# a 1.26.4 runner image, built with GOWORK=off so the workspace is never
+# consulted.
+
+on:
+  pull_request:
+    paths:
+      - "services/elitea-llm-gateway/**"
+      - ".github/workflows/ci-gateway.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/elitea-llm-gateway/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Standalone module: never resolve the parent workspace.
+  GOWORK: "off"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/elitea-llm-gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: services/elitea-llm-gateway/go.sum
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          working-directory: services/elitea-llm-gateway
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/elitea-llm-gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: services/elitea-llm-gateway/go.sum
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+      - name: Coverage floor — enforcement packages
+        # Fails if the budget-gate / governance / fail-mode / cost packages
+        # regress below their current coverage. These are the money+correctness
+        # core; a silent coverage drop there is how untested gaps slip in.
+        run: ./scripts/coverage-floor.sh coverage.out
+
+      - name: Env-drift gate — code env reads vs Helm chart
+        # Fails if the code reads a required env var (os.Getenv, no default) that
+        # the Helm chart cannot set. This class of bug (NATS_URL vs
+        # GATEWAY_NATS_URL; missing GATEWAY_TLS_*) recurred twice in review and
+        # no unit test catches it. yq is needed to read values.yaml.
+        run: |
+          command -v yq >/dev/null || { sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
+          ./scripts/env-drift-check.sh
+
+      - name: Generate llmproxy cobertura coverage (BF0.6t gate)
+        # Emits internal/llmproxy/coverage.xml consumed by the BF0.6t
+        # `type: coverage` validator (>=85%). Uses a pinned go-run tool so the
+        # gateway go.mod is not modified.
+        run: ./scripts/coverage.sh
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: gateway-coverage
+          path: |
+            services/elitea-llm-gateway/coverage.out
+            services/elitea-llm-gateway/internal/llmproxy/coverage.xml
+
+  build:
+    name: Build
+    # CI validation only — confirms the gateway binary compiles cleanly on
+    # every PR/push. Production images are built via Containerfile in
+    # publish.yml, not here.
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    defaults:
+      run:
+        working-directory: services/elitea-llm-gateway
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: services/elitea-llm-gateway/go.sum
+
+      - name: Build elitea-llm-gateway
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-llm-gateway ./cmd/elitea-llm-gateway

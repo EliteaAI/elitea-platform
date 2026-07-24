@@ -35,9 +35,22 @@ const (
 // GatewayService directly; it reaches the LLM proxy via the REST API on
 // elitea-main, which forwards to GatewayService under the hood.
 type GatewayServiceClient interface {
+	// Deprecated: Do not use.
 	// ChatCompletions is a server-streaming RPC that relays a multi-model chat
 	// request to the underlying LLM provider and streams token chunks back to
 	// the caller until the response is complete.
+	//
+	// DEPRECATED (BF0.7 / ADR-0015 §9.4): this RPC was designed for the retired
+	// Python LiteLLM adapter. The elitea-main → gateway internal hop is an mTLS
+	// HTTP/1.1 streaming reverse proxy, NOT gRPC, so this RPC is stranded. A
+	// deterministic usage audit across pylon_indexer and elitea-sdk found NO live
+	// caller (only the generated stubs reference it), so per spec-bifrost-migration
+	// §6 it is marked deprecated. The RPC and its request/response are retained
+	// (deleting them would break the FILE breaking-rule baseline) but must not be
+	// used. Their unused field-number tails are `reserved` below to freeze the
+	// contract. If a typed internal transport is ever preferred over the reverse
+	// proxy (the deferred §9.4 option), lift those reservations and rename this
+	// RPC to InternalAgentStream.
 	ChatCompletions(ctx context.Context, in *ChatCompletionsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatCompletionsChunk], error)
 	// ListModels returns the set of LLM models available to the calling project.
 	ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error)
@@ -53,6 +66,7 @@ func NewGatewayServiceClient(cc grpc.ClientConnInterface) GatewayServiceClient {
 	return &gatewayServiceClient{cc}
 }
 
+// Deprecated: Do not use.
 func (c *gatewayServiceClient) ChatCompletions(ctx context.Context, in *ChatCompletionsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChatCompletionsChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &GatewayService_ServiceDesc.Streams[0], GatewayService_ChatCompletions_FullMethodName, cOpts...)
@@ -103,9 +117,22 @@ func (c *gatewayServiceClient) Health(ctx context.Context, in *HealthRequest, op
 // GatewayService directly; it reaches the LLM proxy via the REST API on
 // elitea-main, which forwards to GatewayService under the hood.
 type GatewayServiceServer interface {
+	// Deprecated: Do not use.
 	// ChatCompletions is a server-streaming RPC that relays a multi-model chat
 	// request to the underlying LLM provider and streams token chunks back to
 	// the caller until the response is complete.
+	//
+	// DEPRECATED (BF0.7 / ADR-0015 §9.4): this RPC was designed for the retired
+	// Python LiteLLM adapter. The elitea-main → gateway internal hop is an mTLS
+	// HTTP/1.1 streaming reverse proxy, NOT gRPC, so this RPC is stranded. A
+	// deterministic usage audit across pylon_indexer and elitea-sdk found NO live
+	// caller (only the generated stubs reference it), so per spec-bifrost-migration
+	// §6 it is marked deprecated. The RPC and its request/response are retained
+	// (deleting them would break the FILE breaking-rule baseline) but must not be
+	// used. Their unused field-number tails are `reserved` below to freeze the
+	// contract. If a typed internal transport is ever preferred over the reverse
+	// proxy (the deferred §9.4 option), lift those reservations and rename this
+	// RPC to InternalAgentStream.
 	ChatCompletions(*ChatCompletionsRequest, grpc.ServerStreamingServer[ChatCompletionsChunk]) error
 	// ListModels returns the set of LLM models available to the calling project.
 	ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error)

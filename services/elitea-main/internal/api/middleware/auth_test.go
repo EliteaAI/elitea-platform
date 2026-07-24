@@ -96,7 +96,11 @@ func TestAuth_BasicAuthExtractsUsername(t *testing.T) {
 
 func TestAuth_TraefikHeaders(t *testing.T) {
 	var gotUser auth.User
-	handler := middleware.Auth(middleware.AuthConfig{Client: newTestClient()})(
+	// httptest.NewRequest sets RemoteAddr to "192.0.2.1:1234"; trust that CIDR.
+	handler := middleware.Auth(middleware.AuthConfig{
+		Client:            newTestClient(),
+		TrustedProxyCIDRs: []string{"192.0.2.0/24"},
+	})(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u, ok := auth.UserFromContext(r.Context())
 			if !ok {

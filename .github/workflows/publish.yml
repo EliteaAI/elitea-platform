@@ -75,6 +75,11 @@ jobs:
           - name: pylon-indexer
             context: ./services/pylon-indexer
             dockerfile: ./services/pylon-indexer/Containerfile
+          # Standalone module on Go 1.26.4 — its Containerfile pins
+          # golang:1.26.4, so no runner-image bump is required here.
+          - name: elitea-llm-gateway
+            context: ./services/elitea-llm-gateway
+            dockerfile: ./services/elitea-llm-gateway/Containerfile
         platform:
           - runner: ubuntu-latest
             arch: linux/amd64
@@ -130,6 +135,7 @@ jobs:
           - name: elitea-scheduler
           - name: elitea-ui
           - name: pylon-indexer
+          - name: elitea-llm-gateway
 
     steps:
       - name: Set up Docker Buildx
@@ -170,6 +176,7 @@ jobs:
           - name: elitea-scheduler
           - name: elitea-ui
           - name: pylon-indexer
+          - name: elitea-llm-gateway
 
     steps:
       - name: Install cosign
@@ -235,7 +242,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "pylon-indexer")
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "pylon-indexer" "elitea-llm-gateway")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 

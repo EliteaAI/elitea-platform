@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/budgetwriteback"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/health"
+	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/pricesync"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/rpc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-scheduler/internal/scheduler"
 )
@@ -71,8 +75,70 @@ func main() {
 	slog.Info("starting scheduler", "instance", cfg.InstanceID, "rpc_channel", cfg.RPCChannel)
 	go sched.Run(ctx)
 
+	// Price-catalog sync worker (design §8.8): refreshes gateway.gateway_models
+	// from ordered PriceSources on a ~24h cadence, off the /llm hot path.
+	if cfg.PriceSyncEnabled {
+		var sources []pricesync.PriceSource
+		if cfg.PriceSyncLiteLLM {
+			sources = append(sources, pricesync.NewLiteLLMSource(cfg.PriceSyncURL, nil))
+		}
+		if cfg.PriceSyncSeed {
+			sources = append(sources, pricesync.NewSeedSource())
+		}
+		if len(sources) == 0 {
+			slog.Warn("price-sync enabled but no sources configured; skipping worker")
+		} else {
+			syncer := pricesync.NewSyncer(pricesync.NewPoolDB(pool), sources, logger)
+			worker := pricesync.NewWorker(syncer, cfg.PriceSyncInterval, logger)
+			slog.Info("starting price-sync worker", "interval", cfg.PriceSyncInterval, "sources", len(sources))
+			go worker.Run(ctx)
+		}
+	}
+
+	// Budget write-back consumer (design §8.6): durable pull consumer draining
+	// GATEWAY_BUDGET_DELTAS into gateway.llm_budget_accumulators. Disabled unless
+	// both the flag and a NATS URL are set, so environments without NATS are
+	// unaffected. A NATS blip at boot is non-fatal (the scheduler keeps running
+	// its other jobs); the consumer resumes when NATS recovers on next restart.
+	var natsConn *nats.Conn
+	if cfg.BudgetWriteBackEnabled && cfg.BudgetWriteBackNATSURL != "" {
+		nc, err := nats.Connect(cfg.BudgetWriteBackNATSURL,
+			nats.Name("elitea-scheduler-budget-writeback"),
+			nats.Timeout(time.Second),
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(500*time.Millisecond),
+		)
+		if err != nil {
+			slog.Warn("budget write-back: NATS connect failed; consumer disabled", "err", err)
+		} else if js, jerr := jetstream.New(nc); jerr != nil {
+			slog.Warn("budget write-back: JetStream init failed; consumer disabled", "err", jerr)
+			nc.Close()
+		} else {
+			wbCfg := budgetwriteback.Config{
+				BatchSize:  cfg.BudgetWriteBackBatchSize,
+				AckWait:    cfg.BudgetWriteBackAckWait,
+				MaxDeliver: cfg.BudgetWriteBackMaxDeliver,
+			}
+			bindCtx, bc := context.WithTimeout(ctx, 5*time.Second)
+			consumer, berr := budgetwriteback.Bind(bindCtx, js, budgetwriteback.NewPoolDB(pool), wbCfg, logger)
+			bc()
+			if berr != nil {
+				slog.Warn("budget write-back: bind consumer failed; consumer disabled", "err", berr)
+				nc.Close()
+			} else {
+				natsConn = nc
+				slog.Info("starting budget write-back consumer", "batch", wbCfg.BatchSize)
+				go consumer.Run(ctx)
+			}
+		}
+	}
+
 	<-ctx.Done()
 	slog.Info("shutting down")
+
+	if natsConn != nil {
+		natsConn.Close()
+	}
 
 	shutCtx, sc := context.WithTimeout(context.Background(), 10*time.Second)
 	defer sc()

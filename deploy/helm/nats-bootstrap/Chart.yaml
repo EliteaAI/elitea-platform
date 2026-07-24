@@ -1,0 +1,10 @@
+apiVersion: v2
+name: nats-bootstrap
+description: >-
+  Post-install Job that creates the elitea-llm-gateway JetStream assets
+  (GATEWAY_BUDGET / GATEWAY_ALERT_COOLDOWN KV buckets + GATEWAY_BUDGET_DELTAS
+  stream) with duplicate_window + retention limits, at a replicas count matching
+  the NATS profile (scale-1=1, HA>=3). BF0.2b.
+type: application
+version: 0.1.0
+appVersion: "2.12.0"

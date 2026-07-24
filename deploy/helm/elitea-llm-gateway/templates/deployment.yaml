@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "elitea-llm-gateway.fullname" . }}
+  labels:
+    {{- include "elitea-llm-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "elitea-llm-gateway.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-llm-gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "elitea-llm-gateway.serviceAccountName" . }}
+      # §9.5: >=150s so in-flight LLM streams (up to ~120s) drain on rolling
+      # deploys instead of being truncated. Rises together with the gateway's
+      # srv.Shutdown() context (GATEWAY_SHUTDOWN_TIMEOUT).
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: elitea-llm-gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.mtls.enabled }}
+            # FIX 1 (HIGH): inject TLS paths so the server calls ListenAndServeTLS
+            # (TLS) or ListenAndServeTLS+RequireAndVerifyClientCert (mTLS when
+            # GATEWAY_TLS_CA_FILE is set). Paths mirror the volumeMount below.
+            # Without these the binary sees empty vars and stays on plain HTTP
+            # even though the cert secret is mounted (design §9.1, FIX #10).
+            - name: GATEWAY_TLS_CERT_FILE
+              value: {{ .Values.mtls.mountPath }}/tls.crt
+            - name: GATEWAY_TLS_KEY_FILE
+              value: {{ .Values.mtls.mountPath }}/tls.key
+            - name: GATEWAY_TLS_CA_FILE
+              value: {{ .Values.mtls.mountPath }}/ca.crt
+            {{- end }}
+          {{- if .Values.preStop.enabled }}
+          lifecycle:
+            preStop:
+              # Quiet window so endpoints deregister before SIGTERM; keeps new
+              # connections off a draining pod (§9.5). The command must be
+              # runnable by the deployed image (distroless/static has no shell).
+              exec:
+                command:
+                  {{- toYaml .Values.preStop.command | nindent 18 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.mtls.enabled }}
+          volumeMounts:
+            # Server cert (tls.crt/tls.key) + CA bundle (ca.crt) for the mTLS
+            # listener; the gateway requires-and-verifies the edge client cert
+            # against ca.crt (design §9.1).
+            - name: mtls
+              mountPath: {{ .Values.mtls.mountPath }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.mtls.enabled }}
+      volumes:
+        - name: mtls
+          secret:
+            secretName: {{ .Values.mtls.serverSecretName }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
