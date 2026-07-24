@@ -126,11 +126,12 @@ func (f *fakeNATS) fireStateChange(from, to gobreaker.State) {
 // ─── fake failmode.DB for in-memory snapshot reads ───────────────────────────
 
 type fakeDB struct {
-	row        failmode.Snapshot
-	rowErr     error
-	beginErr   error
-	beginCalls int // counts calls to Begin (proxy for PersistOutageDelta invocations)
-	mu         sync.Mutex
+	row          failmode.Snapshot
+	rowErr       error
+	beginErr     error
+	beginCalls   int // counts calls to Begin (proxy for PersistOutageDelta invocations)
+	commitCalls  int // counts successful Commits — asserts the txn was actually committed
+	mu           sync.Mutex
 }
 
 func (d *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
@@ -167,7 +168,7 @@ func (d *fakeDB) Begin(_ context.Context) (failmode.Tx, error) {
 	if d.beginErr != nil {
 		return nil, d.beginErr
 	}
-	return &nopTx{}, nil
+	return &trackingNopTx{db: d}, nil
 }
 
 // scriptedRow is shared with the failmode package pattern; we redefine a local
@@ -221,19 +222,28 @@ func assignVal(dest, v any) error {
 	return nil
 }
 
-// nopTx is a no-op transaction for UpdateUsage's outage-delta path in tests
-// where PG commits are not under test.
-type nopTx struct{}
+// trackingNopTx is like nopTx but records each successful Commit in fakeDB so
+// tests can assert the transaction was actually committed (not just opened).
+type trackingNopTx struct {
+	db *fakeDB
+}
 
-func (t *nopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *trackingNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	return scriptedRow{scanErr: errors.New("nop")}
 }
-func (t *nopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {
+func (t *trackingNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {
 	return nil, errors.New("nop")
 }
-func (t *nopTx) ExecAffected(_ context.Context, _ string, _ ...any) (int64, error) { return 1, nil }
-func (t *nopTx) Commit(_ context.Context) error                                     { return nil }
-func (t *nopTx) Rollback(_ context.Context) error                                   { return nil }
+func (t *trackingNopTx) ExecAffected(_ context.Context, _ string, _ ...any) (int64, error) {
+	return 1, nil
+}
+func (t *trackingNopTx) Commit(_ context.Context) error {
+	t.db.mu.Lock()
+	t.db.commitCalls++
+	t.db.mu.Unlock()
+	return nil
+}
+func (t *trackingNopTx) Rollback(_ context.Context) error { return nil }
 
 // ─── test helpers ─────────────────────────────────────────────────────────────
 
@@ -562,20 +572,39 @@ func TestTryAlertCooldown_Forwarded(t *testing.T) {
 }
 
 // TestStart_BindsReconcilerContext: after Start, a breaker→closed transition
-// fires the recovery reconciler. This test just verifies no panic and that the
-// wiring produced by NewGovernanceStore fires the correct HandleBreakerChange path.
+// fires the recovery reconciler and it runs with the bound context. We observe
+// this by watching fakeDB.beginCalls: the reconciler's lockOutageRows always
+// calls Begin once (even when no outage rows exist), so beginCalls > 0 proves
+// the reconciler executed. The old test merely slept and checked for no panic.
 func TestStart_BindsReconcilerContext(t *testing.T) {
 	nc := newFakeNATS()
 	db := &fakeDB{rowErr: failmode.ErrNoBudgetRow}
 	gs := newStore(nc, db) // Start is called inside newStore
 
 	// Simulate a breaker recovery edge (open → closed). The reconciler has no
-	// outage rows so runPass completes trivially.
+	// outage rows so runPass completes trivially, but it must call db.Begin once
+	// as part of lockOutageRows.
 	nc.fireStateChange(gobreaker.StateOpen, gobreaker.StateClosed)
 
-	// Give the goroutine a moment to complete; no assertion needed here beyond
-	// confirming the state-change path does not panic.
-	time.Sleep(50 * time.Millisecond)
+	// Poll for db.beginCalls > 0, confirming the reconciler actually ran.
+	// Replace the bare sleep with deterministic polling (generous 2s timeout).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		db.mu.Lock()
+		began := db.beginCalls
+		db.mu.Unlock()
+		if began > 0 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	db.mu.Lock()
+	began := db.beginCalls
+	db.mu.Unlock()
+	if began == 0 {
+		t.Fatal("recovery reconciler did not run after breaker→closed (Begin never called); Start may not have bound the context")
+	}
 	_ = gs
 }
 
@@ -668,23 +697,30 @@ func TestUpdateUsage_NATSDown_PersistOutageDelta_Called(t *testing.T) {
 		t.Fatalf("UpdateUsage must not error: %v", err)
 	}
 
-	// PersistOutageDelta runs in a goroutine; give it a short window to complete.
+	// PersistOutageDelta runs in a goroutine; poll until the commit completes
+	// (not just Begin) so we assert the txn was actually COMMITTED, not just
+	// started. A Begin-then-rollback bug would increment beginCalls but not
+	// commitCalls and would be missed by the old assertion.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		db.mu.Lock()
-		calls := db.beginCalls
+		commits := db.commitCalls
 		db.mu.Unlock()
-		if calls > 0 {
+		if commits > 0 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 
 	db.mu.Lock()
-	calls := db.beginCalls
+	begins := db.beginCalls
+	commits := db.commitCalls
 	db.mu.Unlock()
-	if calls == 0 {
+	if begins == 0 {
 		t.Fatal("PersistOutageDelta not called on NATS-down path (Begin never invoked)")
+	}
+	if commits == 0 {
+		t.Fatal("PersistOutageDelta opened a transaction but never committed it (Begin without Commit)")
 	}
 }
 
@@ -700,8 +736,9 @@ func TestUpdateUsage_NATSHealthy_PersistOutageDelta_NotCalled(t *testing.T) {
 		t.Fatalf("UpdateUsage: %v", err)
 	}
 
-	// Small sleep to ensure no goroutine fires asynchronously.
-	time.Sleep(50 * time.Millisecond)
+	// On the healthy NATS path no goroutine is spawned, so Drain() returns
+	// immediately and the assertion is deterministic — no time.Sleep needed.
+	gs.Drain()
 
 	db.mu.Lock()
 	calls := db.beginCalls

@@ -144,6 +144,11 @@ func TestSyncAdvisoryLockHeldIsNoOp(t *testing.T) {
 	if tx.committed {
 		t.Error("must not commit when lock is held")
 	}
+	// The no-op path must release the connection via Rollback (deferred in Sync),
+	// not hold the transaction open.
+	if !tx.rolledBack {
+		t.Error("lock-held path must roll back the transaction to release the connection")
+	}
 }
 
 func TestSyncFirstSourceWins(t *testing.T) {
@@ -173,6 +178,44 @@ func TestSyncFirstSourceWins(t *testing.T) {
 				t.Errorf("first-source-wins broken: gpt-4o input = %v, want 2.50", *in)
 			}
 		}
+	}
+}
+
+// TestSyncDriftAlarmFires verifies the drift-alarm code path (syncer.go:127-131)
+// executes when a second source reports an input price that disagrees with the
+// first source by more than driftThreshold (10%). The sync must still succeed
+// (first source wins), but the alarm logger path must be reached.
+func TestSyncDriftAlarmFires(t *testing.T) {
+	// first: 2.50; second: 2.90 → gap = 0.40/2.90 ≈ 13.8% > 10% → alarm fires.
+	first := &fakeSource{name: "litellm", denom: Per1M, raws: []RawModelPrice{
+		{Provider: "openai", ModelName: "gpt-4o", InputCost: fptr(2.50)},
+	}}
+	second := &fakeSource{name: "seed", denom: Per1M, raws: []RawModelPrice{
+		{Provider: "openai", ModelName: "gpt-4o", InputCost: fptr(2.90)},
+	}}
+	tx := &fakeTx{locked: true}
+	s := NewSyncer(&fakeDB{tx: tx}, []PriceSource{first, second}, quietLogger())
+
+	n, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync with drifting sources must not fail: %v", err)
+	}
+	// First source wins; one model upserted.
+	if n != 1 {
+		t.Fatalf("want 1 model upserted, got %d", n)
+	}
+	if len(tx.execArgs) != 1 {
+		t.Fatalf("want 1 upsert exec, got %d", len(tx.execArgs))
+	}
+	// The winning price must be from the first source (2.50).
+	args := tx.execArgs[0]
+	in, ok := args[2].(*float64)
+	if !ok || in == nil || !almost(*in, 2.50) {
+		t.Errorf("drift case: winning input = %v, want 2.50 (first source)", args[2])
+	}
+	// The transaction must have been committed (drift is a warning, not an abort).
+	if !tx.committed {
+		t.Error("drift alarm must not prevent commit")
 	}
 }
 
@@ -279,18 +322,28 @@ func TestPriceDrifts(t *testing.T) {
 	cases := []struct {
 		a, b float64
 		want bool
+		note string
 	}{
-		{2.50, 2.50, false}, // equal
-		{2.50, 2.60, false}, // 4% < 10%
-		{2.50, 3.00, true},  // 20% > 10%
-		{0, 0, false},       // both zero
-		{0, 1, true},        // zero vs nonzero
-		{2.50, 2.75, false}, // exactly 10% (not strictly greater)
+		{2.50, 2.50, false, "equal → no drift"},
+		{2.50, 2.60, false, "4% < 10% → no drift"},
+		{2.50, 3.00, true, "20% > 10% → drift"},
+		{0, 0, false, "both zero → no drift"},
+		{0, 1, true, "zero vs nonzero → always drift"},
+		// (2.50, 2.75): |2.75-2.50|/max(2.75,2.50) = 0.25/2.75 ≈ 9.09% — below 10%.
+		{2.50, 2.75, false, "9.09% < 10% → no drift"},
+		// Exact boundary: |a-b|/max = 0.10 exactly → not strictly greater → no drift.
+		// max(a,b)=b, b-a = 0.1*b → a = 0.9*b; choose b=3.00, a=2.70.
+		// |3.00-2.70|/3.00 = 0.30/3.00 = 10.00% exactly → not strictly greater → false.
+		{2.70, 3.00, false, "10.00% exactly at threshold → not strictly greater → no drift"},
+		// Just above threshold: b=3.00, a=2.69 → |3.00-2.69|/3.00 = 0.31/3.00 ≈ 10.33% > 10%.
+		{2.69, 3.00, true, "10.33% just above 10% boundary → drift"},
 	}
 	for _, c := range cases {
-		if got := priceDrifts(c.a, c.b); got != c.want {
-			t.Errorf("priceDrifts(%v,%v) = %v, want %v", c.a, c.b, got, c.want)
-		}
+		t.Run(c.note, func(t *testing.T) {
+			if got := priceDrifts(c.a, c.b); got != c.want {
+				t.Errorf("priceDrifts(%v,%v) = %v, want %v (%s)", c.a, c.b, got, c.want, c.note)
+			}
+		})
 	}
 }
 

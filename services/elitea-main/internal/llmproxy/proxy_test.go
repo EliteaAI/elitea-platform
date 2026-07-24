@@ -93,23 +93,40 @@ func TestProxy_ForwardsAndInjectsIdentity(t *testing.T) {
 }
 
 func TestProxy_StripsClientSpoofedIdentity(t *testing.T) {
-	var gotProject string
+	var gotHeaders http.Header
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotProject = r.Header.Get(HeaderProjectID)
+		gotHeaders = r.Header.Clone()
 	}))
 	defer backend.Close()
 
-	p := proxyTo(t, backend.URL, "sekret")
+	const secret = "sekret"
+	p := proxyTo(t, backend.URL, secret)
 
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/messages", nil)
-	req.Header.Set(HeaderProjectID, "999") // spoof attempt
+	// Spoof attempt: attacker injects a different project ID and a forged signature.
+	req.Header.Set(HeaderProjectID, "999")
+	req.Header.Set(HeaderSignature, "sha256=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	ctx := middleware.ContextWithProject(req.Context(), middleware.ProjectContext{ProjectID: 7})
 	req = req.WithContext(ctx)
 
 	p.ServeHTTP(httptest.NewRecorder(), req)
 
-	if gotProject != "7" {
-		t.Errorf("gateway saw project %q, want 7 (spoof not stripped)", gotProject)
+	// The spoofed project must be replaced with the edge-resolved project.
+	if gotHeaders.Get(HeaderProjectID) != "7" {
+		t.Errorf("gateway saw project %q, want 7 (spoof not stripped)", gotHeaders.Get(HeaderProjectID))
+	}
+
+	// The outbound signature must be valid over the edge-injected identity (not
+	// the attacker's spoofed values). The gateway verifies it the same way.
+	if !verifyIdentitySignature(gotHeaders, []byte(secret)) {
+		t.Errorf("outbound identity signature is invalid; gateway would reject this request (header=%q)",
+			gotHeaders.Get(HeaderSignature))
+	}
+
+	// The attacker's spoofed signature must NOT appear in the outbound headers:
+	// the proxy must have replaced it, not forwarded it.
+	if gotHeaders.Get(HeaderSignature) == "sha256=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Errorf("proxy forwarded the client-spoofed signature verbatim instead of replacing it")
 	}
 }
 

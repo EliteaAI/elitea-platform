@@ -28,12 +28,101 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/preflight"
 )
+
+// wellFormedAnthropicRouter embeds a MockRouter but overrides
+// ResponsesStreamRequest to emit a WELL-FORMED Anthropic SSE sequence:
+//
+//   response.created  → message_start        (exactly ONE)
+//   response.in_progress × (Chunks-2)        → maps to nil, no SSE event emitted
+//   response.completed → message_delta + message_stop
+//
+// The result is: exactly 1 message_start, then message_delta + message_stop,
+// with ChunkDelay before the Completed chunk to allow incremental-arrival
+// assertions to pass.
+type wellFormedAnthropicRouter struct {
+	*preflight.MockRouter
+	chunks  int
+	delay   time.Duration
+	tokens  int64
+	calledW atomic.Bool // tracks ResponsesStreamRequest calls on this wrapper
+}
+
+// Called reports whether ResponsesStreamRequest was invoked on this wrapper.
+// It shadows MockRouter.Called() so the test can observe the custom method.
+func (w *wellFormedAnthropicRouter) Called() bool {
+	return w.calledW.Load() || w.MockRouter.Called()
+}
+
+func (w *wellFormedAnthropicRouter) ResponsesStreamRequest(
+	_ *schemas.BifrostContext,
+	_ *schemas.BifrostResponsesRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	w.calledW.Store(true)
+	// Total capacity = 1 (Created) + (chunks-2) (InProgress — no-ops) + 1 (Completed)
+	total := w.chunks
+	if total < 2 {
+		total = 2
+	}
+	ch := make(chan *schemas.BifrostStreamChunk, total)
+	go func() {
+		defer close(ch)
+		respID := "wf-anthropic-stream"
+
+		// Emit exactly ONE response.created → this maps to exactly one message_start.
+		ch <- &schemas.BifrostStreamChunk{
+			BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCreated,
+				Response: &schemas.BifrostResponsesResponse{ID: &respID, Model: "anthropic/claude-3-5-sonnet"},
+			},
+		}
+
+		// Emit (chunks-2) response.in_progress chunks as content placeholders.
+		// ResponsesStreamResponseTypeInProgress maps to nil in ToAnthropicResponsesStreamResponse
+		// and is therefore skipped without emitting a second message_start.
+		for i := 0; i < total-2; i++ {
+			if w.delay > 0 {
+				time.Sleep(w.delay)
+			}
+			ch <- &schemas.BifrostStreamChunk{
+				BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+					Type:     schemas.ResponsesStreamResponseTypeInProgress,
+					Response: &schemas.BifrostResponsesResponse{ID: &respID, Model: "anthropic/claude-3-5-sonnet"},
+				},
+			}
+		}
+
+		// Apply delay before the final chunk to ensure the message_stop arrives
+		// detectably later than message_start (incremental-arrival assertion).
+		if w.delay > 0 {
+			time.Sleep(w.delay)
+		}
+
+		// Emit response.completed → message_delta + message_stop (two events).
+		ch <- &schemas.BifrostStreamChunk{
+			BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{
+					ID:    &respID,
+					Model: "anthropic/claude-3-5-sonnet",
+					Usage: &schemas.ResponsesResponseUsage{
+						InputTokens:  int(w.tokens),
+						OutputTokens: int(w.tokens / 2),
+					},
+				},
+			},
+		}
+	}()
+	return ch, nil
+}
 
 // sseFrame is one parsed SSE data line together with its arrival time.
 type sseFrame struct {
@@ -190,13 +279,22 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 	// ── sub-test: Anthropic /llm/v1/messages ───────────────────────────────
 
 	t.Run("Anthropic", func(t *testing.T) {
-		router := preflight.NewMockRouter(preflight.MockRouterConfig{
-			Mode:         preflight.StreamModeAnthropic,
-			Chunks:       5,
-			ChunkDelay:   10 * time.Millisecond,
-			InputTokens:  150,
+		// Use a well-formed Anthropic router: exactly 1 response.created
+		// (→ message_start) followed by (Chunks-2) response.in_progress no-ops
+		// and 1 response.completed (→ message_delta + message_stop). This avoids
+		// the previous behaviour where 5 response.created events each mapped to
+		// their own message_start, producing a malformed stream.
+		baseRouter := preflight.NewMockRouter(preflight.MockRouterConfig{
+			Mode:        preflight.StreamModeAnthropic,
+			InputTokens: 150,
 			OutputTokens: 75,
 		})
+		router := &wellFormedAnthropicRouter{
+			MockRouter: baseRouter,
+			chunks:     5,
+			delay:      10 * time.Millisecond,
+			tokens:     150,
+		}
 		// Use a different projectID to keep seeded counters independent between
 		// subtests (even though each gets its own GovernanceStore instance,
 		// distinct IDs make budget-subject keys non-overlapping).
@@ -243,7 +341,7 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 
 		frames, allLines := readSSELines(t, resp)
 
-		// (1) At least 2 data frames.
+		// (1) At least 2 data frames (message_start + message_stop minimum).
 		if len(frames) < 2 {
 			t.Errorf("SSE data frame count = %d, want >= 2\nfull body:\n%s",
 				len(frames), strings.Join(allLines, "\n"))
@@ -252,11 +350,21 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 		// (2) Incremental arrival.
 		assertIncrementalArrival(t, frames)
 
-		// (3) Correct terminator: Anthropic streams end with "event: message_stop"
-		// (no "[DONE]"). The final usage chunk from MockRouter produces a
-		// ResponsesStreamResponseTypeCompleted event which ToAnthropicResponsesStreamResponse
-		// converts to AnthropicStreamEventTypeMessageStop.
 		fullBody := strings.Join(allLines, "\n")
+
+		// (3) Well-formed framing: exactly ONE message_start.
+		// The well-formed stream emits a single response.created → message_start.
+		// Any additional message_start events indicate malformed router output
+		// (e.g. multiple response.created chunks each producing their own start
+		// event), which would confuse Anthropic SDK clients.
+		if got := strings.Count(fullBody, "event: message_start"); got != 1 {
+			t.Errorf("Anthropic stream: message_start event count = %d, want exactly 1\n"+
+				"(each response.created emits one message_start; the router must emit"+
+				" exactly one response.created for a well-formed stream)\nfull body:\n%s",
+				got, fullBody)
+		}
+
+		// (4) Correct terminator: stream ends with message_stop (no [DONE]).
 		if !strings.Contains(fullBody, "message_stop") {
 			t.Errorf("Anthropic stream must contain 'message_stop'; stream body:\n%s", fullBody)
 		}
@@ -264,12 +372,20 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 			t.Errorf("Anthropic stream must NOT emit '[DONE]'; stream body:\n%s", fullBody)
 		}
 
+		// (5) Correct ordering: message_start must appear before message_stop.
+		startIdx := strings.Index(fullBody, "event: message_start")
+		stopIdx := strings.Index(fullBody, "event: message_stop")
+		if startIdx >= 0 && stopIdx >= 0 && startIdx >= stopIdx {
+			t.Errorf("Anthropic stream ordering: message_start (pos %d) must precede message_stop (pos %d)",
+				startIdx, stopIdx)
+		}
+
 		// Sanity: router was actually called.
 		if !router.Called() {
 			t.Error("MockRouter.Called() false — budget gate blocked an under-budget request")
 		}
 
-		t.Logf("Anthropic: received %d data frames; message_stop found; no [DONE]; incremental delivery verified",
+		t.Logf("Anthropic: received %d data frames; exactly 1 message_start; message_stop found; no [DONE]; incremental delivery verified",
 			len(frames))
 	})
 }

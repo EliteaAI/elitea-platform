@@ -115,13 +115,45 @@ func (f *fakeBudgetChecker) getLastUpdateProjectID() int {
 	return f.lastUpdateProjectID
 }
 
-// fakeCostEstimator returns a fixed per-request cost.
+// fakeCostEstimator returns a cost that is a function of the actual token counts
+// it receives, so a bug in token extraction (e.g. swapped prompt/completion) is
+// detectable.
+//
+// When inputRateNano or outputRateNano is non-zero the estimator computes:
+//
+//	TotalNanoUSD = inputTokens*inputRateNano + outputTokens*outputRateNano
+//
+// When both rates are zero it falls back to the fixed totalNano value, which
+// preserves backward-compatibility for tests that supply a canned cost.
 type fakeCostEstimator struct {
+	// totalNano is the fixed cost returned when both rates are zero.
 	totalNano int64
+	// inputRateNano / outputRateNano: nano-USD per token (token-aware mode).
+	inputRateNano  int64
+	outputRateNano int64
+
+	// lastInput / lastOutput record the token counts actually passed to Cost so
+	// tests can assert that token extraction was correct end-to-end.
+	mu          sync.Mutex
+	lastInput   int64
+	lastOutput  int64
 }
 
-func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, _, _ int64) cost.Cost {
+func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, outputTokens int64) cost.Cost {
+	f.mu.Lock()
+	f.lastInput = inputTokens
+	f.lastOutput = outputTokens
+	f.mu.Unlock()
+	if f.inputRateNano != 0 || f.outputRateNano != 0 {
+		return cost.Cost{TotalNanoUSD: inputTokens*f.inputRateNano + outputTokens*f.outputRateNano}
+	}
 	return cost.Cost{TotalNanoUSD: f.totalNano}
+}
+
+func (f *fakeCostEstimator) getLastTokens() (input, output int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastInput, f.lastOutput
 }
 
 // trackingRouter wraps fakeRouter and records whether any LLM method was called.
@@ -143,6 +175,16 @@ func (t *trackingRouter) ChatCompletionStreamRequest(ctx *schemas.BifrostContext
 func (t *trackingRouter) ResponsesRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	t.called.Store(true)
 	return t.fakeRouter.ResponsesRequest(ctx, req)
+}
+
+func (t *trackingRouter) TextCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.TextCompletionRequest(ctx, req)
+}
+
+func (t *trackingRouter) EmbeddingRequest(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	t.called.Store(true)
+	return t.fakeRouter.EmbeddingRequest(ctx, req)
 }
 
 func (t *trackingRouter) ResponsesStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -194,10 +236,21 @@ func messagesStreamReqWithProject(t *testing.T, projectID string) *http.Request 
 }
 
 // newBudgetHandler builds a Handler with the given tracking router and budget
-// fake wired via WithBudgetGate.
+// fake wired via WithBudgetGate. The fakeCostEstimator is fixed-cost (totalNano),
+// preserving backward-compatibility for tests that care about the cost value but
+// not about which tokens were counted.
 func newBudgetHandler(router *trackingRouter, gate *fakeBudgetChecker, costNano int64) *Handler {
 	calc := &fakeCostEstimator{totalNano: costNano}
 	return NewHandler(router, nil, nil, WithBudgetGate(gate, calc))
+}
+
+// newTokenAwareBudgetHandler builds a Handler whose cost estimator multiplies
+// each token by the supplied per-token rates, making billed cost sensitive to
+// the token counts extracted from the LLM response. Returns the estimator so
+// tests can inspect lastInput/lastOutput after billing completes.
+func newTokenAwareBudgetHandler(router *trackingRouter, gate *fakeBudgetChecker, inputRate, outputRate int64) (*Handler, *fakeCostEstimator) {
+	calc := &fakeCostEstimator{inputRateNano: inputRate, outputRateNano: outputRate}
+	return NewHandler(router, nil, nil, WithBudgetGate(gate, calc)), calc
 }
 
 // ── test cases ────────────────────────────────────────────────────────────────
@@ -295,6 +348,67 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 	}
 	if got := gate.getLastUpdateProjectID(); got != 42 {
 		t.Errorf("UpdateUsage projectID = %d, want 42", got)
+	}
+}
+
+// TestBudgetGate_Allow_TokenAwareCost verifies that the cost billed to
+// UpdateUsage reflects the ACTUAL token counts extracted from the LLM response.
+// It uses a token-aware fakeCostEstimator so that a bug in
+// usageFromChatResponse (e.g. swapping prompt/completion tokens) would produce
+// a different cost than expected, causing this test to fail.
+//
+// Router response: 7 prompt tokens, 13 completion tokens.
+// Rates: 100 nano/input token, 200 nano/output token.
+// Expected cost: 7*100 + 13*200 = 700 + 2600 = 3300 nano-USD.
+func TestBudgetGate_Allow_TokenAwareCost(t *testing.T) {
+	const (
+		inputRate   = int64(100)  // 100 nano-USD per input token
+		outputRate  = int64(200)  // 200 nano-USD per output token
+		promptToks  = 7
+		compToks    = 13
+		wantCost    = promptToks*inputRate + compToks*outputRate // 3300
+	)
+
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}}
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-token-aware",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: promptToks, CompletionTokens: compToks},
+	}
+	h, calc := newTokenAwareBudgetHandler(router, gate, inputRate, outputRate)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "77", false))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Wait for the async billing goroutine to complete.
+	gate.waitForUpdate(t)
+	if gate.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage was NOT called")
+	}
+	// Assert that the BILLED cost matches the expected per-token calculation.
+	// A wrong token extraction (e.g. swapped prompt/completion) would yield
+	// 13*100 + 7*200 = 2700, not 3300, causing this assertion to fail.
+	if got := gate.getLastUpdateCostNano(); got != wantCost {
+		t.Errorf("UpdateUsage costNano = %d, want %d "+
+			"(input=%d*%d + output=%d*%d); got input=%d output=%d from estimator",
+			got, wantCost,
+			promptToks, inputRate, compToks, outputRate,
+			func() int64 { in, _ := calc.getLastTokens(); return in }(),
+			func() int64 { _, out := calc.getLastTokens(); return out }())
+	}
+	// Additionally, assert the estimator received the correct per-role counts.
+	gotIn, gotOut := calc.getLastTokens()
+	if gotIn != promptToks {
+		t.Errorf("estimator received inputTokens = %d, want %d "+
+			"(usageFromChatResponse may have swapped prompt/completion)", gotIn, promptToks)
+	}
+	if gotOut != compToks {
+		t.Errorf("estimator received outputTokens = %d, want %d "+
+			"(usageFromChatResponse may have swapped prompt/completion)", gotOut, compToks)
 	}
 }
 

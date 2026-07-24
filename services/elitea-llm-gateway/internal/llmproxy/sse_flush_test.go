@@ -191,8 +191,11 @@ func serveLockStep(t *testing.T, h *Handler, l *lockStepRouter, serve func(http.
 // a redundant end-of-response dump).
 func assertIncremental(t *testing.T, rec *flushRecorder, wantFlushes int) {
 	t.Helper()
+	// Capture snapshots AND current body length under the same lock so the
+	// body-length read is not a data race with concurrent Write() calls.
 	rec.mu.Lock()
 	snaps := append([]flushSnapshot(nil), rec.snapshots...)
+	finalBodyLen := rec.body.Len()
 	rec.mu.Unlock()
 
 	if len(snaps) != wantFlushes {
@@ -210,9 +213,9 @@ func assertIncremental(t *testing.T, rec *flushRecorder, wantFlushes int) {
 	// i.e. the first snapshot's byte count is less than the final body length
 	// whenever there is more than one frame. This is the crux of "written
 	// before end-of-response".
-	if wantFlushes > 1 && snaps[0].bytesSoFar >= rec.body.Len() {
+	if wantFlushes > 1 && snaps[0].bytesSoFar >= finalBodyLen {
 		t.Errorf("first flush already held the entire body (%d >= %d): not incremental",
-			snaps[0].bytesSoFar, rec.body.Len())
+			snaps[0].bytesSoFar, finalBodyLen)
 	}
 }
 

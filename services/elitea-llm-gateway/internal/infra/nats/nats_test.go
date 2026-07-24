@@ -55,15 +55,28 @@ func (f *fakePublisher) callCount() int {
 }
 
 type fakeReader struct {
-	raw *jetstream.RawStreamMsg
-	err error
+	mu    sync.Mutex
+	raw   *jetstream.RawStreamMsg
+	err   error
+	block time.Duration // simulate a slow read; blocks up to this duration (honours ctx)
 }
 
-func (f *fakeReader) GetLastMsgForSubject(_ context.Context, _ string) (*jetstream.RawStreamMsg, error) {
-	if f.err != nil {
-		return nil, f.err
+func (f *fakeReader) GetLastMsgForSubject(ctx context.Context, _ string) (*jetstream.RawStreamMsg, error) {
+	f.mu.Lock()
+	block, err, raw := f.block, f.err, f.raw
+	f.mu.Unlock()
+
+	if block > 0 {
+		select {
+		case <-time.After(block):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	return f.raw, nil
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 type fakeKV struct {
@@ -313,8 +326,9 @@ func TestPublishDeltaSetsMsgID(t *testing.T) {
 func TestOpTimeoutTripsBreaker(t *testing.T) {
 	// A publisher that blocks longer than OpTimeout must surface ErrUnavailable
 	// (deadline) rather than hang, and the op's ctx MUST have been cancelled.
+	// After CBFailureThreshold consecutive timeout failures the breaker MUST open.
 	pub := &fakePublisher{ackVal: "0", block: 500 * time.Millisecond}
-	c := newTestClient(Config{}, pub, nil, nil)
+	c := newTestClient(Config{CBFailureThreshold: 3}, pub, nil, nil)
 	start := time.Now()
 	_, err := c.IncrBudget(context.Background(), "s", 1)
 	elapsed := time.Since(start)
@@ -326,6 +340,16 @@ func TestOpTimeoutTripsBreaker(t *testing.T) {
 	}
 	if pub.ctxSaw == nil {
 		t.Error("op ctx was not cancelled at the OpTimeout deadline")
+	}
+
+	// Drive enough consecutive timeout failures to trip the breaker.
+	for i := 1; i < 3; i++ {
+		if _, e := c.IncrBudget(context.Background(), "s", 1); !errors.Is(e, ErrUnavailable) {
+			t.Fatalf("timeout op %d err = %v, want ErrUnavailable", i+1, e)
+		}
+	}
+	if c.BreakerState() != gobreaker.StateOpen {
+		t.Errorf("breaker state = %v after %d timeout failures, want Open", c.BreakerState(), 3)
 	}
 }
 
@@ -380,8 +404,20 @@ func TestBreakerRecoversToClosed(t *testing.T) {
 	if c.BreakerState() != gobreaker.StateOpen {
 		t.Fatalf("state = %v, want Open", c.BreakerState())
 	}
-	// After the open duration the breaker probes half-open; a success closes it.
-	time.Sleep(80 * time.Millisecond)
+	// Replace the bare sleep with deterministic polling: wait until the breaker
+	// transitions out of Open (to HalfOpen) so the test is not flaky on loaded
+	// runners where 80ms may not be enough. Generous timeout: 5 seconds.
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if c.BreakerState() != gobreaker.StateOpen {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if c.BreakerState() == gobreaker.StateOpen {
+		t.Fatal("breaker did not leave Open state within 5s (CBOpenDuration=60ms)")
+	}
+	// Now fix the publisher so the half-open probe succeeds and closes the breaker.
 	pub.mu.Lock()
 	pub.err = nil
 	pub.ackVal = "10"
@@ -429,6 +465,26 @@ func TestReadBudgetGarbagePayloadIsConfigError(t *testing.T) {
 	}
 	if errors.Is(err, ErrUnavailable) {
 		t.Error("parse error must not be ErrUnavailable")
+	}
+}
+
+// TestSlowReadTripsOpTimeout asserts that when the counterReader blocks beyond
+// OpTimeout the ReadBudget call returns ErrUnavailable and does not hang. This
+// exercises the ctx-propagation path in fakeReader.GetLastMsgForSubject which
+// was previously untested because the old fake ignored its context entirely.
+func TestSlowReadTripsOpTimeout(t *testing.T) {
+	rd := &fakeReader{block: 500 * time.Millisecond} // much longer than OpTimeout(150ms)
+	c := newTestClient(Config{CBFailureThreshold: 3}, nil, rd, nil)
+
+	start := time.Now()
+	_, err := c.ReadBudget(context.Background(), "s")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("slow read err = %v, want ErrUnavailable", err)
+	}
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("ReadBudget took %v; OpTimeout(150ms) not enforced", elapsed)
 	}
 }
 

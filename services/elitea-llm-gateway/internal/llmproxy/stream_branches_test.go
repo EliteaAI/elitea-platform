@@ -38,11 +38,17 @@ func (d *disconnectWriter) Flush()                 { d.flushes++ }
 
 // TestStreamOpenAI_ClientDisconnect drives streamOpenAI against a writer that
 // errors on the first chunk write; the loop must return on the write error
-// rather than draining the (unbuffered) channel.
+// rather than continuing to marshal/write subsequent chunks.
+//
+// The channel is pre-filled and closed (no separate producer goroutine): c2 is
+// buffered and never consumed because the loop exits after the first write error.
+// This exercises the "client disconnected" early-return branch without needing a
+// live goroutine, since the SSE loop (`for chunk := range ch`) ranges over the
+// pre-filled closed channel and returns on the first write failure.
 func TestStreamOpenAI_ClientDisconnect(t *testing.T) {
-	// Two chunks: the first write fails, so the loop returns before the second
-	// is consumed. Buffer the channel so the (unread) second chunk does not
-	// block the producer.
+	// Two chunks in a buffered, pre-closed channel. The first write fails and the
+	// loop returns; c2 is never consumed (remains buffered) — that is the expected
+	// behaviour. `writes == 1` is the authoritative assertion.
 	chunks := newChunkChan(
 		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "c1"}},
 		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{ID: "c2"}},

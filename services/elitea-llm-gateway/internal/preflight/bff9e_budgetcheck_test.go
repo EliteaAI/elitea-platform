@@ -191,30 +191,48 @@ func TestBFF9E_BudgetHardBlockAndSoftAlert(t *testing.T) {
 		}
 
 		// UpdateUsage is called asynchronously via a goroutine in the handler after
-		// streaming completes. Give it a short window to finish.
+		// the response completes. Wait for the first write-behind delta to be
+		// published before making assertions about billing correctness.
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) && nc.DeltaCount() == 0 {
 			time.Sleep(5 * time.Millisecond)
 		}
 
-		// (c) At least one delta published — UpdateUsage (and thus trySoftAlert)
-		//     executed. In the FakeNATS harness TryAlertCooldown always returns
-		//     (true, nil), so the fired=true branch logs a soft-alert. The delta
-		//     publish is the closest observable that proves the full chain ran.
+		// (c) At least one delta published — proves UpdateUsage ran through the
+		//     full chain: IncrBudgetIdempotent incremented the counter AND
+		//     PublishDelta wrote a write-behind record. Both must succeed for the
+		//     soft-alert path (trySoftAlert) to have been reachable at all.
 		if nc.DeltaCount() == 0 {
 			t.Error("soft-alert: FakeNATS.DeltaCount() = 0 — UpdateUsage did not run; soft-alert chain was not triggered")
 		}
 
-		// (d) Counter exceeds 80% of limit (1M × 0.80 = 800,000 nano-USD).
-		// Budget subject format: "gateway.budget.counter.project.<scopeID>.<periodStart>".
-		// We reconstruct the key using the same components the harness uses.
+		// (c2) Verify the NATS counter subject for this project was incremented
+		//      by a positive amount. GetTotal is mutex-safe (unlike reading
+		//      Deltas directly). We wait until DeltaCount() > 0 above, which
+		//      implies IncrBudgetIdempotent already ran and committed the delta to
+		//      Totals. If TryAlertCooldown was called (the observable we care about)
+		//      it happens AFTER UpdateUsage completes, so the counter increment
+		//      is a strict lower-bound prerequisite for TryAlertCooldown being
+		//      reachable. A counter that equals the initial seed (no increment)
+		//      proves UpdateUsage was NOT called, directly falsifying the claim.
 		now := time.Now().UTC()
 		y, m, _ := now.Date()
 		periodStart := time.Date(y, m, 1, 0, 0, 0, 0, time.UTC).Unix()
 		subjectKey := "gateway.budget.counter.project." + projectIDStr + "." + itoa64(periodStart)
 
-		softThreshold := hardLimitNano * int64(softAlertPct) / 100 // 800,000 nano-USD
+		// Expected: counter has grown beyond the seed (spentNano) by at least 1.
 		currentTotal := nc.GetTotal(subjectKey)
+		if currentTotal <= spentNano {
+			t.Errorf("soft-alert: NATS counter at subject %q = %d nano-USD after billing, "+
+				"want > %d (the seeded spend) — IncrBudgetIdempotent was not called or had no effect",
+				subjectKey, currentTotal, spentNano)
+		}
+
+		// (d) The post-billing counter must have crossed the soft-alert threshold
+		//     (80%% of hard limit = 800,000 nano-USD). This is the condition that
+		//     gates TryAlertCooldown being called: if the counter has not crossed
+		//     the threshold, trySoftAlert never reaches TryAlertCooldown at all.
+		softThreshold := hardLimitNano * int64(softAlertPct) / 100 // 800,000 nano-USD
 		if currentTotal <= softThreshold {
 			t.Errorf("soft-alert: NATS counter at subject %q = %d nano-USD, "+
 				"want > %d (80%% of hard limit %d); soft-alert threshold was not crossed",

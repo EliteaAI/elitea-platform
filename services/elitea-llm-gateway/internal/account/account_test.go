@@ -23,16 +23,21 @@ func (f *fakeVault) Resolve(_ context.Context, projectID, secretRef string) (str
 	if f.err != nil {
 		return "", f.err
 	}
-	name, isRef := parseSecretRef(secretRef)
-	if !isRef {
-		return secretRef, nil
-	}
-	if p, ok := f.secrets[projectID]; ok {
-		if v, ok := p[name]; ok {
-			return v, nil
+	// Self-contained {{secret.NAME}} parsing — does NOT call production parseSecretRef
+	// so the fake is fully isolated from vault.go implementation details.
+	const prefix = "{{secret."
+	const suffix = "}}"
+	if strings.HasPrefix(secretRef, prefix) && strings.HasSuffix(secretRef, suffix) {
+		name := secretRef[len(prefix) : len(secretRef)-len(suffix)]
+		if p, ok := f.secrets[projectID]; ok {
+			if v, ok := p[name]; ok {
+				return v, nil
+			}
 		}
+		return "", errors.New("secret not found")
 	}
-	return "", errors.New("secret not found")
+	// Not a secret reference — return the literal value.
+	return secretRef, nil
 }
 
 // fakeDB is an in-memory rowQuerier. queryRows keyed by nothing fancy: every

@@ -262,6 +262,10 @@ func TestReconcile_IdempotentReusedEventID(t *testing.T) {
 	if c.totals["project.7"] != 40 {
 		t.Fatalf("after pass1 total=%d want 40", c.totals["project.7"])
 	}
+	// Pass 1 must have applied the increment (applied=true path).
+	if len(c.incrs) != 1 {
+		t.Fatalf("pass1 incr count=%d want 1", len(c.incrs))
+	}
 
 	// Simulate a crash after the NATS incr but before PG finalize: the row is
 	// still outage/unreconciled, so a second recovery re-selects it. But NATS
@@ -274,6 +278,37 @@ func TestReconcile_IdempotentReusedEventID(t *testing.T) {
 	startedReconciler(db2, c, dc).runPass(context.Background())
 	if c.totals["project.7"] != 40 {
 		t.Fatalf("double count on replay: total=%d want 40", c.totals["project.7"])
+	}
+
+	// Now exercise the explicit dedup-window SUPPRESSION path: force NATS counter
+	// back to the pre-recovery baseline (0) while keeping the applied map intact.
+	// Pass 3 will see the same (PG=40, NATS=0, delta=40) and therefore generate
+	// the identical event_id as pass 1 — IncrBudgetIdempotent must return
+	// applied=false (Nats-Msg-Id already seen) and NOT advance the counter.
+	c.mu.Lock()
+	c.totals["project.7"] = 0 // reset counter baseline; applied map still has pass1's id
+	incrsBefore := len(c.incrs)
+	c.mu.Unlock()
+
+	db3 := &recDB{
+		rows:          []outageRow{{id: "r1", scope: "project", scopeID: "7", periodStartUnix: 1000, accumulatedNano: 40}},
+		perScopeAccum: map[string]int64{"r1": 40},
+	}
+	startedReconciler(db3, c, dc).runPass(context.Background())
+
+	c.mu.Lock()
+	incrsAfter := len(c.incrs)
+	totalAfter := c.totals["project.7"]
+	c.mu.Unlock()
+
+	// IncrBudgetIdempotent was called (a new incr record was appended) but
+	// applied=false — the counter must stay at 0 (the suppressed duplicate must
+	// not advance the in-memory total).
+	if incrsAfter == incrsBefore {
+		t.Fatal("expected IncrBudgetIdempotent to be called on pass3 (same delta); got no call")
+	}
+	if totalAfter != 0 {
+		t.Fatalf("dedup suppression: counter advanced to %d after duplicate replay, want 0", totalAfter)
 	}
 }
 
@@ -415,10 +450,23 @@ func TestHandleBreakerChange_FiresOnlyOnRecoveryEdge(t *testing.T) {
 }
 
 func TestHandleBreakerChange_IgnoredBeforeStart(t *testing.T) {
+	// HandleBreakerChange guards baseCtx == nil under mutex: when Start has never
+	// been called it returns immediately without launching a goroutine. The
+	// assertion is therefore deterministic — there is no goroutine race to wait
+	// for. Replace the bare sleep with: (a) observe that running is false
+	// (confirming no goroutine was spawned) then (b) assert db.begins == 0.
 	db := &recDB{}
 	r := NewReconciler(db, newFakeCounter(), NewDegradedCounters(), nil) // no Start
 	r.HandleBreakerChange(gobreaker.StateOpen, gobreaker.StateClosed)
-	time.Sleep(20 * time.Millisecond)
+
+	// No goroutine was launched (baseCtx == nil guard), so running must be false
+	// immediately — no sleep needed.
+	r.mu.Lock()
+	running := r.running
+	r.mu.Unlock()
+	if running {
+		t.Fatal("running=true without Start — goroutine unexpectedly launched")
+	}
 	if db.begins != 0 {
 		t.Fatalf("pass fired before Start: begins=%d", db.begins)
 	}
@@ -524,6 +572,94 @@ func TestReconcile_TwoSameDeltaOutagesApplyBoth(t *testing.T) {
 		t.Fatalf("after outage 2 recovery: counter=%d, want 1500 (second delta not applied, possibly dedup-collided)", c.totals["project.7"])
 	}
 }
+
+// TestReconcile_NATSSucceedsPGCommitFails exercises the degraded-counter
+// non-reset path: the NATS increment for a scope succeeds (spending is on the
+// authoritative counter) but the per-scope PG commit (phase 3) fails. In this
+// situation reconcileScope returns an error so the per-scope degraded counter
+// MUST NOT be reset — the cap keeps enforcing until a future recovery edge
+// retries and commits.
+func TestReconcile_NATSSucceedsPGCommitFails(t *testing.T) {
+	// commitFailScopeTx wraps recScopeTx and fails Commit so we can test the
+	// reconcileScope-error path without failing the enumerate-tx commit.
+	// recDB.begins==1 means the enum tx; begins>=2 are scope txs.
+	commitErrAfterFirst := errors.New("pg commit failed on scope tx")
+	db := &recDB{
+		rows:          []outageRow{{id: "r1", scope: "project", scopeID: "7", periodStartUnix: 1000, accumulatedNano: 50}},
+		perScopeAccum: map[string]int64{"r1": 50},
+		// Inject a commit error ONLY for the scope transaction (begins >= 2).
+		// We use a custom wrapper via the commitErrForScopeTx field.
+	}
+	// We need to fail only scope tx commits, not the enumerate tx commit.
+	// Wrap Begin so the scope tx's Commit always fails.
+	wdb := &scopeCommitFailDB{recDB: db, scopeCommitErr: commitErrAfterFirst}
+
+	c := newFakeCounter()
+	c.totals["project.7"] = 0
+	dc := NewDegradedCounters()
+	dc.Add("project.7", 100) // set a degraded cap; must NOT be cleared
+
+	startedReconciler(wdb, c, dc).runPass(context.Background())
+
+	// NATS increment was called (the scope tx attempted the replay).
+	c.mu.Lock()
+	nIncrs := len(c.incrs)
+	counterTotal := c.totals["project.7"]
+	c.mu.Unlock()
+	if nIncrs == 0 {
+		t.Fatal("expected NATS IncrBudgetIdempotent to be called before commit failed")
+	}
+	// The NATS counter reflects the replay (delta=50-0=50).
+	if counterTotal != 50 {
+		t.Fatalf("NATS counter = %d after replay, want 50", counterTotal)
+	}
+
+	// The degraded counter must NOT be reset because the PG commit failed. Even
+	// though NATS was updated, the row was not finalized — so the cap must keep
+	// enforcing until a future recovery edge succeeds. This is the key invariant:
+	// a commit failure on the PG side propagates as a scope error so
+	// reconcileAll does NOT call dc.Reset for this scope.
+	if dc.Get("project.7") != 100 {
+		t.Fatalf("degraded counter = %d after scope commit failure, want 100 (must NOT be reset)", dc.Get("project.7"))
+	}
+	// Note: we do NOT assert db.finalized here because the in-memory fake records
+	// ExecAffected calls eagerly (before commit); in production PG the UPDATE
+	// would be rolled back. The key invariant is the degraded counter above.
+}
+
+// scopeCommitFailDB wraps recDB and returns a Tx whose Commit fails for all
+// scope transactions (begins >= 2 — the first Begin is the enumerate tx).
+type scopeCommitFailDB struct {
+	recDB          *recDB
+	scopeCommitErr error
+}
+
+func (d *scopeCommitFailDB) QueryRow(ctx context.Context, sql string, args ...any) Row {
+	return d.recDB.QueryRow(ctx, sql, args...)
+}
+
+func (d *scopeCommitFailDB) Begin(ctx context.Context) (Tx, error) {
+	tx, err := d.recDB.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d.recDB.mu.Lock()
+	n := d.recDB.begins
+	d.recDB.mu.Unlock()
+	if n >= 2 {
+		// Scope transaction: wrap to fail Commit.
+		return &commitFailTx{Tx: tx, commitErr: d.scopeCommitErr}, nil
+	}
+	return tx, nil
+}
+
+// commitFailTx delegates everything to the underlying Tx but fails Commit.
+type commitFailTx struct {
+	Tx
+	commitErr error
+}
+
+func (t *commitFailTx) Commit(_ context.Context) error { return t.commitErr }
 
 // waitIdle waits until the reconciler's in-flight pass finishes (running=false).
 func waitIdle(t *testing.T, r *Reconciler) {
