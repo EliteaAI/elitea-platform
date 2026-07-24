@@ -1,4 +1,4 @@
-go 1.26.4
+go 1.25.8
 
 use (
 	./gen/go
@@ -8,5 +8,4 @@ use (
 	./libs/go/rpclib
 	./services/elitea-main
 	./services/elitea-scheduler
-	./services/elitea-llm-gateway
 )

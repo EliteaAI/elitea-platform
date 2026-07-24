@@ -152,7 +152,7 @@ func cmdBudgetCheck(args []string) {
 	// test protocol documentation and exit 0 (useful in CI pipelines that gate
 	// on the hermetic preflight instead).
 	if *projectID == 0 {
-		fmt.Fprintf(os.Stdout, `budget-check: no --project-id supplied.
+		_, _ = fmt.Fprintf(os.Stdout, `budget-check: no --project-id supplied.
 
 To run the live gate, provide a finite-budget test project:
 

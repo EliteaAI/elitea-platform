@@ -41,26 +41,6 @@ type sseFrame struct {
 	arrived time.Time
 }
 
-// readSSEFrames opens a response body and collects every "data: " line until
-// the server closes the stream or the overall test deadline fires. It returns
-// the ordered list of frames. The caller must close the response body when done.
-func readSSEFrames(t *testing.T, resp *http.Response) []sseFrame {
-	t.Helper()
-	var frames []sseFrame
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			frames = append(frames, sseFrame{line: line, arrived: time.Now()})
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		// A closed pipe at end-of-stream is normal; surface any other errors.
-		t.Logf("SSE scanner ended: %v", err)
-	}
-	return frames
-}
-
 // readSSEEvents collects both "event:" and "data:" lines so Anthropic dialect
 // event markers are visible for terminator assertions.
 func readSSELines(t *testing.T, resp *http.Response) (frames []sseFrame, allLines []string) {
@@ -169,7 +149,7 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// (a) Must be 200, not 403 (signature accepted) or 402 (under budget).
 		if resp.StatusCode != http.StatusOK {
@@ -249,7 +229,7 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// (a) 200, not 403 / 402.
 		if resp.StatusCode != http.StatusOK {

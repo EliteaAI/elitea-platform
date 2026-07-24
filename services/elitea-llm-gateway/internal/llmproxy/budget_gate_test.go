@@ -45,7 +45,7 @@ type fakeBudgetChecker struct {
 	updateCalls atomic.Int64
 
 	// last UpdateUsage arguments (for assertion).
-	lastUpdateCostNano int64
+	lastUpdateCostNano  int64
 	lastUpdateProjectID int
 }
 
@@ -157,7 +157,7 @@ func newBudgetHandler(router *trackingRouter, gate *fakeBudgetChecker, costNano 
 func TestBudgetGate_Block402_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 500_000)
 
 	rec := httptest.NewRecorder()
@@ -187,7 +187,7 @@ func TestBudgetGate_Block402_ProviderNotCalled(t *testing.T) {
 func TestBudgetGate_Block503_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block503, State: failmode.StateDownPGStale, Degraded: true}}
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -219,7 +219,7 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}}
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+	router.chatResp = &schemas.BifrostChatResponse{
 		ID:    "cmpl-ok",
 		Model: "openai/gpt-4o",
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20},
@@ -250,7 +250,7 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 // WithBudgetGate (nil gate) calls the provider and never touches the gate.
 func TestBudgetGate_Disabled_NoInterference(t *testing.T) {
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
 	// No budget gate wired.
 	h := NewHandler(router, nil, nil)
 
@@ -271,7 +271,7 @@ func TestBudgetGate_Disabled_NoInterference(t *testing.T) {
 func TestBudgetGate_AnonymousProject_Allowed(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}} // would block if called
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "anon"}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "anon"}
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -295,7 +295,7 @@ func TestBudgetGate_AnonymousProject_Allowed(t *testing.T) {
 func TestBudgetGate_Messages_Block402_AnthropicDialect(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
 	router := &trackingRouter{}
-	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
+	router.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -325,7 +325,7 @@ func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
 
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
-	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{
+	router.respResp = &schemas.BifrostResponsesResponse{
 		ID:    strPtr("resp-ok"),
 		Model: "anthropic/claude-3-5-sonnet",
 		Usage: &schemas.ResponsesResponseUsage{InputTokens: 15, OutputTokens: 25},
@@ -354,7 +354,7 @@ func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
 func TestBudgetGate_ChatStream_Block402_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
 	router := &trackingRouter{}
-	router.fakeRouter.streamChan = newChunkChan()
+	router.streamChan = newChunkChan()
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -373,7 +373,7 @@ func TestBudgetGate_ChatStream_Block402_ProviderNotCalled(t *testing.T) {
 func TestBudgetGate_CheckBudgetError_Returns503(t *testing.T) {
 	gate := &fakeBudgetChecker{checkErr: fmt.Errorf("simulated gate panic")}
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -393,7 +393,7 @@ func TestBudgetGate_CheckBudgetError_Returns503(t *testing.T) {
 func TestBudgetGate_ZeroCost_SkipsUpdateUsage(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
-	router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+	router.chatResp = &schemas.BifrostChatResponse{
 		ID:    "zero-usage",
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 0, CompletionTokens: 0},
 	}
@@ -430,7 +430,7 @@ func responsesReqWithProject(t *testing.T, projectID string) *http.Request {
 func TestBudgetGate_Responses_Block402_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
 	router := &trackingRouter{}
-	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
+	router.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
 	h := newBudgetHandler(router, gate, 0)
 
 	rec := httptest.NewRecorder()
@@ -457,7 +457,7 @@ func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 3_000_000
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
-	router.fakeRouter.respResp = &schemas.BifrostResponsesResponse{
+	router.respResp = &schemas.BifrostResponsesResponse{
 		ID:    strPtr("resp-responses-ok"),
 		Model: "openai/gpt-4o",
 		Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 30},
@@ -488,7 +488,7 @@ func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
 func TestBudgetGate_TextCompletion_Block402_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
 	router := &trackingRouter{}
-	router.fakeRouter.textResp = &schemas.BifrostTextCompletionResponse{ID: "should-not-reach"}
+	router.textResp = &schemas.BifrostTextCompletionResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
 
 	body := `{"model":"openai/gpt-3.5-turbo-instruct","prompt":"hello"}`
@@ -513,7 +513,7 @@ func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 900_000
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
-	router.fakeRouter.textResp = &schemas.BifrostTextCompletionResponse{
+	router.textResp = &schemas.BifrostTextCompletionResponse{
 		ID:    "txt-ok",
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 10},
 	}
@@ -543,7 +543,7 @@ func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
 func TestBudgetGate_Embeddings_Block402_ProviderNotCalled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
 	router := &trackingRouter{}
-	router.fakeRouter.embResp = &schemas.BifrostEmbeddingResponse{}
+	router.embResp = &schemas.BifrostEmbeddingResponse{}
 	h := newBudgetHandler(router, gate, 0)
 
 	body := `{"model":"openai/text-embedding-3-small","input":"hello"}`
@@ -568,7 +568,7 @@ func TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 50_000
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
-	router.fakeRouter.embResp = &schemas.BifrostEmbeddingResponse{
+	router.embResp = &schemas.BifrostEmbeddingResponse{
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 8, CompletionTokens: 0},
 	}
 	h := newBudgetHandler(router, gate, wantCostNano)
@@ -602,7 +602,7 @@ func TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 	router := &trackingRouter{}
 	// Two chunks: a delta + a final usage chunk (providers send usage in the
 	// last chunk with Usage populated).
-	router.fakeRouter.streamChan = newChunkChan(
+	router.streamChan = newChunkChan(
 		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
 			ID:     "c-delta",
 			Object: "chat.completion.chunk",
@@ -636,7 +636,7 @@ func TestBudgetGate_ChatStream_NoUsageChunk_Unbilled(t *testing.T) {
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
 	router := &trackingRouter{}
 	// Stream with no usage on any chunk.
-	router.fakeRouter.streamChan = newChunkChan(
+	router.streamChan = newChunkChan(
 		&schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
 			ID: "c-no-usage",
 		}},
@@ -671,7 +671,7 @@ func TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T)
 			},
 		},
 	}
-	router.fakeRouter.streamChan = newChunkChan(completedChunk)
+	router.streamChan = newChunkChan(completedChunk)
 	h := newBudgetHandler(router, gate, wantCostNano)
 
 	rec := httptest.NewRecorder()
@@ -701,7 +701,7 @@ func TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T
 			},
 		},
 	}
-	router.fakeRouter.streamChan = newChunkChan(completedChunk)
+	router.streamChan = newChunkChan(completedChunk)
 	h := newBudgetHandler(router, gate, wantCostNano)
 
 	body := `{"model":"openai/gpt-4o","input":"hi","stream":true}`
@@ -728,11 +728,10 @@ func TestUserIDPropagatedToContext(t *testing.T) {
 	// We need a router that captures the context so we can inspect it.
 	type capturingRouter struct {
 		fakeRouter
-		capturedCtx *schemas.BifrostContext
 	}
 	cap := &capturingRouter{}
-	cap.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
-	cap.fakeRouter.chatResp.Model = "gpt-4o"
+	cap.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
+	cap.chatResp.Model = "gpt-4o"
 
 	// Override ChatCompletionRequest to capture the context.
 	var capturedCtx *schemas.BifrostContext

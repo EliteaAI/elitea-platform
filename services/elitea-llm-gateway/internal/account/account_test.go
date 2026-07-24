@@ -354,10 +354,10 @@ func TestIsSelfReferential_PrefixMatch(t *testing.T) {
 		"not a url":                          false, // unparsable
 		// FIX 2: partial-segment prefix must NOT match.
 		// "/llm/v" is NOT a segment prefix of "/llm/v1".
-		"https://dev.elitea.ai/llm/v":        false,
+		"https://dev.elitea.ai/llm/v": false,
 		// FIX 3: uppercase path must still be caught (case-insensitive comparison).
-		"https://dev.elitea.ai/LLM/V1":       true,
-		"https://dev.elitea.ai/Llm/V1/":      true,
+		"https://dev.elitea.ai/LLM/V1":  true,
+		"https://dev.elitea.ai/Llm/V1/": true,
 	}
 	for base, want := range cases {
 		if got := a.isSelfReferential(base); got != want {
@@ -403,10 +403,10 @@ func TestNormaliseOrigin(t *testing.T) {
 		"https://Dev.Elitea.AI/llm/v1/": "https://dev.elitea.ai/llm/v1",
 		// Path case is preserved in the normalised form; isSelfReferential applies
 		// case-insensitive comparison at match time (FIX 3).
-		"HTTP://Host:8080/Path":   "http://host:8080/Path",
-		"HTTP://Host:8080/PATH/":  "http://host:8080/PATH",
-		"":                        "",
-		"::::":                    "",
+		"HTTP://Host:8080/Path":  "http://host:8080/Path",
+		"HTTP://Host:8080/PATH/": "http://host:8080/PATH",
+		"":                       "",
+		"::::":                   "",
 	}
 	for in, want := range cases {
 		if got := normaliseOrigin(in); got != want {
@@ -444,7 +444,7 @@ func TestGetKeysForProvider_InvalidProjectID(t *testing.T) {
 }
 
 func TestProjectIDFromContext(t *testing.T) {
-	if got := projectIDFromContext(nil); got != "" {
+	if got := projectIDFromContext(context.TODO()); got != "" {
 		t.Fatalf("nil ctx: got %q", got)
 	}
 	if got := projectIDFromContext(context.Background()); got != "" {

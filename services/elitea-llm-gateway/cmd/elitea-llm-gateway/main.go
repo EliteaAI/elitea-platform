@@ -148,17 +148,6 @@ func main() {
 	}
 }
 
-// governanceNATSClient is the exact method set governance.NewGovernanceStore
-// and failmode.NewReconciler need. server.NATSClient is a superset of this, so
-// any server.NATSClient value also satisfies it; the explicit interface avoids
-// relying on governance's unexported natsClient definition.
-//
-// This is also used as the failmode.Counter seam: Counter requires ReadBudget,
-// IncrBudgetIdempotent, and BudgetSubject — all present here.
-type governanceNATSClient interface {
-	server.NATSClient
-}
-
 // buildGovernance assembles the full governance engine (failmode primitives +
 // GovernanceStore + cost.Calculator) and calls Start before returning.
 //

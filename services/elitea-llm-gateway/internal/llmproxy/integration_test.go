@@ -5,15 +5,15 @@
 // fake failmode.DB — directly into a REAL Handler via WithBudgetGate.  The entire
 // chain is exercised:
 //
-//   HTTP request → Handler.Chat → checkBudget → GovernanceStore.CheckBudget
-//     → fakeNATS.ReadBudget (NATS counter) + integDB.QueryRow (PG snapshot)
-//     → failmode.Decide (FSM) → verdict → HTTP response
+//	HTTP request → Handler.Chat → checkBudget → GovernanceStore.CheckBudget
+//	  → fakeNATS.ReadBudget (NATS counter) + integDB.QueryRow (PG snapshot)
+//	  → failmode.Decide (FSM) → verdict → HTTP response
 //
 // and for the billed-completion path:
 //
-//   Handler.Chat → updateUsage → GovernanceStore.UpdateUsage
-//     → fakeNATS.IncrBudgetIdempotent (counter increment)
-//     → fakeNATS.PublishDelta (write-behind)
+//	Handler.Chat → updateUsage → GovernanceStore.UpdateUsage
+//	  → fakeNATS.IncrBudgetIdempotent (counter increment)
+//	  → fakeNATS.PublishDelta (write-behind)
 //
 // Fakes are used ONLY for the leaf infrastructure (NATS transport, PG DB).  The
 // GovernanceStore, failmode.Store, DegradedCounters, Reconciler, cost.Calculator,
@@ -48,7 +48,7 @@ type integNATS struct {
 	mu sync.Mutex
 
 	// totals maps subject → current authoritative counter value (nano-USD).
-	totals  map[string]int64
+	totals map[string]int64
 	// applied tracks event_ids already applied (idempotency guard).
 	applied map[string]bool
 	// deltas records every payload sent via PublishDelta.
@@ -326,7 +326,7 @@ func TestGatewayIntegration(t *testing.T) {
 		calc := cost.New(cost.Config{}) // no catalog DB → default price table
 
 		router := &trackingRouter{}
-		router.fakeRouter.chatResp = &schemas.BifrostChatResponse{ID: "should-never-reach"}
+		router.chatResp = &schemas.BifrostChatResponse{ID: "should-never-reach"}
 		h := NewHandler(router, nil, nil, WithBudgetGate(gs, calc))
 
 		req := chatReqWithProject(t, integProjectIDStr, false)
@@ -373,7 +373,7 @@ func TestGatewayIntegration(t *testing.T) {
 		calc := cost.New(cost.Config{})
 
 		router := &trackingRouter{}
-		router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+		router.chatResp = &schemas.BifrostChatResponse{
 			ID:    "cmpl-under-budget",
 			Model: "gpt-4o",
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 100, CompletionTokens: 50},
@@ -441,7 +441,7 @@ func TestGatewayIntegration(t *testing.T) {
 		// "gpt-4o" prefix in the default table.  Either way, TotalNanoUSD > 0 for
 		// any non-zero token counts, so the exact price path does not affect
 		// whether UpdateUsage is called.
-		router.fakeRouter.chatResp = &schemas.BifrostChatResponse{
+		router.chatResp = &schemas.BifrostChatResponse{
 			ID:    "cmpl-billing",
 			Model: "openai/gpt-4o",
 			Usage: &schemas.BifrostLLMUsage{PromptTokens: 200, CompletionTokens: 100},

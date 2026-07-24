@@ -460,7 +460,6 @@ func (h *Handler) streamOpenAI(
 	var (
 		streamedIn, streamedOut int64
 		gotUsage                bool
-		streamOK                = true // false if the stream ended with a mid-stream error
 	)
 	for chunk := range ch {
 		if chunk == nil {
@@ -469,7 +468,6 @@ func (h *Handler) streamOpenAI(
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Data(string(data))
-			streamOK = false
 			return
 		}
 		// Capture usage from the final usage-carrying chunk (providers send
@@ -484,14 +482,10 @@ func (h *Handler) streamOpenAI(
 			continue
 		}
 		if writeErr := sw.Data(string(data)); writeErr != nil {
-			streamOK = false
 			return // client disconnected
 		}
 	}
 	_ = sw.Data("[DONE]")
-	if !streamOK {
-		return
-	}
 	// Bill after the channel drains successfully.
 	if gotUsage {
 		h.updateUsage(ctx, provider, model, streamedIn, streamedOut, identityProjectFromCtx(ctx))
@@ -526,7 +520,6 @@ func (h *Handler) streamResponses(
 	var (
 		streamedIn, streamedOut int64
 		gotUsage                bool
-		streamOK                = true
 	)
 	for chunk := range ch {
 		if chunk == nil {
@@ -535,7 +528,6 @@ func (h *Handler) streamResponses(
 		if chunk.BifrostError != nil {
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Event("error", string(data))
-			streamOK = false
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
@@ -554,15 +546,11 @@ func (h *Handler) streamResponses(
 			continue
 		}
 		if writeErr := sw.Event(event, string(data)); writeErr != nil {
-			streamOK = false
 			return
 		}
 	}
 	if sendDone {
 		_ = sw.Data("[DONE]")
-	}
-	if !streamOK {
-		return
 	}
 	// Bill after the channel drains successfully.
 	if gotUsage {
@@ -598,7 +586,6 @@ func (h *Handler) streamAnthropic(
 	var (
 		streamedIn, streamedOut int64
 		gotUsage                bool
-		streamOK                = true
 	)
 	for chunk := range ch {
 		if chunk == nil {
@@ -608,7 +595,6 @@ func (h *Handler) streamAnthropic(
 			// ToAnthropicResponsesStreamError returns a complete
 			// "event: error\ndata: ...\n\n" frame.
 			_ = sw.Raw(anthropic.ToAnthropicResponsesStreamError(chunk.BifrostError))
-			streamOK = false
 			return
 		}
 		if chunk.BifrostResponsesStreamResponse == nil {
@@ -631,13 +617,9 @@ func (h *Handler) streamAnthropic(
 				continue
 			}
 			if writeErr := sw.Event(string(ev.Type), string(data)); writeErr != nil {
-				streamOK = false
 				return
 			}
 		}
-	}
-	if !streamOK {
-		return
 	}
 	// Bill after the channel drains successfully.
 	if gotUsage {
