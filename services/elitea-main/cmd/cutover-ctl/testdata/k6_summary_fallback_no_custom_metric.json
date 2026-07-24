@@ -1,0 +1,25 @@
+{
+  "metrics": {
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 18.003,
+        "min": 5.112,
+        "med": 16.441,
+        "max": 89.334,
+        "p(90)": 29.001,
+        "p(95)": 36.772,
+        "p(99)": 44.889
+      }
+    },
+    "http_reqs": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 1500,
+        "rate": 25.0
+      }
+    }
+  }
+}

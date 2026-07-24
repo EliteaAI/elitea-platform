@@ -114,6 +114,27 @@ to `elitea-llm-gateway-svc`; there is no per-project routing state to author.
   - [x] Update the SDK's budget/429 handling so a 402 is treated identically to a 429-on-budget (retry/raise semantics unchanged) (the genuine budget-429 consumer site is `elitea_sdk/tools/utils/retry.py` — NOT flagged by the heuristic audit because the retriable-status predicates carry no budget/quota keyword in their window, but they ARE the real §4.1 contract point: under LiteLLM budget exhaustion arrived as 429 and matched `is_server_error_retriable`/`is_llm_error_retriable`, so it was retried up to the attempt cap then re-raised (`reraise=True`); under the gateway it is 402, which those predicates did NOT match, so it would raise on the FIRST attempt — a silent semantics change. Added `402` to both predicates identically to `429`: `is_server_error_retriable` httpx/openai typed branches (`status == 429 or status == 402`) + string branch `[402,429,500,502,503,504]`, `is_llm_error_retriable` string branch same list; docstrings + module header updated; `retry_on_server_error` doc notes the reraise semantics. `is_volume_error_retriable` deliberately UNTOUCHED so a 402 is never swept into the bisection/split path. The 3 SaaS 429 sites (confluence.py, report_portal.py, openapi/api_wrapper.py:1280) are external third-party rate limits, NOT the Elitea `/llm` budget path — §4.1 keeps those at 429, left as-is. `tests/tools/utils/test_retry.py` (new, 38 cases): httpx+openai typed 402/429/5xx retriable + 4xx non-retriable, string-based `Error code: 402`/`budget_exceeded`, volume-path 402-exclusion, and reraise semantics (402 retries to the cap then re-raises; 400 raises on attempt 1). All 38 green under a scratch venv (tenacity/openai/httpx/langchain-core/langgraph/python-dotenv/cryptography). No SDK dep changes.)
   - [x] Run `cutover-ctl budget-status-audit --paths services/elitea-main,../elitea-sdk` — must exit 0 (the BF0.8 gate) (`elitea-sdk` is a SIBLING repo (`../elitea-sdk`), absent from this single-repo checkout, so the validator's hardcoded relative `elitea-sdk` path can't resolve here — same limitation BF0.8b noted. Proven by symlinking the real `../elitea-sdk` in at repo root and running the EXACT validator command `go run ./services/elitea-main/cmd/cutover-ctl budget-status-audit --paths services/elitea-main,../elitea-sdk` → `✓ … treats 402 identically to 429`, exit 0; symlink then removed. Full phase validator with the SDK reachable: 18/18 BF-Build features passing, BF0.8c ✓.)
 
+> **BF0.9 — Assemble + wire the live /llm request path.** A 2026-07-23 completeness audit found BF0.1 (middleware.Project), BF0.2a (reverse-proxy), and BF0.4 s4 (GovernanceStore) built as isolated, tested packages but NEVER mounted/wired — the `/llm` handler goes straight to the provider with no auth-project resolution and no budget gate. The `file_contains`/isolated-`go test` validators couldn't see this; only a request-path integration test can. The four tasks below are the wiring; do them in order.
+
+- [x] BF0.9a Implement the NATS `GovernanceStore` (the missing BF0.4 s4)
+  - [ ] Create `internal/governance/store.go`: a `GovernanceStore` type composing `internal/infra/nats` counters + `internal/failmode` (fsm/store/counter/recovery)
+  - [ ] Implement `Check*`/`Update*`/`Dump*`/`ResetExpired*` budget methods over int64 nano-USD `Nats-Incr`; on billed increment publish a `GATEWAY_BUDGET_DELTAS` delta with `Nats-Msg-Id = event_id`
+  - [ ] Register the breaker→recovery reconciler; wire the governance plugin via `InitFromStore(...)`
+  - [ ] Unit tests for the store (`go test ./internal/governance/...` green)
+
+- [x] BF0.9b Wire the GovernanceStore budget gate INTO the `/llm` request path
+  - [ ] In the gateway chat/messages handlers (`internal/llmproxy/handler.go`), call the store's budget check (`failmode.Decide()`) BEFORE dispatching to core
+  - [ ] Return HTTP 402 (`type=budget_exceeded, code=insufficient_quota`) on over-limit and 503 on stale/NATS-down
+  - [ ] On billed completion, call `UpdateUsage` to increment the counter + publish the delta
+
+- [x] BF0.9c Mount the edge `/llm` path in `services/elitea-main`
+  - [ ] Register `apimw.Project` middleware on `/llm` in `internal/api/router.go`
+  - [ ] Call `llmproxy.New()` in `cmd/elitea-main/main.go` and mount the proxy so a real request flows edge→gateway with resolved identity headers
+
+- [x] BF0.9d Integration test (the behavioral gate)
+  - [ ] Add `TestGatewayIntegration` (or `TestBudgetGate402`): stand up the mounted gateway handler with a fake provider + a seeded finite budget
+  - [ ] Assert (1) under-budget request streams incrementally, (2) over-budget request returns 402 with the correct error body BEFORE the provider is called, (3) the counter increments on billed completion
+
 ## Phase BF-PF: Pre-flight validation (all deterministic, staging; no production traffic)
 
 Each gate is a `cutover-ctl` subcommand that exits 0 only when it holds. These subcommands

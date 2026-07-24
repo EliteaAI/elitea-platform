@@ -1,0 +1,47 @@
+{
+  "metrics": {
+    "gateway_overhead_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 62.441,
+        "min": 18.502,
+        "med": 58.119,
+        "max": 203.887,
+        "p(90)": 91.334,
+        "p(95)": 112.776,
+        "p(99)": 87.334
+      }
+    },
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 380.221,
+        "min": 201.441,
+        "med": 362.008,
+        "max": 1204.553,
+        "p(90)": 601.112,
+        "p(95)": 788.229,
+        "p(99)": 1101.774
+      }
+    },
+    "http_reqs": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 3000,
+        "rate": 50.0
+      }
+    },
+    "http_req_failed": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0.0,
+        "passes": 3000,
+        "fails": 0
+      }
+    }
+  }
+}

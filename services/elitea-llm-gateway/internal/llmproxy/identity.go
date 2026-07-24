@@ -74,3 +74,27 @@ func verifySignature(h http.Header, secret []byte) bool {
 	want := identityFromHeaders(h).sign(secret)
 	return hmac.Equal([]byte(got), []byte(want))
 }
+
+// SignIdentityHeaders sets the identity headers and HMAC signature on h so
+// verifySignature will accept the request. Non-empty projectID, userID, and
+// tenantID are set on their respective headers; an empty value omits the
+// header. An empty secret skips the signature header (matching the gateway's
+// own behaviour when no secret is configured).
+//
+// Exported for test-support packages that must forge a signed request without
+// going through the real edge (e.g. internal/preflight).
+func SignIdentityHeaders(h http.Header, secret []byte, projectID, userID, tenantID string) {
+	if projectID != "" {
+		h.Set(headerProjectID, projectID)
+	}
+	if userID != "" {
+		h.Set(headerUserID, userID)
+	}
+	if tenantID != "" {
+		h.Set(headerTenantID, tenantID)
+	}
+	if len(secret) > 0 {
+		id := identity{projectID: projectID, userID: userID, tenantID: tenantID}
+		h.Set(headerSignature, id.sign(secret))
+	}
+}
