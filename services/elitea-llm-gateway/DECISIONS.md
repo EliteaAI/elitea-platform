@@ -54,6 +54,14 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   `.secrets` keys; allowlist entries removed.
 - ✅ `internal/llmproxy` coverage raised 84.2% → 91.5% (coverage_boost_test.go);
   coverage-floor bumped to 85.
+- ✅ `/llm/v1/messages/count_tokens` now budget-gated (was the 4th "unmetered path"
+  found — by dogfooding the saved gateway-review workflow on PR#6, after 3 manual
+  rounds missed it). `checkBudget(...,0)` before `CountTokensRequest`; no updateUsage
+  (count_tokens has no billable usage). Guarded by TestBudgetGate_CountTokens_Block402.
+- ✅ Wiring gate now guards `llmproxy.WithBudgetGate(` — the point that attaches the
+  gate to the handler was the single most critical UNasserted wiring; mutation-verified.
+- ✅ env-drift regex `[a-zA-Z]+Or` → `[a-zA-Z0-9]+Or` (was blind to `uint32Or`, so the
+  `LLM_BUDGET_CB_*` vars were silently skipped); CB vars added to values.yaml.
 
 ## Known follow-ups (not blocking, need a human)
 - Set `secrets.*.optional: false` in a production values overlay so a missing
