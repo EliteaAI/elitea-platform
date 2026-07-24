@@ -109,24 +109,43 @@ func TestProcessBatch_CoalescesSameKeyIntoOneTx(t *testing.T) {
 }
 
 func TestProcessBatch_DistinctKeysApplySeparately(t *testing.T) {
-	// Each key-group gets its own transaction; with one shared fakeTx we only
-	// assert both messages settle (ack) and both dedup-probe.
-	tx := &fakeTx{alreadyApplied: map[string]bool{}, upsertAffected: 1}
-	c, _ := newConsumerWith(tx)
+	// Each distinct key-group MUST get its OWN transaction. Mint a fresh fakeTx
+	// per Begin and assert per-group isolation: exactly two txs, each committed
+	// exactly once, each with its own single dedup-probe + upsert. A shared tx
+	// would collapse these and hide cross-group contamination.
+	db := &fakeDB{newTx: func() *fakeTx {
+		return &fakeTx{alreadyApplied: map[string]bool{}, upsertAffected: 1}
+	}}
+	c := NewConsumer(nil, NewStore(db), quietLogger())
 
 	a := validDelta()
 	b := validDelta()
 	b.EventID = "22222222-2222-2222-2222-222222222222"
-	b.ScopeID = "43" // different key
+	b.ScopeID = "43" // different key ⇒ separate group ⇒ separate tx
 	b.ProjectID = 43
 	ma, mb := msg(a), msg(b)
 
 	c.processBatch(context.Background(), []Message{ma, mb})
+
 	if ma.acks.Load() != 1 || mb.acks.Load() != 1 {
 		t.Errorf("distinct-key messages must both ack: a=%d b=%d", ma.acks.Load(), mb.acks.Load())
 	}
-	if len(tx.dedupProbes) != 2 {
-		t.Errorf("dedup probes = %d, want 2", len(tx.dedupProbes))
+	if len(db.txs) != 2 {
+		t.Fatalf("distinct key-groups must each Begin their own tx: got %d txs, want 2", len(db.txs))
+	}
+	for i, tx := range db.txs {
+		if !tx.committed {
+			t.Errorf("tx[%d] must be committed", i)
+		}
+		if tx.rolledBack {
+			t.Errorf("tx[%d] must NOT be rolled back", i)
+		}
+		if len(tx.dedupProbes) != 1 {
+			t.Errorf("tx[%d] dedup probes = %d, want 1 (each group probes only its own delta)", i, len(tx.dedupProbes))
+		}
+		if !tx.upsertRan {
+			t.Errorf("tx[%d] must run its own upsert", i)
+		}
 	}
 }
 

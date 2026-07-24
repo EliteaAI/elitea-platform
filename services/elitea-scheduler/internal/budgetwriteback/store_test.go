@@ -80,19 +80,59 @@ func (t *fakeTx) ExecAffected(_ context.Context, sql string, args ...any) (int64
 	return t.upsertAffected, nil
 }
 
-func (t *fakeTx) Commit(context.Context) error   { t.committed = true; return t.commitErr }
-func (t *fakeTx) Rollback(context.Context) error { t.rolledBack = true; return nil }
+func (t *fakeTx) Commit(context.Context) error {
+	if t.commitErr != nil {
+		return t.commitErr
+	}
+	t.committed = true
+	return nil
+}
+
+// Rollback mirrors pgx semantics: a Rollback after a successful Commit is a
+// no-op (real pgx returns ErrTxClosed and changes nothing). Without this, the
+// Store's unconditional `defer tx.Rollback()` would spuriously mark every
+// committed tx as rolled back, masking a genuine rollback in assertions.
+func (t *fakeTx) Rollback(context.Context) error {
+	if t.committed {
+		return nil
+	}
+	t.rolledBack = true
+	return nil
+}
 
 type fakeDB struct {
+	// tx, when set, is returned by the FIRST Begin (back-compat with tests that
+	// pre-build one tx and inspect it). Subsequent Begins mint a FRESH tx so a
+	// multi-key-group batch cannot share mutable tx state across groups — that
+	// sharing previously hid cross-group contamination (a committed/rolledBack
+	// flag set by group A would appear on group B's "tx").
 	tx       *fakeTx
 	beginErr error
+
+	// newTx, when set, builds a fresh tx per Begin (overrides tx). Each minted
+	// tx is recorded in txs so tests can assert per-group isolation.
+	newTx func() *fakeTx
+	txs    []*fakeTx
 }
 
 func (d *fakeDB) Begin(context.Context) (Tx, error) {
 	if d.beginErr != nil {
 		return nil, d.beginErr
 	}
-	return d.tx, nil
+	if d.newTx != nil {
+		tx := d.newTx()
+		d.txs = append(d.txs, tx)
+		return tx, nil
+	}
+	// First Begin returns the pre-built tx; any further Begin gets its own fresh
+	// tx (so shared mutable state never bleeds across key-groups).
+	if d.tx != nil && len(d.txs) == 0 {
+		d.txs = append(d.txs, d.tx)
+		return d.tx, nil
+	}
+	tx := &fakeTx{alreadyApplied: map[string]bool{}, upsertAffected: 1}
+	d.txs = append(d.txs, tx)
+	return tx, nil
 }
 
 // --- tests -------------------------------------------------------------------

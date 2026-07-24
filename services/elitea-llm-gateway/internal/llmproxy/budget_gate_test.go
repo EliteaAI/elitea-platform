@@ -785,34 +785,48 @@ func TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T
 // TestUserIDPropagatedToContext verifies that the X-Elitea-User-Id header is
 // stored on the BifrostContext under BifrostContextKeyUserID.
 func TestUserIDPropagatedToContext(t *testing.T) {
-	// We need a router that captures the context so we can inspect it.
-	type capturingRouter struct {
-		fakeRouter
+	// A router that captures the *BifrostContext actually handed to the core
+	// call, so we can assert the user id was propagated onto it. Asserting only
+	// HTTP 200 would pass even if propagation broke — the whole point is to
+	// inspect what reached the router.
+	capture := &ctxCapturingRouter{
+		fakeRouter: fakeRouter{chatResp: &schemas.BifrostChatResponse{ID: "ok"}},
 	}
-	cap := &capturingRouter{}
-	cap.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
-	cap.chatResp.Model = "gpt-4o"
+	capture.chatResp.Model = "gpt-4o"
+	h := NewHandler(capture, nil, nil)
 
-	// Override ChatCompletionRequest to capture the context.
-	var capturedCtx *schemas.BifrostContext
-	fake := &fakeRouter{chatResp: &schemas.BifrostChatResponse{ID: "ok"}}
-	h := NewHandler(fake, nil, nil)
-
-	// Build a request with both project-id and user-id headers.
 	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions",
 		strings.NewReader(`{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(headerProjectID, "99")
 	req.Header.Set(headerUserID, "user-abc")
 
-	_ = capturedCtx // suppress unused warning — we verify via context values in newContext
 	rec := httptest.NewRecorder()
 	h.Chat(rec, req)
 
-	// The Chat handler succeeds (200) — if newContext panicked userID would cause a 500.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	if capture.gotCtx == nil {
+		t.Fatal("router never received a context (ChatCompletionRequest not called)")
+	}
+	got, ok := capture.gotCtx.Value(schemas.BifrostContextKeyUserID).(string)
+	if !ok || got != "user-abc" {
+		t.Fatalf("BifrostContextKeyUserID on context = %q (ok=%v), want %q — user id was not propagated",
+			got, ok, "user-abc")
+	}
+}
+
+// ctxCapturingRouter records the context passed to ChatCompletionRequest so a
+// test can assert what the handler propagated (identity, etc.).
+type ctxCapturingRouter struct {
+	fakeRouter
+	gotCtx *schemas.BifrostContext
+}
+
+func (r *ctxCapturingRouter) ChatCompletionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	r.gotCtx = ctx
+	return r.fakeRouter.ChatCompletionRequest(ctx, req)
 }
 
 // TestBillingPeriodHelpers verifies that billingPeriodStart / billingPeriodEnd
