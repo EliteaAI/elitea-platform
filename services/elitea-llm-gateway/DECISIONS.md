@@ -1,0 +1,57 @@
+# DECISIONS — elitea-llm-gateway
+
+Standing decisions for the LLM gateway, with rationale. `CLAUDE.md` is the terse
+agent-facing version of these; this file is the human-readable "why". Each entry
+records a decision so it is not re-litigated on every PR. Items marked **[human
+decision]** are risk/policy calls an autonomous agent must NOT change without sign-off.
+
+## Money
+- **int64 nano-USD, no float on the money path.** Rationale: float rounding drift
+  across the incr → delta → Postgres write-behind hops corrupts billing; integers
+  are exact. Prices are per-1M tokens (a per-1k reading is a 1000× overcharge).
+
+## Enforcement
+- **[human decision] Fail CLOSED on budget-store/PG error while NATS is up.**
+  Chosen 2026-07-23 over fail-open. Rationale: this is a metered spend surface; a
+  transient DB read failure returning an "unlimited" snapshot would let spend run
+  unbounded. We accept returning 503 during a DB blip over granting free spend.
+  Reconsider only if availability SLOs make brief 503s unacceptable AND a safer
+  bound exists.
+- **[human decision] Async-billing concurrent-admission overshoot is a bounded,
+  accepted trade-off.** Billing moved off the HTTP critical path (latency); the
+  window where N concurrent requests pass admission before the counter updates is
+  bounded by an in-flight reservation. The residual overshoot is accepted for the
+  latency win. Revisit if a project can materially exceed budget under burst.
+- Every /llm endpoint is gated + billed uniformly (no per-endpoint exceptions).
+
+## Trust boundary
+- **[human decision] Deny-by-default trusted-proxy model.** `X-Auth-*` identity
+  headers are honored only from `TRUSTED_PROXY_CIDRS` (matched on RemoteAddr, not
+  the spoofable X-Forwarded-For); empty config = trust nothing. The edge strips
+  all client-supplied auth material before proxying. Rationale: without the CIDR
+  gate, any pod with network reach could assert an arbitrary project identity.
+  Operators MUST set TRUSTED_PROXY_CIDRS to their ingress range.
+
+## Topology / build
+- Gateway is a standalone Go 1.26.4 module, deliberately OUT of the root go.work
+  (which stays 1.25.8 for elitea-main/scheduler). Build with GOWORK=off. Rationale:
+  bumping the workspace floor to 1.26.4 broke elitea-main/scheduler CI lint on the
+  1.25 runner (learned the hard way in review round 1's fix).
+
+## Prevention gates (CI)
+- Three enforcing gates guard the classes that recurred in review:
+  1. **Wiring gate** (`cmd/.../main_test.go:TestMainWiring`) — lifecycle methods
+     must be called from main.
+  2. **Env-drift gate** (`scripts/env-drift-check.sh`) — code env reads must be
+     chart-settable or allowlisted.
+  3. **Coverage floor** (`scripts/coverage-floor.sh`) — enforcement packages must
+     not regress below current coverage.
+
+## Known follow-ups (not blocking, need a human)
+- `SECRETS_MASTER_KEY` has no Helm secretRef wiring (external-secrets vs values is
+  an ops decision). It's allowlisted in env-drift so the gate documents it rather
+  than failing.
+- `internal/llmproxy` coverage is 84.2% (floor temporarily 84); raise tests +
+  floor back to 85.
+- elitea-main env-drift is WARN-only (chart sets 7, code reads 30+ via external
+  secrets); tightening it is a separate effort.

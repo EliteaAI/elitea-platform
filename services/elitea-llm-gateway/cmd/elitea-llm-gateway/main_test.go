@@ -1,10 +1,78 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
 )
+
+// TestMainWiring is the "wiring gate": it parses main.go and asserts that each
+// must-call lifecycle method is actually invoked somewhere in this package's
+// source. Rounds 1-3 of review each re-found a "built but not wired" bug — a
+// lifecycle method that existed and unit-tested green but was never called from
+// the composition root (GovernanceStore never constructed → image endpoints
+// never gated → Drain never called on shutdown). A unit test of the method in
+// isolation cannot catch that; this can. If someone deletes one of these calls,
+// this test fails with a message naming the missing wiring.
+//
+// It is a source-level assertion (not a runtime callgraph) so it needs no live
+// NATS/DB and runs in the existing `test` CI job in milliseconds.
+func TestMainWiring(t *testing.T) {
+	// Each entry: the call as it appears in source, and why it must be wired.
+	required := []struct {
+		call string
+		why  string
+	}{
+		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
+		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
+		{"srv.Shutdown(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
+	}
+
+	fset := token.NewFileSet()
+	files, err := parser.ParseDir(fset, ".", nil, 0)
+	if err != nil {
+		t.Fatalf("parse package dir: %v", err)
+	}
+
+	// Collect every selector-call (x.Method(...)) and every bare call (f(...))
+	// across the non-test files of package main.
+	calls := map[string]bool{}
+	for _, pkg := range files {
+		for name, f := range pkg.Files {
+			if strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				ce, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fn := ce.Fun.(type) {
+				case *ast.SelectorExpr: // x.Method
+					if id, ok := fn.X.(*ast.Ident); ok {
+						calls[id.Name+"."+fn.Sel.Name+"("] = true
+					}
+				case *ast.Ident: // bareFunc
+					calls[fn.Name+"("] = true
+				}
+				return true
+			})
+		}
+	}
+
+	for _, r := range required {
+		if !calls[r.call] {
+			t.Errorf("WIRING GATE: %s is never called from package main — %s.\n"+
+				"A lifecycle method that isn't called from the composition root is a "+
+				"'built but not wired' bug (this class recurred 3x in review). Wire it in main().",
+				r.call, r.why)
+		}
+	}
+}
 
 // These tests guard the SHUTDOWN WIRING, not the drain logic in isolation. A
 // unit test proving Handler.DrainBilling()/GovernanceStore.Drain() work does NOT

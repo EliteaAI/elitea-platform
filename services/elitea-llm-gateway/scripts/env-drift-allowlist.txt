@@ -1,0 +1,26 @@
+# env-drift-check.sh allowlist — env vars the gateway code reads that are
+# INTENTIONALLY not set via the Helm chart's `.Values.env` map. One name per
+# line; blank lines and # comments ignored. An allowlisted var is never a FAIL
+# and is not reported as drift.
+#
+# Keep this list SMALL and justified — every entry is a var an operator must
+# supply out-of-band. If you add one, say why.
+
+# Injected by the mtls.enabled conditional block in templates/deployment.yaml
+# (deliberately NOT in the env map to avoid duplicate keys).
+GATEWAY_TLS_CERT_FILE
+GATEWAY_TLS_KEY_FILE
+GATEWAY_TLS_CA_FILE
+
+# Optional OpenTelemetry export — off unless an operator opts in with a collector
+# endpoint; safe defaults when unset.
+OTEL_EXPORTER_OTLP_ENDPOINT
+OTEL_SERVICE_NAME
+
+# Injected by the platform at deploy time (image tag → version), not chart config.
+SERVICE_VERSION
+
+# Security-sensitive: supplied via a Kubernetes Secret / external-secrets operator,
+# never a values.yaml plaintext. NOTE: round-3 flagged that the chart currently
+# provides NO secretRef example for this — tracked as a separate hardening item.
+SECRETS_MASTER_KEY

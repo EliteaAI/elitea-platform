@@ -65,6 +65,21 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Coverage floor — enforcement packages
+        # Fails if the budget-gate / governance / fail-mode / cost packages
+        # regress below their current coverage. These are the money+correctness
+        # core; a silent coverage drop there is how untested gaps slip in.
+        run: ./scripts/coverage-floor.sh coverage.out
+
+      - name: Env-drift gate — code env reads vs Helm chart
+        # Fails if the code reads a required env var (os.Getenv, no default) that
+        # the Helm chart cannot set. This class of bug (NATS_URL vs
+        # GATEWAY_NATS_URL; missing GATEWAY_TLS_*) recurred twice in review and
+        # no unit test catches it. yq is needed to read values.yaml.
+        run: |
+          command -v yq >/dev/null || { sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
+          ./scripts/env-drift-check.sh
+
       - name: Generate llmproxy cobertura coverage (BF0.6t gate)
         # Emits internal/llmproxy/coverage.xml consumed by the BF0.6t
         # `type: coverage` validator (>=85%). Uses a pinned go-run tool so the
