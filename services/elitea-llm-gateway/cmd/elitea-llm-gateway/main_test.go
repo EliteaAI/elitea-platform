@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -32,36 +33,40 @@ func TestMainWiring(t *testing.T) {
 		{"srv.Shutdown(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
 	}
 
+	// Parse each non-test .go file in this package dir individually. (Avoids
+	// parser.ParseDir, deprecated since Go 1.25 — SA1019.)
 	fset := token.NewFileSet()
-	files, err := parser.ParseDir(fset, ".", nil, 0)
+	goFiles, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parse package dir: %v", err)
+		t.Fatalf("glob package dir: %v", err)
 	}
 
 	// Collect every selector-call (x.Method(...)) and every bare call (f(...))
 	// across the non-test files of package main.
 	calls := map[string]bool{}
-	for _, pkg := range files {
-		for name, f := range pkg.Files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				ce, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				switch fn := ce.Fun.(type) {
-				case *ast.SelectorExpr: // x.Method
-					if id, ok := fn.X.(*ast.Ident); ok {
-						calls[id.Name+"."+fn.Sel.Name+"("] = true
-					}
-				case *ast.Ident: // bareFunc
-					calls[fn.Name+"("] = true
-				}
-				return true
-			})
+	for _, name := range goFiles {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		f, perr := parser.ParseFile(fset, name, nil, 0)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			ce, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			switch fn := ce.Fun.(type) {
+			case *ast.SelectorExpr: // x.Method
+				if id, ok := fn.X.(*ast.Ident); ok {
+					calls[id.Name+"."+fn.Sel.Name+"("] = true
+				}
+			case *ast.Ident: // bareFunc
+				calls[fn.Name+"("] = true
+			}
+			return true
+		})
 	}
 
 	for _, r := range required {
