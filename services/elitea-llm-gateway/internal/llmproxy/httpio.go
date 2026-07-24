@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -129,13 +128,6 @@ func openAIErrorBody(bErr *schemas.BifrostError) openAIError {
 		message = bErr.Error.Message
 	}
 	return openAIError{Error: openAIErrorFields{Message: message, Type: errType, Code: code}}
-}
-
-// writeAnthropicError maps a bifrost error to the Anthropic-shaped error body
-// (used by the Anthropic dialect's unary and pre-stream error paths).
-func (h *Handler) writeAnthropicError(w http.ResponseWriter, bErr *schemas.BifrostError) {
-	status, _, _ := statusAndType(bErr)
-	writeJSON(w, status, anthropic.ToAnthropicChatCompletionError(bErr))
 }
 
 // orDefault returns s if non-empty, else def.

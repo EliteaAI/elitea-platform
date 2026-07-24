@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -38,6 +40,21 @@ type Handler struct {
 	// costCalc estimates request cost in nano-USD. Required when budgetGate is
 	// non-nil; ignored (and may be nil) when budgetGate is nil.
 	costCalc CostEstimator
+
+	// billingWg tracks in-flight async billing goroutines (Fix round-3 #2).
+	// DrainBilling() blocks until all goroutines complete. billingClosing is
+	// set to 1 atomically before DrainBilling waits, preventing any new Add
+	// after Wait starts (Add-after-Wait panic guard).
+	billingWg      sync.WaitGroup
+	billingClosing atomic.Int32
+
+	// inflightNano is a per-project in-process reservation counter (Fix round-3
+	// #7). When N concurrent requests pass admission before any async increment
+	// lands, each one adds its estimated cost here so checkBudget can bound the
+	// concurrent-admission window overshoot. The map value is *atomic.Int64
+	// keyed by the scope+scopeID admission key. Values are decremented by the
+	// billing goroutine after UpdateUsage completes.
+	inflightNano sync.Map // key: string → *atomic.Int64
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -78,6 +95,22 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 		opt(h)
 	}
 	return h
+}
+
+// DrainBilling marks the handler as draining (no new billing goroutines will
+// be spawned) and blocks until all in-flight async billing goroutines complete.
+//
+// Call this BEFORE govStore.Drain() during graceful shutdown so billing
+// goroutines that call UpdateUsage finish before the governance store drains
+// its own persist goroutines, preventing Add-after-Wait on persistWg.
+//
+// Sequence mandated by the design:
+//   1. handler.DrainBilling() — waits for updateUsage goroutines.
+//   2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
+//   3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
+func (h *Handler) DrainBilling() {
+	h.billingClosing.Store(1)
+	h.billingWg.Wait()
 }
 
 // discard is an io.Writer that drops everything; used for the nil-logger case.
@@ -282,13 +315,17 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 	// Write the response first, then bill asynchronously (FIX #18).
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
-		// Bill whatever token usage the provider reported. Many image providers
-		// return token counts in Usage (gpt-image-1 uses input/output tokens);
-		// when Usage is nil both return 0 and updateUsage skips the increment
-		// (nothing to bill by token count). The budget admission above already
-		// enforced the hard limit regardless.
-		in, out := usageFromImageResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		// Fix round-3 #8: bill image responses that carry no token Usage by
+		// falling back to a fixed per-image cost (perImageFallbackNano).
+		// usageFromImageResponse returns (in, out, imgCount):
+		//   - Usage != nil  →  in/out populated, imgCount = 0  →  normal token path.
+		//   - Usage == nil  →  in=out=0, imgCount = len(Data)  →  direct billing path.
+		in, out, imgCount := usageFromImageResponse(resp)
+		if in > 0 || out > 0 {
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		} else if imgCount > 0 {
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+		}
 	}
 }
 
@@ -325,7 +362,10 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
 	if bErr != nil {
-		h.writeAnthropicError(w, bErr)
+		// Fix round-3 #4: spec §2.5 mandates OpenAI-shaped errors on ALL /llm
+		// routes, including /llm/v1/messages. Use writeOpenAIError, not
+		// writeAnthropicError, so the error body is {"error":{message,type,code}}.
+		h.writeOpenAIError(w, bErr)
 		return
 	}
 	// Write the response first, then bill asynchronously (FIX #18).
@@ -348,7 +388,8 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 	resp, bErr := h.router.CountTokensRequest(ctx, bifReq)
 	if bErr != nil {
-		h.writeAnthropicError(w, bErr)
+		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes.
+		h.writeOpenAIError(w, bErr)
 		return
 	}
 	writeJSON(w, http.StatusOK, anthropic.ToAnthropicCountTokensResponse(resp))
@@ -602,7 +643,9 @@ func (h *Handler) streamAnthropic(
 	bErr *schemas.BifrostError,
 ) {
 	if bErr != nil {
-		h.writeAnthropicError(w, bErr)
+		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes,
+		// including the Anthropic /v1/messages streaming pre-error path.
+		h.writeOpenAIError(w, bErr)
 		return
 	}
 	sw, err := h.beginStream(w)

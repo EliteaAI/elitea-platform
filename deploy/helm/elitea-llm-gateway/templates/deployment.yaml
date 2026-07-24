@@ -37,6 +37,19 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if .Values.mtls.enabled }}
+            # FIX 1 (HIGH): inject TLS paths so the server calls ListenAndServeTLS
+            # (TLS) or ListenAndServeTLS+RequireAndVerifyClientCert (mTLS when
+            # GATEWAY_TLS_CA_FILE is set). Paths mirror the volumeMount below.
+            # Without these the binary sees empty vars and stays on plain HTTP
+            # even though the cert secret is mounted (design §9.1, FIX #10).
+            - name: GATEWAY_TLS_CERT_FILE
+              value: {{ .Values.mtls.mountPath }}/tls.crt
+            - name: GATEWAY_TLS_KEY_FILE
+              value: {{ .Values.mtls.mountPath }}/tls.key
+            - name: GATEWAY_TLS_CA_FILE
+              value: {{ .Values.mtls.mountPath }}/ca.crt
+            {{- end }}
           {{- if .Values.preStop.enabled }}
           lifecycle:
             preStop:

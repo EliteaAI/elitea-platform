@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -232,13 +233,24 @@ func main() {
 		slog.Info("llmproxy: GATEWAY_HTTP_ADDR not set, /llm route disabled")
 	}
 
+	// Fix round-3 #5: resolve TrustedProxyCIDRs once and pass them into AuthDeps
+	// so BOTH AuthConfig{} constructions in api.NewRouter receive the same list.
+	// Relying on the env-fallback inside apimw.Auth() would work but makes the
+	// router's behaviour invisible at the call site and breaks tests that set the
+	// CIDRs programmatically rather than via the environment.
+	var trustedProxyCIDRs []string
+	if raw := os.Getenv("TRUSTED_PROXY_CIDRS"); raw != "" {
+		trustedProxyCIDRs = strings.Split(raw, ",")
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		Auth: api.AuthDeps{
-			Client:         authClient,
-			Validator:      localValidator,
-			SessionHandler: sessionHandler,
-			OIDCHandler:    oidcHandler,
-			SessionSecret:  jwtSecret,
+			Client:            authClient,
+			Validator:         localValidator,
+			SessionHandler:    sessionHandler,
+			OIDCHandler:       oidcHandler,
+			SessionSecret:     jwtSecret,
+			TrustedProxyCIDRs: trustedProxyCIDRs,
 		},
 		Indexer: api.IndexerDeps{
 			Predictor:      indexerClient,

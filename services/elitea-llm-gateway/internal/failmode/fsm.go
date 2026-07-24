@@ -176,6 +176,12 @@ type Decision struct {
 	// state other than NATS_HEALTHY). The caller emits the degraded alarm and,
 	// on an allowed degraded request, persists an outage-window delta row.
 	Degraded bool
+	// SoftThresholdNear is set by the NATS_HEALTHY path when the authoritative
+	// counter has met or exceeded the soft-alert threshold (default 80% of
+	// HardLimitNano) but has NOT yet reached the hard limit. Used by the handler's
+	// post-increment soft-alert detection (Fix round-3 #6) so the 80%-crossing
+	// triggers an alert on the healthy path, not only when Block402 fires.
+	SoftThresholdNear bool
 }
 
 // natsHealthy is the sentinel the caller passes as authoritativeNano to signal
@@ -200,7 +206,21 @@ func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, sna
 		if !snap.IsUnlimited && snap.HardLimitNano > 0 && authoritativeNano >= snap.HardLimitNano {
 			return Decision{Verdict: Block402, State: StateNATSHealthy}
 		}
-		return Decision{Verdict: Allow, State: StateNATSHealthy}
+		// Fix round-3 #6: set SoftThresholdNear on the NATS_HEALTHY path when
+		// the authoritative counter has reached the soft-alert zone (≥ soft%).
+		// This lets the handler's post-increment logic fire the 80% alert on the
+		// healthy path without requiring another CheckBudget round-trip for the
+		// threshold value (the snapshot carries SoftAlertPct already).
+		var softNear bool
+		if !snap.IsUnlimited && snap.HardLimitNano > 0 {
+			softPct := snap.SoftAlertPct
+			if softPct <= 0 || softPct > 100 {
+				softPct = 80
+			}
+			softThreshold := snap.HardLimitNano * int64(softPct) / 100
+			softNear = authoritativeNano >= softThreshold
+		}
+		return Decision{Verdict: Allow, State: StateNATSHealthy, SoftThresholdNear: softNear}
 	}
 
 	// ── NATS down. FORCED_CLOSED overrides everything, incl. is_unlimited and
@@ -275,12 +295,15 @@ func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, sna
 		//
 		// Design §8.5 mandates a 10% default cap when the operator has not
 		// configured an explicit DegradedCapNano (i.e. DegradedCapNano == 0).
-		// Derive it as limit/10 (integer division; fits int64 for any representable
-		// positive limit). A non-positive limit is a config error already handled
-		// above; once we reach this branch limit > 0.
+		// Derive it as max(1, limit/10): integer division of limit<10 nanoUSD
+		// floors to 0, which disables the cap entirely (every degraded request
+		// would be admitted without bound). Using max(1, …) ensures that even a
+		// 1-nanoUSD budget has a non-zero cap — a 1-nanoUSD degraded limit is
+		// effectively a forced-closed policy, which is the correct conservative
+		// behaviour for extremely small budgets (Fix round-3 #11).
 		effectiveCap := p.DegradedCapNano
 		if effectiveCap <= 0 {
-			effectiveCap = limit / 10
+			effectiveCap = max(1, limit/10)
 		}
 		if effectiveCap > 0 && replicaDegradedNano+reqCostNano > effectiveCap {
 			return Decision{Verdict: Block402, State: StateDownPGFreshSafe, Degraded: true}

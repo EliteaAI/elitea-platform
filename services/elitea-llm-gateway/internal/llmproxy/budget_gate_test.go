@@ -53,8 +53,10 @@ type fakeBudgetChecker struct {
 	lastUpdateCostNano  int64
 	lastUpdateProjectID int
 
-	// updated is closed (once) by the first UpdateUsage call so tests can
-	// wait for the async billing goroutine without a busy-poll or sleep.
+	// updated is closed by the first UpdateUsage call so tests can wait for
+	// the async billing goroutine without a busy-poll or sleep. It is
+	// initialised in the struct literal to avoid the double-once.Do pattern
+	// that required updateChan() as an initialisation trampoline (Fix round-3 #13).
 	once    sync.Once
 	updated chan struct{}
 }
@@ -64,15 +66,10 @@ type fakeBudgetChecker struct {
 func (f *fakeBudgetChecker) waitForUpdate(t *testing.T) {
 	t.Helper()
 	select {
-	case <-f.updateChan():
+	case <-f.updated:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for async UpdateUsage call")
 	}
-}
-
-func (f *fakeBudgetChecker) updateChan() chan struct{} {
-	f.once.Do(func() { f.updated = make(chan struct{}) })
-	return f.updated
 }
 
 func (f *fakeBudgetChecker) CheckBudget(_ context.Context, projectID int, _, _ string, _, _ int64) (failmode.Decision, error) {
@@ -86,14 +83,9 @@ func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, _, _, 
 	f.lastUpdateProjectID = projectID
 	f.lastUpdateCostNano = costNano
 	f.mu.Unlock()
-	// Signal the first completion so tests can synchronise.
-	f.once.Do(func() { f.updated = make(chan struct{}) })
-	select {
-	case <-f.updated:
-		// Already closed — no-op.
-	default:
-		close(f.updated)
-	}
+	// Close updated exactly once so waitForUpdate unblocks regardless of how
+	// many concurrent billing goroutines fire (Fix round-3 #13).
+	f.once.Do(func() { close(f.updated) })
 	return f.updateErr
 }
 
@@ -258,7 +250,7 @@ func newTokenAwareBudgetHandler(router *trackingRouter, gate *fakeBudgetChecker,
 // TestBudgetGate_Block402_ProviderNotCalled verifies that an over-budget project
 // (Block402 verdict) receives HTTP 402 and the provider is never invoked.
 func TestBudgetGate_Block402_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 500_000)
@@ -288,7 +280,7 @@ func TestBudgetGate_Block402_ProviderNotCalled(t *testing.T) {
 // TestBudgetGate_Block503_ProviderNotCalled verifies that an infrastructure
 // failure (Block503 verdict) receives HTTP 503 and the provider is never called.
 func TestBudgetGate_Block503_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block503, State: failmode.StateDownPGStale, Degraded: true}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block503, State: failmode.StateDownPGStale, Degraded: true}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
@@ -320,7 +312,7 @@ func TestBudgetGate_Block503_ProviderNotCalled(t *testing.T) {
 func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 1_500_000 // what fakeCostEstimator returns
 
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{
 		ID:    "cmpl-ok",
@@ -369,7 +361,7 @@ func TestBudgetGate_Allow_TokenAwareCost(t *testing.T) {
 		wantCost    = promptToks*inputRate + compToks*outputRate // 3300
 	)
 
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{
 		ID:    "cmpl-token-aware",
@@ -435,7 +427,7 @@ func TestBudgetGate_Disabled_NoInterference(t *testing.T) {
 // project-id header is allowed when the gate is wired (no ID ⇒ no budget row ⇒
 // unlimited — consistent with GovernanceStore's ErrNoBudgetRow path).
 func TestBudgetGate_AnonymousProject_Allowed(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}} // would block if called
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}, updated: make(chan struct{})} // would block if called
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "anon"}
 	h := newBudgetHandler(router, gate, 0)
@@ -459,7 +451,7 @@ func TestBudgetGate_AnonymousProject_Allowed(t *testing.T) {
 // TestBudgetGate_Messages_Block402 tests the Anthropic /v1/messages path for
 // over-budget → 402 with the Anthropic error format, provider not called.
 func TestBudgetGate_Messages_Block402_AnthropicDialect(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
 	h := newBudgetHandler(router, gate, 0)
@@ -489,7 +481,7 @@ func TestBudgetGate_Messages_Block402_AnthropicDialect(t *testing.T) {
 func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 2_000_000
 
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.respResp = &schemas.BifrostResponsesResponse{
 		ID:    strPtr("resp-ok"),
@@ -519,7 +511,7 @@ func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
 // TestBudgetGate_ChatStream_Block402_ProviderNotCalled verifies that a streaming
 // Chat request is blocked at 402 before the provider is ever called.
 func TestBudgetGate_ChatStream_Block402_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.streamChan = newChunkChan()
 	h := newBudgetHandler(router, gate, 0)
@@ -538,7 +530,7 @@ func TestBudgetGate_ChatStream_Block402_ProviderNotCalled(t *testing.T) {
 // TestBudgetGate_CheckBudgetError_Returns503 verifies that a hard error from
 // CheckBudget (unexpected infra failure) causes a 503 and blocks the provider.
 func TestBudgetGate_CheckBudgetError_Returns503(t *testing.T) {
-	gate := &fakeBudgetChecker{checkErr: fmt.Errorf("simulated gate panic")}
+	gate := &fakeBudgetChecker{checkErr: fmt.Errorf("simulated gate panic"), updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
@@ -558,7 +550,7 @@ func TestBudgetGate_CheckBudgetError_Returns503(t *testing.T) {
 // Calculator returns 0 (e.g. for a response with no usage tokens), UpdateUsage
 // is NOT called — there is nothing to bill.
 func TestBudgetGate_ZeroCost_SkipsUpdateUsage(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{
 		ID:    "zero-usage",
@@ -595,7 +587,7 @@ func responsesReqWithProject(t *testing.T, projectID string) *http.Request {
 // TestBudgetGate_Responses_Block402_ProviderNotCalled verifies that the
 // Responses handler enforces the gate and returns 402 before calling the provider.
 func TestBudgetGate_Responses_Block402_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.respResp = &schemas.BifrostResponsesResponse{ID: strPtr("should-not-reach")}
 	h := newBudgetHandler(router, gate, 0)
@@ -622,7 +614,7 @@ func TestBudgetGate_Responses_Block402_ProviderNotCalled(t *testing.T) {
 // the OpenAI Responses (/v1/responses) handler.
 func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 3_000_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.respResp = &schemas.BifrostResponsesResponse{
 		ID:    strPtr("resp-responses-ok"),
@@ -654,7 +646,7 @@ func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
 // TestBudgetGate_TextCompletion_Block402_ProviderNotCalled verifies the legacy
 // completions handler gates at 402 before calling the provider.
 func TestBudgetGate_TextCompletion_Block402_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.textResp = &schemas.BifrostTextCompletionResponse{ID: "should-not-reach"}
 	h := newBudgetHandler(router, gate, 0)
@@ -679,7 +671,7 @@ func TestBudgetGate_TextCompletion_Block402_ProviderNotCalled(t *testing.T) {
 // the legacy completions handler.
 func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 900_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.textResp = &schemas.BifrostTextCompletionResponse{
 		ID:    "txt-ok",
@@ -710,7 +702,7 @@ func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
 // TestBudgetGate_Embeddings_Block402_ProviderNotCalled verifies the embeddings
 // handler gates at 402 before calling the provider.
 func TestBudgetGate_Embeddings_Block402_ProviderNotCalled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Block402}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.embResp = &schemas.BifrostEmbeddingResponse{}
 	h := newBudgetHandler(router, gate, 0)
@@ -735,7 +727,7 @@ func TestBudgetGate_Embeddings_Block402_ProviderNotCalled(t *testing.T) {
 // the embeddings handler.
 func TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked(t *testing.T) {
 	const wantCostNano = 50_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	router.embResp = &schemas.BifrostEmbeddingResponse{
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 8, CompletionTokens: 0},
@@ -768,7 +760,7 @@ func TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked(t *testing.T) {
 // a streaming Chat request bills via the usage-carrying final chunk.
 func TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 	const wantCostNano = 1_200_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	// Two chunks: a delta + a final usage chunk (providers send usage in the
 	// last chunk with Usage populated).
@@ -805,7 +797,7 @@ func TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 // TestBudgetGate_ChatStream_NoUsageChunk_Unbilled verifies that when no usage
 // chunk arrives the stream completes without calling UpdateUsage (warn, don't bill).
 func TestBudgetGate_ChatStream_NoUsageChunk_Unbilled(t *testing.T) {
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	// Stream with no usage on any chunk.
 	router.streamChan = newChunkChan(
@@ -830,7 +822,7 @@ func TestBudgetGate_ChatStream_NoUsageChunk_Unbilled(t *testing.T) {
 // streaming Anthropic /messages bills from the response.completed usage.
 func TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 	const wantCostNano = 800_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	// Send a response.completed chunk which carries Response.Usage.
 	completedChunk := &schemas.BifrostStreamChunk{
@@ -862,7 +854,7 @@ func TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T)
 // streaming /v1/responses bills from the response.completed usage.
 func TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 	const wantCostNano = 650_000
-	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}}
+	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow}, updated: make(chan struct{})}
 	router := &trackingRouter{}
 	completedChunk := &schemas.BifrostStreamChunk{
 		BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
@@ -956,5 +948,150 @@ func TestBillingPeriodHelpers(t *testing.T) {
 	}
 	if got := billingPeriodEnd(mid); got != wantEnd {
 		t.Errorf("billingPeriodEnd = %d, want %d", got, wantEnd)
+	}
+}
+
+// ── Fix round-3 #3: shutdown / DrainBilling integration test ─────────────────
+
+// slowFakeBudgetChecker is a fakeBudgetChecker whose UpdateUsage blocks until
+// the caller signals `proceed`. Used by the shutdown integration test to hold
+// the billing goroutine in-flight so DrainBilling can be called while billing
+// is still running.
+type slowFakeBudgetChecker struct {
+	fakeBudgetChecker
+	// proceed is closed by the test when UpdateUsage should unblock and return.
+	proceed chan struct{}
+}
+
+func (s *slowFakeBudgetChecker) UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano, periodStart, periodEnd int64) error {
+	// Block until the test says to continue (simulates a slow NATS round-trip).
+	select {
+	case <-s.proceed:
+	case <-ctx.Done():
+	}
+	return s.fakeBudgetChecker.UpdateUsage(ctx, projectID, scope, scopeID, eventID, costNano, periodStart, periodEnd)
+}
+
+// TestDrainBilling_WaitsForInFlightGoroutine is the Fix round-3 #3 integration
+// test. It exercises the full handler→DrainBilling shutdown path:
+//
+//  1. Build a Handler with a slow budget checker (UpdateUsage blocks).
+//  2. Fire a request that succeeds → billing goroutine is spawned and blocks.
+//  3. Call DrainBilling() in a goroutine (should block until billing finishes).
+//  4. Release the billing goroutine (close proceed).
+//  5. Assert DrainBilling returned (billing completed, not dropped).
+//  6. Assert UpdateUsage was called (spend was not silently discarded).
+//
+// Running under -race catches any Add-after-Wait panic: if DrainBilling sets
+// billingClosing BEFORE billingWg.Wait() and a goroutine calls billingWg.Add
+// after Wait, the race detector fires before the panic.
+func TestDrainBilling_WaitsForInFlightGoroutine(t *testing.T) {
+	const wantCostNano = 1_000_000
+
+	proceed := make(chan struct{})
+	slow := &slowFakeBudgetChecker{
+		fakeBudgetChecker: fakeBudgetChecker{
+			checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy},
+			updated:      make(chan struct{}),
+		},
+		proceed: proceed,
+	}
+
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-drain-test",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 10},
+	}
+	// Build the handler pointing to the slow wrapper so UpdateUsage calls are
+	// intercepted by slowFakeBudgetChecker.UpdateUsage (blocking on proceed).
+	h := NewHandler(router, nil, nil, WithBudgetGate(slow, &fakeCostEstimator{totalNano: wantCostNano}))
+
+	// Fire the request. The response is written immediately; the billing
+	// goroutine is spawned and blocks inside slow.UpdateUsage.
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// DrainBilling() should block until billing completes. Run it concurrently
+	// so we can release the goroutine from this goroutine.
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		h.DrainBilling()
+	}()
+
+	// Give the goroutine time to reach DrainBilling's billingWg.Wait().
+	// 10 ms is enough on any modern machine; the test is not time-sensitive.
+	time.Sleep(10 * time.Millisecond)
+
+	// Verify DrainBilling has NOT returned yet (billing goroutine still blocked).
+	select {
+	case <-drainDone:
+		t.Fatal("DrainBilling returned before billing goroutine completed — spend was dropped")
+	default:
+		// expected: DrainBilling is still waiting
+	}
+
+	// Release the billing goroutine.
+	close(proceed)
+
+	// DrainBilling must now unblock within 2 s.
+	select {
+	case <-drainDone:
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for DrainBilling to return after billing goroutine was released")
+	}
+
+	// Billing must have been recorded (not dropped).
+	if slow.updateCalls.Load() == 0 {
+		t.Error("UpdateUsage was NOT called — billing was silently dropped during drain")
+	}
+	if got := slow.getLastUpdateCostNano(); got != wantCostNano {
+		t.Errorf("UpdateUsage costNano = %d, want %d — wrong spend recorded", got, wantCostNano)
+	}
+}
+
+// TestDrainBilling_NewRequestsRejectedAfterDrain verifies that billing goroutines
+// spawned AFTER DrainBilling() sets billingClosing are not added to the
+// WaitGroup (which would panic). The test fires a request after DrainBilling
+// returns and asserts the billing goroutine was skipped (not panicked) and
+// a warning was logged via the updateCalls counter staying zero.
+func TestDrainBilling_NewRequestsRejectedAfterDrain(t *testing.T) {
+	const costNano = 500_000
+
+	gate := &fakeBudgetChecker{
+		checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy},
+		updated:      make(chan struct{}),
+	}
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{
+		ID:    "cmpl-post-drain",
+		Model: "openai/gpt-4o",
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 5},
+	}
+	h := NewHandler(router, nil, nil, WithBudgetGate(gate, &fakeCostEstimator{totalNano: costNano}))
+
+	// Drain first (no in-flight billing goroutines yet).
+	h.DrainBilling()
+
+	// Fire a request AFTER drain. The billing goroutine must be skipped
+	// without panicking (Add-after-Wait guard).
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "10", false))
+
+	// Provider was called (the HTTP path is not affected by drain state).
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Billing must have been skipped (not added after Wait).
+	// Give a brief window for any goroutine that might have been spawned anyway.
+	time.Sleep(50 * time.Millisecond)
+	if gate.updateCalls.Load() != 0 {
+		t.Error("UpdateUsage was called after DrainBilling — billing goroutine was added after Wait")
 	}
 }

@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"expvar"
 	"fmt"
 	"log/slog"
 	"math"
@@ -101,18 +102,29 @@ func main() {
 
 	// FIX #0: assemble and wire the governance engine when both NATS and DB
 	// are available. When either is absent, enforcement is DISABLED.
-	var budgetOpts []llmproxy.HandlerOption
+	//
+	// Fix round-3 #1: hoist govStore to a scope visible at shutdown so
+	// govStore.Drain() can be called in the graceful shutdown path.
+	var (
+		budgetOpts []llmproxy.HandlerOption
+		govStore   *governance.GovernanceStore
+	)
 	nc := srv.NATS()
 	if nc != nil && pool != nil {
-		govStore, calcResult, govErr := buildGovernance(ctx, cfg, nc, pool, logger)
+		var calcResult *cost.Calculator
+		var govErr error
+		govStore, calcResult, govErr = buildGovernance(ctx, cfg, nc, pool, logger)
 		if govErr != nil {
 			logger.Error("BUDGET ENFORCEMENT DISABLED: governance assembly failed", "err", govErr)
+			govStore = nil // ensure nil so drain is skipped on error path
 		} else {
 			budgetOpts = append(budgetOpts, llmproxy.WithBudgetGate(govStore, calcResult))
 			logger.Info("budget enforcement ENABLED", "nats_url", cfg.NATSURL)
+			recordBudgetEnforcementEnabled(true)
 		}
 	} else {
 		logger.Warn("BUDGET ENFORCEMENT DISABLED: " + budgetDisabledReason(cfg, nc, pool))
+		recordBudgetEnforcementEnabled(false)
 	}
 
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
@@ -140,6 +152,13 @@ func main() {
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
 	}
+
+	// Fix round-3 #1/#2: drain billing goroutines before the governance store
+	// drains its persist goroutines, and both before srv.Shutdown closes the
+	// pool. Extracted into drainForShutdown so the WIRING is unit-testable — a
+	// unit test of Drain() in isolation does NOT catch a future removal of this
+	// call (that "built-but-not-wired" gap recurred three times in review).
+	drainForShutdown(handler, govStore)
 
 	// Drain in-flight streams (§9.5: ≥150s ceiling applied inside Shutdown).
 	if err := srv.Shutdown(context.Background()); err != nil {
@@ -238,5 +257,48 @@ func parseLevel(s string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
+	}
+}
+
+// budgetEnforcementEnabled is the scrapable expvar gauge for budget enforcement
+// status (Fix round-3 #9). Set once at startup; operators can alert on 0.
+//
+//	gateway_budget_enforcement_enabled == 1 → enforcement active
+//	gateway_budget_enforcement_enabled == 0 → enforcement DISABLED (loud startup warning already logged)
+var budgetEnforcementEnabled = expvar.NewInt("gateway_budget_enforcement_enabled")
+
+// recordBudgetEnforcementEnabled sets the expvar gauge. Called once at startup
+// after governance assembly succeeds or fails.
+func recordBudgetEnforcementEnabled(enabled bool) {
+	if enabled {
+		budgetEnforcementEnabled.Set(1)
+	} else {
+		budgetEnforcementEnabled.Set(0)
+	}
+}
+
+// billingDrainer / govDrainer are the minimal shutdown-drain surfaces of
+// *llmproxy.Handler and *governance.GovernanceStore, extracted so the shutdown
+// WIRING is testable (see drainForShutdown + its test).
+type billingDrainer interface{ DrainBilling() }
+type govDrainer interface{ Drain() }
+
+// drainForShutdown drains in-flight work in the order that avoids dropped spend
+// and Add-after-Wait on the governance persist WaitGroup:
+//  1. billing goroutines (they may still call the store's UpdateUsage), then
+//  2. the governance store's persist goroutines.
+// Must run BEFORE srv.Shutdown() closes the DB pool. gov may be nil when budget
+// enforcement is disabled.
+func drainForShutdown(h billingDrainer, gov govDrainer) {
+	if h != nil {
+		h.DrainBilling()
+	}
+	// A nil *GovernanceStore stored in a non-nil interface must be treated as
+	// absent (enforcement disabled path passes a typed-nil).
+	if gov != nil {
+		if gs, ok := gov.(*governance.GovernanceStore); ok && gs == nil {
+			return
+		}
+		gov.Drain()
 	}
 }

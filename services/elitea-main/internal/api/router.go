@@ -51,6 +51,15 @@ type AuthDeps struct {
 	SessionHandler *v2auth.SessionHandler
 	OIDCHandler    *v2auth.OIDCHandler
 	SessionSecret  string
+
+	// TrustedProxyCIDRs is the list of CIDR ranges from which Traefik
+	// forward-auth headers (X-Auth-Type / X-Auth-Id / X-Auth-Reference) are
+	// accepted. When empty, the Auth middleware falls back to the
+	// TRUSTED_PROXY_CIDRS environment variable. Populate this from the
+	// TRUSTED_PROXY_CIDRS env var in main.go so both AuthConfig{} construction
+	// sites receive the same list rather than relying on the env fallback at
+	// middleware construction time (Fix round-3 #5).
+	TrustedProxyCIDRs []string
 }
 
 // IndexerDeps groups indexer/predict dependencies (future: gRPC client to elitea-indexer).
@@ -193,7 +202,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret}))
+		r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret, TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs}))
 
 		if cfg.CutoverRouter != nil {
 			r.Use(cfg.CutoverRouter.Middleware)
@@ -641,7 +650,7 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	// proxy adds signed identity headers.
 	if cfg.LLMProxy != nil {
 		r.Group(func(r chi.Router) {
-			r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret}))
+			r.Use(apimw.Auth(apimw.AuthConfig{Client: cfg.Auth.Client, Validator: cfg.Auth.Validator, SessionSecret: cfg.Auth.SessionSecret, TrustedProxyCIDRs: cfg.Auth.TrustedProxyCIDRs}))
 			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: cfg.LLMProjectResolver}))
 			r.Mount("/llm", cfg.LLMProxy)
 		})

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,32 @@ const billingCtxTimeout = 10 * time.Second
 
 // budgetScopeProject is the scope string used for project-level budget checks.
 const budgetScopeProject = "project"
+
+// perImageFallbackNano is the fixed per-image billing cost in nano-USD used
+// when an image-generation response carries no token-based Usage field.
+// $0.040 per image (40_000_000 nano-USD) matches the DALL·E 3 Standard
+// 1024×1024 list price and is a conservative floor for image models that do
+// not report token usage. This constant is intentionally NOT a catalog lookup:
+// image models whose pricing is token-based will report Usage and go through
+// the normal cost.Calculator path; this path only fires when Usage==nil.
+const perImageFallbackNano int64 = 40_000_000
+
+// inflightKey builds the sync.Map key for the per-project in-flight reservation
+// counter (Fix round-3 #7). The key identifies a unique (scope, scopeID,
+// billing-period) triple so concurrent requests in the same project+period
+// share one counter.
+func inflightKey(scopeID string, periodStart int64) string {
+	return budgetScopeProject + ":" + scopeID + ":" + strconv.FormatInt(periodStart, 10)
+}
+
+// addInflight atomically adds delta to the per-project in-flight reservation
+// and returns the new total. Uses a load-or-store idiom on a *atomic.Int64
+// stored in h.inflightNano so no external lock is needed.
+func (h *Handler) addInflight(scopeID string, periodStart, delta int64) int64 {
+	key := inflightKey(scopeID, periodStart)
+	v, _ := h.inflightNano.LoadOrStore(key, new(atomic.Int64))
+	return v.(*atomic.Int64).Add(delta)
+}
 
 // billingPeriodStart returns the first second of the current calendar month in
 // UTC as a Unix timestamp. Budget counters are keyed by this value (design §8,
@@ -104,11 +131,41 @@ func (h *Handler) checkBudget(
 		reqCostNano = h.costCalc.Cost(ctx, provider, model, promptTokenEst, 0).TotalNanoUSD
 	}
 
-	dec, err := h.budgetGate.CheckBudget(ctx, pid, budgetScopeProject, scopeID, periodStart, reqCostNano)
+	// Fix round-3 #7: include the cumulative in-flight reservation in the
+	// admission check to bound the concurrent-admission window overshoot.
+	//
+	// Without this, N requests can pass admission simultaneously before any
+	// async billing increment reaches NATS (each sees the same NATS counter
+	// and is individually admitted). By adding the previous in-flight amount
+	// to reqCostNano, CheckBudget sees the effective pending spend including
+	// any concurrent admits that have not yet been billed.
+	//
+	// Concurrency protocol:
+	//   1. Read the previous inflight total (before adding this request).
+	//   2. Add this request's estimated cost to the in-flight counter.
+	//   3. Pass (reqCostNano + prevInflight) to CheckBudget so the FSM's
+	//      per-replica NEAR cap accounts for the full pending spend.
+	//   4. Decrement the counter when billing completes (or is skipped).
+	//
+	// This is a best-effort local bound, not a distributed lock. The NATS
+	// authoritative counter remains the ground truth.
+	var prevInflight int64
+	if reqCostNano > 0 {
+		// Capture the pre-reservation total: add our cost, then subtract it to
+		// get what was already in-flight before this request.
+		newTotal := h.addInflight(scopeID, periodStart, reqCostNano)
+		prevInflight = newTotal - reqCostNano
+	}
+	effectiveCostNano := reqCostNano + prevInflight
+
+	dec, err := h.budgetGate.CheckBudget(ctx, pid, budgetScopeProject, scopeID, periodStart, effectiveCostNano)
 	if err != nil {
 		// A hard error from the gate is unexpected (the gate is designed to
 		// degrade gracefully); treat it as a 503 to avoid silently bypassing
-		// enforcement.
+		// enforcement. Decrement the reservation since the request is blocked.
+		if reqCostNano > 0 {
+			h.addInflight(scopeID, periodStart, -reqCostNano)
+		}
 		h.logger.Error("budget gate: CheckBudget error; blocking request",
 			"project_id", pid, "err", err)
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
@@ -118,12 +175,32 @@ func (h *Handler) checkBudget(
 
 	switch dec.Verdict {
 	case failmode.Allow:
+		// Fix round-3 #12: log at Info when the Allow decision comes from a
+		// degraded (NATS-down) FSM state so operators can see that the gateway
+		// is operating in fallback mode on a per-request basis. Only logged when
+		// Degraded is set to avoid a log entry on every healthy-path request.
+		if dec.Degraded {
+			h.logger.Info("budget gate: degraded allow (NATS unavailable, fallback tier used)",
+				"project_id", pid,
+				"state", dec.State.String(),
+				"cost_nano_est", reqCostNano,
+			)
+		}
+		// Reservation stays in-flight until billing goroutine decrements it.
 		return true
 	case failmode.Block402:
+		// Decrement the reservation: this request will not be billed.
+		if reqCostNano > 0 {
+			h.addInflight(scopeID, periodStart, -reqCostNano)
+		}
 		writeError(w, http.StatusPaymentRequired, "budget_exceeded",
 			"project budget exhausted for this billing period", "insufficient_quota")
 		return false
 	case failmode.Block503:
+		// Decrement the reservation: this request will not be billed.
+		if reqCostNano > 0 {
+			h.addInflight(scopeID, periodStart, -reqCostNano)
+		}
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
 			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
 		return false
@@ -203,17 +280,77 @@ func (h *Handler) updateUsage(
 		return // nothing to bill
 	}
 
-	eventID := uuid.NewString()
-	costNano := actualCost.TotalNanoUSD
-
-	// FIX #18: read the pre-increment snapshot BEFORE spawning the goroutine
-	// so we can compute the soft-alert crossing in the goroutine without
-	// another round-trip to CheckBudget after the increment.
 	preDec, preErr := h.budgetGate.CheckBudget(costCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD, preDec, preErr)
+}
 
-	// Spawn the increment + alert goroutine OFF the HTTP response critical path.
-	// The response is written by the caller immediately after updateUsage returns.
+// updateUsageDirect bills a pre-computed costNano amount (nano-USD) for the
+// given project, bypassing the cost.Calculator. Used for image-generation
+// responses where the provider does not report token usage (Fix round-3 #8):
+// the caller has already counted the generated images and multiplied by
+// perImageFallbackNano.
+//
+// If costNano <= 0 or the gate/store is absent the call is a no-op.
+func (h *Handler) updateUsageDirect(
+	ctx context.Context,
+	projectIDStr string,
+	costNano int64,
+) {
+	if h.budgetGate == nil || costNano <= 0 {
+		return
+	}
+	pid := parseProjectID(projectIDStr)
+	if pid < 0 {
+		return
+	}
+	scopeID := strconv.Itoa(pid)
+	now := time.Now()
+	periodStart := billingPeriodStart(now)
+	periodEnd := billingPeriodEnd(now)
+
+	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+	defer costCancel()
+
+	preDec, preErr := h.budgetGate.CheckBudget(costCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano, preDec, preErr)
+}
+
+// spawnBillingGoroutine is the shared inner billing path: it guards against
+// Add-after-Wait (Fix round-3 #2), spawns the billing goroutine, and runs
+// the soft-alert crossing check after a successful increment.
+//
+// Callers must have already validated costNano > 0.
+func (h *Handler) spawnBillingGoroutine(
+	pid int,
+	scopeID string,
+	periodStart, periodEnd int64,
+	costNano int64,
+	preDec failmode.Decision,
+	preErr error,
+) {
+	eventID := uuid.NewString()
+
+	// Fix round-3 #2: guard against Add-after-Wait (billingClosing already set
+	// by DrainBilling) and track in-flight goroutines so DrainBilling can wait.
+	if h.billingClosing.Load() != 0 {
+		// Drain in progress — skip spawning; decrement the in-flight reservation
+		// and log so spend is not silently dropped.
+		if costNano > 0 {
+			h.addInflight(scopeID, periodStart, -costNano)
+		}
+		h.logger.Warn("budget gate: billing goroutine skipped (drain in progress); spend may be under-counted",
+			"project_id", pid, "cost_nano", costNano, "event_id", eventID)
+		return
+	}
+	h.billingWg.Add(1)
 	go func() {
+		defer h.billingWg.Done()
+		// Decrement the in-flight reservation when this goroutine finishes,
+		// whether UpdateUsage succeeded or failed (Fix round-3 #7).
+		if costNano > 0 {
+			defer h.addInflight(scopeID, periodStart, -costNano)
+		}
+
 		billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 		defer cancel()
 
@@ -228,7 +365,6 @@ func (h *Handler) updateUsage(
 		// FIX #15: soft-alert threshold crossing check.
 		// The alert must fire ONLY when the pre-increment spend was BELOW the
 		// soft threshold and the post-increment spend is AT OR ABOVE it.
-		// We already have the pre-increment Decision (preDec / preErr).
 		if preErr != nil {
 			// Non-fatal: skip the alert check if we couldn't read the pre-snapshot.
 			return
@@ -283,15 +419,17 @@ func (h *Handler) trySoftAlert(
 	//     The soft threshold (80%) is necessarily also crossed.
 	//   - postDec.State == StateDownPGFreshNear: degraded-path 80%..100% range
 	//     entered; the FSM already enforces the per-replica NEAR cap.
+	//   - postDec.State == StateNATSHealthy && postDec.SoftThresholdNear &&
+	//     !preDec.SoftThresholdNear: NATS_HEALTHY path just crossed into the
+	//     soft-alert zone (Fix round-3 #6: previously the NATS_HEALTHY path
+	//     never fired the soft alert because it didn't track the 80% threshold).
 	//
-	// Only check/fire in these two cases to avoid alerting on every request.
+	// Only fire in these cases to avoid alerting on every request.
 	crossed := postDec.Verdict == failmode.Block402 ||
-		postDec.State == failmode.StateDownPGFreshNear
+		postDec.State == failmode.StateDownPGFreshNear ||
+		(postDec.State == failmode.StateNATSHealthy &&
+			postDec.SoftThresholdNear && !preDec.SoftThresholdNear)
 
-	// Additionally, detect NATS_HEALTHY threshold crossing: if the pre-state
-	// was StateNATSHealthy (Allow, under the soft threshold) and the post-state
-	// is Block402 we already covered that above. If both are StateNATSHealthy
-	// but the post verdict is still Allow, no crossing has occurred on this path.
 	if !crossed {
 		return
 	}
@@ -387,19 +525,25 @@ func usageFromEmbeddingResponse(resp *schemas.BifrostEmbeddingResponse) (int64, 
 	return int64(resp.Usage.PromptTokens), int64(resp.Usage.CompletionTokens)
 }
 
-// usageFromImageResponse extracts (inputTokens, outputTokens) from a
-// BifrostImageGenerationResponse. Image providers may carry token usage
-// in the Usage field (e.g. OpenAI gpt-image-1); when absent both are 0.
-// The cost.Calculator handles image models by looking up the catalog entry
-// (which may express cost as input_tokens = image_tokens), so passing the
-// available token counts is correct. When no usage is present the gate
-// still enforces admission (checkBudget blocks over-budget projects) but
-// skips the post-completion billing increment (nothing measurable to bill).
-func usageFromImageResponse(resp *schemas.BifrostImageGenerationResponse) (int64, int64) {
-	if resp == nil || resp.Usage == nil {
-		return 0, 0
+// usageFromImageResponse extracts (inputTokens, outputTokens, imageCount)
+// from a BifrostImageGenerationResponse.
+//
+// When the provider populates Usage (e.g. OpenAI gpt-image-1), the token
+// counts are returned and imageCount is 0 — the normal cost.Calculator path
+// applies.
+//
+// When Usage is nil (e.g. DALL·E 2, Stability AI), token counts are 0 and
+// imageCount is set to len(resp.Data) so the caller can bill a fixed per-image
+// fallback cost via perImageFallbackNano (Fix round-3 #8). This ensures image
+// models that do not report token usage still get billed.
+func usageFromImageResponse(resp *schemas.BifrostImageGenerationResponse) (inputTokens, outputTokens, imageCount int64) {
+	if resp == nil {
+		return 0, 0, 0
 	}
-	return int64(resp.Usage.InputTokens), int64(resp.Usage.OutputTokens)
+	if resp.Usage != nil {
+		return int64(resp.Usage.InputTokens), int64(resp.Usage.OutputTokens), 0
+	}
+	return 0, 0, int64(len(resp.Data))
 }
 
 // providerModelFromImageGenReq extracts provider and model from a

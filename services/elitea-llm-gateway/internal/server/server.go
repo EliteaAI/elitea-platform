@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -130,10 +131,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, level *slo
 		})
 		if nerr != nil {
 			logger.Warn("NATS budget path unavailable at startup; continuing without enforcement wiring",
-				"err", nerr, "url", cfg.NATSURL)
+				"err", nerr, "url", redactURL(cfg.NATSURL))
 		} else {
 			natsClient = nc
-			logger.Info("NATS budget path connected", "url", cfg.NATSURL, "replicas", cfg.NATSReplicas)
+			logger.Info("NATS budget path connected", "url", redactURL(cfg.NATSURL), "replicas", cfg.NATSReplicas)
 		}
 	} else {
 		logger.Info("NATS budget path disabled (GATEWAY_NATS_URL unset)")
@@ -194,6 +195,19 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 	return nil
+}
+
+// redactURL removes the userinfo component (username:password@ or token@)
+// from a URL before logging so credentials are never written to log streams
+// (Fix round-3 #10). Returns the original string on any parse failure so the
+// caller always gets a printable value.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // buildTLSConfig builds a *tls.Config for the server. When cfg.TLSCAFile is

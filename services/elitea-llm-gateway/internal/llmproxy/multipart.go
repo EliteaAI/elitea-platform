@@ -45,8 +45,13 @@ func (h *Handler) ImageEdit(w http.ResponseWriter, r *http.Request) {
 	resp, bErr := h.router.ImageEditRequest(ctx, bifReq)
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
-		in, out := usageFromImageResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		// Fix round-3 #8: fall back to fixed per-image cost when Usage is nil.
+		in, out, imgCount := usageFromImageResponse(resp)
+		if in > 0 || out > 0 {
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		} else if imgCount > 0 {
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+		}
 	}
 }
 
@@ -78,8 +83,13 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 	resp, bErr := h.router.ImageVariationRequest(ctx, bifReq)
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
-		in, out := usageFromImageResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		// Fix round-3 #8: fall back to fixed per-image cost when Usage is nil.
+		in, out, imgCount := usageFromImageResponse(resp)
+		if in > 0 || out > 0 {
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		} else if imgCount > 0 {
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+		}
 	}
 }
 

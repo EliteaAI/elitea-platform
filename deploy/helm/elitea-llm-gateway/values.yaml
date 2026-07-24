@@ -61,13 +61,29 @@ env:
   #       name: elitea-llm-gateway-secrets
   #       key: identity-secret
   GATEWAY_IDENTITY_SECRET: ""   # override via secretRef in production
-  # FIX #10: mTLS server cert/key/CA paths (mounted from mtls.serverSecretName).
-  # When GATEWAY_TLS_CERT_FILE and GATEWAY_TLS_KEY_FILE are both set the server
-  # switches to TLS; adding GATEWAY_TLS_CA_FILE enables mTLS (require+verify
-  # client cert). Leave empty for plain HTTP (local/dev only).
-  GATEWAY_TLS_CERT_FILE: ""    # e.g. /etc/gateway/tls/tls.crt
-  GATEWAY_TLS_KEY_FILE: ""     # e.g. /etc/gateway/tls/tls.key
-  GATEWAY_TLS_CA_FILE: ""      # e.g. /etc/gateway/tls/ca.crt — enables mTLS
+  # NOTE: GATEWAY_TLS_CERT_FILE / GATEWAY_TLS_KEY_FILE / GATEWAY_TLS_CA_FILE are
+  # NOT configured here. When mtls.enabled=true the chart injects these env vars
+  # automatically (deployment.yaml) pointing at the mtls.mountPath volume. Keeping
+  # them out of this map avoids duplicates and prevents operators from accidentally
+  # supplying conflicting paths.
+
+  # FIX 2 (MEDIUM): budget/NATS operational env vars — absent from round-1/round-2,
+  # so operators couldn't configure them and they silently took code defaults.
+  # Values below mirror config.go defaults (§8.5); override as needed.
+  #
+  # Platform-baseline NATS-failure policy (§8.5).
+  # "tiered_hybrid" (default) | "fail_open" | "fail_closed".
+  # A per-project gateway.project_budget.nats_fail_mode overrides this at runtime.
+  LLM_BUDGET_NATS_FAIL_MODE: "tiered_hybrid"
+  # How old (integer minutes) the Postgres snapshot may be before the tiered-hybrid
+  # fallback degrades to 503 (NATS_DOWN_PG_STALE). Default: 5.
+  LLM_BUDGET_PG_FRESHNESS_MIN: "5"
+  # Absolute per-replica degraded-window overspend cap in USD (§8.5).
+  # 0 = use 10 % of the project hard_limit_usd instead of a fixed cap.
+  LLM_BUDGET_NATS_DEGRADED_CAP_USD: "0"
+  # Continuous NATS outage ceiling (integer minutes). Once NATS has been down longer
+  # than this the FSM forces closed (503) regardless of snapshot freshness. Default: 10.
+  LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN: "10"
 
 # elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
 # §9.1). Named explicitly so the edge/runbook references resolve.

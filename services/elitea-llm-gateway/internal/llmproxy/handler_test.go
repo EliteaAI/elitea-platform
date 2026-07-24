@@ -492,6 +492,68 @@ func TestMessagesUnaryError_Anthropic(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
 	}
+	// Fix round-3 #4: /llm/v1/messages errors MUST be OpenAI-shaped (spec §2.5),
+	// not Anthropic-shaped. Assert the nested error envelope.
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal error body: %v — must be OpenAI-shaped {error:{...}}", err)
+	}
+	if out.Error.Message == "" {
+		t.Errorf("error.message is empty; got body=%s", rec.Body.String())
+	}
+	if out.Error.Code != "unauthenticated" {
+		t.Errorf("error.code = %q, want unauthenticated (spec §2.5)", out.Error.Code)
+	}
+}
+
+// TestMessagesUnaryError_IsOpenAIShaped is the spec §2.5 assertion: the error
+// body from /llm/v1/messages MUST be {"error":{message,type,code}}, NOT the
+// Anthropic {type,error:{type,message}} envelope. This test proves the fix was
+// applied and prevents regression.
+func TestMessagesUnaryError_IsOpenAIShaped(t *testing.T) {
+	fake := &fakeRouter{respErr: &schemas.BifrostError{
+		StatusCode: intPtr(http.StatusTooManyRequests),
+		Error:      &schemas.ErrorField{Message: "rate limited", Type: strPtr("rate_limit_error")},
+	}}
+	h := NewHandler(fake, nil, nil)
+
+	rec := postJSON(t, h.route(), "/llm/v1/messages", `{"model":"claude","max_tokens":1,"messages":[]}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	// Must be OpenAI-shaped, NOT Anthropic-shaped.
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v — body=%s; must be {\"error\":{...}}", err, rec.Body.String())
+	}
+	if out.Error.Type == "" {
+		t.Errorf("error.type is empty; /llm/v1/messages must emit OpenAI-shaped errors")
+	}
+	if out.Error.Code != "rate_limit_exceeded" {
+		t.Errorf("error.code = %q, want rate_limit_exceeded (spec §2.5)", out.Error.Code)
+	}
+}
+
+// TestMessagesStreamPreError_IsOpenAIShaped verifies that streaming /messages
+// pre-errors (returned before any SSE frame) are also OpenAI-shaped.
+func TestMessagesStreamPreError_IsOpenAIShaped(t *testing.T) {
+	fake := &fakeRouter{streamErr: &schemas.BifrostError{
+		StatusCode: intPtr(http.StatusServiceUnavailable),
+		Error:      &schemas.ErrorField{Message: "overloaded"},
+	}}
+	h := NewHandler(fake, nil, nil)
+
+	rec := postJSON(t, h.route(), "/llm/v1/messages", `{"model":"claude","max_tokens":1,"messages":[],"stream":true}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v — body=%s; streaming pre-error must be OpenAI-shaped", err, rec.Body.String())
+	}
+	if out.Error.Message == "" {
+		t.Errorf("error.message is empty; streaming pre-error must be OpenAI-shaped")
+	}
 }
 
 func TestMessagesStreamPreError_Anthropic(t *testing.T) {
@@ -517,6 +579,14 @@ func TestCountTokensError_Anthropic(t *testing.T) {
 	rec := postJSON(t, h.route(), "/llm/v1/messages/count_tokens", `{"model":"claude","max_tokens":1,"messages":[]}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	// Fix round-3 #4: count_tokens errors must also be OpenAI-shaped.
+	var out openAIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v — must be OpenAI-shaped", err)
+	}
+	if out.Error.Message == "" {
+		t.Errorf("error.message empty; count_tokens error must be OpenAI-shaped")
 	}
 }
 

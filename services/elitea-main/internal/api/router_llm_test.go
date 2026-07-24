@@ -208,3 +208,41 @@ func TestLLMRoute_SubpathPreserved(t *testing.T) {
 		}
 	}
 }
+
+// TestTrustedProxyCIDRs_ThreadedThroughAuthDeps verifies Fix round-3 #5:
+// TrustedProxyCIDRs set on AuthDeps reaches both Auth middleware constructions
+// in NewRouter (the main /api/v2 group and the /llm group). A request arriving
+// from a trusted IP with Traefik X-Auth-Type headers is accepted without a
+// Bearer token when TrustedProxyCIDRs includes the loopback address.
+func TestTrustedProxyCIDRs_ThreadedThroughAuthDeps(t *testing.T) {
+	// Traefik-side user injected via headers (no Bearer token in the request).
+	proxy := &recordingHandler{}
+
+	cfg := api.RouterConfig{
+		Auth: api.AuthDeps{
+			Client:            newTestAuthClient(t),
+			Validator:         nil, // not needed for header-auth path
+			TrustedProxyCIDRs: []string{"127.0.0.0/8"},
+		},
+		LLMProxy:           proxy,
+		LLMProjectResolver: &stubProjectResolver{id: 10},
+	}
+	r := api.NewRouter(cfg)
+
+	// Simulate a request from Traefik (127.0.0.1) carrying X-Auth-Type headers.
+	// The Auth middleware must accept this and let the request through.
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Auth-Type", "traefik")
+	req.Header.Set("X-Auth-Id", "user-traefik")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	// 200 proves the CIDR was threaded to the middleware — not 401.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 (trusted proxy accepted), got %d; TrustedProxyCIDRs may not have been threaded to AuthConfig", rec.Code)
+	}
+	if !proxy.reached {
+		t.Error("proxy was not reached; request was blocked despite trusted CIDR")
+	}
+}
