@@ -76,14 +76,34 @@ func (id identity) sign(secret []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// stripIdentityHeaders removes any caller-supplied identity headers so a client
-// cannot spoof a project by setting them itself. The proxy re-sets only the
-// values it resolved at the edge.
+// stripIdentityHeaders removes any caller-supplied authentication and identity
+// headers before the request is forwarded to the gateway. The gateway must only
+// ever see the signed X-Elitea-* identity that this edge process injects; it
+// must never see client-supplied authentication material.
+//
+// Stripped headers:
+//   - X-Elitea-* (signed identity injected below; strip first to avoid leaking
+//     any client-spoofed value)
+//   - X-Auth-Type / X-Auth-Id / X-Auth-Reference (Traefik forward-auth headers)
+//   - Authorization, X-Api-Key (bearer / API-key credentials)
+//   - Cookie (session cookies; must not reach the downstream gateway)
 func stripIdentityHeaders(h http.Header) {
+	// Signed edge identity headers — re-injected after stripping.
 	h.Del(HeaderProjectID)
 	h.Del(HeaderUserID)
 	h.Del(HeaderTenantID)
 	h.Del(HeaderSignature)
+
+	// Traefik forward-auth headers that the auth middleware reads; remove so the
+	// gateway never sees inbound authentication context.
+	h.Del("X-Auth-Type")
+	h.Del("X-Auth-Id")
+	h.Del("X-Auth-Reference")
+
+	// Standard HTTP authentication material.
+	h.Del("Authorization")
+	h.Del("X-Api-Key")
+	h.Del("Cookie")
 }
 
 // injectIdentity strips any client-supplied identity headers on out, then sets

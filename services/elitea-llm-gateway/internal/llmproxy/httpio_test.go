@@ -32,10 +32,16 @@ func TestStatusAndType(t *testing.T) {
 		{"budget by 402", bErr(http.StatusPaymentRequired, "", "", "over budget"), http.StatusPaymentRequired, "budget_exceeded", "insufficient_quota"},
 		{"budget by code on 400", bErr(http.StatusBadRequest, "", "budget_exceeded", "x"), http.StatusPaymentRequired, "budget_exceeded", "insufficient_quota"},
 		{"budget by insufficient_quota code", bErr(http.StatusBadRequest, "", "insufficient_quota", "x"), http.StatusPaymentRequired, "budget_exceeded", "insufficient_quota"},
-		{"rate limit", bErr(http.StatusTooManyRequests, "", "slow", "x"), http.StatusTooManyRequests, "rate_limit_error", "slow"},
-		{"auth", bErr(http.StatusUnauthorized, "", "", "x"), http.StatusUnauthorized, "authentication_error", ""},
-		{"auth keeps provider type", bErr(http.StatusUnauthorized, "invalid_api_key", "", "x"), http.StatusUnauthorized, "invalid_api_key", ""},
-		{"permission", bErr(http.StatusForbidden, "", "", "x"), http.StatusForbidden, "permission_error", ""},
+		// FIX finding #13: 429 must always use code="rate_limit_exceeded", not the provider's raw code.
+		{"rate limit normalised", bErr(http.StatusTooManyRequests, "", "slow", "x"), http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"},
+		{"rate limit provider code overridden", bErr(http.StatusTooManyRequests, "", "tokens_per_min_exceeded", "x"), http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"},
+		{"rate limit empty code normalised", bErr(http.StatusTooManyRequests, "", "", "x"), http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"},
+		// FIX finding #15: 401 must always use code="unauthenticated".
+		{"auth normalised", bErr(http.StatusUnauthorized, "", "", "x"), http.StatusUnauthorized, "authentication_error", "unauthenticated"},
+		{"auth keeps provider type", bErr(http.StatusUnauthorized, "invalid_api_key", "", "x"), http.StatusUnauthorized, "invalid_api_key", "unauthenticated"},
+		// FIX finding #16: 403 must always use code="forbidden".
+		{"permission normalised", bErr(http.StatusForbidden, "", "", "x"), http.StatusForbidden, "permission_error", "forbidden"},
+		{"permission keeps provider type", bErr(http.StatusForbidden, "insufficient_permissions", "", "x"), http.StatusForbidden, "insufficient_permissions", "forbidden"},
 		{"infra 503", bErr(http.StatusServiceUnavailable, "", "", "x"), http.StatusServiceUnavailable, "api_error", ""},
 		{"passthrough 400", bErr(http.StatusBadRequest, "invalid_request_error", "", "x"), http.StatusBadRequest, "invalid_request_error", ""},
 		{"no status defaults 500", bErr(0, "", "", "x"), http.StatusInternalServerError, "api_error", ""},

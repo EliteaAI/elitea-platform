@@ -272,7 +272,17 @@ func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, sna
 	default:
 		// FRESH_SAFE: allow, bounded by the per-replica degraded overspend cap so
 		// a long outage across replicas cannot run unbounded (§8.5).
-		if p.DegradedCapNano > 0 && replicaDegradedNano+reqCostNano > p.DegradedCapNano {
+		//
+		// Design §8.5 mandates a 10% default cap when the operator has not
+		// configured an explicit DegradedCapNano (i.e. DegradedCapNano == 0).
+		// Derive it as limit/10 (integer division; fits int64 for any representable
+		// positive limit). A non-positive limit is a config error already handled
+		// above; once we reach this branch limit > 0.
+		effectiveCap := p.DegradedCapNano
+		if effectiveCap <= 0 {
+			effectiveCap = limit / 10
+		}
+		if effectiveCap > 0 && replicaDegradedNano+reqCostNano > effectiveCap {
 			return Decision{Verdict: Block402, State: StateDownPGFreshSafe, Degraded: true}
 		}
 		return Decision{Verdict: Allow, State: StateDownPGFreshSafe, Degraded: true}

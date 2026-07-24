@@ -672,3 +672,45 @@ func TestParseIntRoundTripGuard(t *testing.T) {
 		t.Fatalf("nano round-trip failed: %v", err)
 	}
 }
+
+// TestBreakerNotOpenOnClientCancellation asserts Fix #5 (nats-atomicity): a
+// burst of context.Canceled errors (client disconnect / browser stop) must NOT
+// trip the circuit breaker. Canceled signals caller-side abort, not NATS
+// infrastructure failure. Without the IsExcluded hook, 3 cancellations within
+// the 5s window open the breaker, triggering false-positive degraded mode.
+func TestBreakerNotOpenOnClientCancellation(t *testing.T) {
+	// Publisher blocks until the context is cancelled.
+	pub := &fakePublisher{block: 5 * time.Second}
+	c := newTestClient(Config{CBFailureThreshold: 3}, pub, nil, nil)
+
+	// Fire 3 calls with pre-cancelled contexts, simulating client disconnects.
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately so the publisher sees ctx.Done()
+		_, err := c.IncrBudget(ctx, "s", 1)
+		if err == nil {
+			t.Fatalf("call %d: expected error on cancelled context", i)
+		}
+		// The error should be ErrUnavailable (context.Canceled is mapped by mapErr)
+		// but it must NOT count towards the breaker threshold.
+	}
+	if c.BreakerState() != gobreaker.StateClosed {
+		t.Errorf("breaker state = %v after 3 client cancellations; want Closed (client abort ≠ NATS failure)", c.BreakerState())
+	}
+}
+
+// TestBreakerStillOpensOnInfraError asserts that Fix #5 does not accidentally
+// suppress real NATS infrastructure errors from tripping the breaker.
+func TestBreakerStillOpensOnInfraError(t *testing.T) {
+	pub := &fakePublisher{err: nats.ErrNoResponders}
+	c := newTestClient(Config{CBFailureThreshold: 3}, pub, nil, nil)
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.IncrBudget(context.Background(), "s", 1); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("call %d: err=%v, want ErrUnavailable", i, err)
+		}
+	}
+	if c.BreakerState() != gobreaker.StateOpen {
+		t.Errorf("breaker state = %v after 3 infra errors; want Open", c.BreakerState())
+	}
+}

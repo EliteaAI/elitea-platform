@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +32,9 @@ import (
 
 // fakeBudgetChecker implements BudgetChecker for tests. It records all calls
 // and returns configured verdicts.
+//
+// Since updateUsage now spawns a goroutine (FIX #18), tests must call
+// waitForUpdate() before reading lastUpdateCostNano / lastUpdateProjectID.
 type fakeBudgetChecker struct {
 	// checkVerdict is the failmode.Decision returned by CheckBudget.
 	checkVerdict failmode.Decision
@@ -40,13 +44,35 @@ type fakeBudgetChecker struct {
 	// updateErr is the error returned by UpdateUsage (nil normally).
 	updateErr error
 
-	// atomic counters so tests can assert call counts.
+	// atomic counters so tests can assert call counts without a mutex.
 	checkCalls  atomic.Int64
 	updateCalls atomic.Int64
 
-	// last UpdateUsage arguments (for assertion).
+	// mu protects lastUpdate* fields which are written by the billing goroutine.
+	mu                  sync.Mutex
 	lastUpdateCostNano  int64
 	lastUpdateProjectID int
+
+	// updated is closed (once) by the first UpdateUsage call so tests can
+	// wait for the async billing goroutine without a busy-poll or sleep.
+	once    sync.Once
+	updated chan struct{}
+}
+
+// waitForUpdate blocks until the first UpdateUsage call completes (or 2 s
+// elapses). Tests call this before reading lastUpdateCostNano / lastUpdateProjectID.
+func (f *fakeBudgetChecker) waitForUpdate(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.updateChan():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async UpdateUsage call")
+	}
+}
+
+func (f *fakeBudgetChecker) updateChan() chan struct{} {
+	f.once.Do(func() { f.updated = make(chan struct{}) })
+	return f.updated
 }
 
 func (f *fakeBudgetChecker) CheckBudget(_ context.Context, projectID int, _, _ string, _, _ int64) (failmode.Decision, error) {
@@ -56,13 +82,37 @@ func (f *fakeBudgetChecker) CheckBudget(_ context.Context, projectID int, _, _ s
 
 func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, _, _, _ string, costNano, _, _ int64) error {
 	f.updateCalls.Add(1)
+	f.mu.Lock()
 	f.lastUpdateProjectID = projectID
 	f.lastUpdateCostNano = costNano
+	f.mu.Unlock()
+	// Signal the first completion so tests can synchronise.
+	f.once.Do(func() { f.updated = make(chan struct{}) })
+	select {
+	case <-f.updated:
+		// Already closed — no-op.
+	default:
+		close(f.updated)
+	}
 	return f.updateErr
 }
 
 func (f *fakeBudgetChecker) TryAlertCooldown(_ context.Context, _, _ string, _ int64) (bool, error) {
 	return false, nil
+}
+
+// getLastUpdateCostNano returns lastUpdateCostNano under the mutex.
+func (f *fakeBudgetChecker) getLastUpdateCostNano() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUpdateCostNano
+}
+
+// getLastUpdateProjectID returns lastUpdateProjectID under the mutex.
+func (f *fakeBudgetChecker) getLastUpdateProjectID() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUpdateProjectID
 }
 
 // fakeCostEstimator returns a fixed per-request cost.
@@ -235,14 +285,16 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 	if !router.called.Load() {
 		t.Error("provider was NOT called despite Allow verdict")
 	}
+	// updateUsage is async (FIX #18) — wait for the billing goroutine before asserting.
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage was NOT called after a successful completion")
 	}
-	if gate.lastUpdateCostNano != wantCostNano {
-		t.Errorf("UpdateUsage costNano = %d, want %d", gate.lastUpdateCostNano, wantCostNano)
+	if got := gate.getLastUpdateCostNano(); got != wantCostNano {
+		t.Errorf("UpdateUsage costNano = %d, want %d", got, wantCostNano)
 	}
-	if gate.lastUpdateProjectID != 42 {
-		t.Errorf("UpdateUsage projectID = %d, want 42", gate.lastUpdateProjectID)
+	if got := gate.getLastUpdateProjectID(); got != 42 {
+		t.Errorf("UpdateUsage projectID = %d, want 42", got)
 	}
 }
 
@@ -341,11 +393,12 @@ func TestBudgetGate_Messages_Allow_UpdateUsageInvoked(t *testing.T) {
 	if !router.called.Load() {
 		t.Error("provider NOT called despite Allow verdict")
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after successful /messages completion")
 	}
-	if gate.lastUpdateProjectID != 55 {
-		t.Errorf("UpdateUsage projectID = %d, want 55", gate.lastUpdateProjectID)
+	if got := gate.getLastUpdateProjectID(); got != 55 {
+		t.Errorf("UpdateUsage projectID = %d, want 55", got)
 	}
 }
 
@@ -473,11 +526,12 @@ func TestBudgetGate_Responses_Allow_UpdateUsageInvoked(t *testing.T) {
 	if !router.called.Load() {
 		t.Error("provider NOT called despite Allow verdict")
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after /responses completion")
 	}
-	if gate.lastUpdateProjectID != 20 {
-		t.Errorf("UpdateUsage projectID = %d, want 20", gate.lastUpdateProjectID)
+	if got := gate.getLastUpdateProjectID(); got != 20 {
+		t.Errorf("UpdateUsage projectID = %d, want 20", got)
 	}
 }
 
@@ -530,11 +584,12 @@ func TestBudgetGate_TextCompletion_Allow_UpdateUsageInvoked(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after /completions success")
 	}
-	if gate.lastUpdateProjectID != 6 {
-		t.Errorf("UpdateUsage projectID = %d, want 6", gate.lastUpdateProjectID)
+	if got := gate.getLastUpdateProjectID(); got != 6 {
+		t.Errorf("UpdateUsage projectID = %d, want 6", got)
 	}
 }
 
@@ -584,11 +639,12 @@ func TestBudgetGate_Embeddings_Allow_UpdateUsageInvoked(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after /embeddings success")
 	}
-	if gate.lastUpdateProjectID != 8 {
-		t.Errorf("UpdateUsage projectID = %d, want 8", gate.lastUpdateProjectID)
+	if got := gate.getLastUpdateProjectID(); got != 8 {
+		t.Errorf("UpdateUsage projectID = %d, want 8", got)
 	}
 }
 
@@ -622,11 +678,13 @@ func TestBudgetGate_ChatStream_Allow_UpdateUsageFromFinalChunk(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	// Streaming billing is still async (goroutine spawned after channel drains).
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after streaming Chat completion")
 	}
-	if gate.lastUpdateCostNano != wantCostNano {
-		t.Errorf("UpdateUsage costNano = %d, want %d", gate.lastUpdateCostNano, wantCostNano)
+	if got := gate.getLastUpdateCostNano(); got != wantCostNano {
+		t.Errorf("UpdateUsage costNano = %d, want %d", got, wantCostNano)
 	}
 }
 
@@ -680,6 +738,7 @@ func TestBudgetGate_MessagesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after streaming Messages completion")
 	}
@@ -715,6 +774,7 @@ func TestBudgetGate_ResponsesStream_Allow_UpdateUsageFromFinalChunk(t *testing.T
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	gate.waitForUpdate(t)
 	if gate.updateCalls.Load() == 0 {
 		t.Error("UpdateUsage NOT called after streaming /responses completion")
 	}

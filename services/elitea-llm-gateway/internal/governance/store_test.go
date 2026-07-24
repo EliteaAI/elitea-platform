@@ -794,6 +794,112 @@ func TestCheckBudget_OutageExceededMax_ForcedClosed(t *testing.T) {
 	}
 }
 
+// TestCheckBudget_NATSHealthyPGFails_FailClosed: Fix #1 — when NATS is healthy
+// but the Postgres snapshot read fails (non-ErrNoBudgetRow transient error),
+// CheckBudget must return a Block/error, NOT Allow. A zero Snapshot{} would
+// give HardLimitNano=0 which disables enforcement silently.
+func TestCheckBudget_NATSHealthyPGFails_FailClosed(t *testing.T) {
+	nc := newFakeNATS()
+	nc.totals[makeSubject()] = 10 * failmode.NanoUSD // NATS healthy and has a counter
+
+	// Postgres returns a transient non-ErrNoBudgetRow error.
+	db := &fakeDB{rowErr: errors.New("postgres connection timeout")}
+	gs := newStore(nc, db)
+
+	dec, err := gs.CheckBudget(context.Background(), testProject, testScope, testScopeID, testPeriod, failmode.NanoUSD)
+	// Fix #1: must return an error and a blocking verdict, not Allow.
+	if err == nil {
+		t.Fatal("Fix #1: CheckBudget must return an error when NATS is healthy but PG read fails")
+	}
+	if dec.Verdict == failmode.Allow {
+		t.Fatalf("Fix #1: want Block verdict when PG fails (fail-closed), got Allow (state=%v)", dec.State)
+	}
+}
+
+// TestDrain_BlocksUntilInFlightPersistsComplete: Fix #2 — Drain() must block
+// until all in-flight PersistOutageDelta goroutines have finished so that the
+// server can call it before closing the database pool on graceful shutdown.
+func TestDrain_BlocksUntilInFlightPersistsComplete(t *testing.T) {
+	nc := newFakeNATS()
+	nc.incrErr = nats.ErrUnavailable
+	nc.pubErr = nats.ErrUnavailable
+
+	// Use a blocking DB: the Begin() call waits until unblocked.
+	blockCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	var beginOnce sync.Once
+
+	blockingDB := &blockingFakeDB{
+		fakeDB: fakeDB{rowErr: failmode.ErrNoBudgetRow},
+		onBegin: func() {
+			beginOnce.Do(func() { close(doneCh) }) // signal that goroutine started
+			<-blockCh                              // block until test unblocks
+		},
+	}
+
+	fmStore := failmode.NewStore(blockingDB)
+	degraded := failmode.NewDegradedCounters()
+	rec := failmode.NewReconciler(blockingDB, nc2counter(nc), degraded, nil)
+	params := failmode.Params{
+		Mode:             failmode.ModeTieredHybrid,
+		PGFreshness:      5 * time.Minute,
+		ExpectedReplicas: 1,
+	}
+	gs := NewGovernanceStore(nc, fmStore, degraded, rec, params, nil)
+	gs.Start(context.Background())
+
+	const costNano = int64(3) * failmode.NanoUSD
+	if err := gs.UpdateUsage(context.Background(), testProject, testScope, testScopeID, "evt-drain", costNano, testPeriod, testPeriodEnd); err != nil {
+		t.Fatalf("UpdateUsage: %v", err)
+	}
+
+	// Wait for the goroutine to start (it is blocking on blockCh).
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not start within 2s")
+	}
+
+	// Drain() must not return while the goroutine is still blocked.
+	drainDone := make(chan struct{})
+	go func() {
+		gs.Drain()
+		close(drainDone)
+	}()
+
+	select {
+	case <-drainDone:
+		t.Fatal("Drain() returned before the in-flight persist goroutine completed")
+	case <-time.After(50 * time.Millisecond):
+		// Good: Drain is still blocked.
+	}
+
+	// Unblock the persist goroutine.
+	close(blockCh)
+
+	// Now Drain() should complete promptly.
+	select {
+	case <-drainDone:
+		// Pass.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drain() did not return after the goroutine finished")
+	}
+}
+
+// blockingFakeDB wraps fakeDB and calls onBegin() synchronously inside Begin()
+// so the test can inject a blocking point into PersistOutageDelta's goroutine.
+type blockingFakeDB struct {
+	fakeDB
+	onBegin func()
+}
+
+func (d *blockingFakeDB) Begin(ctx context.Context) (failmode.Tx, error) {
+	if d.onBegin != nil {
+		d.onBegin()
+	}
+	return d.fakeDB.Begin(ctx)
+}
+
 // TestCheckBudget_OutageExceededMax_ResetsOnClosed: FIX #8 — after breaker→CLOSED
 // the outage clock must reset so a fresh outage does not immediately force-close.
 func TestCheckBudget_OutageExceededMax_ResetsOnClosed(t *testing.T) {

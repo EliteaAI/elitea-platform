@@ -207,8 +207,18 @@ func (c *Calculator) Price(ctx context.Context, provider, model string) Price {
 		price = defaultPrice(model)
 	}
 
+	// Fix #5 (cost): Re-check the cache under the write lock before writing
+	// (standard check-then-act pattern for concurrent caches). Without this,
+	// two goroutines that both miss the read-lock check both call lookupCatalog;
+	// whichever finishes last overwrites the entry from the other — potentially
+	// overwriting a fresher entry with a stale one (or extending TTL incorrectly).
 	c.mu.Lock()
-	c.cache[key] = cacheEntry{price: price, expires: c.now().Add(c.ttl)}
+	if ent, ok := c.cache[key]; !ok || !c.now().Before(ent.expires) {
+		c.cache[key] = cacheEntry{price: price, expires: c.now().Add(c.ttl)}
+	} else {
+		// A concurrent goroutine already wrote a fresh entry; use it.
+		price = ent.price
+	}
 	c.mu.Unlock()
 
 	return price

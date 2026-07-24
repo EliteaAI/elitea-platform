@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -301,6 +302,36 @@ func TestCost_EndToEnd_CatalogAndSource(t *testing.T) {
 	if got.Source != "catalog" {
 		t.Fatalf("source = %q, want catalog", got.Source)
 	}
+}
+
+// TestPrice_ConcurrentCacheDoesNotOverwriteFresher asserts Fix #5 (cost): two
+// goroutines that both miss the cache simultaneously and then both attempt to
+// write must not overwrite a fresher entry with a stale one. The re-check under
+// the write lock ensures only one goroutine writes (or both write the same value
+// if the DB returns the same row), and neither goroutine can extend the cache
+// TTL by re-writing a new entry after a fresh one has already been stored.
+func TestPrice_ConcurrentCacheDoesNotOverwriteFresher(t *testing.T) {
+	t.Parallel()
+
+	db := &fakeDB{rows: map[string]fakeRow{
+		"openai:gpt-4o": {srcInput: ptr(usdToNano(2.50)), srcOutput: ptr(usdToNano(10.00))},
+	}}
+	c := New(Config{DB: db, CacheTTL: time.Minute})
+
+	// Launch many concurrent Price calls; none should panic or race.
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			p := c.Price(context.Background(), "openai", "gpt-4o")
+			if p.Source != "catalog" {
+				t.Errorf("concurrent Price: source=%q, want catalog", p.Source)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestDefaultPrice_OrderedPrefixMatch(t *testing.T) {

@@ -407,10 +407,58 @@ func TestNormaliseOrigin(t *testing.T) {
 		"HTTP://Host:8080/PATH/": "http://host:8080/PATH",
 		"":                       "",
 		"::::":                   "",
+		// Fix #4: trailing dot stripped from FQDN host.
+		"https://host./llm/v1":   "https://host/llm/v1",
+		"https://HOST./LLM/V1":   "https://host/LLM/V1",
+		// Fix #4: explicit default ports stripped.
+		"https://host:443/llm/v1": "https://host/llm/v1",
+		"http://host:80/llm/v1":   "http://host/llm/v1",
+		// Non-default ports must be retained.
+		"https://host:8443/llm/v1": "https://host:8443/llm/v1",
+		"http://host:8080/llm/v1":  "http://host:8080/llm/v1",
 	}
 	for in, want := range cases {
 		if got := normaliseOrigin(in); got != want {
 			t.Errorf("normaliseOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestIsSelfReferential_DefaultPortBypass asserts Fix #4: a credential with an
+// explicit default port (https:443 / http:80) must be caught as self-referential
+// when the self-origin is registered without the port.
+func TestIsSelfReferential_DefaultPortBypass(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+	cases := []struct {
+		cred string
+		want bool
+	}{
+		{"https://dev.elitea.ai:443/llm/v1", true},  // explicit :443 == no port for HTTPS
+		{"http://dev.elitea.ai:80/llm/v1", false},   // scheme mismatch — http vs registered https
+		{"https://dev.elitea.ai:8443/llm/v1", false}, // non-default port is a distinct origin
+	}
+	for _, tc := range cases {
+		if got := a.isSelfReferential(tc.cred); got != tc.want {
+			t.Errorf("isSelfReferential(%q) = %v, want %v", tc.cred, got, tc.want)
+		}
+	}
+}
+
+// TestIsSelfReferential_TrailingDotBypass asserts Fix #4: a credential with a
+// trailing dot on the FQDN must be caught as self-referential.
+func TestIsSelfReferential_TrailingDotBypass(t *testing.T) {
+	a := newTestAccount(t, &fakeDB{}, &fakeVault{}, "https://dev.elitea.ai/llm/v1")
+	cases := []struct {
+		cred string
+		want bool
+	}{
+		{"https://dev.elitea.ai./llm/v1", true},          // trailing dot == same host
+		{"https://DEV.ELITEA.AI./LLM/V1", true},          // trailing dot + uppercase host + uppercase path
+		{"https://dev.elitea.ai:443/llm/v1", true}, // explicit default port
+	}
+	for _, tc := range cases {
+		if got := a.isSelfReferential(tc.cred); got != tc.want {
+			t.Errorf("isSelfReferential(%q) = %v, want %v", tc.cred, got, tc.want)
 		}
 	}
 }

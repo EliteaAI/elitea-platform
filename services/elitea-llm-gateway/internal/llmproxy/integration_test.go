@@ -459,6 +459,13 @@ func TestGatewayIntegration(t *testing.T) {
 			t.Error("provider was NOT invoked — under-budget Allow expected")
 		}
 
+		// FIX: billing is now async (off the HTTP critical path), so we must
+		// poll until the goroutine completes rather than reading immediately.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && nc.getTotal(subject) <= initialTotal {
+			time.Sleep(5 * time.Millisecond)
+		}
+
 		// NATS counter must have increased beyond the seeded initialTotal.
 		finalTotal := nc.getTotal(subject)
 		if finalTotal <= initialTotal {

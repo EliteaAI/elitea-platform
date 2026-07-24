@@ -312,7 +312,10 @@ func (r *Reconciler) reconcileScope(ctx context.Context, row outageRow) error {
 	}
 	replayNano := accumulatedNano - counterNano
 	if replayNano > 0 {
-		eventID := recoveryEventID(row.scope, row.scopeID, row.periodStartUnix, replayNano)
+		// Fix #3: include counterNano (the pre-recovery NATS baseline) in the
+		// event ID so two distinct outages with the same delta within one
+		// RecoveryDedupeWindow produce different IDs and are not dedup-collapsed.
+		eventID := recoveryEventID(row.scope, row.scopeID, row.periodStartUnix, counterNano, replayNano)
 		if _, _, err := r.counter.IncrBudgetIdempotent(cctx, subject, eventID, replayNano); err != nil {
 			return fmt.Errorf("replay outage delta: %w", err)
 		}
@@ -330,12 +333,16 @@ func (r *Reconciler) reconcileScope(ctx context.Context, row outageRow) error {
 }
 
 // recoveryEventID builds the reused Nats-Msg-Id for a scope's replay (design
-// §8.5 step 2). It is stable across retries of the same replay amount (so a
-// lost-ack retry is deduped) but distinct for a later, larger outage in the same
-// period (a different accumulated total ⇒ a different amount ⇒ a fresh id), so a
-// second outage cycle is not wrongly suppressed by the duplicate window.
-func recoveryEventID(scope, scopeID string, periodStartUnix, replayNano int64) string {
-	return fmt.Sprintf("recovery.%s.%s.%d.%d", scope, scopeID, periodStartUnix, replayNano)
+// §8.5 step 2). It is stable across retries of the SAME replay attempt (so a
+// lost-ack retry is deduped) because the counterNano baseline is fixed for the
+// duration of the reconcile attempt. It is distinct across two DIFFERENT outages
+// with the same delta within one RecoveryDedupeWindow because their pre-recovery
+// NATS baselines (counterNano) differ — preventing the second outage's recovery
+// increment from being silently suppressed as a duplicate (Fix #3).
+//
+// Format: recovery.<scope>.<scopeID>.<period>.<base>.<delta>
+func recoveryEventID(scope, scopeID string, periodStartUnix, counterNano, replayNano int64) string {
+	return fmt.Sprintf("recovery.%s.%s.%d.base%d.delta%d", scope, scopeID, periodStartUnix, counterNano, replayNano)
 }
 
 // discard is an io.Writer sink for the fallback no-op logger.

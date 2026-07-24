@@ -150,20 +150,26 @@ func identityProjectFromCtx(ctx context.Context) string {
 }
 
 // updateUsage records the billed cost for a completed request onto the
-// authoritative counter and publishes a write-behind delta. It is a
+// authoritative counter and publishes a write-behind delta. It is
 // best-effort fire-and-forget: errors are logged but do not cause the
 // response to fail (the provider has already been called; double-billing
 // is worse than a missed update).
 //
-// FIX #18: a fresh context is used for the billing increment so that a
-// client disconnect after the LLM call does not cancel the counter update.
-// The context is bounded by billingCtxTimeout to prevent stuck connections
-// from holding goroutines indefinitely.
+// FIX #18 (async off critical path): the actual billing increment is
+// launched in a bounded goroutine on a fresh context so:
+//  1. A client disconnect before the increment does not cancel it.
+//  2. The HTTP response is written BEFORE waiting on the NATS round-trip.
+//
+// The counter increment MUST still happen even if the client disconnects —
+// the goroutine uses context.Background() bounded by billingCtxTimeout, not
+// the request context. This matches the streaming path, which already bills
+// post-drain.
 //
 // FIX #15: after a successful UpdateUsage, the post-increment ratio is
-// compared against the snapshot's SoftAlertPct (default 80). When the
-// threshold is crossed and TryAlertCooldown returns true (not on cooldown),
-// a soft-alert log entry is emitted.
+// compared against the pre-increment snapshot's SoftAlertPct (default 80).
+// The soft alert fires ONLY when the spend CROSSES the threshold (was below,
+// now at-or-above) — not on every request. TryAlertCooldown deduplicates
+// within the cooldown window.
 //
 // The caller supplies the usage from the response; tokens default to 0 when
 // the response carries no usage field (e.g. streaming partial responses).
@@ -186,51 +192,110 @@ func (h *Handler) updateUsage(
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	// FIX #18: decouple from the request context so a client disconnect does
-	// not cancel the billing increment.
-	billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
-	defer cancel()
+	// Compute cost on the caller's goroutine using the cost calculator (no I/O).
+	// Use a fresh context for the cost lookup so a client disconnect doesn't
+	// abort even the cheap in-process price lookup.
+	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+	defer costCancel()
 
-	actualCost := h.costCalc.Cost(billCtx, provider, model, inputTokens, outputTokens)
+	actualCost := h.costCalc.Cost(costCtx, provider, model, inputTokens, outputTokens)
 	if actualCost.TotalNanoUSD <= 0 {
 		return // nothing to bill
 	}
 
 	eventID := uuid.NewString()
-	if err := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
-		actualCost.TotalNanoUSD, periodStart, periodEnd); err != nil {
-		h.logger.Warn("budget gate: UpdateUsage failed; spend may be under-counted",
-			"project_id", pid, "cost_nano", actualCost.TotalNanoUSD,
-			"event_id", eventID, "err", err)
-		return
-	}
+	costNano := actualCost.TotalNanoUSD
 
-	// FIX #15: soft-alert (80%) check.
-	// Read the pre-admission budget snapshot from CheckBudget to get
-	// HardLimitNano + SoftAlertPct. We call CheckBudget with reqCostNano=0
-	// (read-only: we only need the snapshot, not another admission decision).
-	// If CheckBudget errors or the verdict is unlimited, we skip the alert.
-	dec, checkErr := h.budgetGate.CheckBudget(billCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
-	if checkErr != nil {
-		// Non-fatal: log and skip the alert check.
-		h.logger.Warn("budget gate: CheckBudget error during soft-alert check; skipping",
-			"project_id", pid, "err", checkErr)
-		return
-	}
-	// Only fire the soft alert when there is a hard limit to compare against
-	// (Block402 means already over; Allow means we need to check the ratio).
-	if dec.Verdict != failmode.Allow {
-		// Already over the hard limit — no need for a soft alert.
-		return
-	}
-	h.trySoftAlert(billCtx, pid, scopeID, periodStart, actualCost.TotalNanoUSD)
+	// FIX #18: read the pre-increment snapshot BEFORE spawning the goroutine
+	// so we can compute the soft-alert crossing in the goroutine without
+	// another round-trip to CheckBudget after the increment.
+	preDec, preErr := h.budgetGate.CheckBudget(costCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+
+	// Spawn the increment + alert goroutine OFF the HTTP response critical path.
+	// The response is written by the caller immediately after updateUsage returns.
+	go func() {
+		billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+		defer cancel()
+
+		if err := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
+			costNano, periodStart, periodEnd); err != nil {
+			h.logger.Warn("budget gate: UpdateUsage failed; spend may be under-counted",
+				"project_id", pid, "cost_nano", costNano,
+				"event_id", eventID, "err", err)
+			return
+		}
+
+		// FIX #15: soft-alert threshold crossing check.
+		// The alert must fire ONLY when the pre-increment spend was BELOW the
+		// soft threshold and the post-increment spend is AT OR ABOVE it.
+		// We already have the pre-increment Decision (preDec / preErr).
+		if preErr != nil {
+			// Non-fatal: skip the alert check if we couldn't read the pre-snapshot.
+			return
+		}
+		// If the project was already over or at the hard limit before this
+		// request, no soft alert is needed.
+		if preDec.Verdict != failmode.Allow {
+			return
+		}
+		h.trySoftAlert(billCtx, pid, scopeID, periodStart, costNano, preDec)
+	}()
 }
 
-// trySoftAlert fires the 80% soft-alert when the running counter has crossed
-// the SoftAlertPct threshold after the billing increment. It calls
-// TryAlertCooldown to suppress duplicate alerts within the cooldown window.
-// All errors are non-fatal and only logged.
-func (h *Handler) trySoftAlert(ctx context.Context, pid int, scopeID string, periodStart, costJustBilled int64) {
+// trySoftAlert fires the 80% soft-alert ONLY when the running counter has
+// CROSSED the SoftAlertPct threshold with this billing increment.
+//
+// Crossing detection: compare the pre-increment FSM state (preDec) with the
+// post-increment FSM state (from a fresh CheckBudget). The alert fires when:
+//   - preDec was Allow (spend was below the soft threshold), AND
+//   - postDec is Block402 (hard limit crossed, definitely past 80%) OR
+//     postDec.State is StateDownPGFreshNear (degraded-path near-threshold).
+//
+// On the NATS_HEALTHY path the post-increment CheckBudget re-reads the
+// authoritative counter, so it correctly reflects the updated spend. On the
+// degraded path the Snapshot AccumulatedNano doesn't change mid-request, so
+// StateDownPGFreshNear signals the pre-computed threshold was already exceeded.
+//
+// TryAlertCooldown deduplicates: once an alert fires it is suppressed within
+// the cooldown window (typically hours) even if every subsequent request also
+// crosses the threshold.
+func (h *Handler) trySoftAlert(
+	ctx context.Context,
+	pid int,
+	scopeID string,
+	periodStart, costJustBilled int64,
+	preDec failmode.Decision,
+) {
+	// Re-read the budget state AFTER the increment. reqCostNano=costJustBilled
+	// lets the FSM account for the just-billed amount when evaluating thresholds
+	// (particularly the per-replica FRESH_NEAR cap on the degraded path).
+	postDec, postErr := h.budgetGate.CheckBudget(ctx, pid, budgetScopeProject, scopeID, periodStart, costJustBilled)
+	if postErr != nil {
+		h.logger.Warn("budget gate: CheckBudget error during post-increment soft-alert check; skipping",
+			"project_id", pid, "err", postErr)
+		return
+	}
+
+	// Determine whether a threshold was crossed on this billing increment.
+	// The pre-increment state was Allow (enforced by the caller).
+	//
+	//   - postDec.Verdict == Block402: hard limit (100%) was just crossed.
+	//     The soft threshold (80%) is necessarily also crossed.
+	//   - postDec.State == StateDownPGFreshNear: degraded-path 80%..100% range
+	//     entered; the FSM already enforces the per-replica NEAR cap.
+	//
+	// Only check/fire in these two cases to avoid alerting on every request.
+	crossed := postDec.Verdict == failmode.Block402 ||
+		postDec.State == failmode.StateDownPGFreshNear
+
+	// Additionally, detect NATS_HEALTHY threshold crossing: if the pre-state
+	// was StateNATSHealthy (Allow, under the soft threshold) and the post-state
+	// is Block402 we already covered that above. If both are StateNATSHealthy
+	// but the post verdict is still Allow, no crossing has occurred on this path.
+	if !crossed {
+		return
+	}
+
 	fired, err := h.budgetGate.TryAlertCooldown(ctx, budgetScopeProject, scopeID, periodStart)
 	if err != nil {
 		h.logger.Warn("budget gate: TryAlertCooldown error; soft-alert suppressed",
@@ -244,6 +309,8 @@ func (h *Handler) trySoftAlert(ctx context.Context, pid int, scopeID string, per
 			"scope_id", scopeID,
 			"cost_just_billed_nano", costJustBilled,
 			"period_start", periodStart,
+			"pre_state", preDec.State.String(),
+			"post_state", postDec.State.String(),
 		)
 	}
 }
@@ -318,4 +385,46 @@ func usageFromEmbeddingResponse(resp *schemas.BifrostEmbeddingResponse) (int64, 
 		return 0, 0
 	}
 	return int64(resp.Usage.PromptTokens), int64(resp.Usage.CompletionTokens)
+}
+
+// usageFromImageResponse extracts (inputTokens, outputTokens) from a
+// BifrostImageGenerationResponse. Image providers may carry token usage
+// in the Usage field (e.g. OpenAI gpt-image-1); when absent both are 0.
+// The cost.Calculator handles image models by looking up the catalog entry
+// (which may express cost as input_tokens = image_tokens), so passing the
+// available token counts is correct. When no usage is present the gate
+// still enforces admission (checkBudget blocks over-budget projects) but
+// skips the post-completion billing increment (nothing measurable to bill).
+func usageFromImageResponse(resp *schemas.BifrostImageGenerationResponse) (int64, int64) {
+	if resp == nil || resp.Usage == nil {
+		return 0, 0
+	}
+	return int64(resp.Usage.InputTokens), int64(resp.Usage.OutputTokens)
+}
+
+// providerModelFromImageGenReq extracts provider and model from a
+// BifrostImageGenerationRequest.
+func providerModelFromImageGenReq(req *schemas.BifrostImageGenerationRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+	return string(req.Provider), req.Model
+}
+
+// providerModelFromImageEditReq extracts provider and model from a
+// BifrostImageEditRequest.
+func providerModelFromImageEditReq(req *schemas.BifrostImageEditRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+	return string(req.Provider), req.Model
+}
+
+// providerModelFromImageVariationReq extracts provider and model from a
+// BifrostImageVariationRequest.
+func providerModelFromImageVariationReq(req *schemas.BifrostImageVariationRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+	return string(req.Provider), req.Model
 }

@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/preflight"
@@ -85,10 +86,15 @@ func TestHarnessSmoke_StreamReturns200AndAtLeast2Frames(t *testing.T) {
 		t.Error("MockRouter.Called() is false — provider was not invoked despite under-budget Allow")
 	}
 
+	// FIX: billing is now async (off the HTTP critical path), so we must poll
+	// until the goroutine completes rather than reading DeltaCount immediately.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && nc.DeltaCount() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	// After a successful stream the NATS counter must have been incremented
 	// (UpdateUsage fired through the real GovernanceStore).
-	now := httptest.NewRequest(http.MethodGet, "/", nil) // just to get time
-	_ = now
 	// Check that at least one delta was published to the write-behind stream.
 	if nc.DeltaCount() == 0 {
 		t.Error("FakeNATS: no write-behind delta published after billed streaming completion")

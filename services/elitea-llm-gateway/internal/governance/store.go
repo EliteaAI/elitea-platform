@@ -23,6 +23,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 )
 
+
 // natsClient is the minimal NATS surface the GovernanceStore needs. *nats.Client
 // satisfies it; tests inject a fake so no live NATS is required.
 type natsClient interface {
@@ -51,10 +52,15 @@ type GovernanceStore struct {
 	params   failmode.Params
 	log      *slog.Logger
 
+	// persistWg tracks in-flight PersistOutageDelta goroutines (Fix #2). Drain()
+	// blocks until all in-flight persists complete so the server can call it
+	// before closing the pool on graceful shutdown.
+	persistWg sync.WaitGroup
+
 	// FIX #8: track when the circuit breaker transitioned to open so
 	// CheckBudget can detect when the outage has exceeded params.DegradedMaxDuration
 	// and set Params.OutageExceededMax = true to force FORCED_CLOSED.
-	brkMu      sync.RWMutex
+	brkMu         sync.RWMutex
 	breakerOpenAt time.Time // zero means breaker is not open
 }
 
@@ -166,13 +172,21 @@ func (g *GovernanceStore) CheckBudget(
 					Degraded: true,
 				}, nil
 			}
-			// NATS is up but snapshot failed: log and proceed with a zero snap
-			// (NATS_HEALTHY decision does not use the snapshot).
-			g.log.Warn("governance: snapshot read failed; using zero snap for NATS_HEALTHY path",
+			// Fix #1 (fail-closed): NATS is up but PG snapshot read failed.
+			// A zero Snapshot{} would give HardLimitNano=0 which makes
+			// fsm.Decide's NATS_HEALTHY path evaluate (HardLimitNano > 0) as
+			// false and silently allow unlimited requests. Propagate the error
+			// so the caller (handler) can return 503 — enforcement must never
+			// be silently disabled by a transient DB failure.
+			g.log.Error("governance: snapshot read failed; failing closed to deny request",
 				slog.Int("project_id", projectID),
 				slog.Any("err", snapErr),
 			)
-			snap = failmode.Snapshot{}
+			return failmode.Decision{
+				Verdict:  failmode.Block503,
+				State:    failmode.StateDownPGStale,
+				Degraded: false,
+			}, fmt.Errorf("governance: snapshot unavailable: %w", snapErr)
 		}
 	}
 
@@ -262,7 +276,11 @@ func (g *GovernanceStore) UpdateUsage(
 			PeriodEnd:    periodEndUnix,
 			DeltaNanoUSD: costNano,
 		}
+		// Fix #2: use the WaitGroup so Drain() can wait for in-flight persists
+		// to complete before pool.Close() on graceful shutdown.
+		g.persistWg.Add(1)
 		go func() {
+			defer g.persistWg.Done()
 			ctx2, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			if err := g.store.PersistOutageDelta(ctx2, outageDelta); err != nil {
@@ -303,6 +321,13 @@ func (g *GovernanceStore) UpdateUsage(
 	}
 
 	return nil
+}
+
+// Drain blocks until all in-flight PersistOutageDelta goroutines complete (Fix
+// #2). The server MUST call this before closing the database pool on graceful
+// shutdown so no goroutine races with pool.Close().
+func (g *GovernanceStore) Drain() {
+	g.persistWg.Wait()
 }
 
 // DumpTotal returns the current in-process degraded total for a scope/period.

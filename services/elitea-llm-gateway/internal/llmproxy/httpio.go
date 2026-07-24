@@ -77,15 +77,27 @@ func statusAndType(bErr *schemas.BifrostError) (int, string, string) {
 
 	// Normalise the well-known governance/infra classes to the platform's
 	// contract regardless of what the provider reported.
+	//
+	// The spec §2.5 normative code table mandates specific code values:
+	//   429 → "rate_limit_exceeded"   (not the provider's raw code string)
+	//   401 → "unauthenticated"       (not empty or provider code)
+	//   403 → "forbidden"             (not empty or provider code)
+	// Provider-specific codes are preserved in the message field (not the code
+	// field) at a higher level; the code field is always spec-normalised here.
 	switch {
 	case isBudgetError(status, errType, code):
 		return http.StatusPaymentRequired, "budget_exceeded", "insufficient_quota"
 	case status == http.StatusTooManyRequests:
-		return http.StatusTooManyRequests, "rate_limit_error", code
+		// FIX finding #13: spec §2.5 mandates code="rate_limit_exceeded".
+		// The provider's raw code (e.g. "tokens_per_min_exceeded", "slow") must
+		// not be forwarded; it belongs in the message, not the code field.
+		return http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded"
 	case status == http.StatusUnauthorized:
-		return http.StatusUnauthorized, orDefault(errType, "authentication_error"), code
+		// FIX finding #15: spec §2.5 mandates code="unauthenticated".
+		return http.StatusUnauthorized, orDefault(errType, "authentication_error"), "unauthenticated"
 	case status == http.StatusForbidden:
-		return http.StatusForbidden, orDefault(errType, "permission_error"), code
+		// FIX finding #16: spec §2.5 mandates code="forbidden".
+		return http.StatusForbidden, orDefault(errType, "permission_error"), "forbidden"
 	case status == http.StatusServiceUnavailable:
 		return http.StatusServiceUnavailable, orDefault(errType, "api_error"), code
 	}

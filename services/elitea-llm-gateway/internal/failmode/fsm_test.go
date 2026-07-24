@@ -227,13 +227,65 @@ func TestDecide_FreshSafe_DegradedCap(t *testing.T) {
 			t.Fatalf("got %+v", d)
 		}
 	})
-	t.Run("no cap set allows unbounded", func(t *testing.T) {
-		p2 := tieredParams() // DegradedCapNano = 0 ⇒ disabled
-		d := Decide(false, 0, 1_000*NanoUSD, snap, 1_000*NanoUSD, p2)
+	t.Run("no explicit cap defaults to 10% of limit", func(t *testing.T) {
+		// Design §8.5: when DegradedCapNano==0 the cap defaults to 10% of
+		// HardLimitNano. With limit=100 USD the default cap is 10 USD.
+		p2 := tieredParams() // DegradedCapNano = 0 → 10% of limit
+		// degraded=9 USD + req=1 USD = 10 = exactly at the 10% cap → allowed.
+		d := Decide(false, 0, 9*NanoUSD, snap, 1*NanoUSD, p2)
 		if d.Verdict != Allow || d.State != StateDownPGFreshSafe {
-			t.Fatalf("got %+v", d)
+			t.Fatalf("at 10%% cap should allow: %+v", d)
+		}
+		// degraded=10 USD + req=1 USD = 11 > 10% cap → block.
+		d = Decide(false, 0, 10*NanoUSD, snap, 1*NanoUSD, p2)
+		if d.Verdict != Block402 || d.State != StateDownPGFreshSafe {
+			t.Fatalf("over 10%% cap should block: %+v", d)
 		}
 	})
+}
+
+// TestDecide_FreshSafe_DefaultDegradedCap_SmallLimit exercises FIX 1 (fsm.go:275)
+// for small limits: the 10% default is limit/10 (integer), so a 50 nano-USD limit
+// yields a 5 nano-USD cap. Guard against the "cap accidentally 0" edge case.
+func TestDecide_FreshSafe_DefaultDegradedCap_SmallLimit(t *testing.T) {
+	// limit = 50 nano-USD (deliberately tiny: 10% = 5 nano-USD).
+	snap := Snapshot{
+		HardLimitNano:   50,
+		AccumulatedNano: 0,
+		SoftAlertPct:    80, // threshold = 40; accumulated=0 → SAFE branch
+		Found:           true,
+	}
+	p := tieredParams() // DegradedCapNano = 0 → default to 10% = 5
+	// degraded=4 + req=1 = 5 — at cap, not over — must allow.
+	if d := Decide(false, 0, 4, snap, 1, p); d.Verdict != Allow {
+		t.Fatalf("small limit at cap: expected Allow, got %v", d.Verdict)
+	}
+	// degraded=4 + req=2 = 6 > 5 — must block.
+	if d := Decide(false, 0, 4, snap, 2, p); d.Verdict != Block402 {
+		t.Fatalf("small limit over cap: expected Block402, got %v", d.Verdict)
+	}
+}
+
+// TestDecide_FreshSafe_DefaultDegradedCap_LargeLimit exercises FIX 1 for a $100M
+// limit (largest realistic NUMERIC(12,2) budget): the 10% default cap is $10M.
+func TestDecide_FreshSafe_DefaultDegradedCap_LargeLimit(t *testing.T) {
+	const limitNano = int64(100_000_000) * NanoUSD // $100M
+	snap := Snapshot{
+		HardLimitNano:   limitNano,
+		AccumulatedNano: 0,
+		SoftAlertPct:    80,
+		Found:           true,
+	}
+	p := tieredParams() // DegradedCapNano = 0 → default to 10% = $10M nano
+	capNano := limitNano / 10 // $10M
+	// At exactly the cap: degraded=cap, req=0 → allow (not > cap).
+	if d := Decide(false, 0, capNano, snap, 0, p); d.Verdict != Allow {
+		t.Fatalf("large limit at 10%% cap should allow: %+v", d)
+	}
+	// One nano over the cap: must block.
+	if d := Decide(false, 0, capNano, snap, 1, p); d.Verdict != Block402 {
+		t.Fatalf("large limit over 10%% cap should block: %+v", d)
+	}
 }
 
 // TestDecide_SoftThresholdSmallLimit exercises FIX 1: with a limit smaller than

@@ -35,8 +35,19 @@ func (h *Handler) ImageEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostImageEditRequest(ctx)
+
+	// FIX #26: enforce the budget gate before calling the image provider.
+	provider, model := providerModelFromImageEditReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	resp, bErr := h.router.ImageEditRequest(ctx, bifReq)
 	h.writeUnary(w, resp, bErr)
+	if bErr == nil && resp != nil {
+		in, out := usageFromImageResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 }
 
 // ImageVariation handles POST /llm/v1/images/variations, mirroring
@@ -57,8 +68,19 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostImageVariationRequest(ctx)
+
+	// FIX #26: enforce the budget gate before calling the image provider.
+	provider, model := providerModelFromImageVariationReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	resp, bErr := h.router.ImageVariationRequest(ctx, bifReq)
 	h.writeUnary(w, resp, bErr)
+	if bErr == nil && resp != nil {
+		in, out := usageFromImageResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 }
 
 // parseMultipart parses the request's multipart body, writing a 400 on failure.

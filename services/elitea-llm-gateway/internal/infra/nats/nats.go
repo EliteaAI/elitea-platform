@@ -208,6 +208,13 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 // newBreaker builds the KV/counter circuit breaker (design §8.5). It trips after
 // CBFailureThreshold consecutive failures within a 5s window and probes
 // half-open after CBOpenDuration.
+//
+// Fix #5 (nats-atomicity): context.Canceled signals that the *caller* gave up
+// (browser stop-button, client timeout) — it is not evidence of NATS being
+// unhealthy. Without IsExcluded, a burst of 3 concurrent client cancellations
+// within the 5s Interval window opens the breaker and triggers degraded mode
+// even when NATS is fully operational. The hook returns true to exclude
+// context.Canceled from the failure count.
 func newBreaker(cfg Config, onChange func(from, to gobreaker.State)) *gobreaker.CircuitBreaker[uint64] {
 	threshold := cfg.CBFailureThreshold
 	return gobreaker.NewCircuitBreaker[uint64](gobreaker.Settings{
@@ -217,6 +224,15 @@ func newBreaker(cfg Config, onChange func(from, to gobreaker.State)) *gobreaker.
 		Timeout:     cfg.CBOpenDuration,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= threshold
+		},
+		IsSuccessful: func(err error) bool {
+			// context.Canceled means the caller gave up; do not count it as a
+			// breaker success either — it carries no signal about NATS health.
+			return err == nil
+		},
+		IsExcluded: func(err error) bool {
+			// Exclude client-side cancellation from the breaker failure count.
+			return errors.Is(err, context.Canceled)
 		},
 		OnStateChange: func(_ string, from, to gobreaker.State) {
 			if onChange != nil {

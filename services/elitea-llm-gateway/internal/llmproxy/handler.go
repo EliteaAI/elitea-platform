@@ -158,11 +158,14 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
+	// Write the response FIRST (client-visible), then bill asynchronously.
+	// updateUsage spawns a bounded goroutine so the HTTP response latency does
+	// not include the NATS billing round-trip (FIX #18).
+	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromChatResponse(resp)
 		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
 	}
-	h.writeUnary(w, resp, bErr)
 }
 
 // TextCompletion handles POST /llm/v1/completions (legacy text completions).
@@ -184,11 +187,11 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, bErr := h.router.TextCompletionRequest(ctx, bifReq)
+	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromTextCompletionResponse(resp)
 		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
 	}
-	h.writeUnary(w, resp, bErr)
 }
 
 // Embeddings handles POST /llm/v1/embeddings.
@@ -210,11 +213,11 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, bErr := h.router.EmbeddingRequest(ctx, bifReq)
+	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromEmbeddingResponse(resp)
 		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
 	}
-	h.writeUnary(w, resp, bErr)
 }
 
 // Responses handles POST /llm/v1/responses (OpenAI Responses API). It streams
@@ -244,12 +247,12 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, bErr := h.router.ResponsesRequest(ctx, bifReq)
-	// FIX #3: bill the unary response after a successful completion.
+	h.writeUnary(w, resp, bErr)
+	// FIX #3: bill the unary response after writing to the client.
 	if bErr == nil && resp != nil {
 		in, out := usageFromResponsesResponse(resp)
 		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
 	}
-	h.writeUnary(w, resp, bErr)
 }
 
 // ImageGeneration handles POST /llm/v1/images/generations (JSON body).
@@ -263,8 +266,30 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostImageGenerationRequest(ctx)
+
+	// FIX #26: enforce the budget gate before calling the image provider.
+	// Image generation can be expensive; an over-budget project must be
+	// blocked before any provider call incurs real cost.
+	// promptTokenEst=0 is correct here — image requests have no prompt
+	// token pre-count available. The FSM uses reqCostNano only for the
+	// FRESH_NEAR per-replica cap; passing 0 is conservative (never over-gates).
+	provider, model := providerModelFromImageGenReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
+
 	resp, bErr := h.router.ImageGenerationRequest(ctx, bifReq)
+	// Write the response first, then bill asynchronously (FIX #18).
 	h.writeUnary(w, resp, bErr)
+	if bErr == nil && resp != nil {
+		// Bill whatever token usage the provider reported. Many image providers
+		// return token counts in Usage (gpt-image-1 uses input/output tokens);
+		// when Usage is nil both return 0 and updateUsage skips the increment
+		// (nothing to bill by token count). The budget admission above already
+		// enforced the hard limit regardless.
+		in, out := usageFromImageResponse(resp)
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	}
 }
 
 // ---- Anthropic dialect (exact /llm/v1/messages) ----
@@ -303,9 +328,10 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		h.writeAnthropicError(w, bErr)
 		return
 	}
+	// Write the response first, then bill asynchronously (FIX #18).
+	writeJSON(w, http.StatusOK, anthropic.ToAnthropicResponsesResponse(ctx, resp))
 	in, out := usageFromResponsesResponse(resp)
 	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
-	writeJSON(w, http.StatusOK, anthropic.ToAnthropicResponsesResponse(ctx, resp))
 }
 
 // CountTokens handles POST /llm/v1/messages/count_tokens — a synchronous

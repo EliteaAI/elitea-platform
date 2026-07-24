@@ -460,16 +460,68 @@ func TestReconcile_PanicInGoroutineDoesNotCrash(t *testing.T) {
 }
 
 func TestRecoveryEventID_StableAndAmountKeyed(t *testing.T) {
-	a := recoveryEventID("project", "7", 1000, 20)
-	b := recoveryEventID("project", "7", 1000, 20)
+	// Fix #3: counterNano is now part of the event ID.
+	a := recoveryEventID("project", "7", 1000, 30, 20)
+	b := recoveryEventID("project", "7", 1000, 30, 20)
 	if a != b {
 		t.Fatalf("same inputs must yield same id: %q vs %q", a, b)
 	}
-	if a == recoveryEventID("project", "7", 1000, 21) {
-		t.Fatal("different amount must yield different id")
+	if a == recoveryEventID("project", "7", 1000, 30, 21) {
+		t.Fatal("different delta must yield different id")
+	}
+	if a == recoveryEventID("project", "7", 1000, 31, 20) {
+		t.Fatal("different counterNano baseline must yield different id")
 	}
 	if !strings.HasPrefix(a, "recovery.") {
 		t.Fatalf("unexpected id shape: %q", a)
+	}
+}
+
+// TestRecoveryEventID_DistinctOutagesSameDelta asserts Fix #3: two outages with
+// the same replay delta but different NATS counter baselines within one
+// RecoveryDedupeWindow produce distinct event IDs so neither suppresses the other.
+func TestRecoveryEventID_DistinctOutagesSameDelta(t *testing.T) {
+	// Outage 1: NATS was at 0 before the outage; delta = 500.
+	// Outage 2: NATS was at 1000 after first outage + normal ops; delta = 500.
+	id1 := recoveryEventID("project", "7", 1000, 0, 500)
+	id2 := recoveryEventID("project", "7", 1000, 1000, 500)
+	if id1 == id2 {
+		t.Fatalf("distinct outages with same delta must produce different event IDs: %q == %q", id1, id2)
+	}
+}
+
+// TestReconcile_TwoSameDeltaOutagesApplyBoth asserts Fix #3: two distinct
+// outages with the same replay delta both have their recovery increments applied,
+// i.e. neither is dedup-suppressed by the other.
+func TestReconcile_TwoSameDeltaOutagesApplyBoth(t *testing.T) {
+	c := newFakeCounter()
+	dc := NewDegradedCounters()
+
+	// Outage 1: NATS at 0, PG accumulated 500 → replay delta = 500.
+	c.totals["project.7"] = 0
+	db1 := &recDB{
+		rows:          []outageRow{{id: "r1", scope: "project", scopeID: "7", periodStartUnix: 1000, accumulatedNano: 500}},
+		perScopeAccum: map[string]int64{"r1": 500},
+	}
+	startedReconciler(db1, c, dc).runPass(context.Background())
+	if c.totals["project.7"] != 500 {
+		t.Fatalf("after outage 1 recovery: counter=%d, want 500", c.totals["project.7"])
+	}
+
+	// Normal operations advance NATS from 500 → 1000.
+	c.mu.Lock()
+	c.totals["project.7"] = 1000
+	c.mu.Unlock()
+
+	// Outage 2 (within RecoveryDedupeWindow): NATS at 1000, PG accumulated 1500
+	// → replay delta = 500 (same as outage 1).
+	db2 := &recDB{
+		rows:          []outageRow{{id: "r2", scope: "project", scopeID: "7", periodStartUnix: 1000, accumulatedNano: 1500}},
+		perScopeAccum: map[string]int64{"r2": 1500},
+	}
+	startedReconciler(db2, c, dc).runPass(context.Background())
+	if c.totals["project.7"] != 1500 {
+		t.Fatalf("after outage 2 recovery: counter=%d, want 1500 (second delta not applied, possibly dedup-collided)", c.totals["project.7"])
 	}
 }
 

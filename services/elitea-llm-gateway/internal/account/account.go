@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 
@@ -297,6 +298,12 @@ func isSegmentPrefixOf(prefix, s string) bool {
 // for the normalised form; isSelfReferential applies case-insensitive comparison
 // at match time so that uppercase paths cannot evade the guard. Non-URL or empty
 // input yields "".
+//
+// Fix #4: normalisation also strips:
+//   - A trailing dot from FQDN hostnames (e.g. "host." → "host") so that
+//     "https://host./path" and "https://host/path" compare equal.
+//   - Explicit default ports that are semantically a no-op: :443 for HTTPS and
+//     :80 for HTTP, so "https://host:443/path" and "https://host/path" match.
 func normaliseOrigin(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -307,7 +314,25 @@ func normaliseOrigin(raw string) string {
 		return ""
 	}
 	scheme := strings.ToLower(u.Scheme)
-	host := strings.ToLower(u.Host)
+
+	// Separate host and port so we can normalise each independently.
+	hostname := u.Hostname()
+	portStr := u.Port()
+
+	// Strip trailing dot from FQDN (RFC 1034 § 3.1: "host." == "host").
+	hostname = strings.TrimSuffix(hostname, ".")
+	hostname = strings.ToLower(hostname)
+
+	// Drop explicit default ports so "https://host:443" == "https://host".
+	isDefaultPort := (scheme == "https" && portStr == "443") ||
+		(scheme == "http" && portStr == "80")
+	var host string
+	if portStr == "" || isDefaultPort {
+		host = hostname
+	} else {
+		host = net.JoinHostPort(hostname, portStr)
+	}
+
 	path := strings.TrimRight(u.Path, "/")
 	return scheme + "://" + host + path
 }

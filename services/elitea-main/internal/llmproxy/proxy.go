@@ -113,12 +113,11 @@ func New(cfg Config) (*Proxy, error) {
 // not hard-kill a long-lived SSE response on the /llm path (design §9.5). This
 // is the edge-side equivalent of the gateway's WriteTimeout: 0.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if rc := http.NewResponseController(w); rc != nil {
-		// A zero time disables the deadline. Not all ResponseWriters support it
-		// (httptest.ResponseRecorder does not); ignore ErrNotSupported.
-		if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
-			p.logger.Warn("llmproxy: clear write deadline", "err", err)
-		}
+	rc := http.NewResponseController(w)
+	// A zero time disables the deadline. Not all ResponseWriters support it
+	// (httptest.ResponseRecorder does not); ignore ErrNotSupported.
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		p.logger.Warn("llmproxy: clear write deadline", "err", err)
 	}
 	p.rp.ServeHTTP(w, r)
 }
