@@ -3,7 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 // budget-check (spec §8.5 / §8.8, gate BFF.9e):
@@ -68,17 +72,30 @@ type budgetCheckResult struct {
 	// UnderBudgetStatus is the HTTP status code observed for a request from a
 	// project with spend well below its limit. Must be 200.
 	UnderBudgetStatus int
+
+	// BreakerTripped reports whether the §2.6 circular-routing guard opened
+	// (a burst at one (project, model) tuple flipped to 429
+	// rate_limit_exceeded). Must be true — a gateway without the loop breaker
+	// must not pass the pre-flight gate.
+	BreakerTripped bool
 }
 
 // budgetCheckOutcome records the pass/fail of each gate within one evaluation.
 type budgetCheckOutcome struct {
-	HardBlockPass  bool
-	SoftAlertPass  bool
-	UnderBudgetPass bool
+	HardBlockPass     bool
+	SoftAlertPass     bool
+	UnderBudgetPass   bool
+	CircularGuardPass bool
 
-	HardBlockReason  string
-	SoftAlertReason  string
-	UnderBudgetReason string
+	HardBlockReason     string
+	SoftAlertReason     string
+	UnderBudgetReason   string
+	CircularGuardReason string
+}
+
+// allPass reports whether every gate held.
+func (o budgetCheckOutcome) allPass() bool {
+	return o.HardBlockPass && o.SoftAlertPass && o.UnderBudgetPass && o.CircularGuardPass
 }
 
 // checkBudgetResult is the pure, injectable core of the budget-check gate.
@@ -121,70 +138,106 @@ func checkBudgetResult(r budgetCheckResult, alertLatencyS float64) budgetCheckOu
 		out.UnderBudgetReason = fmt.Sprintf("under-budget request returned HTTP %d, want 200", r.UnderBudgetStatus)
 	}
 
+	// 4. Circular-routing guard (spec §2.6 guard #2).
+	if r.BreakerTripped {
+		out.CircularGuardPass = true
+	} else {
+		out.CircularGuardReason = "loop breaker did not open under a same-(project, model) burst (429 rate_limit_exceeded never observed)"
+	}
+
 	return out
 }
 
-// cmdBudgetCheck is the `cutover-ctl budget-check` entrypoint.
+// cmdBudgetCheck is the `cutover-ctl budget-check` entrypoint (gate BFF.9e).
 //
-// In live mode it performs the checks against a real gateway; in the absence of
-// a real gateway (e.g. CI) the operator is expected to supply synthetic results
-// via environment overrides or to run the hermetic BFF.9e preflight test
-// (services/elitea-llm-gateway/internal/preflight/bff9e_budgetcheck_test.go)
-// instead.
-//
-// Since the live integration path requires a running gateway + seeded test project,
-// this subcommand documents the test protocol and delegates to checkBudgetResult
-// for the enforcement logic. It exits non-zero if any gate fails.
+// Live mode requires an operator-seeded projects fixture (--projects-file /
+// $LLM_BUDGET_PROJECTS_FILE) and a reachable gateway + NATS. Without the
+// fixture the gate exits 2 — it must NEVER exit 0 having verified nothing
+// (that failure mode is exactly what BFF.9d's faked validator taught us).
 //
 // Flags:
 //
-//	--alert-latency-s  Maximum seconds from 80% crossing to alert (default 10).
-//	--gateway-url      Gateway base URL (default http://localhost:8083).
-//	--project-id       Test project ID (integer, required in live mode).
+//	--alert-latency-s   Max seconds from 80% crossing to alert (default 10).
+//	--gateway-url       Gateway base URL (default http://localhost:8083).
+//	--nats-url          NATS URL for the gateway.events.* subscription.
+//	--projects-file     JSON fixture: {over_budget, soft_alert, under_budget}
+//	                    each {project_id, user_id, tenant_id, model}.
+//	--identity-secret   Edge identity HMAC secret (default $GATEWAY_IDENTITY_SECRET).
+//
+// Exit codes: 0 all gates pass; 1 gate failure; 2 config/transport error.
 func cmdBudgetCheck(args []string) {
 	fs := flag.NewFlagSet("budget-check", flag.ExitOnError)
 	alertLatencyS := fs.Float64("alert-latency-s", 10, "maximum seconds from 80% spend crossing to soft-alert observation")
 	gatewayURL := fs.String("gateway-url", "http://localhost:8083", "gateway base URL")
-	projectID := fs.Int("project-id", 0, "test project ID (required for live check)")
+	natsURL := fs.String("nats-url", "nats://localhost:4222", "NATS URL for the gateway.events.* soft-alert subscription")
+	projectsFile := fs.String("projects-file", os.Getenv("LLM_BUDGET_PROJECTS_FILE"), "path to the seeded projects fixture (JSON)")
+	identitySecret := fs.String("identity-secret", os.Getenv("GATEWAY_IDENTITY_SECRET"), "edge identity HMAC secret (empty = unsigned headers)")
 	_ = fs.Parse(args)
 
-	// Live integration check requires a project ID; without one we emit the
-	// test protocol documentation and exit 0 (useful in CI pipelines that gate
-	// on the hermetic preflight instead).
-	if *projectID == 0 {
-		_, _ = fmt.Fprintf(os.Stdout, `budget-check: no --project-id supplied.
+	if *projectsFile == "" {
+		fmt.Fprintln(os.Stderr, `budget-check: --projects-file (or $LLM_BUDGET_PROJECTS_FILE) is required.
 
-To run the live gate, provide a finite-budget test project:
+Seed three projects and describe them in a JSON fixture:
+  {
+    "over_budget":  {"project_id": "9101", "user_id": "u", "tenant_id": "t"},
+    "soft_alert":   {"project_id": "9102", "user_id": "u", "tenant_id": "t"},
+    "under_budget": {"project_id": "9103", "user_id": "u", "tenant_id": "t"}
+  }
+over_budget: spend >= hard limit. soft_alert: spend ~79% of limit so one
+request tips over 80%. under_budget: far below limit. The over_budget tuple
+is also burst to assert the §2.6 loop breaker (its circuit opens for 30 s).
 
-  cutover-ctl budget-check \
-    --project-id <id> \
-    --gateway-url %s \
-    --alert-latency-s %.0f
-
-Prerequisites:
-  1. A project whose accumulated spend >= hard_limit_nano (seed the NATS counter
-     or use gateway_models.llm_budget INSERT to set a low limit).
-  2. A project starting at ~79%% of its limit so one request tips over 80%%.
-  3. API key and X-EliteA-Identity headers for both projects.
-
-For a hermetic (no live infra) check, run:
-  GOWORK=off go test ./services/elitea-llm-gateway/internal/preflight/ \
-    -run TestBFF9E_BudgetHardBlockAndSoftAlert -v
-
-Gate: BFF.9e (spec §8.5 / §8.8).
-`, *gatewayURL, *alertLatencyS)
-		os.Exit(0)
+Hermetic equivalent (no live infra):
+  GOWORK=off go test ./services/elitea-llm-gateway/internal/preflight/ -run 'BFF9E|CircularRouting' -v`)
+		os.Exit(2)
 	}
 
-	// Live mode: perform real HTTP checks. The implementation below is a
-	// documented scaffold — in a full deployment this would issue real HTTP
-	// requests to the gateway. The scaffold exits non-zero to prevent accidental
-	// "pass" on unconfigured pipelines.
-	fmt.Fprintf(os.Stderr,
-		"budget-check: live mode for project %d against %s (alert-latency-s=%.0f)\n"+
-			"  This check requires a live gateway + seeded test project.\n"+
-			"  Run the hermetic gate instead:\n"+
-			"    GOWORK=off go test ./services/elitea-llm-gateway/internal/preflight/ -run TestBFF9E_BudgetHardBlockAndSoftAlert -v\n",
-		*projectID, *gatewayURL, *alertLatencyS)
-	os.Exit(2)
+	fixture, err := loadBudgetFixture(*projectsFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(2)
+	}
+
+	nc, err := nats.Connect(*natsURL, nats.Timeout(2*time.Second))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "budget-check: NATS connect %q: %v\n", *natsURL, err)
+		os.Exit(2)
+	}
+	defer nc.Close()
+
+	result, err := runLiveBudgetCheck(liveBudgetCheckConfig{
+		gatewayURL:    *gatewayURL,
+		secret:        []byte(*identitySecret),
+		fixture:       fixture,
+		alertLatencyS: *alertLatencyS,
+		client:        &http.Client{Timeout: 30 * time.Second},
+		waiter:        &natsAlertWaiter{conn: nc},
+		logf: func(format string, a ...any) {
+			fmt.Printf(format+"\n", a...)
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(2)
+	}
+
+	out := checkBudgetResult(result, *alertLatencyS)
+	report := func(name string, pass bool, reason string) {
+		if pass {
+			fmt.Printf("  ✓ %s\n", name)
+		} else {
+			fmt.Printf("  ✗ %s — %s\n", name, reason)
+		}
+	}
+	fmt.Println("budget-check results:")
+	report("hard block (402 budget_exceeded/insufficient_quota)", out.HardBlockPass, out.HardBlockReason)
+	report(fmt.Sprintf("soft alert on gateway.events.* within %.0f s", *alertLatencyS), out.SoftAlertPass, out.SoftAlertReason)
+	report("under-budget control (200)", out.UnderBudgetPass, out.UnderBudgetReason)
+	report("circular-routing guard (429 on same-tuple burst)", out.CircularGuardPass, out.CircularGuardReason)
+
+	if !out.allPass() {
+		fmt.Fprintln(os.Stderr, "\n✗ budget-check: one or more gates failed (spec §8.5/§8.8/§2.6, gate BFF.9e)")
+		os.Exit(1)
+	}
+	fmt.Println("\n✓ budget-check: all gates pass")
 }
