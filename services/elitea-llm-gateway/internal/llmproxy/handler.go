@@ -386,6 +386,14 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
+	// Budget gate BEFORE the provider — count_tokens is a provider call and must
+	// be admission-gated like every other /llm endpoint (uniform gating,
+	// DECISIONS.md). No updateUsage after: CountTokensResponse carries no billable
+	// usage, so there is nothing to meter post-response.
+	provider, model := providerModelFromResponsesReq(bifReq)
+	if !h.checkBudget(w, ctx, provider, model, 0) {
+		return
+	}
 	resp, bErr := h.router.CountTokensRequest(ctx, bifReq)
 	if bErr != nil {
 		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes.

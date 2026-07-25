@@ -46,21 +46,22 @@ env:
   GATEWAY_INITIAL_POOL_SIZE: "100"
   GATEWAY_PROVIDER_CONCURRENCY: "50"
   GATEWAY_LOG_LEVEL: "info"
+  # NATS budget-path circuit breaker (§8.5). Trip after N consecutive failures;
+  # probe again after the open-duration. Mirror config.go defaults.
+  LLM_BUDGET_CB_FAILURE_THRESHOLD: "3"
+  LLM_BUDGET_CB_OPEN_DURATION_SEC: "10"
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
   # client ClusterIP service provisioned by deploy/helm/nats.
   # Must match the env var name the binary reads: GATEWAY_NATS_URL (config.go).
   GATEWAY_NATS_URL: "nats://nats:4222"
-  # FIX #9: HMAC key verifying edge identity headers (design §5.3).
-  # REQUIRED when GATEWAY_NATS_URL is set (budget enforcement on). Set from a
-  # Kubernetes Secret — do NOT hard-code the value here.
-  # Example secretRef wiring (add to container env in deployment.yaml):
-  #   valueFrom:
-  #     secretKeyRef:
-  #       name: elitea-llm-gateway-secrets
-  #       key: identity-secret
-  GATEWAY_IDENTITY_SECRET: ""   # override via secretRef in production
+  # GATEWAY_IDENTITY_SECRET (HMAC key, §5.3) and SECRETS_MASTER_KEY (Fernet vault
+  # master key) are SENSITIVE — they are NOT set here as plaintext. They are wired
+  # from Kubernetes Secrets via the `secrets:` block below (rendered as
+  # valueFrom.secretKeyRef in deployment.yaml). Setting them here too would
+  # produce duplicate env keys.
+  #
   # NOTE: GATEWAY_TLS_CERT_FILE / GATEWAY_TLS_KEY_FILE / GATEWAY_TLS_CA_FILE are
   # NOT configured here. When mtls.enabled=true the chart injects these env vars
   # automatically (deployment.yaml) pointing at the mtls.mountPath volume. Keeping
@@ -84,6 +85,27 @@ env:
   # Continuous NATS outage ceiling (integer minutes). Once NATS has been down longer
   # than this the FSM forces closed (503) regardless of snapshot freshness. Default: 10.
   LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN: "10"
+
+# secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
+# valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map above.
+# Each entry maps the ENV VAR NAME the binary reads → the Secret name + key.
+# `optional: true` lets the pod start when the Secret is absent (e.g. local/dev,
+# or SECRETS_MASTER_KEY unset → vault runs in degraded single-level mode); set
+# false to make the Secret mandatory in production.
+#
+# Provision the referenced Secret out-of-band (kubectl create secret / external-
+# secrets operator / sealed-secrets), e.g.:
+#   kubectl create secret generic elitea-llm-gateway-secrets \
+#     --from-literal=identity-secret=... --from-literal=secrets-master-key=...
+secrets:
+  GATEWAY_IDENTITY_SECRET:
+    secretName: elitea-llm-gateway-secrets
+    key: identity-secret
+    optional: true    # REQUIRED in prod when enforcement is on — set false
+  SECRETS_MASTER_KEY:
+    secretName: elitea-llm-gateway-secrets
+    key: secrets-master-key
+    optional: true    # unset ⇒ Fernet vault degraded single-level mode
 
 # elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
 # §9.1). Named explicitly so the edge/runbook references resolve.

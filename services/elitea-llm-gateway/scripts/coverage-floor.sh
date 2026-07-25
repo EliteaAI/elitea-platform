@@ -14,12 +14,11 @@ PROFILE="${1:-coverage.out}"
 # package-substring : minimum percent. Floors set a few points below the current
 # level (which is ~85-96%) so normal churn passes but a real regression fails.
 # Floors set at (or just below) the CURRENT level so the gate means "do not
-# regress", not "hit an aspirational target". llmproxy sits at 84.2% after the
-# round-3 image-billing additions — floored at 84 (a follow-up should raise its
-# tests + this floor back to 85; tracked in DECISIONS.md).
+# regress", not "hit an aspirational target". llmproxy raised to 91.5% (was
+# 84.2%) by coverage_boost_test.go; floor now 85 with headroom.
 declare -a FLOORS=(
   "internal/governance:93"
-  "internal/llmproxy:84"
+  "internal/llmproxy:85"
   "internal/failmode:88"
   "internal/cost:94"
 )

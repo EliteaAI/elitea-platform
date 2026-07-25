@@ -1,5 +1,11 @@
 /coverage.out
 
+# Compiled binary: `go build` in this module root emits an executable named
+# after the module (elitea-llm-gateway). Anchored to the root so it never
+# matches the cmd/elitea-llm-gateway/ SOURCE package. 37MB artifact — build it
+# in CI, never commit it.
+/elitea-llm-gateway
+
 # Generated coverage artifacts (scripts/coverage.sh). The cobertura coverage.xml
 # is consumed by the BF0.6t validator but is a generated file, not committed —
 # regenerate with scripts/coverage.sh or via ci-gateway.yml.

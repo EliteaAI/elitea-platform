@@ -50,6 +50,15 @@ spec:
             - name: GATEWAY_TLS_CA_FILE
               value: {{ .Values.mtls.mountPath }}/ca.crt
             {{- end }}
+            {{- range $name, $ref := .Values.secrets }}
+            # Sensitive vars from Kubernetes Secrets (never plaintext in env map).
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
           {{- if .Values.preStop.enabled }}
           lifecycle:
             preStop:

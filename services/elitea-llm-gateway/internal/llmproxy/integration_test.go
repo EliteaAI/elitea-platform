@@ -473,6 +473,24 @@ func TestGatewayIntegration(t *testing.T) {
 				initialTotal, finalTotal)
 		}
 
+		// Assert the EXACT billed amount using the same cost.Calculator the handler
+		// uses.  chatReqWithProject sends "openai/gpt-4o"; the fake router response
+		// carries PromptTokens=200, CompletionTokens=100.  With gpt-4o default
+		// pricing (2_500_000_000 / 10_000_000_000 nanoUSD per 1M tokens):
+		//   input:  round(200 * 2_500_000_000 / 1_000_000) = 500_000 nanoUSD
+		//   output: round(100 * 10_000_000_000 / 1_000_000) = 1_000_000 nanoUSD
+		//   total:  1_500_000 nanoUSD
+		// We compute this via the real Calculator so the test stays correct if the
+		// default price table is updated.
+		expectedCost := cost.New(cost.Config{}).Cost(context.Background(), "openai", "gpt-4o", 200, 100).TotalNanoUSD
+		if expectedCost <= 0 {
+			t.Fatal("cost.Calculator returned zero cost for gpt-4o 200+100 tokens — check default price table")
+		}
+		if finalTotal != initialTotal+expectedCost {
+			t.Errorf("NATS counter = %d, want %d (initial=%d + cost=%d); billed amount is wrong",
+				finalTotal, initialTotal+expectedCost, initialTotal, expectedCost)
+		}
+
 		// A write-behind delta must have been published to the GATEWAY_BUDGET_DELTAS stream.
 		if nc.deltaCount() == 0 {
 			t.Error("no write-behind delta published after billed completion — UpdateUsage incomplete")

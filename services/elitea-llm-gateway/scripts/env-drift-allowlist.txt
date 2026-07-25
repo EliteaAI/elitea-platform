@@ -20,7 +20,7 @@ OTEL_SERVICE_NAME
 # Injected by the platform at deploy time (image tag → version), not chart config.
 SERVICE_VERSION
 
-# Security-sensitive: supplied via a Kubernetes Secret / external-secrets operator,
-# never a values.yaml plaintext. NOTE: round-3 flagged that the chart currently
-# provides NO secretRef example for this — tracked as a separate hardening item.
-SECRETS_MASTER_KEY
+# NOTE: SECRETS_MASTER_KEY was previously allowlisted (no chart wiring). It is now
+# wired via the chart's `secrets:` block (valueFrom.secretKeyRef), so it is
+# chart-settable and no longer needs an allowlist exemption. Same for
+# GATEWAY_IDENTITY_SECRET.
