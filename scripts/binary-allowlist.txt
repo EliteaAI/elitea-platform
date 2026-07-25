@@ -1,0 +1,8 @@
+# binary-allowlist.txt — deliberate exceptions to scripts/no-binaries-check.sh.
+# One repo-relative path or glob per line. Keep small; every entry is reviewed.
+#
+# Format examples:
+#   docs/assets/logo.png
+#   apps/*/public/**/*.woff2
+#
+# (empty — no committed binary assets today)

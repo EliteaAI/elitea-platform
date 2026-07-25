@@ -1,0 +1,28 @@
+name: No Binaries
+
+# Repo-wide guard: fail if any tracked file is a binary blob or exceeds the size
+# ceiling. A local `go build` at a module root emits a ~37MB executable that got
+# swept in by `git add <dir>` (twice) before this gate existed. Unlike
+# ci-gateway.yml this is NOT path-filtered — it must see the whole tree on every
+# change so a binary added anywhere is caught.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  no-binaries:
+    name: No committed binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Need the working tree + HEAD to scan; no full history required.
+          fetch-depth: 1
+      - name: Scan for binary / oversize tracked files
+        run: bash scripts/no-binaries-check.sh
