@@ -95,7 +95,10 @@ func (f *fakeNATS) IncrBudgetIdempotent(_ context.Context, _ string, _ string, _
 }
 func (f *fakeNATS) ReadBudget(context.Context, string) (int64, error)      { return 0, nil }
 func (f *fakeNATS) TryAlertCooldown(context.Context, string) (bool, error) { return false, nil }
-func (f *fakeNATS) PublishDelta(context.Context, string, []byte) error     { return nil }
+func (f *fakeNATS) PublishDelta(context.Context, string, []byte) error { return nil }
+func (f *fakeNATS) PublishSoftAlertEvent(context.Context, string, []byte) error {
+	return nil
+}
 func (f *fakeNATS) OnBreakerStateChange(_ func(from, to gobreaker.State))  {}
 func (f *fakeNATS) BreakerState() gobreaker.State                          { return gobreaker.StateClosed }
 func (f *fakeNATS) BudgetSubject(_, _ string, _ int64) string              { return "" }

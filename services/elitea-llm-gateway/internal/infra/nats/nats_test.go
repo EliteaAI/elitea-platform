@@ -105,10 +105,34 @@ func (f *fakeKV) Create(_ context.Context, key string, _ []byte, _ ...jetstream.
 type fakeConn struct {
 	closed bool
 	closes int
+
+	// core-publish recording (PublishSoftAlertEvent surface).
+	published  []fakePub
+	publishErr error
+	flushErr   error
+	flushes    int
+}
+
+type fakePub struct {
+	subject string
+	data    []byte
 }
 
 func (f *fakeConn) Close()         { f.closed = true; f.closes++ }
 func (f *fakeConn) IsClosed() bool { return f.closed }
+
+func (f *fakeConn) Publish(subj string, data []byte) error {
+	if f.publishErr != nil {
+		return f.publishErr
+	}
+	f.published = append(f.published, fakePub{subject: subj, data: data})
+	return nil
+}
+
+func (f *fakeConn) FlushTimeout(time.Duration) error {
+	f.flushes++
+	return f.flushErr
+}
 
 // fakeProvisioner exercises ensureAssets without a live server. It records all
 // StreamConfigs so both the budget counter stream and the deltas stream
@@ -770,3 +794,66 @@ func TestBreakerStillOpensOnInfraError(t *testing.T) {
 		t.Errorf("breaker state = %v after 3 infra errors; want Open", c.BreakerState())
 	}
 }
+
+// ── PublishSoftAlertEvent (gateway.events.*) ─────────────────────────────────
+
+// TestPublishSoftAlertEvent_SubjectAndPayload asserts the event is core-
+// published to the natsbus-compatible per-project subject and flushed.
+func TestPublishSoftAlertEvent_SubjectAndPayload(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{"type":"budget.soft_alert"}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.published) != 1 {
+		t.Fatalf("published %d messages, want 1", len(fc.published))
+	}
+	if got, want := fc.published[0].subject, "gateway.events.project.42.events"; got != want {
+		t.Errorf("subject = %q, want %q (must match elitea-main natsbus subjectFor)", got, want)
+	}
+	if string(fc.published[0].data) != `{"type":"budget.soft_alert"}` {
+		t.Errorf("payload altered in transit: %q", fc.published[0].data)
+	}
+	if fc.flushes != 1 {
+		t.Errorf("flushes = %d, want 1 (publish must be flushed so errors surface)", fc.flushes)
+	}
+}
+
+// TestPublishSoftAlertEvent_PublishError asserts a transport error is mapped
+// and returned (the caller logs it; the alert must not be silently dropped
+// without a trace).
+func TestPublishSoftAlertEvent_PublishError(t *testing.T) {
+	fc := &fakeConn{publishErr: errFakeTransport}
+	c := &Client{nc: fc}
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{}`)); err == nil {
+		t.Fatal("expected error from failed publish, got nil")
+	}
+}
+
+// TestPublishSoftAlertEvent_FlushError asserts a flush failure surfaces too.
+func TestPublishSoftAlertEvent_FlushError(t *testing.T) {
+	fc := &fakeConn{flushErr: errFakeTransport}
+	c := &Client{nc: fc}
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{}`)); err == nil {
+		t.Fatal("expected error from failed flush, got nil")
+	}
+}
+
+// TestPublishSoftAlertEvent_ExpiredContext asserts an already-expired context
+// short-circuits instead of flushing with a non-positive timeout.
+func TestPublishSoftAlertEvent_ExpiredContext(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := c.PublishSoftAlertEvent(ctx, "42", []byte(`{}`)); err == nil {
+		t.Fatal("expected error for expired context, got nil")
+	}
+	if fc.flushes != 0 {
+		t.Errorf("flushes = %d, want 0 (expired ctx must not flush)", fc.flushes)
+	}
+}
+
+// errFakeTransport is the sentinel transport error for the event-publish tests.
+var errFakeTransport = errors.New("fake transport error")

@@ -48,6 +48,15 @@ type Handler struct {
 	billingWg      sync.WaitGroup
 	billingClosing atomic.Int32
 
+	// loopGuard is the per-(project_id, model) circular-routing circuit
+	// breaker (spec §2.6 guard #2). nil = disarmed (unit-test construction);
+	// production wiring arms it via WithLoopBreaker.
+	loopGuard *loopBreaker
+
+	// alertEvents publishes budget.soft_alert to gateway.events.* when the
+	// 80% soft alert fires (spec §8.3). nil = publishing disabled.
+	alertEvents AlertEventPublisher
+
 	// inflightNano is a per-project in-process reservation counter (Fix round-3
 	// #7). When N concurrent requests pass admission before any async increment
 	// lands, each one adds its estimated cost here so checkBudget can bound the
@@ -80,6 +89,23 @@ func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
 		h.budgetGate = gate
 		h.costCalc = calc
 	}
+}
+
+// WithLoopBreaker arms the per-(project_id, model) circular-routing circuit
+// breaker (spec §2.6 guard #2): >= 5 requests for the same tuple within 1 s
+// open the circuit and the handler returns 429 rate_limit_exceeded for 30 s.
+// The composition root (cmd/elitea-llm-gateway/main.go) MUST arm this in
+// production wiring — guarded by TestMainWiring.
+func WithLoopBreaker() HandlerOption {
+	return func(h *Handler) { h.loopGuard = newLoopBreaker() }
+}
+
+// WithAlertEventPublisher wires the gateway.events.* publisher used to emit
+// the budget.soft_alert event when the 80% threshold alert fires (spec §8.3:
+// "a soft-alert is recorded on gateway.events.*"). nil is a no-op (the alert
+// still logs; nothing is published).
+func WithAlertEventPublisher(p AlertEventPublisher) HandlerOption {
+	return func(h *Handler) { h.alertEvents = p }
 }
 
 // NewHandler builds a /llm Handler over the given router. logger may be nil

@@ -119,6 +119,12 @@ func (c Config) withDefaults() Config {
 type conn interface {
 	Close()
 	IsClosed() bool
+	// Publish + FlushTimeout are the core-NATS (non-JetStream) publish surface
+	// used for platform events on gateway.events.* — subscribers (elitea-main
+	// natsbus) use plain core subscriptions, so events must not be JetStream-
+	// persisted under a stream that would shadow the subject space.
+	Publish(subj string, data []byte) error
+	FlushTimeout(d time.Duration) error
 }
 
 // The following narrow interfaces are the exact operation surface the
@@ -506,6 +512,41 @@ func (c *Client) PublishDelta(ctx context.Context, eventID string, payload []byt
 		return 0, nil
 	})
 	if err != nil {
+		return mapErr(err)
+	}
+	return nil
+}
+
+// EventSubjectRoot is the reserved platform-event subject prefix. It mirrors
+// elitea-main natsbus.SubjectRoot: channel "project:<id>:events" maps to
+// "gateway.events.project.<id>.events".
+const EventSubjectRoot = "gateway.events"
+
+// eventSubjectForProject builds the per-project event subject the elitea-main
+// natsbus EventBus subscribes to.
+func eventSubjectForProject(projectID string) string {
+	return EventSubjectRoot + ".project." + projectID + ".events"
+}
+
+// PublishSoftAlertEvent publishes a pre-marshalled event envelope onto the
+// project's gateway.events.* subject via core NATS (not JetStream — the
+// subscribers use plain subscriptions). The flush is bounded by the ctx
+// deadline (capped at OpTimeout) so a wedged connection cannot stall the
+// billing goroutine. Satisfies llmproxy.AlertEventPublisher.
+func (c *Client) PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error {
+	if err := c.nc.Publish(eventSubjectForProject(projectID), event); err != nil {
+		return mapErr(err)
+	}
+	timeout := OpTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < timeout {
+			timeout = until
+		}
+	}
+	if timeout <= 0 {
+		return context.DeadlineExceeded
+	}
+	if err := c.nc.FlushTimeout(timeout); err != nil {
 		return mapErr(err)
 	}
 	return nil

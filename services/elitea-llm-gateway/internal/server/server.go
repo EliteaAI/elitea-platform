@@ -43,6 +43,9 @@ type NATSClient interface {
 	ReadBudget(ctx context.Context, subject string) (int64, error)
 	TryAlertCooldown(ctx context.Context, key string) (bool, error)
 	PublishDelta(ctx context.Context, eventID string, payload []byte) error
+	// PublishSoftAlertEvent emits budget.soft_alert onto gateway.events.*
+	// (spec §8.3); satisfies llmproxy.AlertEventPublisher.
+	PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error
 	OnBreakerStateChange(fn func(from, to gobreaker.State))
 	BreakerState() gobreaker.State
 	// BudgetSubject builds the counter subject for a scope/period key. It must

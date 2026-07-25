@@ -127,9 +127,21 @@ func main() {
 		recordBudgetEnforcementEnabled(false)
 	}
 
+	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
+	// same NATS connection as the budget counters; without NATS the alert
+	// still logs but nothing is published.
+	if nc != nil {
+		budgetOpts = append(budgetOpts, llmproxy.WithAlertEventPublisher(nc))
+	}
+
 	// Mount the /llm dialect surface over the embedded bifrost/core client.
+	// WithLoopBreaker arms circular-routing guard #2 (spec §2.6) — it MUST be
+	// present in production wiring; TestMainWiring asserts it.
 	handlerOpts := append(
-		[]llmproxy.HandlerOption{llmproxy.WithModelResolver(modelResolver)},
+		[]llmproxy.HandlerOption{
+			llmproxy.WithModelResolver(modelResolver),
+			llmproxy.WithLoopBreaker(),
+		},
 		budgetOpts...,
 	)
 	handler := llmproxy.NewHandler(
