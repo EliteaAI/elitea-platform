@@ -2584,3 +2584,22 @@ Cookie audit results:
   upsert-time guard — keep the two env values in sync in deployments.
 - TestMainWiring now guards: WithBudgetGate, WithLoopBreaker, WithAlertEventPublisher,
   account.New, account.NewFernetVault, govStore.Start, drainForShutdown, srv.Shutdown.
+
+### BFF.9x live run (2026-07-25) — live-infra learnings
+
+- NATS 2.12 counter stream message BODY is `{"val":"N"}` JSON; only PubAck.Value is the bare
+  total. Any code parsing counter payloads must handle both (nats.go fix in d8e1534).
+- gateway.project_budget.hard_limit_usd is numeric(12,2): budgets under $0.01 round to 0 =
+  unlimited. Test fixtures MUST use >= $0.01.
+- bifrost v1.7.3 upstream bugs (reproduced with a pure-core probe): responses-STREAM with a
+  customResponseHandler (vllm provider) parses chunks but never forwards them ("// TODO fix
+  this" in openai.go ~1875), and an empty stream becomes (nil, nil) at
+  CheckFirstStreamChunkForError → callers hang. Gateway now 502s on nil-chan (defensive).
+- bifrost vllm provider: URL must EXCLUDE /v1 (provider appends /v1/...); SSRF-safe dialer
+  blocks RFC-1918 unless ProviderConfig.NetworkConfig.AllowPrivateNetwork (account now sets it
+  for VLLM/Ollama only).
+- k6 v2: --summary-export is FLAT (stats on the metric object, no "values"); p(99) needs
+  --summary-trend-stats; any crossed threshold → exit 99 (use --no-thresholds; the gate asserts
+  from the summary).
+- The §2.6 loop breaker and single-tuple load tests are mutually exclusive BY DESIGN — perf
+  runs must spread identities across tuples and pace per-VU below 5 req/s.

@@ -173,6 +173,36 @@ k6, pylon (centry compose).
 > projects for 9c; k6 script for 9d; finite-budget project for 9e) and runs the validator
 > against the live gateway. These are the `features.json` BFF.9x gates.
 
+> **BFF.9x LOCAL RUN-GREEN RESULTS (2026-07-25, gateway d8e1534 + NATS 2.12 + Postgres + local vLLM Qwen3.6-35B):**
+> - **BFF.9b PASS** cost-parity exit 0 (11/11 fixtures).
+> - **BFF.9e PASS** budget-check exit 0 — 402 hard block on healthy NATS path, soft-alert observed on
+>   `gateway.events.project.<id>.events` within 10 s via a real NATS subscription, 200 control,
+>   §2.6 breaker 429 on same-tuple burst. Required THREE live-only fixes (commit d8e1534): NATS 2.12
+>   counter payload is `{"val":"N"}` JSON (old parse failed → enforcement silently degraded on every
+>   deployment); `numeric(12,2)` on project_budget.hard_limit_usd silently rounds sub-cent budgets
+>   to 0 → unlimited (seed >=$0.01); soft-alert event now actually published (was log-only).
+> - **BFF.9d PASS** overhead-check exit 0 — p99 gateway overhead **17.1 ms < 50 ms** (60 projects,
+>   50 VUs, 1145 reqs, 0% errors); benchmark persisted to gateway llmproxy/testdata per design §10.2.
+>   NOTE: the k6 load MUST spread across >=#VUs (project,model) tuples with per-VU pacing — a
+>   single-tuple run trips the §2.6 breaker by design (measured 99.96% 429s). k6 v2 export shape
+>   + --no-thresholds now handled by the gate (commit 142a004).
+> - **BFF.9a PARTIAL** openai dialect PASS through the full live stack (342 frames, 36.6 ms max
+>   inter-frame gap). Anthropic dialect **blocked by upstream bifrost v1.7.3 bugs**: (1)
+>   openai.HandleOpenAIResponsesStreaming's customResponseHandler branch parses but NEVER forwards
+>   chunks (vllm/sgl providers; literal `// TODO fix this` in bifrost source) → empty stream;
+>   (2) core CheckFirstStreamChunkForError turns an empty stream into (nil, nil) → the gateway
+>   previously hung forever (now 502 via the nil-chan guard). Cloud providers (openai/anthropic)
+>   don't use customResponseHandler on this path → expected to pass in staging; VERIFY THERE.
+>   Consider a bifrost issue/patch before cutover if self-hosted vllm backends must serve the
+>   anthropic dialect streaming.
+> - **BFF.9c BLOCKED locally** — legacy LiteLLM (:4000) is not running here; needs the staging
+>   legacy stack + >=5 real projects.
+> - Operator seeding recipe used: p_9101 (over-budget, counter=limit), p_9102 (79%), p_9103
+>   (control), p_9200-9259 (k6 load spread, unlimited) — schemas + `configuration` rows
+>   (section=ai_credentials type=vllm api_base WITHOUT /v1 suffix; bifrost appends /v1/...),
+>   gateway.project_budget rows, gateway.gateway_models price row (provider=vllm), NATS counters
+>   seeded via `nats pub` with `Nats-Incr` headers.
+
 ## Phase BF-PF addendum: gaps found by the BFF.5 audit (2026-07-25)
 
 - [x] BFF.6 Wire the vault-backed Account into the gateway composition root **(CUTOVER BLOCKER — fixed)**
