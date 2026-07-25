@@ -2551,3 +2551,25 @@ Cookie audit results:
   code: `--benchmark-out=auto` persists ONLY for source=k6-run.
 - Pre-existing gofmt drift in `budgetcheck.go` + `cutoververify_test.go` (alignment only) — left
   untouched per scope containment; golangci-lint does not gate gofmt here.
+
+### BFF.5 audit + fix (2026-07-25)
+
+- AUDIT FINDING PATTERN: three "done-looking" gates were hollow — (a) gateway soft alert only
+  slog.Warn'd (never published to gateway.events.*), (b) spec §2.6 guard #2 (per-(project,model)
+  429 loop breaker) did not exist anywhere, (c) `budget-check` bare invocation exited 0. When a
+  spec sentence names an observable ("recorded on gateway.events.*"), grep for the PUBLISHER,
+  not just the log line.
+- CRITICAL UNFIXED: `cmd/elitea-llm-gateway/main.go` passes account=nil → zero-provider
+  bootstrapAccount in production; internal/account (vault + SELF_REFERENTIAL guard) is never
+  constructed, and account.Config.SelfOrigins has no env/Helm source. Filed as BFF.6 (cutover
+  blocker). Do NOT mark BF-PF complete while BFF.6 is open.
+- natsbus event contract: subject `gateway.events.project.<id>.events`, envelope
+  {type, source, payload, timestamp} (mirrors elitea-main internal/infra/redis Event). The
+  gateway publishes CORE NATS (not JetStream) because natsbus subscribes with plain
+  ChanSubscribe — do not add a stream over gateway.events.> or subscribers change semantics.
+- Edge identity signing scheme (v1\nproject\nuser\ntenant, sha256=hex, X-Elitea-* headers) is
+  duplicated by design in cutover-ctl (budgetcheck_live.go) — the llmproxy packages don't export
+  it; golden-vector tests pin both sides.
+- Breaker placement: loopGuard.allow runs at the TOP of checkBudget, before the budgetGate nil
+  check — so the guard works on no-governance deployments AND over-budget projects still count
+  hits (the live gate exploits this: burst the over_budget project, expect 402→429 flip).
