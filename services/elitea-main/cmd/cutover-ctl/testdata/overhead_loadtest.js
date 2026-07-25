@@ -41,6 +41,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Trend } from 'k6/metrics';
+import exec from 'k6/execution';
 
 // gatewayOverheadMs records the gateway-internal hop latency (milliseconds)
 // from the X-Elapsed-Ms response header. This is the metric the overhead-check
@@ -51,10 +52,11 @@ const gatewayOverheadMs = new Trend('gateway_overhead_ms', true);
 const GATEWAY_URL = __ENV.GATEWAY_URL || 'http://localhost:8083';
 const API_KEY     = __ENV.API_KEY     || 'test-api-key';
 const PROJECT_ID  = __ENV.PROJECT_ID  || 'test-project';
+const MODEL       = __ENV.MODEL       || 'gpt-4o-mini';
 
 // Request body: non-streaming, minimal prompt to keep upstream latency low.
 const REQUEST_BODY = JSON.stringify({
-  model: 'gpt-4o-mini',
+  model: MODEL,
   stream: false,
   max_tokens: 8,
   messages: [{ role: 'user', content: 'Reply with one word: OK' }],
@@ -65,6 +67,44 @@ const HEADERS = {
   'Authorization': `Bearer ${API_KEY}`,
   'X-Project-ID': PROJECT_ID,
 };
+
+// Signed edge-identity headers (required whenever the gateway runs with
+// GATEWAY_IDENTITY_SECRET set — FIX #9 makes that mandatory with NATS on).
+// The overhead-check subcommand pre-signs the tuple(s) and passes them via -e;
+// the secret itself never reaches this script.
+//
+// IDENTITIES (JSON array of {project,user,tenant,signature}) spreads the load
+// across many (project, model) tuples. This is REQUIRED against a production
+// gateway: the §2.6 circular-routing breaker opens a tuple's circuit at
+// >=5 req/1s, so a single-identity 50-VU run measures 429s, not overhead.
+// Each VU keeps ONE identity (vu id modulo the set) and paces itself below
+// the breaker threshold (see sleep() in the scenario).
+const IDENTITIES = (() => {
+  if (__ENV.IDENTITIES) {
+    try { return JSON.parse(__ENV.IDENTITIES); } catch (e) { return []; }
+  }
+  if (__ENV.IDENTITY_PROJECT) {
+    return [{
+      project: __ENV.IDENTITY_PROJECT,
+      user: __ENV.IDENTITY_USER || '',
+      tenant: __ENV.IDENTITY_TENANT || '',
+      signature: __ENV.IDENTITY_SIGNATURE || '',
+    }];
+  }
+  return [];
+})();
+
+function identityHeaders() {
+  if (IDENTITIES.length === 0) return {};
+  const id = IDENTITIES[(exec.vu.idInTest - 1) % IDENTITIES.length];
+  const h = {
+    'X-Elitea-Project-Id': id.project,
+    'X-Elitea-User-Id': id.user,
+    'X-Elitea-Tenant-Id': id.tenant,
+  };
+  if (id.signature) h['X-Elitea-Identity-Signature'] = id.signature;
+  return h;
+}
 
 // ── Load profile ─────────────────────────────────────────────────────────────
 export const options = {
@@ -91,7 +131,7 @@ export default function () {
   const res = http.post(
     `${GATEWAY_URL}/llm/v1/chat/completions`,
     REQUEST_BODY,
-    { headers: HEADERS, timeout: '10s' },
+    { headers: Object.assign({}, HEADERS, identityHeaders()), timeout: '10s' },
   );
 
   // Basic response checks.
@@ -120,8 +160,10 @@ export default function () {
     gatewayOverheadMs.add(res.timings.duration);
   }
 
-  // Brief pause between iterations to avoid hammering a single connection.
-  sleep(0.1);
+  // Pace each VU below the §2.6 loop-breaker threshold for its own
+  // (project, model) tuple (>=5 req/1s opens the circuit): 0.3 s floor keeps a
+  // VU at ~<3.5 req/s even when the model answers instantly.
+  sleep(0.3);
 }
 
 // ── Setup / teardown (optional) ───────────────────────────────────────────────

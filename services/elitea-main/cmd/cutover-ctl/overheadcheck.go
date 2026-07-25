@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,11 +60,40 @@ type k6SummaryExport struct {
 	Metrics map[string]k6Metric `json:"metrics"`
 }
 
-// k6Metric is a single metric entry in the k6 summary. The "values" map contains
-// statistics keyed by their k6 name: "p(99)", "avg", "min", "max", "med", etc.
+// k6Metric is a single metric entry in the k6 summary. Two wire shapes exist:
+//   - legacy (k6 < 1.x): {"type":"trend","values":{"p(99)":12.3,...}}
+//   - current (k6 v2):   {"p(99)":12.3,"avg":7.1,...}  (stats directly on the object)
+//
+// UnmarshalJSON normalises both into Values.
 type k6Metric struct {
-	Type   string             `json:"type"`
-	Values map[string]float64 `json:"values"`
+	Type   string
+	Values map[string]float64
+}
+
+func (m *k6Metric) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Values = map[string]float64{}
+	if t, ok := raw["type"]; ok {
+		_ = json.Unmarshal(t, &m.Type)
+	}
+	if v, ok := raw["values"]; ok {
+		var nested map[string]float64
+		if err := json.Unmarshal(v, &nested); err == nil {
+			m.Values = nested
+			return nil
+		}
+	}
+	// Flat (k6 v2) shape: every numeric field is a stat.
+	for k, v := range raw {
+		var f float64
+		if err := json.Unmarshal(v, &f); err == nil {
+			m.Values[k] = f
+		}
+	}
+	return nil
 }
 
 // overheadMetricPreference lists the metrics to try, in priority order. The first
@@ -128,25 +158,68 @@ func parseK6SummaryForOverhead(data []byte, thresholdMS float64) (overheadCheckR
 	)
 }
 
-// k6Args builds the argv (after the binary name) for a k6 run that exports its
-// summary to summaryPath and targets gatewayURL. Pure so tests can pin the exact
-// invocation shape. API_KEY / PROJECT_ID are intentionally NOT forwarded here —
-// k6 exposes the OS environment through __ENV, so the operator's exported values
-// reach the script without appearing in process listings.
-func k6Args(script, gatewayURL, summaryPath string) []string {
-	return []string{
+// k6RunParams carries everything the k6 invocation needs beyond the script.
+// Identity values are pre-signed (the HMAC is static per identity tuple) so
+// the script can send the gateway's required X-Elitea-* headers without
+// knowing the secret.
+type k6RunParams struct {
+	Script      string
+	GatewayURL  string
+	SummaryPath string
+	Model       string // "" = script default
+	// Signed identity headers ("" = unsigned).
+	IdentityProject   string
+	IdentityUser      string
+	IdentityTenant    string
+	IdentitySignature string
+	// IdentitiesJSON, when non-empty, is a JSON array of pre-signed identity
+	// header sets the script rotates across VUs. REQUIRED to run the load
+	// profile against a breaker-armed gateway: hammering one (project, model)
+	// tuple trips the §2.6 loop breaker by design, so the load must spread
+	// over enough tuples to stay under its threshold.
+	IdentitiesJSON string
+}
+
+// k6Args builds the argv (after the binary name) for a k6 run. Pure so tests
+// can pin the exact invocation shape. API_KEY is intentionally NOT forwarded
+// here — k6 exposes the OS environment through __ENV, so the operator's
+// exported value reaches the script without appearing in process listings.
+// The identity SIGNATURE does appear in argv; it is a per-tuple MAC, not the
+// secret, and cannot be used to forge any other identity.
+func k6Args(p k6RunParams) []string {
+	args := []string{
 		"run",
-		"--summary-export", summaryPath,
-		"-e", "GATEWAY_URL=" + gatewayURL,
-		script,
+		// The gate's canonical assertion is cutover-ctl parsing the exported
+		// summary; the script's own thresholds are a local convenience only.
+		// Without this flag a failed convenience threshold (e.g. round-trip
+		// p99 vs a slow local model) makes k6 exit 99 and aborts the gate
+		// before the real assertion runs.
+		"--no-thresholds",
+		"--summary-trend-stats", "avg,min,med,max,p(90),p(95),p(99)",
+		"--summary-export", p.SummaryPath,
+		"-e", "GATEWAY_URL=" + p.GatewayURL,
 	}
+	if p.Model != "" {
+		args = append(args, "-e", "MODEL="+p.Model)
+	}
+	if p.IdentitiesJSON != "" {
+		args = append(args, "-e", "IDENTITIES="+p.IdentitiesJSON)
+	} else if p.IdentityProject != "" {
+		args = append(args,
+			"-e", "IDENTITY_PROJECT="+p.IdentityProject,
+			"-e", "IDENTITY_USER="+p.IdentityUser,
+			"-e", "IDENTITY_TENANT="+p.IdentityTenant,
+			"-e", "IDENTITY_SIGNATURE="+p.IdentitySignature,
+		)
+	}
+	return append(args, p.Script)
 }
 
 // runK6Summary drives the k6 load script against the gateway and returns the
 // bytes of the --summary-export JSON it produced. k6's own stdout/stderr are
 // streamed through to the given writers so the operator sees live progress.
 // The summary file is written to a temp dir and removed on return.
-func runK6Summary(k6Bin, script, gatewayURL string, stdout, stderr io.Writer) ([]byte, error) {
+func runK6Summary(k6Bin string, p k6RunParams, stdout, stderr io.Writer) ([]byte, error) {
 	tmpDir, err := os.MkdirTemp("", "overhead-check-*")
 	if err != nil {
 		return nil, fmt.Errorf("overhead-check: cannot create temp dir: %w", err)
@@ -154,11 +227,12 @@ func runK6Summary(k6Bin, script, gatewayURL string, stdout, stderr io.Writer) ([
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	summaryPath := filepath.Join(tmpDir, "summary.json")
-	cmd := exec.Command(k6Bin, k6Args(script, gatewayURL, summaryPath)...)
+	p.SummaryPath = summaryPath
+	cmd := exec.Command(k6Bin, k6Args(p)...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("overhead-check: k6 run failed (%v) — is k6 installed and the gateway reachable at %s?", err, gatewayURL)
+		return nil, fmt.Errorf("overhead-check: k6 run failed (%v) — is k6 installed and the gateway reachable at %s?", err, p.GatewayURL)
 	}
 
 	data, err := os.ReadFile(summaryPath)
@@ -243,6 +317,12 @@ func cmdOverheadCheck(args []string) {
 	script := fs.String("script", "testdata/overhead_loadtest.js", "k6 load script to run (live mode)")
 	gatewayURL := fs.String("gateway-url", "http://localhost:8083", "gateway base URL the k6 script targets (live mode)")
 	k6Bin := fs.String("k6-bin", "k6", "k6 binary to invoke (live mode)")
+	model := fs.String("model", "", "model for the k6 chat requests (empty = script default)")
+	identitySecret := fs.String("identity-secret", os.Getenv("GATEWAY_IDENTITY_SECRET"), "edge identity HMAC secret (empty = unsigned)")
+	projectID := fs.String("project-id", "", "single project ID for the signed identity headers (live mode)")
+	projectsFile := fs.String("projects-file", "", "JSON array of {project_id,user_id,tenant_id} to spread load across (avoids tripping the §2.6 loop breaker)")
+	userID := fs.String("user-id", "cutover-ctl", "user ID for the signed identity headers")
+	tenantID := fs.String("tenant-id", "", "tenant ID for the signed identity headers")
 	benchmarkOut := fs.String("benchmark-out", benchmarkOutAuto,
 		"benchmark record output path; \"auto\" = testdata/p99_overhead_benchmark.json for live k6 runs only, \"\" disables")
 	_ = fs.Parse(args)
@@ -260,8 +340,31 @@ func cmdOverheadCheck(args []string) {
 		}
 	} else {
 		source = "k6-run"
+		params := k6RunParams{
+			Script:     *script,
+			GatewayURL: *gatewayURL,
+			Model:      *model,
+		}
+		switch {
+		case *projectsFile != "":
+			identitiesJSON, err := signIdentitiesFromFile(*projectsFile, []byte(*identitySecret))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err.Error())
+				os.Exit(2)
+			}
+			params.IdentitiesJSON = identitiesJSON
+		case *projectID != "":
+			// Pre-sign the identity tuple so the k6 script can send the
+			// gateway's required X-Elitea-* headers without holding the secret.
+			sigReq, _ := http.NewRequest(http.MethodPost, *gatewayURL, nil)
+			signIdentity(sigReq, []byte(*identitySecret), *projectID, *userID, *tenantID)
+			params.IdentityProject = *projectID
+			params.IdentityUser = *userID
+			params.IdentityTenant = *tenantID
+			params.IdentitySignature = sigReq.Header.Get(bcHeaderSignature)
+		}
 		fmt.Printf("overhead-check: driving k6 (%s) against %s ...\n", *script, *gatewayURL)
-		data, err = runK6Summary(*k6Bin, *script, *gatewayURL, os.Stdout, os.Stderr)
+		data, err = runK6Summary(*k6Bin, params, os.Stdout, os.Stderr)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(2)
@@ -309,4 +412,48 @@ func cmdOverheadCheck(args []string) {
 
 	fmt.Printf("✓ overhead-check: p99 %.3f ms < %.0f ms threshold — gateway hop overhead is within budget\n",
 		res.P99MS, res.ThresholdMS)
+}
+
+// signedIdentity is one pre-signed identity header set passed to the k6 script.
+type signedIdentity struct {
+	Project   string `json:"project"`
+	User      string `json:"user"`
+	Tenant    string `json:"tenant"`
+	Signature string `json:"signature"`
+}
+
+// signIdentitiesFromFile loads a JSON array of {project_id,user_id,tenant_id}
+// and returns the pre-signed identity sets as a JSON array for the IDENTITIES
+// k6 env. The signing secret never reaches the script.
+func signIdentitiesFromFile(path string, secret []byte) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("overhead-check: cannot read projects file %q: %v", path, err)
+	}
+	var projects []budgetProject
+	if err := json.Unmarshal(data, &projects); err != nil {
+		return "", fmt.Errorf("overhead-check: malformed projects file %q: %v", path, err)
+	}
+	if len(projects) == 0 {
+		return "", fmt.Errorf("overhead-check: projects file %q is empty", path)
+	}
+	out := make([]signedIdentity, 0, len(projects))
+	for _, p := range projects {
+		if p.ProjectID == "" {
+			return "", fmt.Errorf("overhead-check: projects file %q: entry without project_id", path)
+		}
+		sigReq, _ := http.NewRequest(http.MethodPost, "http://sign.local", nil)
+		signIdentity(sigReq, secret, p.ProjectID, p.UserID, p.TenantID)
+		out = append(out, signedIdentity{
+			Project:   p.ProjectID,
+			User:      p.UserID,
+			Tenant:    p.TenantID,
+			Signature: sigReq.Header.Get(bcHeaderSignature),
+		})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("overhead-check: marshal identities: %v", err)
+	}
+	return string(b), nil
 }

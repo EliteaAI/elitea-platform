@@ -110,11 +110,15 @@ func loadBudgetFixture(path string) (budgetFixture, error) {
 	return f, nil
 }
 
-// chatBody builds a minimal non-streaming chat request for model.
+// chatBody builds a minimal non-streaming chat request for model. max_tokens
+// bounds generation so a long-form (e.g. reasoning) model cannot stall the
+// probe past the HTTP client timeout; the exact token count is irrelevant to
+// every gate this probe feeds.
 func chatBody(model string) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"model":    model,
-		"messages": []map[string]string{{"role": "user", "content": "budget-check probe"}},
+		"model":      model,
+		"max_tokens": 64,
+		"messages":   []map[string]string{{"role": "user", "content": "budget-check probe"}},
 	})
 	return b
 }

@@ -173,9 +173,13 @@ func TestOverheadCheck_ResultFields(t *testing.T) {
 // the given path, GATEWAY_URL passed via -e (not argv-embedded secrets), script
 // last. A drift here silently changes what the BFF.9d validator measures.
 func TestOverheadCheck_K6Args(t *testing.T) {
-	got := k6Args("testdata/overhead_loadtest.js", "http://gw:8083", "/tmp/s.json")
+	got := k6Args(k6RunParams{
+		Script: "testdata/overhead_loadtest.js", GatewayURL: "http://gw:8083", SummaryPath: "/tmp/s.json",
+	})
 	want := []string{
 		"run",
+		"--no-thresholds",
+		"--summary-trend-stats", "avg,min,med,max,p(90),p(95),p(99)",
 		"--summary-export", "/tmp/s.json",
 		"-e", "GATEWAY_URL=http://gw:8083",
 		"testdata/overhead_loadtest.js",
@@ -220,7 +224,7 @@ func TestOverheadCheck_RunK6Summary_Success(t *testing.T) {
 	stub := fakeK6(t, summary, 0)
 
 	var stdout, stderr bytes.Buffer
-	data, err := runK6Summary(stub, "testdata/overhead_loadtest.js", "http://gw:8083", &stdout, &stderr)
+	data, err := runK6Summary(stub, k6RunParams{Script: "testdata/overhead_loadtest.js", GatewayURL: "http://gw:8083"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -241,7 +245,7 @@ func TestOverheadCheck_RunK6Summary_Success(t *testing.T) {
 // an error (the gate must not read a partial summary from a failed run).
 func TestOverheadCheck_RunK6Summary_NonZeroExit(t *testing.T) {
 	stub := fakeK6(t, `{}`, 3)
-	_, err := runK6Summary(stub, "script.js", "http://gw:8083", io.Discard, io.Discard)
+	_, err := runK6Summary(stub, k6RunParams{Script: "script.js", GatewayURL: "http://gw:8083"}, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for non-zero k6 exit, got nil")
 	}
@@ -250,7 +254,7 @@ func TestOverheadCheck_RunK6Summary_NonZeroExit(t *testing.T) {
 // TestOverheadCheck_RunK6Summary_MissingBinary asserts a clear error when the
 // k6 binary does not exist.
 func TestOverheadCheck_RunK6Summary_MissingBinary(t *testing.T) {
-	_, err := runK6Summary(filepath.Join(t.TempDir(), "no-such-k6"), "script.js", "http://gw:8083", io.Discard, io.Discard)
+	_, err := runK6Summary(filepath.Join(t.TempDir(), "no-such-k6"), k6RunParams{Script: "script.js", GatewayURL: "http://gw:8083"}, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing k6 binary, got nil")
 	}
@@ -264,7 +268,7 @@ func TestOverheadCheck_RunK6Summary_NoExport(t *testing.T) {
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
-	_, err := runK6Summary(stub, "script.js", "http://gw:8083", io.Discard, io.Discard)
+	_, err := runK6Summary(stub, k6RunParams{Script: "script.js", GatewayURL: "http://gw:8083"}, io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("expected error when summary export is missing, got nil")
 	}
@@ -339,5 +343,51 @@ func TestOverheadCheck_ResolveBenchmarkOut(t *testing.T) {
 		if got := resolveBenchmarkOut(c.flagVal, c.source); got != c.want {
 			t.Errorf("resolveBenchmarkOut(%q, %q) = %q, want %q", c.flagVal, c.source, got, c.want)
 		}
+	}
+}
+
+// TestOverheadCheck_K6Args_IdentityAndModel pins the extended invocation: MODEL
+// and the four pre-signed identity envs are appended before the script path.
+func TestOverheadCheck_K6Args_IdentityAndModel(t *testing.T) {
+	got := k6Args(k6RunParams{
+		Script: "s.js", GatewayURL: "http://gw:8083", SummaryPath: "/tmp/s.json",
+		Model:           "openai/Qwen/Qwen3.6-35B-A3B-FP8",
+		IdentityProject: "9103", IdentityUser: "u", IdentityTenant: "t",
+		IdentitySignature: "sha256=abc",
+	})
+	want := []string{
+		"run",
+		"--no-thresholds",
+		"--summary-trend-stats", "avg,min,med,max,p(90),p(95),p(99)",
+		"--summary-export", "/tmp/s.json",
+		"-e", "GATEWAY_URL=http://gw:8083",
+		"-e", "MODEL=openai/Qwen/Qwen3.6-35B-A3B-FP8",
+		"-e", "IDENTITY_PROJECT=9103",
+		"-e", "IDENTITY_USER=u",
+		"-e", "IDENTITY_TENANT=t",
+		"-e", "IDENTITY_SIGNATURE=sha256=abc",
+		"s.js",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("k6Args len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("k6Args[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestOverheadCheck_K6V2FlatSummaryShape pins the k6 v2 --summary-export shape
+// (stats directly on the metric object, no "values" nesting) — the format the
+// live BFF.9d run actually produces.
+func TestOverheadCheck_K6V2FlatSummaryShape(t *testing.T) {
+	summary := `{"metrics":{"gateway_overhead_ms":{"p(90)":14.07,"p(95)":17.47,"p(99)":20.62,"avg":8.09,"min":1.26,"med":6.88,"max":29.17}}}`
+	res, err := parseK6SummaryForOverhead([]byte(summary), 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.MetricUsed != "gateway_overhead_ms" || res.P99MS != 20.62 || !res.Pass {
+		t.Errorf("res = %+v, want gateway_overhead_ms p99=20.62 pass", res)
 	}
 }
