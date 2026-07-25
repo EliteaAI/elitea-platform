@@ -341,10 +341,10 @@
         {
           "id": "BFF.9d",
           "category": "verification",
-          "description": "Pre-flight: p99 gateway overhead (edge->gateway hop + NATS) within the \u00a710.2 bar under k6 load",
+          "description": "Pre-flight: p99 gateway overhead (edge->gateway hop + NATS) within the \u00a710.2 bar under k6 load (LIVE gate: drives k6 against the gateway; requires gateway :8083 + k6; persists design-\u00a710.2 benchmark)",
           "validator": {
             "type": "command",
-            "command": "go run ./services/elitea-main/cmd/cutover-ctl overhead-check --max-p99-overhead-ms 50 --summary services/elitea-main/cmd/cutover-ctl/testdata/k6_summary_under_threshold.json"
+            "command": "go run ./services/elitea-main/cmd/cutover-ctl overhead-check --max-p99-overhead-ms 50 --script services/elitea-main/cmd/cutover-ctl/testdata/overhead_loadtest.js --benchmark-out services/elitea-llm-gateway/internal/llmproxy/testdata/p99_overhead_benchmark.json"
           },
           "passes": false
         },

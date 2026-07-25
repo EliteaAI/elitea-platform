@@ -2535,3 +2535,19 @@ Cookie audit results:
 - **Fixture-vs-gate exit codes:** missing `--projects-file` (or `LLM_PARITY_PROJECTS_FILE`) → **exit 2** (operator config error), distinct from **exit 1** (gate held-false: too few projects checked, a set diff, or p99 over the bar). Same convention as cost-parity's `--against` exit 2. Fixture is a JSON array of `{project_id, api_key, legacy_api_key?}`; `legacy_api_key` overrides `api_key` for the legacy hop only (staging co-existence may issue different keys). Each project's gateway list is fetched `--samples-per-project` (default 10) times to build the p99 sample.
 - **Gotcha — `writeFile` test helper already exists** in `audit_test.go` (same package `main`, same signature). Do NOT redeclare it (compile error `writeFile redeclared`); reuse it. Same trap will bite BFF.4/BFF.5 test files.
 - **Validators:** BFF.3 = `grep -q 'models-parity' main.go && go test -run 'ModelsParity|Parity' ./cmd/cutover-ctl/... | grep -q ok` → green (the `Parity` alternative also re-runs the cost-parity tests — harmless). BFF.9c = `models-parity --min-projects 5 --max-p99-ms 200` → needs the seeded fixture + live gateway (operator gate; fails offline with exit-2 "no projects fixture given", as expected). Phase BF-PF now 4/10 (BFF.1, BFF.2, BFF.3, BFF.9b ✓). gofmt + golangci-lint (0 issues) clean.
+
+### BFF.4 overhead-check (2026-07-25)
+
+- `overheadcheck.go` pre-existed as parse-only (hermetic `--summary` required); BFF.4's actual
+  spec shape (validator runs `overhead-check --max-p99-overhead-ms 50` with NO --summary) needed
+  a live mode that execs k6 itself. Pattern: keep ALL decisions in pure fns (`k6Args`,
+  `resolveBenchmarkOut`, `parseK6SummaryForOverhead`), exec in a thin `runK6Summary`.
+- exec testing pattern for this repo: write a `#!/bin/sh` stub into t.TempDir() that scans "$@"
+  for the flag it must honor (`--summary-export`) — no exec-mocking library needed.
+- GOTCHA (fixed): `.ralph/features.json` BFF.9d validator had been rewritten to feed
+  `k6_summary_under_threshold.json` via --summary → canned-pass gate that also stamped fixture
+  data into the benchmark artifact. Restored the live invocation (persists to
+  services/elitea-llm-gateway/internal/llmproxy/testdata/ per design §10.2). Guard added in
+  code: `--benchmark-out=auto` persists ONLY for source=k6-run.
+- Pre-existing gofmt drift in `budgetcheck.go` + `cutoververify_test.go` (alignment only) — left
+  untouched per scope containment; golangci-lint does not gate gofmt here.

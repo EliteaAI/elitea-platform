@@ -79,7 +79,7 @@ Commands:
   sse-flush-check      Assert the gateway streams SSE incrementally for both dialects
   cost-parity          Assert gateway nano-USD cost math matches the pylon CostCalculator
   models-parity        Assert gateway /llm/v1/models set-equivalent to legacy for N projects (p99 < M ms)
-  overhead-check       Assert gateway-hop p99 latency < threshold from a k6 --summary-export JSON
+  overhead-check       Drive the k6 load script (or parse --summary) and assert gateway-hop p99 < threshold; persists testdata/p99_overhead_benchmark.json
   budget-check         Assert over-budget returns 402 type=budget_exceeded/code=insufficient_quota + soft-alert within latency window
   cutover-verify       Post-cutover gate BFC.9: assert zero 5xx, no litellm subprocess, zero legacy traffic, 402 block confirmed
 
@@ -92,7 +92,10 @@ Options:
   --max-p99-ms <M>     (models-parity) maximum acceptable p99 gateway /v1/models latency (default 200)
   --projects-file <f>        (models-parity) path to the seeded projects fixture (JSON array)
   --max-p99-overhead-ms <N>  (overhead-check) maximum acceptable gateway-hop p99 latency in ms (default 50)
-  --summary <path>           (overhead-check) path to the k6 --summary-export JSON file (required)
+  --summary <path>           (overhead-check) pre-exported k6 --summary-export JSON; skips running k6 (hermetic mode)
+  --script <path>            (overhead-check) k6 load script to drive (default testdata/overhead_loadtest.js)
+  --k6-bin <path>            (overhead-check) k6 binary to invoke (default k6)
+  --benchmark-out <path>     (overhead-check) benchmark record output (default testdata/p99_overhead_benchmark.json; "" disables)
   --alert-latency-s <N>      (budget-check) max seconds from 80%% crossing to soft-alert observation (default 10)
   --project-id <N>           (budget-check) test project ID for live mode (integer, required for live check)
   --deploy <name>            (cutover-verify) deployment name to inspect (live mode, default elitea-main)
