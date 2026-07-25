@@ -7,6 +7,7 @@ package llmproxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -164,4 +165,27 @@ func TestSoftAlertEvent_EnvelopeShape(t *testing.T) {
 func TestSoftAlertEvent_NilPublisherNoOp(t *testing.T) {
 	h := NewHandler(&trackingRouter{}, nil, nil)
 	h.publishSoftAlertEvent(context.Background(), "42", 1, 1) // must not panic
+}
+
+// TestChat_EmitsElapsedHeader asserts the unary chat path stamps X-Elapsed-Ms
+// (the BFF.9d overhead gate's primary metric source) with a parseable
+// millisecond float.
+func TestChat_EmitsElapsedHeader(t *testing.T) {
+	router := &trackingRouter{}
+	router.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
+	h := NewHandler(router, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.Chat(rec, chatReqWithProject(t, "42", false))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	v := rec.Header().Get("X-Elapsed-Ms")
+	if v == "" {
+		t.Fatal("X-Elapsed-Ms header missing on unary chat response")
+	}
+	var ms float64
+	if _, err := fmt.Sscanf(v, "%f", &ms); err != nil || ms < 0 {
+		t.Fatalf("X-Elapsed-Ms = %q, want non-negative float", v)
+	}
 }

@@ -21,6 +21,7 @@ package nats
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -458,18 +459,33 @@ func (c *Client) ReadBudget(ctx context.Context, subject string) (int64, error) 
 	return total, nil
 }
 
-// counterValue extracts the running total from a counter-stream message. NATS
-// stores the total as the message payload (a decimal string); the Nats-Incr
-// header on the stored message carries the last applied delta, not the total.
+// counterValue extracts the running total from a counter-stream message.
+//
+// NATS 2.12 counter streams store the running total as a JSON body
+// {"val":"<decimal>"} (verified against a live nats:2.12 server — the PubAck
+// carries the same value already unwrapped into PubAck.Value by nats.go). A
+// bare decimal payload is also accepted for forward/backward tolerance; the
+// original implementation expected ONLY the bare form, so every live
+// ReadBudget failed to parse and the budget path silently degraded to the
+// Postgres fallback tier (found by the BFF.9x live gate run).
 func counterValue(raw *jetstream.RawStreamMsg) (int64, error) {
 	if raw == nil || len(raw.Data) == 0 {
 		return 0, nil
 	}
-	total, err := strconv.ParseInt(string(raw.Data), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("nats: counter payload %q: %w", raw.Data, err)
+	if total, err := strconv.ParseInt(string(raw.Data), 10, 64); err == nil {
+		return total, nil
 	}
-	return total, nil
+	var body struct {
+		Val string `json:"val"`
+	}
+	if err := json.Unmarshal(raw.Data, &body); err == nil && body.Val != "" {
+		total, perr := strconv.ParseInt(body.Val, 10, 64)
+		if perr != nil {
+			return 0, fmt.Errorf("nats: counter payload %q: val is not an integer: %w", raw.Data, perr)
+		}
+		return total, nil
+	}
+	return 0, fmt.Errorf("nats: counter payload %q: neither bare integer nor {\"val\":\"N\"}", raw.Data)
 }
 
 // TryAlertCooldown attempts to claim the soft-alert cooldown for key. It returns

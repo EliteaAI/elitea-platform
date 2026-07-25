@@ -507,3 +507,42 @@ func TestProjectIDFromContext(t *testing.T) {
 		t.Fatalf("trimmed value: got %q", got)
 	}
 }
+
+// TestBuildKey_VLLM asserts a vllm credential's api_base is threaded into
+// VLLMKeyConfig.URL (bifrost requires it) with no key-level model filter.
+func TestBuildKey_VLLM(t *testing.T) {
+	k := buildKey(schemas.VLLM, credential{
+		configID: "c1", name: "local-vllm", apiBase: "http://192.168.0.1:8000/v1",
+	}, "sk-anything")
+	if k.VLLMKeyConfig == nil {
+		t.Fatal("VLLMKeyConfig = nil, want URL set from api_base")
+	}
+	if got := k.VLLMKeyConfig.URL.GetValue(); got != "http://192.168.0.1:8000/v1" {
+		t.Errorf("VLLMKeyConfig.URL = %q, want api_base", got)
+	}
+	if k.VLLMKeyConfig.ModelName != "" {
+		t.Errorf("ModelName = %q, want empty (no key-level filter)", k.VLLMKeyConfig.ModelName)
+	}
+}
+
+// TestProviderConfigTypes_VLLM asserts the vllm provider resolves the "vllm"
+// configuration type and is in the configured-provider set.
+func TestProviderConfigTypes_VLLM(t *testing.T) {
+	if got := providerConfigTypes[schemas.VLLM]; len(got) != 1 || got[0] != "vllm" {
+		t.Fatalf("providerConfigTypes[VLLM] = %v, want [vllm]", got)
+	}
+	a, err := New(Config{DB: &fakeDB{}, Vault: &fakeVault{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provs, _ := a.GetConfiguredProviders()
+	found := false
+	for _, p := range provs {
+		if p == schemas.VLLM {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("GetConfiguredProviders() missing schemas.VLLM")
+	}
+}

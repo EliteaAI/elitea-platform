@@ -129,7 +129,7 @@ func TestNewStaticModelResolver_Empty(t *testing.T) {
 // when called with the wrong number of destinations (exercises the guard).
 func TestStaticModelRowsIter_ScanArityError(t *testing.T) {
 	it := &staticModelRowsIter{rows: []staticModelRow{{title: "x"}}}
-	it.Next() // advance to the first row
+	it.Next()                   // advance to the first row
 	err := it.Scan(new(string)) // only 1 dest — must error (expects 2)
 	if err == nil {
 		t.Error("Scan with 1 destination should return an error; got nil")

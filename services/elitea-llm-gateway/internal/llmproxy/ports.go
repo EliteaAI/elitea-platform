@@ -154,7 +154,7 @@ func (r *bifrostLLMRouter) ImageVariationRequest(ctx *schemas.BifrostContext, re
 // and the default wrapper satisfy LLMRouter. The first guards against upstream
 // signature drift at the pinned tag; the second guards the wrapper.
 var (
-	_ LLMRouter    = (*bifrost.Bifrost)(nil)
-	_ LLMRouter    = (*bifrostLLMRouter)(nil)
+	_ LLMRouter     = (*bifrost.Bifrost)(nil)
+	_ LLMRouter     = (*bifrostLLMRouter)(nil)
 	_ CostEstimator = (*cost.Calculator)(nil)
 )

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -131,9 +132,9 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 // its own persist goroutines, preventing Add-after-Wait on persistWg.
 //
 // Sequence mandated by the design:
-//   1. handler.DrainBilling() — waits for updateUsage goroutines.
-//   2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
-//   3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
+//  1. handler.DrainBilling() — waits for updateUsage goroutines.
+//  2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
+//  3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
 func (h *Handler) DrainBilling() {
 	h.billingClosing.Store(1)
 	h.billingWg.Wait()
@@ -191,6 +192,12 @@ func finish(h http.Header) {
 // Chat handles POST /llm/v1/chat/completions. It streams when the body sets
 // "stream": true, else returns a unary chat completion.
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
+	// t0 anchors the hop-overhead measurement (design §10.2 / gate BFF.9d):
+	// X-Elapsed-Ms reports the gateway's own processing time — identity
+	// verification, loop breaker, NATS budget check, credential resolution and
+	// core routing — EXCLUDING the provider round-trip, which is subtracted
+	// below. The k6 overhead script consumes this header.
+	t0 := time.Now()
 	var req openai.OpenAIChatRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -216,7 +223,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		h.streamOpenAI(w, ctx, provider, model, ch, bErr)
 		return
 	}
+	provStart := time.Now()
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
+	setElapsedHeader(w, time.Since(t0)-time.Since(provStart))
 	// Write the response FIRST (client-visible), then bill asynchronously.
 	// updateUsage spawns a bounded goroutine so the HTTP response latency does
 	// not include the NATS billing round-trip (FIX #18).
@@ -554,6 +563,15 @@ func (h *Handler) streamOpenAI(
 		h.writeOpenAIError(w, bErr)
 		return
 	}
+	if ch == nil {
+		// A nil channel with a nil error is a router contract violation
+		// (observed from bifrost's responses-stream path); ranging over it
+		// would hang the request forever. Surface it as a 502 instead.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
+		return
+	}
 	sw, err := h.beginStream(w)
 	if err != nil {
 		return
@@ -612,6 +630,15 @@ func (h *Handler) streamResponses(
 ) {
 	if bErr != nil {
 		h.writeOpenAIError(w, bErr)
+		return
+	}
+	if ch == nil {
+		// A nil channel with a nil error is a router contract violation
+		// (observed from bifrost's responses-stream path); ranging over it
+		// would hang the request forever. Surface it as a 502 instead.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
 		return
 	}
 	sw, err := h.beginStream(w)
@@ -680,6 +707,13 @@ func (h *Handler) streamAnthropic(
 		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes,
 		// including the Anthropic /v1/messages streaming pre-error path.
 		h.writeOpenAIError(w, bErr)
+		return
+	}
+	if ch == nil {
+		// Router contract violation (nil chan + nil error) — see streamResponses.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
 		return
 	}
 	sw, err := h.beginStream(w)

@@ -1,0 +1,11 @@
+{
+  "gate": "BFF.9d",
+  "metric_used": "gateway_overhead_ms",
+  "p99_ms": 17.13235,
+  "threshold_ms": 50,
+  "pass": true,
+  "source": "k6-run",
+  "script": "cmd/cutover-ctl/testdata/overhead_loadtest.js",
+  "gateway_url": "http://localhost:8083",
+  "generated_at": "2026-07-25T19:59:23Z"
+}

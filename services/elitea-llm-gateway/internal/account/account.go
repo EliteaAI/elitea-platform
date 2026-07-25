@@ -65,6 +65,7 @@ var supportedProviders = []schemas.ModelProvider{
 	schemas.Bedrock,
 	schemas.Vertex,
 	schemas.Ollama,
+	schemas.VLLM,
 }
 
 // rowQuerier is the minimal pgx surface the account needs. It is satisfied by
@@ -180,12 +181,23 @@ func (a *EliteaAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error
 // tuned-down concurrency (§9.5). bifrost/core fills the remaining defaults via
 // ProviderConfig.CheckAndSetDefaults. Per-project endpoints (api_base) are
 // delivered per request through GetKeysForProvider's key configs, not here.
-func (a *EliteaAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	return &schemas.ProviderConfig{
+func (a *EliteaAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	cfg := &schemas.ProviderConfig{
 		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 			Concurrency: a.providerConcurrency,
 		},
-	}, nil
+	}
+	// Self-hosted provider classes (vLLM, Ollama) exist to serve from private
+	// networks — their per-key URLs routinely point at RFC-1918 hosts, so
+	// bifrost's SSRF-safe dialer must not reject them. Cloud providers keep
+	// the guard: an api_base for openai/anthropic/etc. must never resolve to
+	// a private address (that shape is exactly the SSRF the dialer exists to
+	// stop, and the SELF_REFERENTIAL guard's runtime backstop).
+	switch provider {
+	case schemas.VLLM, schemas.Ollama:
+		cfg.NetworkConfig.AllowPrivateNetwork = true
+	}
+	return cfg, nil
 }
 
 // GetKeysForProvider resolves the calling project's credentials for provider,
@@ -251,6 +263,13 @@ func buildKey(provider schemas.ModelProvider, c credential, apiKey string) schem
 	case schemas.Azure:
 		if c.apiBase != "" {
 			key.AzureKeyConfig = &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(c.apiBase)}
+		}
+	case schemas.VLLM:
+		// bifrost requires vllm_key_config.url; the credential's api_base IS
+		// the vLLM server URL. ModelName stays empty = no key-level model
+		// filter (the whole instance's model set is reachable).
+		if c.apiBase != "" {
+			key.VLLMKeyConfig = &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar(c.apiBase)}
 		}
 	}
 	return key

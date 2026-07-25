@@ -31,6 +31,7 @@ var providerConfigTypes = map[schemas.ModelProvider][]string{
 	schemas.Ollama:    {"ollama"},
 	schemas.Bedrock:   {"amazon_bedrock"},
 	schemas.Vertex:    {"vertex_ai"},
+	schemas.VLLM:      {"vllm"},
 }
 
 // credentialData is the subset of a configuration row's JSONB `data` the account

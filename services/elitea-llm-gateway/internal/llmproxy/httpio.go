@@ -3,7 +3,9 @@ package llmproxy
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -143,3 +145,14 @@ func canonicalLower(s string) string { return strings.ToLower(s) }
 
 // hasPrefix reports whether s starts with prefix.
 func hasPrefix(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
+
+// setElapsedHeader stamps the gateway's own processing overhead (excluding the
+// provider round-trip) as X-Elapsed-Ms with sub-ms precision. Consumed by the
+// BFF.9d k6 overhead gate (design §10.2). Must be called before the first
+// body/status write.
+func setElapsedHeader(w http.ResponseWriter, overhead time.Duration) {
+	if overhead < 0 {
+		overhead = 0
+	}
+	w.Header().Set("X-Elapsed-Ms", strconv.FormatFloat(float64(overhead)/float64(time.Millisecond), 'f', 3, 64))
+}

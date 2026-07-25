@@ -126,9 +126,9 @@ type fakeCostEstimator struct {
 
 	// lastInput / lastOutput record the token counts actually passed to Cost so
 	// tests can assert that token extraction was correct end-to-end.
-	mu          sync.Mutex
-	lastInput   int64
-	lastOutput  int64
+	mu         sync.Mutex
+	lastInput  int64
+	lastOutput int64
 }
 
 func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, outputTokens int64) cost.Cost {
@@ -359,11 +359,11 @@ func TestBudgetGate_Allow_ProviderCalled_UpdateUsageInvoked(t *testing.T) {
 // Expected cost: 7*100 + 13*200 = 700 + 2600 = 3300 nano-USD.
 func TestBudgetGate_Allow_TokenAwareCost(t *testing.T) {
 	const (
-		inputRate   = int64(100)  // 100 nano-USD per input token
-		outputRate  = int64(200)  // 200 nano-USD per output token
-		promptToks  = 7
-		compToks    = 13
-		wantCost    = promptToks*inputRate + compToks*outputRate // 3300
+		inputRate  = int64(100) // 100 nano-USD per input token
+		outputRate = int64(200) // 200 nano-USD per output token
+		promptToks = 7
+		compToks   = 13
+		wantCost   = promptToks*inputRate + compToks*outputRate // 3300
 	)
 
 	gate := &fakeBudgetChecker{checkVerdict: failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, updated: make(chan struct{})}

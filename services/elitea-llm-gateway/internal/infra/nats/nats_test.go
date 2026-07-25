@@ -857,3 +857,30 @@ func TestPublishSoftAlertEvent_ExpiredContext(t *testing.T) {
 
 // errFakeTransport is the sentinel transport error for the event-publish tests.
 var errFakeTransport = errors.New("fake transport error")
+
+// TestCounterValue_NATS212JSONBody pins the REAL NATS 2.12 counter payload
+// shape {"val":"N"} (the original bare-integer-only parse silently degraded
+// budget enforcement on live servers — found by the BFF.9x gate run).
+func TestCounterValue_NATS212JSONBody(t *testing.T) {
+	cases := []struct {
+		data string
+		want int64
+		ok   bool
+	}{
+		{`{"val":"10000000"}`, 10000000, true},
+		{`{"val":"-250"}`, -250, true},
+		{`12345`, 12345, true}, // bare form still accepted
+		{`{"val":"not-a-number"}`, 0, false},
+		{`{"other":"1"}`, 0, false},
+		{`garbage`, 0, false},
+	}
+	for _, c := range cases {
+		got, err := counterValue(&jetstream.RawStreamMsg{Data: []byte(c.data)})
+		if c.ok && (err != nil || got != c.want) {
+			t.Errorf("counterValue(%q) = %d, %v; want %d, nil", c.data, got, err, c.want)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("counterValue(%q) = %d, nil; want error", c.data, got)
+		}
+	}
+}

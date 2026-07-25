@@ -450,6 +450,14 @@ func (h *Handler) trySoftAlert(
 		(postDec.State == failmode.StateNATSHealthy &&
 			postDec.SoftThresholdNear && !preDec.SoftThresholdNear)
 
+	h.logger.Debug("soft-alert crossing check",
+		"project_id", pid,
+		"crossed", crossed,
+		"pre_state", preDec.State.String(), "pre_near", preDec.SoftThresholdNear,
+		"post_state", postDec.State.String(), "post_near", postDec.SoftThresholdNear,
+		"post_verdict", int(postDec.Verdict),
+		"cost_just_billed_nano", costJustBilled)
+
 	if !crossed {
 		return
 	}
