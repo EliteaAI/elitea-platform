@@ -10,6 +10,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -133,6 +134,14 @@ type Config struct {
 	TLSCertFile string
 	TLSKeyFile  string
 	TLSCAFile   string
+
+	// SelfLLMOrigins are the platform's own /llm origins (comma-separated in
+	// GATEWAY_SELF_LLM_ORIGINS, e.g. "https://dev.elitea.ai/llm/v1,
+	// http://elitea-main:8080/llm/v1"). Any credential api_base matching one
+	// of these is rejected with SELF_REFERENTIAL_CREDENTIAL (spec §2.6 guard
+	// #1). Empty = the request-time guard is inert (the upsert-time guard in
+	// elitea-main still applies).
+	SelfLLMOrigins []string
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -162,7 +171,23 @@ func FromEnv() Config {
 		TLSCertFile:             os.Getenv("GATEWAY_TLS_CERT_FILE"),
 		TLSKeyFile:              os.Getenv("GATEWAY_TLS_KEY_FILE"),
 		TLSCAFile:               os.Getenv("GATEWAY_TLS_CA_FILE"),
+		SelfLLMOrigins:          csvOr("GATEWAY_SELF_LLM_ORIGINS"),
 	}
+}
+
+// csvOr splits a comma-separated env var into trimmed, non-empty entries.
+func csvOr(key string) []string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

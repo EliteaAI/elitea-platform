@@ -31,6 +31,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/account"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/config"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
@@ -67,28 +70,24 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// account=nil → bootstrap account (zero providers). The vault-backed
-	// Account is wired in by BF0.2-account.
-	srv, err := server.New(ctx, cfg, logger, level, nil, mux)
-	if err != nil {
-		slog.Error("failed to initialise gateway", "err", err)
-		os.Exit(1)
-	}
-
-	// Open the Postgres pool. It backs both the governance/failmode store
-	// (FIX #0) and the synthetic /llm/v1/models resolver. The pool MUST live
-	// for the entire server lifetime — closing it while the server is running
-	// would break in-flight governance reads and model lookups.
+	// Open the Postgres pool BEFORE the server: it backs the vault-backed
+	// Account (BFF.6), the governance/failmode store (FIX #0), and the
+	// synthetic /llm/v1/models resolver. The pool MUST live for the entire
+	// server lifetime — closing it while the server is running would break
+	// in-flight credential resolution, governance reads, and model lookups.
 	//
 	// A configured-but-unreachable database is non-fatal: the /v1/models
-	// surface reports an empty set, and the governance engine is simply not
-	// wired (enforcement disabled with a loud warning).
+	// surface reports an empty set, the governance engine is not wired
+	// (enforcement disabled with a loud warning), and the gateway keeps the
+	// zero-provider bootstrap account.
 	var (
 		pool          *pgxpool.Pool
 		modelResolver *llmproxy.ModelResolver
 	)
-	if pool, err = pgxpool.New(ctx, cfg.DatabaseURL); err != nil {
-		logger.Warn("database pool unavailable; models resolver and budget enforcement disabled", "err", err)
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Warn("database pool unavailable; provider credentials, models resolver and budget enforcement disabled", "err", err)
+		pool = nil
 	} else {
 		// Defer pool.Close outside the if-block so it is ALWAYS called at
 		// process exit, whether governance is wired or not.
@@ -98,6 +97,46 @@ func main() {
 			DB:     llmproxy.NewModelPoolQuerier(pool),
 			Logger: logger,
 		})
+	}
+
+	// BFF.6: assemble the vault-backed Account (BF0.2-account) so bifrost can
+	// resolve real per-project provider credentials. Without a pool the
+	// gateway keeps the zero-provider bootstrap account — it will start, but
+	// every provider call fails until the database returns.
+	var acct schemas.Account
+	if pool != nil {
+		vault, verr := account.NewFernetVault(account.NewPoolQuerier(pool))
+		if verr != nil {
+			// A malformed SECRETS_MASTER_KEY is a startup misconfiguration:
+			// refusing to start beats silently failing every wrapped-key
+			// decrypt at runtime.
+			slog.Error("FATAL: Fernet vault init failed", "err", verr)
+			os.Exit(1)
+		}
+		eliteaAcct, aerr := account.New(account.Config{
+			DB:                  account.NewPoolQuerier(pool),
+			Vault:               vault,
+			ProviderConcurrency: cfg.ProviderConcurrency,
+			SelfOrigins:         cfg.SelfLLMOrigins,
+			Logger:              logger,
+		})
+		if aerr != nil {
+			slog.Error("FATAL: vault-backed Account init failed", "err", aerr)
+			os.Exit(1)
+		}
+		acct = eliteaAcct
+		if len(cfg.SelfLLMOrigins) == 0 {
+			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
+		}
+		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
+	} else {
+		logger.Warn("PROVIDER CREDENTIALS DISABLED: no database pool — gateway runs the zero-provider bootstrap account")
+	}
+
+	srv, err := server.New(ctx, cfg, logger, level, acct, mux)
+	if err != nil {
+		slog.Error("failed to initialise gateway", "err", err)
+		os.Exit(1)
 	}
 
 	// FIX #0: assemble and wire the governance engine when both NATS and DB
@@ -215,7 +254,7 @@ func buildGovernance(
 		Mode:                failmode.FailMode(cfg.NATSFailMode),
 		PGFreshness:         cfg.PGFreshnessMin,
 		ExpectedReplicas:    cfg.ExpectedReplicas,
-		DegradedCapNano:     degradedCapNano,           // FIX #7
+		DegradedCapNano:     degradedCapNano,             // FIX #7
 		DegradedMaxDuration: cfg.NATSDegradedMaxDuration, // FIX #8 consumed by GovernanceStore
 	}
 	if params.Mode == "" {
@@ -299,6 +338,7 @@ type govDrainer interface{ Drain() }
 // and Add-after-Wait on the governance persist WaitGroup:
 //  1. billing goroutines (they may still call the store's UpdateUsage), then
 //  2. the governance store's persist goroutines.
+//
 // Must run BEFORE srv.Shutdown() closes the DB pool. gov may be nil when budget
 // enforcement is disabled.
 func drainForShutdown(h billingDrainer, gov govDrainer) {

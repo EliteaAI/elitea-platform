@@ -86,6 +86,14 @@ env:
   # than this the FSM forces closed (503) regardless of snapshot freshness. Default: 10.
   LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN: "10"
 
+  # BFF.6 — circular-routing guard #1 (spec §2.6): the platform's own /llm
+  # origins, comma-separated. Any credential api_base matching one of these is
+  # rejected with SELF_REFERENTIAL_CREDENTIAL at request time. MUST list every
+  # public and in-cluster origin that reaches the /llm surface; empty leaves
+  # the request-time guard inert (the elitea-main upsert-time guard remains).
+  # e.g. "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+  GATEWAY_SELF_LLM_ORIGINS: ""
+
 # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
 # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map above.
 # Each entry maps the ENV VAR NAME the binary reads → the Secret name + key.
