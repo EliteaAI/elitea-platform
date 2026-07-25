@@ -2573,3 +2573,14 @@ Cookie audit results:
 - Breaker placement: loopGuard.allow runs at the TOP of checkBudget, before the budgetGate nil
   check — so the guard works on no-governance deployments AND over-budget projects still count
   hits (the live gate exploits this: burst the over_budget project, expect 402→429 flip).
+
+### BFF.6 Account wiring (2026-07-25)
+
+- main.go composition-root order now: pool → vault+Account → server.New → governance → handler.
+  The pool MUST precede server.New (Account needs it); pool errors degrade to bootstrap account
+  with a loud warning, but a malformed SECRETS_MASTER_KEY is FATAL (startup misconfig).
+- GATEWAY_SELF_LLM_ORIGINS is the single production source for both the gateway request-time
+  SELF_REFERENTIAL guard and (semantically) mirrors elitea-main's ELITEA_SELF_LLM_ORIGINS
+  upsert-time guard — keep the two env values in sync in deployments.
+- TestMainWiring now guards: WithBudgetGate, WithLoopBreaker, WithAlertEventPublisher,
+  account.New, account.NewFernetVault, govStore.Start, drainForShutdown, srv.Shutdown.

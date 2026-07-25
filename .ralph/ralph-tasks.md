@@ -175,10 +175,10 @@ k6, pylon (centry compose).
 
 ## Phase BF-PF addendum: gaps found by the BFF.5 audit (2026-07-25)
 
-- [ ] BFF.6 Wire the vault-backed Account into the gateway composition root **(CUTOVER BLOCKER)**
-  - [ ] `cmd/elitea-llm-gateway/main.go:72` passes `account=nil` → bootstrapAccount with ZERO providers: the production gateway cannot resolve ANY provider credential today. BF0.2-account built `internal/account` (EliteaAccount, vault, SELF_REFERENTIAL guard) but never wired it: construct `account.New({DB: pool, Vault: …, SelfOrigins: cfg, ProviderConcurrency: cfg})` and pass it to `server.New` when pool+vault are available
-  - [ ] Add the SelfOrigins config knob (env + Helm values + env-drift allowlist) — `account.Config.SelfOrigins` currently has NO production source, so guard #1 is inert even where the Account is used
-  - [ ] Extend `TestMainWiring` with the `account.New(` assertion (this is exactly the wiring-bug class CLAUDE.md flags as recurred 3×)
+- [x] BFF.6 Wire the vault-backed Account into the gateway composition root **(CUTOVER BLOCKER — fixed)**
+  - [x] `cmd/elitea-llm-gateway/main.go` passed `account=nil` → bootstrapAccount with ZERO providers. Fixed: the pgxpool now opens BEFORE `server.New`; when available, `account.NewFernetVault(NewPoolQuerier(pool))` + `account.New({DB, Vault, SelfOrigins: cfg.SelfLLMOrigins, ProviderConcurrency, Logger})` are constructed and passed to bifrost. Malformed SECRETS_MASTER_KEY → FATAL at startup (refuse-to-start beats silent runtime decrypt failures); no pool → loud "PROVIDER CREDENTIALS DISABLED" warning + bootstrap account (dev-only path). (commit b456221)
+  - [x] SelfOrigins knob added: `GATEWAY_SELF_LLM_ORIGINS` (comma-separated) → `config.SelfLLMOrigins` (csvOr, trimmed, unit-tested) → `account.Config.SelfOrigins`; Helm `env:` documents it and templates it (helm lint/template verified); startup warns when empty (guard #1 inert). env-drift-check passes with no new allowlist entries.
+  - [x] `TestMainWiring` extended with `account.New(` and `account.NewFernetVault(` assertions. Full gates: GOWORK=off -race green, golangci-lint 0, coverage floors pass, env-drift clean.
 
 ## Phase BF-C: Atomic cutover (one coordinated release)
 
