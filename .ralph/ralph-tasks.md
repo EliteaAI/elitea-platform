@@ -195,8 +195,18 @@ k6, pylon (centry compose).
 >   don't use customResponseHandler on this path → expected to pass in staging; VERIFY THERE.
 >   Consider a bifrost issue/patch before cutover if self-hosted vllm backends must serve the
 >   anthropic dialect streaming.
-> - **BFF.9c BLOCKED locally** — legacy LiteLLM (:4000) is not running here; needs the staging
->   legacy stack + >=5 real projects.
+> - **BFF.9c PASS (staging, 2026-07-26)** — models-parity exit 0: 5 projects (p_2..p_6 seeded with the
+>   dev legacy model set), all set-equivalent, gateway p99 **30 ms < 500 ms** over 50 samples. Gateway
+>   run locally against the staging Postgres (port-forward) since the gateway is not yet deployed to
+>   staging; legacy side = `https://dev.elitea.ai` (NOTE: pass the platform base URL, NOT `.../llm` —
+>   the gate appends the `/llm/v1/models` path itself; `.../llm` yields 403 on a doubled path).
+>   Staging's own pylon-litellm is OIDC-gated and serves an empty model list, so dev is the legacy ref.
+> - **BFF.9a PASS (both dialects, 2026-07-26)** — sse-flush-check exit 0 against **real Claude**
+>   (dev `/llm` as the upstream): openai 3 frames / 2.15 s max gap, anthropic 5 frames / 2.21 s max gap.
+>   The anthropic dialect needed a per-credential `use_anthropic_endpoints` flag (commit 7d28547) so
+>   bifrost targets the upstream's `/v1/messages` instead of `/v1/responses` — the `/v1/responses`
+>   path on OpenAI-compatible upstreams remains broken by maximhq/bifrost#5555 (our PR #5556).
+>   This closes the cloud-provider verification that the local vLLM run could not cover.
 > - Operator seeding recipe used: p_9101 (over-budget, counter=limit), p_9102 (79%), p_9103
 >   (control), p_9200-9259 (k6 load spread, unlimited) — schemas + `configuration` rows
 >   (section=ai_credentials type=vllm api_base WITHOUT /v1 suffix; bifrost appends /v1/...),
