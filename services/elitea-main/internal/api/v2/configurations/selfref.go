@@ -14,6 +14,7 @@ package configurations
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -41,6 +42,13 @@ var (
 func selfLLMOrigins() []string {
 	selfOriginsOnce.Do(func() {
 		selfOriginsCached = buildSelfOrigins(os.Getenv(selfOriginsEnv), os.Getenv("DEPLOYMENT_URL"))
+		// Mirror the gateway's startup warning (cmd/elitea-llm-gateway/main.go):
+		// an empty origin list makes the guard a silent no-op, which is exactly
+		// what a mis-wired Helm deployment looks like. Inside the sync.Once, so
+		// this is logged once per process, not per request.
+		if len(selfOriginsCached) == 0 {
+			slog.Warn(selfOriginsEnv + " and DEPLOYMENT_URL are both empty or unparsable — the upsert-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
+		}
 	})
 	return selfOriginsCached
 }

@@ -29,12 +29,12 @@ const (
 	// loopBreakerOpenFor is how long an opened circuit keeps returning 429.
 	loopBreakerOpenFor = 30 * time.Second
 
-	// loopBreakerMaxTuples bounds the tracking map so an attacker cycling
-	// model names cannot grow memory without bound. When the cap is reached,
-	// pruneLocked drops stale tuples first; if every tuple is live the newest
-	// request is still tracked by evicting nothing and admitting (the guard
-	// degrades to inactive for brand-new tuples rather than blocking honest
-	// traffic on a full table).
+	// loopBreakerMaxTuples bounds BOTH tracking maps (hits and openUntil) so an
+	// attacker cycling model names cannot grow memory without bound. When a cap
+	// is reached, pruneLocked drops stale tuples first; if every tuple is live
+	// the newest request is still tracked by evicting nothing and admitting (the
+	// guard degrades to inactive for brand-new tuples rather than blocking
+	// honest traffic on a full table).
 	loopBreakerMaxTuples = 65536
 )
 
@@ -99,13 +99,26 @@ func (b *loopBreaker) allow(projectID, model string) (bool, time.Duration) {
 	if len(kept) >= loopBreakerThreshold {
 		// Trip: open for loopBreakerOpenFor. The tripping request itself is
 		// rejected — a loop's 5th request is already abusive traffic.
-		b.openUntil[key] = nowNS + loopBreakerOpenFor.Nanoseconds()
 		delete(b.hits, key)
+		// openUntil is the map that survives the trip (hits is dropped), so it
+		// is the one an attacker cycling model names would grow. Cap it exactly
+		// like hits: reclaim elapsed cooldowns first, and if every circuit is
+		// still live, reject without recording rather than leaking an entry.
+		// The tuple is then not pinned open for the full 30 s, but each
+		// threshold-th request keeps being rejected — the guard degrades to
+		// rate limiting, never to unbounded memory.
+		if _, open := b.openUntil[key]; !open && len(b.openUntil) >= loopBreakerMaxTuples {
+			b.pruneLocked(nowNS)
+			if len(b.openUntil) >= loopBreakerMaxTuples {
+				return false, loopBreakerOpenFor
+			}
+		}
+		b.openUntil[key] = nowNS + loopBreakerOpenFor.Nanoseconds()
 		return false, loopBreakerOpenFor
 	}
 
 	if _, tracked := b.hits[key]; !tracked && len(b.hits) >= loopBreakerMaxTuples {
-		b.pruneLocked(cutoff)
+		b.pruneLocked(nowNS)
 		if len(b.hits) >= loopBreakerMaxTuples {
 			// Table still full of live tuples — admit without tracking rather
 			// than blocking honest traffic (see loopBreakerMaxTuples doc).
@@ -116,11 +129,21 @@ func (b *loopBreaker) allow(projectID, model string) (bool, time.Duration) {
 	return true, 0
 }
 
-// pruneLocked drops tuples whose newest hit is older than cutoff. Caller holds mu.
-func (b *loopBreaker) pruneLocked(cutoff int64) {
+// pruneLocked reclaims dead entries from BOTH maps at instant nowNS: hits whose
+// newest timestamp has fallen out of the sliding window, and openUntil entries
+// whose cooldown has elapsed. Pruning openUntil here is what keeps it bounded —
+// the fall-through in allow only reclaims an expired circuit when that exact
+// tuple is requested again. Caller holds mu.
+func (b *loopBreaker) pruneLocked(nowNS int64) {
+	cutoff := nowNS - loopBreakerWindow.Nanoseconds()
 	for k, ts := range b.hits {
 		if len(ts) == 0 || ts[len(ts)-1] <= cutoff {
 			delete(b.hits, k)
+		}
+	}
+	for k, until := range b.openUntil {
+		if until <= nowNS {
+			delete(b.openUntil, k)
 		}
 	}
 }

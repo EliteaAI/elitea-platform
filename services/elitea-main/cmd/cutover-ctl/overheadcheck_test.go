@@ -378,6 +378,131 @@ func TestOverheadCheck_K6Args_IdentityAndModel(t *testing.T) {
 	}
 }
 
+// k6V2Summary renders a k6 v2 --summary-export document in the FLAT shape the
+// live BFF.9d run produces (stats directly on the metric object, no "values"
+// nesting). failedRate is the http_req_failed rate, i.e. the fraction of
+// requests that FAILED. A negative fallbackCount omits the
+// gateway_overhead_fallback counter entirely, as a run with no fallback samples
+// does; a negative overheadP99 omits the custom trend.
+func k6V2Summary(reqs, iters int, failedRate, overheadP99 float64, fallbackCount int) string {
+	fails := int(float64(reqs) * failedRate)
+	metrics := fmt.Sprintf(`"http_reqs":{"count":%d,"rate":50.0},
+		"iterations":{"count":%d,"rate":50.0},
+		"http_req_failed":{"rate":%g,"passes":%d,"fails":%d},
+		"http_req_duration":{"avg":142.5,"min":89.0,"med":138.2,"max":521.3,"p(90)":201.4,"p(95)":263.8,"p(99)":412.0}`,
+		reqs, iters, failedRate, fails, reqs-fails)
+	if overheadP99 >= 0 {
+		metrics += fmt.Sprintf(`,
+		"gateway_overhead_ms":{"avg":8.09,"min":1.26,"med":6.88,"max":29.17,"p(90)":14.07,"p(95)":17.47,"p(99)":%g}`, overheadP99)
+	}
+	if fallbackCount >= 0 {
+		metrics += fmt.Sprintf(`,
+		"gateway_overhead_fallback":{"count":%d,"rate":1.0}`, fallbackCount)
+	}
+	return "{\"metrics\":{" + metrics + "}}"
+}
+
+// TestOverheadCheck_AllRequestsFailed_Fail is the regression test for the
+// faked-validator failure mode: k6 runs with --no-thresholds, so a run in which
+// every request errored still exports a summary with a small, meaningless p99.
+// The gate MUST reject it on run health before it ever looks at the percentile.
+func TestOverheadCheck_AllRequestsFailed_Fail(t *testing.T) {
+	// 3 000 requests, 100% failed, p99 of 4 ms — well "under" the 50 ms bar.
+	data := k6V2Summary(3000, 3000, 1.0, 4.2, 0)
+
+	// The latency half alone happily reports a pass — that is the bug.
+	if res, err := parseK6SummaryForOverhead([]byte(data), 50); err != nil || !res.Pass {
+		t.Fatalf("precondition: latency-only parse should report a pass (res=%+v err=%v)", res, err)
+	}
+	// The gate must not.
+	if _, err := evaluateK6Summary([]byte(data), 50, false); err == nil {
+		t.Fatal("evaluateK6Summary passed an all-errors run — the gate is faked")
+	}
+}
+
+// TestOverheadCheck_SuccessRateBoundary pins the >= 99% success requirement:
+// 98.5% fails, 99.5% passes.
+func TestOverheadCheck_SuccessRateBoundary(t *testing.T) {
+	if _, err := evaluateK6Summary([]byte(k6V2Summary(3000, 3000, 0.015, 20.6, 0)), 50, false); err == nil {
+		t.Error("98.5 percent success rate must fail the gate")
+	}
+	if _, err := evaluateK6Summary([]byte(k6V2Summary(3000, 3000, 0.005, 20.6, 0)), 50, false); err != nil {
+		t.Errorf("99.5%% success rate must pass the gate: %v", err)
+	}
+}
+
+// TestOverheadCheck_ZeroWork_Fail asserts a run that completed no iterations or
+// issued no requests is rejected — there is nothing to measure.
+func TestOverheadCheck_ZeroWork_Fail(t *testing.T) {
+	cases := map[string]string{
+		"zero iterations": k6V2Summary(3000, 0, 0, 20.6, 0),
+		"zero requests":   k6V2Summary(0, 3000, 0, 20.6, 0),
+		"zero both":       k6V2Summary(0, 0, 0, 20.6, 0),
+	}
+	for name, data := range cases {
+		if _, err := evaluateK6Summary([]byte(data), 50, false); err == nil {
+			t.Errorf("%s: expected gate failure, got pass", name)
+		}
+	}
+}
+
+// TestOverheadCheck_HealthySummary_Pass asserts a healthy run in the real k6 v2
+// flat shape still passes, with the health view populated for the audit record.
+func TestOverheadCheck_HealthySummary_Pass(t *testing.T) {
+	res, err := evaluateK6Summary([]byte(k6V2Summary(3000, 3000, 0.0, 20.62, 0)), 50, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Pass || res.MetricUsed != "gateway_overhead_ms" || res.P99MS != 20.62 {
+		t.Errorf("res = %+v, want pass on gateway_overhead_ms p99=20.62", res)
+	}
+	if res.Health.Requests != 3000 || res.Health.SuccessRate() != 1 {
+		t.Errorf("health = %+v, want 3000 requests at 100%% success", res.Health)
+	}
+}
+
+// TestOverheadCheck_NoFailedRateMetric_Fail asserts a summary that omits
+// http_req_failed cannot pass: the gate cannot prove the run succeeded.
+func TestOverheadCheck_NoFailedRateMetric_Fail(t *testing.T) {
+	data := `{"metrics":{
+		"http_reqs":{"count":3000,"rate":50.0},
+		"iterations":{"count":3000,"rate":50.0},
+		"gateway_overhead_ms":{"p(99)":20.62}
+	}}`
+	if _, err := evaluateK6Summary([]byte(data), 50, false); err == nil {
+		t.Fatal("expected failure when http_req_failed is absent, got pass")
+	}
+}
+
+// TestOverheadCheck_RoundTripFallback_LoudByDefault asserts the two silent
+// degradations both fail closed, and that --allow-roundtrip-fallback is the
+// only way to accept them.
+func TestOverheadCheck_RoundTripFallback_LoudByDefault(t *testing.T) {
+	// (1) The script had to fill gateway_overhead_ms from the round-trip.
+	viaCounter := k6V2Summary(3000, 3000, 0.0, 20.62, 7)
+	if _, err := evaluateK6Summary([]byte(viaCounter), 50, false); err == nil {
+		t.Error("non-zero gateway_overhead_fallback must fail the strict gate")
+	}
+	if _, err := evaluateK6Summary([]byte(viaCounter), 50, true); err != nil {
+		t.Errorf("--allow-roundtrip-fallback must accept fallback samples: %v", err)
+	}
+
+	// (2) The custom metric is missing entirely, leaving only http_req_duration
+	// (p99 = 412 ms here, so the opt-in run still fails on the threshold — the
+	// point is that strict mode fails for a DIFFERENT, louder reason).
+	noCustom := k6V2Summary(3000, 3000, 0.0, -1, -1)
+	if _, err := evaluateK6Summary([]byte(noCustom), 50, false); err == nil {
+		t.Error("missing gateway_overhead_ms must fail the strict gate")
+	}
+	res, err := evaluateK6Summary([]byte(noCustom), 500, true)
+	if err != nil {
+		t.Fatalf("--allow-roundtrip-fallback must accept http_req_duration: %v", err)
+	}
+	if res.MetricUsed != "http_req_duration" || !res.Pass {
+		t.Errorf("res = %+v, want passing http_req_duration fallback", res)
+	}
+}
+
 // TestOverheadCheck_K6V2FlatSummaryShape pins the k6 v2 --summary-export shape
 // (stats directly on the metric object, no "values" nesting) — the format the
 // live BFF.9d run actually produces.

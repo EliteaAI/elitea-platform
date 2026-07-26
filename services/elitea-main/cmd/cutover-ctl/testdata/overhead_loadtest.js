@@ -22,15 +22,19 @@
 // What this script measures:
 //   - It sends non-streaming POST /llm/v1/chat/completions requests with a
 //     trivial prompt to minimise model-side latency variance.
-//   - After each successful response it reads the gateway's X-Elapsed-Ms
-//     response header (the gateway's own wall-clock time for the hop, set by the
-//     gateway middleware in internal/middleware/timing.go).
+//   - After each HTTP 200 response it reads the gateway's X-Elapsed-Ms response
+//     header (the gateway's own wall-clock time for the hop, set by the gateway
+//     middleware in internal/middleware/timing.go). Non-200 responses are NOT
+//     recorded: an error path's latency is not a measurement of the hop, and a
+//     run full of fast 4xx/5xx responses must not look like a fast gateway.
 //   - Each X-Elapsed-Ms value is recorded into the custom Trend metric
 //     "gateway_overhead_ms". The overhead-check gate reads exactly this metric's
 //     p(99) from the exported summary.
 //   - If X-Elapsed-Ms is absent (e.g. the reverse proxy strips it), the script
-//     falls back to recording the full http_req_duration so the gate can still
-//     use its fallback metric.
+//     falls back to recording the full round-trip AND increments the
+//     "gateway_overhead_fallback" counter. The gate fails on a non-zero counter
+//     unless --allow-roundtrip-fallback is passed, so this degradation can never
+//     pass silently.
 //
 // Load profile: 60 seconds total — 10 s ramp-up to 50 VUs, 40 s steady state,
 // 10 s ramp-down. Typical staging run produces ~3 000 iterations.
@@ -40,13 +44,19 @@
 
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Trend } from 'k6/metrics';
+import { Trend, Counter } from 'k6/metrics';
 import exec from 'k6/execution';
 
 // gatewayOverheadMs records the gateway-internal hop latency (milliseconds)
-// from the X-Elapsed-Ms response header. This is the metric the overhead-check
-// gate primarily reads.
+// from the X-Elapsed-Ms response header, for successful responses only. This is
+// the metric the overhead-check gate primarily reads.
 const gatewayOverheadMs = new Trend('gateway_overhead_ms', true);
+
+// gatewayOverheadFallback counts the samples that came from the round-trip
+// duration instead of the gateway's own header. Any non-zero value means the
+// trend above is NOT hop-only; the gate treats it as a failure unless the
+// operator opted in with --allow-roundtrip-fallback.
+const gatewayOverheadFallback = new Counter('gateway_overhead_fallback');
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const GATEWAY_URL = __ENV.GATEWAY_URL || 'http://localhost:8083';
@@ -142,22 +152,25 @@ export default function () {
     },
   });
 
-  // Record gateway-hop overhead from the X-Elapsed-Ms header.
+  // Record gateway-hop overhead from the X-Elapsed-Ms header — for HTTP 200
+  // only. Timing an error response measures how fast the gateway said "no",
+  // which would let a wholly failing run report an excellent p99.
   // The gateway sets this header to its internal elapsed time in milliseconds
   // (float, e.g. "12.34"). If absent (stripped by a proxy), fall back to the
   // full round-trip duration so the test still records a conservative bound.
-  const elapsedHeader = res.headers['X-Elapsed-Ms'] || res.headers['x-elapsed-ms'];
-  if (elapsedHeader !== undefined) {
-    const ms = parseFloat(elapsedHeader);
+  if (res.status === 200) {
+    const elapsedHeader = res.headers['X-Elapsed-Ms'] || res.headers['x-elapsed-ms'];
+    const ms = elapsedHeader === undefined ? NaN : parseFloat(elapsedHeader);
     if (!isNaN(ms)) {
       gatewayOverheadMs.add(ms);
+    } else {
+      // Fallback: use the k6-measured round-trip duration as a conservative
+      // proxy, and say so in the summary. This is larger than the true hop
+      // overhead (it includes network RTT to the test runner), so the counter
+      // makes the gate fail loudly instead of quietly grading the network.
+      gatewayOverheadMs.add(res.timings.duration);
+      gatewayOverheadFallback.add(1);
     }
-  } else {
-    // Fallback: use the k6-measured round-trip duration as a conservative proxy.
-    // This will be larger than the true hop overhead (it includes network RTT to
-    // the test runner), so operators should investigate X-Elapsed-Ms propagation
-    // if this path fires consistently.
-    gatewayOverheadMs.add(res.timings.duration);
   }
 
   // Pace each VU below the §2.6 loop-breaker threshold for its own

@@ -1,0 +1,73 @@
+# env-drift allowlist for the elitea-main chart, consumed by
+# services/elitea-llm-gateway/scripts/env-drift-check.sh (which checks both
+# deployed Go services). One name per line; blank lines and # comments ignored.
+# An allowlisted var is never a FAIL and is not reported as drift.
+#
+# The rule going forward: any NEW env var elitea-main starts reading must either
+# appear in this chart's values.yaml `env` map (the whole map is rendered into
+# the ConfigMap) or be added here WITH a justification. Everything below is the
+# PRE-EXISTING baseline that predates this gate — it is not an endorsement, and
+# entries should migrate to values.yaml as each is wired up.
+
+# --- Secrets: must never be plaintext in a ConfigMap; supplied out-of-band via
+# --- a Kubernetes Secret / platform injection.
+APPLICATION_SECRET_KEY
+SECRETS_MASTER_KEY
+GATEWAY_IDENTITY_SECRET
+OIDC_CLIENT_ID
+OIDC_CLIENT_SECRET
+AZURE_STORAGE_KEY
+S3_ACCESS_KEY
+S3_SECRET_KEY
+GOOGLE_APPLICATION_CREDENTIALS
+
+# --- Identity provider endpoints, injected with the OIDC credentials above.
+OIDC_ISSUER_URL
+OIDC_REDIRECT_URI
+
+# --- Object-storage backend selection + per-backend settings. Which backend is
+# --- active is an environment decision made alongside the credentials above.
+STORAGE_BACKEND
+S3_ENDPOINT_URL
+S3_REGION
+S3_FORCE_PATH_STYLE
+GCS_BUCKET
+AZURE_STORAGE_ACCOUNT
+AZURE_STORAGE_CONTAINER
+
+# --- Filesystem paths baked into the container image (Containerfile), not
+# --- per-deployment configuration.
+ADMIN_UI_STATIC_DIR
+ARTIFACTS_DATA_DIR
+ICONS_DATA_DIR
+ICON_DATA_DIR
+TOOL_ICON_DATA_DIR
+
+# --- Admin UI serving knobs, currently image/ingress-level concerns.
+ADMIN_UI_API_URL
+ADMIN_UI_BASE_PATH
+
+# --- Gateway client wiring (mTLS material + NATS/HTTP endpoints). Mirrors the
+# --- gateway chart's own mtls block; injected from the same cert Secret.
+GATEWAY_CA_FILE
+GATEWAY_CLIENT_CERT_FILE
+GATEWAY_CLIENT_KEY_FILE
+GATEWAY_SERVER_NAME
+GATEWAY_HTTP_ADDR
+GATEWAY_NATS_URL
+
+# --- Cutover / parity rollout controls, driven by the migration tooling rather
+# --- than steady-state chart values.
+ELITEA_URL
+ELITEA_SHADOW_URL
+LEGACY_LLM_URL
+LLM_BUDGET_PROJECTS_FILE
+LLM_PARITY_PROJECTS_FILE
+
+# --- Tenancy + operational flags set per environment by the platform.
+AI_PROJECT_ID
+PUBLIC_PROJECT_ID
+SHARED_PROJECT_ID
+TRUSTED_PROXY_CIDRS
+AUTH_DEV_MODE
+SKIP_MIGRATIONS

@@ -841,14 +841,24 @@ func TestPublishSoftAlertEvent_FlushError(t *testing.T) {
 }
 
 // TestPublishSoftAlertEvent_ExpiredContext asserts an already-expired context
-// short-circuits instead of flushing with a non-positive timeout.
+// short-circuits BEFORE the publish, not just before the flush. Core NATS
+// Publish is async and buffered, so publishing first would enqueue the event for
+// the next flush while the method still returned DeadlineExceeded — the caller
+// would be told "not published" about an event that was in fact delivered.
 func TestPublishSoftAlertEvent_ExpiredContext(t *testing.T) {
 	fc := &fakeConn{}
 	c := &Client{nc: fc}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if err := c.PublishSoftAlertEvent(ctx, "42", []byte(`{}`)); err == nil {
+	err := c.PublishSoftAlertEvent(ctx, "42", []byte(`{}`))
+	if err == nil {
 		t.Fatal("expected error for expired context, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if len(fc.published) != 0 {
+		t.Errorf("published %d messages, want 0 (a 'did not publish' error must be truthful)", len(fc.published))
 	}
 	if fc.flushes != 0 {
 		t.Errorf("flushes = %d, want 0 (expired ctx must not flush)", fc.flushes)

@@ -35,6 +35,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -183,8 +184,15 @@ func probeCircularGuard(client *http.Client, gatewayURL string, secret []byte, p
 // is unit-testable without a broker.
 type alertWaiter interface {
 	// WaitForAlert blocks until a budget.soft_alert event for projectID
-	// arrives or timeout elapses. Returns the observed latency from tipAt.
-	WaitForAlert(projectID string, tipAt time.Time, timeout time.Duration) (fired bool, latencyS float64, err error)
+	// arrives or timeout elapses. It returns the instant the alert was
+	// observed; the caller derives the latency from its own tip instant.
+	//
+	// ready is closed exactly once, as soon as the subscription is live (or
+	// before returning if it could never be established). The caller MUST NOT
+	// send the tipping request until ready is closed: an alert published while
+	// the subscription is still being set up is lost, which would fail the gate
+	// for a healthy gateway.
+	WaitForAlert(projectID string, timeout time.Duration, ready chan<- struct{}) (fired bool, at time.Time, err error)
 }
 
 // natsAlertWaiter subscribes to the project's gateway.events subject.
@@ -198,26 +206,43 @@ func eventSubject(projectID string) string {
 	return "gateway.events.project." + projectID + ".events"
 }
 
-func (w *natsAlertWaiter) WaitForAlert(projectID string, tipAt time.Time, timeout time.Duration) (bool, float64, error) {
+func (w *natsAlertWaiter) WaitForAlert(projectID string, timeout time.Duration, ready chan<- struct{}) (bool, time.Time, error) {
+	// The caller blocks on ready before tipping, so every return path must
+	// signal it — including the setup failures below, which would otherwise
+	// hang the gate.
+	var readyOnce sync.Once
+	signalReady := func() { readyOnce.Do(func() { close(ready) }) }
+	defer signalReady()
+
 	ch := make(chan *nats.Msg, 16)
 	sub, err := w.conn.ChanSubscribe(eventSubject(projectID), ch)
 	if err != nil {
-		return false, 0, fmt.Errorf("budget-check: NATS subscribe: %w", err)
+		return false, time.Time{}, fmt.Errorf("budget-check: NATS subscribe: %w", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
+	// ChanSubscribe only queues the SUB protocol message locally; Flush
+	// round-trips to the server, so once it returns the interest is registered
+	// broker-side and no alert published from here on can be missed.
+	if err := w.conn.Flush(); err != nil {
+		return false, time.Time{}, fmt.Errorf("budget-check: NATS flush after subscribe: %w", err)
+	}
+	signalReady()
+
+	// The deadline starts here, not at call time: the caller tips immediately
+	// after readiness, so a slow subscribe must not eat the alert budget.
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		select {
 		case <-deadline.C:
-			return false, 0, nil
+			return false, time.Time{}, nil
 		case msg := <-ch:
 			var evt struct {
 				Type string `json:"type"`
 			}
 			if json.Unmarshal(msg.Data, &evt) == nil && evt.Type == "budget.soft_alert" {
-				return true, time.Since(tipAt).Seconds(), nil
+				return true, time.Now(), nil
 			}
 		}
 	}
@@ -263,22 +288,26 @@ func runLiveBudgetCheck(cfg liveBudgetCheckConfig) (budgetCheckResult, error) {
 	r.UnderBudgetStatus = ub.Status
 
 	// 3. Soft alert: subscribe first, then tip the ~79% project over 80%.
+	// Readiness is explicit — the waiter closes readyCh once its subscription
+	// is registered broker-side. Tipping before that could publish the alert
+	// into a subject nobody is listening on yet and fail a healthy gateway.
 	cfg.logf("budget-check: tipping project %s over the 80%% threshold ...", cfg.fixture.SoftAlert.ProjectID)
-	tipAt := time.Now()
 	type waitOut struct {
-		fired    bool
-		latencyS float64
-		err      error
+		fired bool
+		at    time.Time
+		err   error
 	}
 	waitCh := make(chan waitOut, 1)
+	readyCh := make(chan struct{})
 	go func() {
-		fired, lat, werr := cfg.waiter.WaitForAlert(
-			cfg.fixture.SoftAlert.ProjectID, tipAt,
-			time.Duration(cfg.alertLatencyS*float64(time.Second)))
-		waitCh <- waitOut{fired, lat, werr}
+		fired, at, werr := cfg.waiter.WaitForAlert(
+			cfg.fixture.SoftAlert.ProjectID,
+			time.Duration(cfg.alertLatencyS*float64(time.Second)),
+			readyCh)
+		waitCh <- waitOut{fired, at, werr}
 	}()
-	// Give the subscription a beat to establish before tipping.
-	time.Sleep(100 * time.Millisecond)
+	<-readyCh
+	tipAt := time.Now()
 	if _, err := sendChatProbe(cfg.client, cfg.gatewayURL, cfg.secret, cfg.fixture.SoftAlert); err != nil {
 		return r, err
 	}
@@ -287,7 +316,9 @@ func runLiveBudgetCheck(cfg liveBudgetCheckConfig) (budgetCheckResult, error) {
 		return r, wo.err
 	}
 	r.SoftAlertFired = wo.fired
-	r.SoftAlertLatencyS = wo.latencyS
+	if wo.fired {
+		r.SoftAlertLatencyS = wo.at.Sub(tipAt).Seconds()
+	}
 
 	// 4. Circular-routing guard (spec §2.6): burst the over-budget tuple.
 	cfg.logf("budget-check: bursting (project %s, %s) to assert the loop breaker ...",

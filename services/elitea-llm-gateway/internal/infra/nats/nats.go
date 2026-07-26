@@ -550,9 +550,10 @@ func eventSubjectForProject(projectID string) string {
 // deadline (capped at OpTimeout) so a wedged connection cannot stall the
 // billing goroutine. Satisfies llmproxy.AlertEventPublisher.
 func (c *Client) PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error {
-	if err := c.nc.Publish(eventSubjectForProject(projectID), event); err != nil {
-		return mapErr(err)
-	}
+	// Deadline is evaluated BEFORE the publish: core NATS Publish is async and
+	// buffered, so publishing first and then bailing out on an expired ctx would
+	// still enqueue the event for the next flush while telling the caller the
+	// publish failed. Check first so the returned error is truthful.
 	timeout := OpTimeout
 	if dl, ok := ctx.Deadline(); ok {
 		if until := time.Until(dl); until < timeout {
@@ -561,6 +562,9 @@ func (c *Client) PublishSoftAlertEvent(ctx context.Context, projectID string, ev
 	}
 	if timeout <= 0 {
 		return context.DeadlineExceeded
+	}
+	if err := c.nc.Publish(eventSubjectForProject(projectID), event); err != nil {
+		return mapErr(err)
 	}
 	if err := c.nc.FlushTimeout(timeout); err != nil {
 		return mapErr(err)

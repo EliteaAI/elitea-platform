@@ -129,6 +129,82 @@ func TestLoopBreaker_MapBounded(t *testing.T) {
 	}
 }
 
+// TestLoopBreaker_OpenUntilBounded asserts the open-circuit table is bounded and
+// that elapsed cooldowns are reclaimed. openUntil is the map that survives a
+// trip (hits is dropped), so an attacker cycling model names grows it — and the
+// fall-through in allow only reclaims an entry when that exact tuple is
+// requested again after its cooldown, which a cycling attacker never does.
+func TestLoopBreaker_OpenUntilBounded(t *testing.T) {
+	b, clk := newTestBreaker()
+
+	// trip drives one tuple past the threshold, leaving it open, and reports
+	// what the tripping request itself returned.
+	trip := func(model string) bool {
+		var ok bool
+		for i := 0; i < loopBreakerThreshold; i++ {
+			ok, _ = b.allow("p", model)
+		}
+		return ok
+	}
+
+	// Cycle enough distinct models to reach the cap. hits stays near-empty
+	// (every trip deletes its entry), so only the openUntil cap can bound this.
+	for i := 0; i < loopBreakerMaxTuples; i++ {
+		trip("model-" + itoa(i))
+	}
+	if len(b.openUntil) > loopBreakerMaxTuples {
+		t.Fatalf("openUntil = %d entries, must stay <= %d", len(b.openUntil), loopBreakerMaxTuples)
+	}
+
+	// Every circuit is live: a further new tuple is still rejected, and the
+	// table does not grow past the cap.
+	if trip("overflow-model") {
+		t.Error("threshold burst on a new tuple with a full table: allow = true, want false")
+	}
+	if len(b.openUntil) > loopBreakerMaxTuples {
+		t.Fatalf("openUntil = %d entries after overflow, must stay <= %d", len(b.openUntil), loopBreakerMaxTuples)
+	}
+
+	// Once the cooldowns elapse, the next trip prunes them all: the expired
+	// entries are reclaimed rather than pinned forever.
+	clk.advance(loopBreakerOpenFor + time.Second)
+	if trip("post-cooldown-model") {
+		t.Error("threshold burst after the table was reclaimed: allow = true, want false")
+	}
+	if len(b.openUntil) != 1 {
+		t.Fatalf("openUntil = %d entries after cooldown + trip, want 1 (expired entries must be reclaimed)",
+			len(b.openUntil))
+	}
+	if ok, _ := b.allow("p", "post-cooldown-model"); ok {
+		t.Error("the freshly tripped tuple must still be open after the prune")
+	}
+}
+
+// TestLoopBreaker_PruneReclaimsExpiredOpenCircuits asserts pruneLocked itself
+// drops elapsed cooldowns while keeping live ones (the unit behind the bound).
+func TestLoopBreaker_PruneReclaimsExpiredOpenCircuits(t *testing.T) {
+	b, clk := newTestBreaker()
+
+	for i := 0; i < loopBreakerThreshold; i++ {
+		b.allow("42", "openai/gpt-4o")
+	}
+	clk.advance(loopBreakerOpenFor + time.Second)
+	for i := 0; i < loopBreakerThreshold; i++ {
+		b.allow("42", "anthropic/claude-sonnet-5") // still live after the prune
+	}
+
+	b.mu.Lock()
+	b.pruneLocked(b.now().UnixNano())
+	b.mu.Unlock()
+
+	if _, open := b.openUntil[loopKey("42", "openai/gpt-4o")]; open {
+		t.Error("expired open circuit survived pruneLocked")
+	}
+	if _, open := b.openUntil[loopKey("42", "anthropic/claude-sonnet-5")]; !open {
+		t.Error("live open circuit was pruned — the 30 s cooldown must be honoured")
+	}
+}
+
 // itoa is a tiny helper to avoid strconv in the hot loop above.
 func itoa(n int) string {
 	if n == 0 {

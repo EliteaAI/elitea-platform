@@ -146,10 +146,13 @@ func canonicalLower(s string) string { return strings.ToLower(s) }
 // hasPrefix reports whether s starts with prefix.
 func hasPrefix(s, prefix string) bool { return strings.HasPrefix(s, prefix) }
 
-// setElapsedHeader stamps the gateway's own processing overhead (excluding the
-// provider round-trip) as X-Elapsed-Ms with sub-ms precision. Consumed by the
-// BFF.9d k6 overhead gate (design §10.2). Must be called before the first
-// body/status write.
+// setElapsedHeader stamps the gateway's pre-dispatch overhead as X-Elapsed-Ms
+// with sub-ms precision: the time spent in the handler before the router call
+// (decode, identity verification, loop breaker, budget check). Work performed
+// inside the router — credential resolution and core routing — is NOT included;
+// it is inseparable from the provider round-trip when measured from here. See
+// the Chat handler's t0 comment. Consumed by the BFF.9d k6 overhead gate
+// (design §10.2). Must be called before the first body/status write.
 func setElapsedHeader(w http.ResponseWriter, overhead time.Duration) {
 	if overhead < 0 {
 		overhead = 0

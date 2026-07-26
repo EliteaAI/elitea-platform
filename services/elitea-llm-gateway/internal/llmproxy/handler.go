@@ -101,6 +101,21 @@ func WithLoopBreaker() HandlerOption {
 	return func(h *Handler) { h.loopGuard = newLoopBreaker() }
 }
 
+// WithLoopBreakerClock arms the breaker exactly like WithLoopBreaker but reads
+// time from now instead of time.Now. It exists so tests outside this package
+// (internal/preflight) can drive the 1 s sliding window from a frozen clock
+// instead of racing the wall clock — a burst that must land inside one second
+// is otherwise flaky on a loaded CI box. Production wiring uses WithLoopBreaker;
+// a nil now falls back to time.Now.
+func WithLoopBreakerClock(now func() time.Time) HandlerOption {
+	return func(h *Handler) {
+		h.loopGuard = newLoopBreaker()
+		if now != nil {
+			h.loopGuard.now = now
+		}
+	}
+}
+
 // WithAlertEventPublisher wires the gateway.events.* publisher used to emit
 // the budget.soft_alert event when the 80% threshold alert fires (spec §8.3:
 // "a soft-alert is recorded on gateway.events.*"). nil is a no-op (the alert
@@ -192,11 +207,16 @@ func finish(h http.Header) {
 // Chat handles POST /llm/v1/chat/completions. It streams when the body sets
 // "stream": true, else returns a unary chat completion.
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
-	// t0 anchors the hop-overhead measurement (design §10.2 / gate BFF.9d):
-	// X-Elapsed-Ms reports the gateway's own processing time — identity
-	// verification, loop breaker, NATS budget check, credential resolution and
-	// core routing — EXCLUDING the provider round-trip, which is subtracted
-	// below. The k6 overhead script consumes this header.
+	// t0 anchors the hop-overhead measurement (design §10.2 / gate BFF.9d).
+	// X-Elapsed-Ms reports the gateway's PRE-DISPATCH overhead — body decode,
+	// identity verification, loop breaker and the NATS budget check — i.e.
+	// everything between accepting the request and handing it to the router.
+	// It deliberately does NOT include what happens inside the router call:
+	// per-request credential resolution (Account/vault lookup) and core routing
+	// run there, inseparably from the provider round-trip, so no measurement
+	// taken outside the router can attribute them. The k6 overhead script
+	// consumes this header and must be read as "pre-dispatch overhead", not
+	// "total gateway overhead".
 	t0 := time.Now()
 	var req openai.OpenAIChatRequest
 	if !decodeJSON(w, r, &req) {
@@ -223,9 +243,10 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		h.streamOpenAI(w, ctx, provider, model, ch, bErr)
 		return
 	}
-	provStart := time.Now()
+	// Stamp the header BEFORE dispatch: the value is the pre-dispatch overhead
+	// (see t0 above), and headers must be set before the first body write anyway.
+	setElapsedHeader(w, time.Since(t0))
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
-	setElapsedHeader(w, time.Since(t0)-time.Since(provStart))
 	// Write the response FIRST (client-visible), then bill asynchronously.
 	// updateUsage spawns a bounded goroutine so the HTTP response latency does
 	// not include the NATS billing round-trip (FIX #18).

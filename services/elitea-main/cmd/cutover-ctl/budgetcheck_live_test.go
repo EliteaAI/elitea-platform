@@ -120,15 +120,25 @@ func fakeGateway(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	return srv, &overCalls
 }
 
-// fakeWaiter satisfies alertWaiter with canned observations.
+// fakeWaiter satisfies alertWaiter with canned observations. setupDelay
+// simulates a slow subscription: readiness is signalled only after it elapses,
+// and the caller must not tip before then.
 type fakeWaiter struct {
-	fired    bool
-	latencyS float64
-	err      error
+	fired      bool
+	latency    time.Duration
+	err        error
+	setupDelay time.Duration
 }
 
-func (f *fakeWaiter) WaitForAlert(string, time.Time, time.Duration) (bool, float64, error) {
-	return f.fired, f.latencyS, f.err
+func (f *fakeWaiter) WaitForAlert(_ string, _ time.Duration, ready chan<- struct{}) (bool, time.Time, error) {
+	if f.setupDelay > 0 {
+		time.Sleep(f.setupDelay)
+	}
+	close(ready)
+	if !f.fired {
+		return false, time.Time{}, f.err
+	}
+	return true, time.Now().Add(f.latency), f.err
 }
 
 func liveFixture() budgetFixture {
@@ -149,7 +159,7 @@ func TestBudgetCheckLive_AllGatesPass(t *testing.T) {
 		fixture:       liveFixture(),
 		alertLatencyS: 10,
 		client:        srv.Client(),
-		waiter:        &fakeWaiter{fired: true, latencyS: 1.5},
+		waiter:        &fakeWaiter{fired: true, latency: 1500 * time.Millisecond},
 		logf:          t.Logf,
 	})
 	if err != nil {
@@ -189,7 +199,7 @@ func TestBudgetCheckLive_NoBreaker_Fails(t *testing.T) {
 		fixture:       liveFixture(),
 		alertLatencyS: 10,
 		client:        srv.Client(),
-		waiter:        &fakeWaiter{fired: true, latencyS: 1},
+		waiter:        &fakeWaiter{fired: true, latency: time.Second},
 		logf:          t.Logf,
 	})
 	if err != nil {
@@ -222,6 +232,57 @@ func TestBudgetCheckLive_NoAlert_Fails(t *testing.T) {
 	}
 	if out := checkBudgetResult(result, 10); out.SoftAlertPass {
 		t.Fatal("SoftAlertPass = true with no alert observed")
+	}
+}
+
+// orderedWaiter records whether it had signalled subscription readiness before
+// the caller sent the tipping request.
+type orderedWaiter struct {
+	setupDelay time.Duration
+	ready      atomic.Bool
+}
+
+func (w *orderedWaiter) WaitForAlert(_ string, _ time.Duration, ready chan<- struct{}) (bool, time.Time, error) {
+	time.Sleep(w.setupDelay)
+	w.ready.Store(true)
+	close(ready)
+	return true, time.Now(), nil
+}
+
+// TestBudgetCheckLive_TipWaitsForSubscription asserts the soft-alert probe tips
+// the project only AFTER the waiter reports its subscription is live. A fixed
+// sleep here would race a slow (e.g. reconnecting) NATS and drop the alert,
+// failing the gate for a healthy gateway.
+func TestBudgetCheckLive_TipWaitsForSubscription(t *testing.T) {
+	waiter := &orderedWaiter{setupDelay: 150 * time.Millisecond}
+	var tippedAfterReady atomic.Bool
+	var tips atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(bcHeaderProject) == "9102" {
+			tips.Add(1)
+			tippedAfterReady.Store(waiter.ready.Load())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := runLiveBudgetCheck(liveBudgetCheckConfig{
+		gatewayURL:    srv.URL,
+		secret:        nil,
+		fixture:       liveFixture(),
+		alertLatencyS: 10,
+		client:        srv.Client(),
+		waiter:        waiter,
+		logf:          t.Logf,
+	}); err != nil {
+		t.Fatalf("runLiveBudgetCheck: %v", err)
+	}
+	if tips.Load() != 1 {
+		t.Fatalf("soft-alert tipping requests = %d, want 1", tips.Load())
+	}
+	if !tippedAfterReady.Load() {
+		t.Fatal("tipping request was sent before the subscription reported ready")
 	}
 }
 

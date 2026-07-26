@@ -34,13 +34,29 @@ import (
 // testdata/p99_overhead_benchmark.json (design §10.2) unless --benchmark-out
 // is set to "".
 //
+// Run health is asserted BEFORE the p99 verdict. k6 runs with --no-thresholds
+// (see k6Args), so a run where every request errored still exports a summary —
+// and a latency percentile computed over errors is meaningless, typically small,
+// and would "pass" the gate. The gate therefore requires the run to have made
+// requests and to have kept a >= 99% success rate (http_req_failed) before it
+// looks at any latency number.
+//
 // Metric selection: we use a custom k6 Trend metric "gateway_overhead_ms" that
 // the k6 script populates via a server-timing header (X-Elapsed-Ms or
-// Server-Timing: gw;dur=…) emitted by the gateway. If the custom metric is absent
-// the gate falls back to "http_req_duration" p99 as a conservative proxy (the
-// round-trip always dominates hop-only overhead, so a p99 under 50 ms is still a
-// safe upper bound on hop cost). The selected metric and its p99 are printed so
-// operators can confirm which metric was used.
+// Server-Timing: gw;dur=…) emitted by the gateway, and only for HTTP 200
+// responses. Two degraded paths exist, and both are LOUD by default:
+//
+//   - the custom metric is absent entirely → the gate would have to fall back to
+//     "http_req_duration" p99, which measures the whole round-trip (network RTT
+//     to the load generator + model time), not the hop;
+//   - the script recorded round-trip durations into gateway_overhead_ms because
+//     the gateway's X-Elapsed-Ms header never arrived (it reports this via the
+//     "gateway_overhead_fallback" counter).
+//
+// Either case fails the gate unless --allow-roundtrip-fallback is passed, which
+// accepts the round-trip as a deliberately conservative upper bound on hop cost.
+// The selected metric and its p99 are printed so operators can confirm which
+// metric was used.
 //
 // The k6 summary-export JSON shape (--summary-export):
 //
@@ -108,14 +124,117 @@ var overheadMetricPreference = []string{
 // k6P99 is the key for p99 in the k6 "values" map.
 const k6P99Key = "p(99)"
 
+// Metric/stat keys used by the run-health assertion. http_req_failed is a k6
+// Rate metric whose "rate" is the FAILED fraction; iterations and http_reqs are
+// counters carrying "count".
+const (
+	k6MetricFailed     = "http_req_failed"
+	k6MetricRequests   = "http_reqs"
+	k6MetricIterations = "iterations"
+	// k6MetricFallback is the counter the load script increments each time a
+	// 200 response carried no X-Elapsed-Ms header and the round-trip duration
+	// was recorded into gateway_overhead_ms instead.
+	k6MetricFallback = "gateway_overhead_fallback"
+
+	k6RateKey  = "rate"
+	k6CountKey = "count"
+)
+
+// k6MinSuccessRate is the fraction of requests that must have succeeded for the
+// run to be considered a valid measurement (spec §2.4: the load script's own
+// http_req_failed threshold is rate<0.01).
+const k6MinSuccessRate = 0.99
+
+// k6RunHealth is the "was this run real?" view of a k6 summary, extracted
+// independently of the latency metric so a broken run can be rejected before
+// any percentile is trusted.
+type k6RunHealth struct {
+	Requests        float64 // http_reqs count
+	Iterations      float64 // iterations count
+	FailedRate      float64 // http_req_failed rate (fraction of FAILED requests)
+	FailedRateKnown bool    // false when the summary has no http_req_failed metric
+	FallbackSamples float64 // gateway_overhead_fallback count (0 = every sample came from a real header)
+}
+
+// SuccessRate is the fraction of requests that did not fail. Unknown failure
+// rates are reported as 0 success so callers never quote a flattering number
+// they did not measure.
+func (h k6RunHealth) SuccessRate() float64 {
+	if !h.FailedRateKnown {
+		return 0
+	}
+	return 1 - h.FailedRate
+}
+
+// k6RunHealthFrom extracts the health view from a decoded summary. Absent
+// metrics stay at their zero value; checkK6RunHealth decides what that means.
+func k6RunHealthFrom(summary k6SummaryExport) k6RunHealth {
+	var h k6RunHealth
+	if m, ok := summary.Metrics[k6MetricRequests]; ok {
+		h.Requests = m.Values[k6CountKey]
+	}
+	if m, ok := summary.Metrics[k6MetricIterations]; ok {
+		h.Iterations = m.Values[k6CountKey]
+	}
+	if m, ok := summary.Metrics[k6MetricFailed]; ok {
+		h.FailedRate, h.FailedRateKnown = m.Values[k6RateKey]
+	}
+	if m, ok := summary.Metrics[k6MetricFallback]; ok {
+		h.FallbackSamples = m.Values[k6CountKey]
+	}
+	return h
+}
+
+// checkK6RunHealth rejects summaries that cannot support a latency verdict: a
+// run that issued no requests, or one whose requests overwhelmingly failed. k6
+// is invoked with --no-thresholds, so without this the gate would happily sign
+// off on a 100%-error run whose p99 is small precisely BECAUSE nothing worked.
+func checkK6RunHealth(h k6RunHealth) error {
+	if h.Requests <= 0 && h.Iterations <= 0 {
+		return fmt.Errorf("overhead-check: k6 run made no requests (%s=%.0f, %s=%.0f) — "+
+			"nothing was measured, so the p99 is meaningless",
+			k6MetricRequests, h.Requests, k6MetricIterations, h.Iterations)
+	}
+	if h.Requests <= 0 {
+		return fmt.Errorf("overhead-check: k6 summary reports %s=0 — the load never reached the gateway", k6MetricRequests)
+	}
+	if h.Iterations <= 0 {
+		return fmt.Errorf("overhead-check: k6 summary reports %s=0 — no VU iteration completed", k6MetricIterations)
+	}
+	if !h.FailedRateKnown {
+		return fmt.Errorf("overhead-check: k6 summary has no %q metric — cannot prove the run succeeded; "+
+			"export the summary from a real k6 run (--summary-export)", k6MetricFailed)
+	}
+	if h.SuccessRate() < k6MinSuccessRate {
+		return fmt.Errorf("overhead-check: k6 run success rate %.2f%% is below the required %.0f%% "+
+			"(%s rate=%.4f over %.0f requests) — a latency percentile over failed requests is not a gateway-overhead measurement",
+			h.SuccessRate()*100, k6MinSuccessRate*100, k6MetricFailed, h.FailedRate, h.Requests)
+	}
+	return nil
+}
+
 // overheadCheckResult is the pure result of parsing a k6 summary and evaluating
 // the threshold. It carries enough context for tests to assert correctness without
 // touching os.Exit.
 type overheadCheckResult struct {
-	MetricUsed  string  // which metric was found (gateway_overhead_ms or http_req_duration)
-	P99MS       float64 // parsed p99 value in milliseconds
-	ThresholdMS float64 // the configured threshold
-	Pass        bool    // true iff P99MS < ThresholdMS
+	MetricUsed  string      // which metric was found (gateway_overhead_ms or http_req_duration)
+	P99MS       float64     // parsed p99 value in milliseconds
+	ThresholdMS float64     // the configured threshold
+	Pass        bool        // true iff P99MS < ThresholdMS
+	Health      k6RunHealth // run-health view of the same summary (populated by evaluateK6Summary)
+}
+
+// decodeK6Summary unmarshals a k6 --summary-export file and rejects anything
+// that is not one.
+func decodeK6Summary(data []byte) (k6SummaryExport, error) {
+	var summary k6SummaryExport
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return summary, fmt.Errorf("overhead-check: malformed k6 summary JSON: %w", err)
+	}
+	if summary.Metrics == nil {
+		return summary, fmt.Errorf("overhead-check: k6 summary has no \"metrics\" key (is this a --summary-export file?)")
+	}
+	return summary, nil
 }
 
 // parseK6SummaryForOverhead parses the k6 summary JSON bytes and extracts the
@@ -123,16 +242,23 @@ type overheadCheckResult struct {
 // and an error if the summary is malformed, missing, or contains no recognisable
 // metric.
 //
+// It answers "what does this summary say the latency was?" only. The gate must
+// call evaluateK6Summary, which asserts run health and fallback strictness
+// first; this function is the latency half of that, kept separate so both halves
+// are unit-testable in isolation.
+//
 // This function is pure (no os.Exit, no I/O) so tests can invoke it directly.
 func parseK6SummaryForOverhead(data []byte, thresholdMS float64) (overheadCheckResult, error) {
-	var summary k6SummaryExport
-	if err := json.Unmarshal(data, &summary); err != nil {
-		return overheadCheckResult{}, fmt.Errorf("overhead-check: malformed k6 summary JSON: %w", err)
+	summary, err := decodeK6Summary(data)
+	if err != nil {
+		return overheadCheckResult{}, err
 	}
-	if summary.Metrics == nil {
-		return overheadCheckResult{}, fmt.Errorf("overhead-check: k6 summary has no \"metrics\" key (is this a --summary-export file?)")
-	}
+	return selectOverheadMetric(summary, thresholdMS)
+}
 
+// selectOverheadMetric picks the highest-priority metric present in the decoded
+// summary and evaluates it against the threshold.
+func selectOverheadMetric(summary k6SummaryExport, thresholdMS float64) (overheadCheckResult, error) {
 	for _, name := range overheadMetricPreference {
 		m, ok := summary.Metrics[name]
 		if !ok {
@@ -156,6 +282,50 @@ func parseK6SummaryForOverhead(data []byte, thresholdMS float64) (overheadCheckR
 			"run the k6 script with --summary-export and include gateway_overhead_ms or http_req_duration",
 		fmt.Sprintf("%v", overheadMetricPreference),
 	)
+}
+
+// evaluateK6Summary is the gate's single entrypoint over a k6 summary. Order
+// matters: run health first (a failed run cannot produce a meaningful
+// percentile), then the latency metric, then the fallback strictness check.
+//
+// allowRoundTripFallback accepts a round-trip measurement in place of the
+// gateway-reported hop time — either because gateway_overhead_ms is missing
+// entirely, or because the script had to fill it from res.timings.duration for
+// want of an X-Elapsed-Ms header. It is off by default: the round-trip is a much
+// larger number that happens to pass the 50 ms bar on a fast local network, so
+// silently accepting it turns the gate into a network-latency check.
+func evaluateK6Summary(data []byte, thresholdMS float64, allowRoundTripFallback bool) (overheadCheckResult, error) {
+	summary, err := decodeK6Summary(data)
+	if err != nil {
+		return overheadCheckResult{}, err
+	}
+	health := k6RunHealthFrom(summary)
+	if err := checkK6RunHealth(health); err != nil {
+		return overheadCheckResult{}, err
+	}
+
+	res, err := selectOverheadMetric(summary, thresholdMS)
+	if err != nil {
+		return overheadCheckResult{}, err
+	}
+	res.Health = health
+
+	if !allowRoundTripFallback {
+		if res.MetricUsed != overheadMetricPreference[0] {
+			return res, fmt.Errorf(
+				"overhead-check: summary has no %q metric, only %q — that is the full round-trip, not the gateway hop; "+
+					"fix X-Elapsed-Ms propagation, or pass --allow-roundtrip-fallback to accept the round-trip as a conservative bound",
+				overheadMetricPreference[0], res.MetricUsed)
+		}
+		if health.FallbackSamples > 0 {
+			return res, fmt.Errorf(
+				"overhead-check: %.0f sample(s) were recorded from the round-trip because the gateway sent no X-Elapsed-Ms header (%s counter); "+
+					"the reported p99 is not hop-only. Fix the timing middleware / proxy header stripping, "+
+					"or pass --allow-roundtrip-fallback to accept it",
+				health.FallbackSamples, k6MetricFallback)
+		}
+	}
+	return res, nil
 }
 
 // k6RunParams carries everything the k6 invocation needs beyond the script.
@@ -251,9 +421,11 @@ type benchmarkRecord struct {
 	P99MS       float64 `json:"p99_ms"`       // measured p99 in milliseconds
 	ThresholdMS float64 `json:"threshold_ms"` // the bar (spec §10.2: 50 ms)
 	Pass        bool    `json:"pass"`
-	Source      string  `json:"source"`      // "k6-run" or "summary-file"
-	Script      string  `json:"script"`      // k6 script path (k6-run mode)
-	GatewayURL  string  `json:"gateway_url"` // target gateway (k6-run mode)
+	Requests    float64 `json:"requests"`     // http_reqs count behind the number
+	SuccessRate float64 `json:"success_rate"` // 1 - http_req_failed rate
+	Source      string  `json:"source"`       // "k6-run" or "summary-file"
+	Script      string  `json:"script"`       // k6 script path (k6-run mode)
+	GatewayURL  string  `json:"gateway_url"`  // target gateway (k6-run mode)
 	GeneratedAt string  `json:"generated_at"`
 }
 
@@ -308,8 +480,10 @@ func writeBenchmarkFile(path string, rec benchmarkRecord) error {
 //
 // In both modes the parsed result is persisted to --benchmark-out (default
 // testdata/p99_overhead_benchmark.json, design §10.2; empty string disables).
-// Exits 0 iff p99 < --max-p99-overhead-ms; 1 on threshold breach; 2 on
-// operator/config errors (missing file, malformed summary, k6 failure).
+// Exits 0 iff the run was healthy AND p99 < --max-p99-overhead-ms; 1 on
+// threshold breach; 2 on operator/config errors (missing file, malformed
+// summary, k6 failure) and on an unusable run (no requests, >1% failures, or a
+// round-trip fallback without --allow-roundtrip-fallback).
 func cmdOverheadCheck(args []string) {
 	fs := flag.NewFlagSet("overhead-check", flag.ExitOnError)
 	maxP99MS := fs.Float64("max-p99-overhead-ms", 50, "maximum acceptable gateway-hop p99 latency in milliseconds")
@@ -325,6 +499,8 @@ func cmdOverheadCheck(args []string) {
 	tenantID := fs.String("tenant-id", "", "tenant ID for the signed identity headers")
 	benchmarkOut := fs.String("benchmark-out", benchmarkOutAuto,
 		"benchmark record output path; \"auto\" = testdata/p99_overhead_benchmark.json for live k6 runs only, \"\" disables")
+	allowFallback := fs.Bool("allow-roundtrip-fallback", false,
+		"accept round-trip latency when the gateway reports no X-Elapsed-Ms header (conservative upper bound instead of hop-only)")
 	_ = fs.Parse(args)
 
 	var (
@@ -371,7 +547,7 @@ func cmdOverheadCheck(args []string) {
 		}
 	}
 
-	res, err := parseK6SummaryForOverhead(data, *maxP99MS)
+	res, err := evaluateK6Summary(data, *maxP99MS, *allowFallback)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(2)
@@ -384,6 +560,8 @@ func cmdOverheadCheck(args []string) {
 			P99MS:       res.P99MS,
 			ThresholdMS: res.ThresholdMS,
 			Pass:        res.Pass,
+			Requests:    res.Health.Requests,
+			SuccessRate: res.Health.SuccessRate(),
 			Source:      source,
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		}
@@ -398,9 +576,10 @@ func cmdOverheadCheck(args []string) {
 		fmt.Printf("overhead-check: benchmark persisted to %s\n", outPath)
 	}
 
-	// Always echo the parsed result for operator visibility.
-	fmt.Printf("overhead-check: metric=%s  p99=%.3f ms  threshold=%.0f ms\n",
-		res.MetricUsed, res.P99MS, res.ThresholdMS)
+	// Always echo the parsed result for operator visibility, run health first —
+	// the p99 only means something because these requests actually succeeded.
+	fmt.Printf("overhead-check: requests=%.0f  success=%.2f%%  metric=%s  p99=%.3f ms  threshold=%.0f ms\n",
+		res.Health.Requests, res.Health.SuccessRate()*100, res.MetricUsed, res.P99MS, res.ThresholdMS)
 
 	if !res.Pass {
 		fmt.Fprintf(os.Stderr,

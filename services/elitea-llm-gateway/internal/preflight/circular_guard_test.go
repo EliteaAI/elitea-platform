@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
@@ -39,8 +40,15 @@ func TestCircularRoutingGuard_LoopContained(t *testing.T) {
 		OutputTokens: 5,
 	})
 	gov, _, _ := preflight.NewSeededGovernance(t, projectID, hardLimitNano, 0)
+	// Arm guard #2 exactly as main.go does, but off a frozen clock: every
+	// request below is meant to land inside the same 1 s sliding window and the
+	// same 30 s cooldown. Reading the wall clock instead would make that a
+	// property of CI load, so a slow runner could spread the burst past the
+	// window and flake. The breaker logic under test is unchanged — only its
+	// time source is.
+	frozen := time.Unix(1_700_000_000, 0)
 	handler := preflight.MountedHandler(t, router, gov, secret,
-		llmproxy.WithLoopBreaker(), // arm guard #2 exactly as main.go does
+		llmproxy.WithLoopBreakerClock(func() time.Time { return frozen }),
 	)
 
 	send := func() *httptest.ResponseRecorder {

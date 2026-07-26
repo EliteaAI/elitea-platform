@@ -23,7 +23,12 @@ import (
 func TestLoopGuard_Handler_429OnBurst(t *testing.T) {
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
-	h := NewHandler(router, nil, nil, WithLoopBreaker())
+	// Frozen clock: the whole burst lands at one instant, so "inside the 1 s
+	// window" is a property of the test, not of how fast the CI box happens to
+	// run. With the wall clock a loaded runner could spread the 5 requests past
+	// the window and flake.
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	h := NewHandler(router, nil, nil, WithLoopBreakerClock(clk.now))
 
 	// First threshold-1 requests pass.
 	for i := 0; i < loopBreakerThreshold-1; i++ {
@@ -88,7 +93,10 @@ func TestLoopGuard_Handler_DisarmedByDefault(t *testing.T) {
 func TestLoopGuard_Handler_AnonymousNotTracked(t *testing.T) {
 	router := &trackingRouter{}
 	router.chatResp = &schemas.BifrostChatResponse{ID: "ok"}
-	h := NewHandler(router, nil, nil, WithLoopBreaker())
+	// Frozen clock so the burst genuinely sits inside one window: a wall-clock
+	// run could pass merely because the requests spread out (see 429OnBurst).
+	clk := &testClock{t: time.Unix(1_700_000_000, 0)}
+	h := NewHandler(router, nil, nil, WithLoopBreakerClock(clk.now))
 
 	for i := 0; i < loopBreakerThreshold*2; i++ {
 		rec := httptest.NewRecorder()
