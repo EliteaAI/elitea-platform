@@ -271,6 +271,13 @@ func buildKey(provider schemas.ModelProvider, c credential, apiKey string) schem
 		if c.apiBase != "" {
 			key.VLLMKeyConfig = &schemas.VLLMKeyConfig{URL: *schemas.NewSecretVar(c.apiBase)}
 		}
+		// An OpenAI-compatible upstream that also serves the Anthropic
+		// dialect (/v1/messages) is selected per credential. bifrost's vllm
+		// provider reads this to build Anthropic-shaped requests instead of
+		// /v1/responses.
+		if c.useAnthropicEndpoints {
+			key.UseAnthropicEndpoints = schemas.Ptr(true)
+		}
 	}
 	return key
 }
