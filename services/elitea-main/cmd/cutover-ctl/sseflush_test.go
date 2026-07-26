@@ -252,7 +252,7 @@ func TestSSEFlush_ProbeLiveIncremental(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	v, err := probeStream(client, srv.URL, openAIProbe, 3*time.Millisecond)
+	v, err := probeStream(client, srv.URL, openAIProbe, 3*time.Millisecond, nil)
 	if err != nil {
 		t.Fatalf("probeStream: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestSSEFlush_ProbeNon200(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	_, err := probeStream(client, srv.URL, openAIProbe, time.Millisecond)
+	_, err := probeStream(client, srv.URL, openAIProbe, time.Millisecond, nil)
 	if err == nil || !strings.Contains(err.Error(), "status 502") {
 		t.Fatalf("expected status error, got %v", err)
 	}
@@ -283,7 +283,7 @@ func TestSSEFlush_ProbeWrongContentType(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	_, err := probeStream(client, srv.URL, anthropicProbe, time.Millisecond)
+	_, err := probeStream(client, srv.URL, anthropicProbe, time.Millisecond, nil)
 	if err == nil || !strings.Contains(err.Error(), "text/event-stream") {
 		t.Fatalf("expected content-type error, got %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSSEFlush_ProbeWrongContentType(t *testing.T) {
 func TestSSEFlush_ProbeRequestError(t *testing.T) {
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	// Unroutable address → connection error.
-	_, err := probeStream(client, "http://127.0.0.1:0", openAIProbe, time.Millisecond)
+	_, err := probeStream(client, "http://127.0.0.1:0", openAIProbe, time.Millisecond, nil)
 	if err == nil || !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("expected request failure, got %v", err)
 	}

@@ -141,24 +141,32 @@ type dialectProbe struct {
 // issues. Both set stream:true; the request content is intentionally trivial
 // because the check asserts transport behaviour (incremental flush), not model
 // output.
-var (
-	openAIProbe = dialectProbe{
-		name: "openai",
-		path: "/llm/v1/chat/completions",
-		body: `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"count to five"}]}`,
+// buildProbes constructs the two streaming probes with operator-chosen models
+// (defaults preserve the original staging models; local runs point both at
+// whatever the seeded credential's backend serves).
+func buildProbes(openaiModel, anthropicModel string) []dialectProbe {
+	return []dialectProbe{
+		{
+			name: "openai",
+			path: "/llm/v1/chat/completions",
+			body: fmt.Sprintf(`{"model":%q,"stream":true,"messages":[{"role":"user","content":"count to five"}]}`, openaiModel),
+		},
+		{
+			name: "anthropic",
+			path: "/llm/v1/messages",
+			body: fmt.Sprintf(`{"model":%q,"stream":true,"max_tokens":64,"messages":[{"role":"user","content":"count to five"}]}`, anthropicModel),
+		},
 	}
-	anthropicProbe = dialectProbe{
-		name: "anthropic",
-		path: "/llm/v1/messages",
-		body: `{"model":"claude-sonnet-5","stream":true,"max_tokens":64,"messages":[{"role":"user","content":"count to five"}]}`,
-	}
-)
+}
 
 // probeStream POSTs the dialect's streaming request to the gateway and classifies
 // the response body. It returns an error if the request fails, the status is not
 // 200, or the Content-Type is not text/event-stream — all of which mean the
 // stream was not served correctly regardless of timing.
-func probeStream(client *http.Client, gatewayURL string, p dialectProbe, minGap time.Duration) (streamVerdict, error) {
+// sign, when non-nil, stamps auth/identity headers onto the request (the
+// gateway enforces signed X-Elitea-* identity headers whenever
+// GATEWAY_IDENTITY_SECRET is set — which FIX #9 makes mandatory with NATS on).
+func probeStream(client *http.Client, gatewayURL string, p dialectProbe, minGap time.Duration, sign func(*http.Request)) (streamVerdict, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		strings.TrimRight(gatewayURL, "/")+p.path, strings.NewReader(p.body))
 	if err != nil {
@@ -166,6 +174,9 @@ func probeStream(client *http.Client, gatewayURL string, p dialectProbe, minGap 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if sign != nil {
+		sign(req)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -196,15 +207,28 @@ func cmdSSEFlushCheck(args []string) {
 	gatewayURL := fs.String("gateway-url", "http://localhost:8083", "base URL of the gateway (edge reverse proxy or elitea-llm-gateway-svc)")
 	minGapMS := fs.Int("min-gap-ms", 5, "minimum max-inter-frame gap (ms) to accept a stream as incremental")
 	timeoutS := fs.Int("timeout-s", 30, "per-request timeout in seconds")
+	openaiModel := fs.String("openai-model", "gpt-4o", "model for the OpenAI-dialect probe")
+	anthropicModel := fs.String("anthropic-model", "claude-sonnet-5", "model for the Anthropic-dialect probe")
+	identitySecret := fs.String("identity-secret", os.Getenv("GATEWAY_IDENTITY_SECRET"), "edge identity HMAC secret (empty = unsigned)")
+	projectID := fs.String("project-id", "", "project ID for the signed identity headers")
+	userID := fs.String("user-id", "cutover-ctl", "user ID for the signed identity headers")
+	tenantID := fs.String("tenant-id", "", "tenant ID for the signed identity headers")
 	_ = fs.Parse(args)
 
 	minGap := time.Duration(*minGapMS) * time.Millisecond
 	client := &http.Client{Timeout: time.Duration(*timeoutS) * time.Second}
 
-	probes := []dialectProbe{openAIProbe, anthropicProbe}
+	var sign func(*http.Request)
+	if *projectID != "" {
+		sign = func(req *http.Request) {
+			signIdentity(req, []byte(*identitySecret), *projectID, *userID, *tenantID)
+		}
+	}
+
+	probes := buildProbes(*openaiModel, *anthropicModel)
 	failed := false
 	for _, p := range probes {
-		verdict, err := probeStream(client, *gatewayURL, p, minGap)
+		verdict, err := probeStream(client, *gatewayURL, p, minGap, sign)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "✗ %s (%s): %v\n", p.name, p.path, err)
 			failed = true
@@ -224,3 +248,9 @@ func cmdSSEFlushCheck(args []string) {
 	}
 	fmt.Printf("✓ sse-flush-check: both dialects stream incrementally through %s\n", *gatewayURL)
 }
+
+// Test-compat probe singletons (default models).
+var (
+	openAIProbe    = buildProbes("gpt-4o", "claude-sonnet-5")[0]
+	anthropicProbe = buildProbes("gpt-4o", "claude-sonnet-5")[1]
+)

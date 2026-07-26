@@ -59,7 +59,6 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
-
 func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
 	result := make([]map[string]any, 0, len(sdkConfigSchemas)+len(fallbackConfigTypes()))
 	known := make(map[string]bool)
@@ -705,6 +704,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
+	// Circular-routing guard #1 (spec §2.6): reject self-referential api_base
+	// at authoring time, on every upsert.
+	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 
 	dataMap = maskSecrets(h.pool, projectID, dataMap, r)
 	dataBytes, _ := json.Marshal(dataMap)
@@ -809,6 +814,13 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	dataMap, _ := body["data"].(map[string]any)
 	if dataMap == nil {
 		dataMap = map[string]any{}
+	}
+	// Circular-routing guard #1 (spec §2.6) runs on UPDATE as well — the spec
+	// requires the self-referential check on every credential upsert, not
+	// only initial provisioning.
+	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
 	}
 	dataMap = maskSecrets(h.pool, projectID, dataMap, r)
 	dataBytes, _ := json.Marshal(dataMap)
@@ -971,18 +983,18 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	displayNames := map[string]string{
-		"llm_model":               "LLM Model",
-		"embedding_model":         "Embedding Model",
-		"asr_model":               "ASR Model",
-		"tts_model":               "TTS Model",
-		"image_generation_model":  "Image Generation Model",
+		"llm_model":              "LLM Model",
+		"embedding_model":        "Embedding Model",
+		"asr_model":              "ASR Model",
+		"tts_model":              "TTS Model",
+		"image_generation_model": "Image Generation Model",
 	}
 	sectionMap := map[string]string{
-		"llm_model":               "llm",
-		"embedding_model":         "embedding",
-		"asr_model":               "asr",
-		"tts_model":               "tts",
-		"image_generation_model":  "image_generation",
+		"llm_model":              "llm",
+		"embedding_model":        "embedding",
+		"asr_model":              "asr",
+		"tts_model":              "tts",
+		"image_generation_model": "image_generation",
 	}
 
 	q := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration ORDER BY type`, schema)

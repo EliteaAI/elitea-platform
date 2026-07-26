@@ -153,3 +153,20 @@ func TestFromEnvInvalidValuesFallBackToDefaults(t *testing.T) {
 		t.Errorf("CBOpenDuration = %v, want default on invalid input", cfg.CBOpenDuration)
 	}
 }
+
+// TestSelfLLMOriginsParsing covers the GATEWAY_SELF_LLM_ORIGINS CSV parse
+// (BFF.6): trim, drop empties, nil when unset.
+func TestSelfLLMOriginsParsing(t *testing.T) {
+	t.Setenv("GATEWAY_SELF_LLM_ORIGINS", " https://dev.elitea.ai/llm/v1 ,, http://elitea-main:8080/llm/v1 ")
+	cfg := FromEnv()
+	if len(cfg.SelfLLMOrigins) != 2 ||
+		cfg.SelfLLMOrigins[0] != "https://dev.elitea.ai/llm/v1" ||
+		cfg.SelfLLMOrigins[1] != "http://elitea-main:8080/llm/v1" {
+		t.Fatalf("SelfLLMOrigins = %#v, want two trimmed origins", cfg.SelfLLMOrigins)
+	}
+
+	t.Setenv("GATEWAY_SELF_LLM_ORIGINS", "")
+	if got := FromEnv().SelfLLMOrigins; got != nil {
+		t.Fatalf("SelfLLMOrigins = %#v with unset env, want nil", got)
+	}
+}

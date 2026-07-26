@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,63 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// TestStream_NilChannelNilError_502 covers the router-contract-violation branch
+// shared by all three SSE writers (streamOpenAI, streamResponses,
+// streamAnthropic): the router returns a nil chunk channel AND a nil error.
+// Ranging over the nil channel would hang the request forever, so each writer
+// must abort with a 502 carrying the spec §2.5 OpenAI-shaped error body — and
+// must do so BEFORE beginStream, so no SSE headers or frames reach the client.
+func TestStream_NilChannelNilError_502(t *testing.T) {
+	cases := []struct{ name, path, body string }{
+		{"openai", "/llm/v1/chat/completions",
+			`{"model":"gpt-4o","messages":[],"stream":true}`},
+		{"responses", "/llm/v1/responses",
+			`{"model":"gpt-4o","input":"hi","stream":true}`},
+		{"anthropic", "/llm/v1/messages",
+			`{"model":"claude-3-5-sonnet","max_tokens":10,"messages":[],"stream":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Zero-value fakeRouter: streamChan and streamErr are both nil, so the
+			// stream call returns exactly (nil, nil).
+			h := NewHandler(&fakeRouter{}, nil, nil)
+			rec := postJSON(t, h.route(), tc.path, tc.body)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body=%s", rec.Code, rec.Body.String())
+			}
+			var out openAIError
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("unmarshal 502 body: %v; raw=%s", err, rec.Body.String())
+			}
+			if out.Error.Type != "api_error" {
+				t.Errorf("error.type = %q, want api_error (spec §2.5)", out.Error.Type)
+			}
+			if out.Error.Code != "bad_gateway" {
+				t.Errorf("error.code = %q, want bad_gateway (spec §2.5)", out.Error.Code)
+			}
+			if out.Error.Message == "" {
+				t.Error("error.message is empty; the 502 must explain the failure")
+			}
+
+			// No SSE headers and no SSE framing: the stream was never begun.
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json (no SSE headers)", ct)
+			}
+			for _, h := range []string{"Cache-Control", "Connection"} {
+				if v := rec.Header().Get(h); v != "" {
+					t.Errorf("%s = %q, want unset (stream must not have been begun)", h, v)
+				}
+			}
+			for _, frame := range []string{"data: ", "event: "} {
+				if strings.Contains(rec.Body.String(), frame) {
+					t.Errorf("body contains SSE frame %q; got:\n%s", frame, rec.Body.String())
+				}
+			}
+		})
+	}
+}
 
 // disconnectWriter is an http.ResponseWriter + http.Flusher whose Write fails
 // after the response headers are committed, simulating a client that hangs up

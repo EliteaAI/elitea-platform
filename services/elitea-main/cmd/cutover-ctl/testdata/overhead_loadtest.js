@@ -22,15 +22,19 @@
 // What this script measures:
 //   - It sends non-streaming POST /llm/v1/chat/completions requests with a
 //     trivial prompt to minimise model-side latency variance.
-//   - After each successful response it reads the gateway's X-Elapsed-Ms
-//     response header (the gateway's own wall-clock time for the hop, set by the
-//     gateway middleware in internal/middleware/timing.go).
+//   - After each HTTP 200 response it reads the gateway's X-Elapsed-Ms response
+//     header (the gateway's own wall-clock time for the hop, set by the gateway
+//     middleware in internal/middleware/timing.go). Non-200 responses are NOT
+//     recorded: an error path's latency is not a measurement of the hop, and a
+//     run full of fast 4xx/5xx responses must not look like a fast gateway.
 //   - Each X-Elapsed-Ms value is recorded into the custom Trend metric
 //     "gateway_overhead_ms". The overhead-check gate reads exactly this metric's
 //     p(99) from the exported summary.
 //   - If X-Elapsed-Ms is absent (e.g. the reverse proxy strips it), the script
-//     falls back to recording the full http_req_duration so the gate can still
-//     use its fallback metric.
+//     falls back to recording the full round-trip AND increments the
+//     "gateway_overhead_fallback" counter. The gate fails on a non-zero counter
+//     unless --allow-roundtrip-fallback is passed, so this degradation can never
+//     pass silently.
 //
 // Load profile: 60 seconds total — 10 s ramp-up to 50 VUs, 40 s steady state,
 // 10 s ramp-down. Typical staging run produces ~3 000 iterations.
@@ -40,21 +44,29 @@
 
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Trend } from 'k6/metrics';
+import { Trend, Counter } from 'k6/metrics';
+import exec from 'k6/execution';
 
 // gatewayOverheadMs records the gateway-internal hop latency (milliseconds)
-// from the X-Elapsed-Ms response header. This is the metric the overhead-check
-// gate primarily reads.
+// from the X-Elapsed-Ms response header, for successful responses only. This is
+// the metric the overhead-check gate primarily reads.
 const gatewayOverheadMs = new Trend('gateway_overhead_ms', true);
+
+// gatewayOverheadFallback counts the samples that came from the round-trip
+// duration instead of the gateway's own header. Any non-zero value means the
+// trend above is NOT hop-only; the gate treats it as a failure unless the
+// operator opted in with --allow-roundtrip-fallback.
+const gatewayOverheadFallback = new Counter('gateway_overhead_fallback');
 
 // ── Configuration ────────────────────────────────────────────────────────────
 const GATEWAY_URL = __ENV.GATEWAY_URL || 'http://localhost:8083';
 const API_KEY     = __ENV.API_KEY     || 'test-api-key';
 const PROJECT_ID  = __ENV.PROJECT_ID  || 'test-project';
+const MODEL       = __ENV.MODEL       || 'gpt-4o-mini';
 
 // Request body: non-streaming, minimal prompt to keep upstream latency low.
 const REQUEST_BODY = JSON.stringify({
-  model: 'gpt-4o-mini',
+  model: MODEL,
   stream: false,
   max_tokens: 8,
   messages: [{ role: 'user', content: 'Reply with one word: OK' }],
@@ -65,6 +77,44 @@ const HEADERS = {
   'Authorization': `Bearer ${API_KEY}`,
   'X-Project-ID': PROJECT_ID,
 };
+
+// Signed edge-identity headers (required whenever the gateway runs with
+// GATEWAY_IDENTITY_SECRET set — FIX #9 makes that mandatory with NATS on).
+// The overhead-check subcommand pre-signs the tuple(s) and passes them via -e;
+// the secret itself never reaches this script.
+//
+// IDENTITIES (JSON array of {project,user,tenant,signature}) spreads the load
+// across many (project, model) tuples. This is REQUIRED against a production
+// gateway: the §2.6 circular-routing breaker opens a tuple's circuit at
+// >=5 req/1s, so a single-identity 50-VU run measures 429s, not overhead.
+// Each VU keeps ONE identity (vu id modulo the set) and paces itself below
+// the breaker threshold (see sleep() in the scenario).
+const IDENTITIES = (() => {
+  if (__ENV.IDENTITIES) {
+    try { return JSON.parse(__ENV.IDENTITIES); } catch (e) { return []; }
+  }
+  if (__ENV.IDENTITY_PROJECT) {
+    return [{
+      project: __ENV.IDENTITY_PROJECT,
+      user: __ENV.IDENTITY_USER || '',
+      tenant: __ENV.IDENTITY_TENANT || '',
+      signature: __ENV.IDENTITY_SIGNATURE || '',
+    }];
+  }
+  return [];
+})();
+
+function identityHeaders() {
+  if (IDENTITIES.length === 0) return {};
+  const id = IDENTITIES[(exec.vu.idInTest - 1) % IDENTITIES.length];
+  const h = {
+    'X-Elitea-Project-Id': id.project,
+    'X-Elitea-User-Id': id.user,
+    'X-Elitea-Tenant-Id': id.tenant,
+  };
+  if (id.signature) h['X-Elitea-Identity-Signature'] = id.signature;
+  return h;
+}
 
 // ── Load profile ─────────────────────────────────────────────────────────────
 export const options = {
@@ -91,7 +141,7 @@ export default function () {
   const res = http.post(
     `${GATEWAY_URL}/llm/v1/chat/completions`,
     REQUEST_BODY,
-    { headers: HEADERS, timeout: '10s' },
+    { headers: Object.assign({}, HEADERS, identityHeaders()), timeout: '10s' },
   );
 
   // Basic response checks.
@@ -102,26 +152,31 @@ export default function () {
     },
   });
 
-  // Record gateway-hop overhead from the X-Elapsed-Ms header.
+  // Record gateway-hop overhead from the X-Elapsed-Ms header — for HTTP 200
+  // only. Timing an error response measures how fast the gateway said "no",
+  // which would let a wholly failing run report an excellent p99.
   // The gateway sets this header to its internal elapsed time in milliseconds
   // (float, e.g. "12.34"). If absent (stripped by a proxy), fall back to the
   // full round-trip duration so the test still records a conservative bound.
-  const elapsedHeader = res.headers['X-Elapsed-Ms'] || res.headers['x-elapsed-ms'];
-  if (elapsedHeader !== undefined) {
-    const ms = parseFloat(elapsedHeader);
+  if (res.status === 200) {
+    const elapsedHeader = res.headers['X-Elapsed-Ms'] || res.headers['x-elapsed-ms'];
+    const ms = elapsedHeader === undefined ? NaN : parseFloat(elapsedHeader);
     if (!isNaN(ms)) {
       gatewayOverheadMs.add(ms);
+    } else {
+      // Fallback: use the k6-measured round-trip duration as a conservative
+      // proxy, and say so in the summary. This is larger than the true hop
+      // overhead (it includes network RTT to the test runner), so the counter
+      // makes the gate fail loudly instead of quietly grading the network.
+      gatewayOverheadMs.add(res.timings.duration);
+      gatewayOverheadFallback.add(1);
     }
-  } else {
-    // Fallback: use the k6-measured round-trip duration as a conservative proxy.
-    // This will be larger than the true hop overhead (it includes network RTT to
-    // the test runner), so operators should investigate X-Elapsed-Ms propagation
-    // if this path fires consistently.
-    gatewayOverheadMs.add(res.timings.duration);
   }
 
-  // Brief pause between iterations to avoid hammering a single connection.
-  sleep(0.1);
+  // Pace each VU below the §2.6 loop-breaker threshold for its own
+  // (project, model) tuple (>=5 req/1s opens the circuit): 0.3 s floor keeps a
+  // VU at ~<3.5 req/s even when the model answers instantly.
+  sleep(0.3);
 }
 
 // ── Setup / teardown (optional) ───────────────────────────────────────────────

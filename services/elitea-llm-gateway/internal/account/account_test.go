@@ -413,8 +413,8 @@ func TestNormaliseOrigin(t *testing.T) {
 		"":                       "",
 		"::::":                   "",
 		// Fix #4: trailing dot stripped from FQDN host.
-		"https://host./llm/v1":   "https://host/llm/v1",
-		"https://HOST./LLM/V1":   "https://host/LLM/V1",
+		"https://host./llm/v1": "https://host/llm/v1",
+		"https://HOST./LLM/V1": "https://host/LLM/V1",
 		// Fix #4: explicit default ports stripped.
 		"https://host:443/llm/v1": "https://host/llm/v1",
 		"http://host:80/llm/v1":   "http://host/llm/v1",
@@ -438,8 +438,8 @@ func TestIsSelfReferential_DefaultPortBypass(t *testing.T) {
 		cred string
 		want bool
 	}{
-		{"https://dev.elitea.ai:443/llm/v1", true},  // explicit :443 == no port for HTTPS
-		{"http://dev.elitea.ai:80/llm/v1", false},   // scheme mismatch — http vs registered https
+		{"https://dev.elitea.ai:443/llm/v1", true},   // explicit :443 == no port for HTTPS
+		{"http://dev.elitea.ai:80/llm/v1", false},    // scheme mismatch — http vs registered https
 		{"https://dev.elitea.ai:8443/llm/v1", false}, // non-default port is a distinct origin
 	}
 	for _, tc := range cases {
@@ -457,8 +457,8 @@ func TestIsSelfReferential_TrailingDotBypass(t *testing.T) {
 		cred string
 		want bool
 	}{
-		{"https://dev.elitea.ai./llm/v1", true},          // trailing dot == same host
-		{"https://DEV.ELITEA.AI./LLM/V1", true},          // trailing dot + uppercase host + uppercase path
+		{"https://dev.elitea.ai./llm/v1", true},    // trailing dot == same host
+		{"https://DEV.ELITEA.AI./LLM/V1", true},    // trailing dot + uppercase host + uppercase path
 		{"https://dev.elitea.ai:443/llm/v1", true}, // explicit default port
 	}
 	for _, tc := range cases {
@@ -505,5 +505,59 @@ func TestProjectIDFromContext(t *testing.T) {
 	}
 	if got := projectIDFromContext(ctxWithProject(" 99 ")); got != "99" {
 		t.Fatalf("trimmed value: got %q", got)
+	}
+}
+
+// TestBuildKey_VLLM asserts a vllm credential's api_base is threaded into
+// VLLMKeyConfig.URL (bifrost requires it) with no key-level model filter.
+func TestBuildKey_VLLM(t *testing.T) {
+	k := buildKey(schemas.VLLM, credential{
+		configID: "c1", name: "local-vllm", apiBase: "http://192.168.0.1:8000/v1",
+	}, "sk-anything")
+	if k.VLLMKeyConfig == nil {
+		t.Fatal("VLLMKeyConfig = nil, want URL set from api_base")
+	}
+	if got := k.VLLMKeyConfig.URL.GetValue(); got != "http://192.168.0.1:8000/v1" {
+		t.Errorf("VLLMKeyConfig.URL = %q, want api_base", got)
+	}
+	if k.VLLMKeyConfig.ModelName != "" {
+		t.Errorf("ModelName = %q, want empty (no key-level filter)", k.VLLMKeyConfig.ModelName)
+	}
+}
+
+// TestProviderConfigTypes_VLLM asserts the vllm provider resolves the "vllm"
+// configuration type and is in the configured-provider set.
+func TestProviderConfigTypes_VLLM(t *testing.T) {
+	if got := providerConfigTypes[schemas.VLLM]; len(got) != 1 || got[0] != "vllm" {
+		t.Fatalf("providerConfigTypes[VLLM] = %v, want [vllm]", got)
+	}
+	a, err := New(Config{DB: &fakeDB{}, Vault: &fakeVault{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provs, _ := a.GetConfiguredProviders()
+	found := false
+	for _, p := range provs {
+		if p == schemas.VLLM {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("GetConfiguredProviders() missing schemas.VLLM")
+	}
+}
+
+// TestBuildKey_VLLM_UseAnthropicEndpoints asserts the credential's
+// use_anthropic_endpoints flag reaches schemas.Key so bifrost routes the
+// request to the upstream's Anthropic-compatible /v1/messages surface
+// (BFF.9a: an OpenAI-compatible gateway that also serves the Anthropic dialect).
+func TestBuildKey_VLLM_UseAnthropicEndpoints(t *testing.T) {
+	off := buildKey(schemas.VLLM, credential{configID: "c1", apiBase: "https://up.example"}, "sk")
+	if off.UseAnthropicEndpoints != nil {
+		t.Errorf("UseAnthropicEndpoints = %v, want nil when the flag is unset", *off.UseAnthropicEndpoints)
+	}
+	on := buildKey(schemas.VLLM, credential{configID: "c2", apiBase: "https://up.example", useAnthropicEndpoints: true}, "sk")
+	if on.UseAnthropicEndpoints == nil || !*on.UseAnthropicEndpoints {
+		t.Fatal("UseAnthropicEndpoints must be true when the credential sets use_anthropic_endpoints")
 	}
 }

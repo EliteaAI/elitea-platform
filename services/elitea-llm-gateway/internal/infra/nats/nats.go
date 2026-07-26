@@ -21,6 +21,7 @@ package nats
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -119,6 +120,12 @@ func (c Config) withDefaults() Config {
 type conn interface {
 	Close()
 	IsClosed() bool
+	// Publish + FlushTimeout are the core-NATS (non-JetStream) publish surface
+	// used for platform events on gateway.events.* — subscribers (elitea-main
+	// natsbus) use plain core subscriptions, so events must not be JetStream-
+	// persisted under a stream that would shadow the subject space.
+	Publish(subj string, data []byte) error
+	FlushTimeout(d time.Duration) error
 }
 
 // The following narrow interfaces are the exact operation surface the
@@ -452,18 +459,33 @@ func (c *Client) ReadBudget(ctx context.Context, subject string) (int64, error) 
 	return total, nil
 }
 
-// counterValue extracts the running total from a counter-stream message. NATS
-// stores the total as the message payload (a decimal string); the Nats-Incr
-// header on the stored message carries the last applied delta, not the total.
+// counterValue extracts the running total from a counter-stream message.
+//
+// NATS 2.12 counter streams store the running total as a JSON body
+// {"val":"<decimal>"} (verified against a live nats:2.12 server — the PubAck
+// carries the same value already unwrapped into PubAck.Value by nats.go). A
+// bare decimal payload is also accepted for forward/backward tolerance; the
+// original implementation expected ONLY the bare form, so every live
+// ReadBudget failed to parse and the budget path silently degraded to the
+// Postgres fallback tier (found by the BFF.9x live gate run).
 func counterValue(raw *jetstream.RawStreamMsg) (int64, error) {
 	if raw == nil || len(raw.Data) == 0 {
 		return 0, nil
 	}
-	total, err := strconv.ParseInt(string(raw.Data), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("nats: counter payload %q: %w", raw.Data, err)
+	if total, err := strconv.ParseInt(string(raw.Data), 10, 64); err == nil {
+		return total, nil
 	}
-	return total, nil
+	var body struct {
+		Val string `json:"val"`
+	}
+	if err := json.Unmarshal(raw.Data, &body); err == nil && body.Val != "" {
+		total, perr := strconv.ParseInt(body.Val, 10, 64)
+		if perr != nil {
+			return 0, fmt.Errorf("nats: counter payload %q: val is not an integer: %w", raw.Data, perr)
+		}
+		return total, nil
+	}
+	return 0, fmt.Errorf("nats: counter payload %q: neither bare integer nor {\"val\":\"N\"}", raw.Data)
 }
 
 // TryAlertCooldown attempts to claim the soft-alert cooldown for key. It returns
@@ -506,6 +528,45 @@ func (c *Client) PublishDelta(ctx context.Context, eventID string, payload []byt
 		return 0, nil
 	})
 	if err != nil {
+		return mapErr(err)
+	}
+	return nil
+}
+
+// EventSubjectRoot is the reserved platform-event subject prefix. It mirrors
+// elitea-main natsbus.SubjectRoot: channel "project:<id>:events" maps to
+// "gateway.events.project.<id>.events".
+const EventSubjectRoot = "gateway.events"
+
+// eventSubjectForProject builds the per-project event subject the elitea-main
+// natsbus EventBus subscribes to.
+func eventSubjectForProject(projectID string) string {
+	return EventSubjectRoot + ".project." + projectID + ".events"
+}
+
+// PublishSoftAlertEvent publishes a pre-marshalled event envelope onto the
+// project's gateway.events.* subject via core NATS (not JetStream — the
+// subscribers use plain subscriptions). The flush is bounded by the ctx
+// deadline (capped at OpTimeout) so a wedged connection cannot stall the
+// billing goroutine. Satisfies llmproxy.AlertEventPublisher.
+func (c *Client) PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error {
+	// Deadline is evaluated BEFORE the publish: core NATS Publish is async and
+	// buffered, so publishing first and then bailing out on an expired ctx would
+	// still enqueue the event for the next flush while telling the caller the
+	// publish failed. Check first so the returned error is truthful.
+	timeout := OpTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < timeout {
+			timeout = until
+		}
+	}
+	if timeout <= 0 {
+		return context.DeadlineExceeded
+	}
+	if err := c.nc.Publish(eventSubjectForProject(projectID), event); err != nil {
+		return mapErr(err)
+	}
+	if err := c.nc.FlushTimeout(timeout); err != nil {
 		return mapErr(err)
 	}
 	return nil

@@ -44,6 +44,17 @@ type BudgetChecker interface {
 	TryAlertCooldown(ctx context.Context, scope, scopeID string, periodStartUnix int64) (bool, error)
 }
 
+// AlertEventPublisher publishes the budget.soft_alert event onto the
+// platform event space (NATS subject gateway.events.project.<id>.events —
+// the same subject scheme elitea-main's natsbus EventBus subscribes to).
+// *nats.Client satisfies it; the preflight FakeNATS records calls.
+type AlertEventPublisher interface {
+	// PublishSoftAlertEvent publishes the pre-marshalled event envelope for
+	// projectID. Implementations must bound the operation with the ctx
+	// deadline (every NATS op is bounded — CLAUDE.md).
+	PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error
+}
+
 // CostEstimator resolves per-request LLM cost in int64 nano-USD.
 // *cost.Calculator satisfies it; tests may inject a zero-cost stub.
 type CostEstimator interface {
@@ -143,7 +154,7 @@ func (r *bifrostLLMRouter) ImageVariationRequest(ctx *schemas.BifrostContext, re
 // and the default wrapper satisfy LLMRouter. The first guards against upstream
 // signature drift at the pinned tag; the second guards the wrapper.
 var (
-	_ LLMRouter    = (*bifrost.Bifrost)(nil)
-	_ LLMRouter    = (*bifrostLLMRouter)(nil)
+	_ LLMRouter     = (*bifrost.Bifrost)(nil)
+	_ LLMRouter     = (*bifrostLLMRouter)(nil)
 	_ CostEstimator = (*cost.Calculator)(nil)
 )

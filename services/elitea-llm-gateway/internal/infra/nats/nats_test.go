@@ -105,10 +105,34 @@ func (f *fakeKV) Create(_ context.Context, key string, _ []byte, _ ...jetstream.
 type fakeConn struct {
 	closed bool
 	closes int
+
+	// core-publish recording (PublishSoftAlertEvent surface).
+	published  []fakePub
+	publishErr error
+	flushErr   error
+	flushes    int
+}
+
+type fakePub struct {
+	subject string
+	data    []byte
 }
 
 func (f *fakeConn) Close()         { f.closed = true; f.closes++ }
 func (f *fakeConn) IsClosed() bool { return f.closed }
+
+func (f *fakeConn) Publish(subj string, data []byte) error {
+	if f.publishErr != nil {
+		return f.publishErr
+	}
+	f.published = append(f.published, fakePub{subject: subj, data: data})
+	return nil
+}
+
+func (f *fakeConn) FlushTimeout(time.Duration) error {
+	f.flushes++
+	return f.flushErr
+}
 
 // fakeProvisioner exercises ensureAssets without a live server. It records all
 // StreamConfigs so both the budget counter stream and the deltas stream
@@ -768,5 +792,105 @@ func TestBreakerStillOpensOnInfraError(t *testing.T) {
 	}
 	if c.BreakerState() != gobreaker.StateOpen {
 		t.Errorf("breaker state = %v after 3 infra errors; want Open", c.BreakerState())
+	}
+}
+
+// ── PublishSoftAlertEvent (gateway.events.*) ─────────────────────────────────
+
+// TestPublishSoftAlertEvent_SubjectAndPayload asserts the event is core-
+// published to the natsbus-compatible per-project subject and flushed.
+func TestPublishSoftAlertEvent_SubjectAndPayload(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{"type":"budget.soft_alert"}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.published) != 1 {
+		t.Fatalf("published %d messages, want 1", len(fc.published))
+	}
+	if got, want := fc.published[0].subject, "gateway.events.project.42.events"; got != want {
+		t.Errorf("subject = %q, want %q (must match elitea-main natsbus subjectFor)", got, want)
+	}
+	if string(fc.published[0].data) != `{"type":"budget.soft_alert"}` {
+		t.Errorf("payload altered in transit: %q", fc.published[0].data)
+	}
+	if fc.flushes != 1 {
+		t.Errorf("flushes = %d, want 1 (publish must be flushed so errors surface)", fc.flushes)
+	}
+}
+
+// TestPublishSoftAlertEvent_PublishError asserts a transport error is mapped
+// and returned (the caller logs it; the alert must not be silently dropped
+// without a trace).
+func TestPublishSoftAlertEvent_PublishError(t *testing.T) {
+	fc := &fakeConn{publishErr: errFakeTransport}
+	c := &Client{nc: fc}
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{}`)); err == nil {
+		t.Fatal("expected error from failed publish, got nil")
+	}
+}
+
+// TestPublishSoftAlertEvent_FlushError asserts a flush failure surfaces too.
+func TestPublishSoftAlertEvent_FlushError(t *testing.T) {
+	fc := &fakeConn{flushErr: errFakeTransport}
+	c := &Client{nc: fc}
+	if err := c.PublishSoftAlertEvent(context.Background(), "42", []byte(`{}`)); err == nil {
+		t.Fatal("expected error from failed flush, got nil")
+	}
+}
+
+// TestPublishSoftAlertEvent_ExpiredContext asserts an already-expired context
+// short-circuits BEFORE the publish, not just before the flush. Core NATS
+// Publish is async and buffered, so publishing first would enqueue the event for
+// the next flush while the method still returned DeadlineExceeded — the caller
+// would be told "not published" about an event that was in fact delivered.
+func TestPublishSoftAlertEvent_ExpiredContext(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := c.PublishSoftAlertEvent(ctx, "42", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for expired context, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if len(fc.published) != 0 {
+		t.Errorf("published %d messages, want 0 (a 'did not publish' error must be truthful)", len(fc.published))
+	}
+	if fc.flushes != 0 {
+		t.Errorf("flushes = %d, want 0 (expired ctx must not flush)", fc.flushes)
+	}
+}
+
+// errFakeTransport is the sentinel transport error for the event-publish tests.
+var errFakeTransport = errors.New("fake transport error")
+
+// TestCounterValue_NATS212JSONBody pins the REAL NATS 2.12 counter payload
+// shape {"val":"N"} (the original bare-integer-only parse silently degraded
+// budget enforcement on live servers — found by the BFF.9x gate run).
+func TestCounterValue_NATS212JSONBody(t *testing.T) {
+	cases := []struct {
+		data string
+		want int64
+		ok   bool
+	}{
+		{`{"val":"10000000"}`, 10000000, true},
+		{`{"val":"-250"}`, -250, true},
+		{`12345`, 12345, true}, // bare form still accepted
+		{`{"val":"not-a-number"}`, 0, false},
+		{`{"other":"1"}`, 0, false},
+		{`garbage`, 0, false},
+	}
+	for _, c := range cases {
+		got, err := counterValue(&jetstream.RawStreamMsg{Data: []byte(c.data)})
+		if c.ok && (err != nil || got != c.want) {
+			t.Errorf("counterValue(%q) = %d, %v; want %d, nil", c.data, got, err, c.want)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("counterValue(%q) = %d, nil; want error", c.data, got)
+		}
 	}
 }

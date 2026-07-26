@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/preflight"
 )
 
@@ -169,7 +170,12 @@ func TestBFF9E_BudgetHardBlockAndSoftAlert(t *testing.T) {
 			t, projectID, hardLimitNano, spentNano,
 			preflight.WithSoftAlertPct(softAlertPct),
 		)
-		handler := preflight.MountedHandler(t, router, gov, secret)
+		// Wire the FakeNATS as the alert-event publisher so the spec §8.3
+		// observable — "a soft-alert is recorded on gateway.events.*" — is
+		// asserted directly (assertion (e) below).
+		handler := preflight.MountedHandler(t, router, gov, secret,
+			llmproxy.WithAlertEventPublisher(nc),
+		)
 
 		body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"soft alert test"}]}`
 		req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(body))
@@ -242,7 +248,37 @@ func TestBFF9E_BudgetHardBlockAndSoftAlert(t *testing.T) {
 				currentTotal, softThreshold)
 		}
 
-		t.Logf("soft-alert: HTTP 200, router called, DeltaCount=%d, soft-alert threshold crossed — PASS",
+		// (e) The budget.soft_alert event was published on the gateway.events.*
+		//     surface (spec §8.3 / BFF.9e observable). FakeNATS.TryAlertCooldown
+		//     always grants the claim, so once the threshold crossing is proven
+		//     ((c2)+(d) above) the fired path MUST have emitted exactly one
+		//     event for this project, carrying the natsbus envelope shape.
+		alertDeadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(alertDeadline) && nc.AlertEventCount() == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if nc.AlertEventCount() == 0 {
+			t.Fatal("soft-alert: no budget.soft_alert event published on gateway.events.* — the alert is not externally observable")
+		}
+		evt := nc.AlertEvents[0]
+		if evt.ProjectID != projectIDStr {
+			t.Errorf("soft-alert event projectID = %q, want %q", evt.ProjectID, projectIDStr)
+		}
+		var env struct {
+			Type   string `json:"type"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(evt.Event, &env); err != nil {
+			t.Fatalf("soft-alert event envelope decode: %v\nraw: %s", err, evt.Event)
+		}
+		if env.Type != "budget.soft_alert" {
+			t.Errorf("soft-alert event type = %q, want budget.soft_alert", env.Type)
+		}
+		if env.Source != "elitea-llm-gateway" {
+			t.Errorf("soft-alert event source = %q, want elitea-llm-gateway", env.Source)
+		}
+
+		t.Logf("soft-alert: HTTP 200, router called, DeltaCount=%d, threshold crossed, event published — PASS",
 			nc.DeltaCount())
 	})
 

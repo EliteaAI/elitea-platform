@@ -17,6 +17,9 @@ resources:
     cpu: "1"
     memory: 512Mi
 
+# Arbitrary env vars for the elitea-main container. The whole map is rendered
+# into the ConfigMap (templates/configmap.yaml) and consumed via envFrom, so
+# adding a key here is all that is needed to set a new env var.
 env:
   DATABASE_URL: ""
   REDIS_URL: ""
@@ -25,6 +28,24 @@ env:
   SHADOW_WEIGHT: "0.1"
   LEGACY_URL: ""
   CANARY_WEIGHT: "0.1"
+
+  # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
+  # Comma-separated list of the platform's OWN /llm origins, e.g.
+  #   "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+  # A credential whose api_base resolves to one of these is rejected at save
+  # time with SELF_REFERENTIAL_CREDENTIAL (the gateway's Account-side check is
+  # the request-time backstop).
+  # IMPORTANT: when BOTH this and DEPLOYMENT_URL below are empty, the resolved
+  # self-origin list is empty and guard #1 is INERT — every credential passes
+  # the check. elitea-main logs a one-time WARN at first use in that case.
+  ELITEA_SELF_LLM_ORIGINS: ""
+
+  # Public base URL of this deployment (e.g. "https://dev.elitea.ai"). When set,
+  # it is additionally treated as a self origin with "/llm" appended, so the
+  # common single-domain deployment is guarded with no extra configuration.
+  # Empty here leaves that convenience path off; see the note above — with
+  # ELITEA_SELF_LLM_ORIGINS also empty, §2.6 guard #1 is inert.
+  DEPLOYMENT_URL: ""
 
 probes:
   startup:

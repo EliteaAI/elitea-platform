@@ -268,6 +268,9 @@ type FakeNATS struct {
 	Totals  map[string]int64
 	// Deltas records every payload sent via PublishDelta (write-behind deltas).
 	Deltas  [][]byte
+	// AlertEvents records every (projectID, envelope) pair sent via
+	// PublishSoftAlertEvent (the gateway.events.* budget.soft_alert surface).
+	AlertEvents []AlertEventRecord
 	// applied tracks event_ids already applied (idempotency guard).
 	applied map[string]bool
 
@@ -286,6 +289,29 @@ func NewFakeNATS() *FakeNATS {
 		Totals:  make(map[string]int64),
 		applied: make(map[string]bool),
 	}
+}
+
+// AlertEventRecord is one captured PublishSoftAlertEvent call.
+type AlertEventRecord struct {
+	ProjectID string
+	Event     []byte
+}
+
+// PublishSoftAlertEvent records the budget.soft_alert event (satisfies
+// llmproxy.AlertEventPublisher for the BFF.9e soft-alert observability
+// assertion).
+func (n *FakeNATS) PublishSoftAlertEvent(_ context.Context, projectID string, event []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.AlertEvents = append(n.AlertEvents, AlertEventRecord{ProjectID: projectID, Event: append([]byte(nil), event...)})
+	return nil
+}
+
+// AlertEventCount safely returns the number of captured soft-alert events.
+func (n *FakeNATS) AlertEventCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.AlertEvents)
 }
 
 // GetTotal safely reads the counter total for subject.
@@ -639,16 +665,21 @@ func itoa(n int) string {
 //   - the given identitySecret for HMAC verification (nil/empty disables it).
 //
 // The returned http.Handler is ready for httptest.NewServer / httptest.NewRecorder.
+// Additional llmproxy.HandlerOption values (e.g. llmproxy.WithLoopBreaker()
+// for the circular-routing guard test, llmproxy.WithAlertEventPublisher for
+// the soft-alert event assertion) may be appended via extraOpts.
 func MountedHandler(
 	_ *testing.T,
 	router llmproxy.LLMRouter,
 	gov *governance.GovernanceStore,
 	secret []byte,
+	extraOpts ...llmproxy.HandlerOption,
 ) http.Handler {
 	calc := cost.New(cost.Config{}) // no catalog DB → default price table
-	h := llmproxy.NewHandler(router, nil, secret,
+	opts := append([]llmproxy.HandlerOption{
 		llmproxy.WithBudgetGate(gov, calc),
-	)
+	}, extraOpts...)
+	h := llmproxy.NewHandler(router, nil, secret, opts...)
 	return api.NewRouter(h)
 }
 

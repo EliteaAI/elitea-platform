@@ -20,3 +20,9 @@ deploy/data/production/
 /services/elitea-scheduler/elitea-scheduler
 bin/
 .claude/settings.json
+
+# Local test artifacts for the no-binaries CI gate (scripts/no-binaries-check.sh)
+fake-artifact.bin
+
+# Agent-loop working state (task tracker, learnings, run history) — local only
+.ralph/

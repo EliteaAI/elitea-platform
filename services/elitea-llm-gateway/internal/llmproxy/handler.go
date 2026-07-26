@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -48,6 +49,15 @@ type Handler struct {
 	billingWg      sync.WaitGroup
 	billingClosing atomic.Int32
 
+	// loopGuard is the per-(project_id, model) circular-routing circuit
+	// breaker (spec §2.6 guard #2). nil = disarmed (unit-test construction);
+	// production wiring arms it via WithLoopBreaker.
+	loopGuard *loopBreaker
+
+	// alertEvents publishes budget.soft_alert to gateway.events.* when the
+	// 80% soft alert fires (spec §8.3). nil = publishing disabled.
+	alertEvents AlertEventPublisher
+
 	// inflightNano is a per-project in-process reservation counter (Fix round-3
 	// #7). When N concurrent requests pass admission before any async increment
 	// lands, each one adds its estimated cost here so checkBudget can bound the
@@ -82,6 +92,38 @@ func WithBudgetGate(gate BudgetChecker, calc CostEstimator) HandlerOption {
 	}
 }
 
+// WithLoopBreaker arms the per-(project_id, model) circular-routing circuit
+// breaker (spec §2.6 guard #2): >= 5 requests for the same tuple within 1 s
+// open the circuit and the handler returns 429 rate_limit_exceeded for 30 s.
+// The composition root (cmd/elitea-llm-gateway/main.go) MUST arm this in
+// production wiring — guarded by TestMainWiring.
+func WithLoopBreaker() HandlerOption {
+	return func(h *Handler) { h.loopGuard = newLoopBreaker() }
+}
+
+// WithLoopBreakerClock arms the breaker exactly like WithLoopBreaker but reads
+// time from now instead of time.Now. It exists so tests outside this package
+// (internal/preflight) can drive the 1 s sliding window from a frozen clock
+// instead of racing the wall clock — a burst that must land inside one second
+// is otherwise flaky on a loaded CI box. Production wiring uses WithLoopBreaker;
+// a nil now falls back to time.Now.
+func WithLoopBreakerClock(now func() time.Time) HandlerOption {
+	return func(h *Handler) {
+		h.loopGuard = newLoopBreaker()
+		if now != nil {
+			h.loopGuard.now = now
+		}
+	}
+}
+
+// WithAlertEventPublisher wires the gateway.events.* publisher used to emit
+// the budget.soft_alert event when the 80% threshold alert fires (spec §8.3:
+// "a soft-alert is recorded on gateway.events.*"). nil is a no-op (the alert
+// still logs; nothing is published).
+func WithAlertEventPublisher(p AlertEventPublisher) HandlerOption {
+	return func(h *Handler) { h.alertEvents = p }
+}
+
 // NewHandler builds a /llm Handler over the given router. logger may be nil
 // (a discarding logger is substituted). identitySecret may be empty to disable
 // HMAC verification of the forwarded identity headers. Optional features (the
@@ -105,9 +147,9 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 // its own persist goroutines, preventing Add-after-Wait on persistWg.
 //
 // Sequence mandated by the design:
-//   1. handler.DrainBilling() — waits for updateUsage goroutines.
-//   2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
-//   3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
+//  1. handler.DrainBilling() — waits for updateUsage goroutines.
+//  2. govStore.Drain()       — waits for PersistOutageDelta goroutines.
+//  3. srv.Shutdown()         — closes HTTP, bifrost, NATS.
 func (h *Handler) DrainBilling() {
 	h.billingClosing.Store(1)
 	h.billingWg.Wait()
@@ -165,6 +207,17 @@ func finish(h http.Header) {
 // Chat handles POST /llm/v1/chat/completions. It streams when the body sets
 // "stream": true, else returns a unary chat completion.
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
+	// t0 anchors the hop-overhead measurement (design §10.2 / gate BFF.9d).
+	// X-Elapsed-Ms reports the gateway's PRE-DISPATCH overhead — body decode,
+	// identity verification, loop breaker and the NATS budget check — i.e.
+	// everything between accepting the request and handing it to the router.
+	// It deliberately does NOT include what happens inside the router call:
+	// per-request credential resolution (Account/vault lookup) and core routing
+	// run there, inseparably from the provider round-trip, so no measurement
+	// taken outside the router can attribute them. The k6 overhead script
+	// consumes this header and must be read as "pre-dispatch overhead", not
+	// "total gateway overhead".
+	t0 := time.Now()
 	var req openai.OpenAIChatRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -190,6 +243,9 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		h.streamOpenAI(w, ctx, provider, model, ch, bErr)
 		return
 	}
+	// Stamp the header BEFORE dispatch: the value is the pre-dispatch overhead
+	// (see t0 above), and headers must be set before the first body write anyway.
+	setElapsedHeader(w, time.Since(t0))
 	resp, bErr := h.router.ChatCompletionRequest(ctx, bifReq)
 	// Write the response FIRST (client-visible), then bill asynchronously.
 	// updateUsage spawns a bounded goroutine so the HTTP response latency does
@@ -528,6 +584,15 @@ func (h *Handler) streamOpenAI(
 		h.writeOpenAIError(w, bErr)
 		return
 	}
+	if ch == nil {
+		// A nil channel with a nil error is a router contract violation
+		// (observed from bifrost's responses-stream path); ranging over it
+		// would hang the request forever. Surface it as a 502 instead.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
+		return
+	}
 	sw, err := h.beginStream(w)
 	if err != nil {
 		return
@@ -586,6 +651,15 @@ func (h *Handler) streamResponses(
 ) {
 	if bErr != nil {
 		h.writeOpenAIError(w, bErr)
+		return
+	}
+	if ch == nil {
+		// A nil channel with a nil error is a router contract violation
+		// (observed from bifrost's responses-stream path); ranging over it
+		// would hang the request forever. Surface it as a 502 instead.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
 		return
 	}
 	sw, err := h.beginStream(w)
@@ -654,6 +728,13 @@ func (h *Handler) streamAnthropic(
 		// Fix round-3 #4: spec §2.5 — OpenAI-shaped errors on ALL /llm routes,
 		// including the Anthropic /v1/messages streaming pre-error path.
 		h.writeOpenAIError(w, bErr)
+		return
+	}
+	if ch == nil {
+		// Router contract violation (nil chan + nil error) — see streamResponses.
+		h.logger.Error("stream router returned nil channel with nil error", "provider", provider, "model", model)
+		writeError(w, http.StatusBadGateway, "api_error",
+			"upstream stream could not be established", "bad_gateway")
 		return
 	}
 	sw, err := h.beginStream(w)

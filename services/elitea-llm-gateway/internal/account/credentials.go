@@ -13,10 +13,13 @@ import (
 // literal or a {{secret.NAME}} reference resolved through the Fernet vault; it
 // is never logged.
 type credential struct {
-	configID string // configuration row id (used as the bifrost Key ID)
-	name     string // human-readable label (elitea_title)
-	apiBase  string // provider endpoint (subject to the self-referential guard)
+	configID  string // configuration row id (used as the bifrost Key ID)
+	name      string // human-readable label (elitea_title)
+	apiBase   string // provider endpoint (subject to the self-referential guard)
 	apiKeyRef string // stored api_key: literal or {{secret.NAME}} reference
+	// useAnthropicEndpoints routes vllm-class credentials through the
+	// upstream's Anthropic-compatible /v1/messages surface (see credentialData).
+	useAnthropicEndpoints bool
 }
 
 // providerConfigTypes maps a bifrost provider to the p_{projectID}.configuration
@@ -31,6 +34,7 @@ var providerConfigTypes = map[schemas.ModelProvider][]string{
 	schemas.Ollama:    {"ollama"},
 	schemas.Bedrock:   {"amazon_bedrock"},
 	schemas.Vertex:    {"vertex_ai"},
+	schemas.VLLM:      {"vllm"},
 }
 
 // credentialData is the subset of a configuration row's JSONB `data` the account
@@ -41,6 +45,12 @@ type credentialData struct {
 	APIBase  string `json:"api_base"`
 	APIKey   string `json:"api_key"`
 	APIToken string `json:"api_token"`
+	// UseAnthropicEndpoints routes vllm-class credentials through the
+	// upstream's Anthropic-compatible endpoints (/v1/messages) instead of the
+	// OpenAI-compatible ones. Threaded into schemas.Key.UseAnthropicEndpoints;
+	// bifrost's vllm provider then builds Anthropic-dialect requests against
+	// api_base + /v1/messages with Bearer auth.
+	UseAnthropicEndpoints bool `json:"use_anthropic_endpoints"`
 }
 
 // credentialKeyRef returns the credential secret reference, preferring api_key
@@ -102,10 +112,11 @@ func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, p
 			}
 		}
 		creds = append(creds, credential{
-			configID:  id,
-			name:      title,
-			apiBase:   d.APIBase,
-			apiKeyRef: d.credentialKeyRef(),
+			configID:              id,
+			name:                  title,
+			apiBase:               d.APIBase,
+			apiKeyRef:             d.credentialKeyRef(),
+			useAnthropicEndpoints: d.UseAnthropicEndpoints,
 		})
 	}
 	if err := rows.Err(); err != nil {

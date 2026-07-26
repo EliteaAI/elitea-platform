@@ -9,6 +9,7 @@ package llmproxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -110,6 +111,25 @@ func (h *Handler) checkBudget(
 	model string,
 	promptTokenEst int64,
 ) bool {
+	// Circular-routing guard #2 (spec §2.6) runs BEFORE the budget gate and
+	// regardless of whether budget enforcement is wired: a routing loop must
+	// be contained even on a deployment without governance. The tuple key is
+	// the caller-visible project + model; requests without a resolvable
+	// project are not tracked (they cannot form a stable loop tuple).
+	if h.loopGuard != nil && model != "" {
+		if projectID := identityProjectFromCtx(ctx); projectID != "" {
+			if ok, retryAfter := h.loopGuard.allow(projectID, model); !ok {
+				h.logger.Warn("loop breaker: circuit open for (project, model) tuple — possible circular routing",
+					"project_id", projectID, "model", model, "retry_after", retryAfter)
+				w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second)+1, 10))
+				writeError(w, http.StatusTooManyRequests, "rate_limit_error",
+					"Too many requests for this (project, model) pair; possible circular routing. Retry later.",
+					"rate_limit_exceeded")
+				return false
+			}
+		}
+	}
+
 	if h.budgetGate == nil {
 		return true
 	}
@@ -430,6 +450,14 @@ func (h *Handler) trySoftAlert(
 		(postDec.State == failmode.StateNATSHealthy &&
 			postDec.SoftThresholdNear && !preDec.SoftThresholdNear)
 
+	h.logger.Debug("soft-alert crossing check",
+		"project_id", pid,
+		"crossed", crossed,
+		"pre_state", preDec.State.String(), "pre_near", preDec.SoftThresholdNear,
+		"post_state", postDec.State.String(), "post_near", postDec.SoftThresholdNear,
+		"post_verdict", int(postDec.Verdict),
+		"cost_just_billed_nano", costJustBilled)
+
 	if !crossed {
 		return
 	}
@@ -450,6 +478,66 @@ func (h *Handler) trySoftAlert(
 			"pre_state", preDec.State.String(),
 			"post_state", postDec.State.String(),
 		)
+		h.publishSoftAlertEvent(ctx, scopeID, costJustBilled, periodStart)
+	}
+}
+
+// softAlertPayload is the budget.soft_alert event body. Field names are part
+// of the platform event contract consumed by elitea-main subscribers and the
+// BFF.9e live gate — change only with a spec update.
+type softAlertPayload struct {
+	ProjectID          string `json:"project_id"`
+	Scope              string `json:"scope"`
+	PeriodStartUnix    int64  `json:"period_start_unix"`
+	CostJustBilledNano int64  `json:"cost_just_billed_nano"`
+}
+
+// softAlertEnvelope mirrors elitea-main's redis.Event envelope (the shape
+// natsbus subscribers decode): {type, source, payload, timestamp}.
+type softAlertEnvelope struct {
+	Type      string          `json:"type"`
+	Source    string          `json:"source"`
+	Payload   json.RawMessage `json:"payload"`
+	Timestamp time.Time       `json:"timestamp"`
+}
+
+// softAlertEventType matches elitea-main events.EventBudgetSoftAlert.
+const softAlertEventType = "budget.soft_alert"
+
+// publishSoftAlertEvent emits budget.soft_alert onto gateway.events.* so the
+// alert is externally observable (spec §8.3 / BFF.9e: "a soft-alert is
+// recorded on gateway.events.* within S seconds"). Best-effort: a publish
+// failure is logged, never fatal — the authoritative alert record remains the
+// NATS cooldown claim; the event is the notification channel.
+func (h *Handler) publishSoftAlertEvent(ctx context.Context, scopeID string, costJustBilled, periodStart int64) {
+	if h.alertEvents == nil {
+		return
+	}
+	payload, err := json.Marshal(softAlertPayload{
+		ProjectID:          scopeID,
+		Scope:              budgetScopeProject,
+		PeriodStartUnix:    periodStart,
+		CostJustBilledNano: costJustBilled,
+	})
+	if err != nil {
+		h.logger.Warn("budget soft-alert: marshal event payload failed", "err", err)
+		return
+	}
+	env, err := json.Marshal(softAlertEnvelope{
+		Type:      softAlertEventType,
+		Source:    "elitea-llm-gateway",
+		Payload:   payload,
+		Timestamp: time.Now().UTC(),
+	})
+	if err != nil {
+		h.logger.Warn("budget soft-alert: marshal event envelope failed", "err", err)
+		return
+	}
+
+	pubCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
+	if err := h.alertEvents.PublishSoftAlertEvent(pubCtx, scopeID, env); err != nil {
+		h.logger.Warn("budget soft-alert: event publish failed", "project_id", scopeID, "err", err)
 	}
 }
 

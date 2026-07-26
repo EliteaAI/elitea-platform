@@ -45,7 +45,7 @@ import (
 // flushSnapshot captures the state of the response at the moment Flush() was
 // called: how many bytes had been written and the flush ordinal.
 type flushSnapshot struct {
-	ordinal   int
+	ordinal    int
 	bytesSoFar int
 }
 
