@@ -189,6 +189,62 @@ func TestRetireNoAuthorityIndexIngestUsesBoundedCapabilityScans(t *testing.T) {
 	}
 }
 
+func TestRetireNoAuthorityIndexIngestPersistsTerminalIntentInSameTransaction(t *testing.T) {
+	executor := &scriptedExecutor{
+		rowsResults: []*scriptedRows{{rows: []scriptedRow{{values: []any{
+			"index-outbox-1",
+			"index-execution-1",
+			int64(1),
+			int64(42),
+			"CANCELLED",
+		}}}}},
+		rowResults: []scriptedRow{{values: []any{int64(42)}}},
+	}
+	store := &scriptedStore{scriptedExecutor: executor}
+	repository, err := newCommandOutboxRepository(store, "runtime:index:commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := repository.RetireNoAuthorityIndexIngest(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired != 1 || store.txCalls != 1 ||
+		len(executor.rowCalls) != 1 || len(executor.execCalls) != 2 {
+		t.Fatalf(
+			"retired=%d tx=%d rows=%d execs=%d",
+			retired,
+			store.txCalls,
+			len(executor.rowCalls),
+			len(executor.execCalls),
+		)
+	}
+	intent := executor.execCalls[1]
+	for _, predicate := range []string{
+		"UPDATE elitea_runtime.index_ingest_jobs AS i",
+		"FROM elitea_runtime.command_outbox AS o",
+		"o.retired_at IS NOT NULL",
+		"o.authority_granted_at IS NULL",
+		"i.capability_id = 'index.ingest.v1'",
+		"i.index_meta_initialized_at IS NOT NULL",
+		"i.index_meta_terminal_status IS NULL",
+		"index_meta_terminal_status = 'PENDING'",
+	} {
+		if !strings.Contains(intent.sql, predicate) {
+			t.Fatalf("retirement intent SQL is missing %q", predicate)
+		}
+	}
+	if !reflect.DeepEqual(intent.args, []any{
+		"index-outbox-1",
+		"index-execution-1",
+		int64(1),
+		"cancelled",
+		retirementCodeCancelled,
+	}) {
+		t.Fatalf("retirement intent args=%#v", intent.args)
+	}
+}
+
 func TestIndexIngestRepositoryRejectsInvalidBounds(t *testing.T) {
 	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: &scriptedExecutor{}}, "runtime:index:commands")
 	if err != nil {

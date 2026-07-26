@@ -35,6 +35,9 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 				return err
 			}
 			if retired {
+				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
+					return err
+				}
 				retiredCount++
 			}
 		}
@@ -53,6 +56,9 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 				return err
 			}
 			if retired {
+				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
+					return err
+				}
 				retiredCount++
 			}
 		}
@@ -62,6 +68,50 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 		return 0, err
 	}
 	return retiredCount, nil
+}
+
+// persistCurrentIndexMetaRetirementIntent runs after the durable no-authority
+// retirement and its replay event, in the same transaction. It queues only a
+// local PostgreSQL marker; the standalone reconciler owns all external work.
+func persistCurrentIndexMetaRetirementIntent(
+	ctx context.Context,
+	tx sqlExecutor,
+	candidate noAuthorityRetirementCandidate,
+) error {
+	retirementCode := retirementCodeDeadlineExceeded
+	state := "failed"
+	if candidate.DesiredState == string(runtimedomain.DesiredCancelled) {
+		retirementCode = retirementCodeCancelled
+		state = "cancelled"
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_terminal_state = $4,
+    index_meta_terminal_occurred_at = o.retired_at,
+    index_meta_terminal_status = 'PENDING',
+    index_meta_terminal_attempt_count = 0,
+    index_meta_terminal_next_attempt_at = clock_timestamp()
+FROM elitea_runtime.command_outbox AS o
+WHERE o.outbox_id = $1
+  AND o.execution_id = $2
+  AND o.generation = $3
+  AND o.retired_at IS NOT NULL
+  AND o.authority_granted_at IS NULL
+  AND o.retirement_code = $5
+  AND i.execution_id = o.execution_id
+  AND i.generation = o.generation
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_initialized_at IS NOT NULL
+  AND i.index_meta_terminal_status IS NULL`,
+		candidate.OutboxID,
+		candidate.ExecutionID,
+		candidate.Generation,
+		state,
+		retirementCode,
+	); err != nil {
+		return fmt.Errorf("persist current index metadata retirement intent: %w", err)
+	}
+	return nil
 }
 
 func selectCancelledNoAuthorityIndexIngest(ctx context.Context, tx sqlExecutor, expectedStream string, limit int) ([]noAuthorityRetirementCandidate, error) {

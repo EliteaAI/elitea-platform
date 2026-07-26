@@ -164,6 +164,116 @@ WHERE id = $1`,
 	return nil
 }
 
+func (w *CurrentIndexMetaWriter) MaterializeTerminal(
+	ctx context.Context,
+	target indexingapp.CurrentIndexMetaTarget,
+	record indexingapp.CurrentTerminalIndexMeta,
+) error {
+	// PoV parity is intentionally limited to the current index_meta contract.
+	// Cancellation/failure does not delete partially written embeddings here;
+	// cleanup requires a separately versioned manual-vs-system policy.
+	if w == nil || ctx == nil || w.queryTimeout <= 0 || w.gate == nil || cap(w.gate) <= 0 ||
+		target.SchemaID <= 0 || target.SchemaID != record.ToolkitID ||
+		len(target.ConnectionString) == 0 ||
+		len(target.ConnectionString) > indexingapp.MaxCurrentIndexMetaConnectionStringBytes ||
+		record.Validate() != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case w.gate <- struct{}{}:
+		defer func() { <-w.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
+	if !ok {
+		return ErrCurrentIndexMetaWrite
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	queryContext, cancel := context.WithTimeout(ctx, w.queryTimeout)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(queryContext, config)
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeContext, closeCancel := context.WithTimeout(context.Background(), currentIndexMetaCloseTimeout)
+			defer closeCancel()
+			_ = connection.Close(closeContext)
+		}
+	}()
+
+	transaction, err := connection.BeginTx(queryContext, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	})
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackContext, rollbackCancel := context.WithTimeout(context.Background(), currentIndexMetaCloseTimeout)
+			defer rollbackCancel()
+			_ = transaction.Rollback(rollbackContext)
+		}
+	}()
+
+	schema := pgx.Identifier{strconv.FormatInt(int64(target.SchemaID), 10)}.Sanitize()
+	if _, err := transaction.Exec(
+		queryContext,
+		`SELECT pg_advisory_xact_lock($1::integer, 0)`,
+		target.SchemaID,
+	); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	existing, err := loadCurrentIndexMetaForUpdate(queryContext, transaction, schema, record.IndexName)
+	if err != nil {
+		return err
+	}
+	plan, err := planCurrentTerminalIndexMeta(record, existing)
+	if err != nil {
+		return err
+	}
+	if !plan.noop {
+		tag, err := transaction.Exec(
+			queryContext,
+			`UPDATE `+schema+`.langchain_pg_embedding
+SET cmetadata = $2::jsonb
+WHERE id = $1`,
+			plan.id,
+			plan.metadata,
+		)
+		if err != nil {
+			return currentIndexMetaWriteError(queryContext, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return indexingapp.ErrCurrentIndexMetaConflict
+		}
+	}
+
+	if err := transaction.Commit(queryContext); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed = true
+	closeContext, closeCancel := context.WithTimeout(context.Background(), currentIndexMetaCloseTimeout)
+	defer closeCancel()
+	if err := connection.Close(closeContext); err != nil {
+		return currentIndexMetaWriteError(closeContext, err)
+	}
+	closed = true
+	return nil
+}
+
 func currentIndexMetaSchemaStatements(schema string) []string {
 	return []string{
 		`CREATE SCHEMA IF NOT EXISTS ` + schema,
@@ -301,6 +411,95 @@ func planCurrentInitialIndexMeta(
 		document: record.Document,
 		metadata: metadata,
 	}, nil
+}
+
+func planCurrentTerminalIndexMeta(
+	record indexingapp.CurrentTerminalIndexMeta,
+	existing []currentStoredIndexMeta,
+) (currentIndexMetaWritePlan, error) {
+	if err := record.Validate(); err != nil || len(existing) != 1 {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	stored := existing[0]
+	generation, generationOK := currentIndexMetaInt64(stored.metadata["execution_generation"])
+	if generationOK && generation > int64(record.Generation) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	if stored.metadata["index_meta_id"] != record.MetaID ||
+		stored.metadata["execution_id"] != record.ExecutionID ||
+		!generationOK || generation != int64(record.Generation) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	state, stateOK := stored.metadata["state"].(string)
+	if !stateOK {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	terminal := cloneCurrentIndexMetaObject(stored.metadata)
+	delete(terminal, "history")
+	terminal["state"] = string(record.State)
+	terminal["updated_on"] = currentIndexMetaUnixSeconds(record.OccurredAt)
+	switch record.State {
+	case indexingapp.CurrentIndexMetaFailed:
+		terminal["error"] = record.SafeError
+	case indexingapp.CurrentIndexMetaCancelled:
+		terminal["task_id"] = nil
+		terminal["error"] = nil
+	}
+	if state == string(record.State) {
+		history := currentIndexMetaHistory(stored.metadata["history"])
+		if !currentTerminalIndexMetaCompatible(stored.metadata, history, record) {
+			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		return currentIndexMetaWritePlan{noop: true}, nil
+	}
+	if state != "in_progress" && !currentIndexMetaCanStartNextGeneration(state) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+
+	history := currentIndexMetaHistory(stored.metadata["history"])
+	if len(history) == 0 {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	active, ok := history[len(history)-1].(map[string]any)
+	if !ok || active["state"] != state ||
+		!reflect.DeepEqual(active["created_on"], terminal["created_on"]) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	history[len(history)-1] = cloneCurrentIndexMetaValue(terminal)
+	metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
+	if err != nil {
+		return currentIndexMetaWritePlan{}, err
+	}
+	return currentIndexMetaWritePlan{id: stored.id, metadata: metadata}, nil
+}
+
+func currentTerminalIndexMetaCompatible(
+	metadata map[string]any,
+	history []any,
+	record indexingapp.CurrentTerminalIndexMeta,
+) bool {
+	if len(history) == 0 || metadata["state"] != string(record.State) {
+		return false
+	}
+	last, ok := history[len(history)-1].(map[string]any)
+	if !ok || last["state"] != string(record.State) {
+		return false
+	}
+	if record.State == indexingapp.CurrentIndexMetaCancelled {
+		return metadata["task_id"] == nil && last["task_id"] == nil
+	}
+	errorText, ok := metadata["error"].(string)
+	if !ok || errorText == "" {
+		return false
+	}
+	lastError, ok := last["error"].(string)
+	return ok && lastError != ""
+}
+
+func currentIndexMetaUnixSeconds(value time.Time) json.Number {
+	value = value.UTC()
+	seconds := float64(value.Unix()) + float64(value.Nanosecond())/float64(time.Second)
+	return json.Number(strconv.FormatFloat(seconds, 'f', -1, 64))
 }
 
 func currentIndexMetaCanStartNextGeneration(state string) bool {
@@ -461,3 +660,4 @@ func currentIndexMetaWriteError(ctx context.Context, cause error) error {
 }
 
 var _ indexingapp.CurrentIndexMetaWriter = (*CurrentIndexMetaWriter)(nil)
+var _ indexingapp.CurrentIndexMetaTerminalWriter = (*CurrentIndexMetaWriter)(nil)

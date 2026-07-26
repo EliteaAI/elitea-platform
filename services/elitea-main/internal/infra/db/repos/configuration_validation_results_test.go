@@ -126,7 +126,7 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 2 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 	insert := executor.rowCalls[9]
@@ -140,6 +140,7 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
+	assertIndexTerminalIntentCall(t, executor.execCalls[1], cancelled, "cancelled")
 }
 
 func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejection(t *testing.T) {
@@ -176,7 +177,7 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 2 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 	insert := executor.rowCalls[9]
@@ -190,6 +191,66 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
+	assertIndexTerminalIntentCall(t, executor.execCalls[1], cancelled, "cancelled")
+}
+
+func TestRuntimeFailureProjectionPersistsIdempotentIndexOnlyTerminalIntent(t *testing.T) {
+	frame := testRuntimeFailureFrame(t)
+	record, _, err := failureOutputRecord(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &scriptedExecutor{
+		rowResults: []scriptedRow{
+			{err: pgx.ErrNoRows},
+			{err: pgx.ErrNoRows},
+			{err: pgx.ErrNoRows},
+			{values: []any{"claim-1"}},
+			{values: []any{"claim-1", "claim-1", "RUNNING", false, false, false}},
+			{values: []any{int64(41)}},
+			{values: outputRecordScanValues(record)},
+			{values: outputRecordScanValues(record)},
+			{values: outputRecordScanValues(record)},
+			{values: []any{int64(41)}},
+		},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("UPDATE 0"),
+		},
+	}
+	repository, err := newConfigurationValidationResultsRepository(
+		&scriptedProjectStore{scriptedExecutor: executor},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := outputapp.RuntimeFailureProjection{
+		Frame: frame,
+		BrowserData: []byte(
+			`{"code":"UNSUPPORTED_CAPABILITY","safe_message":"Unsupported capability.","retryable":false}`,
+		),
+	}
+	inserted, err := repository.ProjectRuntimeFailure(context.Background(), projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := repository.ProjectRuntimeFailure(context.Background(), projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inserted.Inserted || inserted.Cursor != 41 ||
+		replayed.Inserted || replayed.Cursor != 41 ||
+		len(executor.execCalls) != 3 {
+		t.Fatalf(
+			"inserted=%+v replayed=%+v execs=%d",
+			inserted,
+			replayed,
+			len(executor.execCalls),
+		)
+	}
+	assertIndexTerminalIntentCall(t, executor.execCalls[1], record, "failed")
+	assertIndexTerminalIntentCall(t, executor.execCalls[2], record, "failed")
 }
 
 func TestConfigurationValidationProjectionReplayedOriginalReturnsTypedCancellationForDurableMaterialization(t *testing.T) {
@@ -414,6 +475,34 @@ func outputRecordScanValues(record outputRecord) []any {
 		record.SettlementDigest[:],
 		record.SettlementKey,
 		record.OccurredAt,
+	}
+}
+
+func assertIndexTerminalIntentCall(
+	t *testing.T,
+	call queryCall,
+	record outputRecord,
+	state string,
+) {
+	t.Helper()
+	for _, predicate := range []string{
+		"UPDATE elitea_runtime.index_ingest_jobs",
+		"capability_id = 'index.ingest.v1'",
+		"index_meta_initialized_at IS NOT NULL",
+		"index_meta_terminal_status IS NULL",
+		"index_meta_terminal_status = 'PENDING'",
+		"index_meta_terminal_attempt_count = 0",
+	} {
+		if !strings.Contains(call.sql, predicate) {
+			t.Fatalf("terminal intent SQL is missing %q", predicate)
+		}
+	}
+	if len(call.args) != 4 ||
+		call.args[0] != record.ExecutionID ||
+		call.args[1] != int64(record.Generation) ||
+		call.args[2] != state ||
+		call.args[3] != record.OccurredAt.UTC() {
+		t.Fatalf("terminal intent args=%#v", call.args)
 	}
 }
 

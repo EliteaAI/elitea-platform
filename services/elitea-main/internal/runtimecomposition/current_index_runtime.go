@@ -40,10 +40,12 @@ func newCurrentIndexRuntime(
 	configurations *CurrentConfigurationsRuntime,
 	config Config,
 	policy repos.IndexIngestDispatchPolicy,
+	indexMetaWriter indexingapp.CurrentIndexMetaWriter,
 ) (*currentIndexRuntime, error) {
 	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
 		configurations.unsecreter == nil || configurations.expander == nil || configurations.models == nil || configurations.vaultLoader == nil ||
-		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 {
+		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 ||
+		indexMetaWriter == nil {
 		return nil, errors.New("current index runtime dependencies are required")
 	}
 	vaults := configurations.vaultLoader
@@ -135,7 +137,7 @@ func newCurrentIndexRuntime(
 	}
 	indexMetaInitializer, err := indexingapp.NewCurrentIndexMetaInitializer(
 		toolkitClaimer,
-		pgvector.NewCurrentIndexMetaWriter(),
+		indexMetaWriter,
 	)
 	if err != nil {
 		return nil, err

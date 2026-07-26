@@ -74,6 +74,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectConfigurationValidatio
 				return nil
 			}
 			if sameCanonicalCancellation(existing, record) {
+				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+					return err
+				}
 				if _, err := replayCursor(ctx, tx, record.EventID); err != nil {
 					return fmt.Errorf("load materialized cancellation cursor: %w", err)
 				}
@@ -104,6 +107,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectConfigurationValidatio
 					return nil
 				}
 				if sameCanonicalCancellation(existing, record) {
+					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+						return err
+					}
 					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
 						return cursorErr
 					}
@@ -229,6 +235,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		existing, err := loadExistingOutput(ctx, tx, record)
 		if err == nil {
 			if sameDurableOutput(existing, record) {
+				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+					return err
+				}
 				cursor, err := replayCursor(ctx, tx, record.EventID)
 				if err != nil {
 					return fmt.Errorf("load replayed failure cursor: %w", err)
@@ -237,6 +246,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 				return nil
 			}
 			if sameCanonicalCancellation(existing, record) {
+				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+					return err
+				}
 				if _, err := replayCursor(ctx, tx, record.EventID); err != nil {
 					return fmt.Errorf("load materialized failure cancellation cursor: %w", err)
 				}
@@ -256,6 +268,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 			existing, loadErr := loadExistingOutput(ctx, tx, record)
 			if loadErr == nil {
 				if sameDurableOutput(existing, record) {
+					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+						return err
+					}
 					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
 					if cursorErr != nil {
 						return cursorErr
@@ -264,6 +279,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 					return nil
 				}
 				if sameCanonicalCancellation(existing, record) {
+					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+						return err
+					}
 					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
 						return cursorErr
 					}
@@ -292,6 +310,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 			return err
 		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
+			return err
+		}
+		if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
 			return err
 		}
 		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: cursor, CommittedSequence: record.Sequence}
@@ -464,12 +485,15 @@ func materializeCanonicalCancellation(ctx context.Context, tx sqlExecutor, sourc
 		if _, err := replayCursor(ctx, tx, cancelled.EventID); err != nil {
 			return fmt.Errorf("load canonical cancellation cursor: %w", err)
 		}
-		return nil
+		return persistCurrentIndexMetaTerminalIntent(ctx, tx, existing)
 	}
 	if _, err := appendReplayEvent(ctx, tx, cancelled, replayEventRuntimeFailure, browserData); err != nil {
 		return err
 	}
-	return markOutputProjected(ctx, tx, cancelled.EventID)
+	if err := markOutputProjected(ctx, tx, cancelled.EventID); err != nil {
+		return err
+	}
+	return persistCurrentIndexMetaTerminalIntent(ctx, tx, cancelled)
 }
 
 func validationIssuesJSON(issues []configurationdomain.ValidationIssue) ([]byte, error) {
@@ -521,6 +545,48 @@ WHERE event_id = $1 AND projected_at IS NULL`, eventID)
 	}
 	if tag.RowsAffected() != 1 {
 		return errors.New("output inbox was not marked projected")
+	}
+	return nil
+}
+
+// persistCurrentIndexMetaTerminalIntent records only lightweight PostgreSQL
+// work for the standalone reconciler. It deliberately performs no secret
+// redemption, PgVector connection, or external metadata write.
+func persistCurrentIndexMetaTerminalIntent(
+	ctx context.Context,
+	tx sqlExecutor,
+	record outputRecord,
+) error {
+	if record.PayloadType != payloadTypeRuntimeFailure {
+		return outputapp.ErrInvalidValidationOutput
+	}
+	var state string
+	switch record.SettlementOutcome {
+	case executionapp.SettlementFailed:
+		state = "failed"
+	case executionapp.SettlementCancelled:
+		state = "cancelled"
+	default:
+		return outputapp.ErrInvalidValidationOutput
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_terminal_state = $3,
+    index_meta_terminal_occurred_at = $4,
+    index_meta_terminal_status = 'PENDING',
+    index_meta_terminal_attempt_count = 0,
+    index_meta_terminal_next_attempt_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2
+  AND capability_id = 'index.ingest.v1'
+  AND index_meta_initialized_at IS NOT NULL
+  AND index_meta_terminal_status IS NULL`,
+		record.ExecutionID,
+		int64(record.Generation),
+		state,
+		record.OccurredAt.UTC(),
+	); err != nil {
+		return fmt.Errorf("persist current index metadata terminal intent: %w", err)
 	}
 	return nil
 }

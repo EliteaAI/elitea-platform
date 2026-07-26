@@ -14,6 +14,7 @@ import (
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/redisdispatch"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/runtimegrpc"
@@ -224,6 +225,27 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		return nil, err
 	}
 
+	var indexMetaTerminalEffect *currentIndexMetaTerminalProcessor
+	var currentIndexMetaWriter *pgvector.CurrentIndexMetaWriter
+	if config.IndexIngestDispatchEnabled {
+		currentIndexMetaWriter = pgvector.NewCurrentIndexMetaWriter()
+		indexMetaTerminalEffect, err = newCurrentIndexMetaTerminalProcessor(
+			dependencies.ReplayPool,
+			dependencies.CurrentConfigurations,
+			currentIndexMetaWriter,
+			func(err error) {
+				dependencies.Logger.Error(
+					"current index metadata terminal item requeued",
+					"err",
+					err,
+				)
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct current index metadata terminal effect: %w", err)
+		}
+	}
+
 	outbox, err := repos.NewCommandOutboxRepository(dependencies.AdmissionPool, config.CommandStream)
 	if err != nil {
 		return nil, fmt.Errorf("construct runtime command outbox: %w", err)
@@ -291,6 +313,33 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	publisherRoot, err := newConfiguredPublisherSet(config.IndexIngestDispatchEnabled, publisher, indexPublisher)
 	if err != nil {
 		return nil, err
+	}
+	if config.IndexIngestDispatchEnabled {
+		indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
+			indexMetaTerminalEffect,
+			500*time.Millisecond,
+			8,
+			func(err error) {
+				dependencies.Logger.Error(
+					"current index metadata terminal reconciliation failed",
+					"err",
+					err,
+				)
+			},
+		)
+		if reconcileErr != nil {
+			return nil, fmt.Errorf(
+				"construct current index metadata terminal reconciler: %w",
+				reconcileErr,
+			)
+		}
+		publisherRoot, err = newPublisherSet(publisherRoot, indexMetaReconciler)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"compose current index metadata terminal reconciler: %w",
+				err,
+			)
+		}
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil {
 		configurationLifecycle, lifecycleErr := newCurrentConfigurationLifecyclePublisher(
@@ -385,7 +434,11 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
-	runtimeFailures, err := outputapp.NewRuntimeFailureService(outputInbox, outputClaims, results)
+	runtimeFailures, err := outputapp.NewRuntimeFailureService(
+		outputInbox,
+		outputClaims,
+		results,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -453,6 +506,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			dependencies.CurrentConfigurations,
 			config,
 			indexDispatchPolicy,
+			currentIndexMetaWriter,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("construct current index runtime: %w", err)

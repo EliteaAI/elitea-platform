@@ -78,21 +78,49 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1)
 
 	conflicting := currentIndexMetaIntegrationRecord(t, schemaID, "meta-2", "execution-2", "message-2")
+	conflicting = currentIndexMetaRecordWithGeneration(t, conflicting, 2)
 	if err := writer.MaterializeInitial(ctx, target, conflicting); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
 		t.Fatalf("active same-index conflict=%v", err)
 	}
 	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1)
 
-	if _, err := connection.Exec(ctx, `
-UPDATE `+schema+`.langchain_pg_embedding
-SET cmetadata = jsonb_set(cmetadata, '{state}', '"completed"'::jsonb)
-WHERE id = 'meta-1'`); err != nil {
+	terminal := indexingapp.CurrentTerminalIndexMeta{
+		MetaID:      first.MetaID,
+		ExecutionID: first.ExecutionID,
+		Generation:  first.Generation,
+		IndexName:   first.IndexName,
+		ToolkitID:   first.ToolkitID,
+		State:       indexingapp.CurrentIndexMetaFailed,
+		OccurredAt:  time.Date(2026, time.July, 26, 12, 13, 14, 567_000_000, time.UTC),
+		SafeError:   "A dependency is unavailable.",
+	}
+	if err := writer.MaterializeTerminal(ctx, target, terminal); err != nil {
+		t.Fatalf("terminalize failed metadata: %v", err)
+	}
+	if err := writer.MaterializeTerminal(ctx, target, terminal); err != nil {
+		t.Fatalf("recover committed terminal metadata: %v", err)
+	}
+	var terminalState string
+	if err := connection.QueryRow(ctx, `
+SELECT cmetadata->>'state'
+FROM `+schema+`.langchain_pg_embedding
+WHERE id = 'meta-1'`).Scan(&terminalState); err != nil {
 		t.Fatal(err)
+	}
+	if terminalState != "failed" {
+		t.Fatalf("terminal state=%q", terminalState)
 	}
 	if err := writer.MaterializeInitial(ctx, target, conflicting); err != nil {
 		t.Fatalf("start reindex generation: %v", err)
 	}
 	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-2", "execution-2", 2)
+	if err := writer.MaterializeTerminal(
+		ctx,
+		target,
+		terminal,
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
+		t.Fatalf("older terminal generation error=%v", err)
+	}
 }
 
 func currentIndexMetaIntegrationRecord(

@@ -25,6 +25,7 @@ var (
 	ErrCurrentIndexMetaTargetUnavailable          = errors.New("current index metadata target is unavailable")
 	ErrCurrentIndexMetaMaterializationUnavailable = errors.New("current index metadata materialization is unavailable")
 	ErrCurrentIndexMetaConflict                   = errors.New("another index execution is already active")
+	ErrCurrentIndexMetaSuperseded                 = errors.New("index metadata terminal effect was superseded")
 )
 
 // FrozenToolkitConfigurationClaim selects the exact immutable toolkit bytes
@@ -80,6 +81,198 @@ func (m CurrentInitialIndexMeta) Validate() error {
 // generation in the already-resolved project PgVector target.
 type CurrentIndexMetaWriter interface {
 	MaterializeInitial(context.Context, CurrentIndexMetaTarget, CurrentInitialIndexMeta) error
+}
+
+type CurrentIndexMetaTerminalState string
+
+const (
+	CurrentIndexMetaFailed    CurrentIndexMetaTerminalState = "failed"
+	CurrentIndexMetaCancelled CurrentIndexMetaTerminalState = "cancelled"
+)
+
+// CurrentIndexMetaTerminalBinding is the immutable admission evidence needed
+// to terminalize the matching external metadata generation. The frozen toolkit
+// bytes contain references only and are redeemed immediately before the write.
+type CurrentIndexMetaTerminalBinding struct {
+	ResourceProjectID    int32
+	ActorUserID          int32
+	ToolkitID            int32
+	IndexName            string
+	MetaID               string
+	ExecutionID          string
+	Generation           uint64
+	ToolkitConfiguration json.RawMessage
+}
+
+func (b CurrentIndexMetaTerminalBinding) Validate() error {
+	if b.ResourceProjectID <= 0 || b.ActorUserID <= 0 || b.ToolkitID <= 0 ||
+		b.IndexName == "" || len(b.IndexName) > maxIndexAdmissionStringBytes ||
+		!validOptionalText(b.MetaID, executiondomain.MaxIndexMetaIDBytes) || b.MetaID == "" ||
+		!validOptionalText(b.ExecutionID, maxIndexAdmissionStringBytes) || b.ExecutionID == "" ||
+		b.Generation == 0 || b.Generation > math.MaxInt64 ||
+		len(b.ToolkitConfiguration) == 0 ||
+		len(b.ToolkitConfiguration) > executiondomain.MaxInputEntryContentBytes ||
+		!validBoundedJSONObject(b.ToolkitConfiguration) {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	return nil
+}
+
+type CurrentIndexMetaTerminalRequest struct {
+	ExecutionID string
+	Generation  uint64
+	State       CurrentIndexMetaTerminalState
+	OccurredAt  time.Time
+	SafeError   string
+}
+
+type CurrentIndexMetaTerminalResolution string
+
+const (
+	CurrentIndexMetaTerminalApplied    CurrentIndexMetaTerminalResolution = "APPLIED"
+	CurrentIndexMetaTerminalSuperseded CurrentIndexMetaTerminalResolution = "SUPERSEDED"
+)
+
+type CurrentIndexMetaTerminalClaim struct {
+	CurrentIndexMetaTerminalRequest
+	ClaimToken string
+}
+
+func (c CurrentIndexMetaTerminalClaim) Validate() error {
+	if err := c.CurrentIndexMetaTerminalRequest.Validate(); err != nil ||
+		!validOptionalText(c.ClaimToken, maxIndexAdmissionStringBytes) ||
+		c.ClaimToken == "" {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	return nil
+}
+
+func (r CurrentIndexMetaTerminalRequest) Validate() error {
+	if !validOptionalText(r.ExecutionID, maxIndexAdmissionStringBytes) || r.ExecutionID == "" ||
+		r.Generation == 0 || r.Generation > math.MaxInt64 || r.OccurredAt.IsZero() {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	switch r.State {
+	case CurrentIndexMetaFailed:
+		if !validOptionalText(r.SafeError, maxIndexAdmissionStringBytes) || r.SafeError == "" {
+			return ErrCurrentIndexMetaInitializationInvalid
+		}
+		return nil
+	case CurrentIndexMetaCancelled:
+		if r.SafeError != "" {
+			return ErrCurrentIndexMetaInitializationInvalid
+		}
+		return nil
+	default:
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+}
+
+type CurrentTerminalIndexMeta struct {
+	MetaID      string
+	ExecutionID string
+	Generation  uint64
+	IndexName   string
+	ToolkitID   int32
+	State       CurrentIndexMetaTerminalState
+	OccurredAt  time.Time
+	SafeError   string
+}
+
+func (m CurrentTerminalIndexMeta) Validate() error {
+	if !validOptionalText(m.MetaID, executiondomain.MaxIndexMetaIDBytes) || m.MetaID == "" ||
+		m.ToolkitID <= 0 || m.IndexName == "" || len(m.IndexName) > maxIndexAdmissionStringBytes {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	return CurrentIndexMetaTerminalRequest{
+		ExecutionID: m.ExecutionID,
+		Generation:  m.Generation,
+		State:       m.State,
+		OccurredAt:  m.OccurredAt,
+		SafeError:   m.SafeError,
+	}.Validate()
+}
+
+type CurrentIndexMetaTerminalBindingRepository interface {
+	LoadCurrentIndexMetaTerminalBinding(context.Context, string, uint64) (CurrentIndexMetaTerminalBinding, error)
+}
+
+type CurrentIndexMetaTerminalWriter interface {
+	MaterializeTerminal(context.Context, CurrentIndexMetaTarget, CurrentTerminalIndexMeta) error
+}
+
+// CurrentIndexMetaTerminalizer applies a claimed terminal effect discovered
+// from durable runtime output or no-authority retirement evidence. The
+// standalone reconciler owns retry/backoff; the writer fences and deduplicates
+// the exact metadata generation.
+type CurrentIndexMetaTerminalizer struct {
+	bindings CurrentIndexMetaTerminalBindingRepository
+	toolkits FrozenToolkitConfigurationClaimer
+	writer   CurrentIndexMetaTerminalWriter
+}
+
+func NewCurrentIndexMetaTerminalizer(
+	bindings CurrentIndexMetaTerminalBindingRepository,
+	toolkits FrozenToolkitConfigurationClaimer,
+	writer CurrentIndexMetaTerminalWriter,
+) (*CurrentIndexMetaTerminalizer, error) {
+	if bindings == nil || toolkits == nil || writer == nil {
+		return nil, errors.New("current index metadata terminalizer dependencies are required")
+	}
+	return &CurrentIndexMetaTerminalizer{bindings: bindings, toolkits: toolkits, writer: writer}, nil
+}
+
+func (t *CurrentIndexMetaTerminalizer) Terminalize(
+	ctx context.Context,
+	request CurrentIndexMetaTerminalRequest,
+) error {
+	if t == nil || t.bindings == nil || t.toolkits == nil || t.writer == nil || ctx == nil {
+		return ErrCurrentIndexMetaInitializationInvalid
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	binding, err := t.bindings.LoadCurrentIndexMetaTerminalBinding(ctx, request.ExecutionID, request.Generation)
+	if err != nil {
+		return currentIndexMetaInitializationError(ctx, err)
+	}
+	if err := binding.Validate(); err != nil ||
+		binding.ExecutionID != request.ExecutionID ||
+		binding.Generation != request.Generation {
+		return ErrCurrentIndexMetaConflict
+	}
+	claimed, err := t.toolkits.ClaimFrozenToolkitConfiguration(ctx, FrozenToolkitConfigurationClaim{
+		ResourceProjectID:    binding.ResourceProjectID,
+		ActorUserID:          binding.ActorUserID,
+		ToolkitConfiguration: bytes.Clone(binding.ToolkitConfiguration),
+	})
+	if err != nil {
+		return currentIndexMetaInitializationError(ctx, err)
+	}
+	target, err := currentIndexMetaTarget(claimed, binding.ToolkitID, binding.ResourceProjectID)
+	if err != nil {
+		return err
+	}
+	record := CurrentTerminalIndexMeta{
+		MetaID:      binding.MetaID,
+		ExecutionID: binding.ExecutionID,
+		Generation:  binding.Generation,
+		IndexName:   binding.IndexName,
+		ToolkitID:   binding.ToolkitID,
+		State:       request.State,
+		OccurredAt:  request.OccurredAt.UTC(),
+		SafeError:   request.SafeError,
+	}
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	if err := t.writer.MaterializeTerminal(ctx, target, record); err != nil {
+		return currentIndexMetaInitializationError(ctx, err)
+	}
+	return nil
 }
 
 // CurrentIndexMetaInitializer ports the current reset_or_create metadata
@@ -297,6 +490,9 @@ func currentIndexMetaInitializationError(ctx context.Context, cause error) error
 	}
 	if errors.Is(cause, ErrCurrentIndexMetaConflict) {
 		return ErrCurrentIndexMetaConflict
+	}
+	if errors.Is(cause, ErrCurrentIndexMetaSuperseded) {
+		return ErrCurrentIndexMetaSuperseded
 	}
 	if errors.Is(cause, ErrCurrentIndexMetaTargetUnavailable) {
 		return ErrCurrentIndexMetaTargetUnavailable

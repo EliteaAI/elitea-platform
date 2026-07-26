@@ -280,6 +280,9 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 				outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
 				return nil
 			case sameCanonicalCancellation(existing, record):
+				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+					return indexProjectionError(err)
+				}
 				if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
 					return fmt.Errorf("load materialized index cancellation cursor: %w", cursorErr)
 				}
@@ -309,6 +312,9 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 					outcome = outputapp.ProjectionOutcome{Inserted: false, Cursor: cursor, CommittedSequence: record.Sequence}
 					return nil
 				case sameCanonicalCancellation(existing, record):
+					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+						return indexProjectionError(err)
+					}
 					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
 						return cursorErr
 					}
