@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -172,6 +173,110 @@ func TestCurrentIndexMetaTerminalEffectResolutionOwnsClaimToken(t *testing.T) {
 	}
 }
 
+func TestCurrentIndexMetaTerminalEffectSupersedesOnlyDurablyNewerInitializedIdentity(t *testing.T) {
+	occurredAt := time.Date(2026, time.July, 26, 12, 13, 14, 0, time.UTC)
+	store := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{true, true}}}}
+	repository, err := newCurrentIndexMetaTerminalBindingsRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := indexingapp.CurrentIndexMetaTerminalClaim{
+		CurrentIndexMetaTerminalRequest: indexingapp.CurrentIndexMetaTerminalRequest{
+			ExecutionID: "execution-a",
+			Generation:  1,
+			State:       indexingapp.CurrentIndexMetaCancelled,
+			OccurredAt:  occurredAt,
+		},
+		ClaimToken: "claim-a",
+	}
+	superseded, err := repository.SupersedeTerminalEffectIfNewerInitialized(
+		context.Background(),
+		claim,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !superseded || len(store.rowCalls) != 1 {
+		t.Fatalf("superseded=%v calls=%+v", superseded, store.rowCalls)
+	}
+	call := store.rowCalls[0]
+	for _, predicate := range []string{
+		"WITH stale AS MATERIALIZED",
+		"resolved AS",
+		"j.resource_project_id",
+		"i.toolkit_id",
+		"i.index_name",
+		"i.index_meta_terminal_claim_token = $5",
+		"index_meta_terminal_status = 'SUPERSEDED'",
+		"newer_job.resource_project_id = stale.resource_project_id",
+		"newer_index.toolkit_id = stale.toolkit_id",
+		"newer_index.index_name = stale.index_name",
+		"newer_index.index_meta_initialized_at IS NOT NULL",
+		"(newer_job.admitted_at, newer_job.execution_id)",
+		"> (stale.admitted_at, stale.execution_id)",
+		"EXISTS (SELECT 1 FROM stale)",
+		"EXISTS (SELECT 1 FROM resolved)",
+	} {
+		if !strings.Contains(call.sql, predicate) {
+			t.Fatalf("terminal supersession SQL is missing %q", predicate)
+		}
+	}
+	if len(call.args) != 5 ||
+		call.args[0] != claim.ExecutionID ||
+		call.args[1] != int64(claim.Generation) ||
+		call.args[2] != string(claim.State) ||
+		call.args[3] != occurredAt ||
+		call.args[4] != claim.ClaimToken {
+		t.Fatalf("terminal supersession args=%#v", call.args)
+	}
+}
+
+func TestCurrentIndexMetaTerminalEffectDoesNotInferSupersessionFromNoMatch(t *testing.T) {
+	store := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{true, false}}}}
+	repository, err := newCurrentIndexMetaTerminalBindingsRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	superseded, err := repository.SupersedeTerminalEffectIfNewerInitialized(
+		context.Background(),
+		indexingapp.CurrentIndexMetaTerminalClaim{
+			CurrentIndexMetaTerminalRequest: indexingapp.CurrentIndexMetaTerminalRequest{
+				ExecutionID: "execution-latest",
+				Generation:  1,
+				State:       indexingapp.CurrentIndexMetaCancelled,
+				OccurredAt:  time.Date(2026, time.July, 26, 12, 13, 14, 0, time.UTC),
+			},
+			ClaimToken: "claim-latest",
+		},
+	)
+	if err != nil || superseded {
+		t.Fatalf("superseded=%v err=%v", superseded, err)
+	}
+}
+
+func TestCurrentIndexMetaTerminalEffectRejectsLostClaimBeforeExternalWrite(t *testing.T) {
+	store := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{false, false}}}}
+	repository, err := newCurrentIndexMetaTerminalBindingsRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	superseded, err := repository.SupersedeTerminalEffectIfNewerInitialized(
+		context.Background(),
+		indexingapp.CurrentIndexMetaTerminalClaim{
+			CurrentIndexMetaTerminalRequest: indexingapp.CurrentIndexMetaTerminalRequest{
+				ExecutionID: "execution-reclaimed",
+				Generation:  1,
+				State:       indexingapp.CurrentIndexMetaCancelled,
+				OccurredAt:  time.Date(2026, time.July, 26, 12, 13, 14, 0, time.UTC),
+			},
+			ClaimToken: "stale-claim",
+		},
+	)
+	if !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) || superseded {
+		t.Fatalf("superseded=%v err=%v", superseded, err)
+	}
+}
+
 func TestIndexMetaTerminalEffectMigrationSeedsOldSourceBackedRows(t *testing.T) {
 	migration, err := os.ReadFile("../../../../migrations/shared/0043_index_meta_terminal_effect.sql")
 	if err != nil {
@@ -215,4 +320,189 @@ func TestIndexMetaTerminalEffectMigrationSeedsOldSourceBackedRows(t *testing.T) 
 			t.Fatalf("migration retains recurring source scan/index via %q", forbidden)
 		}
 	}
+}
+
+func TestIndexMetaTerminalSupersessionMigrationProvidesOrderedLookup(t *testing.T) {
+	migration, err := os.ReadFile("../../../../migrations/shared/0044_index_meta_terminal_supersession.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(migration)
+	for _, fragment := range []string{
+		"CREATE INDEX execution_jobs_index_identity_order_idx",
+		"resource_project_id, admitted_at, execution_id, generation",
+		"WHERE capability_id = 'index.ingest.v1'",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("terminal supersession migration is missing %q", fragment)
+		}
+	}
+}
+
+// TestPostgresCurrentIndexMetaEqualGenerationSupersession crosses the real
+// PostgreSQL migration, claim ownership and total-order transition. It proves
+// that generation=1 executions are ordered by (admitted_at, execution_id);
+// it does not cross PgVector or the runtime reconciler process.
+func TestPostgresCurrentIndexMetaEqualGenerationSupersession(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    16,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminals, err := NewCurrentIndexMetaTerminalBindingsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	first, err := newPostgresIndexAdmissionService(t, jobs, "supersession-a").Submit(
+		ctx,
+		postgresIndexSubmitRequest("supersession-a", "equal-generation"),
+	)
+	if err != nil || !first.Created || first.Generation != 1 {
+		t.Fatalf("first admission=%+v err=%v", first, err)
+	}
+	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   first.ExecutionID,
+		Generation:    first.Generation,
+		MetaID:        first.IndexMetaID,
+		CorrelationID: first.IndexMetaCorrelationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET state = 'SUCCEEDED',
+    settled_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2`,
+		first.ExecutionID,
+		int64(first.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	second, err := newPostgresIndexAdmissionService(t, jobs, "supersession-z").Submit(
+		ctx,
+		postgresIndexSubmitRequest("supersession-z", "equal-generation"),
+	)
+	if err != nil || !second.Created || second.Generation != 1 {
+		t.Fatalf("second admission=%+v err=%v", second, err)
+	}
+	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:   second.ExecutionID,
+		Generation:    second.Generation,
+		MetaID:        second.IndexMetaID,
+		CorrelationID: second.IndexMetaCorrelationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if first.ExecutionID >= second.ExecutionID {
+		t.Fatalf("fixture execution order is not increasing: first=%q second=%q", first.ExecutionID, second.ExecutionID)
+	}
+	admittedAt := time.Date(2026, time.July, 26, 12, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET admitted_at = $3
+WHERE (execution_id, generation) IN (($1, 1), ($2, 1))`,
+		first.ExecutionID,
+		second.ExecutionID,
+		admittedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	occurredAt := admittedAt.Add(time.Minute)
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_terminal_state = 'cancelled',
+    index_meta_terminal_occurred_at = $3,
+    index_meta_terminal_status = 'PENDING',
+    index_meta_terminal_claim_token = $4,
+    index_meta_terminal_claim_expires_at = clock_timestamp() + interval '1 minute',
+    index_meta_terminal_attempt_count = 1,
+    index_meta_terminal_next_attempt_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2`,
+		first.ExecutionID,
+		int64(first.Generation),
+		occurredAt,
+		"claim-first",
+	); err != nil {
+		t.Fatal(err)
+	}
+	firstClaim := indexingapp.CurrentIndexMetaTerminalClaim{
+		CurrentIndexMetaTerminalRequest: indexingapp.CurrentIndexMetaTerminalRequest{
+			ExecutionID: first.ExecutionID,
+			Generation:  first.Generation,
+			State:       indexingapp.CurrentIndexMetaCancelled,
+			OccurredAt:  occurredAt,
+		},
+		ClaimToken: "claim-first",
+	}
+	superseded, err := terminals.SupersedeTerminalEffectIfNewerInitialized(ctx, firstClaim)
+	if err != nil || !superseded {
+		t.Fatalf("supersede first equal-generation execution=%v err=%v", superseded, err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs
+WHERE execution_id = $1
+  AND generation = 1
+  AND index_meta_terminal_status = 'SUPERSEDED'
+  AND index_meta_terminal_claim_token IS NULL`,
+		first.ExecutionID,
+	)
+
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_terminal_state = 'cancelled',
+    index_meta_terminal_occurred_at = $3,
+    index_meta_terminal_status = 'PENDING',
+    index_meta_terminal_claim_token = $4,
+    index_meta_terminal_claim_expires_at = clock_timestamp() + interval '1 minute',
+    index_meta_terminal_attempt_count = 1,
+    index_meta_terminal_next_attempt_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2`,
+		second.ExecutionID,
+		int64(second.Generation),
+		occurredAt,
+		"claim-second",
+	); err != nil {
+		t.Fatal(err)
+	}
+	secondClaim := indexingapp.CurrentIndexMetaTerminalClaim{
+		CurrentIndexMetaTerminalRequest: indexingapp.CurrentIndexMetaTerminalRequest{
+			ExecutionID: second.ExecutionID,
+			Generation:  second.Generation,
+			State:       indexingapp.CurrentIndexMetaCancelled,
+			OccurredAt:  occurredAt,
+		},
+		ClaimToken: "claim-second",
+	}
+	superseded, err = terminals.SupersedeTerminalEffectIfNewerInitialized(ctx, secondClaim)
+	if err != nil || superseded {
+		t.Fatalf("latest execution superseded=%v err=%v", superseded, err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs
+WHERE execution_id = $1
+  AND generation = 1
+  AND index_meta_terminal_status = 'PENDING'
+  AND index_meta_terminal_claim_token = 'claim-second'`,
+		second.ExecutionID,
+	)
 }

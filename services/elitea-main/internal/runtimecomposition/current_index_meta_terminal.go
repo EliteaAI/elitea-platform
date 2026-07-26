@@ -34,6 +34,10 @@ type currentIndexMetaTerminalEffectStore interface {
 		int,
 		time.Duration,
 	) ([]indexingapp.CurrentIndexMetaTerminalClaim, error)
+	SupersedeTerminalEffectIfNewerInitialized(
+		context.Context,
+		indexingapp.CurrentIndexMetaTerminalClaim,
+	) (bool, error)
 	ResolveTerminalEffect(
 		context.Context,
 		indexingapp.CurrentIndexMetaTerminalClaim,
@@ -175,6 +179,17 @@ func (e *currentIndexMetaTerminalProcessor) applyClaim(
 	ctx context.Context,
 	claim indexingapp.CurrentIndexMetaTerminalClaim,
 ) (bool, error) {
+	superseded, err := e.store.SupersedeTerminalEffectIfNewerInitialized(ctx, claim)
+	if err != nil {
+		releaseErr := e.store.ReleaseTerminalEffect(ctx, claim, terminalEffectErrorCode(err))
+		if releaseErr != nil {
+			return false, errors.Join(err, releaseErr)
+		}
+		return true, err
+	}
+	if superseded {
+		return false, nil
+	}
 	if err := e.terminalizer.Terminalize(ctx, claim.CurrentIndexMetaTerminalRequest); err != nil {
 		if errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
 			return false, e.store.ResolveTerminalEffect(

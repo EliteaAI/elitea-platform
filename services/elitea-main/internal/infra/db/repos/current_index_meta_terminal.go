@@ -262,6 +262,89 @@ LIMIT 1`,
 	return terminalSafeError(payloadBytes, retirementCode), nil
 }
 
+// SupersedeTerminalEffectIfNewerInitialized atomically resolves a claimed
+// terminal intent only when PostgreSQL already contains a later initialized
+// execution for the same project/toolkit/index identity. The database admission
+// timestamp and execution ID form the total order because generation is still
+// scoped to one execution in the current baseline.
+func (r *CurrentIndexMetaTerminalBindingsRepository) SupersedeTerminalEffectIfNewerInitialized(
+	ctx context.Context,
+	claim indexingapp.CurrentIndexMetaTerminalClaim,
+) (bool, error) {
+	if r == nil || r.store == nil || ctx == nil {
+		return false, indexingapp.ErrCurrentIndexMetaInitializationInvalid
+	}
+	if err := claim.Validate(); err != nil {
+		return false, err
+	}
+	var owned, superseded bool
+	err := r.store.QueryRow(ctx, `
+WITH stale AS MATERIALIZED (
+    SELECT i.execution_id,
+           i.generation,
+           i.toolkit_id,
+           i.index_name,
+           j.resource_project_id,
+           j.admitted_at
+    FROM elitea_runtime.index_ingest_jobs AS i
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = i.execution_id
+     AND j.generation = i.generation
+     AND j.capability_id = i.capability_id
+    WHERE i.execution_id = $1
+      AND i.generation = $2
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NOT NULL
+      AND i.index_meta_terminal_state = $3
+      AND i.index_meta_terminal_occurred_at = $4
+      AND i.index_meta_terminal_status = 'PENDING'
+      AND i.index_meta_terminal_claim_token = $5
+),
+resolved AS (
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_terminal_status = 'SUPERSEDED',
+    index_meta_terminal_claim_token = NULL,
+    index_meta_terminal_claim_expires_at = NULL,
+    index_meta_terminal_next_attempt_at = NULL,
+    index_meta_terminal_last_error_code = NULL,
+    index_meta_terminalized_at = COALESCE(i.index_meta_terminalized_at, clock_timestamp())
+FROM stale
+WHERE i.execution_id = stale.execution_id
+  AND i.generation = stale.generation
+  AND EXISTS (
+      SELECT 1
+      FROM elitea_runtime.execution_jobs AS newer_job
+      JOIN elitea_runtime.index_ingest_jobs AS newer_index
+        ON newer_index.execution_id = newer_job.execution_id
+       AND newer_index.generation = newer_job.generation
+       AND newer_index.capability_id = newer_job.capability_id
+      WHERE newer_job.resource_project_id = stale.resource_project_id
+        AND newer_job.capability_id = 'index.ingest.v1'
+        AND newer_index.toolkit_id = stale.toolkit_id
+        AND newer_index.index_name = stale.index_name
+        AND newer_index.index_meta_initialized_at IS NOT NULL
+        AND (newer_job.admitted_at, newer_job.execution_id)
+            > (stale.admitted_at, stale.execution_id)
+  )
+RETURNING 1
+)
+SELECT EXISTS (SELECT 1 FROM stale),
+       EXISTS (SELECT 1 FROM resolved)`,
+		claim.ExecutionID,
+		int64(claim.Generation),
+		string(claim.State),
+		claim.OccurredAt.UTC(),
+		claim.ClaimToken,
+	).Scan(&owned, &superseded)
+	if err != nil {
+		return false, fmt.Errorf("supersede current index metadata terminal effect: %w", err)
+	}
+	if !owned {
+		return false, indexingapp.ErrCurrentIndexMetaConflict
+	}
+	return superseded, nil
+}
+
 func (r *CurrentIndexMetaTerminalBindingsRepository) ResolveTerminalEffect(
 	ctx context.Context,
 	claim indexingapp.CurrentIndexMetaTerminalClaim,

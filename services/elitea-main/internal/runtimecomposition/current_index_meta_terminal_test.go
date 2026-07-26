@@ -31,8 +31,11 @@ type currentIndexMetaTerminalEffectStoreStub struct {
 	mu           sync.Mutex
 	pending      []indexingapp.CurrentIndexMetaTerminalClaim
 	claimErr     error
+	supersedeErr error
 	resolveErr   error
 	releaseErr   error
+	superseded   map[string]bool
+	checked      []indexingapp.CurrentIndexMetaTerminalClaim
 	resolved     []indexingapp.CurrentIndexMetaTerminalClaim
 	resolutions  []indexingapp.CurrentIndexMetaTerminalResolution
 	released     []indexingapp.CurrentIndexMetaTerminalClaim
@@ -53,6 +56,16 @@ func (s *currentIndexMetaTerminalEffectStoreStub) ClaimPendingTerminalEffects(
 	s.claimLeases = append(s.claimLeases, lease)
 	count := min(limit, len(s.pending))
 	return append([]indexingapp.CurrentIndexMetaTerminalClaim(nil), s.pending[:count]...), s.claimErr
+}
+
+func (s *currentIndexMetaTerminalEffectStoreStub) SupersedeTerminalEffectIfNewerInitialized(
+	_ context.Context,
+	claim indexingapp.CurrentIndexMetaTerminalClaim,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checked = append(s.checked, claim)
+	return s.superseded[claim.ExecutionID], s.supersedeErr
 }
 
 func (s *currentIndexMetaTerminalEffectStoreStub) ResolveTerminalEffect(
@@ -229,6 +242,70 @@ func TestCurrentIndexMetaExplicitLaterGenerationBecomesSuperseded(t *testing.T) 
 		store.resolutions[0] != indexingapp.CurrentIndexMetaTerminalSuperseded ||
 		len(store.released) != 0 {
 		t.Fatalf("resolutions=%+v released=%+v", store.resolutions, store.released)
+	}
+}
+
+func TestCurrentIndexMetaDurablyNewerInitializedExecutionSkipsExternalWrite(t *testing.T) {
+	claim := terminalClaim("stale-equal-generation", indexingapp.CurrentIndexMetaCancelled)
+	terminalizer := &currentIndexMetaTerminalizerStub{}
+	store := &currentIndexMetaTerminalEffectStoreStub{
+		pending:    []indexingapp.CurrentIndexMetaTerminalClaim{claim},
+		superseded: map[string]bool{claim.ExecutionID: true},
+	}
+	effect := newTestCurrentIndexMetaEffect(terminalizer, store)
+
+	count, err := effect.ReconcilePendingIndexMetaTerminals(context.Background(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || len(store.checked) != 1 ||
+		store.checked[0].ExecutionID != claim.ExecutionID ||
+		len(terminalizer.requests) != 0 || len(store.resolved) != 0 ||
+		len(store.released) != 0 {
+		t.Fatalf(
+			"count=%d checked=%+v requests=%+v resolved=%+v released=%+v",
+			count,
+			store.checked,
+			terminalizer.requests,
+			store.resolved,
+			store.released,
+		)
+	}
+}
+
+func TestCurrentIndexMetaSupersessionLookupFailureRequeuesBeforeExternalWrite(t *testing.T) {
+	claim := terminalClaim("supersession-lookup-failure", indexingapp.CurrentIndexMetaCancelled)
+	dependencyErr := errors.New("database unavailable")
+	terminalizer := &currentIndexMetaTerminalizerStub{}
+	store := &currentIndexMetaTerminalEffectStoreStub{
+		pending:      []indexingapp.CurrentIndexMetaTerminalClaim{claim},
+		supersedeErr: dependencyErr,
+	}
+	effect := newTestCurrentIndexMetaEffect(terminalizer, store)
+	var reported []error
+	effect.reportItemFailure = func(err error) {
+		reported = append(reported, err)
+	}
+
+	count, err := effect.ReconcilePendingIndexMetaTerminals(context.Background(), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || len(terminalizer.requests) != 0 ||
+		len(store.released) != 1 ||
+		store.released[0].ExecutionID != claim.ExecutionID ||
+		len(store.releaseCodes) != 1 ||
+		store.releaseCodes[0] != "DEPENDENCY_UNAVAILABLE" {
+		t.Fatalf(
+			"count=%d requests=%+v released=%+v release_codes=%+v",
+			count,
+			terminalizer.requests,
+			store.released,
+			store.releaseCodes,
+		)
+	}
+	if len(reported) != 1 || !errors.Is(reported[0], dependencyErr) {
+		t.Fatalf("reported=%v", reported)
 	}
 }
 
