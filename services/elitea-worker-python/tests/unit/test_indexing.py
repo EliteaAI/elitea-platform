@@ -225,6 +225,120 @@ def test_current_index_callback_maps_state_shape_without_redeemed_configuration(
     assert "redeemed-secret" not in json.dumps(current)
 
 
+@pytest.mark.parametrize(
+    ("event_name", "event_type", "data", "expected_fields"),
+    [
+        (
+            "thinking_step",
+            "agent_thinking_step",
+            {
+                "message": "20 files processed",
+                "tool_name": "loader",
+                "toolkit": "EliteaGitHubAPIWrapper",
+                "toolkit_config": {
+                    "settings": {"private_token": "redeemed-secret"}
+                },
+                "tool_params": {"api_key": "redeemed-secret"},
+            },
+            {
+                "message": "20 files processed",
+                "tool_name": "loader",
+                "toolkit": "EliteaGitHubAPIWrapper",
+            },
+        ),
+        (
+            "thinking_step_update",
+            "agent_thinking_step_update",
+            {
+                "message": "20 files processed",
+                "tool_name": "loader",
+                "toolkit": "EliteaGitHubAPIWrapper",
+                "markdown": True,
+                "toolkit_config": {
+                    "settings": {"private_token": "redeemed-secret"}
+                },
+                "tool_params": {"api_key": "redeemed-secret"},
+            },
+            {
+                "message": "20 files processed",
+                "tool_name": "loader",
+                "toolkit": "EliteaGitHubAPIWrapper",
+                "markdown": True,
+            },
+        ),
+    ],
+)
+def test_current_index_callback_maps_current_thinking_shape_without_enrichment(
+    event_name: str,
+    event_type: str,
+    data: dict[str, Any],
+    expected_fields: dict[str, Any],
+) -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        events.append,
+    )
+    callback.on_custom_event(
+        event_name,
+        data,
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+        metadata={
+            "initiator": "user",
+            "tool_name": "index_data",
+            "display_name": "configurations",
+        },
+    )
+    callback.raise_if_failed()
+
+    assert len(events) == 1
+    current = json.loads(encode_current_node_event_json(events[0]))
+    assert set(current) == {
+        "type",
+        "stream_id",
+        "message_id",
+        "question_id",
+        "content",
+        "thinking",
+        "response_metadata",
+        "references",
+        "sio_event",
+        "created_at",
+        "parent_message_id",
+        "agent_name",
+        "execution_generation",
+    }
+    assert current["type"] == event_type
+    assert current["stream_id"] == "execution-1"
+    assert current["content"] is None
+    assert current["references"] == []
+    metadata = current["response_metadata"]
+    assert metadata == {
+        "name": event_name,
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "tool_run_id": "00000000-0000-0000-0000-000000000001",
+        "metadata": {
+            "initiator": "user",
+            "tool_name": "index_data",
+            "display_name": "configurations",
+        },
+        "datetime": metadata["datetime"],
+        **expected_fields,
+    }
+    assert "project_id" not in metadata
+    assert "user_id" not in metadata
+    assert "toolkit_id" not in metadata
+    assert "task_id" not in metadata
+    assert "redeemed-secret" not in json.dumps(current)
+
+
 def test_current_index_callback_rejects_an_oversized_status() -> None:
     callback = CurrentIndexNodeEventCallback(
         CurrentIndexNodeEventContext(

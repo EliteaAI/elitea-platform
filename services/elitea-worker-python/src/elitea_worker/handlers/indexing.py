@@ -29,6 +29,14 @@ from elitea_worker.protocol.node_event import (
 
 
 _CURRENT_INDEX_CUSTOM_EVENTS = {
+    "thinking_step": (
+        "agent_thinking_step",
+        frozenset({"message", "tool_name", "toolkit"}),
+    ),
+    "thinking_step_update": (
+        "agent_thinking_step_update",
+        frozenset({"message", "tool_name", "toolkit", "markdown"}),
+    ),
     "index_data_status": (
         "agent_index_data_status",
         frozenset(
@@ -97,7 +105,7 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Handle the two state-bearing callbacks emitted by index toolkits."""
+        """Handle the current progress callbacks emitted by index toolkits."""
 
         _ = tags, kwargs
         selected = _CURRENT_INDEX_CUSTOM_EVENTS.get(name)
@@ -129,10 +137,19 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                         "user_id": self._context.user_id,
                     }
                 )
-            elif "project_id" not in payload:
-                payload["project_id"] = self._context.project_id
-            if not payload.get("toolkit_id") and self._context.toolkit_id is not None:
-                payload["toolkit_id"] = self._context.toolkit_id
+                if (
+                    not payload.get("toolkit_id")
+                    and self._context.toolkit_id is not None
+                ):
+                    payload["toolkit_id"] = self._context.toolkit_id
+            elif name == "index_data_removed":
+                if "project_id" not in payload:
+                    payload["project_id"] = self._context.project_id
+                if (
+                    not payload.get("toolkit_id")
+                    and self._context.toolkit_id is not None
+                ):
+                    payload["toolkit_id"] = self._context.toolkit_id
 
             raw = json.dumps(
                 {

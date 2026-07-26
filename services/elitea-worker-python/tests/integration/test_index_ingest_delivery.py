@@ -83,7 +83,7 @@ class RecordingSdk:
                         name,
                         data,
                         run_id=UUID("00000000-0000-0000-0000-000000000007"),
-                        metadata={"source": "current-sdk"},
+                        metadata=kwargs["runtime_config"].get("metadata"),
                     )
                 except Exception as exc:
                     if not self.catch_callback_errors:
@@ -375,7 +375,11 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
             assert sdk.calls[0]["toolkit_config"]["settings"]["token"] == "github-secret"
             runtime_config = sdk.calls[0]["runtime_config"]
             assert len(runtime_config["callbacks"]) == 1
-            assert runtime_config["metadata"] == {"initiator": "user"}
+            assert runtime_config["metadata"] == {
+                "initiator": "user",
+                "tool_name": "index_data",
+                "display_name": "github",
+            }
         else:
             assert result.output_frame.runtime_error.code == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
             assert result.output_frame.runtime_error.safe_message == "The runtime operation failed."
@@ -513,7 +517,7 @@ def test_execute_internal_failure_emits_bounded_credential_safe_diagnostic(
     assert canary not in captured.err
 
 
-def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
+def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run() -> None:
@@ -525,6 +529,17 @@ def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
                 "result": {"status": "ok", "message": "Indexed 3 documents"},
             },
             custom_events=[
+                (
+                    "thinking_step",
+                    {
+                        "message": "20 files processed",
+                        "tool_name": "loader",
+                        "toolkit": "EliteaGitHubAPIWrapper",
+                        "toolkit_config": {
+                            "settings": {"private_token": canary}
+                        },
+                    },
+                ),
                 (
                     "index_data_status",
                     {
@@ -568,15 +583,40 @@ def test_current_sdk_index_status_is_acked_before_contiguous_terminal(
         result = await processing
 
         assert result.output_frame is not None
-        assert result.output_frame.sequence == 2
-        assert result.output_frame.settlement_proposal.terminal_sequence == 2
-        assert [frame.sequence for frame in output.frames] == [1, 2]
-        progress, terminal = output.frames
-        assert not progress.terminal
-        assert not progress.HasField("settlement_proposal")
-        assert progress.event_type == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT
+        assert result.output_frame.sequence == 3
+        assert result.output_frame.settlement_proposal.terminal_sequence == 3
+        assert [frame.sequence for frame in output.frames] == [1, 2, 3]
+        thinking, status, terminal = output.frames
+        for progress in (thinking, status):
+            assert not progress.terminal
+            assert not progress.HasField("settlement_proposal")
+            assert (
+                progress.event_type
+                == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT
+            )
         assert terminal == result.output_frame
-        browser_event = json.loads(encode_current_node_event_json(progress.node_event))
+
+        browser_event = json.loads(
+            encode_current_node_event_json(thinking.node_event)
+        )
+        assert browser_event["type"] == "agent_thinking_step"
+        assert browser_event["stream_id"] == case.command.execution_id
+        assert browser_event["response_metadata"]["message"] == "20 files processed"
+        assert browser_event["response_metadata"]["tool_name"] == "loader"
+        assert (
+            browser_event["response_metadata"]["toolkit"]
+            == "EliteaGitHubAPIWrapper"
+        )
+        assert browser_event["response_metadata"]["metadata"] == {
+            "initiator": "user",
+            "tool_name": "index_data",
+            "display_name": "github",
+        }
+        assert canary not in json.dumps(browser_event)
+
+        browser_event = json.loads(
+            encode_current_node_event_json(status.node_event)
+        )
         assert browser_event["type"] == "agent_index_data_status"
         assert browser_event["stream_id"] == case.command.execution_id
         metadata = browser_event["response_metadata"]

@@ -1313,7 +1313,13 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             mcp_tokens=resolved_input.mcp_tokens,
             runtime_config={
                 "callbacks": [callback],
-                "metadata": {"initiator": "user"},
+                "metadata": {
+                    "initiator": "user",
+                    "tool_name": "index_data",
+                    "display_name": _current_toolkit_display_name(
+                        resolved_input.toolkit_configuration.value
+                    ),
+                },
             },
         )
         try:
@@ -1371,6 +1377,20 @@ def _current_toolkit_id(toolkit_configuration: Any) -> int | str | None:
         parsed = _current_numeric_identity(value)
         return parsed if parsed else None
     return None
+
+
+def _current_toolkit_display_name(toolkit_configuration: Any) -> str:
+    if not isinstance(toolkit_configuration, dict):
+        return "index_data"
+    for field in ("toolkit_name", "name", "type"):
+        value = toolkit_configuration.get(field)
+        if (
+            isinstance(value, str)
+            and value
+            and len(value.encode("utf-8")) <= MAX_SAFE_STRING_BYTES
+        ):
+            return value
+    return "index_data"
 
 
 def _claim_receipt(response: control_pb2.ClaimCommandResponseV1) -> control_pb2.ClaimReceiptV1:
