@@ -83,6 +83,13 @@ type Querier interface {
 	// duplicate candidates a deterministic baseline order.
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
+	// The unqualified table name is intentional. This query runs only inside an
+	// authorized project transaction whose local search_path is p_<project_id>.
+	//
+	// The two predicates are independent to preserve the current endpoint:
+	// requesting MCP rows does not implicitly include application rows, and
+	// requesting application rows does not implicitly include MCP rows.
+	ListCurrentToolkitTypes(ctx context.Context, arg ListCurrentToolkitTypesParams) ([]string, error)
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
