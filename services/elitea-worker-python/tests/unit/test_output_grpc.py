@@ -8,6 +8,7 @@ from elitea.runtime.v1 import common_pb2, errors_pb2, output_pb2
 
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
+    DependencyUnavailable,
     InvalidInput,
     OutputCancellationWon,
     OutputDeadlineWon,
@@ -144,6 +145,22 @@ def _deadline_winner(
     ack.fence.CopyFrom(frame.fence)
     ack.rejection.code = errors_pb2.RUNTIME_ERROR_CODE_V1_DEADLINE_EXCEEDED
     ack.rejection.safe_message = "The execution deadline was exceeded."
+    ack.rejection.retryable = True
+    return ack
+
+
+def _retryable_rejection(
+    frame: output_pb2.ExecutionOutputFrameV1,
+    code: int,
+) -> output_pb2.ExecutionOutputAckV1:
+    ack = output_pb2.ExecutionOutputAckV1(
+        stream_id=frame.stream_id,
+        claim_handoff_watermark=frame.claim_handoff_watermark,
+    )
+    ack.identity.CopyFrom(frame.identity)
+    ack.fence.CopyFrom(frame.fence)
+    ack.rejection.code = code
+    ack.rejection.safe_message = "A required runtime dependency is unavailable."
     ack.rejection.retryable = True
     return ack
 
@@ -406,6 +423,127 @@ def test_only_exact_bound_deadline_rejection_exposes_winner_signal(
             assert not isinstance(rejected.value.__cause__, OutputDeadlineWon)
             assert malformed_spool.pending() != ()
             await malformed_session.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        errors_pb2.RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE,
+        errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL,
+    ],
+)
+def test_exact_bound_retryable_rejection_is_dependency_unavailable(
+    tmp_path: Path,
+    code: int,
+) -> None:
+    async def run() -> None:
+        call = FakeCall()
+        call.write_gate.set()
+        session, spool, _ = _session(tmp_path, call)
+        frame = _frame(1)
+        await session.start()
+        await call.controls.put(_ack(0))
+        await session.send(frame)
+        while not call.writes:
+            await asyncio.sleep(0)
+        await call.controls.put(_retryable_rejection(frame, code))
+
+        with pytest.raises(RuntimeError, match="unavailable") as caught:
+            await session.wait_for_ack(1, 1)
+        assert isinstance(caught.value.__cause__, DependencyUnavailable)
+        assert spool.pending() != ()
+        await session.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable", "change_binding", "expected"),
+    [
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE,
+            False,
+            False,
+            InvalidInput,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE,
+            True,
+            True,
+            AuthorizationFailure,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED,
+            True,
+            False,
+            AuthorizationFailure,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_AUTHORIZATION_FAILED,
+            True,
+            False,
+            AuthorizationFailure,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_STALE_FENCE,
+            True,
+            False,
+            AuthorizationFailure,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_INVALID_INPUT,
+            True,
+            False,
+            InvalidInput,
+        ),
+        (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION,
+            True,
+            False,
+            InvalidInput,
+        ),
+    ],
+    ids=[
+        "non-retryable-dependency",
+        "unbound-retryable-dependency",
+        "authentication",
+        "authorization",
+        "stale-fence",
+        "invalid-input",
+        "protocol-violation",
+    ],
+)
+def test_retryable_rejection_contract_fails_closed(
+    tmp_path: Path,
+    code: int,
+    retryable: bool,
+    change_binding: bool,
+    expected: type[InvalidInput] | type[AuthorizationFailure],
+) -> None:
+    async def run() -> None:
+        call = FakeCall()
+        call.write_gate.set()
+        session, spool, _ = _session(tmp_path, call)
+        frame = _frame(1)
+        await session.start()
+        await call.controls.put(_ack(0))
+        await session.send(frame)
+        while not call.writes:
+            await asyncio.sleep(0)
+        rejection = _retryable_rejection(frame, code)
+        rejection.rejection.retryable = retryable
+        if change_binding:
+            rejection.fence.fence_token = b"x" * 32
+        await call.controls.put(rejection)
+
+        with pytest.raises(RuntimeError, match="unavailable") as caught:
+            await session.wait_for_ack(1, 1)
+        assert isinstance(caught.value.__cause__, expected)
+        assert not isinstance(caught.value.__cause__, DependencyUnavailable)
+        assert spool.pending() != ()
+        await session.close()
 
     asyncio.run(run())
 

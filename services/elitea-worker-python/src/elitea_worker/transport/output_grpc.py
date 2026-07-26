@@ -19,6 +19,7 @@ from elitea_worker.constants import MAX_GRPC_REQUEST_BYTES, MAX_GRPC_RESPONSE_BY
 
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
+    DependencyUnavailable,
     ExecutionCancelled,
     InvalidInput,
     OutputCancellationWon,
@@ -373,6 +374,16 @@ class OutputGrpcSession:
                 errors_pb2.RUNTIME_ERROR_CODE_V1_STALE_FENCE,
             }:
                 raise AuthorizationFailure("The output stream was rejected.")
+            if (
+                rejection
+                in {
+                    errors_pb2.RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE,
+                    errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL,
+                }
+                and ack.rejection.retryable
+            ):
+                self._validate_retryable_rejection(ack)
+                raise DependencyUnavailable()
             raise InvalidInput("The output service rejected a frame or stream.")
         if ack.desired_state == common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED:
             raise ExecutionCancelled("Execution cancellation was observed on output control.")
@@ -486,6 +497,29 @@ class OutputGrpcSession:
         ):
             raise AuthorizationFailure(
                 "The output deadline winner is not bound to its exact frame."
+            )
+
+    def _validate_retryable_rejection(
+        self, ack: output_pb2.ExecutionOutputAckV1
+    ) -> None:
+        if (
+            self._stream_id is None
+            or ack.desired_state
+            != common_pb2.DESIRED_EXECUTION_STATE_V1_UNSPECIFIED
+            or ack.committed_contiguous_sequence != 0
+            or ack.credit_frames != 0
+            or ack.credit_bytes != 0
+            or not ack.stream_id
+            or not ack.HasField("identity")
+            or not ack.HasField("fence")
+            or ack.stream_id != self._stream_id
+            or ack.identity.SerializeToString(deterministic=True)
+            != self._identity_bytes
+            or ack.fence.SerializeToString(deterministic=True) != self._fence_bytes
+            or int(ack.claim_handoff_watermark) != self._claim_handoff_watermark
+        ):
+            raise AuthorizationFailure(
+                "The retryable output rejection is not bound to its exact frame."
             )
 
     def _bind_frame_identity(self, frame: output_pb2.ExecutionOutputFrameV1) -> None:

@@ -312,6 +312,29 @@ class DeadlineWinnerCall(FakeOutputCall):
         await self.controls.put(_bound_deadline_winner(frame))
 
 
+class DependencyRejectionCall(FakeOutputCall):
+    def __init__(self, *, retryable: bool) -> None:
+        super().__init__()
+        self.retryable = retryable
+        self.write_gate.set()
+
+    async def write(self, frame: output_pb2.ExecutionOutputFrameV1) -> None:
+        self.write_started.set()
+        self.frames.append(frame)
+        ack = _bound_ack(frame, committed=0)
+        ack.credit_frames = 0
+        ack.credit_bytes = 0
+        ack.desired_state = common_pb2.DESIRED_EXECUTION_STATE_V1_UNSPECIFIED
+        ack.rejection.code = (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE
+        )
+        ack.rejection.safe_message = (
+            "The index metadata terminal projection is temporarily unavailable."
+        )
+        ack.rejection.retryable = self.retryable
+        await self.controls.put(ack)
+
+
 class StaleFenceCall(FakeOutputCall):
     def __init__(self) -> None:
         super().__init__()
@@ -379,6 +402,31 @@ class DeadlineThenReplayFactory:
     def __call__(self) -> OutputGrpcSession:
         call: FakeOutputCall = (
             DeadlineWinnerCall() if not self.calls else AckReplayCall()
+        )
+        self.calls.append(call)
+        return OutputGrpcSession(
+            OutputStub(call),
+            spool=self.spool,
+            metadata=lambda: (("x-elitea-workload-session", _WORKLOAD_SESSION),),
+            max_queued_frames=2,
+            max_queued_bytes=128 * 1024,
+            max_frame_bytes=64 * 1024,
+        )
+
+
+class DependencyRejectionThenReplayFactory:
+    def __init__(
+        self, spool: EncryptedOutputSpool, *, retryable: bool
+    ) -> None:
+        self.spool = spool
+        self.retryable = retryable
+        self.calls: list[FakeOutputCall] = []
+
+    def __call__(self) -> OutputGrpcSession:
+        call: FakeOutputCall = (
+            DependencyRejectionCall(retryable=self.retryable)
+            if not self.calls
+            else AckReplayCall()
         )
         self.calls.append(call)
         return OutputGrpcSession(
@@ -1700,6 +1748,81 @@ def test_output_stream_crash_replays_exact_spooled_frame_without_business_reexec
         assert len(control.settlements) == 1
         assert acker.acked == [delivery]
         assert spool.pending() == ()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("retryable", [True, False], ids=["retryable", "terminal"])
+def test_dependency_rejection_honors_retryability_without_losing_spooled_frame(
+    tmp_path: Path,
+    retryable: bool,
+) -> None:
+    async def run() -> None:
+        fixture = _FIXTURES / "valid"
+        envelope = envelope_pb2.WorkerExecutionEnvelopeV1.FromString(
+            (fixture / "envelope.pb").read_bytes()
+        )
+        command = command_pb2.WorkerCommandV1.FromString(
+            envelope.signed_command.worker_command_bytes
+        )
+        manifest = input_pb2.ExecutionInputBundleV1.FromString(
+            (fixture / "input-bundle.pb").read_bytes()
+        )
+        frame = output_pb2.ExecutionOutputFrameV1.FromString(
+            (fixture / "expected-output.pb").read_bytes()
+        )
+        spool = EncryptedOutputSpool(
+            tmp_path / "retryable-rejection-spool",
+            key=b"r" * 32,
+            stream_aad=(
+                f"{frame.identity.execution_id}:{frame.identity.generation}".encode()
+            ),
+            max_frames=4,
+            max_bytes=128 * 1024,
+            max_frame_bytes=64 * 1024,
+        )
+        sessions = DependencyRejectionThenReplayFactory(
+            spool,
+            retryable=retryable,
+        )
+        processor = ConfigurationValidationDeliveryProcessor(
+            supervisor=InlineSupervisor(),
+            handler=None,
+            control=Control(command, envelope, manifest),
+            command_acker=Acker(),
+            input_client=CountingInput(b""),
+            input_request_builder=ClaimBoundInputRequestBuilder(
+                origin="https://content.test"
+            ),
+            output_session_factory=sessions,
+            signed_command_authenticator=TestOnlyConformanceHmacAuthenticator(),
+            workload_session_id=_WORKLOAD_SESSION,
+            producer_id=_PRODUCER,
+            clock_unix_millis=lambda: CONFORMANCE_OCCURRED_AT_UNIX_MILLIS,
+            max_output_sessions=2,
+        )
+
+        if retryable:
+            await processor._publish_output(frame)
+        else:
+            with pytest.raises(RuntimeError, match="unavailable") as caught:
+                await processor._publish_output(frame)
+            assert isinstance(caught.value.__cause__, InvalidInput)
+
+        assert len(sessions.calls) == (2 if retryable else 1)
+        first = sessions.calls[0]
+        assert len(first.frames) == 1
+        expected = frame.SerializeToString(deterministic=True)
+        assert first.frames[0].SerializeToString(deterministic=True) == expected
+        if retryable:
+            replay = sessions.calls[1]
+            assert len(replay.frames) == 1
+            assert replay.frames[0].SerializeToString(deterministic=True) == expected
+            assert spool.pending() == ()
+        else:
+            pending = spool.pending()
+            assert len(pending) == 1
+            assert pending[0].payload == expected
 
     asyncio.run(run())
 
