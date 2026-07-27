@@ -3,6 +3,9 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -37,10 +40,12 @@ func (p *recordingCurrentIndexActivityProjector) projectTerminal(
 
 func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *testing.T) {
 	occurredAt := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	thinkingFixture := currentWorkerThinkingStepFixture(t)
 	tests := []struct {
 		name         string
-		event        string
+		event        json.RawMessage
 		kind         string
+		runID        string
 		text         string
 		finishReason string
 		stepType     string
@@ -49,21 +54,21 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 	}{
 		{
 			name:  "tool start",
-			event: `{"type":"agent_tool_start","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"tool_name":"index_data","tool_run_id":"run-1","timestamp_start":"2026-07-27T09:59:58Z","metadata":{"initiator":"user","tool_name":"index_data","display_name":"configurations","ignored":"must-not-persist"}},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T09:59:58Z"}`,
+			event: json.RawMessage(`{"type":"agent_tool_start","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"tool_name":"index_data","tool_run_id":"run-1","timestamp_start":"2026-07-27T09:59:58Z","metadata":{"initiator":"user","tool_name":"index_data","display_name":"configurations","ignored":"must-not-persist"}},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T09:59:58Z"}`),
 			kind:  "tool_call",
+			runID: "run-1",
 		},
 		{
-			name:      "thinking step",
-			event:     `{"type":"agent_thinking_step","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"name":"thinking_step","run_id":"run-1","tool_run_id":"run-1","tool_name":"loader","message":"10 files processed","datetime":"2026-07-27T09:59:59Z","timestamp_start":"2026-07-27T09:59:57Z","timestamp_finish":"2026-07-27T09:59:59Z","type":"ChatGenerationChunk","model_name":"index-progress-model","metadata":{"initiator":"user","tool_name":"index_data","display_name":"configurations"}},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T09:59:59Z"}`,
-			kind:      "thinking_step",
-			text:      "10 files processed",
-			stepType:  "ChatGenerationChunk",
-			modelName: "index-progress-model",
+			name:  "standalone worker thinking step",
+			event: thinkingFixture,
+			kind:  "thinking_step",
+			runID: "00000000-0000-0000-0000-000000000001",
+			text:  "10 files processed",
 		},
 		{
 			name:  "tool error",
-			event: `{"type":"agent_tool_error","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"tool_name":"index_data","tool_run_id":"run-1","finish_reason":"error","timestamp_start":"2026-07-27T09:59:58Z","timestamp_finish":"2026-07-27T10:00:00Z"},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T10:00:00Z"}`,
-			kind:  "tool_call", finishReason: "error", isError: true,
+			event: json.RawMessage(`{"type":"agent_tool_error","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"tool_name":"index_data","tool_run_id":"run-1","finish_reason":"error","timestamp_start":"2026-07-27T09:59:58Z","timestamp_finish":"2026-07-27T10:00:00Z"},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T10:00:00Z"}`),
+			kind:  "tool_call", runID: "run-1", finishReason: "error", isError: true,
 		},
 	}
 	for _, test := range tests {
@@ -71,7 +76,7 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 			node, ok, err := currentIndexActivityNodeFromFrame(outputapp.NodeEventFrame{
 				EventID:     "command-1:7",
 				OccurredAt:  occurredAt,
-				BrowserData: json.RawMessage(test.event),
+				BrowserData: test.event,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -79,23 +84,27 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 			if !ok {
 				t.Fatal("current worker fixture was not mapped")
 			}
-			if node.kind != test.kind || node.runID != "run-1" ||
+			if node.kind != test.kind || node.runID != test.runID ||
 				node.text != test.text || node.finishReason != test.finishReason ||
 				node.stepType != test.stepType || node.modelName != test.modelName ||
 				node.isError != test.isError {
 				t.Fatalf("unexpected current Activity node: %+v", node)
 			}
-			if test.kind == "thinking_step" &&
-				(!node.startedAt.Equal(time.Date(2026, 7, 27, 9, 59, 57, 0, time.UTC)) ||
+			if test.kind == "thinking_step" {
+				currentDatetime := time.Date(2026, 7, 27, 10, 0, 0, int(time.Millisecond), time.UTC)
+				if !node.startedAt.Equal(currentDatetime) ||
 					node.finishedAt == nil ||
-					!node.finishedAt.Equal(time.Date(2026, 7, 27, 9, 59, 59, 0, time.UTC))) {
-				t.Fatalf("thinking detail timestamps drifted: %+v", node)
+					!node.finishedAt.Equal(currentDatetime) ||
+					node.stepType != "" ||
+					node.modelName != "" {
+					t.Fatalf("standalone thinking fallback drifted: %+v", node)
+				}
 			}
 			if strings.Contains(string(node.attrs), "ignored") ||
 				strings.Contains(string(node.attrs), "event-controlled") {
 				t.Fatalf("untrusted event identity/metadata reached attrs: %s", node.attrs)
 			}
-			if test.kind == "tool_call" && strings.Contains(test.event, "agent_tool_start") &&
+			if test.kind == "tool_call" && strings.Contains(string(test.event), "agent_tool_start") &&
 				!strings.Contains(string(node.attrs), `"display_name":"configurations"`) {
 				t.Fatalf("current tool display metadata was not projected: %s", node.attrs)
 			}
@@ -248,4 +257,46 @@ func currentActivityTestFrame() outputapp.NodeEventFrame {
 			`{"type":"agent_thinking_step","response_metadata":{"run_id":"run-1","message":"10 files processed","datetime":"2026-07-27T09:59:59Z"}}`,
 		),
 	}
+}
+
+func currentWorkerThinkingStepFixture(t *testing.T) json.RawMessage {
+	t.Helper()
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate current index Activity test source")
+	}
+	fixturePath := filepath.Join(
+		filepath.Dir(sourceFile),
+		"..", "..", "..", "..", "..",
+		"elitea-worker-python", "tests", "fixtures",
+		"current_index_thinking_step.json",
+	)
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read standalone worker thinking fixture: %v", err)
+	}
+	if !json.Valid(fixture) {
+		t.Fatal("standalone worker thinking fixture is not valid JSON")
+	}
+	var event struct {
+		Type             string         `json:"type"`
+		ResponseMetadata map[string]any `json:"response_metadata"`
+	}
+	if err := json.Unmarshal(fixture, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != "agent_thinking_step" {
+		t.Fatalf("standalone worker fixture type=%q", event.Type)
+	}
+	for _, enriched := range []string{
+		"timestamp_start",
+		"timestamp_finish",
+		"type",
+		"model_name",
+	} {
+		if _, found := event.ResponseMetadata[enriched]; found {
+			t.Fatalf("standalone worker fixture invented %q", enriched)
+		}
+	}
+	return fixture
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import threading
 from typing import Any
 from uuid import UUID
@@ -346,6 +347,63 @@ def test_current_index_callback_maps_current_thinking_shape_without_enrichment(
     assert "toolkit_id" not in metadata
     assert "task_id" not in metadata
     assert "redeemed-secret" not in json.dumps(current)
+
+
+def test_current_index_thinking_wire_matches_cross_language_fixture() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "current_index_thinking_step.json"
+        ).read_text(encoding="utf-8")
+    )
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id=fixture["stream_id"],
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            message_id=fixture["message_id"],
+            sio_event=fixture["sio_event"],
+            display_name="configurations",
+        ),
+        events.append,
+    )
+    callback.on_custom_event(
+        "thinking_step",
+        {
+            "message": "10 files processed",
+            "tool_name": "loader",
+            "toolkit": "EliteaGitHubAPIWrapper",
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+        metadata={"ignored_by_the_standalone_mapper": True},
+    )
+    callback.raise_if_failed()
+
+    assert len(events) == 1
+    current = json.loads(encode_current_node_event_json(events[0]))
+    # The callback owns wall-clock capture. Normalize only those two values;
+    # every identity, metadata, and business field must match the fixture that
+    # the Go projection integration test consumes.
+    current["created_at"] = fixture["created_at"]
+    current["response_metadata"]["datetime"] = fixture["response_metadata"][
+        "datetime"
+    ]
+    assert current == fixture
+    assert set(current["response_metadata"]) == {
+        "name",
+        "run_id",
+        "tool_run_id",
+        "metadata",
+        "datetime",
+        "message",
+        "tool_name",
+        "toolkit",
+    }
 
 
 def test_current_index_tool_lifecycle_is_correlated_and_credential_free() -> None:

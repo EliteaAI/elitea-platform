@@ -76,28 +76,30 @@ func TestPostgresCurrentIndexActivityPreservesOrderedStepsAndTenantIsolation(t *
 		t.Fatal(err)
 	}
 
-	base := time.Now().UTC().Truncate(time.Millisecond)
+	base := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
+	const currentRunID = "00000000-0000-0000-0000-000000000001"
 	events := make([]outputapp.NodeEventFrame, 0, 15)
 	events = append(events, postgresCurrentActivityNodeFrame(
 		t, expected, fence, 1, base, "agent_tool_start",
 		map[string]any{
-			"tool_name": "index_data", "tool_run_id": "index-run-1",
+			"tool_name": "index_data", "tool_run_id": currentRunID,
 			"timestamp_start": base.Format(time.RFC3339Nano),
 			"metadata": map[string]string{
 				"initiator": "user", "tool_name": "index_data", "display_name": "configurations",
 			},
 		},
 	))
-	for step := 1; step <= 13; step++ {
+	events = append(events, postgresCurrentActivityNodeFrameWithBrowserData(
+		t, expected, fence, 2, base.Add(time.Millisecond), currentWorkerThinkingStepFixture(t),
+	))
+	for step := 2; step <= 13; step++ {
 		at := base.Add(time.Duration(step) * time.Millisecond)
 		events = append(events, postgresCurrentActivityNodeFrame(
 			t, expected, fence, uint64(step+1), at, "agent_thinking_step",
 			map[string]any{
-				"name": "thinking_step", "run_id": "index-run-1", "tool_run_id": "index-run-1",
+				"name": "thinking_step", "run_id": currentRunID, "tool_run_id": currentRunID,
 				"tool_name": "loader", "message": fmt.Sprintf("%d files processed", step*10),
-				"datetime": at.Format(time.RFC3339Nano), "timestamp_start": at.Format(time.RFC3339Nano),
-				"timestamp_finish": at.Format(time.RFC3339Nano), "type": "ChatGenerationChunk",
-				"model_name": "index-progress-model",
+				"datetime": at.Format(time.RFC3339Nano), "toolkit": "EliteaGitHubAPIWrapper",
 				"metadata": map[string]string{
 					"initiator": "user", "tool_name": "index_data", "display_name": "configurations",
 				},
@@ -107,7 +109,7 @@ func TestPostgresCurrentIndexActivityPreservesOrderedStepsAndTenantIsolation(t *
 	events = append(events, postgresCurrentActivityNodeFrame(
 		t, expected, fence, 15, base.Add(15*time.Millisecond), "agent_tool_end",
 		map[string]any{
-			"tool_name": "index_data", "tool_run_id": "index-run-1", "finish_reason": "stop",
+			"tool_name": "index_data", "tool_run_id": currentRunID, "finish_reason": "stop",
 			"timestamp_start":  base.Format(time.RFC3339Nano),
 			"timestamp_finish": base.Add(15 * time.Millisecond).Format(time.RFC3339Nano),
 		},
@@ -304,8 +306,9 @@ ORDER BY trace.started_at NULLS LAST, trace.id`, qualified, qualified), messageU
 	}
 	thinking := fixtures[1]
 	if thinking["kind"] != "thinking_step" ||
-		thinking["step_type"] != "ChatGenerationChunk" ||
-		thinking["model_name"] != "index-progress-model" {
+		thinking["step_type"] != nil ||
+		thinking["model_name"] != nil ||
+		thinking["started_at"] != thinking["finished_at"] {
 		t.Fatalf("current UI thinking fixture changed: %#v", thinking)
 	}
 	attrs, ok := thinking["attrs"].(map[string]any)
@@ -341,9 +344,15 @@ func assertCurrentActivityPostgresQueryBudget(
 				frames = append(frames, postgresCurrentActivityNodeFrame(
 					t, expected, fence, uint64(index+1), at, "agent_thinking_step_update",
 					map[string]any{
+						"name":   "thinking_step",
 						"run_id": "query-budget-run", "tool_run_id": "query-budget-run",
 						"tool_name": "loader", "message": fmt.Sprintf("%d files processed", index+1),
 						"datetime": at.Format(time.RFC3339Nano),
+						"toolkit":  "EliteaGitHubAPIWrapper",
+						"metadata": map[string]string{
+							"initiator": "user", "tool_name": "index_data",
+							"display_name": "configurations",
+						},
 					},
 				))
 			}
@@ -467,6 +476,20 @@ func postgresCurrentActivityNodeFrame(
 	if err != nil {
 		t.Fatal(err)
 	}
+	return postgresCurrentActivityNodeFrameWithBrowserData(
+		t, expected, fence, sequence, occurredAt, browserData,
+	)
+}
+
+func postgresCurrentActivityNodeFrameWithBrowserData(
+	t *testing.T,
+	expected outputapp.ExpectedIndexIngest,
+	fence runtimedomain.Fence,
+	sequence uint64,
+	occurredAt time.Time,
+	browserData json.RawMessage,
+) outputapp.NodeEventFrame {
+	t.Helper()
 	wire := []byte(fmt.Sprintf("current-activity-node-%d", sequence))
 	return outputapp.NodeEventFrame{
 		StreamID: fence.ExecutionID + ":1", TenantID: expected.TenantID,
@@ -594,7 +617,7 @@ func assertCurrentActivityProjection(
 	var groups, toolCalls, thinking int
 	var streaming, toolVisible, indexActivity, orphanLinkage bool
 	var text, thinkingText, taskID string
-	var thinkingAt time.Time
+	var thinkingStartedAt, thinkingFinishedAt time.Time
 	if err := pool.QueryRow(t.Context(), fmt.Sprintf(`
 SELECT count(*)::integer,
        bool_or(message_group.is_streaming),
@@ -603,6 +626,7 @@ SELECT count(*)::integer,
        bool_and(trace.has_visible_content) FILTER (WHERE trace.kind = 'tool_call'),
        max(trace.text) FILTER (WHERE trace.kind = 'thinking_step'),
        max(trace.started_at) FILTER (WHERE trace.kind = 'thinking_step'),
+       max(trace.finished_at) FILTER (WHERE trace.kind = 'thinking_step'),
        max(message_text.content),
        bool_and(message_group.meta->>'activity_kind' = 'indexing'),
        max(message_group.task_id),
@@ -625,7 +649,8 @@ WHERE message_group.uuid = $1`,
 		&thinking,
 		&toolVisible,
 		&thinkingText,
-		&thinkingAt,
+		&thinkingStartedAt,
+		&thinkingFinishedAt,
 		&text,
 		&indexActivity,
 		&taskID,
@@ -637,10 +662,12 @@ WHERE message_group.uuid = $1`,
 	// text item exists, so these counts remain the actual trace cardinalities.
 	if groups != wantThinking+1 || streaming || toolCalls != 1 || !toolVisible ||
 		thinking != wantThinking || thinkingText != wantThinkingText ||
-		!thinkingAt.Equal(wantThinkingAt) || text != wantText ||
+		!thinkingStartedAt.Equal(wantThinkingAt) ||
+		!thinkingFinishedAt.Equal(wantThinkingAt) || text != wantText ||
 		!indexActivity || taskID == "" || !orphanLinkage {
-		t.Fatalf("current Activity projection: rows=%d streaming=%t tools=%d tool_visible=%t thinking=%d thinking_text=%q thinking_at=%s text=%q index_activity=%t task_id=%q orphan_linkage=%t",
-			groups, streaming, toolCalls, toolVisible, thinking, thinkingText, thinkingAt, text,
+		t.Fatalf("current Activity projection: rows=%d streaming=%t tools=%d tool_visible=%t thinking=%d thinking_text=%q thinking_started_at=%s thinking_finished_at=%s text=%q index_activity=%t task_id=%q orphan_linkage=%t",
+			groups, streaming, toolCalls, toolVisible, thinking, thinkingText,
+			thinkingStartedAt, thinkingFinishedAt, text,
 			indexActivity, taskID, orphanLinkage)
 	}
 }
