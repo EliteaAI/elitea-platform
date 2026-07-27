@@ -16,8 +16,10 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -189,6 +191,46 @@ func (v *Vault) LookupRegularInteger(name string) (Secret, error) {
 	return Secret{}, ErrSecretNotFound
 }
 
+// LookupPythonInteger is the compatibility accessor for the current chat
+// configuration endpoint, whose Python implementation calls int(value) after
+// merging project regular, project hidden, and shared admin regular secrets.
+// It preserves regular-over-hidden precedence and returns an arbitrary-
+// precision canonical base-10 integer.
+func (v *Vault) LookupPythonInteger(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+	secret, err := v.LookupRegularPythonInteger(name)
+	if err == nil || !errors.Is(err, ErrSecretNotFound) {
+		return secret, err
+	}
+	if raw, ok := v.hidden[name]; ok {
+		value, ok := decodePythonInteger(raw)
+		if !ok {
+			return Secret{}, ErrInvalidSecret
+		}
+		return Secret{Value: value, Hidden: true}, nil
+	}
+	return Secret{}, ErrSecretNotFound
+}
+
+// LookupRegularPythonInteger is LookupPythonInteger without hidden-secret
+// fallback. It is the only variant suitable for the shared admin vault.
+func (v *Vault) LookupRegularPythonInteger(name string) (Secret, error) {
+	if v == nil {
+		return Secret{}, ErrInvalidVault
+	}
+	raw, ok := v.regular[name]
+	if !ok {
+		return Secret{}, ErrSecretNotFound
+	}
+	value, ok := decodePythonInteger(raw)
+	if !ok {
+		return Secret{}, ErrInvalidSecret
+	}
+	return Secret{Value: value}, nil
+}
+
 func open(projectKey [fernetKeyBytes]byte, encryptedVault []byte) (*Vault, error) {
 	defer clearKey(&projectKey)
 
@@ -308,6 +350,122 @@ func decodeInteger(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatInt(int64(parsedFloat), 10), true
+}
+
+func decodePythonInteger(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	// The current writer already rejects a rewritten vault above 8 MiB.
+	// Reusing that durable compatibility ceiling prevents one integer from
+	// creating an unbounded big.Int/HTTP response without narrowing any value
+	// that the current writer can persist.
+	if len(trimmed) == 0 || len(trimmed) > maxRewrittenVaultPlaintextBytes {
+		return "", false
+	}
+	if bytes.Equal(trimmed, []byte("true")) {
+		return "1", true
+	}
+	if bytes.Equal(trimmed, []byte("false")) {
+		return "0", true
+	}
+	if trimmed[0] == '"' {
+		var value string
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return "", false
+		}
+		return parsePythonDecimalString(value)
+	}
+	if bytes.IndexAny(trimmed, ".eE") < 0 {
+		value := new(big.Int)
+		if _, ok := value.SetString(string(trimmed), 10); !ok {
+			return "", false
+		}
+		return value.String(), true
+	}
+
+	// json.loads uses a binary64 float for a JSON number containing a decimal
+	// point or exponent. Python int(float) then truncates toward zero and emits
+	// the exact integer represented by that binary64 value.
+	value, err := strconv.ParseFloat(string(trimmed), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return "", false
+	}
+	integer, _ := new(big.Float).SetFloat64(value).Int(nil)
+	return integer.String(), true
+}
+
+func parsePythonDecimalString(value string) (string, bool) {
+	runes := []rune(value)
+	start := 0
+	for start < len(runes) && unicode.IsSpace(runes[start]) {
+		start++
+	}
+	end := len(runes)
+	for end > start && unicode.IsSpace(runes[end-1]) {
+		end--
+	}
+	if start == end {
+		return "", false
+	}
+
+	sign := byte(0)
+	if runes[start] == '+' || runes[start] == '-' {
+		sign = byte(runes[start])
+		start++
+	}
+	if start == end {
+		return "", false
+	}
+
+	decimal := make([]byte, 0, end-start+1)
+	if sign != 0 {
+		decimal = append(decimal, sign)
+	}
+	digitBefore := false
+	for index := start; index < end; index++ {
+		current := runes[index]
+		if current == '_' {
+			if !digitBefore || index+1 >= end {
+				return "", false
+			}
+			if _, ok := pythonDecimalDigit(runes[index+1]); !ok {
+				return "", false
+			}
+			digitBefore = false
+			continue
+		}
+		digit, ok := pythonDecimalDigit(current)
+		if !ok {
+			return "", false
+		}
+		decimal = append(decimal, byte('0'+digit))
+		digitBefore = true
+	}
+	if !digitBefore {
+		return "", false
+	}
+	integer := new(big.Int)
+	if _, ok := integer.SetString(string(decimal), 10); !ok {
+		return "", false
+	}
+	return integer.String(), true
+}
+
+func pythonDecimalDigit(value rune) (byte, bool) {
+	for _, range16 := range unicode.Digit.R16 {
+		if value < rune(range16.Lo) || value > rune(range16.Hi) ||
+			(value-rune(range16.Lo))%rune(range16.Stride) != 0 {
+			continue
+		}
+		return byte(((value - rune(range16.Lo)) / rune(range16.Stride)) % 10), true
+	}
+	for _, range32 := range unicode.Digit.R32 {
+		if value < rune(range32.Lo) || value > rune(range32.Hi) ||
+			(value-rune(range32.Lo))%rune(range32.Stride) != 0 {
+			continue
+		}
+		return byte(((value - rune(range32.Lo)) / rune(range32.Stride)) % 10), true
+	}
+	return 0, false
 }
 
 func decodeFernetKey(encoded []byte) ([fernetKeyBytes]byte, bool) {

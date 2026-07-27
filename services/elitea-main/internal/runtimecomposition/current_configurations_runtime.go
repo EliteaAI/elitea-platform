@@ -248,6 +248,16 @@ func (runtime *CurrentConfigurationsRuntime) VaultWriter() *repos.CurrentSecretV
 	return runtime.vaultWriter
 }
 
+// VaultLoader exposes the request-scoped read capability owned by this
+// runtime. Callers must not retain decrypted vault snapshots or destroy the
+// returned loader; lifecycle remains with CurrentConfigurationsRuntime.
+func (runtime *CurrentConfigurationsRuntime) VaultLoader() storage.SecretVaultLoader {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.vaultLoader
+}
+
 func (runtime *CurrentConfigurationsRuntime) Destroy() {
 	if runtime == nil {
 		return

@@ -192,6 +192,12 @@ func TestNilVaultFailsClosed(t *testing.T) {
 	if _, err := vault.LookupRegularInteger("canary"); !errors.Is(err, ErrInvalidVault) {
 		t.Fatalf("regular integer lookup error = %v, want ErrInvalidVault", err)
 	}
+	if _, err := vault.LookupPythonInteger("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("python integer lookup error = %v, want ErrInvalidVault", err)
+	}
+	if _, err := vault.LookupRegularPythonInteger("canary"); !errors.Is(err, ErrInvalidVault) {
+		t.Fatalf("regular python integer lookup error = %v, want ErrInvalidVault", err)
+	}
 }
 
 func TestLookupRegularDoesNotExposeHiddenSecret(t *testing.T) {
@@ -276,6 +282,59 @@ func TestLookupRegularIntegerAcceptsCurrentPythonIntShapes(t *testing.T) {
 	}
 	if _, err := vault.LookupRegularInteger("hidden"); !errors.Is(err, ErrSecretNotFound) {
 		t.Fatalf("hidden integer error=%v", err)
+	}
+}
+
+func TestLookupPythonIntegerMatchesCurrentChatConfigIntContract(t *testing.T) {
+	vault := &Vault{
+		regular: map[string]json.RawMessage{
+			"bool_true":          json.RawMessage(`true`),
+			"bool_false":         json.RawMessage(`false`),
+			"integer":            json.RawMessage(`123456789012345678901234567890`),
+			"fraction":           json.RawMessage(`45.9`),
+			"negative":           json.RawMessage(`-45.9`),
+			"exponent":           json.RawMessage(`1e20`),
+			"binary64_exponent":  json.RawMessage(`1e100`),
+			"binary64_underflow": json.RawMessage(`1e-400`),
+			"string":             json.RawMessage(`" +1_234 "`),
+			"unicode_digits":     json.RawMessage(`"١٢٣"`),
+			"regular_wins":       json.RawMessage(`7`),
+			"string_float":       json.RawMessage(`"45.0"`),
+			"null":               json.RawMessage(`null`),
+			"object":             json.RawMessage(`{"value":45}`),
+			"invalid_underscore": json.RawMessage(`"1__2"`),
+		},
+		hidden: map[string]json.RawMessage{
+			"hidden":       json.RawMessage(`88.7`),
+			"regular_wins": json.RawMessage(`9`),
+		},
+	}
+	for name, want := range map[string]string{
+		"bool_true":          "1",
+		"bool_false":         "0",
+		"integer":            "123456789012345678901234567890",
+		"fraction":           "45",
+		"negative":           "-45",
+		"exponent":           "100000000000000000000",
+		"binary64_exponent":  "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104",
+		"binary64_underflow": "0",
+		"string":             "1234",
+		"unicode_digits":     "123",
+		"hidden":             "88",
+		"regular_wins":       "7",
+	} {
+		secret, err := vault.LookupPythonInteger(name)
+		if err != nil || secret.Value != want {
+			t.Fatalf("lookup %q = %+v, %v; want %q", name, secret, err, want)
+		}
+	}
+	for _, name := range []string{"string_float", "null", "object", "invalid_underscore"} {
+		if _, err := vault.LookupPythonInteger(name); !errors.Is(err, ErrInvalidSecret) {
+			t.Fatalf("invalid lookup %q error=%v", name, err)
+		}
+	}
+	if _, err := vault.LookupRegularPythonInteger("hidden"); !errors.Is(err, ErrSecretNotFound) {
+		t.Fatalf("admin-style regular lookup exposed hidden secret: %v", err)
 	}
 }
 

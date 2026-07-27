@@ -22,12 +22,103 @@ import (
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
+
+type productionChatConfigReader struct{}
+
+func (productionChatConfigReader) GetCurrentChatConfig(
+	context.Context,
+	int64,
+) (promptcontextreadsapi.CurrentChatConfig, error) {
+	return promptcontextreadsapi.CurrentChatConfig{
+		ChatMaxUploadCount:       "10",
+		ChatMaxUploadSizeMB:      "150",
+		ChatMaxFileUploadSizeMB:  "150",
+		ChatMaxImageUploadCount:  "10",
+		ChatMaxImageUploadSizeMB: "3",
+	}, nil
+}
+
+type productionProjectContextReader struct{}
+
+func (productionProjectContextReader) GetCurrentProjectContext(
+	context.Context,
+	int64,
+) (promptcontextreadsapi.CurrentProjectContext, error) {
+	return promptcontextreadsapi.CurrentProjectContext{Content: "", Enabled: true}, nil
+}
+
+type productionPromptContextPermissionResolver struct{}
+
+func (productionPromptContextPermissionResolver) ResolvePermissions(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error) {
+	return auth.PermissionResolution{
+		UserID: 11,
+		Permissions: []string{
+			promptcontextreadsapi.CurrentChatConfigPermission,
+			promptcontextreadsapi.CurrentProjectContextPermission,
+		},
+	}, nil
+}
+
+func TestProductionRouterMountsOnlyCurrentPromptContextGETs(t *testing.T) {
+	routes, err := promptcontextreadsapi.NewCurrentRoutes(
+		productionChatConfigReader{},
+		productionProjectContextReader{},
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionPromptContextPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentPromptContextReads: routes})
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/api/v2/elitea_core/chat_config/prompt_lib/7", http.StatusOK},
+		{http.MethodGet, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusOK},
+		{http.MethodPut, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v2/elitea_core/chat_config/default/7", http.StatusNotFound},
+	} {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		request.RemoteAddr = "10.0.0.8:43120"
+		request.Header.Set("X-Auth-Type", "user")
+		request.Header.Set("X-Auth-ID", "11")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != test.want {
+			t.Fatalf("%s %s status=%d want=%d body=%q", test.method, test.path, response.Code, test.want, response.Body.String())
+		}
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	for _, path := range []string{
+		"/api/v2/elitea_core/chat_config/prompt_lib/7",
+		"/api/v2/elitea_core/project_context/prompt_lib/7/project-context",
+	} {
+		response := httptest.NewRecorder()
+		uncomposed.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("uncomposed %s status=%d", path, response.Code)
+		}
+	}
+}
 
 func TestProductionAuthRoutesRequireBothReviewedEdges(t *testing.T) {
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})

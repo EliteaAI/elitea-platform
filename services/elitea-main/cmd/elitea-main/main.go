@@ -23,6 +23,7 @@ import (
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
@@ -265,6 +266,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load current Configurations settings: %w", err)
 	}
+	currentPromptContextReadsSettings, err :=
+		currentPromptContextReadsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current prompt-context read settings: %w", err)
+	}
+	if currentPromptContextReadsSettings.Enabled && !currentConfigurationsConfig.Enabled {
+		return errors.New("ELITEA_PROMPT_CONTEXT_READS_ENABLED requires ELITEA_CONFIGURATIONS_ENABLED=true")
+	}
 	if currentConfigurationsConfig.Enabled && (formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
@@ -277,6 +286,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentModelDefault http.Handler
 	var currentLLMFacade http.Handler
 	var currentLLMRoot *runtimecomposition.CurrentLLMRuntime
+	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
 			pool,
@@ -348,6 +358,30 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			}
 			defer currentLLMRoot.Close()
 			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
+		}
+		if currentPromptContextReadsSettings.Enabled {
+			chatConfigReader, readerErr :=
+				promptcontextreadsapi.NewCurrentChatConfigVaultReader(
+					currentConfigurationsRoot.VaultLoader(),
+				)
+			if readerErr != nil {
+				return fmt.Errorf("compose current chat configuration reader: %w", readerErr)
+			}
+			projectContextReader, readerErr :=
+				promptcontextreadsapi.NewCurrentProjectContextRepository(pool)
+			if readerErr != nil {
+				return fmt.Errorf("compose current project-context reader: %w", readerErr)
+			}
+			currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
+				chatConfigReader,
+				projectContextReader,
+				currentAuth,
+				currentPermissions,
+			)
+			if err != nil {
+				return fmt.Errorf("compose current prompt-context read routes: %w", err)
+			}
+			logger.Info("current prompt-context read routes enabled")
 		}
 		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
 	}
@@ -492,6 +526,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentProjectInfo:            currentProjectInfo,
 		CurrentIndexTypes:             currentIndexTypes,
 		CurrentApplicationSkills:      currentApplicationSkills,
+		CurrentPromptContextReads:     currentPromptContextReads,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
