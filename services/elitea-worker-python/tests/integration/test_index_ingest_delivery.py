@@ -351,6 +351,7 @@ class Control:
         begin_dispositions: list[int] | None = None,
         claim_disposition: int | None = None,
         receipt_fence: common_pb2.ExecutionFenceV1 | None = None,
+        desired_state: int = common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
     ) -> None:
         self.case = case
         self.active = active
@@ -364,7 +365,7 @@ class Control:
         self.begin_dispositions = begin_dispositions or [
             control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW
         ]
-        self.desired_state = common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING
+        self.desired_state = desired_state
         self.cancellation_observed = asyncio.Event()
 
     async def claim_command(self, request):
@@ -383,7 +384,7 @@ class Control:
             identity=_identity(self.case.command),
             fence=self.receipt_fence,
             lease_expires_at_unix_millis=_NOW + 120_000,
-            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+            desired_state=self.desired_state,
             claim_handoff_watermark=self.claim_handoff_watermark,
         )
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_ACCEPTED:
@@ -1264,6 +1265,247 @@ def test_node_event_ack_loss_replays_on_redis_redelivery_without_sdk(
         assert all(control.begins == 0 for control in controls)
         assert all(control.settlements == 0 for control in controls)
         assert acker.calls == 0
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_running_recovery_replays_progress_then_settles_once() -> None:
+    async def run() -> None:
+        case = _case()
+        pending = _pending_node_event(case)
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == 2
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert len(output.frames) == 1
+        assert output.frames[0] == result.output_frame
+        assert output.frame is None
+        assert control.begins == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_running_recovery_without_spool_uses_handoff_next_sequence() -> None:
+    async def run() -> None:
+        case = _case()
+        output = Output()
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            claim_handoff_watermark=3,
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == 4
+        assert result.output_frame.claim_handoff_watermark == 3
+        assert (
+            result.output_frame.settlement_proposal.requested_outcome
+            == common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        assert control.begins == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_running_recovery_replaces_rejected_progress_at_same_sequence() -> None:
+    async def run() -> None:
+        case = _case()
+        pending = _pending_node_event(case)
+        shared = SharedPendingOutput(pending)
+        frames: list[output_pb2.ExecutionOutputFrameV1] = []
+        output = CancellationWinnerOutput(
+            shared,
+            reject_progress=True,
+            frames=frames,
+        )
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=None,
+            output_factory=lambda: output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert result.output_frame.sequence == pending.sequence
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert frames == [result.output_frame]
+        assert shared.frame is None
+        assert control.begins == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_running_recovery_reuses_lost_terminal_on_redelivery() -> None:
+    async def run() -> None:
+        case = _case()
+        output = AckLossOutput(None)
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        def processor() -> IndexIngestDeliveryProcessor:
+            return _processor(
+                case,
+                control=Control(
+                    case,
+                    claim_disposition=(
+                        control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+                    ),
+                    desired_state=(
+                        common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED
+                    ),
+                ),
+                input_client=ForbiddenInput(),
+                output=output,
+                acker=acker,
+                context_factory=forbidden_context,
+                supervisor=supervisor,
+            )
+
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await processor().process(case.delivery)
+        pending = output.pending_replay_frame
+        assert pending is not None and pending.terminal
+        assert acker.calls == 0
+
+        output.lose_ack = False
+        result = await processor().process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame == pending
+        assert output.frame is None
+        assert len(output.frames) == 1
+        assert not supervisor.submitted
+        assert acker.calls == 1
+
+    asyncio.run(run())
+
+
+def test_settled_cancelled_recovery_acks_without_reinvoking_worker() -> None:
+    async def run() -> None:
+        case = _case()
+        control = Control(
+            case,
+            claim_disposition=control_pb2.CLAIM_DISPOSITION_V1_SETTLED_ACK,
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("settled cancellation must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("settled cancellation must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=Output(),
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.TERMINAL_REDELIVERY_ACKED
+        assert control.begins == 0
+        assert control.settlements == 0
+        assert acker.calls == 1
         assert not supervisor.submitted
 
     asyncio.run(run())

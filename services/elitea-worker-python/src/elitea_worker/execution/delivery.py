@@ -792,13 +792,25 @@ class ConfigurationValidationDeliveryProcessor:
             pending = output.pending_replay_frame
             if output.has_pending_replay != (pending is not None):
                 raise InvalidInput("The durable output spool state is inconsistent.")
+            verified = _verified_claim_command(signed, command, receipt)
+            if (
+                receipt.desired_state
+                == common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED
+            ):
+                return await self._recover_cancelled_running(
+                    delivery=delivery,
+                    frame=pending,
+                    output=output,
+                    receipt=receipt,
+                    verified=verified,
+                )
             if pending is not None:
                 return await self._recover_pending_output(
                     delivery=delivery,
                     frame=pending,
                     output=output,
                     receipt=receipt,
-                    verified=_verified_claim_command(signed, command, receipt),
+                    verified=verified,
                     allow_nonterminal=True,
                 )
             return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
@@ -1200,6 +1212,152 @@ class ConfigurationValidationDeliveryProcessor:
             )
         finally:
             await lease.stop()
+
+    async def _recover_cancelled_running(
+        self,
+        *,
+        delivery: RedisCommandDelivery,
+        frame: output_pb2.ExecutionOutputFrameV1 | None,
+        output: OutputSession,
+        receipt: control_pb2.ClaimReceiptV1,
+        verified: VerifiedWorkerCommand,
+    ) -> DeliveryResult:
+        # Cancellation changes desired state, not current lease authority. Keep
+        # the exact recovered fence alive while replaying a bounded nonterminal
+        # frame and settling its sole cancellation terminal.
+        lease = _ClaimLeaseMonitor(
+            control=self._control,
+            receipt=receipt,
+            clock_unix_millis=self._clock,
+            interval_seconds=self._lease_poll_interval,
+        )
+        lease.start()
+        try:
+            return await self._recover_cancelled_running_under_lease(
+                delivery=delivery,
+                frame=frame,
+                output=output,
+                receipt=receipt,
+                verified=verified,
+            )
+        finally:
+            await lease.stop()
+
+    async def _recover_cancelled_running_under_lease(
+        self,
+        *,
+        delivery: RedisCommandDelivery,
+        frame: output_pb2.ExecutionOutputFrameV1 | None,
+        output: OutputSession,
+        receipt: control_pb2.ClaimReceiptV1,
+        verified: VerifiedWorkerCommand,
+    ) -> DeliveryResult:
+        """Dispose a cancelled recovered execution without re-entering SDK work.
+
+        ``RECOVER_RUNNING_NOACK`` is normally a no-authority recovery state.
+        When its server-owned desired state is CANCELLED, it is instead an
+        authenticated recovery authority for exactly one terminal cancellation.
+        No input, client context, executor reservation or BeginExecution call
+        is permitted on this path.
+        """
+
+        watermark = int(receipt.claim_handoff_watermark)
+        terminal_sequence = watermark + 1
+        if frame is not None:
+            terminal = self._validate_pending_output(
+                frame,
+                command=verified.command,
+                receipt=receipt,
+            )
+            if terminal:
+                # A terminal was already made durable locally before the
+                # restart. Its immutable result remains the single winner.
+                return await self._recover_local_output(
+                    delivery=delivery,
+                    frame=frame,
+                    output=output,
+                    receipt=receipt,
+                    verified=verified,
+                )
+            if not _pending_output_binding_matches(frame, receipt):
+                if watermark >= int(frame.sequence):
+                    await output.reconcile_pending_through(watermark)
+                else:
+                    raise AuthorizationFailure(
+                        "The durable output spool uses a different claim fence; "
+                        "server-side recovery is required."
+                    )
+            else:
+                try:
+                    await self._publish_output(frame, initial_output=output)
+                except (RuntimeError, OutputCancellationWon, OutputDeadlineWon) as error:
+                    if not _is_output_cancellation_winner(error):
+                        raise
+                    # Main rejected this exact non-terminal frame because
+                    # cancellation already won. Replace its pending bytes with
+                    # the canonical terminal at the same contiguous sequence.
+                    return await self._settle_cancelled_recovery(
+                        delivery=delivery,
+                        receipt=receipt,
+                        verified=verified,
+                        sequence=int(frame.sequence),
+                        initial_output=output,
+                        replace_pending=frame,
+                    )
+                terminal_sequence = int(frame.sequence) + 1
+
+        return await self._settle_cancelled_recovery(
+            delivery=delivery,
+            receipt=receipt,
+            verified=verified,
+            sequence=terminal_sequence,
+            initial_output=self._output_session_factory(),
+        )
+
+    async def _settle_cancelled_recovery(
+        self,
+        *,
+        delivery: RedisCommandDelivery,
+        receipt: control_pb2.ClaimReceiptV1,
+        verified: VerifiedWorkerCommand,
+        sequence: int,
+        initial_output: OutputSession,
+        replace_pending: output_pb2.ExecutionOutputFrameV1 | None = None,
+    ) -> DeliveryResult:
+        if sequence <= int(receipt.claim_handoff_watermark):
+            raise InvalidInput("The recovered cancellation sequence is malformed.")
+        frame = build_output_frame(
+            verified,
+            ExecutionCancelled(),
+            occurred_at_unix_millis=_runtime_now(self._clock),
+            claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+            sequence=sequence,
+        )
+        if replace_pending is not None:
+            if (
+                not initial_output.has_pending_replay
+                or initial_output.pending_replay_frame != replace_pending
+            ):
+                raise AuthorizationFailure(
+                    "The rejected progress frame disappeared before cancellation recovery."
+                )
+            await initial_output.replace_pending_exact(replace_pending, frame)
+        frame = await self._publish_with_terminal_linearization(
+            frame,
+            verified=verified,
+            claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+            initial_output=initial_output,
+        )
+        receipt_id = await self._prepare_frame_settlement(frame)
+        await self._command_acker.ack_after_settlement(
+            delivery, verified.command.idempotency_key
+        )
+        return DeliveryResult(
+            DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED,
+            output_frame=frame,
+            settlement_receipt_id=receipt_id,
+            execution_error=ExecutionCancelled(),
+        )
 
     async def _recover_local_output(
         self,
@@ -2066,7 +2224,10 @@ def _validate_recover_running_receipt(
     )
     if (
         receipt.desired_state
-        != common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING
+        not in {
+            common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+            common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+        }
         or receipt.HasField("input_bundle_ref")
         or receipt.HasField("input_bundle")
         or receipt.HasField("settlement_recovery")
