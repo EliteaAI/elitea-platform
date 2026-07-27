@@ -579,6 +579,42 @@
       "waiver": null
     },
     {
+      "id": "XPORT-012",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "waived",
+      "title": "Artifact-fetch credentials mode unified under one dynamic rule (waiver W-010)",
+      "source": [
+        "apps/elitea-ui/src/slices/upload.js:117",
+        "apps/elitea-ui/src/common/utils.jsx:390",
+        "apps/elitea-ui/src/common/utils.jsx:508",
+        "apps/elitea-ui/src/[fsd]/features/artifacts/lib/hooks/useArtifactContentFetch.hooks.js:81"
+      ],
+      "acceptance": [
+        "GIVEN the old app's credentials mode was inconsistent across the three near-identical artifact-fetch call sites cited in source — one call unconditionally sent credentials, two sent no credentials option at all, and one explicitly requested credentials",
+        "WHEN the reimplementation issues any request corresponding to one of these old call sites",
+        "THEN a single dynamic rule decides the credentials mode for every one of them: credentials are included when the resolved request origin differs from the page origin, and omitted otherwise",
+        "AND this deliberately replaces the old app's three divergent behaviours with one consistent rule instead of reproducing any of them bug-for-bug; for the pinned same-origin baseline deployment the observable network behaviour is unchanged in all three cases"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-manifest --validate",
+        "testId": "waived > W-010 > artifact-fetch-credentials-mode"
+      },
+      "unit": "S6",
+      "status": "waived",
+      "coverage": {
+        "file": "src/shared/api/artifacts.ts",
+        "min": 95
+      },
+      "waiver": {
+        "reason": "W-010: the old app's credentials mode was inconsistent across three near-identical artifact-fetch call sites — slices/upload.js:117's axios PUT sets withCredentials:true unconditionally; utils.jsx:390 (fetchArtifactBlobUrl) and utils.jsx:508 (downloadArtifactsAsZip) set no credentials option at all; useArtifactContentFetch.hooks.js:81 sets credentials:'include' explicitly. Bug-for-bug (N4) parity would require arbitrarily picking one of three divergent behaviours for what is functionally one request pattern, so shared/api/artifacts.ts unifies all of them under F4's single dynamic same-origin/cross-origin credentials rule instead.",
+        "decidedBy": "S6",
+        "date": "2026-07-27",
+        "replacesBehaviour": "slices/upload.js:117 (unconditional withCredentials:true), utils.jsx:390 + utils.jsx:508 (no credentials option, default 'same-origin'), and useArtifactContentFetch.hooks.js:81 (explicit credentials:'include') — three divergent behaviours replaced by one dynamic same-origin/cross-origin rule"
+      }
+    },
+    {
       "id": "PERM-001",
       "domain": "artifacts",
       "kind": "permission",
