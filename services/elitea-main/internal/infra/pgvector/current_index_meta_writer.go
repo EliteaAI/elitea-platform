@@ -617,7 +617,13 @@ func planCurrentInitialIndexMeta(
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 	if len(existing) == 0 {
-		metadata, err := encodeCurrentIndexMetaWithHistory(initial, []any{cloneCurrentIndexMetaValue(initial)})
+		// Main owns pre-dispatch top-level visibility. The SDK owns the one
+		// mutable history entry for each run, so Main creates only the
+		// permanent, run-neutral marker here.
+		metadata, err := encodeCurrentIndexMetaWithHistory(
+			initial,
+			[]any{currentCreatedIndexMetaMarker(initial)},
+		)
 		if err != nil {
 			return currentIndexMetaWritePlan{}, err
 		}
@@ -654,8 +660,14 @@ func planCurrentInitialIndexMeta(
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 
-	history := currentIndexMetaHistory(stored.metadata["history"])
-	history = append(history, cloneCurrentIndexMetaValue(initial))
+	history, historyOK := decodeCurrentIndexMetaHistory(
+		stored.metadata["history"],
+	)
+	if !historyOK {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	// The unchanged SDK appends this generation's active entry after it starts.
 	metadata, err := encodeCurrentIndexMetaWithHistory(initial, history)
 	if err != nil {
 		return currentIndexMetaWritePlan{}, err
@@ -703,17 +715,26 @@ func planCurrentTerminalIndexMeta(
 		terminal["error"] = nil
 	}
 	if state == string(record.State) {
-		history := currentIndexMetaHistory(stored.metadata["history"])
-		if !currentTerminalIndexMetaCompatible(stored.metadata, history, record) {
+		history, historyOK := decodeCurrentIndexMetaHistory(
+			stored.metadata["history"],
+		)
+		if !historyOK {
+			return currentIndexMetaWritePlan{},
+				indexingapp.ErrCurrentIndexMetaConflict
+		}
+		runIndex, err := currentIndexMetaHistoryRunIndex(history, record)
+		if err != nil || runIndex != len(history)-1 ||
+			!currentTerminalIndexMetaCompatible(
+				stored.metadata,
+				history,
+				record,
+			) {
 			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 		}
 		if _, present := stored.metadata["index_generation"]; present {
 			return currentIndexMetaWritePlan{noop: true}, nil
 		}
-		last, ok := history[len(history)-1].(map[string]any)
-		if !ok {
-			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
-		}
+		last := history[runIndex].(map[string]any)
 		last["index_generation"] = record.IndexGeneration
 		metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
 		if err != nil {
@@ -725,16 +746,39 @@ func planCurrentTerminalIndexMeta(
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 
-	history := currentIndexMetaHistory(stored.metadata["history"])
-	if len(history) == 0 {
+	history, historyOK := decodeCurrentIndexMetaHistory(
+		stored.metadata["history"],
+	)
+	if !historyOK {
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
-	active, ok := history[len(history)-1].(map[string]any)
-	if !ok || active["state"] != state ||
-		!reflect.DeepEqual(active["created_on"], terminal["created_on"]) {
-		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	runIndex, err := currentIndexMetaHistoryRunIndex(history, record)
+	if err != nil {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
 	}
-	history[len(history)-1] = cloneCurrentIndexMetaValue(terminal)
+	if runIndex >= 0 {
+		// The SDK started and therefore owns the exact last run entry.
+		active := history[runIndex].(map[string]any)
+		if runIndex != len(history)-1 ||
+			active["state"] != state ||
+			!reflect.DeepEqual(
+				active["created_on"],
+				terminal["created_on"],
+			) {
+			return currentIndexMetaWritePlan{},
+				indexingapp.ErrCurrentIndexMetaConflict
+		}
+		history[runIndex] = cloneCurrentIndexMetaValue(terminal)
+	} else {
+		// Main still owns terminalization when the SDK never started.
+		if state != "in_progress" ||
+			currentIndexMetaHistoryHasUnfencedActiveRun(history) {
+			return currentIndexMetaWritePlan{},
+				indexingapp.ErrCurrentIndexMetaConflict
+		}
+		history = append(history, cloneCurrentIndexMetaValue(terminal))
+	}
 	metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
 	if err != nil {
 		return currentIndexMetaWritePlan{}, err
@@ -937,12 +981,148 @@ func currentIndexMetaRetryMatches(stored, initial map[string]any) bool {
 	if !reflect.DeepEqual(withoutHistory, initial) {
 		return false
 	}
-	history := currentIndexMetaHistory(stored["history"])
+	history, historyOK := decodeCurrentIndexMetaHistory(stored["history"])
+	if !historyOK {
+		return false
+	}
+	legacyRunEntry := -1
+	for index, raw := range history {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		if !currentIndexMetaHistoryEntryClaimsInitialRun(entry, initial) {
+			continue
+		}
+		if legacyRunEntry >= 0 ||
+			index != len(history)-1 ||
+			!reflect.DeepEqual(entry, initial) {
+			return false
+		}
+		legacyRunEntry = index
+	}
+	return true
+}
+
+func currentCreatedIndexMetaMarker(initial map[string]any) map[string]any {
+	marker := cloneCurrentIndexMetaObject(initial)
+	marker["state"] = "created"
+	marker["task_id"] = nil
+	marker["conversation_id"] = nil
+	for _, key := range []string{
+		"execution_id",
+		"execution_generation",
+		"index_generation",
+		"index_meta_id",
+		"correlation_id",
+	} {
+		delete(marker, key)
+	}
+	return marker
+}
+
+func currentIndexMetaHistoryRunIndex(
+	history []any,
+	record indexingapp.CurrentTerminalIndexMeta,
+) (int, error) {
+	firstRunIndex := -1
+	runIndex := -1
+	runEntries := 0
+	for index, raw := range history {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return -1, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		if currentIndexMetaHistoryEntryMatchesRun(entry, record) {
+			runEntries++
+			if runEntries > 2 {
+				return -1, indexingapp.ErrCurrentIndexMetaConflict
+			}
+			if firstRunIndex < 0 {
+				firstRunIndex = index
+			}
+			runIndex = index
+			continue
+		}
+		if currentIndexMetaHistoryEntryClaimsRun(entry, record) {
+			return -1, indexingapp.ErrCurrentIndexMetaConflict
+		}
+	}
+	if runEntries == 2 {
+		bootstrap, ok := history[firstRunIndex].(map[string]any)
+		if !ok || runIndex != firstRunIndex+1 ||
+			!currentIndexMetaHistoryEntryIsLegacyBootstrap(bootstrap) {
+			return -1, indexingapp.ErrCurrentIndexMetaConflict
+		}
+	}
+	return runIndex, nil
+}
+
+func currentIndexMetaHistoryEntryIsLegacyBootstrap(
+	entry map[string]any,
+) bool {
+	indexed, indexedOK := currentIndexMetaInt64(entry["indexed"])
+	updated, updatedOK := currentIndexMetaInt64(entry["updated"])
+	return entry["state"] == "in_progress" &&
+		indexedOK && indexed == 0 &&
+		updatedOK && updated == 0
+}
+
+func currentIndexMetaHistoryEntryMatchesRun(
+	entry map[string]any,
+	record indexingapp.CurrentTerminalIndexMeta,
+) bool {
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaLogicalGeneration(entry)
+	executionGeneration, executionGenerationOK :=
+		currentIndexMetaInt64(entry["execution_generation"])
+	return entry["index_meta_id"] == record.MetaID &&
+		entry["execution_id"] == record.ExecutionID &&
+		indexGenerationOK &&
+		indexGeneration == int64(record.IndexGeneration) &&
+		executionGenerationOK &&
+		executionGeneration == int64(record.Generation)
+}
+
+func currentIndexMetaHistoryEntryClaimsRun(
+	entry map[string]any,
+	record indexingapp.CurrentTerminalIndexMeta,
+) bool {
+	if entry["index_meta_id"] == record.MetaID ||
+		entry["execution_id"] == record.ExecutionID {
+		return true
+	}
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaLogicalGeneration(entry)
+	return indexGenerationOK &&
+		indexGeneration == int64(record.IndexGeneration)
+}
+
+func currentIndexMetaHistoryEntryClaimsInitialRun(
+	entry map[string]any,
+	initial map[string]any,
+) bool {
+	metaID, _ := initial["index_meta_id"].(string)
+	executionID, _ := initial["execution_id"].(string)
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaLogicalGeneration(initial)
+	if entry["index_meta_id"] == metaID ||
+		entry["execution_id"] == executionID {
+		return true
+	}
+	entryIndexGeneration, entryIndexGenerationOK :=
+		currentIndexMetaLogicalGeneration(entry)
+	return indexGenerationOK &&
+		entryIndexGenerationOK &&
+		entryIndexGeneration == indexGeneration
+}
+
+func currentIndexMetaHistoryHasUnfencedActiveRun(history []any) bool {
 	if len(history) == 0 {
 		return false
 	}
 	last, ok := history[len(history)-1].(map[string]any)
-	return ok && reflect.DeepEqual(last, initial)
+	return !ok || last["state"] == "in_progress"
 }
 
 func encodeCurrentIndexMetaWithHistory(initial map[string]any, history []any) ([]byte, error) {
@@ -960,23 +1140,31 @@ func encodeCurrentIndexMetaWithHistory(initial map[string]any, history []any) ([
 }
 
 func currentIndexMetaHistory(value any) []any {
+	history, ok := decodeCurrentIndexMetaHistory(value)
+	if !ok {
+		return []any{}
+	}
+	return history
+}
+
+func decodeCurrentIndexMetaHistory(value any) ([]any, bool) {
 	switch value := value.(type) {
 	case string:
 		decoder := json.NewDecoder(bytes.NewBufferString(value))
 		decoder.UseNumber()
 		var history []any
 		if err := decoder.Decode(&history); err != nil || history == nil {
-			return []any{}
+			return nil, false
 		}
 		var trailing any
 		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			return []any{}
+			return nil, false
 		}
-		return cloneCurrentIndexMetaValue(history).([]any)
+		return cloneCurrentIndexMetaValue(history).([]any), true
 	case []any:
-		return cloneCurrentIndexMetaValue(value).([]any)
+		return cloneCurrentIndexMetaValue(value).([]any), true
 	default:
-		return []any{}
+		return nil, false
 	}
 }
 

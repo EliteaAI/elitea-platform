@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -283,10 +284,61 @@ func markCurrentFirstHistoryEntryCreated(metadata map[string]any) {
 		return
 	}
 	first, ok := history[0].(map[string]any)
-	if !ok || first["state"] != "completed" {
+	if !ok {
+		return
+	}
+	if first["state"] == "completed" {
+		first["state"] = "created"
+		return
+	}
+	if first["state"] != "in_progress" || len(history) < 2 ||
+		!currentHistoryCountIsZero(first["indexed"]) ||
+		!currentHistoryCountIsZero(first["updated"]) {
+		return
+	}
+	// Earlier target builds let Main and the SDK write adjacent entries for
+	// one run. Repair only that exact, zero-count bootstrap in the response;
+	// persisted history remains untouched.
+	second, ok := history[1].(map[string]any)
+	if !ok || !currentHistoryStateIsTerminal(second["state"]) ||
+		!currentHistoryEntriesHaveSameRun(first, second) {
 		return
 	}
 	first["state"] = "created"
+}
+
+func currentHistoryEntriesHaveSameRun(first, second map[string]any) bool {
+	for _, key := range []string{
+		"index_meta_id",
+		"execution_id",
+		"execution_generation",
+		"index_generation",
+	} {
+		if first[key] == nil ||
+			!reflect.DeepEqual(first[key], second[key]) {
+			return false
+		}
+	}
+	return true
+}
+
+func currentHistoryStateIsTerminal(value any) bool {
+	state, ok := value.(string)
+	if !ok {
+		return false
+	}
+	switch state {
+	case "completed", "failed", "partly_indexed", "cancelled",
+		"scheduled_reindex":
+		return true
+	default:
+		return false
+	}
+}
+
+func currentHistoryCountIsZero(value any) bool {
+	count, ok := currentUnixSeconds(value)
+	return ok && count == 0
 }
 
 func currentIndexIsStale(metadata map[string]any, now time.Time, timeout time.Duration) (bool, error) {

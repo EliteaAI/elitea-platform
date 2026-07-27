@@ -76,6 +76,148 @@ func TestServiceListPreservesCurrentIndexMetaContract(t *testing.T) {
 	}
 }
 
+func TestServiceListProjectsExistingDualWriterBootstrapAsCreated(t *testing.T) {
+	t.Parallel()
+
+	toolkits := &currentToolkitStub{toolkit: indexingapp.CurrentToolkitSnapshot{
+		ID:   42,
+		Type: "sample_toolkit",
+		Settings: map[string]any{
+			"pgvector_configuration": map[string]any{
+				"elitea_title": "elitea-pgvector",
+				"private":      true,
+			},
+		},
+	}, found: true}
+	settings := &currentSettingsStub{result: map[string]any{
+		"pgvector_configuration": map[string]any{
+			"connection_string": "postgresql+psycopg://pg/project",
+		},
+	}}
+	historyRaw, err := json.Marshal([]map[string]any{
+		{
+			"state":                "in_progress",
+			"indexed":              0,
+			"updated":              0,
+			"index_meta_id":        "meta-15",
+			"execution_id":         "execution-15",
+			"execution_generation": 1,
+			"index_generation":     15,
+		},
+		{
+			"state":                "completed",
+			"indexed":              61,
+			"updated":              228,
+			"index_meta_id":        "meta-15",
+			"execution_id":         "execution-15",
+			"execution_generation": 1,
+			"index_generation":     15,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := json.Marshal(map[string]any{
+		"state":      "completed",
+		"updated_on": 20_000,
+		"history":    string(historyRaw),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &currentReaderStub{records: []RawRecord{{
+		ID:       "dual-writer",
+		Metadata: metadata,
+	}}}
+	service := currentServiceForTest(
+		t,
+		toolkits,
+		settings,
+		&currentTimeoutStub{timeout: 2 * time.Hour},
+		reader,
+		func() time.Time { return time.Unix(20_000, 0) },
+	)
+
+	items, err := service.List(
+		context.Background(),
+		Request{ProjectID: 7, ActorUserID: 8, ToolkitID: 42},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, ok := items[0].Metadata["history"].([]any)
+	if !ok || len(history) != 2 {
+		t.Fatalf("history=%#v", items[0].Metadata["history"])
+	}
+	first, firstOK := history[0].(map[string]any)
+	second, secondOK := history[1].(map[string]any)
+	if !firstOK || !secondOK ||
+		first["state"] != "created" ||
+		second["state"] != "completed" ||
+		second["indexed"] != json.Number("61") ||
+		second["updated"] != json.Number("228") {
+		t.Fatalf("history=%#v", history)
+	}
+}
+
+func TestDualWriterProjectionRequiresZeroCountExactRunIdentity(t *testing.T) {
+	t.Parallel()
+
+	baseFirst := map[string]any{
+		"state":                "in_progress",
+		"indexed":              json.Number("0"),
+		"updated":              json.Number("0"),
+		"index_meta_id":        "meta-15",
+		"execution_id":         "execution-15",
+		"execution_generation": json.Number("1"),
+		"index_generation":     json.Number("15"),
+	}
+	baseSecond := map[string]any{
+		"state":                "completed",
+		"indexed":              json.Number("61"),
+		"updated":              json.Number("228"),
+		"index_meta_id":        "meta-15",
+		"execution_id":         "execution-15",
+		"execution_generation": json.Number("1"),
+		"index_generation":     json.Number("15"),
+	}
+	for _, test := range []struct {
+		name string
+		edit func(map[string]any, map[string]any)
+	}{
+		{
+			name: "nonzero bootstrap",
+			edit: func(first, _ map[string]any) {
+				first["indexed"] = json.Number("1")
+			},
+		},
+		{
+			name: "different generation",
+			edit: func(_, second map[string]any) {
+				second["index_generation"] = json.Number("16")
+			},
+		},
+		{
+			name: "missing identity",
+			edit: func(first, _ map[string]any) {
+				delete(first, "index_meta_id")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			first := cloneCurrentHistoryForTest(baseFirst)
+			second := cloneCurrentHistoryForTest(baseSecond)
+			test.edit(first, second)
+			metadata := map[string]any{"history": []any{first, second}}
+			markCurrentFirstHistoryEntryCreated(metadata)
+			if first["state"] != "in_progress" {
+				t.Fatalf("history=%#v", metadata["history"])
+			}
+		})
+	}
+}
+
 func TestServiceListRejectsRequestAndResolvedTargetFailures(t *testing.T) {
 	t.Parallel()
 
@@ -133,6 +275,14 @@ func TestServiceListRejectsRequestAndResolvedTargetFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func cloneCurrentHistoryForTest(source map[string]any) map[string]any {
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func TestServiceListFailsClosedWithoutLeakingDependencies(t *testing.T) {

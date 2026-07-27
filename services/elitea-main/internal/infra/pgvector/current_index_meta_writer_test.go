@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 )
 
-func TestPlanCurrentInitialIndexMetaCreatesStrictCurrentHistory(t *testing.T) {
+func TestPlanCurrentInitialIndexMetaCreatesPermanentHistoryMarker(t *testing.T) {
 	record := currentIndexMetaRecordForTest("meta-1", "execution-1", "message-1")
 	plan, err := planCurrentInitialIndexMeta(record, nil)
 	if err != nil {
@@ -28,9 +29,12 @@ func TestPlanCurrentInitialIndexMetaCreatesStrictCurrentHistory(t *testing.T) {
 	if len(history) != 1 {
 		t.Fatalf("history=%#v", history)
 	}
-	delete(metadata, "history")
-	if !reflect.DeepEqual(history[0], metadata) {
-		t.Fatalf("history[0]=%#v metadata=%#v", history[0], metadata)
+	assertCurrentIndexMetaCreatedMarker(t, history[0], "Docs")
+	if metadata["state"] != "in_progress" ||
+		metadata["task_id"] != record.ExecutionID ||
+		metadata["execution_id"] != record.ExecutionID ||
+		metadata["index_meta_id"] != record.MetaID {
+		t.Fatalf("metadata=%#v", metadata)
 	}
 }
 
@@ -55,6 +59,36 @@ func TestPlanCurrentInitialIndexMetaRecoversCommittedWriteWithoutAppendingHistor
 	}
 	if history := currentIndexMetaHistory(stored.metadata["history"]); len(history) != 1 {
 		t.Fatalf("retry changed history=%#v", history)
+	}
+}
+
+func TestPlanCurrentInitialIndexMetaRecoversLegacyCommittedBootstrap(
+	t *testing.T,
+) {
+	record := currentIndexMetaRecordForTest(
+		"meta-1",
+		"execution-1",
+		"message-1",
+	)
+	initial := mustDecodeCurrentIndexMeta(t, record.InitialMetadata)
+	encoded, err := encodeCurrentIndexMetaWithHistory(
+		initial,
+		[]any{cloneCurrentIndexMetaValue(initial)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := record.Document
+	replayed, err := planCurrentInitialIndexMeta(
+		record,
+		[]currentStoredIndexMeta{{
+			id:       record.MetaID,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, encoded),
+		}},
+	)
+	if err != nil || !replayed.noop {
+		t.Fatalf("replayed=%+v err=%v", replayed, err)
 	}
 }
 
@@ -94,7 +128,7 @@ func TestPlanCurrentInitialIndexMetaRejectsUnknownExistingState(t *testing.T) {
 	}
 }
 
-func TestPlanCurrentInitialIndexMetaReindexPreservesAndAppendsObservableHistory(t *testing.T) {
+func TestPlanCurrentInitialIndexMetaReindexPreservesHistoryWithoutAppending(t *testing.T) {
 	record := currentIndexMetaRecordWithGeneration(
 		t,
 		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
@@ -128,16 +162,17 @@ func TestPlanCurrentInitialIndexMetaReindexPreservesAndAppendsObservableHistory(
 		t.Fatalf("history type=%T", metadata["history"])
 	}
 	items := currentIndexMetaHistory(history)
-	if len(items) != 3 {
+	if len(items) != 2 {
 		t.Fatalf("history=%#v", items)
 	}
-	last, ok := items[2].(map[string]any)
-	if !ok || last["state"] != "in_progress" || last["index_meta_id"] != "meta-2" ||
-		last["execution_id"] != "execution-2" || last["correlation_id"] != "message-2" {
-		t.Fatalf("last history=%#v", items[2])
+	if !reflect.DeepEqual(items, existing.metadata["history"]) {
+		t.Fatalf(
+			"history changed on reindex: got=%#v want=%#v",
+			items,
+			existing.metadata["history"],
+		)
 	}
-	if metadata["history"] == existing.metadata["history"] ||
-		metadata["state"] != "in_progress" ||
+	if metadata["state"] != "in_progress" ||
 		metadata["task_id"] != "execution-2" {
 		t.Fatalf("metadata=%#v", metadata)
 	}
@@ -194,7 +229,11 @@ func TestPlanCurrentTerminalIndexMetaFencesRetriesAndAllowsNextGeneration(t *tes
 				t.Fatalf("failed metadata error=%#v", terminalMetadata["error"])
 			}
 			history := currentIndexMetaHistory(terminalMetadata["history"])
-			if len(history) != 1 || !reflect.DeepEqual(history[0], func() map[string]any {
+			if len(history) != 2 {
+				t.Fatalf("terminal history=%#v", history)
+			}
+			assertCurrentIndexMetaCreatedMarker(t, history[0], "Docs")
+			if !reflect.DeepEqual(history[1], func() map[string]any {
 				current := cloneCurrentIndexMetaObject(terminalMetadata)
 				delete(current, "history")
 				return current
@@ -281,6 +320,183 @@ func TestPlanCurrentTerminalIndexMetaRejectsDifferentGeneration(t *testing.T) {
 	}
 }
 
+func TestPlanCurrentTerminalIndexMetaRejectsPartiallyMatchingHistoryRun(
+	t *testing.T,
+) {
+	initial := currentIndexMetaRecordForTest(
+		"meta-1",
+		"execution-1",
+		"message-1",
+	)
+	created, err := planCurrentInitialIndexMeta(initial, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := created.document
+	metadata := mustDecodeCurrentIndexMeta(t, created.metadata)
+	history := currentIndexMetaHistory(metadata["history"])
+	active := cloneCurrentIndexMetaObject(metadata)
+	delete(active, "history")
+	active["execution_generation"] = json.Number("2")
+	history = append(history, active)
+	encoded, err := encodeCurrentIndexMetaWithHistory(
+		func() map[string]any {
+			top := cloneCurrentIndexMetaObject(metadata)
+			delete(top, "history")
+			return top
+		}(),
+		history,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := indexingapp.CurrentTerminalIndexMeta{
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaFailed,
+		OccurredAt:      time.Now(),
+		SafeError:       "A dependency is unavailable.",
+	}
+	if _, err := planCurrentTerminalIndexMeta(
+		terminal,
+		[]currentStoredIndexMeta{{
+			id:       created.id,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, encoded),
+		}},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPlanCurrentTerminalIndexMetaConvergesLegacyDualWriterHistory(
+	t *testing.T,
+) {
+	for _, test := range []struct {
+		name          string
+		currentState  string
+		terminalState indexingapp.CurrentIndexMetaTerminalState
+		indexed       int64
+	}{
+		{
+			name:          "SDK active",
+			currentState:  "in_progress",
+			terminalState: indexingapp.CurrentIndexMetaFailed,
+		},
+		{
+			name:          "SDK completed",
+			currentState:  "completed",
+			terminalState: indexingapp.CurrentIndexMetaCancelled,
+			indexed:       61,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			initial := currentIndexMetaRecordForTest(
+				"meta-1",
+				"execution-1",
+				"message-1",
+			)
+			top := mustDecodeCurrentIndexMeta(t, initial.InitialMetadata)
+			top["state"] = test.currentState
+			top["indexed"] = test.indexed
+			bootstrap := cloneCurrentIndexMetaObject(
+				mustDecodeCurrentIndexMeta(t, initial.InitialMetadata),
+			)
+			sdkRun := cloneCurrentIndexMetaObject(top)
+			encoded, err := encodeCurrentIndexMetaWithHistory(
+				top,
+				[]any{bootstrap, sdkRun},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			document := initial.Document
+			terminal := indexingapp.CurrentTerminalIndexMeta{
+				MetaID:          initial.MetaID,
+				ExecutionID:     initial.ExecutionID,
+				Generation:      initial.Generation,
+				IndexGeneration: initial.IndexGeneration,
+				IndexName:       initial.IndexName,
+				ToolkitID:       initial.ToolkitID,
+				State:           test.terminalState,
+				OccurredAt:      time.Now(),
+			}
+			if test.terminalState == indexingapp.CurrentIndexMetaFailed {
+				terminal.SafeError = "A dependency is unavailable."
+			}
+			plan, err := planCurrentTerminalIndexMeta(
+				terminal,
+				[]currentStoredIndexMeta{{
+					id:       initial.MetaID,
+					document: &document,
+					metadata: mustDecodeCurrentIndexMeta(t, encoded),
+				}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			metadata := mustDecodeCurrentIndexMeta(t, plan.metadata)
+			history := currentIndexMetaHistory(metadata["history"])
+			if len(history) != 2 ||
+				history[0].(map[string]any)["state"] != "in_progress" ||
+				history[1].(map[string]any)["state"] !=
+					string(test.terminalState) ||
+				history[1].(map[string]any)["indexed"] !=
+					json.Number(strconv.FormatInt(test.indexed, 10)) {
+				t.Fatalf("metadata=%#v history=%#v", metadata, history)
+			}
+		})
+	}
+}
+
+func TestPlanCurrentTerminalIndexMetaRejectsThreeMatchingHistoryRuns(
+	t *testing.T,
+) {
+	initial := currentIndexMetaRecordForTest(
+		"meta-1",
+		"execution-1",
+		"message-1",
+	)
+	top := mustDecodeCurrentIndexMeta(t, initial.InitialMetadata)
+	active := cloneCurrentIndexMetaObject(top)
+	encoded, err := encodeCurrentIndexMetaWithHistory(
+		top,
+		[]any{
+			cloneCurrentIndexMetaValue(active),
+			cloneCurrentIndexMetaValue(active),
+			cloneCurrentIndexMetaValue(active),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := initial.Document
+	if _, err := planCurrentTerminalIndexMeta(
+		indexingapp.CurrentTerminalIndexMeta{
+			MetaID:          initial.MetaID,
+			ExecutionID:     initial.ExecutionID,
+			Generation:      initial.Generation,
+			IndexGeneration: initial.IndexGeneration,
+			IndexName:       initial.IndexName,
+			ToolkitID:       initial.ToolkitID,
+			State:           indexingapp.CurrentIndexMetaFailed,
+			OccurredAt:      time.Now(),
+			SafeError:       "A dependency is unavailable.",
+		},
+		[]currentStoredIndexMeta{{
+			id:       initial.MetaID,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, encoded),
+		}},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestPlanCurrentCancellationConvergesLateSDKCompletionForSameExecution(t *testing.T) {
 	initial := currentIndexMetaRecordForTest("meta-1", "execution-1", "message-1")
 	created, err := planCurrentInitialIndexMeta(initial, nil)
@@ -294,11 +510,11 @@ func TestPlanCurrentCancellationConvergesLateSDKCompletionForSameExecution(t *te
 	completed["skipped"] = `{"total_skipped":5}`
 	completed["updated_on"] = json.Number("1777777777.5")
 	history := currentIndexMetaHistory(completed["history"])
-	history[len(history)-1] = func() map[string]any {
+	history = append(history, func() map[string]any {
 		copy := cloneCurrentIndexMetaObject(completed)
 		delete(copy, "history")
 		return copy
-	}()
+	}())
 	completedBytes, err := encodeCurrentIndexMetaWithHistory(
 		history[len(history)-1].(map[string]any),
 		history,
@@ -336,7 +552,10 @@ func TestPlanCurrentCancellationConvergesLateSDKCompletionForSameExecution(t *te
 		t.Fatalf("metadata=%#v", metadata)
 	}
 	history = currentIndexMetaHistory(metadata["history"])
-	if len(history) != 1 || history[0].(map[string]any)["state"] != "cancelled" {
+	if len(history) != 2 ||
+		history[0].(map[string]any)["state"] != "created" ||
+		history[1].(map[string]any)["state"] != "cancelled" ||
+		history[1].(map[string]any)["indexed"] != json.Number("66") {
 		t.Fatalf("history=%#v", history)
 	}
 
@@ -372,11 +591,11 @@ func TestPlanCurrentFailureConvergesCompatibleSDKTerminalStates(t *testing.T) {
 			sdk["indexed"] = json.Number("61")
 			sdk["skipped"] = `{"total_skipped":5}`
 			history := currentIndexMetaHistory(sdk["history"])
-			history[len(history)-1] = func() map[string]any {
+			history = append(history, func() map[string]any {
 				copy := cloneCurrentIndexMetaObject(sdk)
 				delete(copy, "history")
 				return copy
-			}()
+			}())
 			encoded, err := encodeCurrentIndexMetaWithHistory(
 				history[len(history)-1].(map[string]any),
 				history,
@@ -416,8 +635,11 @@ func TestPlanCurrentFailureConvergesCompatibleSDKTerminalStates(t *testing.T) {
 				t.Fatalf("metadata=%#v", metadata)
 			}
 			history = currentIndexMetaHistory(metadata["history"])
-			if len(history) != 1 ||
-				history[0].(map[string]any)["state"] != "failed" {
+			if len(history) != 2 ||
+				history[0].(map[string]any)["state"] != "created" ||
+				history[1].(map[string]any)["state"] != "failed" ||
+				history[1].(map[string]any)["indexed"] !=
+					json.Number("61") {
 				t.Fatalf("history=%#v", history)
 			}
 		})
@@ -551,20 +773,22 @@ func TestPlanCurrentManualStopCleanupRejectsToolkitOrHistoryDrift(t *testing.T) 
 		t.Fatal(err)
 	}
 	document := created.document
-	metadata := mustDecodeCurrentIndexMeta(t, created.metadata)
-	metadata["state"] = "cancelled"
-	metadata["task_id"] = nil
-	history := currentIndexMetaHistory(metadata["history"])
-	last := history[len(history)-1].(map[string]any)
-	last["state"] = "cancelled"
-	last["task_id"] = nil
-	encoded, err := encodeCurrentIndexMetaWithHistory(
-		func() map[string]any {
-			value := cloneCurrentIndexMetaObject(metadata)
-			delete(value, "history")
-			return value
-		}(),
-		history,
+	terminal, err := planCurrentTerminalIndexMeta(
+		indexingapp.CurrentTerminalIndexMeta{
+			MetaID:          initial.MetaID,
+			ExecutionID:     initial.ExecutionID,
+			Generation:      initial.Generation,
+			IndexGeneration: initial.IndexGeneration,
+			IndexName:       initial.IndexName,
+			ToolkitID:       initial.ToolkitID,
+			State:           indexingapp.CurrentIndexMetaCancelled,
+			OccurredAt:      time.Now(),
+		},
+		[]currentStoredIndexMeta{{
+			id:       created.id,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, created.metadata),
+		}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +816,7 @@ func TestPlanCurrentManualStopCleanupRejectsToolkitOrHistoryDrift(t *testing.T) 
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			value := mustDecodeCurrentIndexMeta(t, encoded)
+			value := mustDecodeCurrentIndexMeta(t, terminal.metadata)
 			mutate(value)
 			if err := planCurrentManualStopCleanup(
 				cleanup,
@@ -641,6 +865,48 @@ func TestPlanCurrentInitialIndexMetaUsesLegacyGenerationFallback(t *testing.T) {
 	metadata := mustDecodeCurrentIndexMeta(t, plan.metadata)
 	if metadata["index_generation"] != json.Number("2") {
 		t.Fatalf("metadata=%#v", metadata)
+	}
+}
+
+func TestPlanCurrentInitialIndexMetaRetriesLegacyEmptyHistory(t *testing.T) {
+	next := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
+		2,
+	)
+	document := "index_meta_Docs"
+	legacy := currentStoredIndexMeta{
+		id:       "legacy-physical-row",
+		document: &document,
+		metadata: map[string]any{
+			"collection":           "Docs",
+			"type":                 "index_meta",
+			"state":                "completed",
+			"execution_generation": json.Number("1"),
+			"history":              []any{},
+		},
+	}
+	planned, err := planCurrentInitialIndexMeta(
+		next,
+		[]currentStoredIndexMeta{legacy},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := currentStoredIndexMeta{
+		id:       planned.id,
+		document: &document,
+		metadata: mustDecodeCurrentIndexMeta(t, planned.metadata),
+	}
+	retry, err := planCurrentInitialIndexMeta(
+		next,
+		[]currentStoredIndexMeta{stored},
+	)
+	if err != nil || !retry.noop {
+		t.Fatalf("retry=%+v err=%v", retry, err)
+	}
+	if history := currentIndexMetaHistory(stored.metadata["history"]); len(history) != 0 {
+		t.Fatalf("history=%#v", history)
 	}
 }
 
@@ -701,8 +967,13 @@ func TestPlanCurrentTerminalIndexMetaUpgradesLegacyGenerationMetadata(t *testing
 	}
 	document := created.document
 	legacy := mustDecodeCurrentIndexMeta(t, created.metadata)
-	delete(legacy, "index_generation")
 	history := currentIndexMetaHistory(legacy["history"])
+	history = append(history, func() map[string]any {
+		active := cloneCurrentIndexMetaObject(legacy)
+		delete(active, "history")
+		return active
+	}())
+	delete(legacy, "index_generation")
 	delete(history[len(history)-1].(map[string]any), "index_generation")
 	legacyBytes, err := encodeCurrentIndexMetaWithHistory(
 		func() map[string]any {
@@ -803,4 +1074,32 @@ func mustDecodeCurrentIndexMeta(t *testing.T, raw []byte) map[string]any {
 		t.Fatal(err)
 	}
 	return metadata
+}
+
+func assertCurrentIndexMetaCreatedMarker(
+	t *testing.T,
+	raw any,
+	indexName string,
+) {
+	t.Helper()
+	marker, ok := raw.(map[string]any)
+	if !ok ||
+		marker["collection"] != indexName ||
+		marker["type"] != "index_meta" ||
+		marker["state"] != "created" ||
+		marker["task_id"] != nil ||
+		marker["conversation_id"] != nil {
+		t.Fatalf("created marker=%#v", raw)
+	}
+	for _, key := range []string{
+		"execution_id",
+		"execution_generation",
+		"index_generation",
+		"index_meta_id",
+		"correlation_id",
+	} {
+		if _, present := marker[key]; present {
+			t.Fatalf("created marker contains run field %q: %#v", key, marker)
+		}
+	}
 }
