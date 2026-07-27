@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
 type embeddingConfigurationReaderStub struct {
@@ -55,154 +58,163 @@ func (s *embeddingRuntimeReaderStub) GetCurrentEmbeddingRuntimeGroup(
 	return group, found, nil
 }
 
-func TestCurrentEmbeddingBindingResolverUsesProjectThenPublicAndIsRestartStable(t *testing.T) {
+func TestCurrentEmbeddingBindingResolverPreservesProjectPublicRawRoute(t *testing.T) {
+	tests := []struct {
+		name       string
+		groups     map[string]CurrentEmbeddingRuntimeGroup
+		wantGroup  string
+		wantRoute  string
+		wantCalls  []string
+		configs    map[int32]CurrentEmbeddingConfiguration
+		configCall []embeddingConfigurationCall
+	}{
+		{
+			name:      "project",
+			groups:    embeddingGroups("7_embed"),
+			wantGroup: "7_embed",
+			wantRoute: "project",
+			wantCalls: []string{"7_embed"},
+			configs: map[int32]CurrentEmbeddingConfiguration{
+				7: currentEmbeddingConfiguration(7, "00000000-0000-0000-0000-000000000701", "embed", false),
+			},
+			configCall: []embeddingConfigurationCall{{projectID: 7, modelName: "embed"}},
+		},
+		{
+			name:      "public",
+			groups:    embeddingGroups("1_embed"),
+			wantGroup: "1_embed",
+			wantRoute: "public",
+			wantCalls: []string{"7_embed", "1_embed"},
+			configs: map[int32]CurrentEmbeddingConfiguration{
+				1: currentEmbeddingConfiguration(1, "00000000-0000-0000-0000-000000000101", "embed", true),
+			},
+			configCall: []embeddingConfigurationCall{
+				{projectID: 7, modelName: "embed"},
+				{projectID: 1, modelName: "embed", sharedOnly: true},
+			},
+		},
+		{
+			name:       "raw external",
+			groups:     map[string]CurrentEmbeddingRuntimeGroup{},
+			wantGroup:  "embed",
+			wantRoute:  "raw",
+			wantCalls:  []string{"7_embed", "1_embed"},
+			configs:    map[int32]CurrentEmbeddingConfiguration{},
+			configCall: []embeddingConfigurationCall{{projectID: 7, modelName: "embed"}, {projectID: 1, modelName: "embed", sharedOnly: true}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configurations := &embeddingConfigurationReaderStub{configurations: test.configs}
+			runtime := &embeddingRuntimeReaderStub{groups: test.groups}
+			resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := resolver.Resolve(context.Background(), 7, "embed", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if binding.ModelName != "embed" ||
+				binding.ResolvedModelGroup != test.wantGroup ||
+				binding.Route != test.wantRoute ||
+				binding.ModelProjectID != 0 {
+				t.Fatalf("binding=%+v", binding)
+			}
+			if !reflect.DeepEqual(runtime.calls, test.wantCalls) {
+				t.Fatalf("runtime calls=%v want=%v", runtime.calls, test.wantCalls)
+			}
+			if !reflect.DeepEqual(configurations.calls, test.configCall) {
+				t.Fatalf("configuration calls=%+v want=%+v", configurations.calls, test.configCall)
+			}
+			encoded, err := binding.MarshalCanonical()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"api_key", "token", "credential_title", "deployment_id", "endpoint"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("binding leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestCurrentEmbeddingBindingResolverRetainsAuthoritativeDefaultTupleWithDuplicateName(t *testing.T) {
 	public := currentEmbeddingConfiguration(
 		1,
 		"00000000-0000-0000-0000-000000000101",
-		"text-embedding-3-small",
+		"embed",
 		true,
 	)
 	configurations := &embeddingConfigurationReaderStub{
-		configurations: map[int32]CurrentEmbeddingConfiguration{1: public},
-	}
-	dimension := uint32(1536)
-	runtime := &embeddingRuntimeReaderStub{groups: map[string]CurrentEmbeddingRuntimeGroup{
-		"1_text-embedding-3-small": {
-			Name:      "1_text-embedding-3-small",
-			Providers: []string{"openai", "openai"},
-			Deployments: []CurrentEmbeddingRuntimeDeployment{
-				{
-					ConfigurationUUID: public.UUID,
-					Provider:          "openai",
-					ModelVersion:      "2024-01",
-					Dimension:         &dimension,
-				},
-				{
-					ConfigurationUUID: public.UUID,
-					Provider:          "openai",
-					ModelVersion:      "2024-01",
-					Dimension:         &dimension,
-				},
-			},
+		configurations: map[int32]CurrentEmbeddingConfiguration{
+			7: currentEmbeddingConfiguration(
+				7,
+				"00000000-0000-0000-0000-000000000701",
+				"embed",
+				false,
+			),
+			1: public,
 		},
-	}}
+	}
+	runtime := &embeddingRuntimeReaderStub{groups: embeddingGroups("7_embed", "1_embed")}
 	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	first, err := resolver.Resolve(context.Background(), 7, "text-embedding-3-small")
+	preferredProjectID := int32(1)
+	first, err := resolver.Resolve(context.Background(), 7, "embed", &preferredProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := resolver.Resolve(context.Background(), 7, "text-embedding-3-small")
+	second, err := resolver.Resolve(context.Background(), 7, "embed", &preferredProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("restart changed binding: first=%+v second=%+v", first, second)
 	}
-	if first.ConfigurationProjectID != 1 || first.ConfigurationUUID != public.UUID ||
-		first.ResolvedModelGroup != "1_text-embedding-3-small" || first.Provider != "openai" ||
-		first.ModelVersion != "2024-01" || first.Dimension == nil || *first.Dimension != 1536 {
-		t.Fatalf("binding=%+v", first)
+	if first.ModelProjectID != 1 ||
+		first.ConfigurationProjectID != 1 ||
+		first.ConfigurationUUID != public.UUID ||
+		first.ConfigurationDigest.IsZero() {
+		t.Fatalf("default tuple bound the wrong duplicate: %+v", first)
+	}
+	// The current proxy route remains project-first and is recorded separately;
+	// the worker does not rewrite the model to either group.
+	if first.Route != "project" || first.ResolvedModelGroup != "7_embed" {
+		t.Fatalf("current route drifted: %+v", first)
 	}
 	if !reflect.DeepEqual(configurations.calls, []embeddingConfigurationCall{
-		{projectID: 7, modelName: "text-embedding-3-small", sharedOnly: false},
-		{projectID: 1, modelName: "text-embedding-3-small", sharedOnly: true},
-		{projectID: 7, modelName: "text-embedding-3-small", sharedOnly: false},
-		{projectID: 1, modelName: "text-embedding-3-small", sharedOnly: true},
+		{projectID: 1, modelName: "embed", sharedOnly: true},
+		{projectID: 1, modelName: "embed", sharedOnly: true},
 	}) {
-		t.Fatalf("configuration lookup order=%+v", configurations.calls)
-	}
-	if !reflect.DeepEqual(runtime.calls, []string{
-		"1_text-embedding-3-small",
-		"1_text-embedding-3-small",
-	}) {
-		t.Fatalf("runtime groups=%v", runtime.calls)
-	}
-
-	encoded, err := first.MarshalCanonical()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"api_key", "token", "credential_title", "deployment_id"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("binding leaked %q: %s", forbidden, encoded)
-		}
+		t.Fatalf("default configuration lookup=%+v", configurations.calls)
 	}
 }
 
-func TestCurrentEmbeddingBindingResolverProjectConfigurationWins(t *testing.T) {
-	project := currentEmbeddingConfiguration(
-		7,
-		"00000000-0000-0000-0000-000000000701",
-		"embed",
-		false,
+func TestCurrentEmbeddingBindingResolverRejectsDefaultFromUnrelatedProject(t *testing.T) {
+	resolver, err := NewCurrentEmbeddingBindingResolver(
+		&embeddingConfigurationReaderStub{},
+		&embeddingRuntimeReaderStub{},
+		1,
 	)
-	configurations := &embeddingConfigurationReaderStub{
-		configurations: map[int32]CurrentEmbeddingConfiguration{
-			7: project,
-			1: currentEmbeddingConfiguration(
-				1,
-				"00000000-0000-0000-0000-000000000101",
-				"embed",
-				true,
-			),
-		},
-	}
-	runtime := &embeddingRuntimeReaderStub{groups: map[string]CurrentEmbeddingRuntimeGroup{
-		"7_embed": currentEmbeddingRuntimeGroup("7_embed", project.UUID, "azure"),
-	}}
-	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := resolver.Resolve(context.Background(), 7, "embed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if binding.ConfigurationProjectID != 7 || binding.Provider != "azure" ||
-		len(configurations.calls) != 1 || configurations.calls[0].sharedOnly {
-		t.Fatalf("binding=%+v calls=%+v", binding, configurations.calls)
-	}
-}
-
-func TestCurrentEmbeddingBindingResolverRejectsExternalFallbackAndCrossTenantDrift(t *testing.T) {
-	configurations := &embeddingConfigurationReaderStub{
-		configurations: map[int32]CurrentEmbeddingConfiguration{
-			8: currentEmbeddingConfiguration(
-				8,
-				"00000000-0000-0000-0000-000000000801",
-				"external-only",
-				false,
-			),
-		},
-	}
-	runtime := &embeddingRuntimeReaderStub{groups: map[string]CurrentEmbeddingRuntimeGroup{
-		"external-only": currentEmbeddingRuntimeGroup(
-			"external-only",
-			"00000000-0000-0000-0000-000000000801",
-			"openai",
-		),
-	}}
-	resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = resolver.Resolve(context.Background(), 7, "external-only")
-	if !errors.Is(err, ErrCurrentEmbeddingBindingUnavailable) {
+	unrelatedProjectID := int32(8)
+	if _, err := resolver.Resolve(
+		context.Background(),
+		7,
+		"embed",
+		&unrelatedProjectID,
+	); !errors.Is(err, ErrInvalidCurrentEmbeddingBinding) {
 		t.Fatalf("error=%v", err)
 	}
-	if !reflect.DeepEqual(configurations.calls, []embeddingConfigurationCall{
-		{projectID: 7, modelName: "external-only", sharedOnly: false},
-		{projectID: 1, modelName: "external-only", sharedOnly: true},
-	}) || len(runtime.calls) != 0 {
-		t.Fatalf("cross-tenant row influenced resolution: configurations=%+v runtime=%v", configurations.calls, runtime.calls)
-	}
 }
 
-func TestCurrentEmbeddingBindingResolverModelChangeChangesConfigurationDigest(t *testing.T) {
+func TestCurrentEmbeddingBindingConfigurationChangeChangesDigest(t *testing.T) {
 	first := currentEmbeddingConfiguration(
 		7,
 		"00000000-0000-0000-0000-000000000701",
@@ -221,91 +233,39 @@ func TestCurrentEmbeddingBindingResolverModelChangeChangesConfigurationDigest(t 
 		t.Fatal(err)
 	}
 	if firstDigest == secondDigest {
-		t.Fatal("configuration reference change retained the old immutable digest")
+		t.Fatal("configuration reference change retained the old digest")
 	}
 }
 
-func TestCurrentEmbeddingBindingResolverRejectsDimensionAndProviderAmbiguity(t *testing.T) {
-	configuration := currentEmbeddingConfiguration(
-		7,
-		"00000000-0000-0000-0000-000000000701",
-		"embed",
-		false,
-	)
-	dimension1536 := uint32(1536)
-	dimension3072 := uint32(3072)
-	tests := []CurrentEmbeddingRuntimeGroup{
-		{
-			Name: "7_embed", Providers: []string{"openai"},
-			Deployments: []CurrentEmbeddingRuntimeDeployment{
-				{ConfigurationUUID: configuration.UUID, Provider: "openai", Dimension: &dimension1536},
-				{ConfigurationUUID: configuration.UUID, Provider: "openai", Dimension: &dimension3072},
-			},
-		},
-		{
-			Name: "7_embed", Providers: []string{"openai", "azure"},
-			Deployments: []CurrentEmbeddingRuntimeDeployment{
-				{ConfigurationUUID: configuration.UUID, Provider: "openai"},
-			},
-		},
+func TestCurrentEmbeddingBindingAcceptsCurrentOptionalCredentialReference(t *testing.T) {
+	configuration := CurrentEmbeddingConfiguration{
+		UUID:      "00000000-0000-0000-0000-000000000701",
+		ProjectID: 7,
+		Type:      "embedding_model",
+		Section:   "embedding",
+		Data:      json.RawMessage(`{"name":"external-embedding","ai_credentials":null}`),
 	}
-	for index, group := range tests {
-		configurations := &embeddingConfigurationReaderStub{
-			configurations: map[int32]CurrentEmbeddingConfiguration{7: configuration},
-		}
-		runtime := &embeddingRuntimeReaderStub{
-			groups: map[string]CurrentEmbeddingRuntimeGroup{"7_embed": group},
-		}
-		resolver, err := NewCurrentEmbeddingBindingResolver(configurations, runtime, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = resolver.Resolve(context.Background(), 7, "embed")
-		if !errors.Is(err, ErrCurrentEmbeddingBindingAmbiguous) {
-			t.Fatalf("case %d error=%v", index, err)
-		}
+	first, err := currentEmbeddingConfigurationDigest(configuration, "external-embedding")
+	if err != nil || first.IsZero() {
+		t.Fatalf("optional credential reference: digest=%s err=%v", first, err)
 	}
-}
-
-func TestCurrentEmbeddingBindingResolverDoesNotInventVersionOrDimension(t *testing.T) {
-	configuration := currentEmbeddingConfiguration(
-		7,
-		"00000000-0000-0000-0000-000000000701",
-		"embed",
-		false,
-	)
-	runtime := &embeddingRuntimeReaderStub{groups: map[string]CurrentEmbeddingRuntimeGroup{
-		"7_embed": currentEmbeddingRuntimeGroup("7_embed", configuration.UUID, "openai"),
-	}}
-	resolver, err := NewCurrentEmbeddingBindingResolver(
-		&embeddingConfigurationReaderStub{
-			configurations: map[int32]CurrentEmbeddingConfiguration{7: configuration},
-		},
-		runtime,
-		1,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding, err := resolver.Resolve(context.Background(), 7, "embed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if binding.ModelVersion != "" || binding.Dimension != nil {
-		t.Fatalf("invented model metadata: %+v", binding)
+	configuration.Data = json.RawMessage(`{"name":"external-embedding"}`)
+	second, err := currentEmbeddingConfigurationDigest(configuration, "external-embedding")
+	if err != nil || second != first {
+		t.Fatalf("missing and null optional references diverged: first=%s second=%s err=%v", first, second, err)
 	}
 }
 
 func TestCurrentEmbeddingBindingResolverRedactsDependencyFailuresAndPreservesCancellation(t *testing.T) {
 	resolver, err := NewCurrentEmbeddingBindingResolver(
-		&embeddingConfigurationReaderStub{err: errors.New("credential-details")},
-		&embeddingRuntimeReaderStub{},
+		&embeddingConfigurationReaderStub{},
+		&embeddingRuntimeReaderStub{err: errors.New("credential-details")},
 		1,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = resolver.Resolve(context.Background(), 7, "embed")
+	_, err = resolver.Resolve(context.Background(), 7, "embed", nil)
 	if !errors.Is(err, ErrCurrentEmbeddingBindingUnavailable) ||
 		strings.Contains(err.Error(), "credential-details") {
 		t.Fatalf("error=%v", err)
@@ -313,9 +273,91 @@ func TestCurrentEmbeddingBindingResolverRedactsDependencyFailuresAndPreservesCan
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = resolver.Resolve(ctx, 7, "embed")
+	_, err = resolver.Resolve(ctx, 7, "embed", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error=%v", err)
+	}
+}
+
+func TestEmbeddingBindingValidationContract(t *testing.T) {
+	valid := EmbeddingBinding{
+		SchemaVersion:          CurrentEmbeddingBindingSchema,
+		ModelName:              "embed",
+		ResolvedModelGroup:     "1_embed",
+		Route:                  "public",
+		ModelProjectID:         1,
+		ConfigurationProjectID: 1,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000101",
+		ConfigurationDigest:    currentEmbeddingDigest("valid"),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tests := []EmbeddingBinding{
+		func() EmbeddingBinding { value := valid; value.Route = "raw"; return value }(),
+		func() EmbeddingBinding { value := valid; value.ResolvedModelGroup = "embed"; return value }(),
+		func() EmbeddingBinding { value := valid; value.ModelProjectID = -1; return value }(),
+		func() EmbeddingBinding { value := valid; value.ConfigurationUUID = ""; return value }(),
+		func() EmbeddingBinding { value := valid; value.ConfigurationProjectID = 7; return value }(),
+		func() EmbeddingBinding {
+			value := valid
+			value.ModelName = strings.Repeat("x", maxEmbeddingBindingIdentity+1)
+			return value
+		}(),
+	}
+	for index, invalid := range tests {
+		if !errors.Is(invalid.Validate(), ErrInvalidCurrentEmbeddingBinding) {
+			t.Fatalf("case %d accepted: %+v", index, invalid)
+		}
+	}
+}
+
+func TestEmbeddingBindingValidationSharedGoPythonFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/embedding_binding_validation_v2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name     string `json:"name"`
+		Valid    bool   `json:"valid"`
+		Document struct {
+			SchemaVersion          string `json:"schema_version"`
+			ModelName              string `json:"model_name"`
+			ResolvedModelGroup     string `json:"resolved_model_group"`
+			Route                  string `json:"route"`
+			ModelProjectID         int32  `json:"model_project_id"`
+			ConfigurationProjectID int32  `json:"configuration_project_id"`
+			ConfigurationUUID      string `json:"configuration_uuid"`
+			ConfigurationDigest    string `json:"configuration_digest"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			var digest runtimedomain.Digest
+			if test.Document.ConfigurationDigest != "" {
+				var parseErr error
+				digest, parseErr = runtimedomain.ParseDigest(test.Document.ConfigurationDigest)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+			}
+			binding := EmbeddingBinding{
+				SchemaVersion:          test.Document.SchemaVersion,
+				ModelName:              test.Document.ModelName,
+				ResolvedModelGroup:     test.Document.ResolvedModelGroup,
+				Route:                  test.Document.Route,
+				ModelProjectID:         test.Document.ModelProjectID,
+				ConfigurationProjectID: test.Document.ConfigurationProjectID,
+				ConfigurationUUID:      test.Document.ConfigurationUUID,
+				ConfigurationDigest:    digest,
+			}
+			if got := binding.Validate() == nil; got != test.Valid {
+				t.Fatalf("valid=%t want=%t binding=%+v", got, test.Valid, binding)
+			}
+		})
 	}
 }
 
@@ -343,17 +385,14 @@ func currentEmbeddingConfiguration(
 	}
 }
 
-func currentEmbeddingRuntimeGroup(
-	name string,
-	configurationUUID string,
-	provider string,
-) CurrentEmbeddingRuntimeGroup {
-	return CurrentEmbeddingRuntimeGroup{
-		Name:      name,
-		Providers: []string{provider},
-		Deployments: []CurrentEmbeddingRuntimeDeployment{{
-			ConfigurationUUID: configurationUUID,
-			Provider:          provider,
-		}},
+func embeddingGroups(names ...string) map[string]CurrentEmbeddingRuntimeGroup {
+	groups := make(map[string]CurrentEmbeddingRuntimeGroup, len(names))
+	for _, name := range names {
+		groups[name] = CurrentEmbeddingRuntimeGroup{Name: name}
 	}
+	return groups
+}
+
+func currentEmbeddingDigest(value string) runtimedomain.Digest {
+	return runtimedomain.SHA256([]byte(value))
 }

@@ -52,7 +52,7 @@ type CurrentToolkitSettingsValidator interface {
 }
 
 type CurrentEmbeddingBindingSelector interface {
-	Resolve(context.Context, int32, string) (EmbeddingBinding, error)
+	Resolve(context.Context, int32, string, *int32) (EmbeddingBinding, error)
 }
 
 // CurrentAuthoritativeInputResolver ports the current index_data preparation
@@ -130,17 +130,19 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 	if expandedSettings == nil {
 		return AuthoritativeInputs{}, ErrInvalidAuthoritativeIndexInput
 	}
-	if err := r.applyCurrentEmbeddingModelDefault(
+	defaultEmbeddingProjectID, err := r.applyCurrentEmbeddingModelDefault(
 		ctx,
 		int32(request.ProjectID),
 		expandedSettings,
-	); err != nil {
+	)
+	if err != nil {
 		return AuthoritativeInputs{}, err
 	}
 	embeddingBinding, err := r.resolveCurrentEmbeddingBinding(
 		ctx,
 		int32(request.ProjectID),
 		expandedSettings,
+		defaultEmbeddingProjectID,
 	)
 	if err != nil {
 		return AuthoritativeInputs{}, err
@@ -182,6 +184,7 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentEmbeddingBinding(
 	ctx context.Context,
 	projectID int32,
 	settings map[string]any,
+	preferredProjectID *int32,
 ) (*EmbeddingBinding, error) {
 	value, present := settings["embedding_model"]
 	if !present {
@@ -194,7 +197,7 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentEmbeddingBinding(
 	if modelName == "" {
 		return nil, ErrCurrentEmbeddingBindingUnavailable
 	}
-	binding, err := r.embeddings.Resolve(ctx, projectID, modelName)
+	binding, err := r.embeddings.Resolve(ctx, projectID, modelName, preferredProjectID)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, contextErr
@@ -211,6 +214,9 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentEmbeddingBinding(
 	if binding.ModelName != modelName {
 		return nil, ErrCurrentEmbeddingBindingAmbiguous
 	}
+	if preferredProjectID != nil && binding.ModelProjectID != *preferredProjectID {
+		return nil, ErrCurrentEmbeddingBindingAmbiguous
+	}
 	copyBinding := binding.Clone()
 	return &copyBinding, nil
 }
@@ -219,15 +225,15 @@ func (r *CurrentAuthoritativeInputResolver) applyCurrentEmbeddingModelDefault(
 	ctx context.Context,
 	projectID int32,
 	settings map[string]any,
-) error {
+) (*int32, error) {
 	value, present := settings["embedding_model"]
 	if present {
 		model, ok := value.(string)
 		if !ok {
-			return ErrInvalidAuthoritativeIndexInput
+			return nil, ErrInvalidAuthoritativeIndexInput
 		}
 		if model != "" {
-			return nil
+			return nil, nil
 		}
 	}
 	catalog, err := r.models.Get(ctx, configurationapp.CurrentModelCatalogQuery{
@@ -238,14 +244,24 @@ func (r *CurrentAuthoritativeInputResolver) applyCurrentEmbeddingModelDefault(
 	})
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
-			return contextErr
+			return nil, contextErr
 		}
-		return ErrCurrentEmbeddingBindingUnavailable
+		return nil, ErrCurrentEmbeddingBindingUnavailable
 	}
-	if catalog.DefaultModelName != nil && *catalog.DefaultModelName != "" {
-		settings["embedding_model"] = *catalog.DefaultModelName
+	if (catalog.DefaultModelName == nil) != (catalog.DefaultModelProjectID == nil) {
+		return nil, ErrCurrentEmbeddingBindingUnavailable
 	}
-	return nil
+	if catalog.DefaultModelName == nil {
+		return nil, nil
+	}
+	if *catalog.DefaultModelName == "" || catalog.DefaultModelProjectID == nil ||
+		(*catalog.DefaultModelProjectID != projectID &&
+			*catalog.DefaultModelProjectID != r.publicProjectID) {
+		return nil, ErrCurrentEmbeddingBindingUnavailable
+	}
+	settings["embedding_model"] = *catalog.DefaultModelName
+	project := *catalog.DefaultModelProjectID
+	return &project, nil
 }
 
 func (r *CurrentAuthoritativeInputResolver) resolveCurrentModelMetadata(

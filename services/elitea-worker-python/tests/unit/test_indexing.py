@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import threading
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -114,11 +115,10 @@ def test_adapter_invokes_current_sdk_method_once_with_exact_arguments() -> None:
     assert llm_config["sampling"]["temperature"] == 0
 
 
-def test_adapter_applies_exact_bound_embedding_group_on_invocation_copy() -> None:
+def test_adapter_preserves_current_proxy_embedding_model_on_invocation_copy() -> None:
     client = _ClientStub()
     adapter = object.__new__(EliteaSdkIndexingAdapter)
     adapter._client = client
-    adapter._embedding_model_group = "42_embedding-current"
     toolkit_config = {
         "type": "confluence",
         "settings": {
@@ -138,7 +138,7 @@ def test_adapter_applies_exact_bound_embedding_group_on_invocation_copy() -> Non
 
     assert (
         client.calls[0]["toolkit_config"]["settings"]["embedding_model"]
-        == "42_embedding-current"
+        == "embedding-current"
     )
     assert toolkit_config["settings"]["embedding_model"] == "embedding-current"
 
@@ -158,13 +158,16 @@ def test_embedding_binding_is_required_only_by_frozen_toolkit_contract() -> None
     binding = _resolved(
         "embedding-binding",
         {
-            "schema_version": "elitea.index.embedding-binding.v1",
+            "schema_version": "elitea.index.embedding-binding.v2",
             "model_name": "embedding-current",
             "resolved_model_group": "42_embedding-current",
+            "route": "project",
+            "model_project_id": 42,
             "configuration_project_id": 42,
             "configuration_uuid": "00000000-0000-4000-8000-000000000107",
-            "configuration_digest": hashlib.sha256(b"configuration").hexdigest(),
-            "provider": "openai",
+            "configuration_digest": (
+                f"sha256:{hashlib.sha256(b'configuration').hexdigest()}"
+            ),
         },
         b"e" * 32,
     )
@@ -176,6 +179,36 @@ def test_embedding_binding_is_required_only_by_frozen_toolkit_contract() -> None
     binding.value["model_name"] = "other"
     with pytest.raises(InvalidInput, match="does not match"):
         resolve_embedding_binding(toolkit, binding)
+
+
+def test_embedding_binding_validation_shared_go_python_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[4]
+        / "services"
+        / "elitea-main"
+        / "internal"
+        / "application"
+        / "indexing"
+        / "testdata"
+        / "embedding_binding_validation_v2.json"
+    )
+    cases = json.loads(fixture_path.read_text())
+    for case in cases:
+        document = case["document"]
+        toolkit = _resolved(
+            "toolkit-config",
+            {
+                "type": "github",
+                "settings": {"embedding_model": document["model_name"]},
+            },
+            b"t" * 32,
+        )
+        binding = _resolved("embedding-binding", document, b"e" * 32)
+        if case["valid"]:
+            assert resolve_embedding_binding(toolkit, binding) is not None, case["name"]
+        else:
+            with pytest.raises(InvalidInput):
+                resolve_embedding_binding(toolkit, binding)
 
 
 @pytest.mark.parametrize(
@@ -827,7 +860,7 @@ def test_kernel_uses_bounded_sync_executor_and_keeps_bulk_off_wire() -> None:
             projection_project_id="project-1",
             principal_ref="principal-1",
             capability_id="index.ingest.v1",
-            capability_version="1",
+            capability_version="2",
             resource_class="indexing",
             isolation_class="shared",
             priority=1,

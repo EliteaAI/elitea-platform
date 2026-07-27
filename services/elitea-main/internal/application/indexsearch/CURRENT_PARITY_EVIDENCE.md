@@ -23,9 +23,10 @@ no-result/error branch. The admitted SDK does that work exactly once.
 | Pydantic schema accepts filter, cutoff, top-N, full-text, extended search, legacy/advanced reranking; only `search_index` declares output fields; defaults and limits are SDK-owned. | `tools/index_params.py:28-130` | No duplicate validation beyond object/identity safety; exact SDK validation remains authoritative. | Source parity only |
 | Vector algorithm implements extended chunk retrieval, full-text score merge, reranking, cutoff, ordering and output formatting. | `runtime/tools/vectorstore_base.py:370-617` | Explicitly excluded from Main and the new worker kernel. | Preserved in SDK |
 | Current worker runs a generic `EliteAClient.test_toolkit_tool`, forwards current `runtime_config`, deep-copies persisted toolkit/tool/LLM inputs, and derives UI event/full-message output around the SDK response. | `centry/pylon_indexer/plugins/indexer_worker/methods/indexer_test_toolkit.py:408-707`; `elitea_sdk/runtime/clients/client.py:1312-1515` | `EliteaSdkIndexSearchAdapter` mirrors the one SDK invocation/copy boundary; handler intentionally leaves exceptions to a later current-event parity wrapper. | Source parity only |
-| The SDK constructs `OpenAIEmbeddings` from the selected embedding-model name and Main LLM endpoint/PAT/project; the vector-store toolkit passes that embedding object into the saved vector-store settings. | `elitea_sdk/runtime/clients/client.py:371-384`; `elitea_sdk/runtime/tools/vectorstore_base.py:157-158` | Index admission records a distinct immutable embedding binding; search/list/stepback must consume that recorded generation binding. | Source parity only |
-| Current saved `embedding_model` data has `name` plus an `ai_credentials` configuration reference. Configurations projects the group as `{project_id}_{name}` and records `centry_configuration_uuid`; provider comes from the credential-type mapper. | `elitea_sdk/configurations/embedding.py`; `runtime_interface_litellm/.../configuration_transformations.py`; Go parity mapper `internal/infra/litellm/mapper.go` | The binding records model name, resolved group, configuration project/UUID/digest and provider. It contains no secret, endpoint, header or deployment ID. | Source parity only |
-| Neither the current Configurations shape nor the SDK call supplies an authoritative semantic model version or embedding dimension. LiteLLM `model_info.id` identifies a deployment, not a model version. | Same sources above; current tenant-table row inspection performed 2026-07-27 | Version/dimension remain absent unless a future authoritative runtime field explicitly supplies them. They are never inferred from a model name. | Proven absence; fail closed |
+| The SDK constructs `OpenAIEmbeddings` from the configured raw embedding-model name and Main LLM endpoint/PAT/project; the vector-store toolkit passes that object into the saved vector-store settings. | `elitea_sdk/runtime/clients/client.py:371-384`; `elitea_sdk/runtime/tools/vectorstore_base.py:157-158` | The worker preserves the model name and the exact SDK invocation. It does not rewrite the model to a LiteLLM group. | Implemented and unit/integration tested |
+| The current LiteLLM facade checks `{project_id}_{model}`, then `{public_project_id}_{model}`, then forwards the raw name for an externally managed model. It always authenticates with the caller project's key. | `runtime_interface_litellm/methods/proxy.py:145-180` | Admission performs the same bounded group-existence checks and records the observed `project`, `public`, or `raw` route. Execution deliberately re-resolves through the same facade. | Implemented and unit/integration tested |
+| The current Configurations model catalog returns an authoritative default tuple of `default_model_name` and `default_model_project_id`; a duplicate name may exist in both the caller and public project. | `configurations/utils_models.py:109-280`; Go parity implementation `internal/application/configurations/current_models.go` | Omitted/empty UI input retains the exact name/project tuple. The tuple's configuration identity is independent of the project-first proxy route, so duplicate names are not silently rebound. | Implemented and unit tested |
+| Current saved embedding configurations contain `data.name` and an `ai_credentials` reference. Neither this shape nor the SDK call provides an authoritative deployment, endpoint, provider version, semantic model version, or embedding dimension. | `elitea_sdk/configurations/embedding.py`; `configurations/models/pd/llm_model.py`; `elitea_sdk/runtime/clients/client.py:371-384` | The binding records only model name, optional model-project tuple, observed route, and optional non-secret configuration project/UUID/digest. It contains no expanded credential, endpoint, deployment, provider, version, or dimension claim. | Implemented and validation-tested |
 
 ## Current HTTP/RBAC boundary
 
@@ -60,22 +61,38 @@ command. The command carries only content entry IDs. The route component locks
 the current permission/project boundary in unit tests, but it does not yet make
 the required admission transaction or claim production RBAC parity.
 
-## Immutable embedding-generation binding
+## Embedding admission record and current-route parity
 
-`CurrentEmbeddingBindingResolver` reproduces only the managed part of the
-current resolution order: exact project configuration first, then an exact
-shared public-project configuration. It rejects the current raw external-name
-LiteLLM fallback because that fallback has no Configurations-owned immutable
-identity to bind. Adding such an authority is separate work; silently treating
-a mutable raw name as immutable would make an index unreproducible.
+`CurrentEmbeddingBindingResolver` reproduces the current LiteLLM facade's
+project-to-public-to-raw route. It performs exact, bounded model-group lookups
+for the caller and public project. If neither managed group exists, it records
+the raw route without attempting to prove that an externally managed model
+exists; this is the current proxy behavior.
 
-The saved Configurations adapter performs a tenant-routed, exact
-`type='embedding_model'`, `section='embedding'`, `status_ok=true`,
-`data.name=model` query with a two-row ambiguity sentinel. It reads the stored
-reference form only and never expands `ai_credentials`. The LiteLLM adapter
-allowlists only group, provider and `centry_configuration_uuid`; arbitrary
-`litellm_params`, credentials, endpoints and `model_info.id` do not enter the
-binding.
+The record does **not** pin execution to the route observed at admission.
+The worker passes the original model name to the admitted SDK unchanged, and
+the SDK calls Main's authenticated LiteLLM facade with the execution actor's
+PAT and project. LiteLLM therefore selects the current deployment, endpoint,
+credentials, and provider at execution exactly as it does today. The recorded
+route is immutable evidence for generation compatibility and diagnostics, not
+a second routing authority.
+
+When the current catalog supplies a default, admission preserves the complete
+`(model_name, model_project_id)` tuple. The model project must be either the
+authorized caller project or the configured public project. Its exact saved
+configuration is loaded from that tenant schema; public-project lookup also
+requires `shared=true`. This prevents a duplicate name in another project from
+silently replacing the catalog-selected default even though the runtime proxy
+continues to check the caller's model group first.
+
+For an explicit saved model without a catalog-selected tuple, the
+Configurations adapter checks the authorized caller project first and then an
+exact shared public row. A model may legitimately have no Configurations row
+when it uses the current raw external-name fallback. The adapter performs a
+tenant-routed exact `type='embedding_model'`, `section='embedding'`,
+`status_ok=true`, `data.name=model` query with a two-row ambiguity sentinel. It
+reads only the saved `name` and `ai_credentials` reference; it never expands a
+credential.
 
 Admission canonicalizes the non-secret binding into an existing immutable
 input-bundle entry with semantic role `index.embedding_binding`. The same
@@ -83,26 +100,32 @@ transaction already persists input bundle, generation, execution job and
 outbox. Redis and worker protobufs carry only entry ID/version/digest. No
 embedding registry, schema column or migration was introduced.
 
-Production index admission now composes `CurrentEmbeddingBindingResolver` from
-the existing tenant-routed Configurations repository and the existing
-authenticated LiteLLM administration client. The UI's common omitted
-`embedding_model` shape and the explicit empty shape both consult the current
-Configurations embedding catalog: an authoritative default is frozen into the
-toolkit snapshot and bound; no name is invented when the catalog has no
-default. An explicit model is never replaced. Admission fails closed with a
-safe typed HTTP response when a required binding is unavailable, malformed, or
-ambiguous.
+Production index admission composes `CurrentEmbeddingBindingResolver` from the
+existing tenant-routed Configurations repository and authenticated LiteLLM
+administration client. The UI's common omitted `embedding_model` shape and the
+explicit empty shape both consult the current Configurations embedding
+catalog: an authoritative name/project tuple is frozen into the toolkit
+snapshot and binding; no name is invented when the catalog has no default. An
+explicit non-empty model is never replaced. Admission fails closed with a safe
+typed HTTP response when a required catalog/configuration binding is
+unavailable, malformed, or ambiguous.
 
 The Python worker accepts the optional `index.embedding_binding` entry only
 when the signed command's entry ID, immutable version, and SHA-256 digest match
-the claim manifest. It then validates the non-secret binding against the
-already-frozen toolkit snapshot and copies the exact `resolved_model_group`
-into a claim-scoped client context. The SDK adapter changes only the
-invocation-local deep copy of `settings.embedding_model`; the
-`EliteAClient.test_toolkit_tool` method and keyword shape remain unchanged.
-The worker never re-queries Configurations or LiteLLM and echoes the exact
-binding reference in its terminal result. Redis still contains only the
-reference and digest.
+the claim manifest. It validates the non-secret record against the
+already-frozen toolkit snapshot but does not use `resolved_model_group` to
+route the SDK. The `EliteAClient.test_toolkit_tool` method, model name, and
+keyword shape remain unchanged. The worker never re-queries Configurations or
+LiteLLM and echoes the exact binding reference in its terminal result. Redis
+still contains only the reference and digest.
+
+The binding schema change is carried by `index.ingest.v1` capability version
+`2`. Production Main emits and verifies index commands at version `2` while
+configuration validation remains version `1`. The new worker advertises index
+version `2` and rejects an index version `1` envelope during command
+verification, before claim or input fetch. Deployment must therefore drain or
+terminally reconcile version `1` index work before enabling Main version `2`;
+the shared stream is not a mixed-version routing mechanism.
 
 Pre-binding rows without the entry remain valid only when their frozen toolkit
 snapshot does not declare an embedding model. A row that declares an embedding
@@ -110,7 +133,7 @@ model but lacks or mismatches the binding fails with a safe typed worker error.
 Historical search/list/stepback validation returns
 typed `LEGACY_EMBEDDING_BINDING_MISSING`; it must not re-resolve today's
 mutable default. Other typed failures cover stale generation, scope, model,
-configuration and explicit-dimension mismatches.
+model-project and configuration mismatches.
 
 ## Index admission authorization evidence
 
@@ -129,15 +152,17 @@ credentials.
 
 | Check | Boundary actually exercised |
 | --- | --- |
-| `go test ./internal/application/indexsearch` | Go unit: identity/input binding, operation allowlist, no control-plane content leak, exact immutable model/configuration bindings. |
-| `go test ./internal/application/indexing ./internal/infra/db/repos ./internal/infra/litellm ./internal/transport/redisdispatch` | Go unit: project/public model resolution, canonical non-secret digest, ambiguity/fail-closed cases, atomic bundle-entry reference, bounded Redis reference contract, tenant-routed Configurations query, and allowlisted LiteLLM projection. |
-| `go test -race ./internal/infra/db/repos -run TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM` with `ELITEA_TEST_DATABASE_URL` | Real PostgreSQL project-to-shared-public tenant routing, private-public rejection, and fake authenticated LiteLLM group/model endpoints; proves the composed binding without inferring version or dimension. |
-| `go test -race ./internal/application/indexing ./internal/api/v2/indexing ./internal/runtimecomposition` | Race-enabled admission/default/composition and safe HTTP error behavior. |
+| `go test ./internal/application/indexsearch` | Go unit: identity/input binding, operation allowlist, no control-plane content leak, exact model-project/configuration compatibility. |
+| `go test ./internal/application/indexing ./internal/infra/db/repos ./internal/infra/litellm ./internal/transport/redisdispatch ./internal/transport/runtimegrpc/control` | Go unit: exact project/public/raw route, default tuple retention, canonical non-secret digest, shared Go/Python validation fixture, ambiguity/fail-closed cases, bounded catalog and Redis reference contracts, and capability-specific version verification. |
+| `go test -race ./internal/infra/db/repos -run TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM` with `ELITEA_TEST_DATABASE_URL` | Real PostgreSQL tenant schemas plus fake authenticated LiteLLM: caller miss, public hit, exact saved public configuration, and private-public denial. No deployment/provider/version/dimension claim is made. |
+| `go test -race ./internal/application/indexing ./internal/api/v2/indexing ./internal/runtimecomposition` | Race-enabled admission/default/composition, production index capability version `2`, and safe HTTP error behavior. |
 | `go test ./internal/api/v2/indexsearch` | Go HTTP component: exact current path/permission/event, trusted-auth and dynamic project-RBAC-before-body ordering, opaque async/await response envelopes, timeout cancellation intent, and unsupported-operation rejection. |
 | `go test ./tests/contract` | Go protobuf contract: decodes the deterministic command bytes created by the checked Python binding. |
 | `pytest tests/unit/test_index_search.py` | Python unit: three operation branches, error/no-result pass-through, no SDK call for another operation, current invocation copy boundary, result artifact binding. |
-| `pytest tests/unit/test_indexing.py tests/integration/test_index_ingest_delivery.py` | Python worker: optional and required binding validation, exact manifest reference/digest, exact resolved model group at the unchanged SDK call, terminal echo, pre-binding/mismatch rejection, and absence of binding content from Redis. |
+| `pytest tests/unit/test_indexing.py tests/integration/test_index_ingest_delivery.py` | Python worker: shared binding validation, exact manifest reference/digest, unchanged raw SDK model name, terminal echo, version-`1` pre-claim rejection, pre-binding/mismatch rejection, and absence of binding content from Redis. |
+| `pytest tests/parity/test_sdk_lock.py tests/parity/test_index_ingest_current_parity.py` | Exact current SDK baseline: distribution `0.8.30`, source revision `48c51a16634a9924f6c5d5313c3bacedb0b5b56b`, admitted dependency surface, and the single current indexing call boundary. |
 | `pytest tests/integration/test_index_search_protocol_contract.py` | Python-to-Go wire fixture producer; this is language binding interoperability, not a deployed worker integration. |
+| `ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST=1 go test ./services/elitea-main/tests/system -run TestIndexEmbeddingBindingMainWorkerCrossProcess` | Real Go-to-Python process boundary: Main default owner tuple and project/public/raw observation, production Ed25519 signing/authentication, stale index version `1` rejection before claim, version `2` reaching claim, exact binding-reference digest, and no model/credential/deployment content in the control envelope. It does not contact Redis, PostgreSQL, LiteLLM, PgVector or a provider. |
 
 ## Explicit remaining work before mounting
 
@@ -161,8 +186,12 @@ credentials.
    route bounds body size and returns reviewed typed errors, while the current
    Flask endpoint has Pydantic coercion/raw validation and lets an invalid
    timeout conversion escape its generic exception branch.
-7. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
+7. Before rolling out index capability version `2`, stop new version-`1`
+   admission and drain or terminally reconcile all version-`1` index jobs and
+   pending stream entries. Main and workers must then be enabled at version
+   `2` together; mixed-version delivery is intentionally rejected.
+8. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
    and reliability tests. None are claimed by this source-only slice.
-8. Run the mounted flow against the production-equivalent LiteLLM deployment
+9. Run the mounted flow against the production-equivalent LiteLLM deployment
    and UI before release; this source repository test slice does not claim a
    browser/deployment checkpoint.

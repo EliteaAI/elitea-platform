@@ -10,6 +10,7 @@ from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter
 from elitea_worker.constants import (
     CONFORMANCE_OCCURRED_AT_UNIX_MILLIS,
     INDEX_INGEST_CAPABILITY_ID,
+    INDEX_INGEST_CAPABILITY_VERSION,
 )
 from elitea_worker.execution.delivery import (
     ConfigurationValidationDeliveryProcessor,
@@ -47,7 +48,11 @@ def build_static_handler_registry(
                 1,
                 toolkit_available_tools.execute,
             ),
-            CapabilityRegistration(INDEX_INGEST_CAPABILITY_ID, 1, index_ingest.execute),
+            CapabilityRegistration(
+                INDEX_INGEST_CAPABILITY_ID,
+                int(INDEX_INGEST_CAPABILITY_VERSION),
+                index_ingest.execute,
+            ),
         )
     )
 

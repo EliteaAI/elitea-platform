@@ -1,0 +1,94 @@
+[
+  {
+    "name": "managed full identity",
+    "valid": true,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "1_embed",
+      "route": "public",
+      "model_project_id": 1,
+      "configuration_project_id": 1,
+      "configuration_uuid": "00000000-0000-0000-0000-000000000101",
+      "configuration_digest": "sha256:ec654fac9599f62e79e2706ab8258cb58a21bd1cd5877dfd79ad89a57a063e85"
+    }
+  },
+  {
+    "name": "raw name preserves surrounding spaces",
+    "valid": true,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": " embed ",
+      "resolved_model_group": " embed ",
+      "route": "raw"
+    }
+  },
+  {
+    "name": "raw route cannot name a prefixed group",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "7_embed",
+      "route": "raw"
+    }
+  },
+  {
+    "name": "managed prefix is unsigned decimal",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "+7_embed",
+      "route": "project"
+    }
+  },
+  {
+    "name": "configuration identity is all or none",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "7_embed",
+      "route": "project",
+      "configuration_project_id": 7
+    }
+  },
+  {
+    "name": "uuid is canonical lowercase hex",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "7_embed",
+      "route": "project",
+      "configuration_project_id": 7,
+      "configuration_uuid": "00000000-0000-0000-0000-00000000010A",
+      "configuration_digest": "sha256:ec654fac9599f62e79e2706ab8258cb58a21bd1cd5877dfd79ad89a57a063e85"
+    }
+  },
+  {
+    "name": "default tuple and configuration identity agree",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed",
+      "resolved_model_group": "7_embed",
+      "route": "project",
+      "model_project_id": 1,
+      "configuration_project_id": 7,
+      "configuration_uuid": "00000000-0000-0000-0000-000000000701",
+      "configuration_digest": "sha256:ec654fac9599f62e79e2706ab8258cb58a21bd1cd5877dfd79ad89a57a063e85"
+    }
+  },
+  {
+    "name": "control characters are rejected",
+    "valid": false,
+    "document": {
+      "schema_version": "elitea.index.embedding-binding.v2",
+      "model_name": "embed\nsecret",
+      "resolved_model_group": "embed\nsecret",
+      "route": "raw"
+    }
+  }
+]

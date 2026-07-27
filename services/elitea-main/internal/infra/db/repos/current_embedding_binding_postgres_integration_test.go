@@ -60,19 +60,18 @@ INSERT INTO p_1.configuration (
 		switch calls.Add(1) {
 		case 1:
 			if request.URL.Path != "/model_group/info" ||
+				request.URL.Query().Get("model_group") != "2_text-embedding-current" {
+				t.Errorf("group request=%s", request.URL.String())
+			}
+			_, _ = io.WriteString(writer, `{"data":[]}`)
+		case 2:
+			if request.URL.Path != "/model_group/info" ||
 				request.URL.Query().Get("model_group") != "1_text-embedding-current" {
 				t.Errorf("group request=%s", request.URL.String())
 			}
 			_, _ = io.WriteString(writer, `{"data":[{"model_group":"1_text-embedding-current","providers":["openai"]}]}`)
-		case 2:
-			if request.URL.Path != "/model/info" {
-				t.Errorf("models request=%s", request.URL.String())
-			}
-			_, _ = io.WriteString(writer, `{"data":[{
-				"model_name":"1_text-embedding-current",
-				"litellm_params":{"custom_llm_provider":"openai","api_key":"must-not-escape"},
-				"model_info":{"centry_configuration_uuid":"00000000-0000-0000-0000-000000000107"}
-			}]}`)
+		case 3, 4:
+			_, _ = io.WriteString(writer, `{"data":[]}`)
 		default:
 			t.Errorf("unexpected LiteLLM request %s", request.URL.String())
 			writer.WriteHeader(http.StatusInternalServerError)
@@ -96,30 +95,29 @@ INSERT INTO p_1.configuration (
 		t.Fatal(err)
 	}
 
-	binding, err := resolver.Resolve(ctx, 2, "text-embedding-current")
+	binding, err := resolver.Resolve(ctx, 2, "text-embedding-current", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if binding.ModelName != "text-embedding-current" ||
 		binding.ResolvedModelGroup != "1_text-embedding-current" ||
+		binding.Route != "public" ||
 		binding.ConfigurationProjectID != 1 ||
 		binding.ConfigurationUUID != "00000000-0000-0000-0000-000000000107" ||
-		binding.Provider != "openai" ||
-		binding.ModelVersion != "" ||
-		binding.Dimension != nil ||
 		binding.ConfigurationDigest.IsZero() {
 		t.Fatalf("binding=%#v", binding)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("LiteLLM calls=%d", calls.Load())
 	}
-	if _, err := resolver.Resolve(ctx, 2, "private-embedding"); !errors.Is(
+	preferredPublicProject := int32(1)
+	if _, err := resolver.Resolve(ctx, 2, "private-embedding", &preferredPublicProject); !errors.Is(
 		err,
 		indexingapp.ErrCurrentEmbeddingBindingUnavailable,
 	) {
 		t.Fatalf("private public-project binding escaped tenant scope: %v", err)
 	}
-	if calls.Load() != 2 {
-		t.Fatalf("private configuration reached LiteLLM, calls=%d", calls.Load())
+	if calls.Load() != 4 {
+		t.Fatalf("unexpected LiteLLM calls=%d", calls.Load())
 	}
 }

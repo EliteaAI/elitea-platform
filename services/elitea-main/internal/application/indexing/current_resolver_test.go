@@ -50,8 +50,9 @@ type currentEmbeddingBindingSelectorStub struct {
 	binding EmbeddingBinding
 	err     error
 	calls   []struct {
-		projectID int32
-		modelName string
+		projectID          int32
+		modelName          string
+		preferredProjectID *int32
 	}
 }
 
@@ -59,18 +60,30 @@ func (s *currentEmbeddingBindingSelectorStub) Resolve(
 	_ context.Context,
 	projectID int32,
 	modelName string,
+	preferredProjectID *int32,
 ) (EmbeddingBinding, error) {
+	var preferredCopy *int32
+	if preferredProjectID != nil {
+		value := *preferredProjectID
+		preferredCopy = &value
+	}
 	s.calls = append(s.calls, struct {
-		projectID int32
-		modelName string
-	}{projectID: projectID, modelName: modelName})
+		projectID          int32
+		modelName          string
+		preferredProjectID *int32
+	}{projectID: projectID, modelName: modelName, preferredProjectID: preferredCopy})
 	if s.err != nil {
 		return EmbeddingBinding{}, s.err
 	}
 	if s.binding.SchemaVersion != "" {
 		return s.binding.Clone(), nil
 	}
-	return currentEmbeddingBindingForTest(projectID, modelName), nil
+	binding := currentEmbeddingBindingForTest(projectID, modelName)
+	if preferredProjectID != nil {
+		binding.ModelProjectID = *preferredProjectID
+		binding.ConfigurationProjectID = *preferredProjectID
+	}
+	return binding, nil
 }
 
 func (s *currentToolkitSettingsValidatorStub) Resolve(
@@ -251,6 +264,7 @@ func TestCurrentAuthoritativeInputResolverUsesConfigurationsDefaultWithoutCopyin
 
 func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(t *testing.T) {
 	defaultEmbedding := "configured-embedding"
+	defaultProjectID := int32(7)
 	toolkits := validCurrentToolkitReader()
 	toolkits.toolkit.Settings["embedding_model"] = ""
 	var sections []configurationapp.CurrentModelSection
@@ -260,7 +274,8 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 		sections = append(sections, query.Section)
 		if query.Section == configurationapp.CurrentModelSectionEmbedding {
 			return configurationapp.CurrentModelCatalogResponse{
-				DefaultModelName: &defaultEmbedding,
+				DefaultModelName:      &defaultEmbedding,
+				DefaultModelProjectID: &defaultProjectID,
 			}, nil
 		}
 		return configurationapp.CurrentModelCatalogResponse{}, nil
@@ -291,7 +306,9 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 		inputs.EmbeddingBinding.ResolvedModelGroup != "7_"+defaultEmbedding ||
 		len(embeddings.calls) != 1 ||
 		embeddings.calls[0].projectID != 7 ||
-		embeddings.calls[0].modelName != defaultEmbedding {
+		embeddings.calls[0].modelName != defaultEmbedding ||
+		embeddings.calls[0].preferredProjectID == nil ||
+		*embeddings.calls[0].preferredProjectID != defaultProjectID {
 		t.Fatalf("embedding binding=%+v calls=%+v", inputs.EmbeddingBinding, embeddings.calls)
 	}
 	if !reflect.DeepEqual(sections, []configurationapp.CurrentModelSection{
@@ -304,13 +321,15 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 
 func TestCurrentAuthoritativeInputResolverFreezesConfigurationsEmbeddingDefaultForOmittedUIShape(t *testing.T) {
 	defaultEmbedding := "configured-embedding"
+	defaultProjectID := int32(7)
 	toolkits := validCurrentToolkitReader()
 	models := &currentModelCatalogStub{get: func(
 		query configurationapp.CurrentModelCatalogQuery,
 	) (configurationapp.CurrentModelCatalogResponse, error) {
 		if query.Section == configurationapp.CurrentModelSectionEmbedding {
 			return configurationapp.CurrentModelCatalogResponse{
-				DefaultModelName: &defaultEmbedding,
+				DefaultModelName:      &defaultEmbedding,
+				DefaultModelProjectID: &defaultProjectID,
 			}, nil
 		}
 		return configurationapp.CurrentModelCatalogResponse{}, nil
@@ -708,9 +727,9 @@ func currentEmbeddingBindingForTest(projectID int32, modelName string) Embedding
 		SchemaVersion:          CurrentEmbeddingBindingSchema,
 		ModelName:              modelName,
 		ResolvedModelGroup:     "7_" + modelName,
+		Route:                  "project",
 		ConfigurationProjectID: projectID,
 		ConfigurationUUID:      "00000000-0000-0000-0000-000000000107",
 		ConfigurationDigest:    runtimedomain.SHA256([]byte("configuration:" + modelName)),
-		Provider:               "openai",
 	}
 }

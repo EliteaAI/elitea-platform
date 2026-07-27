@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from elitea.runtime.v1 import command_pb2, common_pb2, input_pb2, output_pb2
 
 from elitea_worker.app import build_static_handler_registry
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
+from elitea_worker.execution.errors import UnsupportedCapability
 from elitea_worker.handlers.indexing import IndexIngestHandler
 from elitea_worker.handlers.toolkit_available_tools import (
     ToolkitAvailableToolsHandler,
@@ -114,7 +116,9 @@ def test_static_registry_contains_exact_versioned_handler() -> None:
 
     assert registry.resolve("configuration.validate.v1", 1).__self__ is validation
     assert registry.resolve("toolkit.available_tools.v1", 1).__self__ is toolkit
-    assert registry.resolve("index.ingest.v1", 1).__self__ is index_ingest
+    assert registry.resolve("index.ingest.v1", 2).__self__ is index_ingest
+    with pytest.raises(UnsupportedCapability):
+        registry.resolve("index.ingest.v1", 1)
 
 
 def _request(settings: dict[str, Any]) -> ToolkitAvailableToolsRequest:

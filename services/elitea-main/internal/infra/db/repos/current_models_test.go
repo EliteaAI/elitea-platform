@@ -232,6 +232,16 @@ func TestCurrentModelsRepositoryValidatesRequestAndBoundsCatalog(t *testing.T) {
 	if !errors.Is(err, errCurrentModelCatalogTooLarge) {
 		t.Fatalf("catalog limit error=%v", err)
 	}
+
+	oversizedData := `{"name":"model","padding":"` +
+		strings.Repeat("x", maxCurrentModelCatalogBytes) + `"}`
+	queries.rows = []sqlcgen.ListCurrentModelConfigurationsRow{
+		currentModelRow(1, 7, configurationapp.CurrentModelSectionEmbedding, label, false, oversizedData),
+	}
+	_, err = repository.List(context.Background(), 7, configurationapp.CurrentModelSectionEmbedding, false)
+	if !errors.Is(err, errCurrentModelCatalogTooLarge) {
+		t.Fatalf("catalog byte limit error=%v", err)
+	}
 }
 
 func TestNewCurrentModelsRepositoryRejectsMissingDependencies(t *testing.T) {

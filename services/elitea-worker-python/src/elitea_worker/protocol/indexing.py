@@ -27,11 +27,12 @@ _SUMMARY_STATUS = {
     "partly_indexed": indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
     "error": indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
 }
-_EMBEDDING_BINDING_SCHEMA = "elitea.index.embedding-binding.v1"
+_EMBEDDING_BINDING_SCHEMA = "elitea.index.embedding-binding.v2"
+_MAX_EMBEDDING_IDENTITY_BYTES = 1024
 _CANONICAL_UUID = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,54 +66,66 @@ def resolve_embedding_binding(
         "schema_version",
         "model_name",
         "resolved_model_group",
+        "route",
+        "model_project_id",
         "configuration_project_id",
         "configuration_uuid",
         "configuration_digest",
-        "provider",
-        "model_version",
-        "dimension",
     }:
         raise InvalidInput("The embedding binding is malformed.")
     required = (
         document.get("schema_version"),
         document.get("model_name"),
         document.get("resolved_model_group"),
-        document.get("configuration_uuid"),
-        document.get("configuration_digest"),
-        document.get("provider"),
+        document.get("route"),
     )
-    project_id = document.get("configuration_project_id")
+    model_project_id = document.get("model_project_id", 0)
+    configuration_project_id = document.get("configuration_project_id", 0)
+    configuration_uuid = document.get("configuration_uuid", "")
+    configuration_digest = document.get("configuration_digest", "")
+    has_configuration_identity = bool(
+        configuration_project_id or configuration_uuid or configuration_digest
+    )
     if (
         document.get("schema_version") != _EMBEDDING_BINDING_SCHEMA
         or any(not _valid_embedding_identity(value) for value in required)
         or document.get("model_name") != model_name
-        or isinstance(project_id, bool)
-        or not isinstance(project_id, int)
-        or project_id < 1
-        or document.get("resolved_model_group") != f"{project_id}_{model_name}"
-        or not _CANONICAL_UUID.fullmatch(document["configuration_uuid"])
-        or not _SHA256_HEX.fullmatch(document["configuration_digest"])
+        or not _valid_optional_project_id(model_project_id)
+        or not _valid_optional_project_id(configuration_project_id)
     ):
         raise InvalidInput("The embedding binding does not match the admitted model.")
-    model_version = document.get("model_version")
-    dimension = document.get("dimension")
-    if (
-        (model_version is not None and not _valid_embedding_identity(model_version))
-        or (
-            dimension is not None
-            and (
-                isinstance(dimension, bool)
-                or not isinstance(dimension, int)
-                or dimension < 1
-                or dimension >= 1 << 32
-            )
+    route = document["route"]
+    resolved_model_group = document["resolved_model_group"]
+    if route == "raw":
+        valid_route = resolved_model_group == model_name
+    elif route in {"project", "public"}:
+        valid_route = _valid_prefixed_embedding_group(
+            resolved_model_group,
+            model_name,
         )
+    else:
+        valid_route = False
+    if not valid_route:
+        raise InvalidInput("The embedding binding is malformed.")
+    if has_configuration_identity:
+        if (
+            configuration_project_id < 1
+            or not isinstance(configuration_uuid, str)
+            or not _CANONICAL_UUID.fullmatch(configuration_uuid)
+            or not isinstance(configuration_digest, str)
+            or not _SHA256_DIGEST.fullmatch(configuration_digest)
+        ):
+            raise InvalidInput("The embedding binding is malformed.")
+    if (
+        model_project_id
+        and configuration_project_id
+        and model_project_id != configuration_project_id
     ):
         raise InvalidInput("The embedding binding is malformed.")
     return ResolvedEmbeddingBinding(
         input=embedding_input,
         model_name=model_name,
-        resolved_model_group=document["resolved_model_group"],
+        resolved_model_group=resolved_model_group,
     )
 
 
@@ -316,9 +329,35 @@ def _valid_text(value: object) -> bool:
 
 
 def _valid_embedding_identity(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
     return bool(
-        _valid_text(value)
-        and isinstance(value, str)
-        and value == value.strip()
+        len(encoded) <= _MAX_EMBEDDING_IDENTITY_BYTES
         and not any(character in value for character in ("\x00", "\r", "\n"))
     )
+
+
+def _valid_optional_project_id(value: object) -> bool:
+    return bool(
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and 0 <= value < 1 << 31
+    )
+
+
+def _valid_prefixed_embedding_group(group: str, model: str) -> bool:
+    suffix = f"_{model}"
+    if not group.endswith(suffix) or len(group) <= len(suffix):
+        return False
+    prefix = group[: -len(suffix)]
+    if not prefix.isascii() or not prefix.isdecimal():
+        return False
+    try:
+        project_id = int(prefix, 10)
+    except ValueError:
+        return False
+    return 0 < project_id < 1 << 31

@@ -35,6 +35,7 @@ from elitea_worker.constants import (
     CONFORMANCE_HMAC_KEY_ID,
     ENVELOPE_SCHEMA_REVISION,
     INDEX_INGEST_CAPABILITY_ID,
+    INDEX_INGEST_CAPABILITY_VERSION,
     LIMITS_REVISION,
     MAX_ENVELOPE_BYTES,
     MAX_GRPC_REQUEST_BYTES,
@@ -491,8 +492,6 @@ def _runtime_error_message(error: WorkerError) -> errors_pb2.RuntimeErrorV1:
 def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
     if command.protocol_revision != PROTOCOL_REVISION or command.limits_revision != LIMITS_REVISION:
         raise IncompatibleVersion()
-    if command.capability_version != CAPABILITY_VERSION:
-        raise UnsupportedCapability()
     selected_capability = command.WhichOneof("capability_command")
     configuration_command = (
         command.capability_id == CAPABILITY_ID
@@ -506,6 +505,11 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
         and selected_capability == "index_ingest"
     )
     if not configuration_command and not index_command:
+        raise UnsupportedCapability()
+    expected_capability_version = (
+        INDEX_INGEST_CAPABILITY_VERSION if index_command else CAPABILITY_VERSION
+    )
+    if command.capability_version != expected_capability_version:
         raise UnsupportedCapability()
     required = (
         command.command_id,

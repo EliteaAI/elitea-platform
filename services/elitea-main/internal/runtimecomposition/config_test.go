@@ -149,6 +149,16 @@ func TestIndexIngestProductionRedisEntryBoundIsStrictlyBelow64KiB(t *testing.T) 
 	}
 }
 
+func TestIndexIngestEmbeddingBindingUsesDedicatedCapabilityVersion(t *testing.T) {
+	if capabilityVersion != "1" || indexCapabilityVersion != "2" {
+		t.Fatalf(
+			"capability versions: configuration=%q index=%q",
+			capabilityVersion,
+			indexCapabilityVersion,
+		)
+	}
+}
+
 func TestConfigRedisURLContract(t *testing.T) {
 	tests := []struct {
 		name string

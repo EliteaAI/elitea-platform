@@ -11,11 +11,89 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"google.golang.org/protobuf/proto"
 )
 
 type publicKeyResolverStub struct {
 	keys      map[string]ed25519.PublicKey
 	requested []string
+}
+
+func TestProductionVerifierSelectsCapabilitySpecificVersion(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &publicKeyResolverStub{keys: map[string]ed25519.PublicKey{"key-1": publicKey}}
+	versions := map[string]string{
+		"configuration.validate.v1": "1",
+		"index.ingest.v1":           "2",
+	}
+	verifier, err := NewProductionCommandVerifier(ProductionVerifierConfig{
+		EnvelopeSchemaRevision: "elitea.runtime.signed-worker-command.v1",
+		ProtocolRevision:       "elitea.runtime.v1",
+		CapabilityVersions:     versions,
+		LimitsRevision:         "elitea.runtime.limits.conformance.v1",
+		MaxWorkerCommandBytes:  32 * 1024,
+		MaxInputManifestBytes:  64 * 1024,
+		MaxStringBytes:         256,
+	}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions["index.ingest.v1"] = "1"
+	indexCommand := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(validRawIndexWorkerCommand(t), indexCommand); err != nil {
+		t.Fatal(err)
+	}
+	indexCommand.CapabilityVersion = "2"
+	indexV2, err := proto.MarshalOptions{Deterministic: true}.Marshal(indexCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(
+		context.Background(),
+		productionSignedEnvelope(t, "key-1", privateKey, indexV2),
+	); err != nil {
+		t.Fatalf("index v2 rejected: %v", err)
+	}
+	indexCommand.CapabilityVersion = "1"
+	indexV1, err := proto.MarshalOptions{Deterministic: true}.Marshal(indexCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(
+		context.Background(),
+		productionSignedEnvelope(t, "key-1", privateKey, indexV1),
+	); !errors.Is(err, ErrCommandIncompatible) {
+		t.Fatalf("index v1 error=%v, want incompatible", err)
+	}
+	if _, err := verifier.Verify(
+		context.Background(),
+		productionSignedEnvelope(t, "key-1", privateKey, validRawWorkerCommand(t)),
+	); err != nil {
+		t.Fatalf("configuration v1 rejected: %v", err)
+	}
+}
+
+func TestProductionVerifierRejectsAmbiguousCapabilityVersionConfiguration(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewProductionCommandVerifier(ProductionVerifierConfig{
+		EnvelopeSchemaRevision: "elitea.runtime.signed-worker-command.v1",
+		ProtocolRevision:       "elitea.runtime.v1",
+		CapabilityVersion:      "1",
+		CapabilityVersions:     map[string]string{"index.ingest.v1": "2"},
+		LimitsRevision:         "elitea.runtime.limits.conformance.v1",
+		MaxWorkerCommandBytes:  32 * 1024,
+		MaxInputManifestBytes:  64 * 1024,
+		MaxStringBytes:         256,
+	}, &publicKeyResolverStub{keys: map[string]ed25519.PublicKey{"key-1": publicKey}})
+	if err == nil {
+		t.Fatal("scalar and per-capability versions must not be configured together")
+	}
 }
 
 func (r *publicKeyResolverStub) ResolveEd25519PublicKey(_ context.Context, keyID string) (ed25519.PublicKey, error) {

@@ -22,6 +22,7 @@ type ProductionVerifierConfig struct {
 	EnvelopeSchemaRevision string
 	ProtocolRevision       string
 	CapabilityVersion      string
+	CapabilityVersions     map[string]string
 	LimitsRevision         string
 	MaxWorkerCommandBytes  int
 	MaxInputManifestBytes  uint64
@@ -37,12 +38,22 @@ type ProductionCommandVerifier struct {
 }
 
 func NewProductionCommandVerifier(config ProductionVerifierConfig, resolver Ed25519PublicKeyResolver) (*ProductionCommandVerifier, error) {
-	if resolver == nil || config.EnvelopeSchemaRevision == "" || config.ProtocolRevision == "" || config.CapabilityVersion == "" || config.LimitsRevision == "" {
+	if resolver == nil || config.EnvelopeSchemaRevision == "" ||
+		config.ProtocolRevision == "" ||
+		(config.CapabilityVersion == "" && len(config.CapabilityVersions) == 0) ||
+		(config.CapabilityVersion != "" && len(config.CapabilityVersions) != 0) ||
+		config.LimitsRevision == "" {
 		return nil, errors.New("production verifier revisions and key resolver are required")
 	}
 	if config.MaxWorkerCommandBytes <= 0 || config.MaxInputManifestBytes == 0 || config.MaxStringBytes <= 0 {
 		return nil, errors.New("production verifier limits must be positive")
 	}
+	for capabilityID, version := range config.CapabilityVersions {
+		if capabilityID == "" || version == "" {
+			return nil, errors.New("production capability versions must be complete")
+		}
+	}
+	config.CapabilityVersions = cloneCapabilityVersions(config.CapabilityVersions)
 	return &ProductionCommandVerifier{config: config, resolver: resolver}, nil
 }
 
@@ -78,10 +89,22 @@ func (v *ProductionCommandVerifier) Verify(ctx context.Context, envelope *runtim
 	return decodeAndValidateCommand(commandBytes, commandValidationConfig{
 		ProtocolRevision:      v.config.ProtocolRevision,
 		CapabilityVersion:     v.config.CapabilityVersion,
+		CapabilityVersions:    v.config.CapabilityVersions,
 		LimitsRevision:        v.config.LimitsRevision,
 		MaxInputManifestBytes: v.config.MaxInputManifestBytes,
 		MaxStringBytes:        v.config.MaxStringBytes,
 	})
+}
+
+func cloneCapabilityVersions(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for capabilityID, version := range source {
+		cloned[capabilityID] = version
+	}
+	return cloned
 }
 
 var _ CommandVerifier = (*ProductionCommandVerifier)(nil)

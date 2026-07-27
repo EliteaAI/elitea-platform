@@ -18,7 +18,7 @@ import sys
 import threading
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol
 
@@ -40,6 +40,7 @@ from elitea_worker.agents.client_context import (
 from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import (
     INDEX_INGEST_CAPABILITY_ID,
+    INDEX_INGEST_CAPABILITY_VERSION,
     MAX_BUNDLE_ENTRIES,
     MAX_SAFE_STRING_BYTES,
     MAX_SETTINGS_BYTES,
@@ -1739,7 +1740,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
     ) -> None:
         if (
             command.capability_id != INDEX_INGEST_CAPABILITY_ID
-            or command.capability_version != "1"
+            or command.capability_version != INDEX_INGEST_CAPABILITY_VERSION
             or command.command_type
             != command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST
             or command.WhichOneof("capability_command") != "index_ingest"
@@ -1811,11 +1812,6 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 error=error,
             )
             raise InternalFailure() from None
-        if embedding is not None:
-            context = replace(
-                context,
-                embedding_model_group=embedding.resolved_model_group,
-            )
         return _ResolvedIndexInputs(
             toolkit_configuration=resolved[_INDEX_TOOLKIT_CONFIGURATION_ROLE],
             tool_parameters=resolved[_INDEX_TOOL_PARAMETERS_ROLE],

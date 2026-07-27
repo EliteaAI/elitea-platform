@@ -94,10 +94,10 @@ func TestInputBundleFactoryBindsEmbeddingByReferenceAndDigest(t *testing.T) {
 		SchemaVersion:          CurrentEmbeddingBindingSchema,
 		ModelName:              "text-embedding-3-small",
 		ResolvedModelGroup:     "1_text-embedding-3-small",
+		Route:                  "public",
 		ConfigurationProjectID: 1,
 		ConfigurationUUID:      "00000000-0000-0000-0000-000000000101",
 		ConfigurationDigest:    configurationDigest,
-		Provider:               "openai",
 	}
 	bundle, indexBinding, err := factory.Build(context.Background(), AuthoritativeInputs{
 		ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"github"}`),

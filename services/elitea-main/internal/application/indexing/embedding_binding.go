@@ -7,15 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
 const (
-	CurrentEmbeddingBindingSchema = "elitea.index.embedding-binding.v1"
+	CurrentEmbeddingBindingSchema = "elitea.index.embedding-binding.v2"
 	maxEmbeddingBindingIdentity   = 1024
 )
 
@@ -48,23 +48,12 @@ type CurrentEmbeddingConfigurationReader interface {
 	) (CurrentEmbeddingConfiguration, bool, error)
 }
 
-// CurrentEmbeddingRuntimeDeployment contains only allowlisted non-secret
-// LiteLLM metadata. DeploymentID is deliberately absent: LiteLLM's model_info.id
-// is an operational deployment identity, not an embedding-model version.
-type CurrentEmbeddingRuntimeDeployment struct {
-	ConfigurationUUID string
-	Provider          string
-	ModelVersion      string
-	Dimension         *uint32
-}
-
-// CurrentEmbeddingRuntimeGroup is the exact current project-prefixed LiteLLM
-// model group and its deployments. Implementations must omit credentials,
-// endpoints, headers and arbitrary model_info/litellm_params fields.
+// CurrentEmbeddingRuntimeGroup is the exact non-secret LiteLLM model-group
+// identity observed during admission. It deliberately excludes deployment,
+// endpoint and credential metadata: the current proxy resolves those values
+// again when the SDK invokes it.
 type CurrentEmbeddingRuntimeGroup struct {
-	Name        string
-	Providers   []string
-	Deployments []CurrentEmbeddingRuntimeDeployment
+	Name string
 }
 
 type CurrentEmbeddingRuntimeReader interface {
@@ -74,38 +63,55 @@ type CurrentEmbeddingRuntimeReader interface {
 	) (CurrentEmbeddingRuntimeGroup, bool, error)
 }
 
-// EmbeddingBinding is an immutable, non-secret description of the embedding
-// behavior selected for one logical index generation. ModelVersion and
-// Dimension remain absent unless the runtime supplies explicit authoritative
-// values; neither is inferred from a model name.
+// EmbeddingBinding is an immutable, non-secret admission record. It preserves
+// the authoritative default (model_name, model_project_id) tuple and records
+// the current proxy's project -> public -> raw route observed at admission.
+//
+// It is not a deployment pin: the worker passes ModelName to the unchanged SDK,
+// and the proxy resolves deployments, endpoints and credentials at execution.
 type EmbeddingBinding struct {
 	SchemaVersion          string
 	ModelName              string
 	ResolvedModelGroup     string
+	Route                  string
+	ModelProjectID         int32
 	ConfigurationProjectID int32
 	ConfigurationUUID      string
 	ConfigurationDigest    runtimedomain.Digest
-	Provider               string
-	ModelVersion           string
-	Dimension              *uint32
 }
 
 func (b EmbeddingBinding) Validate() error {
 	if b.SchemaVersion != CurrentEmbeddingBindingSchema ||
 		!validEmbeddingBindingIdentity(b.ModelName) ||
-		!validEmbeddingBindingIdentity(b.ResolvedModelGroup) ||
-		b.ConfigurationProjectID <= 0 ||
-		!validCanonicalUUID(b.ConfigurationUUID) ||
-		b.ConfigurationDigest.IsZero() ||
-		!validEmbeddingBindingIdentity(b.Provider) {
+		!validEmbeddingBindingIdentity(b.ResolvedModelGroup) {
 		return ErrInvalidCurrentEmbeddingBinding
 	}
-	for _, optional := range []string{b.ModelVersion} {
-		if optional != "" && !validEmbeddingBindingIdentity(optional) {
+	switch b.Route {
+	case "project", "public":
+		if !validPrefixedEmbeddingGroup(b.ResolvedModelGroup, b.ModelName) {
 			return ErrInvalidCurrentEmbeddingBinding
 		}
+	case "raw":
+		if b.ResolvedModelGroup != b.ModelName {
+			return ErrInvalidCurrentEmbeddingBinding
+		}
+	default:
+		return ErrInvalidCurrentEmbeddingBinding
 	}
-	if b.Dimension != nil && *b.Dimension == 0 {
+	if b.ModelProjectID < 0 || b.ConfigurationProjectID < 0 {
+		return ErrInvalidCurrentEmbeddingBinding
+	}
+	hasConfigurationIdentity := b.ConfigurationProjectID != 0 ||
+		b.ConfigurationUUID != "" ||
+		!b.ConfigurationDigest.IsZero()
+	if hasConfigurationIdentity &&
+		(b.ConfigurationProjectID <= 0 ||
+			!validCanonicalUUID(b.ConfigurationUUID) ||
+			b.ConfigurationDigest.IsZero()) {
+		return ErrInvalidCurrentEmbeddingBinding
+	}
+	if b.ModelProjectID != 0 && b.ConfigurationProjectID != 0 &&
+		b.ModelProjectID != b.ConfigurationProjectID {
 		return ErrInvalidCurrentEmbeddingBinding
 	}
 	return nil
@@ -118,31 +124,30 @@ func (b EmbeddingBinding) MarshalCanonical() ([]byte, error) {
 		return nil, err
 	}
 	document := struct {
-		SchemaVersion          string  `json:"schema_version"`
-		ModelName              string  `json:"model_name"`
-		ResolvedModelGroup     string  `json:"resolved_model_group"`
-		ConfigurationProjectID int32   `json:"configuration_project_id"`
-		ConfigurationUUID      string  `json:"configuration_uuid"`
-		ConfigurationDigest    string  `json:"configuration_digest"`
-		Provider               string  `json:"provider"`
-		ModelVersion           string  `json:"model_version,omitempty"`
-		Dimension              *uint32 `json:"dimension,omitempty"`
+		SchemaVersion          string `json:"schema_version"`
+		ModelName              string `json:"model_name"`
+		ResolvedModelGroup     string `json:"resolved_model_group"`
+		Route                  string `json:"route"`
+		ModelProjectID         int32  `json:"model_project_id,omitempty"`
+		ConfigurationProjectID int32  `json:"configuration_project_id,omitempty"`
+		ConfigurationUUID      string `json:"configuration_uuid,omitempty"`
+		ConfigurationDigest    string `json:"configuration_digest,omitempty"`
 	}{
 		SchemaVersion:          b.SchemaVersion,
 		ModelName:              b.ModelName,
 		ResolvedModelGroup:     b.ResolvedModelGroup,
+		Route:                  b.Route,
+		ModelProjectID:         b.ModelProjectID,
 		ConfigurationProjectID: b.ConfigurationProjectID,
 		ConfigurationUUID:      b.ConfigurationUUID,
-		ConfigurationDigest:    b.ConfigurationDigest.String(),
-		Provider:               b.Provider,
-		ModelVersion:           b.ModelVersion,
-		Dimension:              cloneUint32(b.Dimension),
+	}
+	if !b.ConfigurationDigest.IsZero() {
+		document.ConfigurationDigest = b.ConfigurationDigest.String()
 	}
 	return json.Marshal(document)
 }
 
 func (b EmbeddingBinding) Clone() EmbeddingBinding {
-	b.Dimension = cloneUint32(b.Dimension)
 	return b
 }
 
@@ -167,20 +172,134 @@ func NewCurrentEmbeddingBindingResolver(
 	}, nil
 }
 
-// Resolve reproduces the current managed-model selection relevant to indexing:
-// project configuration first, then shared public configuration. The external
-// raw-name LiteLLM fallback is intentionally not accepted because it has no
-// Configurations-owned immutable identity to bind.
+// Resolve records the current proxy route without changing it: caller project
+// first, shared public project second, then the raw name. preferredProjectID is
+// present only when the current model catalog supplied an authoritative default
+// tuple; it is retained independently from the observed proxy route.
 func (r *CurrentEmbeddingBindingResolver) Resolve(
 	ctx context.Context,
 	projectID int32,
 	modelName string,
+	preferredProjectID *int32,
 ) (EmbeddingBinding, error) {
 	if ctx == nil || projectID <= 0 || !validEmbeddingBindingIdentity(modelName) {
 		return EmbeddingBinding{}, ErrInvalidCurrentEmbeddingBinding
 	}
+	if preferredProjectID != nil &&
+		(*preferredProjectID != projectID && *preferredProjectID != r.publicProject) {
+		return EmbeddingBinding{}, ErrInvalidCurrentEmbeddingBinding
+	}
 	if err := ctx.Err(); err != nil {
 		return EmbeddingBinding{}, err
+	}
+
+	groupName, route, err := r.resolveCurrentEmbeddingRoute(ctx, projectID, modelName)
+	if err != nil {
+		return EmbeddingBinding{}, err
+	}
+	binding := EmbeddingBinding{
+		SchemaVersion:      CurrentEmbeddingBindingSchema,
+		ModelName:          modelName,
+		ResolvedModelGroup: groupName,
+		Route:              route,
+	}
+	if preferredProjectID != nil {
+		binding.ModelProjectID = *preferredProjectID
+	}
+
+	configuration, found, err := r.resolveCurrentEmbeddingConfiguration(
+		ctx,
+		projectID,
+		modelName,
+		preferredProjectID,
+	)
+	if err != nil {
+		return EmbeddingBinding{}, err
+	}
+	if found {
+		configurationDigest, digestErr := currentEmbeddingConfigurationDigest(
+			configuration,
+			modelName,
+		)
+		if digestErr != nil {
+			return EmbeddingBinding{}, digestErr
+		}
+		binding.ConfigurationProjectID = configuration.ProjectID
+		binding.ConfigurationUUID = configuration.UUID
+		binding.ConfigurationDigest = configurationDigest
+	}
+
+	if err := binding.Validate(); err != nil {
+		return EmbeddingBinding{}, err
+	}
+	return binding, nil
+}
+
+func (r *CurrentEmbeddingBindingResolver) resolveCurrentEmbeddingRoute(
+	ctx context.Context,
+	projectID int32,
+	modelName string,
+) (string, string, error) {
+	projectGroup := strconv.FormatInt(int64(projectID), 10) + "_" + modelName
+	found, err := r.currentEmbeddingGroupExists(ctx, projectGroup)
+	if err != nil {
+		return "", "", err
+	}
+	if found {
+		return projectGroup, "project", nil
+	}
+	if projectID != r.publicProject {
+		publicGroup := strconv.FormatInt(int64(r.publicProject), 10) + "_" + modelName
+		found, err = r.currentEmbeddingGroupExists(ctx, publicGroup)
+		if err != nil {
+			return "", "", err
+		}
+		if found {
+			return publicGroup, "public", nil
+		}
+	}
+	// The current proxy deliberately forwards the raw name without first
+	// proving that an externally managed LiteLLM group exists.
+	return modelName, "raw", nil
+}
+
+func (r *CurrentEmbeddingBindingResolver) currentEmbeddingGroupExists(
+	ctx context.Context,
+	groupName string,
+) (bool, error) {
+	group, found, err := r.runtime.GetCurrentEmbeddingRuntimeGroup(ctx, groupName)
+	if err != nil {
+		return false, currentEmbeddingDependencyError(ctx, err)
+	}
+	if !found {
+		return false, nil
+	}
+	if group.Name != groupName || !validEmbeddingBindingIdentity(group.Name) {
+		return false, ErrInvalidCurrentEmbeddingBinding
+	}
+	return true, nil
+}
+
+func (r *CurrentEmbeddingBindingResolver) resolveCurrentEmbeddingConfiguration(
+	ctx context.Context,
+	projectID int32,
+	modelName string,
+	preferredProjectID *int32,
+) (CurrentEmbeddingConfiguration, bool, error) {
+	if preferredProjectID != nil {
+		configuration, found, err := r.configurations.FindCurrentEmbeddingConfiguration(
+			ctx,
+			*preferredProjectID,
+			modelName,
+			*preferredProjectID == r.publicProject && projectID != r.publicProject,
+		)
+		if err != nil {
+			return CurrentEmbeddingConfiguration{}, false, currentEmbeddingDependencyError(ctx, err)
+		}
+		if !found {
+			return CurrentEmbeddingConfiguration{}, false, ErrCurrentEmbeddingBindingUnavailable
+		}
+		return configuration, true, nil
 	}
 
 	configuration, found, err := r.configurations.FindCurrentEmbeddingConfiguration(
@@ -190,59 +309,21 @@ func (r *CurrentEmbeddingBindingResolver) Resolve(
 		false,
 	)
 	if err != nil {
-		return EmbeddingBinding{}, currentEmbeddingDependencyError(ctx, err)
+		return CurrentEmbeddingConfiguration{}, false, currentEmbeddingDependencyError(ctx, err)
 	}
-	if !found && projectID != r.publicProject {
-		configuration, found, err = r.configurations.FindCurrentEmbeddingConfiguration(
-			ctx,
-			r.publicProject,
-			modelName,
-			true,
-		)
-		if err != nil {
-			return EmbeddingBinding{}, currentEmbeddingDependencyError(ctx, err)
-		}
+	if found || projectID == r.publicProject {
+		return configuration, found, nil
 	}
-	if !found {
-		return EmbeddingBinding{}, ErrCurrentEmbeddingBindingUnavailable
-	}
-
-	configurationDigest, err := currentEmbeddingConfigurationDigest(configuration, modelName)
-	if err != nil {
-		return EmbeddingBinding{}, err
-	}
-	groupName := strconv.FormatInt(int64(configuration.ProjectID), 10) + "_" + modelName
-	group, found, err := r.runtime.GetCurrentEmbeddingRuntimeGroup(ctx, groupName)
-	if err != nil {
-		return EmbeddingBinding{}, currentEmbeddingDependencyError(ctx, err)
-	}
-	if !found {
-		return EmbeddingBinding{}, ErrCurrentEmbeddingBindingUnavailable
-	}
-	provider, modelVersion, dimension, err := selectCurrentEmbeddingRuntime(
-		group,
-		groupName,
-		configuration.UUID,
+	configuration, found, err = r.configurations.FindCurrentEmbeddingConfiguration(
+		ctx,
+		r.publicProject,
+		modelName,
+		true,
 	)
 	if err != nil {
-		return EmbeddingBinding{}, err
+		return CurrentEmbeddingConfiguration{}, false, currentEmbeddingDependencyError(ctx, err)
 	}
-
-	binding := EmbeddingBinding{
-		SchemaVersion:          CurrentEmbeddingBindingSchema,
-		ModelName:              modelName,
-		ResolvedModelGroup:     groupName,
-		ConfigurationProjectID: configuration.ProjectID,
-		ConfigurationUUID:      configuration.UUID,
-		ConfigurationDigest:    configurationDigest,
-		Provider:               provider,
-		ModelVersion:           modelVersion,
-		Dimension:              dimension,
-	}
-	if err := binding.Validate(); err != nil {
-		return EmbeddingBinding{}, err
-	}
-	return binding, nil
+	return configuration, found, nil
 }
 
 func currentEmbeddingConfigurationDigest(
@@ -260,26 +341,22 @@ func currentEmbeddingConfigurationDigest(
 		return runtimedomain.Digest{}, ErrInvalidCurrentEmbeddingBinding
 	}
 	canonical := struct {
-		UUID          string `json:"uuid"`
-		ProjectID     int32  `json:"project_id"`
-		Type          string `json:"type"`
-		Section       string `json:"section"`
-		Shared        bool   `json:"shared"`
-		Name          string `json:"name"`
-		CredentialRef struct {
-			EliteaTitle string `json:"elitea_title"`
-			Private     bool   `json:"private"`
-		} `json:"ai_credentials"`
+		UUID          string                               `json:"uuid"`
+		ProjectID     int32                                `json:"project_id"`
+		Type          string                               `json:"type"`
+		Section       string                               `json:"section"`
+		Shared        bool                                 `json:"shared"`
+		Name          string                               `json:"name"`
+		CredentialRef *currentEmbeddingCredentialReference `json:"ai_credentials,omitempty"`
 	}{
-		UUID:      configuration.UUID,
-		ProjectID: configuration.ProjectID,
-		Type:      configuration.Type,
-		Section:   configuration.Section,
-		Shared:    configuration.Shared,
-		Name:      data.Name,
+		UUID:          configuration.UUID,
+		ProjectID:     configuration.ProjectID,
+		Type:          configuration.Type,
+		Section:       configuration.Section,
+		Shared:        configuration.Shared,
+		Name:          data.Name,
+		CredentialRef: data.CredentialRef,
 	}
-	canonical.CredentialRef.EliteaTitle = data.CredentialTitle
-	canonical.CredentialRef.Private = data.CredentialPrivate
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return runtimedomain.Digest{}, ErrInvalidCurrentEmbeddingBinding
@@ -287,21 +364,22 @@ func currentEmbeddingConfigurationDigest(
 	return runtimedomain.SHA256(encoded), nil
 }
 
+type currentEmbeddingCredentialReference struct {
+	EliteaTitle string `json:"elitea_title"`
+	Private     bool   `json:"private"`
+}
+
 type currentEmbeddingConfigurationData struct {
-	Name              string
-	CredentialTitle   string
-	CredentialPrivate bool
+	Name          string
+	CredentialRef *currentEmbeddingCredentialReference
 }
 
 func decodeCurrentEmbeddingConfigurationData(raw []byte) (currentEmbeddingConfigurationData, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var document struct {
-		Name          string `json:"name"`
-		AICredentials struct {
-			EliteaTitle string `json:"elitea_title"`
-			Private     bool   `json:"private"`
-		} `json:"ai_credentials"`
+		Name          string                               `json:"name"`
+		AICredentials *currentEmbeddingCredentialReference `json:"ai_credentials"`
 	}
 	if err := decoder.Decode(&document); err != nil {
 		return currentEmbeddingConfigurationData{}, ErrInvalidCurrentEmbeddingBinding
@@ -311,74 +389,14 @@ func decodeCurrentEmbeddingConfigurationData(raw []byte) (currentEmbeddingConfig
 		return currentEmbeddingConfigurationData{}, ErrInvalidCurrentEmbeddingBinding
 	}
 	if !validEmbeddingBindingIdentity(document.Name) ||
-		!validEmbeddingBindingIdentity(document.AICredentials.EliteaTitle) {
+		(document.AICredentials != nil &&
+			!validEmbeddingBindingIdentity(document.AICredentials.EliteaTitle)) {
 		return currentEmbeddingConfigurationData{}, ErrInvalidCurrentEmbeddingBinding
 	}
 	return currentEmbeddingConfigurationData{
-		Name:              document.Name,
-		CredentialTitle:   document.AICredentials.EliteaTitle,
-		CredentialPrivate: document.AICredentials.Private,
+		Name:          document.Name,
+		CredentialRef: document.AICredentials,
 	}, nil
-}
-
-func selectCurrentEmbeddingRuntime(
-	group CurrentEmbeddingRuntimeGroup,
-	groupName string,
-	configurationUUID string,
-) (string, string, *uint32, error) {
-	if group.Name != groupName || !validEmbeddingBindingIdentity(group.Name) ||
-		len(group.Providers) == 0 || len(group.Deployments) == 0 {
-		return "", "", nil, ErrCurrentEmbeddingBindingUnavailable
-	}
-	providers := uniqueSortedEmbeddingStrings(group.Providers)
-	if len(providers) != 1 || !validEmbeddingBindingIdentity(providers[0]) {
-		return "", "", nil, ErrCurrentEmbeddingBindingAmbiguous
-	}
-
-	var selected *CurrentEmbeddingRuntimeDeployment
-	for index := range group.Deployments {
-		deployment := group.Deployments[index]
-		if deployment.ConfigurationUUID != configurationUUID {
-			continue
-		}
-		if deployment.Provider == "" {
-			deployment.Provider = providers[0]
-		}
-		if deployment.Provider != providers[0] ||
-			(deployment.ModelVersion != "" && !validEmbeddingBindingIdentity(deployment.ModelVersion)) ||
-			(deployment.Dimension != nil && *deployment.Dimension == 0) {
-			return "", "", nil, ErrCurrentEmbeddingBindingAmbiguous
-		}
-		if selected == nil {
-			copied := deployment
-			copied.Dimension = cloneUint32(deployment.Dimension)
-			selected = &copied
-			continue
-		}
-		if selected.Provider != deployment.Provider ||
-			selected.ModelVersion != deployment.ModelVersion ||
-			!equalOptionalUint32(selected.Dimension, deployment.Dimension) {
-			return "", "", nil, ErrCurrentEmbeddingBindingAmbiguous
-		}
-	}
-	if selected == nil {
-		return "", "", nil, ErrCurrentEmbeddingBindingUnavailable
-	}
-	return selected.Provider, selected.ModelVersion, cloneUint32(selected.Dimension), nil
-}
-
-func uniqueSortedEmbeddingStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func currentEmbeddingDependencyError(ctx context.Context, err error) error {
@@ -393,7 +411,7 @@ func currentEmbeddingDependencyError(ctx context.Context, err error) error {
 
 func validEmbeddingBindingIdentity(value string) bool {
 	return value != "" && len(value) <= maxEmbeddingBindingIdentity &&
-		!strings.ContainsAny(value, "\x00\r\n")
+		utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 func validCanonicalUUID(value string) bool {
@@ -415,15 +433,17 @@ func validCanonicalUUID(value string) bool {
 	return true
 }
 
-func cloneUint32(value *uint32) *uint32 {
-	if value == nil {
-		return nil
+func validPrefixedEmbeddingGroup(group, model string) bool {
+	suffix := "_" + model
+	if !strings.HasSuffix(group, suffix) || len(group) <= len(suffix) {
+		return false
 	}
-	copied := *value
-	return &copied
-}
-
-func equalOptionalUint32(left, right *uint32) bool {
-	return (left == nil && right == nil) ||
-		(left != nil && right != nil && *left == *right)
+	prefix := group[:len(group)-len(suffix)]
+	for _, character := range prefix {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	projectID, err := strconv.ParseInt(prefix, 10, 32)
+	return err == nil && projectID > 0
 }

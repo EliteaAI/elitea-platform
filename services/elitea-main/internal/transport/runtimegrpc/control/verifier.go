@@ -92,6 +92,7 @@ func (v *ConformanceCommandVerifier) Verify(ctx context.Context, envelope *runti
 type commandValidationConfig struct {
 	ProtocolRevision      string
 	CapabilityVersion     string
+	CapabilityVersions    map[string]string
 	LimitsRevision        string
 	MaxInputManifestBytes uint64
 	MaxStringBytes        int
@@ -123,7 +124,16 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 	if command.GetProtocolRevision() != config.ProtocolRevision || command.GetLimitsRevision() != config.LimitsRevision {
 		return ErrCommandIncompatible
 	}
-	if command.GetCapabilityVersion() != config.CapabilityVersion {
+	expectedCapabilityVersion := config.CapabilityVersion
+	if len(config.CapabilityVersions) != 0 {
+		var ok bool
+		expectedCapabilityVersion, ok = config.CapabilityVersions[command.GetCapabilityId()]
+		if !ok {
+			return ErrCommandIncompatible
+		}
+	}
+	if expectedCapabilityVersion == "" ||
+		command.GetCapabilityVersion() != expectedCapabilityVersion {
 		return ErrCommandIncompatible
 	}
 	input := command.GetInputBundleRef()

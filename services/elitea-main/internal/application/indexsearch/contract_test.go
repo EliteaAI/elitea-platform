@@ -126,17 +126,16 @@ func bindings() Bindings {
 	}
 }
 
-func TestRequireRecordedEmbeddingBindingRejectsLegacyStaleScopeModelConfigurationAndDimensionDrift(t *testing.T) {
-	dimension := uint32(1536)
+func TestRequireRecordedEmbeddingBindingRejectsLegacyStaleScopeModelAndConfigurationDrift(t *testing.T) {
 	binding := indexingapp.EmbeddingBinding{
 		SchemaVersion:          indexingapp.CurrentEmbeddingBindingSchema,
 		ModelName:              "embed",
 		ResolvedModelGroup:     "7_embed",
+		Route:                  "project",
+		ModelProjectID:         7,
 		ConfigurationProjectID: 7,
 		ConfigurationUUID:      "00000000-0000-0000-0000-000000000701",
 		ConfigurationDigest:    digest("configuration"),
-		Provider:               "openai",
-		Dimension:              &dimension,
 	}
 	recorded := &RecordedEmbeddingBinding{
 		ResourceProjectID: "7",
@@ -152,9 +151,9 @@ func TestRequireRecordedEmbeddingBindingRejectsLegacyStaleScopeModelConfiguratio
 		IndexName:           "docs",
 		IndexGeneration:     4,
 		ModelName:           "embed",
+		ModelProjectID:      7,
 		ConfigurationUUID:   binding.ConfigurationUUID,
 		ConfigurationDigest: binding.ConfigurationDigest,
-		Dimension:           &dimension,
 	}
 	if err := RequireRecordedEmbeddingBinding(recorded, expectation); err != nil {
 		t.Fatal(err)
@@ -173,10 +172,9 @@ func TestRequireRecordedEmbeddingBindingRejectsLegacyStaleScopeModelConfiguratio
 	wrongConfiguration := expectation
 	wrongConfiguration.ConfigurationDigest = digest("changed-configuration")
 	assertCompatibilityCode(t, recorded, wrongConfiguration, EmbeddingCompatibilityConfigurationMismatch)
-	wrongDimension := expectation
-	dimension3072 := uint32(3072)
-	wrongDimension.Dimension = &dimension3072
-	assertCompatibilityCode(t, recorded, wrongDimension, EmbeddingCompatibilityDimensionMismatch)
+	wrongProject := expectation
+	wrongProject.ModelProjectID = 1
+	assertCompatibilityCode(t, recorded, wrongProject, EmbeddingCompatibilityConfigurationMismatch)
 }
 
 func assertCompatibilityCode(

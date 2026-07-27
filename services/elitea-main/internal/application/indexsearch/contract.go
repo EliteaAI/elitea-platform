@@ -24,7 +24,6 @@ const (
 	EmbeddingCompatibilityStaleGeneration       EmbeddingCompatibilityCode = "STALE_INDEX_GENERATION"
 	EmbeddingCompatibilityScopeMismatch         EmbeddingCompatibilityCode = "EMBEDDING_BINDING_SCOPE_MISMATCH"
 	EmbeddingCompatibilityModelMismatch         EmbeddingCompatibilityCode = "EMBEDDING_MODEL_MISMATCH"
-	EmbeddingCompatibilityDimensionMismatch     EmbeddingCompatibilityCode = "EMBEDDING_DIMENSION_MISMATCH"
 	EmbeddingCompatibilityConfigurationMismatch EmbeddingCompatibilityCode = "EMBEDDING_CONFIGURATION_MISMATCH"
 )
 
@@ -291,9 +290,9 @@ type EmbeddingExpectation struct {
 	IndexName           string
 	IndexGeneration     uint64
 	ModelName           string
+	ModelProjectID      int32
 	ConfigurationUUID   string
 	ConfigurationDigest runtimedomain.Digest
-	Dimension           *uint32
 }
 
 // RequireRecordedEmbeddingBinding gates search/list/stepback admission before
@@ -326,6 +325,10 @@ func RequireRecordedEmbeddingBinding(
 	if recorded.Binding.ModelName != expectation.ModelName {
 		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityModelMismatch}
 	}
+	if expectation.ModelProjectID != 0 &&
+		recorded.Binding.ModelProjectID != expectation.ModelProjectID {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityConfigurationMismatch}
+	}
 	if expectation.ConfigurationUUID != "" &&
 		recorded.Binding.ConfigurationUUID != expectation.ConfigurationUUID {
 		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityConfigurationMismatch}
@@ -333,11 +336,6 @@ func RequireRecordedEmbeddingBinding(
 	if !expectation.ConfigurationDigest.IsZero() &&
 		recorded.Binding.ConfigurationDigest != expectation.ConfigurationDigest {
 		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityConfigurationMismatch}
-	}
-	if expectation.Dimension != nil &&
-		(recorded.Binding.Dimension == nil ||
-			*recorded.Binding.Dimension != *expectation.Dimension) {
-		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityDimensionMismatch}
 	}
 	return nil
 }

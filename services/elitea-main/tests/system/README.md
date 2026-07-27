@@ -144,3 +144,36 @@ rotation, or production-scale issue #5681 test. The current input-content
 profile is intentionally capped at 256 KiB; large file/image streaming needs
 its artifact path before that broader scenario can be claimed closed by a
 system test.
+
+## Index embedding binding Go-to-Python gate
+
+`TestIndexEmbeddingBindingMainWorkerCrossProcess` is a non-deployment,
+cross-process compatibility gate for the index capability-version transition.
+The Go process uses the production authoritative-input resolver, embedding
+binding resolver and Ed25519 index command producer. It proves that an exact
+default `(model_name, model_project_id)` tuple owned by the shared public
+project remains distinct from the current LiteLLM proxy's observed
+project-first, public-fallback and raw-fallback routes.
+
+A separate Python process uses the production worker delivery processor and
+Ed25519 authenticator. It rejects a correctly signed stale
+`index.ingest.v1` capability version `1` before the worker calls Main's claim
+service, accepts version `2` through that pre-claim boundary, and validates the
+claim-scoped binding with the worker's production schema mapper. The signed
+control message carries only the immutable binding reference and digest; model
+names, credential references, deployment details and endpoints remain absent.
+
+Run it against the worker's exactly pinned SDK:
+
+```bash
+ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST=1 \
+ELITEA_SYSTEM_PYTHON=/absolute/path/to/python3.12 \
+ELITEA_SYSTEM_SDK_PATH=/absolute/path/to/elitea-sdk-at-the-pinned-revision \
+go test -count=1 -v ./services/elitea-main/tests/system \
+  -run '^TestIndexEmbeddingBindingMainWorkerCrossProcess$'
+```
+
+This gate does not contact PostgreSQL, LiteLLM, Redis, PgVector or a provider.
+Those service-backed boundaries retain their dedicated integration tests; this
+test specifically proves the signed Main-to-worker authorization, version and
+reference-only language boundary.

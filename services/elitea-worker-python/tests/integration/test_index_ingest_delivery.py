@@ -40,12 +40,14 @@ from elitea_worker.execution.errors import (
     InternalFailure,
     InvalidInput,
     OutputCancellationWon,
+    UnsupportedCapability,
 )
 from elitea_worker.protocol.codec import (
     TestOnlyConformanceHmacAuthenticator,
     VerifiedWorkerCommand,
     build_node_event_output_frame,
     build_output_frame,
+    parse_and_verify_signed_command,
 )
 from elitea_worker.protocol.indexing import (
     INDEX_INGEST_FAILURE_SAFE_MESSAGE,
@@ -605,7 +607,7 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
     assert captured.err == ""
 
 
-def test_bound_embedding_group_reaches_sdk_exactly_and_never_redis(
+def test_embedding_admission_record_preserves_sdk_proxy_input_and_never_enters_redis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     case = _embedding_case()
@@ -654,7 +656,7 @@ def test_bound_embedding_group_reaches_sdk_exactly_and_never_redis(
         assert len(client_calls) == 1
         assert (
             client_calls[0]["toolkit_config"]["settings"]["embedding_model"]
-            == "42_embedding-current"
+            == "embedding-current"
         )
         assert (
             json.loads(case.values["content-1"])["settings"]["embedding_model"]
@@ -671,6 +673,29 @@ def test_bound_embedding_group_reaches_sdk_exactly_and_never_redis(
         assert len(signed_bytes) < 64 * 1024
 
     asyncio.run(run())
+
+
+def test_binding_aware_worker_rejects_index_capability_v1_before_claim() -> None:
+    case = _embedding_case()
+    signed = envelope_pb2.SignedWorkerCommandEnvelopeV1.FromString(
+        case.delivery.signed_envelope
+    )
+    command = command_pb2.WorkerCommandV1.FromString(signed.worker_command_bytes)
+    command.capability_version = "1"
+    command_raw = command.SerializeToString(deterministic=True)
+    signed.worker_command_bytes = command_raw
+    signed.worker_command_digest.CopyFrom(_digest(hashlib.sha256(command_raw).digest()))
+    signed.signature = hmac.new(
+        CONFORMANCE_HMAC_KEY,
+        command_raw,
+        hashlib.sha256,
+    ).digest()
+
+    with pytest.raises(UnsupportedCapability):
+        parse_and_verify_signed_command(
+            signed.SerializeToString(deterministic=True),
+            authenticator=TestOnlyConformanceHmacAuthenticator(),
+        )
 
 
 @pytest.mark.parametrize("failure", ["missing", "mismatched", "pre_binding"])
@@ -2532,7 +2557,7 @@ def _case() -> Case:
             media_type="application/x-protobuf",
         ),
         capability_id="index.ingest.v1",
-        capability_version="1",
+        capability_version="2",
         resource_class="indexing",
         isolation_class="shared",
         priority=1,
@@ -2609,13 +2634,16 @@ def _embedding_case() -> Case:
     ).encode()
 
     binding = {
-        "schema_version": "elitea.index.embedding-binding.v1",
+        "schema_version": "elitea.index.embedding-binding.v2",
         "model_name": "embedding-current",
         "resolved_model_group": "42_embedding-current",
+        "route": "project",
+        "model_project_id": 42,
         "configuration_project_id": 42,
         "configuration_uuid": "00000000-0000-4000-8000-000000000107",
-        "configuration_digest": hashlib.sha256(b"configuration").hexdigest(),
-        "provider": "openai",
+        "configuration_digest": (
+            f"sha256:{hashlib.sha256(b'configuration').hexdigest()}"
+        ),
     }
     binding_raw = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
     binding_version = f"sha256:{hashlib.sha256(binding_raw).hexdigest()}"

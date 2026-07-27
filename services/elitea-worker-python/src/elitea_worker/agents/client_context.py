@@ -36,7 +36,6 @@ class EliteaClientContext:
     project_id: int
     base_url: str
     auth_token: str = field(repr=False)
-    embedding_model_group: str | None = None
 
     def __post_init__(self) -> None:
         if self.project_id < 1 or not _valid_base_url(self.base_url):
@@ -47,11 +46,6 @@ class EliteaClientContext:
             raise DependencyUnavailable(
                 "The claim-scoped SDK client context is unavailable."
             )
-        if self.embedding_model_group is not None and not _bounded_text(
-            self.embedding_model_group, 256
-        ):
-            raise InvalidInput("The bound embedding model group is malformed.")
-
 
 ClaimBoundTokenFetcher = Callable[[IndexExecutionClaim], Awaitable[str]]
 

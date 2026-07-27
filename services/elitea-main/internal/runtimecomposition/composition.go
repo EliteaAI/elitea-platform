@@ -13,6 +13,7 @@ import (
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
@@ -31,6 +32,7 @@ const (
 	envelopeSchemaRevision = "elitea.runtime.signed-worker-command.v1"
 	outputSchemaRevision   = "elitea.runtime.execution-output.v1"
 	capabilityVersion      = "1"
+	indexCapabilityVersion = "2"
 	limitsRevision         = "elitea.runtime.limits.conformance.v1"
 
 	resourceClass          = "validation-small"
@@ -180,7 +182,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	indexDispatchPolicy := repos.IndexIngestDispatchPolicy{
 		StreamName:        config.IndexIngestCommandStream,
-		CapabilityVersion: capabilityVersion,
+		CapabilityVersion: indexCapabilityVersion,
 		ResourceClass:     indexResourceClass,
 		IsolationClass:    indexIsolationClass,
 		Priority:          1,
@@ -335,7 +337,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			ValidationStream:       config.CommandStream,
 			ProtocolRevision:       protocolRevision,
 			EnvelopeSchemaRevision: envelopeSchemaRevision,
-			CapabilityVersion:      capabilityVersion,
+			CapabilityVersion:      indexCapabilityVersion,
 			Limits:                 indexLimits,
 		}, signer, indexAppender)
 		if err != nil {
@@ -482,11 +484,14 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	verifier, err := control.NewProductionCommandVerifier(control.ProductionVerifierConfig{
 		EnvelopeSchemaRevision: envelopeSchemaRevision,
 		ProtocolRevision:       protocolRevision,
-		CapabilityVersion:      capabilityVersion,
-		LimitsRevision:         limitsRevision,
-		MaxWorkerCommandBytes:  maxWorkerCommandBytes,
-		MaxInputManifestBytes:  maxInputManifestBytes,
-		MaxStringBytes:         maxSafeStringBytes,
+		CapabilityVersions: map[string]string{
+			executiondomain.ConfigurationValidationCapability: capabilityVersion,
+			executiondomain.IndexIngestCapability:             indexCapabilityVersion,
+		},
+		LimitsRevision:        limitsRevision,
+		MaxWorkerCommandBytes: maxWorkerCommandBytes,
+		MaxInputManifestBytes: maxInputManifestBytes,
+		MaxStringBytes:        maxSafeStringBytes,
 	}, verificationKeys)
 	if err != nil {
 		return nil, err

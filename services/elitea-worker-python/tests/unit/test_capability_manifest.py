@@ -28,6 +28,7 @@ def test_capability_document_is_deterministic_and_pinned() -> None:
     assert "production-delivery-not-wired" in toolkit["featureFlags"]
     index = document["capabilities"][2]
     assert index["capabilityId"] == "index.ingest.v1"
+    assert index["capabilityVersion"] == "2"
     assert index["interactionModel"] == "durable_job"
     assert "current-sdk-delegate" in index["featureFlags"]
     assert "claim-bound-runtime-context" in index["featureFlags"]

@@ -243,10 +243,10 @@ func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIn
 		SchemaVersion:          indexingapp.CurrentEmbeddingBindingSchema,
 		ModelName:              "text-embedding-3-small",
 		ResolvedModelGroup:     "1_text-embedding-3-small",
+		Route:                  "public",
 		ConfigurationProjectID: 1,
 		ConfigurationUUID:      "00000000-0000-0000-0000-000000000111",
 		ConfigurationDigest:    runtimedomain.SHA256([]byte("configuration:" + prefix)),
-		Provider:               "openai",
 	}
 	outcome, err := service.Submit(ctx, request)
 	if err != nil || !outcome.Created {

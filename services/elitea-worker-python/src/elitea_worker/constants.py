@@ -5,6 +5,7 @@ from __future__ import annotations
 CONFIGURATION_VALIDATION_CAPABILITY_ID = "configuration.validate.v1"
 TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID = "toolkit.available_tools.v1"
 INDEX_INGEST_CAPABILITY_ID = "index.ingest.v1"
+INDEX_INGEST_CAPABILITY_VERSION = "2"
 # Backward-compatible name used by the first validation slice.
 CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"

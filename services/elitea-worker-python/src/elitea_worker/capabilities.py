@@ -18,6 +18,7 @@ from elitea_worker.constants import (
     CONFIGURATION_CATALOG_REVISION,
     CONFIGURATION_CATALOG_SHA256,
     INDEX_INGEST_CAPABILITY_ID,
+    INDEX_INGEST_CAPABILITY_VERSION,
     LIMITS_REVISION,
     RUNTIME_IMPLEMENTATION,
     RUNTIME_VERSION,
@@ -125,7 +126,7 @@ def capability_message(
             ),
             capability_manifest_pb2.RuntimeCapabilityV1(
                 capability_id=INDEX_INGEST_CAPABILITY_ID,
-                capability_version="1",
+                capability_version=INDEX_INGEST_CAPABILITY_VERSION,
                 accepted_command_types=[
                     command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST,
                 ],

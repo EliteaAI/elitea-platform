@@ -19,6 +19,7 @@ import (
 const (
 	maxCurrentModelCatalogRows       = 10_000
 	currentModelCatalogQueryRows     = maxCurrentModelCatalogRows + 1
+	maxCurrentModelCatalogBytes      = 8 * 1024 * 1024
 	currentLLMDefaultMaxOutputTokens = 16_000
 )
 
@@ -101,6 +102,17 @@ func (r *CurrentModelsRepository) List(
 	}
 	if len(rows) > maxCurrentModelCatalogRows {
 		return nil, errCurrentModelCatalogTooLarge
+	}
+	totalBytes := 0
+	for _, row := range rows {
+		rowBytes := len(row.Data) + len(row.EliteaTitle) + len(row.Section)
+		if row.Label != nil {
+			rowBytes += len(*row.Label)
+		}
+		if rowBytes > maxCurrentModelCatalogBytes-totalBytes {
+			return nil, errCurrentModelCatalogTooLarge
+		}
+		totalBytes += rowBytes
 	}
 
 	candidates := make([]currentModelCandidate, 0, len(rows))
