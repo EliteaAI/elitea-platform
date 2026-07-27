@@ -38,6 +38,8 @@ type mockRepo struct {
 	deleteAttachmentsFn       func(ctx context.Context, projectID, conversationID string) error
 	getContextAnalyticsFn     func(ctx context.Context, projectID, conversationID string) (map[string]any, error)
 	updateContextStrategyFn   func(ctx context.Context, projectID, conversationID string, body map[string]any) error
+	deleteMessagesFn          func(ctx context.Context, projectID, conversationID string) error
+	deleteMessageFn           func(ctx context.Context, projectID, groupUID string) error
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -118,6 +120,20 @@ func (m *mockRepo) GetContextAnalytics(ctx context.Context, projectID, conversat
 
 func (m *mockRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error {
 	return m.updateContextStrategyFn(ctx, projectID, conversationID, body)
+}
+
+func (m *mockRepo) DeleteMessages(ctx context.Context, projectID, conversationID string) error {
+	if m.deleteMessagesFn == nil {
+		return nil
+	}
+	return m.deleteMessagesFn(ctx, projectID, conversationID)
+}
+
+func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID string) error {
+	if m.deleteMessageFn == nil {
+		return nil
+	}
+	return m.deleteMessageFn(ctx, projectID, groupUID)
 }
 
 // newRouter mounts the handler under /projects/{projectID}/conversations to
@@ -541,8 +557,8 @@ func TestDeleteMessages_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
 	}
 }
 
@@ -558,8 +574,8 @@ func TestDeleteMessage_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
 	}
 }
 

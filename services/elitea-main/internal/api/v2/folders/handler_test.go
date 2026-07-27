@@ -245,7 +245,11 @@ func TestFolderUpdate_InvalidBody(t *testing.T) {
 // ---- Update (PATCH) ---------------------------------------------------------
 
 func TestFolderPatch_Success(t *testing.T) {
-	repo := &mockFolderRepo{}
+	repo := &mockFolderRepo{
+		folders: []handler.Folder{
+			{ID: "f-1", ProjectID: "proj-1", Name: "Original Folder"},
+		},
+	}
 	r := setupFoldersRouter(repo)
 
 	payload, _ := json.Marshal(handler.Folder{Name: "Patched Folder"})

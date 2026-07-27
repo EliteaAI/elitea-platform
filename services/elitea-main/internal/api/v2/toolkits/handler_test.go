@@ -58,6 +58,38 @@ func (m *mockRepo) ForkToolkit(_ context.Context, _ string, _ map[string]any) (t
 	return m.tool, nil
 }
 
+func (m *mockRepo) ListToolkits(_ context.Context, _ string, _, _ int) ([]map[string]any, int, error) {
+	if m.err != nil {
+		return nil, 0, m.err
+	}
+	return nil, 0, nil
+}
+
+func (m *mockRepo) CreateToolkit(_ context.Context, _ string, body map[string]any) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return body, nil
+}
+
+func (m *mockRepo) GetToolkit(_ context.Context, _, _ string) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return map[string]any{}, nil
+}
+
+func (m *mockRepo) UpdateToolkit(_ context.Context, _, _ string, body map[string]any) (map[string]any, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return body, nil
+}
+
+func (m *mockRepo) DeleteToolkit(_ context.Context, _, _ string) error {
+	return m.err
+}
+
 // setupRouter wires up a chi router with the given mock repo attached at the
 // URL patterns matching router.go.
 func setupRouter(repo toolkits.Repository) *chi.Mux {
@@ -95,12 +127,12 @@ func TestListTypes_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected toolkit_types array, got %T", resp["toolkit_types"])
 	}
-	if len(types) != 3 {
-		t.Errorf("expected 3 types, got %d", len(types))
+	if len(types) != 12 {
+		t.Errorf("expected 12 types, got %d", len(types))
 	}
 	total := resp["total"].(float64)
-	if int(total) != 3 {
-		t.Errorf("expected total 3, got %v", total)
+	if int(total) != 12 {
+		t.Errorf("expected total 12, got %v", total)
 	}
 }
 
@@ -112,7 +144,7 @@ func TestListTypes_DBError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// Handler returns 200 with empty list on error
+	// Handler returns the static baseline when the repository is unavailable.
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -124,12 +156,12 @@ func TestListTypes_DBError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected toolkit_types array, got %T", resp["toolkit_types"])
 	}
-	if len(types) != 0 {
-		t.Errorf("expected 0 types on error, got %d", len(types))
+	if len(types) != 10 {
+		t.Errorf("expected 10 static types on error, got %d", len(types))
 	}
 	total := resp["total"].(float64)
-	if int(total) != 0 {
-		t.Errorf("expected total 0 on error, got %v", total)
+	if int(total) != 10 {
+		t.Errorf("expected total 10 on error, got %v", total)
 	}
 }
 
@@ -425,33 +457,39 @@ func TestIndexTypes_StaticResponse(t *testing.T) {
 	var resp map[string]any
 	json.NewDecoder(rec.Body).Decode(&resp)
 
-	indexTypes, ok := resp["index_types"].([]any)
+	indexTypes, ok := resp["items"].([]any)
 	if !ok {
-		t.Fatalf("expected index_types array, got %T", resp["index_types"])
+		t.Fatalf("expected items array, got %T", resp["items"])
 	}
-	if len(indexTypes) != 3 {
-		t.Errorf("expected 3 index types, got %d", len(indexTypes))
+	if len(indexTypes) != 6 {
+		t.Errorf("expected 6 index types, got %d", len(indexTypes))
 	}
 
 	total := resp["total"].(float64)
-	if int(total) != 3 {
-		t.Errorf("expected total 3, got %v", total)
+	if int(total) != 6 {
+		t.Errorf("expected total 6, got %v", total)
 	}
 
-	// Verify expected names are present
-	expected := map[string]bool{"vector": false, "keyword": false, "hybrid": false}
+	expected := map[string]bool{
+		"file_loader":       false,
+		"web_loader":        false,
+		"confluence_loader": false,
+		"github_loader":     false,
+		"jira_loader":       false,
+		"s3_loader":         false,
+	}
 	for _, item := range indexTypes {
 		entry, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		if name, _ := entry["name"].(string); name != "" {
-			expected[name] = true
+		if indexType, _ := entry["type"].(string); indexType != "" {
+			expected[indexType] = true
 		}
 	}
-	for name, found := range expected {
+	for indexType, found := range expected {
 		if !found {
-			t.Errorf("missing index type %q in response", name)
+			t.Errorf("missing index type %q in response", indexType)
 		}
 	}
 }
