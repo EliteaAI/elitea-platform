@@ -195,6 +195,7 @@ credentials.
 | `pytest tests/integration/test_index_search_protocol_contract.py` | Python-to-Go wire fixture producer; this is language binding interoperability, not a deployed worker integration. |
 | `ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST=1 go test ./services/elitea-main/tests/system -run TestIndexEmbeddingBindingMainWorkerCrossProcess` | Real Go-to-Python process boundary: Main default owner tuple and project/public/raw observation, production Ed25519 signing/authentication, stale index version `1` rejection before claim, version `2` reaching claim, exact binding-reference digest, and no model/credential/deployment content in the control envelope. CI installs the exact worker-locked SDK source before running it. It does not contact Redis, PostgreSQL, LiteLLM, PgVector or a provider. |
 | `index-v2-preflight --spool-root ...` | Operator gate against the stopped version-1 release configuration: zero live v1 jobs, unretired outbox rows, unreleased claims, source stream entries, PEL entries, delivery mappings, and files in every old worker replica's private durable spool root. Any missing reader/group/root or dependency failure blocks. |
+| `docker build -f services/elitea-main/Containerfile .` plus final-image execution of `/index-v2-preflight` | The release image builds, vulnerability-scans and ships the operator binary. CI asserts missing arguments exit `2` and missing runtime dependencies exit `1`; a missing binary would not satisfy either contract. |
 
 ## Explicit remaining work before mounting
 
@@ -219,18 +220,26 @@ credentials.
    Flask endpoint has Pydantic coercion/raw validation and lets an invalid
    timeout conversion escape its generic exception branch.
 7. Treat capability `1` to `2` as a coordinated cutover, never a mixed rolling
-   deployment:
+   deployment. The operator release contract and least-privilege one-shot
+   service requirements are in
+   [`deploy/INDEX_V2_CUTOVER.md`](../../../../../deploy/INDEX_V2_CUTOVER.md):
 
-   1. Close indexing admission at ingress and scale every version-`1` Main
-      producer to zero. Keep version-`1` workers running while already-admitted
-      work drains.
-   2. Recover or terminally reconcile every version-`1` job through the normal
-      durable state machine. Do not delete job, outbox, claim, stream, delivery
-      mapping, or spool rows/files by hand.
-   3. After database and source Redis work are empty, stop all version-`1`
-      workers. Mount every stopped replica's durable spool root read-only into
-      the preflight job.
-   4. Run the command below with `DATABASE_URL` and the old version-`1`
+   1. Close indexing admission at ingress. Keep one `ac96452`-compatible
+      version-`1` Main initializer/outbox publisher on the old route and the
+      exact pinned version-`1` worker running.
+   2. Verify the standard migrator's recorded migration head includes
+      `0051_index_meta_initialization_recovery.sql`; never execute that SQL
+      manually. Then let the Main/worker pair recover or terminally reconcile
+      every version-`1` job through the normal durable state machine. In the
+      current rollout, execution `4ceb724db45501c2cb9b142422f368db` must
+      terminally settle. Do not delete or manually update job, outbox, claim,
+      stream, delivery mapping, or spool rows/files.
+   3. Keep the worker alive until old Redis deliveries and durable output
+      spools are acknowledged, settled and drained. Only after database,
+      source Redis and spool work are empty, scale every version-`1` Main
+      producer to zero and stop all version-`1` workers. Mount every stopped
+      replica's durable spool root read-only into the preflight job.
+   4. Run the packaged command below with `DATABASE_URL` and the old version-`1`
       release's authenticated Redis/TLS configuration. It must exit zero and
       report only zero counts. Re-run it after any reconciliation:
 
@@ -244,7 +253,8 @@ credentials.
       consumer group while admission remains closed. Verify worker health and
       capability `2`.
    6. Deploy version-`2` Main against that same new route, verify health, then
-      and only then reopen indexing admission.
+      and only then reopen indexing admission. Version-`2` Main and workers
+      continue to reject version-`1` commands; they never recover old work.
 
    Before step 6 admits any version-`2` command, rollback is: stop version-`2`
    Main/workers, restore the version-`1` workers and Main with their old route,

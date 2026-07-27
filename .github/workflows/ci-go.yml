@@ -413,8 +413,8 @@ jobs:
 
   build:
     name: Build
-    # CI validation only — confirms the binaries compile cleanly on every PR/push.
-    # Production images are built via Containerfile in publish.yml, not here.
+    # CI compiles each binary and executes the final production image. The
+    # release-tagged multi-arch images are still built by publish.yml.
     runs-on: ubuntu-latest
     needs: [sqlc, lint, test, redis-integration, postgres-integration, pgvector-index-meta-integration, confluence-indexing-current-characterization, postgres-auth-integration, index-embedding-cutover]
     steps:
@@ -449,3 +449,21 @@ jobs:
         run: |
           cd services/elitea-main
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/index-v2-preflight ./cmd/index-v2-preflight
+
+      - name: Verify packaged index-v2-preflight fails closed
+        run: |
+          docker build \
+            --file services/elitea-main/Containerfile \
+            --tag elitea-main-ci:index-v2-preflight \
+            .
+          usage_status=0
+          docker run --rm \
+            --entrypoint /index-v2-preflight \
+            elitea-main-ci:index-v2-preflight || usage_status=$?
+          test "${usage_status}" -eq 2
+          blocked_status=0
+          docker run --rm \
+            --entrypoint /index-v2-preflight \
+            elitea-main-ci:index-v2-preflight \
+            --spool-root /not-mounted || blocked_status=$?
+          test "${blocked_status}" -eq 1

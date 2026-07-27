@@ -19,13 +19,21 @@ import (
 )
 
 const (
-	exitReady        = 0
-	exitBlocked      = 1
-	exitInvalidUsage = 2
-	preflightTimeout = 30 * time.Second
+	exitReady              = 0
+	exitBlocked            = 1
+	exitInvalidUsage       = 2
+	preflightTimeout       = 30 * time.Second
+	preflightRedisPoolSize = 2
 )
 
 type stringList []string
+
+type preflightRuntimeConfig struct {
+	databaseURL   string
+	commandStream string
+	consumerGroup string
+	redis         runtimecomposition.CutoverRedisConfig
+}
 
 func (values *stringList) String() string {
 	return ""
@@ -61,21 +69,16 @@ func run(
 		writeMessage(stderr, "usage: index-v2-preflight --spool-root <absolute-private-directory> [--spool-root ...]\n")
 		return exitInvalidUsage
 	}
-	runtimeConfig, err := runtimecomposition.ConfigFromEnv(lookup)
-	if err != nil || !runtimeConfig.Enabled || !runtimeConfig.IndexIngestDispatchEnabled {
+	runtimeConfig, err := preflightConfigFromEnv(lookup)
+	if err != nil {
 		writeMessage(stderr, "runtime index cutover configuration is invalid\n")
-		return exitBlocked
-	}
-	databaseURL, exists := lookup("DATABASE_URL")
-	if !exists || databaseURL == "" {
-		writeMessage(stderr, "runtime index cutover database configuration is unavailable\n")
 		return exitBlocked
 	}
 
 	ctx, cancel := context.WithTimeout(parent, preflightTimeout)
 	defer cancel()
 
-	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	poolConfig, err := pgxpool.ParseConfig(runtimeConfig.databaseURL)
 	if err != nil {
 		writeMessage(stderr, "runtime index cutover database configuration is invalid\n")
 		return exitBlocked
@@ -93,7 +96,7 @@ func run(
 		return exitBlocked
 	}
 
-	redisClient, err := runtimecomposition.NewControlRedisClient(ctx, runtimeConfig)
+	redisClient, err := runtimecomposition.NewCutoverControlRedisClient(ctx, runtimeConfig.redis)
 	if err != nil {
 		writeMessage(stderr, "runtime index cutover control store is unavailable\n")
 		return exitBlocked
@@ -109,8 +112,8 @@ func run(
 	}
 	control, err := redisdispatch.NewIndexV2CutoverReader(
 		redisClient,
-		runtimeConfig.IndexIngestCommandStream,
-		runtimeConfig.IndexIngestConsumerGroup,
+		runtimeConfig.commandStream,
+		runtimeConfig.consumerGroup,
 	)
 	if err != nil {
 		writeMessage(stderr, "runtime index cutover control-state reader is unavailable\n")
@@ -139,6 +142,60 @@ func run(
 		return exitBlocked
 	}
 	return exitReady
+}
+
+func preflightConfigFromEnv(lookup runtimecomposition.LookupEnv) (preflightRuntimeConfig, error) {
+	if lookup == nil {
+		return preflightRuntimeConfig{}, errors.New("runtime environment lookup is required")
+	}
+	if enabled, _ := lookup("ELITEA_RUNTIME_ENABLED"); enabled != "true" {
+		return preflightRuntimeConfig{}, errors.New("runtime must be enabled")
+	}
+	if enabled, _ := lookup("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED"); enabled != "true" {
+		return preflightRuntimeConfig{}, errors.New("index ingest dispatch must be enabled")
+	}
+	required := func(name string) (string, error) {
+		value, ok := lookup(name)
+		if !ok || value == "" {
+			return "", errors.New(name + " is required")
+		}
+		return value, nil
+	}
+	databaseURL, err := required("DATABASE_URL")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	commandStream, err := required("ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	consumerGroup, err := required("ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	redisURL, err := required("ELITEA_RUNTIME_REDIS_URL")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	redisPasswordFile, err := required("ELITEA_RUNTIME_REDIS_PASSWORD_FILE")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	redisCAFile, err := required("ELITEA_RUNTIME_REDIS_CA_FILE")
+	if err != nil {
+		return preflightRuntimeConfig{}, err
+	}
+	return preflightRuntimeConfig{
+		databaseURL:   databaseURL,
+		commandStream: commandStream,
+		consumerGroup: consumerGroup,
+		redis: runtimecomposition.CutoverRedisConfig{
+			URL:          redisURL,
+			PasswordFile: redisPasswordFile,
+			CAFile:       redisCAFile,
+			PoolSize:     preflightRedisPoolSize,
+		},
+	}, nil
 }
 
 func parseArguments(arguments []string) ([]string, bool) {
