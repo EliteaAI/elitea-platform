@@ -37,15 +37,31 @@ export const Multiline: Story = {
 export const WithClipboardButton: Story = {
   args: { meta: { label: 'API key', clipboard: true } },
   play: async ({ canvasElement }) => {
-    // Real Clipboard API reads/writes need a permission grant this
-    // Storybook/Playwright harness does not set up — the actual
-    // copy-succeeds behaviour is covered in
-    // `CommonStringField.test.tsx` (jsdom, via `@testing-library/
-    // user-event`'s own clipboard stub, which needs no such grant). This
-    // play function only proves the button renders and is clickable
-    // without throwing.
+    // Stubs navigator.clipboard.writeText for the duration of this click,
+    // same testing philosophy as `CommonStringField.test.tsx`'s jsdom
+    // project (which reads the outcome off `@testing-library/user-event`'s
+    // own clipboard stub) — just implemented by hand, since this play
+    // function runs in a real browser, not jsdom, so that stub isn't
+    // available here. A granted Playwright permission alone was not
+    // sufficient in CI: a headless Linux runner's sandbox commonly has no
+    // OS-level clipboard at all (no X server / clipboard daemon), which no
+    // page-level permission can work around. Without this stub, the real
+    // (environment-dependent) Clipboard API rejects, and
+    // `shared/lib/clipboard.ts`'s `handleCopy` — deliberately, correctly,
+    // per that file's own doc comment (a preserved old-app quirk, N4) —
+    // fires an unhandled, unawaited retry on total failure, which fails
+    // the whole Storybook test run regardless of what this specific test
+    // asserts.
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole('button', { name: 'Copy to clipboard' }));
+    const originalWriteText: typeof navigator.clipboard.writeText = navigator.clipboard.writeText.bind(
+      navigator.clipboard,
+    );
+    navigator.clipboard.writeText = () => Promise.resolve();
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: 'Copy to clipboard' }));
+    } finally {
+      navigator.clipboard.writeText = originalWriteText;
+    }
   },
 };
 
