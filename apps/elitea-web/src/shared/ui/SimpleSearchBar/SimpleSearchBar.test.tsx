@@ -158,6 +158,12 @@ describe('SimpleSearchBar', () => {
   });
 
   it('Escape clears immediately, bypassing any pending debounce', async () => {
+    // Deliberately does NOT assert `not.toHaveBeenCalled()` immediately
+    // after typing "abc" (the same real-timer race fixed elsewhere in this
+    // file) -- the toHaveBeenCalledTimes(1) after sleep(300), well past the
+    // 200ms debounce window, already proves the pending "abc" call was
+    // genuinely cancelled: if it hadn't been, that call plus the real
+    // Escape-triggered '' call would total 2, not 1.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { getByDisplayValue } = renderWithTheme(
@@ -169,7 +175,6 @@ describe('SimpleSearchBar', () => {
     );
     const input = getByDisplayValue('');
     await user.type(input, 'abc');
-    expect(onChange).not.toHaveBeenCalled();
     await user.keyboard('{Escape}');
     expect(onChange).toHaveBeenCalledWith('');
     expect(getByDisplayValue('')).toBeInTheDocument();

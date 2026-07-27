@@ -74,6 +74,20 @@ jobs:
             echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
             npm run test:unit -- --run
           fi
+      - name: Install Playwright browser (Storybook's @storybook/addon-vitest)
+        # Real CI gap, found the first time this job ran end-to-end against
+        # a populated .storybook/ (draft-PR CI hadn't executed before unit
+        # S1 landed): @storybook/addon-vitest launches a real headless
+        # browser for interaction/a11y tests, independently of the plain
+        # vitest `browser` project (which this job never runs — see
+        # package.json's test:unit script) — nothing upstream of this step
+        # installs it. The E2E/visual-regression jobs already do their own
+        # `playwright install`; this is the same fix for the job that was
+        # missing it.
+        run: |
+          if [ -d .storybook ]; then
+            npx playwright install --with-deps chromium
+          fi
       - name: Storybook tests
         # The storybook vitest project is stub-commented in vitest.config.ts
         # exactly as §6.3 shows; unit S1 lands .storybook/ and uncomments it.
