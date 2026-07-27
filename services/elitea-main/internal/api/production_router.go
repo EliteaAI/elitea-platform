@@ -12,6 +12,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 )
 
 var ErrInvalidProductionAuthRoutes = errors.New("invalid production authentication routes")
@@ -55,6 +56,10 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	}
 	if cfg.CurrentProjectList != nil {
 		r.Method(http.MethodGet, v2projects.CurrentProjectListPath, cfg.CurrentProjectList)
+	}
+	if cfg.CurrentSocialAuthors != nil {
+		r.Method(http.MethodGet, v2social.CurrentAuthorsPath, cfg.CurrentSocialAuthors)
+		r.Method(http.MethodGet, v2social.CurrentAuthorsDefaultPath, cfg.CurrentSocialAuthors)
 	}
 	if cfg.CurrentConfigurationAvailable != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentAvailablePath, cfg.CurrentConfigurationAvailable)

@@ -19,6 +19,8 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -144,6 +146,92 @@ func TestProductionRouterMountsOnlyExactCurrentProjectListPath(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
 			}
 		})
+	}
+}
+
+type productionSocialAuthorsReader struct {
+	calls int
+}
+
+func (reader *productionSocialAuthorsReader) ListCurrentProjectAuthors(
+	context.Context,
+	int32,
+) ([]socialapp.CurrentAuthor, error) {
+	reader.calls++
+	return []socialapp.CurrentAuthor{}, nil
+}
+
+type productionSocialAuthorsPermissionResolver struct{}
+
+func (productionSocialAuthorsPermissionResolver) ResolvePermissions(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error) {
+	return auth.PermissionResolution{
+		UserID:      41,
+		Permissions: []string{v2social.CurrentAuthorsPermission},
+	}, nil
+}
+
+func TestProductionRouterMountsOnlyExactCurrentSocialAuthorsPaths(t *testing.T) {
+	reader := &productionSocialAuthorsReader{}
+	authors, err := v2social.NewCurrentAuthorsRoute(
+		reader,
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionSocialAuthorsPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentSocialAuthors: authors})
+
+	for _, target := range []string{
+		"/api/v2/social/authors/7",
+		"/api/v2/social/authors/default/7?limit=5&sort_by=name",
+	} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.RemoteAddr = "10.0.0.8:43120"
+		request.Header.Set("X-Auth-Type", "user")
+		request.Header.Set("X-Auth-ID", "41")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "[]\n" {
+			t.Fatalf("GET %s status=%d body=%q", target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if reader.calls != 2 {
+		t.Fatalf("reader calls=%d want=2", reader.calls)
+	}
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{method: http.MethodPost, path: "/api/v2/social/authors/7", want: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: "/api/v2/social/authors/administration/7", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/api/v2/social/authors/7/extra", want: http.StatusNotFound},
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(test.method, test.path, nil))
+		if recorder.Code != test.want {
+			t.Fatalf("%s %s status=%d want=%d", test.method, test.path, recorder.Code, test.want)
+		}
+	}
+
+	unmounted := NewRouter(RouterConfig{})
+	recorder := httptest.NewRecorder()
+	unmounted.ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/v2/social/authors/7", nil),
+	)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d", recorder.Code)
 	}
 }
 

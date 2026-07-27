@@ -20,11 +20,14 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
+	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
@@ -83,6 +86,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	var productionAuth *api.ProductionAuthRoutes
 	var currentProjectList *v2projects.CurrentProjectListRoute
+	var currentSocialAuthors *socialapi.CurrentAuthorsRoute
 	var formGraph *authcomposition.FormGraph
 	var authReadiness health.Checker
 	var principalValidator apimw.PrincipalValidator
@@ -128,6 +132,26 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		)
 		if err != nil {
 			return fmt.Errorf("compose current project-list route: %w", err)
+		}
+		socialAuthorsRepository, repositoryErr := dbrepos.NewCurrentSocialAuthorsRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current Social authors repository: %w", repositoryErr)
+		}
+		socialAuthorsService, serviceErr := socialapp.NewCurrentAuthorsService(socialAuthorsRepository)
+		if serviceErr != nil {
+			return fmt.Errorf("compose current Social authors service: %w", serviceErr)
+		}
+		currentSocialAuthors, err = socialapi.NewCurrentAuthorsRoute(
+			socialAuthorsService,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Social authors route: %w", err)
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
@@ -361,6 +385,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectList:            currentProjectList,
+		CurrentSocialAuthors:          currentSocialAuthors,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
 		CurrentConfigurationRead:      currentConfigurationRead,
 		CurrentConfigurationTypes:     currentConfigurationTypes,

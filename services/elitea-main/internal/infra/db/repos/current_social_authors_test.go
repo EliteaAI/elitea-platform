@@ -15,14 +15,16 @@ type currentSocialAuthorsQueriesStub struct {
 	err       error
 	calls     int
 	projectID int32
+	context   context.Context
 }
 
 func (stub *currentSocialAuthorsQueriesStub) ListCurrentProjectAuthors(
-	_ context.Context,
+	ctx context.Context,
 	projectID int32,
 ) ([]sqlcgen.ListCurrentProjectAuthorsRow, error) {
 	stub.calls++
 	stub.projectID = projectID
+	stub.context = ctx
 	return stub.rows, stub.err
 }
 
@@ -56,6 +58,11 @@ func TestCurrentSocialAuthorsRepositoryMapsOneGeneratedQuery(t *testing.T) {
 	}
 	if queries.calls != 1 || queries.projectID != 7 {
 		t.Fatalf("query calls=%d project=%d", queries.calls, queries.projectID)
+	}
+	deadline, ok := queries.context.Deadline()
+	remaining := time.Until(deadline)
+	if !ok || remaining <= 0 || remaining > CurrentSocialAuthorsQueryTimeout {
+		t.Fatalf("query deadline present=%t remaining=%v", ok, remaining)
 	}
 	if len(authors) != 2 || authors[0].ID != 41 || authors[0].Email == nil ||
 		*authors[0].Email != email || authors[0].Name == nil || *authors[0].Name != name ||

@@ -14,6 +14,8 @@ import (
 
 var ErrInvalidCurrentSocialAuthorsRequest = errors.New("current social authors request is invalid")
 
+const CurrentSocialAuthorsQueryTimeout = 5 * time.Second
+
 type currentSocialAuthorsQueries interface {
 	ListCurrentProjectAuthors(
 		context.Context,
@@ -57,7 +59,9 @@ func (repository *CurrentSocialAuthorsRepository) ListCurrentProjectAuthors(
 		return nil, err
 	}
 
-	rows, err := repository.queries.ListCurrentProjectAuthors(ctx, projectID)
+	queryContext, cancel := context.WithTimeout(ctx, CurrentSocialAuthorsQueryTimeout)
+	defer cancel()
+	rows, err := repository.queries.ListCurrentProjectAuthors(queryContext, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("query current social authors: %w", err)
 	}

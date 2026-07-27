@@ -79,6 +79,7 @@ type RouterConfig struct {
 	ProductionAuth                *ProductionAuthRoutes
 	ProductionRuntime             *ProductionRuntimeRoutes
 	CurrentProjectList            *v2projects.CurrentProjectListRoute
+	CurrentSocialAuthors          *v2social.CurrentAuthorsRoute
 	CurrentConfigurationAvailable http.Handler
 	CurrentConfigurationRead      http.Handler
 	CurrentConfigurationTypes     http.Handler
