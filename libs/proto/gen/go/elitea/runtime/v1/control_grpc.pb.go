@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	RuntimeControlService_ClaimCommand_FullMethodName        = "/elitea.runtime.v1.RuntimeControlService/ClaimCommand"
+	RuntimeControlService_BeginExecution_FullMethodName      = "/elitea.runtime.v1.RuntimeControlService/BeginExecution"
 	RuntimeControlService_RenewLease_FullMethodName          = "/elitea.runtime.v1.RuntimeControlService/RenewLease"
 	RuntimeControlService_ObserveDesiredState_FullMethodName = "/elitea.runtime.v1.RuntimeControlService/ObserveDesiredState"
 	RuntimeControlService_PrepareSettlement_FullMethodName   = "/elitea.runtime.v1.RuntimeControlService/PrepareSettlement"
@@ -30,6 +31,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RuntimeControlServiceClient interface {
 	ClaimCommand(ctx context.Context, in *ClaimCommandRequestV1, opts ...grpc.CallOption) (*ClaimCommandResponseV1, error)
+	BeginExecution(ctx context.Context, in *BeginExecutionRequestV1, opts ...grpc.CallOption) (*BeginExecutionResponseV1, error)
 	RenewLease(ctx context.Context, in *RenewLeaseRequestV1, opts ...grpc.CallOption) (*RenewLeaseResponseV1, error)
 	ObserveDesiredState(ctx context.Context, in *ObserveDesiredStateRequestV1, opts ...grpc.CallOption) (*ObserveDesiredStateResponseV1, error)
 	PrepareSettlement(ctx context.Context, in *PrepareSettlementRequestV1, opts ...grpc.CallOption) (*PrepareSettlementResponseV1, error)
@@ -47,6 +49,16 @@ func (c *runtimeControlServiceClient) ClaimCommand(ctx context.Context, in *Clai
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ClaimCommandResponseV1)
 	err := c.cc.Invoke(ctx, RuntimeControlService_ClaimCommand_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeControlServiceClient) BeginExecution(ctx context.Context, in *BeginExecutionRequestV1, opts ...grpc.CallOption) (*BeginExecutionResponseV1, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BeginExecutionResponseV1)
+	err := c.cc.Invoke(ctx, RuntimeControlService_BeginExecution_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +100,7 @@ func (c *runtimeControlServiceClient) PrepareSettlement(ctx context.Context, in 
 // for forward compatibility.
 type RuntimeControlServiceServer interface {
 	ClaimCommand(context.Context, *ClaimCommandRequestV1) (*ClaimCommandResponseV1, error)
+	BeginExecution(context.Context, *BeginExecutionRequestV1) (*BeginExecutionResponseV1, error)
 	RenewLease(context.Context, *RenewLeaseRequestV1) (*RenewLeaseResponseV1, error)
 	ObserveDesiredState(context.Context, *ObserveDesiredStateRequestV1) (*ObserveDesiredStateResponseV1, error)
 	PrepareSettlement(context.Context, *PrepareSettlementRequestV1) (*PrepareSettlementResponseV1, error)
@@ -103,6 +116,9 @@ type UnimplementedRuntimeControlServiceServer struct{}
 
 func (UnimplementedRuntimeControlServiceServer) ClaimCommand(context.Context, *ClaimCommandRequestV1) (*ClaimCommandResponseV1, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClaimCommand not implemented")
+}
+func (UnimplementedRuntimeControlServiceServer) BeginExecution(context.Context, *BeginExecutionRequestV1) (*BeginExecutionResponseV1, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BeginExecution not implemented")
 }
 func (UnimplementedRuntimeControlServiceServer) RenewLease(context.Context, *RenewLeaseRequestV1) (*RenewLeaseResponseV1, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RenewLease not implemented")
@@ -148,6 +164,24 @@ func _RuntimeControlService_ClaimCommand_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RuntimeControlServiceServer).ClaimCommand(ctx, req.(*ClaimCommandRequestV1))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeControlService_BeginExecution_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BeginExecutionRequestV1)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).BeginExecution(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_BeginExecution_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).BeginExecution(ctx, req.(*BeginExecutionRequestV1))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -216,6 +250,10 @@ var RuntimeControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClaimCommand",
 			Handler:    _RuntimeControlService_ClaimCommand_Handler,
+		},
+		{
+			MethodName: "BeginExecution",
+			Handler:    _RuntimeControlService_BeginExecution_Handler,
 		},
 		{
 			MethodName: "RenewLease",

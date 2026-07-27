@@ -35,6 +35,14 @@ class GeneratedControlStub(Protocol):
         metadata: tuple[tuple[str, str], ...],
     ) -> Awaitable[control_pb2.RenewLeaseResponseV1]: ...
 
+    def BeginExecution(
+        self,
+        request: control_pb2.BeginExecutionRequestV1,
+        *,
+        timeout: float,
+        metadata: tuple[tuple[str, str], ...],
+    ) -> Awaitable[control_pb2.BeginExecutionResponseV1]: ...
+
     def ObserveDesiredState(
         self,
         request: control_pb2.ObserveDesiredStateRequestV1,
@@ -109,6 +117,18 @@ class ExecutionControlClient:
     ) -> control_pb2.RenewLeaseResponseV1:
         _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
         response = await self._stub.RenewLease(
+            request,
+            timeout=self._deadline,
+            metadata=_validated_metadata(self._metadata()),
+        )
+        _require_wire_size(response, MAX_GRPC_RESPONSE_BYTES, "control response")
+        return response
+
+    async def begin_execution(
+        self, request: control_pb2.BeginExecutionRequestV1
+    ) -> control_pb2.BeginExecutionResponseV1:
+        _require_wire_size(request, MAX_GRPC_REQUEST_BYTES, "control request")
+        response = await self._stub.BeginExecution(
             request,
             timeout=self._deadline,
             metadata=_validated_metadata(self._metadata()),

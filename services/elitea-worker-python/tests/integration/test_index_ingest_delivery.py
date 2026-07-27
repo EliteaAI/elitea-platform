@@ -53,11 +53,30 @@ _PRODUCER = "index-producer-1"
 
 
 class InlineSupervisor:
+    def __init__(self) -> None:
+        self.reserved = False
+        self.submitted = False
+
     async def run(self, operation):
         return await operation()
 
     async def run_sync(self, operation, /, *args, **kwargs):
+        assert self.reserved
+        self.submitted = True
         return await asyncio.to_thread(operation, *args, **kwargs)
+
+    async def reserve_sync(self):
+        assert not self.reserved
+        self.reserved = True
+        return InlineReservation(self)
+
+
+class InlineReservation:
+    def __init__(self, supervisor: InlineSupervisor) -> None:
+        self._supervisor = supervisor
+
+    def release(self) -> None:
+        self._supervisor.reserved = False
 
 
 class RecordingSdk:
@@ -271,11 +290,16 @@ class Control:
         *,
         active: bool = False,
         claim_handoff_watermark: int = 0,
+        begin_dispositions: list[int] | None = None,
     ) -> None:
         self.case = case
         self.active = active
         self.claim_handoff_watermark = claim_handoff_watermark
         self.settlements = 0
+        self.begins = 0
+        self.begin_dispositions = begin_dispositions or [
+            control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW
+        ]
 
     async def claim_command(self, request):
         disposition = (
@@ -301,6 +325,17 @@ class Control:
         return control_pb2.RenewLeaseResponseV1(
             lease_expires_at_unix_millis=_NOW + 180_000,
             desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+        )
+
+    async def begin_execution(self, request):
+        self.begins += 1
+        disposition = (
+            self.begin_dispositions.pop(0)
+            if self.begin_dispositions
+            else control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED
+        )
+        return control_pb2.BeginExecutionResponseV1(
+            disposition=disposition,
         )
 
     async def observe_desired_state(self, request):
@@ -432,6 +467,104 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
             for frame in diagnostic["frames"]
         )
         assert canary not in captured.err
+
+
+def test_lost_begin_response_replay_never_resolves_inputs_or_invokes_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case()
+
+    class ForbiddenInput:
+        async def fetch_materialized(self, *args, **kwargs):
+            raise AssertionError("ALREADY_STARTED must not resolve business inputs")
+
+    class ForbiddenSdk:
+        @classmethod
+        def from_context(cls, context):
+            raise AssertionError("ALREADY_STARTED must not construct the SDK")
+
+    monkeypatch.setattr(EliteaSdkIndexingAdapter, "from_context", ForbiddenSdk.from_context)
+
+    async def run() -> None:
+        async def forbidden_context(claim):
+            raise AssertionError("ALREADY_STARTED must not redeem SDK authority")
+
+        supervisor = InlineSupervisor()
+
+        class CapacityAwareControl(Control):
+            async def begin_execution(self, request):
+                assert supervisor.reserved
+                return await super().begin_execution(request)
+
+        control = CapacityAwareControl(
+            case,
+            begin_dispositions=[
+                control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED
+            ],
+        )
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=Output(),
+            acker=Acker(),
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+        assert control.begins == 1
+        assert supervisor.submitted is False
+        assert supervisor.reserved is False
+
+    asyncio.run(run())
+
+
+def test_begin_replay_cannot_double_submit_index_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case()
+    sdk = RecordingSdk(
+        {"success": True, "result": {"status": "ok", "message": "Indexed once"}}
+    )
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: sdk),
+    )
+
+    async def run() -> None:
+        async def context_factory(claim):
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        control = Control(
+            case,
+            begin_dispositions=[
+                control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW,
+                control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED,
+            ],
+        )
+        supervisor = InlineSupervisor()
+        processor = _processor(
+            case,
+            control=control,
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+            supervisor=supervisor,
+        )
+
+        first = await processor.process(case.delivery)
+        replay = await processor.process(case.delivery)
+
+        assert first.disposition is DeliveryDisposition.EXECUTED_SETTLED_ACKED
+        assert replay.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+        assert control.begins == 2
+        assert len(sdk.calls) == 1
+        assert supervisor.reserved is False
+
+    asyncio.run(run())
 
 
 def test_input_context_internal_failure_emits_credential_safe_diagnostic(
@@ -925,10 +1058,11 @@ def _processor(
     context_factory,
     clock=None,
     output_factory=None,
+    supervisor=None,
 ):
     clock = clock or (lambda: _NOW)
     return IndexIngestDeliveryProcessor(
-        supervisor=InlineSupervisor(),
+        supervisor=supervisor or InlineSupervisor(),
         client_context_factory=context_factory,
         control=control,
         command_acker=acker,

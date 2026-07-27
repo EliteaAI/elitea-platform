@@ -9,6 +9,7 @@ from typing import Any, Protocol, TypeVar
 from elitea_worker.execution.sync_executor import (
     BoundedAdmissionGate,
     BoundedSyncExecutor,
+    SyncExecutorReservation,
 )
 
 T = TypeVar("T")
@@ -24,6 +25,8 @@ class ExecutionRunner(Protocol):
         *args: Any,
         **kwargs: Any,
     ) -> T: ...
+
+    async def reserve_sync(self) -> SyncExecutorReservation: ...
 
 
 class ExecutionSupervisor:
@@ -78,6 +81,9 @@ class ExecutionSupervisor:
         **kwargs: Any,
     ) -> T:
         return await self._sync.run(operation, *args, **kwargs)
+
+    async def reserve_sync(self) -> SyncExecutorReservation:
+        return await self._sync.reserve()
 
     def stop_admission(self) -> None:
         """Reject and wake whole-delivery and synchronous-call waiters."""

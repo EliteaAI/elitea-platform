@@ -51,8 +51,30 @@ type claimControllerStub struct {
 	desiredState     runtimedomain.DesiredState
 	claimRequest     *executionapp.ClaimRequest
 	claimErr         error
+	beginDisposition executionapp.BeginExecutionDisposition
+	beginSequence    *[]executionapp.BeginExecutionDisposition
+	beginErr         error
 	abortDisposition *executionapp.ClaimAbortDisposition
 	abortErr         error
+}
+
+func (s claimControllerStub) BeginExecution(_ context.Context, fence runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error) {
+	*s.calls = append(*s.calls, "begin-execution")
+	if fence != s.lease.Fence {
+		return "", runtimedomain.ErrStaleFence
+	}
+	if s.beginErr != nil {
+		return "", s.beginErr
+	}
+	if s.beginSequence != nil && len(*s.beginSequence) > 0 {
+		disposition := (*s.beginSequence)[0]
+		*s.beginSequence = (*s.beginSequence)[1:]
+		return disposition, nil
+	}
+	if s.beginDisposition != "" {
+		return s.beginDisposition, nil
+	}
+	return executionapp.BeginExecutionStartedNow, nil
 }
 
 func (s claimControllerStub) Claim(_ context.Context, request executionapp.ClaimRequest) (executionapp.ClaimDecision, error) {
@@ -178,6 +200,81 @@ func TestClaimCommandAuthenticatesThenVerifiesThenClaimsBeforeResolvingInput(t *
 	}
 	if got := response.GetReceipt().GetFence().GetFenceToken(); string(got) != string(lease.Fence.Token[:]) {
 		t.Fatal("claim response lost unpredictable fence token")
+	}
+}
+
+func TestBeginExecutionReturnsStartedThenLostResponseReplayWithoutBusinessMaterial(t *testing.T) {
+	calls := []string{}
+	lease := validLease()
+	sequence := []executionapp.BeginExecutionDisposition{
+		executionapp.BeginExecutionStartedNow,
+		executionapp.BeginExecutionAlreadyStarted,
+	}
+	server, err := NewServer(
+		testControlServerConfig(),
+		workloadAuthorizerStub{calls: &calls},
+		newTestVerifier(t),
+		claimControllerStub{calls: &calls, lease: lease, beginSequence: &sequence},
+		inputResolverStub{calls: &calls, manifest: validManifest()},
+		&settlementControllerStub{calls: &calls},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &runtimev1.BeginExecutionRequestV1{
+		Identity: &runtimev1.ExecutionIdentityV1{
+			CommandId:   lease.Fence.CommandID,
+			ExecutionId: lease.Fence.ExecutionID,
+			Generation:  lease.Fence.Generation,
+		},
+		Fence: fenceProto(lease.Fence),
+	}
+
+	first, err := server.BeginExecution(context.Background(), request)
+	if err != nil || first.GetRejection() != nil || first.GetDisposition() != runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW {
+		t.Fatalf("first begin response=%v err=%v", first, err)
+	}
+	replay, err := server.BeginExecution(context.Background(), request)
+	if err != nil || replay.GetRejection() != nil || replay.GetDisposition() != runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED {
+		t.Fatalf("lost-response replay=%v err=%v", replay, err)
+	}
+	if !reflect.DeepEqual(calls, []string{"authorize-peer", "begin-execution", "authorize-peer", "begin-execution"}) {
+		t.Fatalf("begin execution crossed a business-input boundary: %v", calls)
+	}
+}
+
+func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
+	calls := []string{}
+	lease := validLease()
+	server, err := NewServer(
+		testControlServerConfig(),
+		workloadAuthorizerStub{calls: &calls},
+		verifierSpy{calls: &calls, verifier: newTestVerifier(t)},
+		claimControllerStub{
+			calls:       &calls,
+			lease:       lease,
+			disposition: executionapp.ClaimRecoverRunningNoACK,
+			watermark:   7,
+		},
+		inputResolverStub{calls: &calls, manifest: validIndexManifest()},
+		&settlementControllerStub{calls: &calls},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ClaimCommand(context.Background(), claimRequestForIndexManifest(t, validIndexManifest()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := response.GetReceipt()
+	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK {
+		t.Fatalf("unexpected running recovery receipt: %v", response)
+	}
+	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil {
+		t.Fatalf("running recovery leaked business material: %v", receipt)
+	}
+	if !reflect.DeepEqual(calls, []string{"authorize-peer", "verify-command", "claim"}) {
+		t.Fatalf("running recovery reached business input: %v", calls)
 	}
 }
 

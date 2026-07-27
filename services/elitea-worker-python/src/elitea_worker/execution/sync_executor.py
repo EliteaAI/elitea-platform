@@ -11,7 +11,7 @@ import asyncio
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextvars import copy_context
+from contextvars import ContextVar, Token, copy_context
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -27,6 +27,44 @@ class SyncExecutorSaturated(SyncExecutorAdmissionRejected):
 
 class SyncExecutorNotAccepting(SyncExecutorAdmissionRejected):
     """The executor has entered drain or has shut down."""
+
+
+class SyncExecutorReservation:
+    """One task-bound executor slot reserved before durable execution begins."""
+
+    def __init__(
+        self,
+        *,
+        admission: BoundedAdmissionGate,
+        variable: ContextVar[SyncExecutorReservation | None],
+        token: Token[SyncExecutorReservation | None],
+        owner: asyncio.Task[Any],
+    ) -> None:
+        self._admission = admission
+        self._variable = variable
+        self._token = token
+        self._owner = owner
+        self._consumed = False
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        if asyncio.current_task() is not self._owner:
+            raise RuntimeError("executor reservation cannot move between tasks")
+        self._released = True
+        self._variable.reset(self._token)
+        if not self._consumed:
+            self._admission.release()
+
+    def _consume(self) -> None:
+        if (
+            self._released
+            or self._consumed
+            or asyncio.current_task() is not self._owner
+        ):
+            raise RuntimeError("executor reservation is not available")
+        self._consumed = True
 
 
 class BoundedAdmissionGate:
@@ -144,8 +182,39 @@ class BoundedSyncExecutor:
         self._close_task: asyncio.Task[None] | None = None
         self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._futures: set[Future[Any]] = set()
+        self._reservation: ContextVar[SyncExecutorReservation | None] = ContextVar(
+            f"elitea_sync_executor_reservation_{id(self)}",
+            default=None,
+        )
         self._drained = asyncio.Event()
         self._drained.set()
+
+    async def reserve(self) -> SyncExecutorReservation:
+        """Reserve one running-or-queued slot before a durable start RPC."""
+
+        self._owned_running_loop()
+        if self._closed:
+            raise SyncExecutorNotAccepting()
+        if self._reservation.get() is not None:
+            raise RuntimeError("this task already owns an executor reservation")
+        await self._admission.acquire()
+        if self._closed:
+            self._admission.release()
+            raise SyncExecutorNotAccepting()
+        owner = asyncio.current_task()
+        if owner is None:
+            self._admission.release()
+            raise RuntimeError("executor reservation requires an asyncio task")
+        reservation = SyncExecutorReservation.__new__(SyncExecutorReservation)
+        token = self._reservation.set(reservation)
+        SyncExecutorReservation.__init__(
+            reservation,
+            admission=self._admission,
+            variable=self._reservation,
+            token=token,
+            owner=owner,
+        )
+        return reservation
 
     async def run(
         self,
@@ -161,8 +230,16 @@ class BoundedSyncExecutor:
         admitted = False
         submitted: Future[T] | None = None
         try:
-            await self._admission.acquire()
-            admitted = True
+            reservation = self._reservation.get()
+            if (
+                reservation is None
+                or asyncio.current_task() is not reservation._owner
+            ):
+                await self._admission.acquire()
+                admitted = True
+            else:
+                reservation._consume()
+                admitted = True
 
             if self._closed:
                 raise SyncExecutorNotAccepting()

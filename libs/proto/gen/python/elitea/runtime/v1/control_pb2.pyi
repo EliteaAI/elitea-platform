@@ -22,6 +22,13 @@ class ClaimDispositionV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK: _ClassVar[ClaimDispositionV1]
     CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK: _ClassVar[ClaimDispositionV1]
     CLAIM_DISPOSITION_V1_RETIRED_ACK: _ClassVar[ClaimDispositionV1]
+    CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK: _ClassVar[ClaimDispositionV1]
+
+class BeginExecutionDispositionV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED: _ClassVar[BeginExecutionDispositionV1]
+    BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW: _ClassVar[BeginExecutionDispositionV1]
+    BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED: _ClassVar[BeginExecutionDispositionV1]
 CLAIM_DISPOSITION_V1_UNSPECIFIED: ClaimDispositionV1
 CLAIM_DISPOSITION_V1_ACCEPTED: ClaimDispositionV1
 CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK: ClaimDispositionV1
@@ -31,6 +38,10 @@ CLAIM_DISPOSITION_V1_OBSOLETE_ACK: ClaimDispositionV1
 CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK: ClaimDispositionV1
 CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK: ClaimDispositionV1
 CLAIM_DISPOSITION_V1_RETIRED_ACK: ClaimDispositionV1
+CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK: ClaimDispositionV1
+BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED: BeginExecutionDispositionV1
+BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW: BeginExecutionDispositionV1
+BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED: BeginExecutionDispositionV1
 
 class ClaimCommandRequestV1(_message.Message):
     __slots__ = ("workload_session_id", "producer_id", "signed_command")
@@ -89,6 +100,22 @@ class ClaimCommandResponseV1(_message.Message):
     receipt: ClaimReceiptV1
     rejection: _errors_pb2.RuntimeErrorV1
     def __init__(self, receipt: _Optional[_Union[ClaimReceiptV1, _Mapping]] = ..., rejection: _Optional[_Union[_errors_pb2.RuntimeErrorV1, _Mapping]] = ...) -> None: ...
+
+class BeginExecutionRequestV1(_message.Message):
+    __slots__ = ("identity", "fence")
+    IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    FENCE_FIELD_NUMBER: _ClassVar[int]
+    identity: _common_pb2.ExecutionIdentityV1
+    fence: _common_pb2.ExecutionFenceV1
+    def __init__(self, identity: _Optional[_Union[_common_pb2.ExecutionIdentityV1, _Mapping]] = ..., fence: _Optional[_Union[_common_pb2.ExecutionFenceV1, _Mapping]] = ...) -> None: ...
+
+class BeginExecutionResponseV1(_message.Message):
+    __slots__ = ("disposition", "rejection")
+    DISPOSITION_FIELD_NUMBER: _ClassVar[int]
+    REJECTION_FIELD_NUMBER: _ClassVar[int]
+    disposition: BeginExecutionDispositionV1
+    rejection: _errors_pb2.RuntimeErrorV1
+    def __init__(self, disposition: _Optional[_Union[BeginExecutionDispositionV1, str]] = ..., rejection: _Optional[_Union[_errors_pb2.RuntimeErrorV1, _Mapping]] = ...) -> None: ...
 
 class RenewLeaseRequestV1(_message.Message):
     __slots__ = ("identity", "fence", "idempotency_key")

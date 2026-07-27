@@ -59,7 +59,10 @@ from elitea_worker.execution.errors import (
     WorkerError,
 )
 from elitea_worker.execution.supervisor import ExecutionRunner
-from elitea_worker.execution.sync_executor import SyncExecutorAdmissionRejected
+from elitea_worker.execution.sync_executor import (
+    SyncExecutorAdmissionRejected,
+    SyncExecutorReservation,
+)
 from elitea_worker.fixtures.bundle import (
     FixtureContent,
     FixtureEntry,
@@ -131,6 +134,10 @@ class ControlPlane(Protocol):
         self, request: control_pb2.PrepareSettlementRequestV1
     ) -> control_pb2.PrepareSettlementResponseV1: ...
 
+    async def begin_execution(
+        self, request: control_pb2.BeginExecutionRequestV1
+    ) -> control_pb2.BeginExecutionResponseV1: ...
+
     async def renew_lease(
         self, request: control_pb2.RenewLeaseRequestV1
     ) -> control_pb2.RenewLeaseResponseV1: ...
@@ -171,6 +178,7 @@ class DeliveryDisposition(Enum):
     RECOVERED_SETTLEMENT_ACKED = "recovered_settlement_acked"
     TERMINAL_REDELIVERY_ACKED = "terminal_redelivery_acked"
     OWNED_ELSEWHERE_NOACK = "owned_elsewhere_noack"
+    RECOVERY_REQUIRED_NOACK = "recovery_required_noack"
     RETRY_LATER_NOACK = "retry_later_noack"
 
 
@@ -705,6 +713,14 @@ class ConfigurationValidationDeliveryProcessor:
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK:
             _require_no_recovery(receipt)
             return DeliveryResult(DeliveryDisposition.RETRY_LATER_NOACK)
+        if disposition == control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK:
+            _validate_recover_running_receipt(
+                receipt,
+                workload_session_id=self._workload_session_id,
+                producer_id=self._producer_id,
+                now_unix_millis=_runtime_now(self._clock),
+            )
+            return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK:
             now = _runtime_now(self._clock)
             _validate_active_fence(
@@ -784,8 +800,11 @@ class ConfigurationValidationDeliveryProcessor:
             clock_unix_millis=self._clock,
             interval_seconds=self._lease_poll_interval,
         )
-        lease.start()
+        reservation = await self._reserve_execution_capacity()
         try:
+            if not await self._begin_execution(receipt):
+                return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
+            lease.start()
             cancellation: ExecutionCancelled | None = None
             try:
                 await lease.check_now()
@@ -888,9 +907,23 @@ class ConfigurationValidationDeliveryProcessor:
                 execution_error=outcome if isinstance(outcome, WorkerError) else None,
             )
         finally:
+            if reservation is not None:
+                reservation.release()
             if progress is not None:
                 await progress.close()
             await lease.stop()
+
+    async def _reserve_execution_capacity(
+        self,
+    ) -> SyncExecutorReservation | None:
+        return None
+
+    async def _begin_execution(
+        self,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> bool:
+        _ = receipt
+        return True
 
     def _new_progress_output(
         self,
@@ -1169,6 +1202,35 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             lease_poll_interval_seconds=lease_poll_interval_seconds,
         )
         self._client_context_factory = client_context_factory
+
+    async def _reserve_execution_capacity(self) -> SyncExecutorReservation:
+        return await self._supervisor.reserve_sync()
+
+    async def _begin_execution(
+        self,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> bool:
+        response = await self._control.begin_execution(
+            control_pb2.BeginExecutionRequestV1(
+                identity=receipt.identity,
+                fence=receipt.fence,
+            )
+        )
+        if response.HasField("rejection"):
+            if int(response.disposition) != (
+                control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED
+            ):
+                raise InvalidInput("The begin execution response is ambiguous.")
+            raise _worker_error_from_runtime(response.rejection)
+        disposition = int(response.disposition)
+        if disposition == control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW:
+            return True
+        if (
+            disposition
+            == control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED
+        ):
+            return False
+        raise InvalidInput("The begin execution disposition is malformed.")
 
     def _new_progress_output(
         self,
@@ -1766,6 +1828,31 @@ def _validate_active_fence(
         or receipt.lease_expires_at_unix_millis <= now_unix_millis
     ):
         raise AuthorizationFailure("The claim fence is malformed or expired.")
+
+
+def _validate_recover_running_receipt(
+    receipt: control_pb2.ClaimReceiptV1,
+    *,
+    workload_session_id: str,
+    producer_id: str,
+    now_unix_millis: int,
+) -> None:
+    _validate_active_fence(
+        receipt,
+        workload_session_id=workload_session_id,
+        producer_id=producer_id,
+        now_unix_millis=now_unix_millis,
+    )
+    if (
+        receipt.desired_state
+        != common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING
+        or receipt.HasField("input_bundle_ref")
+        or receipt.HasField("input_bundle")
+        or receipt.HasField("settlement_recovery")
+    ):
+        raise InvalidInput(
+            "The running recovery receipt contains business or settlement material."
+        )
 
 
 def _terminal_ack_recovery(

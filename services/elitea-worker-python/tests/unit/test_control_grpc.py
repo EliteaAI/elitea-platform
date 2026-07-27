@@ -31,6 +31,7 @@ class Unary:
 class Stub:
     def __init__(self) -> None:
         self.ClaimCommand = Unary(control_pb2.ClaimCommandResponseV1())
+        self.BeginExecution = Unary(control_pb2.BeginExecutionResponseV1())
         self.RenewLease = Unary(control_pb2.RenewLeaseResponseV1())
         self.ObserveDesiredState = Unary(control_pb2.ObserveDesiredStateResponseV1())
         self.PrepareSettlement = Unary(control_pb2.PrepareSettlementResponseV1())
@@ -51,6 +52,34 @@ def test_control_call_has_identity_metadata_and_deadline_without_retry() -> None
         )
         assert await client.claim_command(request) == control_pb2.ClaimCommandResponseV1()
         assert stub.ClaimCommand.calls == [
+            (
+                request,
+                {
+                    "timeout": 1.25,
+                    "metadata": (("x-elitea-workload-session", "session-1"),),
+                },
+            )
+        ]
+
+    asyncio.run(run())
+
+
+def test_begin_execution_is_one_bounded_rpc_attempt() -> None:
+    async def run() -> None:
+        stub = Stub()
+        response = control_pb2.BeginExecutionResponseV1(
+            disposition=control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED
+        )
+        stub.BeginExecution.response = response
+        client = ExecutionControlClient(
+            stub,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            deadline_seconds=1.25,
+        )
+        request = control_pb2.BeginExecutionRequestV1()
+
+        assert await client.begin_execution(request) == response
+        assert stub.BeginExecution.calls == [
             (
                 request,
                 {

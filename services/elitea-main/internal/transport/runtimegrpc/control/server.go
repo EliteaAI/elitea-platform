@@ -23,6 +23,7 @@ type WorkloadAuthorizer interface {
 
 type ClaimController interface {
 	Claim(ctx context.Context, request executionapp.ClaimRequest) (executionapp.ClaimDecision, error)
+	BeginExecution(ctx context.Context, fence runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error)
 	Abort(ctx context.Context, fence runtimedomain.Fence, disposition executionapp.ClaimAbortDisposition) error
 	Renew(ctx context.Context, fence runtimedomain.Fence) (runtimedomain.ActiveLease, error)
 	VerifyActive(ctx context.Context, fence runtimedomain.Fence) error
@@ -199,6 +200,30 @@ func (s *Server) abortClaim(ctx context.Context, fence runtimedomain.Fence, disp
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimAbortCleanupTimeout)
 	defer cancel()
 	return s.claims.Abort(cleanupCtx, fence, disposition)
+}
+
+func (s *Server) BeginExecution(ctx context.Context, request *runtimev1.BeginExecutionRequestV1) (*runtimev1.BeginExecutionResponseV1, error) {
+	if request == nil || request.GetIdentity() == nil || request.GetFence() == nil || hasUnknownFields(request.ProtoReflect()) {
+		return beginExecutionRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The begin execution request is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetFence().GetWorkloadSessionId(), request.GetFence().GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return beginExecutionRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	fence, err := fenceDomain(request.GetIdentity(), request.GetFence(), workloadIdentity)
+	if err != nil {
+		return beginExecutionRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	disposition, err := s.claims.BeginExecution(ctx, fence)
+	if err != nil {
+		code, message, retryable := safeRuntimeError(err)
+		return beginExecutionRejection(code, message, retryable), nil
+	}
+	wireDisposition, err := beginExecutionDispositionProto(disposition)
+	if err != nil {
+		return beginExecutionRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The begin execution disposition is unavailable.", false), nil
+	}
+	return &runtimev1.BeginExecutionResponseV1{Disposition: wireDisposition}, nil
 }
 
 func (s *Server) RenewLease(ctx context.Context, request *runtimev1.RenewLeaseRequestV1) (*runtimev1.RenewLeaseResponseV1, error) {
@@ -491,6 +516,10 @@ func settlementRejection(code runtimev1.RuntimeErrorCodeV1, message string, retr
 	return &runtimev1.PrepareSettlementResponseV1{Rejection: runtimeError(code, message, retryable)}
 }
 
+func beginExecutionRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.BeginExecutionResponseV1 {
+	return &runtimev1.BeginExecutionResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
 func runtimeError(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.RuntimeErrorV1 {
 	return &runtimev1.RuntimeErrorV1{Code: code, SafeMessage: message, Retryable: retryable}
 }
@@ -526,8 +555,21 @@ func claimDispositionProto(disposition executionapp.ClaimDisposition) (runtimev1
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK, nil
 	case executionapp.ClaimRetiredACK:
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RETIRED_ACK, nil
+	case executionapp.ClaimRecoverRunningNoACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK, nil
 	default:
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
+	}
+}
+
+func beginExecutionDispositionProto(disposition executionapp.BeginExecutionDisposition) (runtimev1.BeginExecutionDispositionV1, error) {
+	switch disposition {
+	case executionapp.BeginExecutionStartedNow:
+		return runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW, nil
+	case executionapp.BeginExecutionAlreadyStarted:
+		return runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED, nil
+	default:
+		return runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
 	}
 }
 

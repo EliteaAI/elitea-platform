@@ -51,19 +51,20 @@ func (d ClaimAbortDisposition) valid() bool {
 type ClaimDisposition string
 
 const (
-	ClaimAccepted           ClaimDisposition = "ACCEPTED"
-	ClaimRecoverTerminalACK ClaimDisposition = "RECOVER_TERMINAL_ACK"
-	ClaimRecoverSettlement  ClaimDisposition = "RECOVER_SETTLEMENT"
-	ClaimSettledACK         ClaimDisposition = "SETTLED_ACK"
-	ClaimObsoleteACK        ClaimDisposition = "OBSOLETE_ACK"
-	ClaimActiveLeaseNoACK   ClaimDisposition = "ACTIVE_LEASE_NOACK"
-	ClaimRetryLaterNoACK    ClaimDisposition = "RETRY_LATER_NOACK"
-	ClaimRetiredACK         ClaimDisposition = "RETIRED_ACK"
+	ClaimAccepted            ClaimDisposition = "ACCEPTED"
+	ClaimRecoverTerminalACK  ClaimDisposition = "RECOVER_TERMINAL_ACK"
+	ClaimRecoverSettlement   ClaimDisposition = "RECOVER_SETTLEMENT"
+	ClaimSettledACK          ClaimDisposition = "SETTLED_ACK"
+	ClaimObsoleteACK         ClaimDisposition = "OBSOLETE_ACK"
+	ClaimActiveLeaseNoACK    ClaimDisposition = "ACTIVE_LEASE_NOACK"
+	ClaimRetryLaterNoACK     ClaimDisposition = "RETRY_LATER_NOACK"
+	ClaimRetiredACK          ClaimDisposition = "RETIRED_ACK"
+	ClaimRecoverRunningNoACK ClaimDisposition = "RECOVER_RUNNING_NOACK"
 )
 
 func (d ClaimDisposition) valid() bool {
 	switch d {
-	case ClaimAccepted, ClaimRecoverTerminalACK, ClaimRecoverSettlement, ClaimSettledACK, ClaimObsoleteACK, ClaimActiveLeaseNoACK, ClaimRetryLaterNoACK, ClaimRetiredACK:
+	case ClaimAccepted, ClaimRecoverTerminalACK, ClaimRecoverSettlement, ClaimSettledACK, ClaimObsoleteACK, ClaimActiveLeaseNoACK, ClaimRetryLaterNoACK, ClaimRetiredACK, ClaimRecoverRunningNoACK:
 		return true
 	default:
 		return false
@@ -173,6 +174,24 @@ type ClaimRepository interface {
 	DesiredState(ctx context.Context, executionID string, generation uint64) (runtimedomain.DesiredState, error)
 }
 
+type BeginExecutionDisposition string
+
+const (
+	BeginExecutionStartedNow     BeginExecutionDisposition = "STARTED_NOW"
+	BeginExecutionAlreadyStarted BeginExecutionDisposition = "ALREADY_STARTED"
+)
+
+func (d BeginExecutionDisposition) valid() bool {
+	return d == BeginExecutionStartedNow || d == BeginExecutionAlreadyStarted
+}
+
+// BeginExecutionRepository owns the exact durable CLAIMED -> RUNNING
+// transition. It is kept separate from ClaimRepository so read-only claim
+// doubles do not accidentally acquire execution-start authority.
+type BeginExecutionRepository interface {
+	BeginExecution(ctx context.Context, fence runtimedomain.Fence) (BeginExecutionDisposition, error)
+}
+
 // ClaimLeaseTTLMillis is the bounded, whole-millisecond lease policy passed to
 // the state owner. It deliberately cannot represent an application-authored
 // absolute expiry.
@@ -222,6 +241,24 @@ func (s *ClaimService) Claim(ctx context.Context, request ClaimRequest) (ClaimDe
 		return ClaimDecision{}, err
 	}
 	return decision, nil
+}
+
+func (s *ClaimService) BeginExecution(ctx context.Context, fence runtimedomain.Fence) (BeginExecutionDisposition, error) {
+	if err := fence.Validate(); err != nil {
+		return "", err
+	}
+	repository, ok := s.repository.(BeginExecutionRepository)
+	if !ok {
+		return "", ErrClaimDependencyUnavailable
+	}
+	disposition, err := repository.BeginExecution(ctx, fence)
+	if err != nil {
+		return "", fmt.Errorf("begin execution: %w", err)
+	}
+	if !disposition.valid() {
+		return "", ErrInvalidClaim
+	}
+	return disposition, nil
 }
 
 func claimCapabilityAllowed(capabilityID string) bool {

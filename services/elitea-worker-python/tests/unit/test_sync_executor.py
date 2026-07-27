@@ -400,3 +400,46 @@ def test_stop_admission_drain_and_shutdown_are_explicit() -> None:
             await supervisor.run_sync(lambda: None)
 
     asyncio.run(run())
+
+
+def test_reserved_slot_fences_capacity_before_submit_and_is_consumed_once() -> None:
+    async def run() -> None:
+        supervisor = ExecutionSupervisor(
+            max_workers=1,
+            max_in_flight=1,
+            admission_timeout_seconds=0.01,
+            drain_timeout_seconds=1,
+        )
+        reservation = await supervisor.reserve_sync()
+        submitted: list[str] = []
+
+        with pytest.raises(SyncExecutorSaturated):
+            await asyncio.create_task(supervisor.run_sync(lambda: submitted.append("unsafe")))
+        assert submitted == []
+
+        assert await supervisor.run_sync(lambda: "started") == "started"
+        with pytest.raises(RuntimeError, match="not available"):
+            await supervisor.run_sync(lambda: "double-submit")
+        reservation.release()
+
+        assert await asyncio.create_task(supervisor.run_sync(lambda: "next")) == "next"
+        await supervisor.shutdown()
+
+    asyncio.run(run())
+
+
+def test_unused_reserved_slot_is_released_without_submit() -> None:
+    async def run() -> None:
+        supervisor = ExecutionSupervisor(
+            max_workers=1,
+            max_in_flight=1,
+            admission_timeout_seconds=0.01,
+            drain_timeout_seconds=1,
+        )
+        reservation = await supervisor.reserve_sync()
+        reservation.release()
+        reservation.release()
+        assert await supervisor.run_sync(lambda: "available") == "available"
+        await supervisor.shutdown()
+
+    asyncio.run(run())

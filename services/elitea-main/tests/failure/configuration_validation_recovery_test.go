@@ -135,6 +135,10 @@ func (c *recoveryClaims) Claim(_ context.Context, request executionapp.ClaimRequ
 	return c.decision, nil
 }
 
+func (c *recoveryClaims) BeginExecution(context.Context, runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error) {
+	return executionapp.BeginExecutionAlreadyStarted, nil
+}
+
 func (c *recoveryClaims) Abort(context.Context, runtimedomain.Fence, executionapp.ClaimAbortDisposition) error {
 	return errors.New("recovery claim must not be aborted")
 }

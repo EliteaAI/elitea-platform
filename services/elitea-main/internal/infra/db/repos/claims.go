@@ -207,6 +207,9 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation), request.Cap
 					return err
 				}
 				decision.ClaimHandoffWatermark = watermark
+				if state == executiondomain.JobRunning {
+					decision.Disposition = executionapp.ClaimRecoverRunningNoACK
+				}
 			}
 			return nil
 		case err == nil:
@@ -411,6 +414,10 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 				// A terminal result exists but its predecessor claim is not eligible
 				// for this authenticated handoff. Never re-execute business logic.
 				decision.Disposition = executionapp.ClaimRetryLaterNoACK
+			} else if request.CapabilityID == executiondomain.IndexIngestCapability && state == executiondomain.JobRunning {
+				// A replacement fence over RUNNING may reconcile durable output,
+				// but it must never receive business inputs or invoke the SDK.
+				decision.Disposition = executionapp.ClaimRecoverRunningNoACK
 			}
 		}
 		return nil
@@ -422,6 +429,96 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 		return executionapp.ClaimDecision{}, fmt.Errorf("%w: %w", executionapp.ErrClaimDependencyUnavailable, err)
 	}
 	return decision, nil
+}
+
+func (r *ClaimsRepository) BeginExecution(ctx context.Context, fence runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error) {
+	if err := fence.Validate(); err != nil {
+		return "", err
+	}
+	var disposition executionapp.BeginExecutionDisposition
+	err := r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
+		var state, desired string
+		var live bool
+		err := tx.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
+SELECT j.state, j.desired_state,
+       c.lease_expires_at > authority_clock.observed_at
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.execution_claims AS c
+  ON c.execution_id = j.execution_id AND c.generation = j.generation
+JOIN authority_clock ON TRUE
+WHERE j.execution_id = $1
+  AND j.generation = $2
+  AND j.command_id = $3
+  AND c.workload_identity = $4
+  AND c.workload_session_id = $5
+  AND c.producer_id = $6
+  AND c.claim_attempt = $7
+  AND c.lease_epoch = $8
+  AND c.fence_token = $9
+  AND c.released_at IS NULL
+FOR UPDATE OF j, c`,
+			fence.ExecutionID,
+			int64(fence.Generation),
+			fence.CommandID,
+			fence.WorkloadIdentity,
+			fence.WorkloadSessionID,
+			fence.ProducerID,
+			int64(fence.ClaimAttempt),
+			int64(fence.LeaseEpoch),
+			fence.Token[:],
+		).Scan(&state, &desired, &live)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return runtimedomain.ErrStaleFence
+		}
+		if err != nil {
+			return fmt.Errorf("lock execution start authority: %w", err)
+		}
+		if !live {
+			return runtimedomain.ErrLeaseExpired
+		}
+		if runtimedomain.DesiredState(desired) != runtimedomain.DesiredRunning {
+			return runtimedomain.ErrStaleFence
+		}
+		switch executiondomain.JobState(state) {
+		case executiondomain.JobRunning:
+			disposition = executionapp.BeginExecutionAlreadyStarted
+			return nil
+		case executiondomain.JobClaimed:
+		default:
+			return runtimedomain.ErrStaleFence
+		}
+
+		tag, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET state = 'RUNNING'
+WHERE execution_id = $1
+  AND generation = $2
+  AND command_id = $3
+  AND state = 'CLAIMED'
+  AND desired_state = 'RUNNING'`,
+			fence.ExecutionID,
+			int64(fence.Generation),
+			fence.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("mark execution running: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return runtimedomain.ErrStaleFence
+		}
+		disposition = executionapp.BeginExecutionStartedNow
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, runtimedomain.ErrStaleFence) || errors.Is(err, runtimedomain.ErrLeaseExpired) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: %w", executionapp.ErrClaimDependencyUnavailable, err)
+	}
+	return disposition, nil
 }
 
 // loadClaimHandoffWatermark returns the immutable sequence floor captured when

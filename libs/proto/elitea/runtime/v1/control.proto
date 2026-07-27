@@ -20,6 +20,13 @@ enum ClaimDispositionV1 {
   CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK = 6;
   CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK = 7;
   CLAIM_DISPOSITION_V1_RETIRED_ACK = 8;
+  CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK = 9;
+}
+
+enum BeginExecutionDispositionV1 {
+  BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED = 0;
+  BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW = 1;
+  BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED = 2;
 }
 
 message ClaimCommandRequestV1 {
@@ -59,6 +66,20 @@ message ClaimReceiptV1 {
 
 message ClaimCommandResponseV1 {
   ClaimReceiptV1 receipt = 1;
+  RuntimeErrorV1 rejection = 2;
+  reserved 3 to 15;
+}
+
+// BeginExecution is the durable side-effect fence between an admitted local
+// executor slot and business execution. It carries no business inputs.
+message BeginExecutionRequestV1 {
+  ExecutionIdentityV1 identity = 1;
+  ExecutionFenceV1 fence = 2;
+  reserved 3 to 15;
+}
+
+message BeginExecutionResponseV1 {
+  BeginExecutionDispositionV1 disposition = 1;
   RuntimeErrorV1 rejection = 2;
   reserved 3 to 15;
 }
@@ -107,6 +128,7 @@ message PrepareSettlementResponseV1 {
 
 service RuntimeControlService {
   rpc ClaimCommand(ClaimCommandRequestV1) returns (ClaimCommandResponseV1);
+  rpc BeginExecution(BeginExecutionRequestV1) returns (BeginExecutionResponseV1);
   rpc RenewLease(RenewLeaseRequestV1) returns (RenewLeaseResponseV1);
   rpc ObserveDesiredState(ObserveDesiredStateRequestV1) returns (ObserveDesiredStateResponseV1);
   rpc PrepareSettlement(PrepareSettlementRequestV1) returns (PrepareSettlementResponseV1);

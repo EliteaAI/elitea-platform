@@ -832,6 +832,144 @@ func testClaimRequest(digest runtimedomain.Digest) executionapp.ClaimRequest {
 	}
 }
 
+func TestBeginExecutionLostResponseReplayDoesNotTransitionTwice(t *testing.T) {
+	fence := runtimedomain.Fence{
+		CommandID:         "command-1",
+		ExecutionID:       "execution-1",
+		Generation:        1,
+		WorkloadIdentity:  "spiffe://elitea.test/workload/worker-1",
+		WorkloadSessionID: "workload-1",
+		ProducerID:        "worker-1",
+		ClaimAttempt:      1,
+		LeaseEpoch:        1,
+		Token:             runtimedomain.FenceToken(runtimedomain.SHA256([]byte("begin-token"))),
+	}
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{
+		rowResults: []scriptedRow{
+			{values: []any{"CLAIMED", "RUNNING", true}},
+			{values: []any{"RUNNING", "RUNNING", true}},
+		},
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+	}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "unused", nil },
+		func() (runtimedomain.FenceToken, error) { return runtimedomain.FenceToken{}, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := repository.BeginExecution(context.Background(), fence)
+	if err != nil || first != executionapp.BeginExecutionStartedNow {
+		t.Fatalf("first begin disposition=%q err=%v", first, err)
+	}
+	replay, err := repository.BeginExecution(context.Background(), fence)
+	if err != nil || replay != executionapp.BeginExecutionAlreadyStarted {
+		t.Fatalf("lost-response replay disposition=%q err=%v", replay, err)
+	}
+	if store.txCalls != 2 || len(store.rowCalls) != 2 || len(store.execCalls) != 1 {
+		t.Fatalf("begin replay mutated more than once: tx=%d rows=%d updates=%d", store.txCalls, len(store.rowCalls), len(store.execCalls))
+	}
+	for _, predicate := range []string{
+		"j.command_id = $3",
+		"c.workload_identity = $4",
+		"c.workload_session_id = $5",
+		"c.producer_id = $6",
+		"c.claim_attempt = $7",
+		"c.lease_epoch = $8",
+		"c.fence_token = $9",
+		"c.released_at IS NULL",
+		"FOR UPDATE OF j, c",
+	} {
+		if !strings.Contains(store.rowCalls[0].sql, predicate) {
+			t.Fatalf("begin SQL is missing exact fence predicate %q", predicate)
+		}
+	}
+}
+
+func TestBeginExecutionRejectsExpiredClaimWithoutMutation(t *testing.T) {
+	fence := runtimedomain.Fence{
+		CommandID:         "command-1",
+		ExecutionID:       "execution-1",
+		Generation:        1,
+		WorkloadIdentity:  "spiffe://elitea.test/workload/worker-1",
+		WorkloadSessionID: "workload-1",
+		ProducerID:        "worker-1",
+		ClaimAttempt:      1,
+		LeaseEpoch:        1,
+		Token:             runtimedomain.FenceToken(runtimedomain.SHA256([]byte("expired-token"))),
+	}
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{"CLAIMED", "RUNNING", false}},
+	}}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "unused", nil },
+		func() (runtimedomain.FenceToken, error) { return runtimedomain.FenceToken{}, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.BeginExecution(context.Background(), fence); !errors.Is(err, runtimedomain.ErrLeaseExpired) {
+		t.Fatalf("expired begin error=%v", err)
+	}
+	if len(store.execCalls) != 0 {
+		t.Fatal("expired begin mutated execution state")
+	}
+}
+
+func TestExpiredRunningIndexClaimReturnsRecoveryOnlyReplacement(t *testing.T) {
+	digest := runtimedomain.SHA256([]byte("published-index-envelope"))
+	oldToken := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("old-running-token")))
+	newToken := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("new-running-token")))
+	observedAt := time.Date(2026, time.July, 27, 12, 0, 0, 0, time.UTC)
+	expiresAt := observedAt.Add(executionapp.MaxClaimLeaseTTLMillis.Duration())
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{
+		rowResults: []scriptedRow{
+			claimExecutionRow("RUNNING", "RUNNING", true, digest[:], digest[:], true),
+			{values: []any{
+				"old-claim", "command-1", "execution-1", int64(1),
+				"spiffe://elitea.test/workload/old", "old-session", "old-producer",
+				int64(1), int64(1), oldToken[:],
+				observedAt.Add(-time.Minute), "RUNNING", false, observedAt,
+			}},
+			{values: []any{int64(2)}},
+			{values: []any{expiresAt, observedAt, int64(0)}},
+			{err: pgx.ErrNoRows},
+			{values: []any{false}},
+		},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("UPDATE 1"),
+		},
+	}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "replacement-claim", nil },
+		func() (runtimedomain.FenceToken, error) { return newToken, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testClaimRequest(digest)
+	request.CapabilityID = executiondomain.IndexIngestCapability
+	request.WorkloadIdentity = "spiffe://elitea.test/workload/replacement"
+	request.WorkloadSessionID = "replacement-session"
+	request.ProducerID = "replacement-producer"
+
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Disposition != executionapp.ClaimRecoverRunningNoACK || decision.Lease.ClaimID != "replacement-claim" || decision.SettlementRecovery != nil {
+		t.Fatalf("expired RUNNING claim received executable authority: %+v", decision)
+	}
+	if decision.Lease.Fence.Token != newToken || decision.Lease.Fence.ClaimAttempt != 2 {
+		t.Fatalf("replacement recovery fence is malformed: %+v", decision.Lease.Fence)
+	}
+}
+
 func claimExecutionRow(desiredState, jobState string, published bool, preparedDigest, publishedDigest []byte, authorityGranted bool) scriptedRow {
 	return scriptedRow{values: []any{
 		"command-1",

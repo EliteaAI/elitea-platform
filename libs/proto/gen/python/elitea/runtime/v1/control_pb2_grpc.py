@@ -39,6 +39,11 @@ class RuntimeControlServiceStub(object):
                 request_serializer=elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandRequestV1.SerializeToString,
                 response_deserializer=elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandResponseV1.FromString,
                 _registered_method=True)
+        self.BeginExecution = channel.unary_unary(
+                '/elitea.runtime.v1.RuntimeControlService/BeginExecution',
+                request_serializer=elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionRequestV1.SerializeToString,
+                response_deserializer=elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionResponseV1.FromString,
+                _registered_method=True)
         self.RenewLease = channel.unary_unary(
                 '/elitea.runtime.v1.RuntimeControlService/RenewLease',
                 request_serializer=elitea_dot_runtime_dot_v1_dot_control__pb2.RenewLeaseRequestV1.SerializeToString,
@@ -60,6 +65,12 @@ class RuntimeControlServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def ClaimCommand(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BeginExecution(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -90,6 +101,11 @@ def add_RuntimeControlServiceServicer_to_server(servicer, server):
                     servicer.ClaimCommand,
                     request_deserializer=elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandRequestV1.FromString,
                     response_serializer=elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandResponseV1.SerializeToString,
+            ),
+            'BeginExecution': grpc.unary_unary_rpc_method_handler(
+                    servicer.BeginExecution,
+                    request_deserializer=elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionRequestV1.FromString,
+                    response_serializer=elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionResponseV1.SerializeToString,
             ),
             'RenewLease': grpc.unary_unary_rpc_method_handler(
                     servicer.RenewLease,
@@ -134,6 +150,33 @@ class RuntimeControlService(object):
             '/elitea.runtime.v1.RuntimeControlService/ClaimCommand',
             elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandRequestV1.SerializeToString,
             elitea_dot_runtime_dot_v1_dot_control__pb2.ClaimCommandResponseV1.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BeginExecution(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/elitea.runtime.v1.RuntimeControlService/BeginExecution',
+            elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionRequestV1.SerializeToString,
+            elitea_dot_runtime_dot_v1_dot_control__pb2.BeginExecutionResponseV1.FromString,
             options,
             channel_credentials,
             insecure,
