@@ -1,6 +1,7 @@
 package pgvector
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -11,6 +12,35 @@ import (
 
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 )
+
+func TestCurrentIndexMetaWriterClassifiesFrozenMalformedTargetAsPermanent(
+	t *testing.T,
+) {
+	record := currentIndexMetaRecordForTest(
+		"meta-malformed",
+		"execution-malformed",
+		"message-malformed",
+	)
+	for _, connectionString := range []string{
+		"mysql://localhost/index",
+		"postgres://%gh&%ij",
+	} {
+		err := NewCurrentIndexMetaWriter().MaterializeInitial(
+			context.Background(),
+			indexingapp.CurrentIndexMetaTarget{
+				ConnectionString: connectionString,
+				SchemaID:         record.ToolkitID,
+			},
+			record,
+		)
+		if !errors.Is(
+			err,
+			indexingapp.ErrCurrentIndexMetaTargetUnavailable,
+		) {
+			t.Fatalf("connection=%q error=%v", connectionString, err)
+		}
+	}
+}
 
 func TestPlanCurrentInitialIndexMetaCreatesPermanentHistoryMarker(t *testing.T) {
 	record := currentIndexMetaRecordForTest("meta-1", "execution-1", "message-1")

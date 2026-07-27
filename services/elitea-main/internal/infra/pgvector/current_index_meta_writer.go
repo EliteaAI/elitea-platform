@@ -64,11 +64,11 @@ func (w *CurrentIndexMetaWriter) MaterializeInitial(
 
 	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
 	if !ok {
-		return ErrCurrentIndexMetaWrite
+		return indexingapp.ErrCurrentIndexMetaTargetUnavailable
 	}
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return ErrCurrentIndexMetaWrite
+		return indexingapp.ErrCurrentIndexMetaTargetUnavailable
 	}
 	queryContext, cancel := context.WithTimeout(ctx, w.queryTimeout)
 	defer cancel()
