@@ -73,10 +73,12 @@ const dataRowSx = (theme: Theme, clickable: boolean) => ({
     : {}),
 });
 
-// No local `.MuiTablePagination-*` override (R-T6 bans deep internal
-// selectors outside `shared/brand/mui-overrides/`, where `MuiTablePagination.ts`
-// already themes this component globally) — `color` alone is enough to
-// match the baseline's `text.secondary` root colour.
+/**
+ * No local `.MuiTablePagination-*` override (R-T6 bans deep internal
+ * selectors outside `shared/brand/mui-overrides/`, where `MuiTablePagination.ts`
+ * already themes this component globally) — `color` alone is enough to
+ * match the baseline's `text.secondary` root colour.
+ */
 const paginationSx = (theme: Theme) => ({ color: theme.vars.palette.text.secondary });
 
 function PaginatedEntityTableImpl({
