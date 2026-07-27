@@ -115,7 +115,9 @@ describe('row 1 — putArtifactToS3', () => {
     server.use(s3PutOk(sink));
     const file = nodeBlob(['file-bytes'], { type: 'text/plain' });
     const result = await putArtifactToS3({ baseUrl: '/api/v2', s3Path: '/artifacts/s3/bucket', fileKey: 'a.txt', projectId: 'p1', file });
-    expect(result).toEqual({ ok: true, status: 200, data: undefined });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({ ok: true, status: 200, data: undefined, headers: result.headers });
     expect(sink[0]?.method).toBe('PUT');
     expect(sink[0]?.bodyText).toBe('file-bytes');
     expect(sink[0]?.contentType).toBe('text/plain');
@@ -200,7 +202,14 @@ describe('row 5 — un-prefixed /artifacts/s3/ path (RED/GREEN proof b)', () => 
     const sink: CapturedArtifactsRequest[] = [];
     server.use(bucketListOk(sink));
     const result = await listBuckets({ baseUrl: '/api/v2', projectId: 'p1' });
-    expect(result).toEqual({ ok: true, status: 200, data: { buckets: [{ name: 'demo-bucket', created_at: '2026-07-20T00:00:00Z' }] } });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      data: { buckets: [{ name: 'demo-bucket', created_at: '2026-07-20T00:00:00Z' }] },
+      headers: result.headers,
+    });
     expect(sink[0]?.url).not.toContain('/api/v2/artifacts');
     expect(new URL(sink[0]!.url).pathname).toBe('/artifacts/s3/');
   });
@@ -230,7 +239,9 @@ describe('row 5 — un-prefixed /artifacts/s3/ path (RED/GREEN proof b)', () => 
   it('listBuckets surfaces raw text when the server lies about application/json', async () => {
     server.use(bucketListLyingJson());
     const result = await listBuckets({ baseUrl: '/api/v2', projectId: 'p1' });
-    expect(result).toEqual({ ok: true, status: 200, data: 'not json' });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({ ok: true, status: 200, data: 'not json', headers: result.headers });
   });
 
   it('listArtifacts resolves a kind:network failure without throwing', async () => {

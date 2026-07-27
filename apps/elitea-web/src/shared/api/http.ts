@@ -49,9 +49,22 @@ export type HttpFailure =
   | { kind: 'network'; url: string; message: string; cause: unknown }
   | { kind: 'aborted'; url: string };
 
-/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+/**
+ * @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2.
+ * `headers` is the real `Response.headers` (not re-derived/synthesised) —
+ * `eliteaFetch` (S4's mutator) needs it verbatim to build the
+ * `{data, status, headers}` envelope orval's generated types declare for
+ * every operation (`includeHttpResponseReturnType` defaults to `true` in
+ * orval 8.23.0's `@orval/fetch` generator, confirmed by reading
+ * `node_modules/@orval/fetch/dist/index.mjs`; `orval.config.ts` does not
+ * override it). With a custom mutator configured, orval's own generated
+ * code never builds this envelope itself — it fully delegates to the
+ * mutator (`return eliteaFetch<T>(url, options)`, no wrapping) — so the
+ * envelope has to be constructed somewhere on this side of the boundary,
+ * and `headers` only exists on the raw `Response`, not before this point.
+ */
 export type HttpResult<T> =
-  | { ok: true; status: number; data: T }
+  | { ok: true; status: number; data: T; headers: Headers }
   | { ok: false; error: HttpFailure };
 
 /** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
@@ -213,7 +226,7 @@ async function toResult<T>(response: Response): Promise<HttpResult<T>> {
   if (!response.ok) {
     return failure({ kind: 'http', status: response.status, url: response.url, body });
   }
-  return { ok: true, status: response.status, data: body as T };
+  return { ok: true, status: response.status, data: body as T, headers: response.headers };
 }
 
 /* ── factory ─────────────────────────────────────────────────────────────── */

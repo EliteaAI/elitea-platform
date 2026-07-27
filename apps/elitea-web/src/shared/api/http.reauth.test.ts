@@ -58,7 +58,14 @@ describe('behaviour 2 — real 401/403 is the PRIMARY re-auth signal', () => {
 
     const result = await client(reauthenticate).get<{ message: string }>(PROBE);
 
-    expect(result).toEqual({ ok: true, status: 200, data: { message: 'transport probe ok' } });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      data: { message: 'transport probe ok' },
+      headers: result.headers,
+    });
     expect(state.calls).toBe(1);
     expect(sink).toHaveLength(2); // original + retry
   });
@@ -215,7 +222,9 @@ describe('replayability — the post-re-auth retry is byte-identical', () => {
     const body = { q: 'söme β bytes', nested: { list: [1, 2, 3] } };
     const result = await client(reauthenticate).post<{ received: boolean }>(ECHO, { body });
 
-    expect(result).toEqual({ ok: true, status: 200, data: { received: true } });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({ ok: true, status: 200, data: { received: true }, headers: result.headers });
     expect(state.calls).toBe(1);
     expect(sink).toHaveLength(2);
     expect(sink[0]?.bodyText).toBe(sink[1]?.bodyText); // byte-identical replay

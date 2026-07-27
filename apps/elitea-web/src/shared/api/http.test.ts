@@ -67,7 +67,14 @@ describe('§3.6 — discriminated Result, never a throw for 4xx', () => {
   it('resolves ok:true with parsed JSON for a 200', async () => {
     server.use(probeOk());
     const result = await client.get<{ message: string }>(path);
-    expect(result).toEqual({ ok: true, status: 200, data: { message: 'transport probe ok' } });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      data: { message: 'transport probe ok' },
+      headers: result.headers,
+    });
   });
 
   it('resolves — does not throw — with a kind:http failure for a 404', async () => {
@@ -99,7 +106,9 @@ describe('§3.6 — discriminated Result, never a throw for 4xx', () => {
   it('returns undefined data for 204 No Content', async () => {
     server.use(probeNoContent());
     const result = await client.get(path);
-    expect(result).toEqual({ ok: true, status: 204, data: undefined });
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.headers).toBeInstanceOf(Headers);
+    expect(result).toEqual({ ok: true, status: 204, data: undefined, headers: result.headers });
   });
 
   it('serves non-GET sugar methods through the same Result path', async () => {
