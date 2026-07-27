@@ -107,6 +107,9 @@ FROM replay_bounds`,
 	if len(events) == limit {
 		return events, nil
 	}
+	if effectiveCursor == highCursor {
+		return events, nil
+	}
 
 	rows, err := r.store.Query(ctx, `
 SELECT cursor, event_type, event_bytes, event_digest

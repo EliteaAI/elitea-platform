@@ -116,3 +116,58 @@ func TestReplayEventsRepositoryBoundsStaleReconnectStorm(t *testing.T) {
 		)
 	}
 }
+
+func TestReplayEventsRepositorySkipsRowsQueryAtHighCursor(t *testing.T) {
+	tests := []struct {
+		name          string
+		afterCursor   uint64
+		bounds        scriptedRow
+		wantEventType string
+		wantCursor    uint64
+	}{
+		{
+			name:        "caught up",
+			afterCursor: 15,
+			bounds:      scriptedRow{values: []any{int64(11), int64(15), true, true}},
+		},
+		{
+			name:          "retention reset reaches high cursor",
+			afterCursor:   3,
+			bounds:        scriptedRow{values: []any{int64(11), int64(11), true, false}},
+			wantEventType: replayEventReset,
+			wantCursor:    11,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := &scriptedExecutor{rowResults: []scriptedRow{test.bounds}}
+			events, err := newReplayEventsRepository(executor).Replay(
+				context.Background(),
+				"42",
+				"execution-1",
+				test.afterCursor,
+				10,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(executor.rowCalls) != 1 || len(executor.queryCalls) != 0 {
+				t.Fatalf(
+					"caught-up replay performed unexpected queries: bounds=%d replay=%d",
+					len(executor.rowCalls),
+					len(executor.queryCalls),
+				)
+			}
+			if test.wantEventType == "" {
+				if events == nil || len(events) != 0 {
+					t.Fatalf("caught-up replay = %+v, want non-nil empty result", events)
+				}
+				return
+			}
+			if len(events) != 1 || events[0].Type != test.wantEventType || events[0].Cursor != test.wantCursor {
+				t.Fatalf("reset replay = %+v, want one %s event at %d", events, test.wantEventType, test.wantCursor)
+			}
+		})
+	}
+}

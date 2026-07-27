@@ -261,16 +261,45 @@ func validateDurableEvent(event DurableEvent) error {
 }
 
 func writeDurableEvent(w http.ResponseWriter, event DurableEvent) error {
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, event.Data); err != nil {
-		return err
+	data := []byte(event.Data)
+	if !isCompactSingleLineJSON(data) {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, data); err != nil {
+			return err
+		}
+		data = compact.Bytes()
 	}
 	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: ", event.Cursor, event.Type); err != nil {
 		return err
 	}
-	if _, err := w.Write(compact.Bytes()); err != nil {
+	if _, err := w.Write(data); err != nil {
 		return err
 	}
 	_, err := fmt.Fprint(w, "\n\n")
 	return err
+}
+
+func isCompactSingleLineJSON(data []byte) bool {
+	inString := false
+	escaped := false
+	for _, value := range data {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case value == '\\':
+				escaped = true
+			case value == '"':
+				inString = false
+			}
+			continue
+		}
+		switch value {
+		case '"':
+			inString = true
+		case ' ', '\t', '\n', '\r':
+			return false
+		}
+	}
+	return json.Valid(data)
 }

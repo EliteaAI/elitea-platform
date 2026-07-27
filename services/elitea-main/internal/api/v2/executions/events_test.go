@@ -254,6 +254,99 @@ func TestValidateDurableEventRejectsInjectionAndOversize(t *testing.T) {
 	}
 }
 
+func TestWriteDurableEventPreservesCompactJSONAndCompactsFallback(t *testing.T) {
+	tests := []struct {
+		name string
+		data json.RawMessage
+		want string
+	}{
+		{
+			name: "compact object",
+			data: json.RawMessage(`{"message":"space and escaped\nline","nested":{"ok":true}}`),
+			want: `{"message":"space and escaped\nline","nested":{"ok":true}}`,
+		},
+		{
+			name: "insignificant spaces",
+			data: json.RawMessage(` { "message": "space in value", "ok": true } `),
+			want: `{"message":"space in value","ok":true}`,
+		},
+		{
+			name: "multiline",
+			data: json.RawMessage("{\n\t\"ok\": true\n}"),
+			want: `{"ok":true}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			err := writeDurableEvent(response, DurableEvent{
+				Cursor: 7,
+				Type:   "index.ingest.progress",
+				Data:   test.data,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "id: 7\nevent: index.ingest.progress\ndata: " + test.want + "\n\n"
+			if response.Body.String() != want {
+				t.Fatalf("SSE event = %q, want %q", response.Body.String(), want)
+			}
+		})
+	}
+}
+
+func TestWriteDurableEventRejectsInvalidJSONBeforeWriting(t *testing.T) {
+	for _, data := range []json.RawMessage{
+		json.RawMessage(`{"missing":"brace"`),
+		json.RawMessage("{\n\"missing\":\"brace\""),
+	} {
+		response := httptest.NewRecorder()
+		if err := writeDurableEvent(response, DurableEvent{
+			Cursor: 7,
+			Type:   "index.ingest.progress",
+			Data:   data,
+		}); err == nil {
+			t.Fatalf("invalid JSON was accepted: %q", data)
+		}
+		if response.Body.Len() != 0 {
+			t.Fatalf("invalid JSON wrote partial SSE data: %q", response.Body.String())
+		}
+	}
+}
+
+type discardEventResponseWriter struct{}
+
+func (discardEventResponseWriter) Header() http.Header            { return nil }
+func (discardEventResponseWriter) WriteHeader(int)                {}
+func (discardEventResponseWriter) Write(data []byte) (int, error) { return len(data), nil }
+
+func BenchmarkWriteDurableEvent(b *testing.B) {
+	events := map[string]DurableEvent{
+		"compact": {
+			Cursor: 7,
+			Type:   "index.ingest.progress",
+			Data:   json.RawMessage(`{"type":"agent_thinking_step","message":"20 files processed","metadata":{"tool_name":"index_data"}}`),
+		},
+		"whitespace_fallback": {
+			Cursor: 7,
+			Type:   "index.ingest.progress",
+			Data:   json.RawMessage(` { "type": "agent_thinking_step", "message": "20 files processed", "metadata": { "tool_name": "index_data" } } `),
+		},
+	}
+	writer := discardEventResponseWriter{}
+	for name, event := range events {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if err := writeDurableEvent(writer, event); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func executionEventsRequest() *http.Request {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	routeContext := chi.NewRouteContext()
