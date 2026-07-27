@@ -1,0 +1,107 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/entries/admin/main.tsx",
+    "src/entries/maintenance/main.tsx",
+    "scripts/*.mjs",
+    // unit M1: src/test/msw/handlers/index.ts imports each tag's aggregate
+    // `get<Tag>Mock()` (spec §6.5 R-M2/R-M3 design note in that file). That
+    // import pulls the `*.msw.ts` file, its per-operation
+    // `get<Op>ResponseMock`/`get<Op>MockHandler` siblings (used only
+    // internally by the aggregate), AND every `model/*.zod.ts` type they
+    // reference into knip's reachability graph. `ignoreFiles` below only
+    // suppresses the "Unused files" report — once ANY export in a file is
+    // reachable, knip separately flags that file's OTHER exports as "unused
+    // exports", cascading through the whole generated/ tree one import at a
+    // time. Listing the full directory here (same fix already applied to
+    // `scripts/*.mjs` above, just broadened to cover the cascade) is the
+    // mechanism that actually delivers the INTENT the `ignoreFiles` entry
+    // below was written for ("Generated hooks are unused until Wave 2
+    // consumes them … not a knip dead-code target") — `ignoreFiles` alone
+    // never fully did that once anything imported from the tree; `entry`
+    // does, for both "unused files" AND every export within it.
+    "src/shared/api/generated/**",
+    // Real CI gap, found the first time the aggregate `knip --max-issues 0`
+    // gate ran end-to-end against this branch: `shared/ui/**/index.ts` are
+    // this app's public component-library barrels (spec §2.2), and Wave 2
+    // (the features/widgets/pages layer that actually imports each
+    // component) has not landed yet. Most of the 67 components are already
+    // "used" because sibling shared/ui components compose them, but a
+    // dozen-odd leaf components (Common*Field, CodeMirrorEditor, cron,
+    // SecretField, …) had zero internal consumers yet and were flagged as
+    // dead code — the exact same "public surface awaiting Wave 2" situation
+    // `src/shared/api/generated/**` above already has an entry for, applied
+    // the same way. Not a signal to prune anything.
+    "src/shared/ui/**/index.ts"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
+  "ignoreFiles": [
+    // unit M1: `src/shared/api/generated/**` (unit S4's orval output) moved
+    // to `entry` above — knip's own "Remove from ignoreFiles" configuration
+    // hint confirmed `entry` fully subsumes an `ignoreFiles` glob (roots are
+    // never "unused files" either), so keeping both here was pure
+    // redundancy once M1 made the tree reachable.
+    // unit S1: written, complete, deliberately NOT wired into
+    // mui-overrides/index.ts — its target library (`@mui/x-tree-view`) is
+    // intentionally not a dependency of this app (spec §2.2/P1: "the file
+    // tree is hand-rolled"). See the file's own header comment.
+    "src/shared/brand/mui-overrides/MuiTreeItem.ts"
+  ],
+  "ignoreDependencies": [
+    // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
+    // landed yet (forms/date-pickers/charts/flow-diagram libraries), or
+    // devDependencies consumed only by CI/tooling scripts outside knip's
+    // `project` glob (Lighthouse CI, Playwright's axe integration, the
+    // dependency-cruiser CLI itself, invoked via npx not imported).
+    // Confirmed empirically (temporarily emptied this array and re-ran
+    // knip to get the ground-truth "still genuinely unused" list, rather
+    // than guessing from the truncated config-hints output) after removing
+    // the 16 entries below that already have real consumers.
+    "@hookform/resolvers",
+    "@mui/x-date-pickers",
+    "@xyflow/react",
+    "date-fns",
+    "react-hook-form",
+    "recharts",
+    "@axe-core/playwright",
+    "@lhci/cli",
+    "@swc/core",
+    "dependency-cruiser"
+    // [S1-E] `@codemirror/commands`/`@codemirror/lang-json`/`@codemirror/lint`/
+    // `@codemirror/search`/`@codemirror/state`/`@codemirror/view` REMOVED from
+    // this list: S1 pinned them ahead of their first consumer
+    // (`shared/ui/CodeMirrorEditor`/`shared/ui/ResizableCodeMirrorEditor`,
+    // baseline `apps/elitea-ui/src/[fsd]/shared/ui/field/**` — this app's own
+    // convention keeps each component at its own top-level `shared/ui/
+    // ComponentName/`, not grouped under a `field/` parent the way the
+    // baseline's source tree is); this follow-up unit built that batch (plus
+    // the `Common*Field`/`AnyOfPatternField`/`SecretInputField` family), so
+    // all six now have real consumers and knip finds them itself — same
+    // pattern S1-G used below for `dompurify`/`marked`. `@codemirror/language`
+    // and `@lezer/highlight` (added by this unit, for `CodeMirrorEditor`'s
+    // accessible syntax-highlight style — see that file's doc comment) never
+    // needed an entry here at all: both were already real, immediate
+    // consumers from the moment they were added.
+    // [S1-G] `dompurify`/`marked` REMOVED from this list: this follow-up
+    // unit built the Markdown/Token/DefaultMarkdown/MentionToolItem/
+    // MentionToolList/ConditionalTooltip/InfoTooltip/TooltipMarkdownContent/
+    // TypographyWithConditionalTooltip/EllipsisTypography batch S1 pinned
+    // these ahead for — both packages now have real consumers
+    // (`shared/ui/lib/sanitizeMarkdownHtml.ts` and `shared/ui/DefaultMarkdown/
+    // DefaultMarkdown.tsx`), so knip finds them itself.
+    // [M1] `@faker-js/faker` REMOVED from this list: S4's comment here
+    // ("M1 consumes these, S4 does not") anticipated exactly this — now
+    // that src/test/msw/handlers/index.ts imports the `*.msw.ts` files
+    // (which import faker) and those files are listed in `entry` above,
+    // knip traces the real usage itself.
+    // [CI-fix pass] `storybook`/`@storybook/react-vite`/`orval`/`prettier`/
+    // `@emotion/react`/`@emotion/styled`/`@mui/icons-material`/
+    // `@mui/material`/`@mui/system`/`@mui/x-data-grid`/
+    // `@tanstack/react-query`/`@tanstack/react-router`/
+    // `@tanstack/router-plugin`/`@uiw/react-codemirror`/`socket.io-client`/
+    // `zustand` REMOVED: all 16 were knip's own "Remove from
+    // ignoreDependencies" configuration hints, confirmed empirically (see
+    // note above the remaining list) — every one now has a real consumer
+    // knip finds on its own, same pattern as every removal noted above.
+  ]
+}

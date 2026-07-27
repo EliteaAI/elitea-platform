@@ -1,0 +1,2057 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "pipelines",
+  "items": [
+    {
+      "id": "ROUTE-017",
+      "domain": "pipelines",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/pipelines` renders index redirect",
+      "source": [
+        "apps/elitea-ui/src/routes.js:19",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:201"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /pipelines",
+        "THEN the index redirect screen is displayed at that URL",
+        "AND index redirects to the first Applications tab, preserving query string and history state"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-017"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-018",
+      "domain": "pipelines",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/pipelines/create` renders CreatePipeline",
+      "source": [
+        "apps/elitea-ui/src/routes.js:21",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:202"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /pipelines/create",
+        "THEN the create pipeline screen is displayed at that URL",
+        "AND navigation is blocked while the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-018"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-019",
+      "domain": "pipelines",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/pipelines/:tab` renders Pipelines",
+      "source": [
+        "apps/elitea-ui/src/routes.js:20",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:203"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /pipelines/:tab",
+        "THEN the pipelines screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-019"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-020",
+      "domain": "pipelines",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/pipelines/:tab/:agentId` renders EditPipeline",
+      "source": [
+        "apps/elitea-ui/src/routes.js:22",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:204"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /pipelines/:tab/:agentId",
+        "THEN the edit pipeline screen is displayed at that URL",
+        "AND navigation is blocked while the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-020"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-069",
+      "domain": "pipelines",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/pipelines/:tab/:agentId/:version` renders EditPipeline (version child)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:22",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /pipelines/:tab/:agentId/:version",
+        "THEN the edit pipeline screen is displayed at that URL",
+        "AND empty child element: the parent renders and reads the version parameter"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-069"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-052",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `isFromCreation` on /pipelines/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:34"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab",
+        "WHEN the URL contains the isFromCreation query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > isFromCreation"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-053",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `isFromCreation` on /pipelines/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/EditPipeline.jsx:34"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab/:agentId",
+        "WHEN the URL contains the isFromCreation query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > isFromCreation"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-054",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_by` on /pipelines/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:53"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab",
+        "WHEN the URL contains the sort_by query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > sort_by"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-055",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_by` on /pipelines/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:53"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab/:agentId",
+        "WHEN the URL contains the sort_by query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > sort_by"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-056",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_order` on /pipelines/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:55"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab",
+        "WHEN the URL contains the sort_order query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > sort_order"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-057",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_order` on /pipelines/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:55"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab/:agentId",
+        "WHEN the URL contains the sort_order query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.pipelines.test.tsx",
+        "testId": "search-params > pipelines > sort_order"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-055",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on pipelines: generate content streaming via onClick/onGenerate/onStop",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:306",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:307",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:364",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:390",
+        "apps/elitea-ui/src/api/llm.js:6"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to generate content streaming",
+        "THEN a POST request to /elitea_core/predict_llm/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions pipelines\"",
+        "testId": "action > pipelines > generateContentStreaming"
+      },
+      "unit": "A2",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/pipelines/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-056",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on pipelines: stop llm task via onClick/onGenerate/onStop",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:306",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:307",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:364",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:390",
+        "apps/elitea-ui/src/api/llm.js:29"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to stop llm task",
+        "THEN a DELETE request to /elitea_core/task/prompt_lib/{projectId}/{task_id} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions pipelines\"",
+        "testId": "action > pipelines > stopLlmTask"
+      },
+      "unit": "A2",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/pipelines/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-057",
+      "domain": "pipelines",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on pipelines: update pipeline trigger via onClick/onSubmit/onValueChange",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:299",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:332",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:344",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:352",
+        "apps/elitea-ui/src/api/applications.js:865"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update pipeline trigger",
+        "THEN a PUT request to /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions pipelines\"",
+        "testId": "action > pipelines > updatePipelineTrigger"
+      },
+      "unit": "A2",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/pipelines/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-153",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: constants/promptTemplates.js (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/constants/promptTemplates.js:8",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/lib/constants/promptTemplates.js:52"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"System message generation for LLM node\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > promptTemplates.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-154",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AIAssistantModal.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:320",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIAssistantModal.jsx:438"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"Current Version\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > AIAssistantModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-155",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AIPromptInput.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIPromptInput.jsx:70",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/ai-assistant/ui/AIPromptInput.jsx:100"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Describe your idea to generate or rewrite the value.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > AIPromptInput.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-156",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: constants/flowEditor.constants.js (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/constants/flowEditor.constants.js:154",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/constants/flowEditor.constants.js:162"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"F-String\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > flowEditor.constants.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-157",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/decisionOutput.helpers.js (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/decisionOutput.helpers.js:6",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/decisionOutput.helpers.js:13"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Corresponding node doesn't exist\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > decisionOutput.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-158",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/edgeOperations.helpers.js (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/edgeOperations.helpers.js:17"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Interrupt\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > edgeOperations.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-159",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/flowEditor.helpers.js (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/flowEditor.helpers.js:128",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/flowEditor.helpers.js:136"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Task for agent.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > flowEditor.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-160",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/parsePipeline.helpers.js (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parsePipeline.helpers.js:40",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/helpers/parsePipeline.helpers.js:560"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"State\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > parsePipeline.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-161",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: hooks/useNodeOptions.hooks.js (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/lib/hooks/useNodeOptions.hooks.js:14"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"END\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > useNodeOptions.hooks.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-162",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/FlowEditor.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/FlowEditor.jsx:518",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/FlowEditor.jsx:621"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"State\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > FlowEditor.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-163",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/AgentNode.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:114",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/AgentNode.jsx:135"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Agent not found — select a replacement or delete this node\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > AgentNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-164",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: BaseNode/NodeCardHeader.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:210",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseNode/NodeCardHeader.jsx:313"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Make entrypoint\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > NodeCardHeader.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-165",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/BaseToolNode.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/BaseToolNode.jsx:169"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Output\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > BaseToolNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-166",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/CodeNode.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:83",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/CodeNode.jsx:89"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Input\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > CodeNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-167",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: DecisionNode/DecisionNodeShared.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/DecisionNodeShared.jsx:20"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Decision outputs\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > DecisionNodeShared.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-168",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: DecisionNode/LegacyDecisionNode.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/LegacyDecisionNode.jsx:182",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/LegacyDecisionNode.jsx:254"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Not in state\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > LegacyDecisionNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-169",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: DecisionNode/NormalDecisionNode.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:94",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DecisionNode/NormalDecisionNode.jsx:121"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Default output\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > NormalDecisionNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-170",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/DefaultNode.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/DefaultNode.jsx:178"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Output\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > DefaultNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-171",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: deprecated/ConditionNode.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/ConditionNode.jsx:196",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/ConditionNode.jsx:284"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Not in state\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > ConditionNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-172",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: deprecated/LoopNode.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/LoopNode.jsx:141",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/LoopNode.jsx:161"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Task\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > LoopNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-173",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: deprecated/LoopToolNode.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/LoopToolNode.jsx:231",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/LoopToolNode.jsx:273"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Loop toolkit\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > LoopToolNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-174",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: deprecated/ToolNode.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/ToolNode.jsx:198",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/deprecated/ToolNode.jsx:238"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Tool\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > ToolNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-175",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/EndNode.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/EndNode.jsx:25"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"End\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > EndNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-176",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/HITLNode.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/HITLNode.jsx:26",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/HITLNode.jsx:280"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Approve\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > HITLNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-177",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/LLMNode.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:88",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/LLMNode.jsx:94"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Input\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > LLMNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-178",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/PrinterNode.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/PrinterNode.jsx:100"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Final Message\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > PrinterNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-179",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/RouterNode.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/RouterNode.jsx:125",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/RouterNode.jsx:175"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Default output\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > RouterNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-180",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: nodes/StateModifierNode.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/StateModifierNode.jsx:78",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/nodes/StateModifierNode.jsx:105"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Jinja Template\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateModifierNode.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-181",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: select/LLMToolsSelect.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/select/LLMToolsSelect.jsx:58"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Tools\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > LLMToolsSelect.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-182",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: select/OutputSelect.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/select/OutputSelect.jsx:43"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Not in state\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > OutputSelect.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-183",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: select/RouteSelect.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/select/RouteSelect.jsx:71"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Not in state\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > RouteSelect.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-184",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/CommonInterruptSettings.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:69",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CommonInterruptSettings.jsx:165"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"interrupt\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > CommonInterruptSettings.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-185",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/ConnectionDropdown.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/ConnectionDropdown.jsx:219"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Create new node\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > ConnectionDropdown.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-186",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/CustomNodeInput.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:131",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/CustomNodeInput.jsx:245"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Copy to clipboard\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > CustomNodeInput.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-187",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: InputMappings/InputMappingItem.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/InputMappings/InputMappingItem.jsx:15",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/InputMappings/InputMappingItem.jsx:355"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"input number\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > InputMappingItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-188",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/PipelineScheduleModal.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineScheduleModal.jsx:49",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineScheduleModal.jsx:122"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Schedule settings\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > PipelineScheduleModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-189",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/PipelineWebhookModal.jsx (17 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineWebhookModal.jsx:15",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/PipelineWebhookModal.jsx:356"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 17 strings from this component (for example \"GitHub\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > PipelineWebhookModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-190",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/SimpleLLMInputItem.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/SimpleLLMInputItem.jsx:55",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/SimpleLLMInputItem.jsx:218"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Value\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > SimpleLLMInputItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-191",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/TriggerTypeSelector.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:39",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/TriggerTypeSelector.jsx:325"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Chat Message\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > TriggerTypeSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-192",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/VariablesMapping.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/VariablesMapping.jsx:17",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/settings/VariablesMapping.jsx:164"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"State\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > VariablesMapping.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-193",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/RunStateDialog.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/RunStateDialog.jsx:89",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/RunStateDialog.jsx:411"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Before\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > RunStateDialog.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-194",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateDrawer.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateDrawer.jsx:111"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"STATE\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateDrawer.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-195",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateTypeSelector.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateTypeSelector.jsx:57"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Select data type\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateTypeSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-196",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateVariableDefaultValue.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableDefaultValue.jsx:37",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableDefaultValue.jsx:90"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Default value\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateVariableDefaultValue.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-197",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateVariableItem.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableItem.jsx:200"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Default value\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateVariableItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-198",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateVariableList.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableList.jsx:215"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Context\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateVariableList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-199",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: state/StateVariableTable.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:121",
+        "apps/elitea-ui/src/[fsd]/features/pipelines/flow-editor/ui/state/StateVariableTable.jsx:300"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > StateVariableTable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-486",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/AddNodeMenu.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Components/AddNodeMenu.jsx:71",
+        "apps/elitea-ui/src/pages/Pipelines/Components/AddNodeMenu.jsx:80"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Add node\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > AddNodeMenu.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-487",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/ConfigurationTab.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Components/ConfigurationTab.jsx:289"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Failed to load data! Please try refreshing the page.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > ConfigurationTab.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-488",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/EditorPanel.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:232",
+        "apps/elitea-ui/src/pages/Pipelines/Components/EditorPanel.jsx:266"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Failed to load the flow editor\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > EditorPanel.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-489",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/CreatePipeline.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/CreatePipeline.jsx:48"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"New Pipeline\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > CreatePipeline.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-490",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/Latest.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Latest.jsx:16",
+        "apps/elitea-ui/src/pages/Pipelines/Latest.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"No pipelines available.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > Latest.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-491",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/MyLiked.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/MyLiked.jsx:16",
+        "apps/elitea-ui/src/pages/Pipelines/MyLiked.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"You have not liked any pipelines yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > MyLiked.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-492",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/Pipelines.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:155",
+        "apps/elitea-ui/src/pages/Pipelines/Pipelines.jsx:256"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Latest\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > Pipelines.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-493",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/PrivatePipelinesList.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:24",
+        "apps/elitea-ui/src/pages/Pipelines/PrivatePipelinesList.jsx:98"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"No pipelines yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > PrivatePipelinesList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-494",
+      "domain": "pipelines",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Pipelines/Trending.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Pipelines/Trending.jsx:16",
+        "apps/elitea-ui/src/pages/Pipelines/Trending.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the pipelines screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"No public pipelines yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > pipelines > Trending.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-016",
+      "domain": "pipelines",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 16: Create pipeline, edit flow graph, save",
+      "source": [
+        "apps/elitea-ui/src/routes.js:21",
+        "apps/elitea-ui/src/api/applications.js:204"
+      ],
+      "acceptance": [
+        "GIVEN the create-pipeline flow",
+        "WHEN the user edits the flow graph and saves",
+        "THEN the saved pipeline reloads with the same graph",
+        "AND validation errors block saving with a visible reason"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-16\"",
+        "testId": "journey > 16 > Create pipeline, edit flow graph, save"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import (
 	v2apps "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applications"
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
+	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
 	v2chat "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/chat"
 	v2configs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
@@ -179,6 +180,22 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	}
 	r.Handle("/app/application_icon/*", http.StripPrefix("/app/application_icon/", http.FileServer(http.Dir(iconDir))))
 	r.Handle("/app/application_tool_icon/*", http.StripPrefix("/app/application_tool_icon/", http.FileServer(http.Dir(toolIconDir))))
+
+	// Branding bootstrap script (UI spec §4.3 channel C, §9.3 unit W3).
+	// Deliberately registered OUTSIDE the Auth group below: index.html
+	// references this script on the login/loading path before any session
+	// exists, so it must be reachable unauthenticated — same tier as the
+	// health routes and the /forward-auth session flows above. The exact
+	// static path coexists with the Auth group's /api/v2 subtree because chi
+	// prefers a static match over the mounted wildcard (same mechanism that
+	// lets the /api/v2/api/v2/* shim below sit at the root level). Env read
+	// inline follows the ICON_DATA_DIR precedent above.
+	brandingHandler := v2branding.NewHandler(v2branding.Config{PackPath: os.Getenv("BRAND_PACK_PATH")})
+	r.Get("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
+	// HEAD must be registered explicitly or it falls through to the
+	// auth-wrapped /api/v2 mount and 401s; the handler suppresses the body
+	// for HEAD itself (RFC 9110 §9.3.2).
+	r.Head("/api/v2/branding/bootstrap.js", brandingHandler.Bootstrap)
 
 	// Admin UI SPA — serves the admin panel with server-side config injection
 	if cfg.AdminUI != nil {

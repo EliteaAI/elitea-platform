@@ -1,0 +1,897 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "mcps",
+  "items": [
+    {
+      "id": "ROUTE-031",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps` renders index redirect",
+      "source": [
+        "apps/elitea-ui/src/routes.js:44",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:221"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps",
+        "THEN the index redirect screen is displayed at that URL",
+        "AND menu entry hidden unless the MCP platform flags are enabled; index redirects to the first Toolkits tab"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-031"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-032",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/create` renders CreateToolkit (MCP mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:46",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:222"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/create",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-032"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-033",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/create/:mcpType` renders CreateToolkit (MCP mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:47",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:223"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/create/:mcpType",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-033"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-034",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/:tab` renders Toolkits (MCP mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:45",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:224"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/:tab",
+        "THEN the toolkits screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-034"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-035",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcps/:tab/:mcpId` renders EditToolkit (MCP mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:48",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:225"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcps/:tab/:mcpId",
+        "THEN the edit toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-035"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-050",
+      "domain": "mcps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/mcp-auth-callback` renders McpAuthPage",
+      "source": [
+        "apps/elitea-ui/src/routes.js:70",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:248"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /mcp-auth-callback",
+        "THEN the mcp auth page screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-050"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-048",
+      "domain": "mcps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `code` on /mcp-auth-callback",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:71"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /mcp-auth-callback",
+        "WHEN the URL contains the code query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.mcp-auth.test.tsx",
+        "testId": "search-params > mcp-auth > code"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-049",
+      "domain": "mcps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `error` on /mcp-auth-callback",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:73"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /mcp-auth-callback",
+        "WHEN the URL contains the error query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.mcp-auth.test.tsx",
+        "testId": "search-params > mcp-auth > error"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-050",
+      "domain": "mcps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `error_description` on /mcp-auth-callback",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:74"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /mcp-auth-callback",
+        "WHEN the URL contains the error_description query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.mcp-auth.test.tsx",
+        "testId": "search-params > mcp-auth > error_description"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-051",
+      "domain": "mcps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `state` on /mcp-auth-callback",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:72"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /mcp-auth-callback",
+        "WHEN the URL contains the state query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.mcp-auth.test.tsx",
+        "testId": "search-params > mcp-auth > state"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-164",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/mcp_oauth_proxy/{projectId} (exchangeMcpOAuthToken)",
+      "source": [
+        "apps/elitea-ui/src/api/mcpOAuth.js:7-20"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the exchange mcp oauth token operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/mcp_oauth_proxy/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/mcpOAuth.contract.test.ts",
+        "testId": "api > mcpOAuth.js > exchangeMcpOAuthToken"
+      },
+      "unit": "A5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/mcps/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-165",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/mcp_oauth_proxy/{projectId} (refreshMcpOAuthToken)",
+      "source": [
+        "apps/elitea-ui/src/api/mcpOAuth.js:21-37"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the refresh mcp oauth token operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/mcp_oauth_proxy/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/mcpOAuth.contract.test.ts",
+        "testId": "api > mcpOAuth.js > refreshMcpOAuthToken"
+      },
+      "unit": "A5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/mcps/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-166",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/mcp_dcr_proxy/{projectId} (registerMcpDynamicClient)",
+      "source": [
+        "apps/elitea-ui/src/api/mcpOAuth.js:38-51"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the register mcp dynamic client operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/mcp_dcr_proxy/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/mcpOAuth.contract.test.ts",
+        "testId": "api > mcpOAuth.js > registerMcpDynamicClient"
+      },
+      "unit": "A5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/mcps/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-002",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at mcpClient.helpers.js:12 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/helpers/mcpClient.helpers.js:12"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > mcpClient.helpers.js:12"
+      },
+      "unit": "A5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/mcps/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-003",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at mcpClient.helpers.js:83 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/helpers/mcpClient.helpers.js:83"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > mcpClient.helpers.js:83"
+      },
+      "unit": "A5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/mcps/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "SOCK-028",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Socket event `mcp_status` (catalogued)",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:914",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useGetCurrentToolkitSchemas.hooks.js:40",
+        "apps/elitea-ui/src/hooks/application/useAgentMCPToolsStatusMonitor.js:73",
+        "apps/elitea-ui/src/hooks/chat/useMCPParticipantStatusMonitor.js:24"
+      ],
+      "acceptance": [
+        "GIVEN an active socket connection on a screen that consumes mcp_status",
+        "WHEN the server emits mcp_status",
+        "THEN the visible state updates accordingly without a refetch",
+        "AND a malformed payload is logged and ignored rather than crashing the client"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/socket",
+        "testId": "socket > event > mcp_status"
+      },
+      "unit": "S5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/socket/client.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "SOCK-029",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Socket event `test_mcp_connection` (catalogued)",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:917",
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:88"
+      ],
+      "acceptance": [
+        "GIVEN an active socket connection on a screen that consumes test_mcp_connection",
+        "WHEN the server emits test_mcp_connection",
+        "THEN the visible state updates accordingly without a refetch",
+        "AND a malformed payload is logged and ignored rather than crashing the client"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/socket",
+        "testId": "socket > event > test_mcp_connection"
+      },
+      "unit": "S5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/socket/client.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "SOCK-052",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Streaming payload discriminant `mcp_authorization_required`",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:166",
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthCheck.hooks.js:59",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/hooks/useToolkitChat.hooks.js:188",
+        "apps/elitea-ui/src/components/Chat/hooks.js:909"
+      ],
+      "acceptance": [
+        "GIVEN a streaming run is in progress",
+        "WHEN a streamed message with type mcp_authorization_required arrives",
+        "THEN the message is applied to the conversation or run view according to its meaning in the baseline",
+        "AND the stream continues uninterrupted afterwards"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/socket",
+        "testId": "socket > discriminant > mcp_authorization_required"
+      },
+      "unit": "S5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/socket/client.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-061",
+      "domain": "mcps",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Platform flag `mcp_exposure_enabled` controls MCP visibility",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/shared/lib/hooks/useMcpVisibility.hooks.js:8"
+      ],
+      "acceptance": [
+        "GIVEN a deployment where mcp_exposure_enabled is disabled",
+        "WHEN the application loads",
+        "THEN the MCP menu entries and MCP routes governed by this flag are hidden",
+        "AND enabling the flag makes them visible without a rebuild"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/widgets",
+        "testId": "flags > mcp_exposure_enabled"
+      },
+      "unit": "W-shell",
+      "status": "todo",
+      "coverage": {
+        "file": "src/widgets/sidebar/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-062",
+      "domain": "mcps",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Platform flag `mcp_in_menu_enabled` controls MCP visibility",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/shared/lib/hooks/useMcpVisibility.hooks.js:8"
+      ],
+      "acceptance": [
+        "GIVEN a deployment where mcp_in_menu_enabled is disabled",
+        "WHEN the application loads",
+        "THEN the MCP menu entries and MCP routes governed by this flag are hidden",
+        "AND enabling the flag makes them visible without a rebuild"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/widgets",
+        "testId": "flags > mcp_in_menu_enabled"
+      },
+      "unit": "W-shell",
+      "status": "todo",
+      "coverage": {
+        "file": "src/widgets/sidebar/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-138",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/mcpClient.helpers.js (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/helpers/mcpClient.helpers.js:98"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"test-key\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > mcpClient.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-139",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: hooks/useMcpAuthModal.hooks.js (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/lib/hooks/useMcpAuthModal.hooks.js:314"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Configuration OAuth\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > useMcpAuthModal.hooks.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-140",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/McpAuthStatus.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:124",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpAuthStatus.jsx:124"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Connected!\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpAuthStatus.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-141",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/McpLogInButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpLogInButton.jsx:27"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Logging in...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpLogInButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-142",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/McpLogInLink.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpLogInLink.jsx:29"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Logging in...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpLogInLink.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-143",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/McpLogoutButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/McpLogoutButton.jsx:42"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Log out\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpLogoutButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-144",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: modal/McpAuthModal.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:383",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpAuthModal.jsx:490"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"MCP Authorization\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpAuthModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-145",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: modal/McpLogoutModal.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpLogoutModal.jsx:79",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/McpLogoutModal.jsx:146"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"MCP Authorization\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > McpLogoutModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-146",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: modal/OAuthFormFields.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/OAuthFormFields.jsx:30",
+        "apps/elitea-ui/src/[fsd]/features/mcp/ui/modal/OAuthFormFields.jsx:85"
+      ],
+      "acceptance": [
+        "GIVEN the mcps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Client ID\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcps > OAuthFormFields.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-284",
+      "domain": "mcps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: mcp/index.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:145",
+        "apps/elitea-ui/src/[fsd]/pages/mcp/index.jsx:174"
+      ],
+      "acceptance": [
+        "GIVEN the mcp-auth screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Processing authorization...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > mcp-auth > index.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-018",
+      "domain": "mcps",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 18: Create MCP with OAuth callback round trip",
+      "source": [
+        "apps/elitea-ui/src/routes.js:70",
+        "apps/elitea-ui/src/api/mcpOAuth.js:7"
+      ],
+      "acceptance": [
+        "GIVEN the create-MCP flow requiring OAuth",
+        "WHEN the OAuth provider redirects back to the callback route",
+        "THEN the token exchange completes and the MCP becomes usable",
+        "AND OAuth errors are shown on the callback screen"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-18\"",
+        "testId": "journey > 18 > Create MCP with OAuth callback round trip"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

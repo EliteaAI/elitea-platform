@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): GET /artifacts/s3/ bucket list (router.go:165, S3Handler.ListBuckets, ROOT-LEVEL — no /api/v2 prefix; this is the exact routing fact spec §5.7 row 5 asks S6 to preserve).",
+  "body": { "buckets": [{ "name": "demo-bucket", "created_at": "2026-07-20T00:00:00Z" }] }
+}

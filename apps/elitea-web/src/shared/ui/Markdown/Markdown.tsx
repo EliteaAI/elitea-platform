@@ -1,0 +1,71 @@
+import type { ReactNode } from 'react';
+import { useMemo } from 'react';
+
+import Box from '@mui/material/Box';
+import type { SxProps, Theme } from '@mui/material/styles';
+import { marked, type MarkedToken } from 'marked';
+
+import { combineSx } from '../lib/combineSx';
+import { Token } from '../Token';
+
+/** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
+export interface MarkdownProps {
+  children: string;
+  /** When `false`, literal HTML written in `children` is dropped instead of rendered. Defaults to `true`. */
+  renderHtml?: boolean;
+  sx?: SxProps<Theme>;
+  'data-testid'?: string;
+}
+
+/**
+ * Lexes `children` into a `marked` block-token tree and renders each token
+ * through `Token`. Ported from
+ * `apps/elitea-ui/src/[fsd]/shared/ui/markdown/Markdown.jsx` — see
+ * `Token`/`DefaultMarkdown`'s doc comments for the sanitize-before-render
+ * boundary and the deviations from the baseline's `mui-markdown`-based
+ * implementation.
+ *
+ * `whiteSpace: 'pre-wrap'` cascading to every descendant (matching the
+ * baseline's `Markdown.jsx` container styles exactly) is what makes a
+ * single source newline read as a visual line break WITHOUT marked's
+ * `breaks: true` option converting it to a literal `<br>` — this app
+ * renders live-streaming AI responses where the raw text arrives
+ * incrementally, and rewriting `\n` to `<br>` server-side-style would fight
+ * that streaming re-render.
+ */
+export function Markdown({
+  children,
+  renderHtml = true,
+  sx,
+  'data-testid': dataTestId,
+}: MarkdownProps): ReactNode {
+  const tokens = useMemo(() => marked.lexer(children), [children]);
+
+  return (
+    <Box
+      data-testid={dataTestId}
+      sx={combineSx(
+        {
+          whiteSpace: 'pre-wrap',
+          '& *': { whiteSpace: 'inherit' },
+          '& pre, & code': { whiteSpace: 'pre-wrap' },
+          '& p': { margin: '0 0 0.8em' },
+          '& p:last-child': { marginBottom: 0 },
+        },
+        sx,
+      )}
+    >
+      {tokens.map((token, index) => (
+        // eslint-disable-next-line react/no-array-index-key -- marked tokens have no stable identity across re-renders
+        <Token
+          key={index}
+          // `marked.lexer()`'s return type admits `Tokens.Generic` (marked's
+          // own extension point); this app registers no marked extensions,
+          // so every lexed token is actually a `MarkedToken`.
+          token={token as MarkedToken}
+          renderHtml={renderHtml}
+        />
+      ))}
+    </Box>
+  );
+}

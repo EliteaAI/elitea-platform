@@ -1,0 +1,267 @@
+/**
+ * Decision logic for scripts/check-budgets.mjs — spec §3.5 complexity
+ * budgets, statically checkable subset (unit F2).
+ *
+ * Implemented here (breach == build failure, no warning tier):
+ *   file-length            ≤ 400 lines   (test + generated files exempt)
+ *   component-props        ≤ 12
+ *   use-effects            ≤ 3 per component
+ *   hook-deps              ≤ 8 entries in a dependency array
+ *   slice-public-api       ≤ 20 exported symbols from a slice index.ts
+ *
+ * Deliberately NOT implemented here (recorded, not forgotten):
+ *   cyclomatic complexity 12 — oxlint native `complexity` rule (.oxlintrc.json)
+ *   prop-drill depth 3        — needs cross-module data flow; review + R-L3
+ *   import closure ≤ 250      — route-entry analysis lands with R1 (uictl)
+ *   bundle budgets (§3.5 last two rows) — @lhci/cli in the CI build job (§7.6)
+ *
+ * Parser: @babel/parser (already in the tree via the React Compiler wiring —
+ * TypeScript 7 ships no JS compiler API, so `typescript` cannot parse here).
+ *
+ * Everything in this module is pure: (filename, source, limits) → findings.
+ */
+import { parse } from '@babel/parser';
+
+export const DEFAULT_LIMITS = Object.freeze({
+  fileLength: 400,
+  componentProps: 12,
+  useEffectsPerComponent: 3,
+  hookDeps: 8,
+  slicePublicApi: 20,
+});
+
+const TEST_FILE_RE = /(\.test\.|\.spec\.|\.stories\.)|(^|\/)__tests__\/|(^|\/)__mocks__\/|(^|\/)src\/test\//;
+// [S5] scripts/gen-socket-contract.mjs's two outputs (spec §5.5) — same
+// "generated-code conventions apply" treatment as src/shared/api/generated/
+// above, added because the spec names them events.ts/messages.ts verbatim
+// (not a .gen.ts suffix), so the existing patterns don't reach them.
+const GENERATED_FILE_RE = /(^|\/)src\/shared\/api\/generated\/|\.gen\.tsx?$|\.d\.ts$|(^|\/)src\/shared\/api\/socket\/(events|messages)\.ts$/;
+const SLICE_INDEX_RE = /(^|\/)src\/(features|entities|widgets|processes)\/[^/]+\/index\.tsx?$/;
+const HOOK_WITH_DEPS_RE = /^use[A-Z]|^use(Effect|LayoutEffect|InsertionEffect|Memo|Callback|ImperativeHandle)$/;
+
+export function isTestFile(filename) {
+  return TEST_FILE_RE.test(filename);
+}
+
+export function isGeneratedFile(filename) {
+  return GENERATED_FILE_RE.test(filename);
+}
+
+export function isSliceIndex(filename) {
+  return SLICE_INDEX_RE.test(filename);
+}
+
+export function parseSource(filename, source) {
+  const plugins = filename.endsWith('.tsx') || filename.endsWith('.jsx')
+    ? ['typescript', 'jsx']
+    : ['typescript'];
+  return parse(source, { sourceType: 'module', plugins, errorRecovery: false });
+}
+
+const NON_NODE_KEYS = new Set(['loc', 'leadingComments', 'trailingComments', 'extra']);
+
+const isNode = (value) => Boolean(value) && typeof value.type === 'string';
+
+/** Generic ESTree-ish walker; calls enter(node, ancestors). */
+export function walk(node, enter, ancestors = []) {
+  if (!isNode(node)) return;
+  enter(node, ancestors);
+  const nextAncestors = [...ancestors, node];
+  for (const key of Object.keys(node)) {
+    if (NON_NODE_KEYS.has(key)) continue;
+    const value = node[key];
+    const children = Array.isArray(value) ? value : [value];
+    for (const child of children) {
+      if (isNode(child)) walk(child, enter, nextAncestors);
+    }
+  }
+}
+
+function finding(rule, file, line, message) {
+  return { rule, file, line, message };
+}
+
+/** §3.5 row 1 — file length ≤ 400; tests + generated exempt. */
+export function checkFileLength(filename, source, limits = DEFAULT_LIMITS) {
+  if (isTestFile(filename) || isGeneratedFile(filename)) return [];
+  // A trailing newline does not open a new line (wc -l semantics).
+  const lines = source.split('\n').length - (source.endsWith('\n') ? 1 : 0);
+  if (lines <= limits.fileLength) return [];
+  return [
+    finding(
+      'file-length',
+      filename,
+      limits.fileLength + 1,
+      `file is ${lines} lines (budget ${limits.fileLength}; NewChat.jsx was 1,861 — split it)`,
+    ),
+  ];
+}
+
+/** Name of a function-ish node, from declaration id or enclosing declarator. */
+function functionName(node, ancestors) {
+  if (node.id && node.id.type === 'Identifier') return node.id.name;
+  const parent = ancestors[ancestors.length - 1];
+  if (parent && parent.type === 'VariableDeclarator' && parent.id.type === 'Identifier') {
+    return parent.id.name;
+  }
+  return null;
+}
+
+const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+function isComponentName(name) {
+  return typeof name === 'string' && /^[A-Z]/.test(name);
+}
+
+/** Count declared props on a component's first parameter (pattern + type). */
+function countProps(param) {
+  let patternCount = 0;
+  let typeCount = 0;
+  if (!param) return 0;
+  if (param.type === 'ObjectPattern') {
+    patternCount = param.properties.length;
+  }
+  const annotation = param.typeAnnotation && param.typeAnnotation.typeAnnotation;
+  if (annotation && annotation.type === 'TSTypeLiteral') {
+    typeCount = annotation.members.length;
+  }
+  return Math.max(patternCount, typeCount);
+}
+
+/** §3.5 rows: component props ≤ 12, useEffect per component ≤ 3. */
+export function checkComponents(filename, ast, limits = DEFAULT_LIMITS) {
+  const findings = [];
+  const effectCounts = new Map(); // component fn node -> {name, count, line}
+
+  walk(ast.program, (node, ancestors) => {
+    if (FUNCTION_TYPES.has(node.type)) {
+      const name = functionName(node, ancestors);
+      if (isComponentName(name)) {
+        const propCount = countProps(node.params[0]);
+        if (propCount > limits.componentProps) {
+          findings.push(
+            finding(
+              'component-props',
+              filename,
+              node.loc.start.line,
+              `component ${name} declares ${propCount} props (budget ${limits.componentProps}; pass an object or lift to a store)`,
+            ),
+          );
+        }
+      }
+    }
+    if (
+      node.type === 'CallExpression' &&
+      node.callee.type === 'Identifier' &&
+      node.callee.name === 'useEffect'
+    ) {
+      // Attribute to the innermost enclosing component function.
+      for (let i = ancestors.length - 1; i >= 0; i--) {
+        const ancestor = ancestors[i];
+        if (FUNCTION_TYPES.has(ancestor.type)) {
+          const name = functionName(ancestor, ancestors.slice(0, i));
+          if (isComponentName(name)) {
+            const entry = effectCounts.get(ancestor) ?? { name, count: 0, line: ancestor.loc.start.line };
+            entry.count += 1;
+            effectCounts.set(ancestor, entry);
+            break;
+          }
+        }
+      }
+    }
+  });
+
+  for (const { name, count, line } of effectCounts.values()) {
+    if (count > limits.useEffectsPerComponent) {
+      findings.push(
+        finding(
+          'use-effects',
+          filename,
+          line,
+          `component ${name} has ${count} useEffect calls (budget ${limits.useEffectsPerComponent}; extract hooks or move to a store)`,
+        ),
+      );
+    }
+  }
+  return findings;
+}
+
+/** §3.5 row — hook dependency array length ≤ 8. */
+export function checkHookDeps(filename, ast, limits = DEFAULT_LIMITS) {
+  const findings = [];
+  walk(ast.program, (node) => {
+    if (node.type !== 'CallExpression' || node.callee.type !== 'Identifier') return;
+    if (!HOOK_WITH_DEPS_RE.test(node.callee.name)) return;
+    const last = node.arguments[node.arguments.length - 1];
+    if (last && last.type === 'ArrayExpression' && last.elements.length > limits.hookDeps) {
+      findings.push(
+        finding(
+          'hook-deps',
+          filename,
+          node.loc.start.line,
+          `${node.callee.name} dependency array has ${last.elements.length} entries (budget ${limits.hookDeps}; the hook does too much)`,
+        ),
+      );
+    }
+  });
+  return findings;
+}
+
+/** Count exported symbols of a module (for slice index.ts files). */
+export function countExports(ast) {
+  let count = 0;
+  for (const statement of ast.program.body) {
+    if (statement.type === 'ExportNamedDeclaration') {
+      if (statement.declaration) {
+        if (statement.declaration.type === 'VariableDeclaration') {
+          count += statement.declaration.declarations.length;
+        } else {
+          count += 1; // function / class / TS type-ish declaration
+        }
+      }
+      count += statement.specifiers.length;
+    } else if (statement.type === 'ExportDefaultDeclaration') {
+      count += 1;
+    } else if (statement.type === 'ExportAllDeclaration') {
+      // R-L4 bans this outright (oxlint elitea/no-export-all); count it so the
+      // budget cannot be gamed by star re-exports either.
+      count += limitsSentinel;
+    }
+  }
+  return count;
+}
+
+// A star export makes the public surface unbounded; treat as > any budget.
+const limitsSentinel = 1000;
+
+/** §3.5 row — slice public API ≤ 20 exported symbols from index.ts. */
+export function checkSlicePublicApi(filename, ast, limits = DEFAULT_LIMITS) {
+  if (!isSliceIndex(filename)) return [];
+  const count = countExports(ast);
+  if (count <= limits.slicePublicApi) return [];
+  return [
+    finding(
+      'slice-public-api',
+      filename,
+      1,
+      `slice public API exports ${count >= limitsSentinel ? 'an unbounded (export *) set of' : count} symbols (budget ${limits.slicePublicApi}; §3.3 — a curated API, not a barrel)`,
+    ),
+  ];
+}
+
+/** All checks for one file. Parse errors surface as findings, not crashes. */
+export function checkFile(filename, source, limits = DEFAULT_LIMITS) {
+  const findings = [...checkFileLength(filename, source, limits)];
+  let ast;
+  try {
+    ast = parseSource(filename, source);
+  } catch (error) {
+    // Babel embeds the exact position in the message ("(1:6)"), so the
+    // finding pins line 1 unconditionally — no untestable branch.
+    return [...findings, finding('parse-error', filename, 1, `unparseable source: ${error.message}`)];
+  }
+  findings.push(...checkComponents(filename, ast, limits));
+  findings.push(...checkHookDeps(filename, ast, limits));
+  findings.push(...checkSlicePublicApi(filename, ast, limits));
+  return findings;
+}

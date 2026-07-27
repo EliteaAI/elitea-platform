@@ -40,6 +40,19 @@ target "elitea-ui" {
   platforms  = ["linux/amd64", "linux/arm64"]
 }
 
+# New UI (spec §7.3): context is the repo root and the Containerfile lives with
+# the app, so bake, publish.yml and Taskfile build with identical contexts —
+# fixing defect D1 by construction. Built in parallel with elitea-ui for the
+# whole cutover; rollback is a traefik weight change, never a rebuild.
+target "elitea-web" {
+  context    = "."
+  dockerfile = "apps/elitea-web/Containerfile"
+  tags       = ["${REGISTRY}/elitea-web:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-web"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-web"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
+
 
 group "pylon" {
   targets = ["pylon-indexer"]

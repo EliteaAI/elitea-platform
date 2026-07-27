@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): generic 404 error body shared by the artifacts.ts probes.",
+  "body": { "error": "not found" }
+}

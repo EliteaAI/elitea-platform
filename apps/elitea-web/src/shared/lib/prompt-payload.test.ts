@@ -1,0 +1,27 @@
+import { describe, expect, it } from 'vitest';
+
+import { APPLICATION_PAYLOAD_KEY, PROMPT_PAYLOAD_KEY } from './prompt-payload';
+
+describe('PROMPT_PAYLOAD_KEY', () => {
+  it('preserves the exact field-name mapping (constants.js:1030-1056)', () => {
+    expect(PROMPT_PAYLOAD_KEY.context).toBe('prompt');
+    expect(PROMPT_PAYLOAD_KEY.modelName).toBe('model_name');
+    expect(PROMPT_PAYLOAD_KEY.maxTokens).toBe('max_tokens');
+    expect(PROMPT_PAYLOAD_KEY.reasoningEffort).toBe('reasoning_effort');
+    expect(PROMPT_PAYLOAD_KEY.welcomeMessage).toBe('welcome_message');
+    expect(PROMPT_PAYLOAD_KEY.webhookSecret).toBe('webhook_secret');
+    expect(Object.keys(PROMPT_PAYLOAD_KEY)).toHaveLength(25);
+  });
+});
+
+describe('APPLICATION_PAYLOAD_KEY', () => {
+  it('preserves the exact field-name mapping (constants.js:126-132)', () => {
+    expect(APPLICATION_PAYLOAD_KEY).toEqual({
+      file: 'file',
+      name: 'name',
+      description: 'description',
+      tags: 'tags',
+      type: 'type',
+    });
+  });
+});

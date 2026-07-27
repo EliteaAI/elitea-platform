@@ -1,0 +1,1766 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "skills",
+  "items": [
+    {
+      "id": "ROUTE-013",
+      "domain": "skills",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/skills` renders index redirect",
+      "source": [
+        "apps/elitea-ui/src/routes.js:14",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:174"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /skills",
+        "THEN the index redirect screen is displayed at that URL",
+        "AND guarded: hidden entirely in the Public project (redirects to /chat); index redirects to the first Skills tab"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-013"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-014",
+      "domain": "skills",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/skills/create` renders CreateSkill",
+      "source": [
+        "apps/elitea-ui/src/routes.js:16",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:176"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /skills/create",
+        "THEN the create skill screen is displayed at that URL",
+        "AND guarded: hidden entirely in the Public project (redirects to /chat)"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-014"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-015",
+      "domain": "skills",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/skills/:tab` renders Skills",
+      "source": [
+        "apps/elitea-ui/src/routes.js:15",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:184"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /skills/:tab",
+        "THEN the skills screen is displayed at that URL",
+        "AND guarded: hidden entirely in the Public project (redirects to /chat)"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-015"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-016",
+      "domain": "skills",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/skills/:tab/:skillId` renders EditSkill",
+      "source": [
+        "apps/elitea-ui/src/routes.js:17",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:192"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /skills/:tab/:skillId",
+        "THEN the edit skill screen is displayed at that URL",
+        "AND guarded: hidden entirely in the Public project (redirects to /chat)"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-016"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-068",
+      "domain": "skills",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/skills/:tab/:skillId/:version` renders EditSkill (version child)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:17",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /skills/:tab/:skillId/:version",
+        "THEN the edit skill screen is displayed at that URL",
+        "AND empty child element: the parent renders and reads the version parameter"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-068"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-088",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newSkillId` on /skills/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:74"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab",
+        "WHEN the URL contains the newSkillId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > newSkillId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-089",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newSkillId` on /skills/:tab/:skillId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:74"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab/:skillId",
+        "WHEN the URL contains the newSkillId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > newSkillId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-090",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /skills/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:109",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:68"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab",
+        "WHEN the URL contains the return_url query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-091",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /skills/:tab/:skillId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:109",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:68"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab/:skillId",
+        "WHEN the URL contains the return_url query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-092",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /skills/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:81",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:69"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab",
+        "WHEN the URL contains the source_application_id query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-093",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /skills/:tab/:skillId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:81",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:155",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:69"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /skills/:tab/:skillId",
+        "WHEN the URL contains the source_application_id query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.skills.test.tsx",
+        "testId": "search-params > skills > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-057",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/generate_skill_draft/prompt_lib/{projectId} (generateSkillDraft)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/generateSkillDraftApi.js:5-11"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the generate skill draft operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/generate_skill_draft/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/generateSkillDraftApi.contract.test.ts",
+        "testId": "api > generateSkillDraftApi.js > generateSkillDraft"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-058",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/skills/prompt_lib/{projectId} (skillList)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:59-101"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/skills/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillList"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-059",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/skills/prompt_lib/{projectId} (totalSkills)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:102-112"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the total skills operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/skills/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > totalSkills"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-060",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/skills/prompt_lib/{projectId} (skillCreate)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:113-131"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill create operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/skills/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillCreate"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-061",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillDetails)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:132-154"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/skill/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillDetails"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-062",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillCreateVersion)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:155-180"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill create version operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/skill/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillCreateVersion"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-063",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/skill/prompt_lib/{projectId}/{skillId} (skillUpdate)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:181-203"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill update operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/skill/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillUpdate"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-064",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/skill/prompt_lib/{projectId}/{skillId} (deleteSkill)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:204-239"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete skill operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/skill/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > deleteSkill"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-065",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /elitea_core/skill_default_version/prompt_lib/{projectId}/{skillId} (setSkillDefaultVersion)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:241-256"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the set skill default version operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /elitea_core/skill_default_version/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > setSkillDefaultVersion"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-066",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/skill_export/prompt_lib/{projectId}/{skillId} (skillExportMd)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:258-279"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill export md operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/skill_export/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillExportMd"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-067",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/skill_import/prompt_lib/{projectId} (skillImport)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:282-305"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the skill import operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/skill_import/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > skillImport"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-068",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /elitea_core/skill/prompt_lib/{projectId}/{skillId} (updateSkillRelation)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308-331"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update skill relation operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /elitea_core/skill/prompt_lib/{projectId}/{skillId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > updateSkillRelation"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-069",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/application_skills/prompt_lib/{projectId}/{appVersionId} (getApplicationSkills)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:333-338"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get application skills operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/application_skills/prompt_lib/{projectId}/{appVersionId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > getApplicationSkills"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-070",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/upload_skill_icon/prompt_lib/{projectId} (getSkillIcons)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:340-378"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get skill icons operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/upload_skill_icon/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > getSkillIcons"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-071",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core{/upload_skill_icon/prompt_lib/{projectId}/{versionId}|/upload_skill_icon/prompt_lib/{projectId}} (uploadSkillIcon) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:379-404"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the upload skill icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core{/upload_skill_icon/prompt_lib/{projectId}/{versionId}|/upload_skill_icon/prompt_lib/{projectId}} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > uploadSkillIcon"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-072",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{versionId} (replaceSkillIcon)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:405-448"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the replace skill icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > replaceSkillIcon"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-073",
+      "domain": "skills",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{name} (deleteSkillIcon)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:449-486"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete skill icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/upload_skill_icon/prompt_lib/{projectId}/{name} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/skillsApi.contract.test.ts",
+        "testId": "api > skillsApi.js > deleteSkillIcon"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-033",
+      "domain": "skills",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.skills.upload_icon.post` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:44"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.skills.upload_icon.post",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.skills.upload_icon.post"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-058",
+      "domain": "skills",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Route guard SkillsGuard",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/SkillsGuard.jsx:13-21"
+      ],
+      "acceptance": [
+        "GIVEN the guard condition for SkillsGuard applies",
+        "WHEN a guarded route is visited",
+        "THEN in the Public project every skills route redirects to the chat screen",
+        "AND when the condition does not apply the guarded content renders normally"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes",
+        "testId": "guards > SkillsGuard"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-088",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: generate content streaming via onRegenerateAnswer/onSend/onSubmitEditedMessage",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:475",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:476",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:488",
+        "apps/elitea-ui/src/api/llm.js:6"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to generate content streaming",
+        "THEN a POST request to /elitea_core/predict_llm/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > generateContentStreaming"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-089",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: generate skill draft via onGenerate",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:105",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/generateSkillDraftApi.js:5"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to generate skill draft",
+        "THEN a POST request to /elitea_core/generate_skill_draft/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > generateSkillDraft"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-090",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: set skill default version via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/skills/EditSkill.jsx:267",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:241"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to set skill default version",
+        "THEN a PATCH request to /elitea_core/skill_default_version/prompt_lib/{projectId}/{skillId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > setSkillDefaultVersion"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-091",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: skill create via onApprove/onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:130",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:109",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:113"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to skill create",
+        "THEN a POST request to /elitea_core/skills/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > skillCreate"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-092",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: skill create version via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:98",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:155"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to skill create version",
+        "THEN a POST request to /elitea_core/skill/prompt_lib/{projectId}/{skillId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > skillCreateVersion"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-093",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: skill import via onClick/onClose/onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:37",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:49",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:50",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:282"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to skill import",
+        "THEN a POST request to /elitea_core/skill_import/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > skillImport"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-094",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: skill update via onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:40",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:181"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to skill update",
+        "THEN a PUT request to /elitea_core/skill/prompt_lib/{projectId}/{skillId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > skillUpdate"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-095",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: stop llm task via onStopGeneration",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:490",
+        "apps/elitea-ui/src/api/llm.js:29"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to stop llm task",
+        "THEN a DELETE request to /elitea_core/task/prompt_lib/{projectId}/{task_id} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > stopLlmTask"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-096",
+      "domain": "skills",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on skills: update skill relation via onClick/onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:140",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:121",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update skill relation",
+        "THEN a PATCH request to /elitea_core/skill/prompt_lib/{projectId}/{skillId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions skills\"",
+        "testId": "action > skills > updateSkillRelation"
+      },
+      "unit": "A3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/skills/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-233",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/ApplicationSkills.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/ApplicationSkills.jsx:70"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"skills added.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > ApplicationSkills.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-234",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/CreateSkillTabBar.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:132",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/CreateSkillTabBar.jsx:137"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > CreateSkillTabBar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-235",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: generate-skill-modal/GenerateSkillModal.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillModal.jsx:104"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Describe what your skill should do, its inputs, and expected\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > GenerateSkillModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-236",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: generate-skill-modal/GenerateSkillReviewForm.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillReviewForm.jsx:33",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillReviewForm.jsx:66"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > GenerateSkillReviewForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-237",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: import/SkillImportButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportButton.jsx:32"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Import\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillImportButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-238",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: import/SkillImportModal.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportModal.jsx:39",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/import/SkillImportModal.jsx:102"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Import parameters\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillImportModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-239",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/PrivateSkillsList.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:72",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsList.jsx:73"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"No skills yet\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > PrivateSkillsList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-240",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/PrivateSkillsListEmptyState.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:10",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/PrivateSkillsListEmptyState.jsx:11"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Nothing found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > PrivateSkillsListEmptyState.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-241",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SaveSkillButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillButton.jsx:42"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SaveSkillButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-242",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SaveSkillVersionButton.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:85",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SaveSkillVersionButton.jsx:93"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Save As Version\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SaveSkillVersionButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-243",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: form/CreateSkillForm.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:56",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-details/form/CreateSkillForm.jsx:303"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"Edit mode\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > CreateSkillForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-244",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: skill-row-action/DisabledPublishMenuItem.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-row-action/DisabledPublishMenuItem.jsx:26"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Publish\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > DisabledPublishMenuItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-245",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: skill-row-action/SkillDeleteActionWithDialog.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-row-action/SkillDeleteActionWithDialog.jsx:37"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Delete\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillDeleteActionWithDialog.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-246",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: skill-test-panel/SkillTestPanel.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/skill-test-panel/SkillTestPanel.jsx:487"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Type your message...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillTestPanel.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-247",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillCard.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:51",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillCard.jsx:134"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"Are you sure to remove the\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillCard.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-248",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillControls.jsx (10 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:67",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillControls.jsx:188"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 10 strings from this component (for example \"Share\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillControls.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-249",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillInformation.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:15",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillInformation.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Information\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillInformation.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-250",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillMenu.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:180",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillMenu.jsx:199"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Skill\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillMenu.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-251",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillRowAction.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:102",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillRowAction.jsx:124"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"more\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillRowAction.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-252",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/SkillVersionSelector.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:102",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/SkillVersionSelector.jsx:111"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Versions\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > SkillVersionSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-293",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: skills/CreateSkill.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/skills/CreateSkill.jsx:40"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"New Skill\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > CreateSkill.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-294",
+      "domain": "skills",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: skills/Skills.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/skills/Skills.jsx:51",
+        "apps/elitea-ui/src/[fsd]/pages/skills/Skills.jsx:64"
+      ],
+      "acceptance": [
+        "GIVEN the skills screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Skills\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > skills > Skills.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

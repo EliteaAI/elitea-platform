@@ -97,7 +97,11 @@ func (s *Server) CreateBucket(w http.ResponseWriter, r *http.Request, projectId 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": body.Name})
 }
 
-func (s *Server) EditBucket(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId) {
+// NOTE(W2): editBucket gained the required ?name= query parameter when the
+// spec was aligned to the live handler contract
+// (internal/api/v2/artifacts/handler.go:109-115). Mechanical signature update
+// only; this adapter keeps its pre-existing old_name/new_name body semantics.
+func (s *Server) EditBucket(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, _ generated.EditBucketParams) {
 	var body struct {
 		OldName string `json:"old_name"`
 		NewName string `json:"new_name"`
@@ -182,11 +186,12 @@ func (s *Server) DeleteArtifact(w http.ResponseWriter, r *http.Request, projectI
 }
 
 func (s *Server) DeleteArtifacts(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, bucket string, params generated.DeleteArtifactsParams) {
-	if params.Fnames != nil {
-		for _, fname := range *params.Fnames {
-			path := filepath.Join(s.artifactsDir, projectId, bucket, fname)
-			_ = os.Remove(path) // best-effort delete; response is always 204
-		}
+	// NOTE(W2): the spec parameter was renamed fnames -> fname[] to match the
+	// live handler's query key (internal/api/v2/artifacts/handler.go:330);
+	// mechanical field rename only (Fnames *[]string -> Fname []string).
+	for _, fname := range params.Fname {
+		path := filepath.Join(s.artifactsDir, projectId, bucket, fname)
+		_ = os.Remove(path) // best-effort delete; response is always 204
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

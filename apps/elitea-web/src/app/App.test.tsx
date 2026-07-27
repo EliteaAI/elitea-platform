@@ -1,0 +1,105 @@
+import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { resetConfigForTests } from '@/shared/config/get-config';
+import { DEFAULT_BRAND_PACK } from '@/shared/brand';
+
+import { App } from './App';
+import { AppProviders } from './providers';
+import { installWebStorageShim } from '../test/webstorage';
+
+installWebStorageShim();
+
+const ALL_KEYS = [
+  'VITE_SERVER_URL',
+  'VITE_BASE_URI',
+  'VITE_SOCKET_SERVER',
+  'VITE_SOCKET_PATH',
+  'VITE_PUBLIC_PROJECT_ID',
+] as const;
+
+const g = globalThis as unknown as Record<string, unknown>;
+const realProcessEnv = (g['process'] as { env: Record<string, string | undefined> }).env;
+
+/**
+ * The DOM fingerprint a mounted `AppProviders` leaves behind: a `<style>`
+ * emitted by `CssBaseline` carrying the default pack's real primary colour
+ * (`BrandThemeProvider.test.tsx`'s RED/GREEN (b) technique). This is NOT
+ * `InitColorSchemeScript`'s `<script>` — that component is verified inert
+ * for this app's `createRoot()` bootstrap (see `BrandThemeProvider.tsx`'s
+ * header and its own test), so its absence proves nothing either way about
+ * whether `AppProviders` mounted. No `vi.mock()` involved anywhere in this
+ * file (R-M1 bans it outside `src/**\/__mocks__/`) — this is real, rendered
+ * DOM evidence.
+ */
+function providerFingerprintPresent(): boolean {
+  const styleText = [...document.querySelectorAll('style')].map((s) => s.textContent ?? '').join('\n');
+  return styleText.toLowerCase().includes(`--el-palette-primary-main:${DEFAULT_BRAND_PACK.schemes.dark['primary.main']}`);
+}
+
+beforeEach(() => {
+  resetConfigForTests();
+  for (const key of ALL_KEYS) {
+    delete realProcessEnv[key];
+  }
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetConfigForTests();
+});
+
+describe('App', () => {
+  it('RED (control): when AppProviders IS mounted directly, its DOM fingerprint (brand-colour stylesheet) is present — proves the detection technique below is meaningful, not vacuous', () => {
+    render(
+      <AppProviders>
+        <p>probe</p>
+      </AppProviders>,
+    );
+
+    expect(providerFingerprintPresent()).toBe(true);
+  });
+
+  it('RED/GREEN (d): the config-missing short-circuit still works — MissingEnvPage renders and NONE of AppProviders\' fingerprint appears (F3\'s original gate is preserved, not regressed)', () => {
+    // No VITE_* vars stubbed: getConfig() resolves 'missing' for all three
+    // required keys, exactly like F3's own missing-env-page.test.tsx setup.
+    render(<App />);
+
+    // GREEN: MissingEnvPage's real, byte-exact copy (parity item COPY-468)
+    // renders — the same assertions unit F3's own test makes.
+    expect(screen.getByRole('alert').textContent).toBe('[Error]');
+    expect(screen.getByRole('list')).toBeTruthy();
+
+    // GREEN: the fingerprint the RED control case above proved meaningful is
+    // NOT present — AppProviders (theme/i18n/query client/error boundary)
+    // never mounted.
+    expect(providerFingerprintPresent()).toBe(false);
+  });
+
+  it('mounts AppProviders around the real router when config resolves (the non-missing branch)', async () => {
+    vi.stubEnv('VITE_SERVER_URL', '/api/v2');
+    vi.stubEnv('VITE_BASE_URI', '/app/');
+    vi.stubEnv('VITE_PUBLIC_PROJECT_ID', 'proj-1');
+
+    render(<App />);
+
+    // MissingEnvPage must NOT render on this branch.
+    expect(screen.queryByRole('alert')).toBeNull();
+    // AppProviders mounted: the brand-colour fingerprint is present, proven
+    // meaningful by the RED control case above — same as that case, just
+    // reached through App's real config-ok branch instead of directly.
+    await waitFor(() => expect(providerFingerprintPresent()).toBe(true));
+  });
+
+  it('renders the missing variables in C7 contract order under their old UPPER_CASE names', () => {
+    vi.stubEnv('VITE_BASE_URI', '/app/'); // leave the other two required keys missing
+
+    render(<App />);
+
+    const items = screen.getAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      'VITE_SERVER_URL',
+      'VITE_PUBLIC_PROJECT_ID',
+    ]);
+  });
+});

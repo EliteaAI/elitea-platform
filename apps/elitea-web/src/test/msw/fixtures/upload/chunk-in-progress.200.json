@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): intermediate chunk ack for POST /api/v2/elitea_core/attachments/prompt_lib/{projectId}/{conversationId} (old app: hooks/chat/useUploadWithProgress.js:110-111 normalises ANY response whose JSON.parse(...)[0] is nullish to {in_progress:true} — this fixture models the literal object shape).",
+  "body": { "in_progress": true }
+}

@@ -1,0 +1,117 @@
+import { URL, fileURLToPath } from 'node:url';
+
+import babel from '@rolldown/plugin-babel';
+import { tanstackRouter } from '@tanstack/router-plugin/vite';
+import react, { reactCompilerPreset } from '@vitejs/plugin-react';
+import { defineConfig, type PluginOption, type UserConfig } from 'vite';
+import { viteSingleFile } from 'vite-plugin-singlefile';
+import svgr from 'vite-plugin-svgr';
+import tsconfigPaths from 'vite-tsconfig-paths';
+
+const resolvePath = (p: string): string => fileURLToPath(new URL(p, import.meta.url));
+
+/**
+ * Three build targets (spec §7.4), selected via `vite build --mode <target>`:
+ *
+ *  - (default)      main SPA        base './' (contract C4), outDir dist/app
+ *  - admin          admin module    base '/admin/app/' so the Go adminui handler's
+ *                                   marker substitution and asset serving keep
+ *                                   working unchanged (contract C15), dist/admin
+ *  - maintenance    self-contained  vite-plugin-singlefile inlines everything into
+ *                                   one maintenance.html, dist/maintenance
+ *
+ * Vite keeps NODE_ENV=production for `vite build` regardless of a custom --mode
+ * (mode and NODE_ENV are distinct), so all three outputs are production builds.
+ *
+ * The TanStack Router plugin (unit R1, §2.3/§9.3): file-based routing over
+ * `src/routes/**`, `autoCodeSplitting: true`. Main-app target ONLY — admin
+ * and maintenance are plain single-entry SPAs with no route tree.
+ * `routeFileIgnorePattern` excludes `-`-prefixed helper directories
+ * (`-search/`, `-guards/`, `-ui/`) by TanStack's own default convention
+ * (`routeFileIgnorePrefix` defaults to `"-"`, verified against the
+ * installed `@tanstack/router-generator@1.168.23` — no override needed) and
+ * `__tests__/`, which is NOT excluded by default and must be listed
+ * explicitly.
+ *
+ * `splitBehavior` keeps `/auth-callback` OUT of the split (`[]` = no lazy
+ * chunk for that route, matching old `router.jsx:4`'s eager, non-lazy
+ * import of `AuthCallbackPage` — every other page in the old app is
+ * `ChunkHelpers.lazyWithRetry`-wrapped, this one deliberately is not).
+ */
+export default defineConfig(({ mode }): UserConfig => {
+  const basePlugins: PluginOption[] = [
+    react(),
+    // React Compiler (spec §2.1): plugin-react 6 removed its `babel` option, so
+    // the compiler is wired via @rolldown/plugin-babel + reactCompilerPreset().
+    babel({ presets: [reactCompilerPreset()] }),
+    // svgrOptions.ref (unit S2, §3.7/R-T8): every icon in shared/ui/icons/** is imported via
+    // the `?react` convention and typed as a ref-forwarding component (see
+    // shared/ui/icons/svg-react.d.ts, which overrides the package's default,
+    // non-ref-forwarding `vite-plugin-svgr/client` typings to match).
+    svgr({ svgrOptions: { ref: true } }),
+    tsconfigPaths({ projects: [resolvePath('./tsconfig.json')] }),
+  ];
+
+  if (mode === 'admin') {
+    return {
+      plugins: basePlugins,
+      root: resolvePath('./src/entries/admin'),
+      base: '/admin/app/',
+      publicDir: false,
+      build: {
+        outDir: resolvePath('./dist/admin'),
+        emptyOutDir: true,
+        sourcemap: false,
+      },
+    };
+  }
+
+  if (mode === 'maintenance') {
+    return {
+      plugins: [...basePlugins, viteSingleFile()],
+      root: resolvePath('./src/entries/maintenance'),
+      base: './',
+      publicDir: false,
+      build: {
+        outDir: resolvePath('./dist/maintenance'),
+        emptyOutDir: true,
+        sourcemap: false,
+        rollupOptions: {
+          input: resolvePath('./src/entries/maintenance/maintenance.html'),
+        },
+      },
+    };
+  }
+
+  return {
+    plugins: [
+      // Must run before @vitejs/plugin-react (react()): it rewrites route
+      // files' exports (autoCodeSplitting) before JSX/compiler transforms
+      // see them. Verified via the installed package's own vite.js plugin
+      // ordering example.
+      tanstackRouter({
+        target: 'react',
+        autoCodeSplitting: true,
+        routesDirectory: resolvePath('./src/routes'),
+        generatedRouteTree: resolvePath('./src/routeTree.gen.ts'),
+        // Matches `__tests__/` directories AND colocated `*.test.tsx`
+        // files (e.g. `routes/auth-callback.test.tsx`) — both patterns
+        // appear under src/routes/**; without the second alternative the
+        // generator warns "does not export a Route" for every colocated
+        // test file (harmless — they're excluded from the tree either
+        // way — but noisy, and worth silencing at the source).
+        routeFileIgnorePattern: '(__tests__|\\.test\\.tsx?$)',
+        codeSplittingOptions: {
+          splitBehavior: ({ routeId }) => (routeId === '/auth-callback' ? [] : undefined),
+        },
+      }),
+      ...basePlugins,
+    ],
+    base: './', // contract C4: assets emitted with relative URLs
+    build: {
+      outDir: resolvePath('./dist/app'),
+      emptyOutDir: true,
+      sourcemap: false,
+    },
+  };
+});

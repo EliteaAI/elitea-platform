@@ -1,0 +1,320 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "notifications",
+  "items": [
+    {
+      "id": "ROUTE-062",
+      "domain": "notifications",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/notifications` renders NotificationCenter",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:339",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/notifications",
+        "THEN the notification center screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-062"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-167",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /notifications/notifications/prompt_lib/{projectId} (notificationList)",
+      "source": [
+        "apps/elitea-ui/src/api/notifications.js:13-26"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the notification list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /notifications/notifications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/notifications.contract.test.ts",
+        "testId": "api > notifications.js > notificationList"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-168",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /notifications/notification/prompt_lib/{projectId}/{id} (notificationRead)",
+      "source": [
+        "apps/elitea-ui/src/api/notifications.js:27-33"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the notification read operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /notifications/notification/prompt_lib/{projectId}/{id} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/notifications.contract.test.ts",
+        "testId": "api > notifications.js > notificationRead"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-169",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /notifications/notification/prompt_lib/{projectId}/{id} (notificationDelete)",
+      "source": [
+        "apps/elitea-ui/src/api/notifications.js:34-42"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the notification delete operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /notifications/notification/prompt_lib/{projectId}/{id} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/notifications.contract.test.ts",
+        "testId": "api > notifications.js > notificationDelete"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-170",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /notifications/notifications/prompt_lib/{projectId} (notificationBulkDelete)",
+      "source": [
+        "apps/elitea-ui/src/api/notifications.js:43-50"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the notification bulk delete operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /notifications/notifications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/notifications.contract.test.ts",
+        "testId": "api > notifications.js > notificationBulkDelete"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-171",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /notifications/notifications/prompt_lib/{projectId} (notificationBulkMarkSeen)",
+      "source": [
+        "apps/elitea-ui/src/api/notifications.js:51-58"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the notification bulk mark seen operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /notifications/notifications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/notifications.contract.test.ts",
+        "testId": "api > notifications.js > notificationBulkMarkSeen"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "SOCK-017",
+      "domain": "notifications",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Socket event `notifications_notify` (catalogued)",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:898",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/NotificationButton.jsx:43"
+      ],
+      "acceptance": [
+        "GIVEN an active socket connection on a screen that consumes notifications_notify",
+        "WHEN the server emits notifications_notify",
+        "THEN the visible state updates accordingly without a refetch",
+        "AND a malformed payload is logged and ignored rather than crashing the client"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/socket",
+        "testId": "socket > event > notifications_notify"
+      },
+      "unit": "S5",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/socket/client.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-053",
+      "domain": "notifications",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on notifications: notification bulk delete via onDeleteSelected",
+      "source": [
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:230",
+        "apps/elitea-ui/src/api/notifications.js:43"
+      ],
+      "acceptance": [
+        "GIVEN the notifications screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to notification bulk delete",
+        "THEN a DELETE request to /notifications/notifications/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions notifications\"",
+        "testId": "action > notifications > notificationBulkDelete"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-054",
+      "domain": "notifications",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on notifications: notification bulk mark seen via onMarkToggle",
+      "source": [
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:231",
+        "apps/elitea-ui/src/api/notifications.js:51"
+      ],
+      "acceptance": [
+        "GIVEN the notifications screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to notification bulk mark seen",
+        "THEN a PUT request to /notifications/notifications/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions notifications\"",
+        "testId": "action > notifications > notificationBulkMarkSeen"
+      },
+      "unit": "A11",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/notifications/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-482",
+      "domain": "notifications",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: NotificationCenter/NotificationTable.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:31",
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTable.jsx:239"
+      ],
+      "acceptance": [
+        "GIVEN the notifications screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Type\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > notifications > NotificationTable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-483",
+      "domain": "notifications",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: NotificationCenter/NotificationTableToolbar.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTableToolbar.jsx:36",
+        "apps/elitea-ui/src/pages/NotificationCenter/NotificationTableToolbar.jsx:66"
+      ],
+      "acceptance": [
+        "GIVEN the notifications screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Notifications Center\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > notifications > NotificationTableToolbar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

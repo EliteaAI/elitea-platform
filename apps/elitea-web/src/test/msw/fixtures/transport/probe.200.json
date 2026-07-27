@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-26",
+  "synthetic": true,
+  "note": "Synthetic transport-probe body (unit F4, spec §6.5 R-M2): exercises the §5.4 HTTP-core behaviours against paths no real endpoint serves; no Channel-B capture exists for /__transport__/ probes by design.",
+  "body": { "message": "transport probe ok" }
+}

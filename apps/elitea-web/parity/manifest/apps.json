@@ -1,0 +1,238 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "apps",
+  "items": [
+    {
+      "id": "ROUTE-036",
+      "domain": "apps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/apps` renders Apps",
+      "source": [
+        "apps/elitea-ui/src/routes.js:36",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:228"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /apps",
+        "THEN the apps screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-036"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-037",
+      "domain": "apps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/apps/create` renders CreateToolkit (application mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:40",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:169"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /apps/create",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-037"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-038",
+      "domain": "apps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/apps/create/:appType` renders CreateToolkit (application mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:41",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:230"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /apps/create/:appType",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-038"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-039",
+      "domain": "apps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/apps/:tab` renders Apps",
+      "source": [
+        "apps/elitea-ui/src/routes.js:39",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:231"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /apps/:tab",
+        "THEN the apps screen is displayed at that URL",
+        "AND covers /apps/applications and /apps/catalog"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-039"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-040",
+      "domain": "apps",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/apps/:tab/:appId` renders AppDetail",
+      "source": [
+        "apps/elitea-ui/src/routes.js:42",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:232"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /apps/:tab/:appId",
+        "THEN the app detail screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-040"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-022",
+      "domain": "apps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `view` on /apps/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:48"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /apps/:tab",
+        "WHEN the URL contains the view query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.apps.test.tsx",
+        "testId": "search-params > apps > view"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-023",
+      "domain": "apps",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `view` on /apps/:tab/:appId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:48"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /apps/:tab/:appId",
+        "WHEN the URL contains the view query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.apps.test.tsx",
+        "testId": "search-params > apps > view"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-282",
+      "domain": "apps",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: apps/Apps.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:92",
+        "apps/elitea-ui/src/[fsd]/pages/apps/Apps.jsx:106"
+      ],
+      "acceptance": [
+        "GIVEN the apps screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Applications\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > apps > Apps.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

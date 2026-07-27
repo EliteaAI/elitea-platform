@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): GET /artifacts/s3/{bucket} object list (router.go:166, S3Handler.ListObjects, ROOT-LEVEL — no /api/v2 prefix).",
+  "body": { "objects": [{ "key": "notes.md", "size": 128 }] }
+}

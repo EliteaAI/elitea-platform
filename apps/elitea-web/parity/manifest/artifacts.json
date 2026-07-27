@@ -1,0 +1,1687 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "artifacts",
+  "items": [
+    {
+      "id": "ROUTE-048",
+      "domain": "artifacts",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/artifacts` renders Artifacts",
+      "source": [
+        "apps/elitea-ui/src/routes.js:66",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:244"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /artifacts",
+        "THEN the artifacts screen is displayed at that URL",
+        "AND requires the artifacts view permission"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-048"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-049",
+      "domain": "artifacts",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/artifacts/create-bucket` renders CreateBucket",
+      "source": [
+        "apps/elitea-ui/src/routes.js:67",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:245"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /artifacts/create-bucket",
+        "THEN the create bucket screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-049"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-074",
+      "domain": "artifacts",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route anomaly `/artifacts/edit-bucket` — declared but not mounted, reproduced bug-for-bug",
+      "source": [
+        "apps/elitea-ui/src/routes.js:68",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:386"
+      ],
+      "acceptance": [
+        "GIVEN the application is running with the baseline route table",
+        "WHEN the browser navigates to /artifacts/edit-bucket",
+        "THEN the latent baseline behaviour is reproduced exactly: declared in the route table but never mounted; two segments, so the project-switcher catch-all swallows it and hard-reloads against a project named \"artifacts\"",
+        "AND no redirect, 404 page or new screen is introduced for this path"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-074"
+      },
+      "unit": "R3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/routes/$projectId.$.tsx",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-024",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `bucket` on /artifacts (spec QP-009)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:276",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:377",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:453",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:480",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:533",
+        "apps/elitea-ui/src/utils/shareUtils.js:5"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /artifacts",
+        "WHEN the URL contains the bucket query parameter with a valid value",
+        "THEN the bucket is selected on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.artifacts.test.tsx",
+        "testId": "search-params > artifacts > bucket"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-025",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `file` on /artifacts (spec QP-009)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:161",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:276",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:364",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:531"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /artifacts",
+        "WHEN the URL contains the file query parameter with a valid value",
+        "THEN the file preview opens inside the bucket on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.artifacts.test.tsx",
+        "testId": "search-params > artifacts > file"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-026",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `folder` on /artifacts (spec QP-009)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:532"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /artifacts",
+        "WHEN the URL contains the folder query parameter with a valid value",
+        "THEN the folder is opened inside the bucket on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.artifacts.test.tsx",
+        "testId": "search-params > artifacts > folder"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-027",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `shared_bucket` on /artifacts [write-only URL contract]",
+      "source": [
+        "apps/elitea-ui/src/utils/shareUtils.js:5"
+      ],
+      "acceptance": [
+        "GIVEN the feature that generates links carrying the shared_bucket parameter",
+        "WHEN such a link is produced",
+        "THEN the URL contains shared_bucket with the same value semantics as the baseline",
+        "AND this is a URL contract: the parameter shape must be preserved even though no in-app reader consumes it, because external consumers and shared links depend on it"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.artifacts.test.tsx",
+        "testId": "search-params > artifacts > shared_bucket"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-129",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /artifacts/s3/?{params} (bucketList)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:22-44"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the bucket list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /artifacts/s3/?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen",
+        "AND the request goes to the UN-PREFIXED /artifacts/s3/ path — deliberately not under the /api/v2 base path, because the deployment routes /artifacts/ straight to the backend; this exact un-prefixed shape is a real routing fact and must be preserved"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > bucketList"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-130",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /artifacts/buckets/default/{projectId} (createBucket)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:45-53"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the create bucket operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /artifacts/buckets/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > createBucket"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-131",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /artifacts/buckets/default/{projectId} (editBucket)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:54-62"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the edit bucket operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /artifacts/buckets/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > editBucket"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-132",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /artifacts/buckets/default/{projectId}?name={bucketName} (updateBucketPin)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:63-71"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update bucket pin operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /artifacts/buckets/default/{projectId}?name={bucketName} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > updateBucketPin"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-133",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /artifacts/buckets/default/{projectId}?name={bucket} (deleteBucket)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:72-78"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete bucket operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /artifacts/buckets/default/{projectId}?name={bucket} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > deleteBucket"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-134",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /artifacts/s3/{bucket}?{params} (artifactList)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:79-101"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the artifact list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /artifacts/s3/{bucket}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen",
+        "AND the request goes to the UN-PREFIXED /artifacts/s3/ path — deliberately not under the /api/v2 base path, because the deployment routes /artifacts/ straight to the backend; this exact un-prefixed shape is a real routing fact and must be preserved"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > artifactList"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-135",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /artifacts/artifacts/default/{projectId}/{bucket} (createArtifact)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:102-123"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the create artifact operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /artifacts/artifacts/default/{projectId}/{bucket} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > createArtifact"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-136",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /artifacts/artifact/default/{projectId}/{bucket} (deleteArtifact)",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:124-133"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete artifact operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /artifacts/artifact/default/{projectId}/{bucket} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > deleteArtifact"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-137",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /artifacts/artifacts/default/{projectId}/{bucket}?{expr} (deleteArtifacts) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/artifacts.js:134-166"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete artifacts operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /artifacts/artifacts/default/{projectId}/{bucket}?{expr} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/artifacts.contract.test.ts",
+        "testId": "api > artifacts.js > deleteArtifacts"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-001",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at useArtifactContentFetch.hooks.js:81 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/lib/hooks/useArtifactContentFetch.hooks.js:81"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > useArtifactContentFetch.hooks.js:81"
+      },
+      "unit": "S6",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/upload.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-004",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at utils.jsx:334 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/common/utils.jsx:334"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > utils.jsx:334"
+      },
+      "unit": "S6",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/upload.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-005",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at utils.jsx:390 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/common/utils.jsx:390"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > utils.jsx:390"
+      },
+      "unit": "S6",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/upload.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-006",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Non-REST transport: fetch at utils.jsx:508 [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/common/utils.jsx:508"
+      ],
+      "acceptance": [
+        "GIVEN the feature served by this transport is used",
+        "WHEN the browser performs a raw fetch request",
+        "THEN the request shape, credential mode, URL prefix handling and progress or streaming behaviour match the baseline exactly",
+        "AND failures are reported to the user rather than silently dropped"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/api/upload.test.ts src/shared/api/artifacts.test.ts",
+        "testId": "transport > utils.jsx:508"
+      },
+      "unit": "S6",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/api/upload.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "XPORT-012",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "waived",
+      "title": "Artifact-fetch credentials mode unified under one dynamic rule (waiver W-010)",
+      "source": [
+        "apps/elitea-ui/src/slices/upload.js:117",
+        "apps/elitea-ui/src/common/utils.jsx:390",
+        "apps/elitea-ui/src/common/utils.jsx:508",
+        "apps/elitea-ui/src/[fsd]/features/artifacts/lib/hooks/useArtifactContentFetch.hooks.js:81"
+      ],
+      "acceptance": [
+        "GIVEN the old app's credentials mode was inconsistent across the three near-identical artifact-fetch call sites cited in source — one call unconditionally sent credentials, two sent no credentials option at all, and one explicitly requested credentials",
+        "WHEN the reimplementation issues any request corresponding to one of these old call sites",
+        "THEN a single dynamic rule decides the credentials mode for every one of them: credentials are included when the resolved request origin differs from the page origin, and omitted otherwise",
+        "AND this deliberately replaces the old app's three divergent behaviours with one consistent rule instead of reproducing any of them bug-for-bug; for the pinned same-origin baseline deployment the observable network behaviour is unchanged in all three cases"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-manifest --validate",
+        "testId": "waived > W-010 > artifact-fetch-credentials-mode"
+      },
+      "unit": "S6",
+      "status": "waived",
+      "coverage": {
+        "file": "src/shared/api/artifacts.ts",
+        "min": 95
+      },
+      "waiver": {
+        "reason": "W-010: the old app's credentials mode was inconsistent across three near-identical artifact-fetch call sites — slices/upload.js:117's axios PUT sets withCredentials:true unconditionally; utils.jsx:390 (fetchArtifactBlobUrl) and utils.jsx:508 (downloadArtifactsAsZip) set no credentials option at all; useArtifactContentFetch.hooks.js:81 sets credentials:'include' explicitly. Bug-for-bug (N4) parity would require arbitrarily picking one of three divergent behaviours for what is functionally one request pattern, so shared/api/artifacts.ts unifies all of them under F4's single dynamic same-origin/cross-origin credentials rule instead.",
+        "decidedBy": "S6",
+        "date": "2026-07-27",
+        "replacesBehaviour": "slices/upload.js:117 (unconditional withCredentials:true), utils.jsx:390 + utils.jsx:508 (no credentials option, default 'same-origin'), and useArtifactContentFetch.hooks.js:81 (explicit credentials:'include') — three divergent behaviours replaced by one dynamic same-origin/cross-origin rule"
+      }
+    },
+    {
+      "id": "PERM-001",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.artifacts.create` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:576",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:78",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTableToolbar.jsx:103"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.artifacts.create",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.artifacts.create"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-002",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.artifacts.delete` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:577",
+        "apps/elitea-ui/src/pages/Artifacts/component/ActionsMenu.jsx:99",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTableToolbar.jsx:141"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.artifacts.delete",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.artifacts.delete"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-003",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.artifacts.view` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:578"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.artifacts.view",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.artifacts.view"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-005",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.buckets.delete` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:580"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.buckets.delete",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.buckets.delete"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-006",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.buckets.update` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:581"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.buckets.update",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.buckets.update"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-007",
+      "domain": "artifacts",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.artifacts.buckets.view` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:583"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.artifacts.buckets.view",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.artifacts.buckets.view"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-010",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on artifacts: delete artifact via onConfirm/onDelete",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/index.jsx:508",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTable.jsx:545",
+        "apps/elitea-ui/src/api/artifacts.js:124"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to delete artifact",
+        "THEN a DELETE request to /artifacts/artifact/default/{projectId}/{bucket} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions artifacts\"",
+        "testId": "action > artifacts > deleteArtifact"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-011",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on artifacts: delete artifacts via onDelete/onDeleteArtifacts",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTable.jsx:491",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTable.jsx:545",
+        "apps/elitea-ui/src/api/artifacts.js:134"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to delete artifacts",
+        "THEN a DELETE request to /artifacts/artifacts/default/{projectId}/{bucket}?{expr} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions artifacts\"",
+        "testId": "action > artifacts > deleteArtifacts"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-012",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on artifacts: delete bucket via onDelete",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/Buckets.jsx:221",
+        "apps/elitea-ui/src/api/artifacts.js:72"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to delete bucket",
+        "THEN a DELETE request to /artifacts/buckets/default/{projectId}?name={bucket} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions artifacts\"",
+        "testId": "action > artifacts > deleteBucket"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-013",
+      "domain": "artifacts",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on artifacts: update bucket pin via onPin",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/Buckets.jsx:222",
+        "apps/elitea-ui/src/api/artifacts.js:63"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update bucket pin",
+        "THEN a PATCH request to /artifacts/buckets/default/{projectId}?name={bucketName} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions artifacts\"",
+        "testId": "action > artifacts > updateBucketPin"
+      },
+      "unit": "A8",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/artifacts/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-065",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: FilePreviewCanvas/index.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/index.jsx:513"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Warning\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > index.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-066",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: FilePreviewCanvas/PreviewContent.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewContent.jsx:80",
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewContent.jsx:241"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Loading file content...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > PreviewContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-067",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: FilePreviewCanvas/PreviewHeader.jsx (10 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewHeader.jsx:20",
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewHeader.jsx:261"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 10 strings from this component (for example \"Plain Text\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > PreviewHeader.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-068",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: FilePreviewCanvas/PreviewUnavailable.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewUnavailable.jsx:27",
+        "apps/elitea-ui/src/[fsd]/features/artifacts/ui/FilePreviewCanvas/PreviewUnavailable.jsx:50"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Preview Not Available\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > PreviewUnavailable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-440",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Artifacts/Artifacts.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:710",
+        "apps/elitea-ui/src/pages/Artifacts/Artifacts.jsx:729"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"No buckets created yet\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > Artifacts.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-441",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ActionsMenu.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ActionsMenu.jsx:68",
+        "apps/elitea-ui/src/pages/Artifacts/component/ActionsMenu.jsx:115"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Preview file\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ActionsMenu.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-442",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ArtifactRowActions.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactRowActions.jsx:42",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactRowActions.jsx:65"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Download\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ArtifactRowActions.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-443",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ArtifactTable.jsx (10 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTable.jsx:53",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTable.jsx:572"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 10 strings from this component (for example \"Name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ArtifactTable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-444",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ArtifactTableNoFiles.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTableNoFiles.jsx:36"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Upload files\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ArtifactTableNoFiles.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-445",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ArtifactTableToolbar.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTableToolbar.jsx:88",
+        "apps/elitea-ui/src/pages/Artifacts/component/ArtifactTableToolbar.jsx:123"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Search\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ArtifactTableToolbar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-446",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/BucketInfoTooltip.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/BucketInfoTooltip.jsx:19",
+        "apps/elitea-ui/src/pages/Artifacts/component/BucketInfoTooltip.jsx:69"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Retention Policy:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketInfoTooltip.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-447",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/DuplicateDialogContent.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/DuplicateDialogContent.jsx:104",
+        "apps/elitea-ui/src/pages/Artifacts/component/DuplicateDialogContent.jsx:104"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Show less\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > DuplicateDialogContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-448",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/DuplicateResolutionDialog.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/DuplicateResolutionDialog.jsx:19",
+        "apps/elitea-ui/src/pages/Artifacts/component/DuplicateResolutionDialog.jsx:49"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Resolve duplicates\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > DuplicateResolutionDialog.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-449",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/UploadPathDialog.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/UploadPathDialog.jsx:78",
+        "apps/elitea-ui/src/pages/Artifacts/component/UploadPathDialog.jsx:130"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Path\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > UploadPathDialog.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-450",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: component/ZipDownloadProgressDialog.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/component/ZipDownloadProgressDialog.jsx:18",
+        "apps/elitea-ui/src/pages/Artifacts/component/ZipDownloadProgressDialog.jsx:50"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Downloading files...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > ZipDownloadProgressDialog.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-451",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketContent.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketContent.jsx:67",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketContent.jsx:93"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Loading files...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-452",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketFooter.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketFooter.jsx:16",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketFooter.jsx:32"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Buckets:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketFooter.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-453",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketHeader.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketHeader.jsx:46",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketHeader.jsx:50"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Buckets\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketHeader.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-454",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketItem.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketItem.jsx:137",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketItem.jsx:180"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Upload files\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-455",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketSearch.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketSearch.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Search buckets\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketSearch.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-456",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketsListContent.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketsListContent.jsx:94",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketsListContent.jsx:119"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"No buckets found\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketsListContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-457",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketsPanel.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketsPanel.jsx:129"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Search buckets...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketsPanel.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-458",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/BucketStorageSelector.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketStorageSelector.jsx:54",
+        "apps/elitea-ui/src/pages/Artifacts/Components/BucketStorageSelector.jsx:113"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Select Storage\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > BucketStorageSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-459",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/NewBucketItem.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/NewBucketItem.jsx:98"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"New Bucket...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > NewBucketItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-460",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/SimpleBucketList.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/Components/SimpleBucketList.jsx:107"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"No buckets found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > SimpleBucketList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-461",
+      "domain": "artifacts",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Artifacts/CreateBucket.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Artifacts/CreateBucket.jsx:209",
+        "apps/elitea-ui/src/pages/Artifacts/CreateBucket.jsx:285"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Edit bucket\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > artifacts > CreateBucket.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-020",
+      "domain": "artifacts",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 20: Artifacts bucket lifecycle: create, upload, preview, download, ZIP, delete",
+      "source": [
+        "apps/elitea-ui/src/routes.js:66",
+        "apps/elitea-ui/src/api/artifacts.js:45",
+        "apps/elitea-ui/src/api/artifacts.js:102",
+        "apps/elitea-ui/src/api/artifacts.js:124"
+      ],
+      "acceptance": [
+        "GIVEN the artifacts screen",
+        "WHEN the user creates a bucket, uploads a file, previews and downloads it, multi-downloads as ZIP and deletes it",
+        "THEN each step behaves as in the baseline including the direct storage upload",
+        "AND errors at any step are surfaced without corrupting the bucket view"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-20\"",
+        "testId": "journey > 20 > Artifacts bucket lifecycle: create, upload, preview, download, ZIP, delete"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

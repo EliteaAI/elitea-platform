@@ -1,0 +1,332 @@
+name: CI — Web
+
+# apps/elitea-web quality gates (spec §7.6, unit F2). Replaces ci-ui.yml at
+# cutover step 8 — until then both run side by side. Jobs quality/gates/
+# build/image/parity block PRs; e2e/visual/mutation-spotcheck run only on
+# release tags (non-blocking for PRs, blocking for the release, §6.6).
+#
+# npm ci works here because the lockfile is committed (fixes the old D4);
+# the npm cache is keyed on that lockfile.
+
+on:
+  pull_request:
+    paths:
+      - "apps/elitea-web/**"
+      - "tools/uictl/**"
+      - "services/elitea-main/api/openapi/**"
+      - ".github/workflows/ci-web.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/elitea-web/**"
+      - "tools/uictl/**"
+      - "services/elitea-main/api/openapi/**"
+      - ".github/workflows/ci-web.yml"
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal token scope — these jobs only read the checked-out repo.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/elitea-web
+
+jobs:
+  quality:
+    name: Quality (typecheck, lint, unit, storybook)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint (oxlint + tsgolint + elitea/* + i18next bridge)
+        # --deny-warnings: every rule is pinned error today; the flag is a
+        # tripwire so a future warn-severity rule can never pass CI silently
+        # (package.json is F1's, so the flag rides the CI invocation).
+        run: npm run lint -- --deny-warnings
+      - name: Unit tests (coverage self-arms with the first real unit test)
+        # SELF-ARMING §6.6 coverage gate: the --coverage flag switches on as
+        # soon as a real unit test exists in src/ — excluding src/smoke/
+        # (React-19 compatibility probes) and src/test/ (test infra; §6.3
+        # excludes it from the coverage denominator, so its tests cannot move
+        # the number). vitest.config.ts thresholds are untouched
+        # (autoUpdate:false); nothing here weakens them.
+        run: |
+          if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
+               ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
+            echo "real unit tests present — §6.6 coverage thresholds armed"
+            npm run test:unit -- --run --coverage
+          else
+            echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
+            npm run test:unit -- --run
+          fi
+      - name: Install Playwright browser (Storybook's @storybook/addon-vitest)
+        # Real CI gap, found the first time this job ran end-to-end against
+        # a populated .storybook/ (draft-PR CI hadn't executed before unit
+        # S1 landed): @storybook/addon-vitest launches a real headless
+        # browser for interaction/a11y tests, independently of the plain
+        # vitest `browser` project (which this job never runs — see
+        # package.json's test:unit script) — nothing upstream of this step
+        # installs it. The E2E/visual-regression jobs already do their own
+        # `playwright install`; this is the same fix for the job that was
+        # missing it.
+        run: |
+          if [ -d .storybook ]; then
+            npx playwright install --with-deps chromium
+          fi
+      - name: Storybook tests
+        # The storybook vitest project is stub-commented in vitest.config.ts
+        # exactly as §6.3 shows; unit S1 lands .storybook/ and uncomments it.
+        run: |
+          if [ -d .storybook ]; then
+            npm run test:storybook
+          else
+            echo "storybook project pending (unit S1) — stub per §6.3"
+          fi
+
+  gates:
+    name: Gates (budgets, contracts, depcruise, knip, theme, rule self-test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Rule-layer self-test (every §3.4/§6.5 fence proves RED+GREEN)
+        run: node scripts/check-gates-selftest.mjs
+      - name: Gate-script decision-logic coverage (100%, §9.3 unit F2)
+        # Enforces the 100% floor on scripts/lib/** that vitest.config.ts's
+        # scripts project documents. CLI-scoped so the §6.3 src/** thresholds
+        # are not touched.
+        run: >
+          npx vitest run --config vitest.config.ts --project scripts
+          --coverage.enabled=true --coverage.all=false
+          --coverage.include='scripts/lib/**'
+          --coverage.thresholds.lines=100
+          --coverage.thresholds.functions=100
+          --coverage.thresholds.branches=100
+          --coverage.thresholds.statements=100
+      - name: Generated-client mutator coverage (≥90%, §9.3 unit S4)
+        # src/shared/api/generated/** is blanket-excluded from the §6.3
+        # global coverage denominator (generated code is contract-tested,
+        # not line-covered) — but mutator.ts under that same directory is
+        # HAND-WRITTEN infra (unit S4's eliteaFetch adapter over F4's
+        # HttpClient), not orval output, and carries no coverage floor
+        # anywhere else. CLI-scoped `--coverage.exclude` overrides (does not
+        # append to) vitest.config.ts's array for this invocation only, so
+        # mutator.ts is the one file from that directory actually measured
+        # here; `--coverage.include` narrows the denominator to just it so
+        # the rest of generated/** (orval + backfill output) still doesn't
+        # count against these thresholds. Runs only once the file exists,
+        # matching this job's existing pending-unit convention.
+        run: |
+          if [ -f src/shared/api/generated/mutator.ts ]; then
+            npx vitest run --config vitest.config.ts --project node \
+              src/shared/api/generated/mutator.test.ts \
+              --coverage.enabled=true --coverage.all=false \
+              --coverage.include='src/shared/api/generated/mutator.ts' \
+              --coverage.exclude='src/shared/api/generated/mutator.test.ts' \
+              --coverage.thresholds.lines=90 \
+              --coverage.thresholds.functions=90 \
+              --coverage.thresholds.branches=85 \
+              --coverage.thresholds.statements=90
+          else
+            echo "mutator.ts pending (unit S4)"
+          fi
+      - name: Complexity budgets (§3.5)
+        run: node scripts/check-budgets.mjs
+      - name: Endpoint manifest (R-A5)
+        # Script lands with units S4+W2 (§5.2); the guard fails loudly once
+        # the manifest exists but the checker is missing.
+        run: |
+          if [ -f scripts/check-endpoint-manifest.mjs ]; then
+            node scripts/check-endpoint-manifest.mjs
+          elif [ -f src/shared/api/endpoints.manifest.json ]; then
+            echo "endpoints.manifest.json exists but scripts/check-endpoint-manifest.mjs is missing (R-A5)"; exit 1
+          else
+            echo "endpoint manifest pending (units S4+W2)"
+          fi
+      - name: MSW handler hygiene (R-M2)
+        run: |
+          if [ -f scripts/check-handlers.mjs ]; then
+            node scripts/check-handlers.mjs
+          else
+            echo "check-handlers.mjs pending (unit M1); rule logic proven by the self-test (scripts/lib/mock-rules-core.mjs)"
+          fi
+      - name: Fixture freshness (R-M4)
+        run: |
+          if [ -f scripts/check-fixture-freshness.mjs ]; then
+            node scripts/check-fixture-freshness.mjs
+          else
+            echo "check-fixture-freshness.mjs pending (unit M1); rule logic proven by the self-test"
+          fi
+      - name: Layer + cycle gate (R-L1/R-L2/R-L3, dependency-cruiser)
+        run: npx depcruise src --config .dependency-cruiser.cjs
+      - name: Dead code gate (R-D1, knip)
+        run: npx knip --max-issues 0
+      - name: Theme gate (§4.6)
+        run: npm run theme-gate
+      # [F3] Contract C7b + §9.5 step 9: the removed dev-token keys must be
+      # absent from the BUILT bundle, not just from the runtime config object.
+      # The script never builds (a gate that rebuilds could mask a broken
+      # build), so the bundle is produced here first. It also asserts contract
+      # sentinels are PRESENT, so it cannot pass vacuously on an empty dist/.
+      - name: Build for the bundle-secret scan (C7b)
+        run: npm run build
+      - name: Bundle secrets gate (C7b — no vite_dev_token/dev/bearer in dist)
+        run: node scripts/check-bundle-secrets.mjs
+      - name: Contract coverage (§5.1)
+        # Fails on any VIOLATION (Struct/GenericResponse leakage, unjustified
+        # additionalProperties, a malformed x-elitea-passthrough marker) or a
+        # burn-down ratchet regression against the committed
+        # contract-coverage.lock.json. Reads
+        # ../../services/elitea-main/api/openapi/v2.yaml relative to this
+        # working directory, so the on.paths trigger above must include that
+        # tree for a spec-only PR to run this job.
+        run: node scripts/check-contract-coverage.mjs
+
+  build:
+    name: Build (three entries + bundle budget)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Build (app + admin + maintenance)
+        run: npm run build
+      - name: Bundle budget (§3.5 — 300 KB initial, 250 KB per route chunk)
+        # @lhci/cli is pinned; its config lands when the app has routes to
+        # measure (post-R1). Until then the guard documents the pending gate.
+        run: |
+          if [ -f lighthouserc.json ] || [ -f .lighthouserc.json ]; then
+            npx lhci autorun
+          else
+            echo "lhci bundle budget pending (needs the R1 route tree; §3.5 last two rows)"
+          fi
+      - name: Upload dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: elitea-web-dist
+          path: apps/elitea-web/dist/
+          retention-days: 7
+
+  image:
+    name: Image (bake, no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - name: Bake elitea-web (build only, push happens in publish.yml)
+        working-directory: .
+        run: docker buildx bake elitea-web
+
+  parity:
+    name: Parity (uictl routes + manifest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive # apps/elitea-ui is the pinned parity baseline
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          # uictl has no external deps (no go.sum); key on the workspace sum.
+          cache-dependency-path: go.work.sum
+      # Decision record, "CI parity-gate phasing": on PR this job blocks on
+      # parity-routes + parity-manifest --validate; --require-must runs in the
+      # SAME job but blocks only release tags and cutover/* branches.
+      - name: Route + manifest parity (PR-blocking)
+        working-directory: .
+        run: |
+          go run ./tools/uictl parity-routes --baseline apps/elitea-ui
+          go run ./tools/uictl parity-manifest --validate
+      - name: Require-must parity (release/cutover gate)
+        # TEMPORARY gating (same mechanism as the e2e/visual/mutation jobs):
+        # flips to PR-blocking at cutover step 3 (§7.5) — remove the `if:` so
+        # --require-must blocks every PR from that step on.
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/cutover/')
+        working-directory: .
+        run: go run ./tools/uictl parity-manifest --require-must
+
+  # ── non-blocking on PR, blocking on the release tag (§6.6/§7.6) ──────────
+
+  e2e:
+    name: E2E (release gate)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Playwright against the real stack
+        # On a release tag this MUST exist (unit V1) — a missing suite fails
+        # the release, it does not skip.
+        run: |
+          test -d e2e || { echo "release tag without an e2e suite (unit V1) — refusing"; exit 1; }
+          npx playwright install --with-deps chromium webkit
+          npm run e2e
+
+  visual:
+    name: Visual regression (release gate)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Snapshot suite
+        run: |
+          test -d e2e/visual || { echo "release tag without a visual suite (unit V2) — refusing"; exit 1; }
+          npx playwright install --with-deps chromium
+          npx playwright test --grep @visual
+
+  mutation-spotcheck:
+    name: Mutation spot-check (release gate, §6.7)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Rotating 5% sample over shared/ + entities/
+        run: |
+          test -f scripts/mutate-spotcheck.mjs || { echo "release tag without mutate-spotcheck (unit V3) — refusing"; exit 1; }
+          node scripts/mutate-spotcheck.mjs
