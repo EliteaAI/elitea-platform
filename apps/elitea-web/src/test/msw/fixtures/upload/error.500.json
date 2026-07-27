@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): server-error ack for the upload-failure probe.",
+  "body": { "error": "internal error" }
+}

@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): final-chunk ack — an array whose first element is the assembled attachment's metadata (useUploadWithProgress.js:110-111, response[0]).",
+  "body": [{ "id": "att-1", "filename": "demo.bin", "size": 5242881 }]
+}

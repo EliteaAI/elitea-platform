@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): S3 PutObject ack for PUT /artifacts/s3/{bucket}/{key} (router.go:168, S3Handler.PutObject, ROOT-LEVEL — mounted before the /api/v2 group, no /api/v2 prefix, no Channel-B capture exists for this raw byte-proxy route). Body shape is illustrative only; putArtifactToS3 (shared/api/artifacts.ts) inspects response.ok/status and never this body.",
+  "body": { "etag": "\"synthetic-etag\"" }
+}

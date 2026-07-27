@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-27",
+  "synthetic": true,
+  "note": "Synthetic (unit S6): markdown export body for GET /api/v2/elitea_core/export_import/prompt_lib/{projectId}/{applicationId} (old app: pages/Common/Components/useExport.js:78-101).",
+  "body": "# Exported Agent\n\nSynthetic markdown body."
+}
