@@ -17,6 +17,7 @@ def bind_result_artifact(
     llm_model: index_search_pb2.IndexSearchInputBindingV1 | None,
     llm_configuration: index_search_pb2.IndexSearchInputBindingV1 | None,
     mcp_tokens: index_search_pb2.IndexSearchInputBindingV1 | None,
+    embedding_binding: index_search_pb2.IndexSearchInputBindingV1,
     artifact_id: str,
     immutable_version: str,
     media_type: str,
@@ -36,6 +37,7 @@ def bind_result_artifact(
         or not immutable_version
         or not media_type
         or not classification
+        or not embedding_binding.entry_id
         or byte_length < 0
     ):
         raise InvalidInput("The index-search artifact binding is malformed.")
@@ -46,6 +48,7 @@ def bind_result_artifact(
         input_bundle_digest=_digest(input_bundle_digest),
         toolkit_configuration=toolkit_configuration,
         tool_parameters=tool_parameters,
+        embedding_binding=embedding_binding,
         result_artifact=index_search_pb2.IndexSearchArtifactReferenceV1(
             artifact_id=artifact_id,
             immutable_version=immutable_version,

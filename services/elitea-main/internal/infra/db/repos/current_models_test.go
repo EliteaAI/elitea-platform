@@ -30,14 +30,25 @@ func TestCurrentModelsRepositoryRoutesAuthorizedTenantQuery(t *testing.T) {
 		t.Fatalf("mapped items=%#v", items)
 	}
 	if !reflect.DeepEqual(projects.projectIDs, []int64{7}) || len(projects.options) != 1 ||
-		projects.options[0].IsoLevel != pgx.ReadCommitted || projects.options[0].AccessMode != pgx.ReadOnly {
+		projects.options[0].IsoLevel != pgx.RepeatableRead || projects.options[0].AccessMode != pgx.ReadOnly {
 		t.Fatalf("project transaction ids=%v options=%#v", projects.projectIDs, projects.options)
+	}
+	wantBounds := sqlcgen.GetCurrentModelCatalogBoundsParams{
+		ProjectID: 7, Section: "embedding", SharedOnly: false, LimitRows: currentModelCatalogQueryRows,
 	}
 	wantParams := sqlcgen.ListCurrentModelConfigurationsParams{
 		ProjectID: 7, Section: "embedding", SharedOnly: false, LimitRows: currentModelCatalogQueryRows,
 	}
-	if queries.calls != 1 || !reflect.DeepEqual(queries.params, wantParams) {
-		t.Fatalf("query calls=%d params=%#v", queries.calls, queries.params)
+	if queries.boundCalls != 1 || queries.listCalls != 1 ||
+		!reflect.DeepEqual(queries.boundParams, wantBounds) ||
+		!reflect.DeepEqual(queries.params, wantParams) {
+		t.Fatalf(
+			"bound calls=%d params=%#v list calls=%d params=%#v",
+			queries.boundCalls,
+			queries.boundParams,
+			queries.listCalls,
+			queries.params,
+		)
 	}
 }
 
@@ -219,8 +230,13 @@ func TestCurrentModelsRepositoryValidatesRequestAndBoundsCatalog(t *testing.T) {
 			t.Fatalf("invalid request error=%v", err)
 		}
 	}
-	if queries.calls != 0 || len(projects.projectIDs) != 0 {
-		t.Fatalf("invalid request reached database: calls=%d projects=%v", queries.calls, projects.projectIDs)
+	if queries.boundCalls != 0 || queries.listCalls != 0 || len(projects.projectIDs) != 0 {
+		t.Fatalf(
+			"invalid request reached database: bound=%d list=%d projects=%v",
+			queries.boundCalls,
+			queries.listCalls,
+			projects.projectIDs,
+		)
 	}
 
 	label := "Model"
@@ -232,6 +248,9 @@ func TestCurrentModelsRepositoryValidatesRequestAndBoundsCatalog(t *testing.T) {
 	if !errors.Is(err, errCurrentModelCatalogTooLarge) {
 		t.Fatalf("catalog limit error=%v", err)
 	}
+	if queries.listCalls != 0 {
+		t.Fatalf("oversized row catalog was materialized: list calls=%d", queries.listCalls)
+	}
 
 	oversizedData := `{"name":"model","padding":"` +
 		strings.Repeat("x", maxCurrentModelCatalogBytes) + `"}`
@@ -241,6 +260,9 @@ func TestCurrentModelsRepositoryValidatesRequestAndBoundsCatalog(t *testing.T) {
 	_, err = repository.List(context.Background(), 7, configurationapp.CurrentModelSectionEmbedding, false)
 	if !errors.Is(err, errCurrentModelCatalogTooLarge) {
 		t.Fatalf("catalog byte limit error=%v", err)
+	}
+	if queries.listCalls != 0 {
+		t.Fatalf("oversized JSONB row was materialized: list calls=%d", queries.listCalls)
 	}
 }
 
@@ -297,17 +319,44 @@ func (s *currentModelProjectStore) WithinProjectTx(_ context.Context, projectID 
 }
 
 type currentModelQueriesStub struct {
-	rows   []sqlcgen.ListCurrentModelConfigurationsRow
-	err    error
-	params sqlcgen.ListCurrentModelConfigurationsParams
-	calls  int
+	rows        []sqlcgen.ListCurrentModelConfigurationsRow
+	err         error
+	boundParams sqlcgen.GetCurrentModelCatalogBoundsParams
+	params      sqlcgen.ListCurrentModelConfigurationsParams
+	boundCalls  int
+	listCalls   int
+}
+
+func (s *currentModelQueriesStub) GetCurrentModelCatalogBounds(
+	_ context.Context,
+	params sqlcgen.GetCurrentModelCatalogBoundsParams,
+) (sqlcgen.GetCurrentModelCatalogBoundsRow, error) {
+	s.boundCalls++
+	s.boundParams = params
+	if s.err != nil {
+		return sqlcgen.GetCurrentModelCatalogBoundsRow{}, s.err
+	}
+	rows := s.rows
+	if len(rows) > int(params.LimitRows) {
+		rows = rows[:params.LimitRows]
+	}
+	var bounds sqlcgen.GetCurrentModelCatalogBoundsRow
+	bounds.RowCount = int64(len(rows))
+	for _, row := range rows {
+		projected := int64(len(row.Data) + len(row.EliteaTitle) + len(row.Section))
+		if row.Label != nil {
+			projected += int64(len(*row.Label))
+		}
+		bounds.ProjectedBytes += projected
+	}
+	return bounds, nil
 }
 
 func (s *currentModelQueriesStub) ListCurrentModelConfigurations(
 	_ context.Context,
 	params sqlcgen.ListCurrentModelConfigurationsParams,
 ) ([]sqlcgen.ListCurrentModelConfigurationsRow, error) {
-	s.calls++
+	s.listCalls++
 	s.params = params
 	return s.rows, s.err
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/litellm"
 )
@@ -119,5 +120,112 @@ INSERT INTO p_1.configuration (
 	}
 	if calls.Load() != 4 {
 		t.Fatalf("unexpected LiteLLM calls=%d", calls.Load())
+	}
+}
+
+func TestPostgresServiceBackedCurrentModelCatalogBoundsBeforeJSONProjection(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO centry.project (id, create_success, suspended)
+VALUES (2, TRUE, FALSE);
+CREATE SCHEMA p_2;
+CREATE TABLE p_2.configuration (LIKE p_1.configuration INCLUDING ALL);
+INSERT INTO p_2.configuration (
+    uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+)
+SELECT gen_random_uuid(),
+       2,
+       'Embedding ' || value,
+       'embedding_' || value,
+       'embedding_model',
+       'embedding',
+       jsonb_build_object(
+           'name', 'embedding-' || value,
+           'padding', repeat('x', 220 * 1024)
+       ),
+       '{}'::jsonb,
+       false,
+       true,
+       'user'
+FROM generate_series(1, 40) AS value`); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewCurrentModelsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.List(
+		ctx,
+		2,
+		configurationapp.CurrentModelSectionEmbedding,
+		false,
+	); !errors.Is(err, errCurrentModelCatalogTooLarge) {
+		t.Fatalf("oversized projected catalog error=%v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+TRUNCATE p_2.configuration RESTART IDENTITY;
+INSERT INTO p_2.configuration (
+    uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+)
+SELECT gen_random_uuid(),
+       2,
+       'Embedding ' || value,
+       'embedding_' || value,
+       'embedding_model',
+       'embedding',
+       jsonb_build_object('name', 'embedding-' || value),
+       '{}'::jsonb,
+       false,
+       true,
+       'user'
+FROM generate_series(1, 10001) AS value`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.List(
+		ctx,
+		2,
+		configurationapp.CurrentModelSectionEmbedding,
+		false,
+	); !errors.Is(err, errCurrentModelCatalogTooLarge) {
+		t.Fatalf("oversized row-count catalog error=%v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+TRUNCATE p_2.configuration RESTART IDENTITY;
+INSERT INTO p_2.configuration (
+    uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+) VALUES (
+    gen_random_uuid(),
+    2,
+    'Large but admitted embedding',
+    'large_but_admitted_embedding',
+    'embedding_model',
+    'embedding',
+    jsonb_build_object(
+        'name', 'large-but-admitted',
+        'padding', repeat('x', 300 * 1024)
+    ),
+    '{}'::jsonb,
+    false,
+    true,
+    'user'
+)`); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(
+		ctx,
+		2,
+		configurationapp.CurrentModelSectionEmbedding,
+		false,
+	)
+	if err != nil || len(items) != 1 || items[0].Name != "large-but-admitted" {
+		t.Fatalf("parity-preserved large model item=%#v err=%v", items, err)
 	}
 }

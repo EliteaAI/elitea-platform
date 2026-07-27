@@ -125,7 +125,9 @@ configuration validation remains version `1`. The new worker advertises index
 version `2` and rejects an index version `1` envelope during command
 verification, before claim or input fetch. Deployment must therefore drain or
 terminally reconcile version `1` index work before enabling Main version `2`;
-the shared stream is not a mixed-version routing mechanism.
+the source stream is not a mixed-version routing mechanism. Version `2` uses a
+new versioned stream and consumer group after the version-`1` route is proven
+empty.
 
 Pre-binding rows without the entry remain valid only when their frozen toolkit
 snapshot does not declare an embedding model. A row that declares an embedding
@@ -134,6 +136,33 @@ Historical search/list/stepback validation returns
 typed `LEGACY_EMBEDDING_BINDING_MISSING`; it must not re-resolve today's
 mutable default. Other typed failures cover stale generation, scope, model,
 model-project and configuration mismatches.
+
+`BuildHistoricalEmbeddingInventory` is the source-only mount preflight for
+those operations. Coverage means enumerating every distinct non-empty
+`cmetadata.collection` from vector rows, not merely rows whose type is
+`index_meta`; this preserves current `list_indexes` and empty-`index_name`
+search/stepback behavior. A generation is exact only when its external
+metadata identity matches exactly one durable Main execution/index job and
+exactly one immutable input-bundle entry with semantic role
+`index.embedding_binding`, with valid content digest and binding schema.
+`ExactHistoricalEmbeddingBackfill` can copy only that already-persisted
+reference and non-secret record into a future association. It never resolves
+the current model catalog, LiteLLM route, toolkit setting, vector dimension,
+or configuration as a substitute.
+
+Missing or duplicate metadata, incomplete execution linkage, absent or
+ambiguous binding entries, malformed content, and every current-baseline
+generation without exact evidence are `REINDEX_REQUIRED`. An operator
+approval is bound to the exact project/toolkit/index/generation and source
+metadata digest, so a changed inventory invalidates the approval. Approval
+records operator intent only: it never makes old vector data searchable.
+Search, list, and stepback mounting remains blocked when collection coverage is
+incomplete, any item is unresolved, or any item remains
+`REINDEX_REQUIRED`. After reindexing, a fresh complete inventory must prove the
+replacement generation's exact immutable evidence. The inventory contract is implemented and unit tested, but its
+external PgVector collection enumerator and central evidence repository are
+not yet composed; therefore this document does not claim those routes are
+mountable.
 
 ## Index admission authorization evidence
 
@@ -155,6 +184,8 @@ credentials.
 | `go test ./internal/application/indexsearch` | Go unit: identity/input binding, operation allowlist, no control-plane content leak, exact model-project/configuration compatibility. |
 | `go test ./internal/application/indexing ./internal/infra/db/repos ./internal/infra/litellm ./internal/transport/redisdispatch ./internal/transport/runtimegrpc/control` | Go unit: exact project/public/raw route, default tuple retention, canonical non-secret digest, shared Go/Python validation fixture, ambiguity/fail-closed cases, bounded catalog and Redis reference contracts, and capability-specific version verification. |
 | `go test -race ./internal/infra/db/repos -run TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM` with `ELITEA_TEST_DATABASE_URL` | Real PostgreSQL tenant schemas plus fake authenticated LiteLLM: caller miss, public hit, exact saved public configuration, and private-public denial. No deployment/provider/version/dimension claim is made. |
+| `go test -race ./internal/infra/db/repos -run TestPostgresServiceBackedCurrentModelCatalogBoundsBeforeJSONProjection` with `ELITEA_TEST_DATABASE_URL` | Real PostgreSQL rejects a projected catalog above 8 MiB and the 10,001st row before sqlc materializes JSONB, while retaining the current-valid 300 KiB single-row case. The bounds/list pair uses one read-only REPEATABLE READ snapshot. |
+| `go test ./internal/application/indexsearch -run TestHistoricalEmbeddingInventory` | Source-only historical collection gate: complete coverage, exact immutable evidence, digest-bound reindex intent, no synthesis from current state, and list/global-search/stepback blocking until a fresh inventory proves the replacement generation. It does not claim the external inventory is composed. |
 | `go test -race ./internal/application/indexing ./internal/api/v2/indexing ./internal/runtimecomposition` | Race-enabled admission/default/composition, production index capability version `2`, and safe HTTP error behavior. |
 | `go test ./internal/api/v2/indexsearch` | Go HTTP component: exact current path/permission/event, trusted-auth and dynamic project-RBAC-before-body ordering, opaque async/await response envelopes, timeout cancellation intent, and unsupported-operation rejection. |
 | `go test ./tests/contract` | Go protobuf contract: decodes the deterministic command bytes created by the checked Python binding. |
@@ -162,7 +193,8 @@ credentials.
 | `pytest tests/unit/test_indexing.py tests/integration/test_index_ingest_delivery.py` | Python worker: shared binding validation, exact manifest reference/digest, unchanged raw SDK model name, terminal echo, version-`1` pre-claim rejection, pre-binding/mismatch rejection, and absence of binding content from Redis. |
 | `pytest tests/parity/test_sdk_lock.py tests/parity/test_index_ingest_current_parity.py` | Exact current SDK baseline: distribution `0.8.30`, source revision `48c51a16634a9924f6c5d5313c3bacedb0b5b56b`, admitted dependency surface, and the single current indexing call boundary. |
 | `pytest tests/integration/test_index_search_protocol_contract.py` | Python-to-Go wire fixture producer; this is language binding interoperability, not a deployed worker integration. |
-| `ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST=1 go test ./services/elitea-main/tests/system -run TestIndexEmbeddingBindingMainWorkerCrossProcess` | Real Go-to-Python process boundary: Main default owner tuple and project/public/raw observation, production Ed25519 signing/authentication, stale index version `1` rejection before claim, version `2` reaching claim, exact binding-reference digest, and no model/credential/deployment content in the control envelope. It does not contact Redis, PostgreSQL, LiteLLM, PgVector or a provider. |
+| `ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST=1 go test ./services/elitea-main/tests/system -run TestIndexEmbeddingBindingMainWorkerCrossProcess` | Real Go-to-Python process boundary: Main default owner tuple and project/public/raw observation, production Ed25519 signing/authentication, stale index version `1` rejection before claim, version `2` reaching claim, exact binding-reference digest, and no model/credential/deployment content in the control envelope. CI installs the exact worker-locked SDK source before running it. It does not contact Redis, PostgreSQL, LiteLLM, PgVector or a provider. |
+| `index-v2-preflight --spool-root ...` | Operator gate against the stopped version-1 release configuration: zero live v1 jobs, unretired outbox rows, unreleased claims, source stream entries, PEL entries, delivery mappings, and files in every old worker replica's private durable spool root. Any missing reader/group/root or dependency failure blocks. |
 
 ## Explicit remaining work before mounting
 
@@ -186,12 +218,47 @@ credentials.
    route bounds body size and returns reviewed typed errors, while the current
    Flask endpoint has Pydantic coercion/raw validation and lets an invalid
    timeout conversion escape its generic exception branch.
-7. Before rolling out index capability version `2`, stop new version-`1`
-   admission and drain or terminally reconcile all version-`1` index jobs and
-   pending stream entries. Main and workers must then be enabled at version
-   `2` together; mixed-version delivery is intentionally rejected.
+7. Treat capability `1` to `2` as a coordinated cutover, never a mixed rolling
+   deployment:
+
+   1. Close indexing admission at ingress and scale every version-`1` Main
+      producer to zero. Keep version-`1` workers running while already-admitted
+      work drains.
+   2. Recover or terminally reconcile every version-`1` job through the normal
+      durable state machine. Do not delete job, outbox, claim, stream, delivery
+      mapping, or spool rows/files by hand.
+   3. After database and source Redis work are empty, stop all version-`1`
+      workers. Mount every stopped replica's durable spool root read-only into
+      the preflight job.
+   4. Run the command below with `DATABASE_URL` and the old version-`1`
+      release's authenticated Redis/TLS configuration. It must exit zero and
+      report only zero counts. Re-run it after any reconciliation:
+
+      ```bash
+      index-v2-preflight \
+        --spool-root /mnt/worker-0/output-spool \
+        --spool-root /mnt/worker-1/output-spool
+      ```
+
+   5. Deploy every version-`2` worker against a new versioned stream and
+      consumer group while admission remains closed. Verify worker health and
+      capability `2`.
+   6. Deploy version-`2` Main against that same new route, verify health, then
+      and only then reopen indexing admission.
+
+   Before step 6 admits any version-`2` command, rollback is: stop version-`2`
+   Main/workers, restore the version-`1` workers and Main with their old route,
+   verify health, then reopen admission. After any version-`2` command is
+   admitted, binary rollback to version `1` is prohibited: freeze admission,
+   drain or terminally reconcile version `2`, and roll forward or execute a
+   separately reviewed symmetric cutover. Never attach a version-`1` worker to
+   a version-`2` stream or vice versa.
 8. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
    and reliability tests. None are claimed by this source-only slice.
-9. Run the mounted flow against the production-equivalent LiteLLM deployment
+9. Compose the historical collection enumerator and immutable central evidence
+   loader, produce a complete inventory, and reindex every
+   `REINDEX_REQUIRED` collection before mounting search/list/stepback. Current
+   Configurations or LiteLLM state is never acceptable backfill evidence.
+10. Run the mounted flow against the production-equivalent LiteLLM deployment
    and UI before release; this source repository test slice does not claim a
    browser/deployment checkpoint.

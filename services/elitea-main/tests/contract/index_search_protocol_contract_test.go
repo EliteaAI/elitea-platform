@@ -12,7 +12,7 @@ import (
 // services/elitea-worker-python/tests/integration/test_index_search_protocol_contract.py.
 // It proves wire compatibility only; it does not claim a mounted worker path.
 func TestIndexSearchCommandPythonWireFixture(t *testing.T) {
-	encoded, err := hex.DecodeString("08011207746f6f6c6b69741a06706172616d7322096c6c6d2d6d6f64656c2a0a6c6c6d2d636f6e666967320a6d63702d746f6b656e73")
+	encoded, err := hex.DecodeString("08011207746f6f6c6b69741a06706172616d7322096c6c6d2d6d6f64656c2a0a6c6c6d2d636f6e666967320a6d63702d746f6b656e733a4b0a11656d62656464696e672d62696e64696e6712107368613235363a656d62656464696e671a24080112206565656565656565656565656565656565656565656565656565656565656565")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestIndexSearchCommandPythonWireFixture(t *testing.T) {
 	if err := proto.Unmarshal(encoded, command); err != nil {
 		t.Fatal(err)
 	}
-	if command.GetOperation() != runtimev1.IndexSearchOperationV1_INDEX_SEARCH_OPERATION_V1_SEARCH_INDEX || command.GetToolkitConfigurationEntryId() != "toolkit" || command.GetToolParametersEntryId() != "params" || command.GetLlmModelEntryId() != "llm-model" || command.GetLlmConfigurationEntryId() != "llm-config" || command.GetMcpTokensEntryId() != "mcp-tokens" {
+	if command.GetOperation() != runtimev1.IndexSearchOperationV1_INDEX_SEARCH_OPERATION_V1_SEARCH_INDEX || command.GetToolkitConfigurationEntryId() != "toolkit" || command.GetToolParametersEntryId() != "params" || command.GetLlmModelEntryId() != "llm-model" || command.GetLlmConfigurationEntryId() != "llm-config" || command.GetMcpTokensEntryId() != "mcp-tokens" || command.GetEmbeddingBinding().GetEntryId() != "embedding-binding" || len(command.GetEmbeddingBinding().GetContentDigest().GetValue()) != 32 {
 		t.Fatalf("unexpected Python command fixture: %+v", command)
 	}
 }

@@ -29,6 +29,7 @@ var (
 )
 
 type currentModelQueries interface {
+	GetCurrentModelCatalogBounds(context.Context, sqlcgen.GetCurrentModelCatalogBoundsParams) (sqlcgen.GetCurrentModelCatalogBoundsRow, error)
 	ListCurrentModelConfigurations(context.Context, sqlcgen.ListCurrentModelConfigurationsParams) ([]sqlcgen.ListCurrentModelConfigurationsRow, error)
 }
 
@@ -79,12 +80,27 @@ func (r *CurrentModelsRepository) List(
 
 	rows := []sqlcgen.ListCurrentModelConfigurationsRow{}
 	err := r.projects.WithinProjectTx(ctx, int64(projectID), pgx.TxOptions{
-		IsoLevel:   pgx.ReadCommitted,
+		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
 	}, func(tx sqlExecutor) error {
 		queries, err := r.queries(tx)
 		if err != nil {
 			return err
+		}
+		bounds, err := queries.GetCurrentModelCatalogBounds(ctx, sqlcgen.GetCurrentModelCatalogBoundsParams{
+			ProjectID:  projectID,
+			Section:    string(section),
+			SharedOnly: sharedOnly,
+			LimitRows:  currentModelCatalogQueryRows,
+		})
+		if err != nil {
+			return fmt.Errorf("bound current model configurations: %w", err)
+		}
+		if bounds.RowCount > maxCurrentModelCatalogRows ||
+			bounds.ProjectedBytes > maxCurrentModelCatalogBytes ||
+			bounds.RowCount < 0 ||
+			bounds.ProjectedBytes < 0 {
+			return errCurrentModelCatalogTooLarge
 		}
 		rows, err = queries.ListCurrentModelConfigurations(ctx, sqlcgen.ListCurrentModelConfigurationsParams{
 			ProjectID:  projectID,
@@ -103,6 +119,10 @@ func (r *CurrentModelsRepository) List(
 	if len(rows) > maxCurrentModelCatalogRows {
 		return nil, errCurrentModelCatalogTooLarge
 	}
+	// This is a defensive invariant check, not the memory bound. The generated
+	// aggregate query above rejects an oversized snapshot before any JSONB row
+	// is transferred into this process, and REPEATABLE READ keeps the checked
+	// and projected snapshots identical.
 	totalBytes := 0
 	for _, row := range rows {
 		rowBytes := len(row.Data) + len(row.EliteaTitle) + len(row.Section)

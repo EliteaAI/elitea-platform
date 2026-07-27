@@ -314,6 +314,72 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 	}
 }
 
+func TestRedisStreamServiceBackedIndexV2CutoverState(t *testing.T) {
+	address := os.Getenv(redisServiceTestAddressEnv)
+	if address == "" {
+		t.Skipf("set %s to run the real-Redis integration test", redisServiceTestAddressEnv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := redis.NewClient(&redis.Options{
+		Addr:         address,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		MaxRetries:   0,
+	})
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close Redis client: %v", err)
+		}
+	}()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("ping Redis service at %s: %v", address, err)
+	}
+	stream := fmt.Sprintf("elitea:test:index-v2-cutover:%d", time.Now().UnixNano())
+	group := "elitea-indexer-worker-v1"
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cleanupCancel()
+		if err := client.Del(cleanupCtx, stream, deliveryIndexKey(stream)).Err(); err != nil {
+			t.Errorf("delete Redis cutover test state: %v", err)
+		}
+	}()
+	if err := client.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := NewIndexV2CutoverReader(client, stream, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := reader.ReadIndexControlState(ctx)
+	if err != nil || state.StreamEntries != 0 || state.PendingEntries != 0 || state.DeliveryMappings != 0 {
+		t.Fatalf("clean service-backed state=%+v err=%v", state, err)
+	}
+	entryID, err := client.XAdd(ctx, &redis.XAddArgs{
+		Stream: stream,
+		Values: map[string]any{redisEnvelopeField: "signed-v1"},
+	}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.HSet(ctx, deliveryIndexKey(stream), "outbox-v1", entryID).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    group,
+		Consumer: "worker-v1",
+		Streams:  []string{stream, ">"},
+		Count:    1,
+	}).Result(); err != nil {
+		t.Fatal(err)
+	}
+	state, err = reader.ReadIndexControlState(ctx)
+	if err != nil || state.StreamEntries != 1 || state.PendingEntries != 1 || state.DeliveryMappings != 1 {
+		t.Fatalf("outstanding service-backed state=%+v err=%v", state, err)
+	}
+}
+
 type redisServiceHMACSigner struct{}
 
 func (redisServiceHMACSigner) SignWorkerCommand(_ context.Context, command []byte) (Signature, error) {

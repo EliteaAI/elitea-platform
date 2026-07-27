@@ -125,7 +125,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		return nil, fmt.Errorf("load content listener TLS: %w", err)
 	}
 
-	controlRedis, err := newControlRedisClient(ctx, config)
+	controlRedis, err := NewControlRedisClient(ctx, config)
 	if err != nil {
 		return nil, err
 	}

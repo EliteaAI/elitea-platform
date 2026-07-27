@@ -103,6 +103,23 @@ LIMIT sqlc.arg('limit_rows')::integer;
 -- Raw data is intentional: the Go adapter performs type-safe, redacted
 -- decoding before applying section-specific response shaping. ID order gives
 -- duplicate candidates a deterministic baseline order.
+-- name: GetCurrentModelCatalogBounds :one
+SELECT count(*)::bigint AS row_count,
+       COALESCE(sum(candidate.projected_bytes), 0)::bigint AS projected_bytes
+FROM (
+    SELECT octet_length(data::text)::bigint
+             + octet_length(elitea_title)
+             + octet_length(section)
+             + COALESCE(octet_length(label), 0) AS projected_bytes
+    FROM configuration
+    WHERE project_id = sqlc.arg('project_id')::integer
+      AND section = sqlc.arg('section')::text
+      AND status_ok = true
+      AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
+    ORDER BY id ASC
+    LIMIT sqlc.arg('limit_rows')::integer
+) AS candidate;
+
 -- name: ListCurrentModelConfigurations :many
 SELECT id,
        project_id,

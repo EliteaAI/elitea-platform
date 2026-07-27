@@ -54,6 +54,10 @@ type Querier interface {
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
 	GetCurrentConfigurationRenameToolkit(ctx context.Context, arg GetCurrentConfigurationRenameToolkitParams) (GetCurrentConfigurationRenameToolkitRow, error)
+	// Raw data is intentional: the Go adapter performs type-safe, redacted
+	// decoding before applying section-specific response shaping. ID order gives
+	// duplicate candidates a deterministic baseline order.
+	GetCurrentModelCatalogBounds(ctx context.Context, arg GetCurrentModelCatalogBoundsParams) (GetCurrentModelCatalogBoundsRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.
 	GetCurrentToolkit(ctx context.Context, toolkitID int32) (EliteaTool, error)
@@ -86,9 +90,6 @@ type Querier interface {
 	// current UI contract. The caller caps limit_rows at the 257-row sentinel.
 	ListCurrentConfigurationTypes(ctx context.Context, arg ListCurrentConfigurationTypesParams) ([]string, error)
 	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
-	// Raw data is intentional: the Go adapter performs type-safe, redacted
-	// decoding before applying section-specific response shaping. ID order gives
-	// duplicate candidates a deterministic baseline order.
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
 	ListCurrentProjectAuthors(ctx context.Context, projectID int32) ([]ListCurrentProjectAuthorsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)

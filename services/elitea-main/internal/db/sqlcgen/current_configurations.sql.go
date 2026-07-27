@@ -268,6 +268,51 @@ func (q *Queries) GetCurrentConfiguration(ctx context.Context, arg GetCurrentCon
 	return i, err
 }
 
+const getCurrentModelCatalogBounds = `-- name: GetCurrentModelCatalogBounds :one
+SELECT count(*)::bigint AS row_count,
+       COALESCE(sum(candidate.projected_bytes), 0)::bigint AS projected_bytes
+FROM (
+    SELECT octet_length(data::text)::bigint
+             + octet_length(elitea_title)
+             + octet_length(section)
+             + COALESCE(octet_length(label), 0) AS projected_bytes
+    FROM configuration
+    WHERE project_id = $1::integer
+      AND section = $2::text
+      AND status_ok = true
+      AND (NOT $3::boolean OR shared = true)
+    ORDER BY id ASC
+    LIMIT $4::integer
+) AS candidate
+`
+
+type GetCurrentModelCatalogBoundsParams struct {
+	ProjectID  int32  `db:"project_id" json:"project_id"`
+	Section    string `db:"section" json:"section"`
+	SharedOnly bool   `db:"shared_only" json:"shared_only"`
+	LimitRows  int32  `db:"limit_rows" json:"limit_rows"`
+}
+
+type GetCurrentModelCatalogBoundsRow struct {
+	RowCount       int64 `db:"row_count" json:"row_count"`
+	ProjectedBytes int64 `db:"projected_bytes" json:"projected_bytes"`
+}
+
+// Raw data is intentional: the Go adapter performs type-safe, redacted
+// decoding before applying section-specific response shaping. ID order gives
+// duplicate candidates a deterministic baseline order.
+func (q *Queries) GetCurrentModelCatalogBounds(ctx context.Context, arg GetCurrentModelCatalogBoundsParams) (GetCurrentModelCatalogBoundsRow, error) {
+	row := q.db.QueryRow(ctx, getCurrentModelCatalogBounds,
+		arg.ProjectID,
+		arg.Section,
+		arg.SharedOnly,
+		arg.LimitRows,
+	)
+	var i GetCurrentModelCatalogBoundsRow
+	err := row.Scan(&i.RowCount, &i.ProjectedBytes)
+	return i, err
+}
+
 const insertCurrentConfiguration = `-- name: InsertCurrentConfiguration :one
 INSERT INTO configuration (
     uuid, project_id, label, elitea_title, type, section, data, meta, shared,
@@ -674,9 +719,6 @@ type ListCurrentModelConfigurationsRow struct {
 	Shared      bool    `db:"shared" json:"shared"`
 }
 
-// Raw data is intentional: the Go adapter performs type-safe, redacted
-// decoding before applying section-specific response shaping. ID order gives
-// duplicate candidates a deterministic baseline order.
 func (q *Queries) ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error) {
 	rows, err := q.db.Query(ctx, listCurrentModelConfigurations,
 		arg.ProjectID,

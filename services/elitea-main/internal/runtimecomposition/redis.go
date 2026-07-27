@@ -10,7 +10,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newControlRedisClient(ctx context.Context, config Config) (*redis.Client, error) {
+// NewControlRedisClient opens the dedicated, authenticated TLS Redis client
+// used by runtime composition and coordinated operator preflight commands.
+func NewControlRedisClient(ctx context.Context, config Config) (*redis.Client, error) {
 	options, err := controlRedisOptions(config)
 	if err != nil {
 		return nil, err

@@ -102,6 +102,7 @@ def test_artifact_result_binds_opaque_current_result_to_exact_inputs() -> None:
         llm_model=None,
         llm_configuration=None,
         mcp_tokens=None,
+        embedding_binding=binding,
         artifact_id="artifact-1",
         immutable_version="sha256:artifact",
         media_type="application/vnd.elitea.index-search-result.v1+json",
@@ -112,6 +113,7 @@ def test_artifact_result_binds_opaque_current_result_to_exact_inputs() -> None:
 
     assert result.operation == index_search_pb2.INDEX_SEARCH_OPERATION_V1_SEARCH_INDEX
     assert result.toolkit_configuration.entry_id == "toolkit"
+    assert result.embedding_binding.entry_id == "toolkit"
     assert result.result_artifact.artifact_id == "artifact-1"
     assert bytes(result.result_artifact.digest.value) == b"a" * 32
 

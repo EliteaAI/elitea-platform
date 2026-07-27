@@ -117,7 +117,7 @@ jobs:
         run: >-
           go test -race -count=1
           ./services/elitea-main/internal/transport/redisdispatch
-          -run '^TestRedisStreamServiceBackedControlPlane$'
+          -run '^(TestRedisStreamServiceBackedControlPlane|TestRedisStreamServiceBackedIndexV2CutoverState)$'
 
   postgres-integration:
     name: Real PostgreSQL runtime integration
@@ -335,12 +335,88 @@ jobs:
           ./services/elitea-main/internal/infra/identityrepo
           -run '^TestPostgres(TokenRepositoryLifecycle|IndexRuntimeCurrentIdentityPATSelection|IdentityProvisioning(CurrentBaseline|Rollback))$'
 
+  index-embedding-cutover:
+    name: Index binding, RBAC, and coordinated-cutover integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: elitea
+          POSTGRES_PASSWORD: elitea
+          POSTGRES_DB: elitea
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U elitea -d elitea"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            services/elitea-main/go.sum
+            libs/proto/gen/go/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            services/elitea-worker-python/pyproject.toml
+            services/elitea-worker-python/elitea-sdk.lock.json
+
+      - name: Check out the exact worker-locked SDK source
+        env:
+          SDK_REVISION: 48c51a16634a9924f6c5d5313c3bacedb0b5b56b
+          SDK_ARCHIVE_SHA256: 85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
+        run: |
+          test "$(python -c 'import json; print(json.load(open("services/elitea-worker-python/elitea-sdk.lock.json"))["source"]["revision"])')" = "${SDK_REVISION}"
+          test "$(python -c 'import json; print(json.load(open("services/elitea-worker-python/elitea-sdk.lock.json"))["source"]["git_archive_sha256"])')" = "${SDK_ARCHIVE_SHA256}"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/EliteaAI/elitea-sdk.git \
+            /tmp/elitea-sdk-current
+          git -C /tmp/elitea-sdk-current checkout --detach "${SDK_REVISION}"
+          test "$(git -C /tmp/elitea-sdk-current rev-parse HEAD)" = "${SDK_REVISION}"
+          test "$(git -C /tmp/elitea-sdk-current archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${SDK_ARCHIVE_SHA256}"
+
+      - name: Install the pinned Go-to-Python gate runtime
+        run: |
+          python -m pip install \
+            "elitea-sdk @ file:///tmp/elitea-sdk-current" \
+            ./libs/proto \
+            "./services/elitea-worker-python[test]"
+          python -m pip check
+
+      - name: Exercise real PostgreSQL, authenticated LiteLLM, and project RBAC
+        env:
+          ELITEA_TEST_DATABASE_URL: postgres://elitea:elitea@127.0.0.1:5432/elitea?sslmode=disable
+        run: |
+          go test -race -count=1 \
+            ./services/elitea-main/internal/infra/db/repos \
+            -run '^(TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM|TestPostgresServiceBackedCurrentModelCatalogBoundsBeforeJSONProjection|TestPostgresServiceBackedIndexV2CutoverRejectsPersistedV1UntilTerminalReconciliation)$'
+          go test -race -count=1 \
+            ./services/elitea-main/internal/runtimecomposition \
+            -run '^TestIndexRoutesPostgresRBACAndTenantMatrix$'
+
+      - name: Exercise signed Go-to-Python capability-version gate
+        env:
+          ELITEA_INDEX_BINDING_CROSS_PROCESS_TEST: "1"
+          ELITEA_SYSTEM_PYTHON: python
+          ELITEA_SYSTEM_SDK_PATH: /tmp/elitea-sdk-current
+        run: >-
+          go test -race -count=1
+          ./services/elitea-main/tests/system
+          -run '^TestIndexEmbeddingBindingMainWorkerCrossProcess$'
+
   build:
     name: Build
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
     # Production images are built via Containerfile in publish.yml, not here.
     runs-on: ubuntu-latest
-    needs: [sqlc, lint, test, redis-integration, postgres-integration, pgvector-index-meta-integration, confluence-indexing-current-characterization, postgres-auth-integration]
+    needs: [sqlc, lint, test, redis-integration, postgres-integration, pgvector-index-meta-integration, confluence-indexing-current-characterization, postgres-auth-integration, index-embedding-cutover]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -368,3 +444,8 @@ jobs:
         run: |
           cd services/elitea-main
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-auth-validate ./cmd/elitea-auth-validate
+
+      - name: Build index-v2-preflight
+        run: |
+          cd services/elitea-main
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/index-v2-preflight ./cmd/index-v2-preflight
