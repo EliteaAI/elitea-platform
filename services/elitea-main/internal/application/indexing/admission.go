@@ -232,12 +232,15 @@ func indexDigestProto(digest runtimedomain.Digest) *runtimev1.DigestV1 {
 }
 
 type SubmitRequest struct {
-	Identity       executionapp.AdmissionIdentity
-	IdempotencyKey string
-	CorrelationID  string
-	ToolkitID      int32
-	Initiator      executiondomain.IndexIngestInitiator
-	Inputs         AuthoritativeInputs
+	Identity        executionapp.AdmissionIdentity
+	IdempotencyKey  string
+	CorrelationID   string
+	ClientStreamID  string
+	ClientMessageID string
+	SIOEvent        string
+	ToolkitID       int32
+	Initiator       executiondomain.IndexIngestInitiator
+	Inputs          AuthoritativeInputs
 }
 
 type Admission struct {
@@ -311,6 +314,9 @@ func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (A
 	if request.Identity.TenantID == "" || request.Identity.ResourceProjectID == "" || request.Identity.ProjectionProjectID == "" || request.Identity.ActorID == "" ||
 		request.IdempotencyKey == "" || len(request.IdempotencyKey) > 200 ||
 		request.CorrelationID == "" || !validOptionalText(request.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) ||
+		!validOptionalText(request.ClientStreamID, MaxClientCorrelationBytes) ||
+		!validOptionalText(request.ClientMessageID, MaxClientCorrelationBytes) ||
+		!validIndexSIOEvent(request.SIOEvent) ||
 		request.ToolkitID <= 0 || !request.Initiator.Valid() {
 		return AdmissionOutcome{}, ErrInvalidIndexStart
 	}
@@ -334,6 +340,9 @@ func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (A
 	}
 	binding.IndexMetaID = indexMetaID
 	binding.IndexMetaCorrelationID = request.CorrelationID
+	binding.ClientStreamID = request.ClientStreamID
+	binding.ClientMessageID = request.ClientMessageID
+	binding.SIOEvent = request.SIOEvent
 	if err := binding.Validate(bundle); err != nil {
 		return AdmissionOutcome{}, fmt.Errorf("%w: %v", ErrInvalidIndexStart, err)
 	}

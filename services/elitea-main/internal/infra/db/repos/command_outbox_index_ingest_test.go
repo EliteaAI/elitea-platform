@@ -64,6 +64,7 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 		"index-bundle-1", "admission:index-bundle-1", "application/x-protobuf", int64(256), manifestDigest[:],
 		"1", "indexing", "project", int32(1), deadline, "index-limits-v1", "", "",
 		"toolkit-configuration", "tool-parameters", "llm-model", "llm-configuration", "mcp-credential-references",
+		"stream-1", "message-1", "chat_predict",
 	}}}}
 	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
 	if err != nil {
@@ -73,7 +74,7 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatch.OutboxID != "index-outbox-1" || dispatch.InputBundleDigest != manifestDigest || dispatch.ToolkitConfigurationEntryID != "toolkit-configuration" || dispatch.MCPTokensEntryID != "mcp-credential-references" {
+	if dispatch.OutboxID != "index-outbox-1" || dispatch.InputBundleDigest != manifestDigest || dispatch.ToolkitConfigurationEntryID != "toolkit-configuration" || dispatch.MCPTokensEntryID != "mcp-credential-references" || dispatch.ClientStreamID != "stream-1" || dispatch.ClientMessageID != "message-1" || dispatch.SIOEvent != "chat_predict" {
 		t.Fatalf("unexpected index dispatch: %+v", dispatch)
 	}
 	query := executor.rowCalls[0].sql

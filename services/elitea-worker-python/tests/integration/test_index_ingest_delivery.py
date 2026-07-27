@@ -67,28 +67,52 @@ class RecordingSdk:
         *,
         custom_events: list[tuple[str, dict[str, Any]]] | None = None,
         catch_callback_errors: bool = False,
+        emit_tool_lifecycle: bool = False,
     ) -> None:
         self.result = result
         self.custom_events = custom_events or []
         self.catch_callback_errors = catch_callback_errors
+        self.emit_tool_lifecycle = emit_tool_lifecycle
         self.calls: list[dict[str, Any]] = []
         self.callback_errors: list[Exception] = []
 
     def ingest(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        run_id = UUID("00000000-0000-0000-0000-000000000007")
+        parent_run_id = UUID("00000000-0000-0000-0000-000000000099")
+        if self.emit_tool_lifecycle:
+            for callback in kwargs["runtime_config"]["callbacks"]:
+                callback.on_tool_start(
+                    {
+                        "name": "index_data",
+                        "description": "REDEEMED_LIFECYCLE_CANARY",
+                    },
+                    "REDEEMED_LIFECYCLE_CANARY",
+                    run_id=run_id,
+                    parent_run_id=parent_run_id,
+                    metadata={"credential": "REDEEMED_LIFECYCLE_CANARY"},
+                    inputs={"token": "REDEEMED_LIFECYCLE_CANARY"},
+                )
         for name, data in self.custom_events:
             for callback in kwargs["runtime_config"]["callbacks"]:
                 try:
                     callback.on_custom_event(
                         name,
                         data,
-                        run_id=UUID("00000000-0000-0000-0000-000000000007"),
+                        run_id=run_id,
                         metadata=kwargs["runtime_config"].get("metadata"),
                     )
                 except Exception as exc:
                     if not self.catch_callback_errors:
                         raise
                     self.callback_errors.append(exc)
+        if self.emit_tool_lifecycle:
+            for callback in kwargs["runtime_config"]["callbacks"]:
+                callback.on_tool_end(
+                    {"credential": "REDEEMED_LIFECYCLE_CANARY"},
+                    run_id=run_id,
+                    parent_run_id=parent_run_id,
+                )
         return self.result
 
 
@@ -332,7 +356,7 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
                 "toolkit_config": {"settings": {"token": canary}},
             }
         )
-        sdk = RecordingSdk(sdk_result)
+        sdk = RecordingSdk(sdk_result, emit_tool_lifecycle=True)
         monkeypatch.setattr(
             EliteaSdkIndexingAdapter,
             "from_context",
@@ -368,6 +392,15 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
         assert acker.calls == 1
         encoded = result.output_frame.SerializeToString(deterministic=True)
         assert canary.encode() not in encoded
+        assert b"REDEEMED_LIFECYCLE_CANARY" not in b"".join(
+            frame.SerializeToString(deterministic=True) for frame in output.frames
+        )
+        assert [frame.node_event.type for frame in output.frames[:-1]] == (
+            ["agent_tool_start", "agent_tool_end"]
+            if sdk_success
+            else ["agent_tool_start", "agent_tool_error"]
+        )
+        assert output.frames[-1] == result.output_frame
         if sdk_success:
             assert result.output_frame.event_type == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT
             assert result.output_frame.index_ingest.result_summary.status == indexing_pb2.INDEX_INGEST_STATUS_V1_OK
@@ -557,6 +590,7 @@ def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
                     },
                 )
             ],
+            emit_tool_lifecycle=True,
         )
         monkeypatch.setattr(
             EliteaSdkIndexingAdapter,
@@ -583,11 +617,11 @@ def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
         result = await processing
 
         assert result.output_frame is not None
-        assert result.output_frame.sequence == 3
-        assert result.output_frame.settlement_proposal.terminal_sequence == 3
-        assert [frame.sequence for frame in output.frames] == [1, 2, 3]
-        thinking, status, terminal = output.frames
-        for progress in (thinking, status):
+        assert result.output_frame.sequence == 5
+        assert result.output_frame.settlement_proposal.terminal_sequence == 5
+        assert [frame.sequence for frame in output.frames] == [1, 2, 3, 4, 5]
+        start, thinking, status, end, terminal = output.frames
+        for progress in (start, thinking, status, end):
             assert not progress.terminal
             assert not progress.HasField("settlement_proposal")
             assert (
@@ -595,12 +629,16 @@ def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
                 == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT
             )
         assert terminal == result.output_frame
+        assert start.node_event.type == "agent_tool_start"
+        assert end.node_event.type == "agent_tool_end"
 
         browser_event = json.loads(
             encode_current_node_event_json(thinking.node_event)
         )
         assert browser_event["type"] == "agent_thinking_step"
-        assert browser_event["stream_id"] == case.command.execution_id
+        assert browser_event["stream_id"] == case.command.index_ingest.client_stream_id
+        assert browser_event["message_id"] == case.command.index_ingest.client_message_id
+        assert browser_event["sio_event"] == case.command.index_ingest.sio_event
         assert browser_event["response_metadata"]["message"] == "20 files processed"
         assert browser_event["response_metadata"]["tool_name"] == "loader"
         assert (
@@ -618,7 +656,7 @@ def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
             encode_current_node_event_json(status.node_event)
         )
         assert browser_event["type"] == "agent_index_data_status"
-        assert browser_event["stream_id"] == case.command.execution_id
+        assert browser_event["stream_id"] == case.command.index_ingest.client_stream_id
         metadata = browser_event["response_metadata"]
         assert metadata["task_id"] == case.command.execution_id
         assert metadata["initiator"] == "user"
@@ -1017,6 +1055,9 @@ def _case() -> Case:
             llm_model_entry_id="llm-model",
             llm_configuration_entry_id="llm-config",
             mcp_tokens_entry_id="mcp-tokens",
+            client_stream_id="conversation-1",
+            client_message_id="message-1",
+            sio_event="chat_predict",
         ),
     )
     command_raw = command.SerializeToString(deterministic=True)

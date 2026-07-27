@@ -152,6 +152,7 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     execution_id, generation, index_generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
+    client_stream_id, client_message_id, sio_event,
     index_meta_id, index_meta_correlation_id,
     toolkit_id, index_name, initiator
 ) VALUES (
@@ -165,6 +166,9 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     sqlc.narg(llm_model_entry_id)::text,
     sqlc.narg(llm_configuration_entry_id)::text,
     sqlc.narg(mcp_tokens_entry_id)::text,
+    sqlc.narg(client_stream_id)::text,
+    sqlc.narg(client_message_id)::text,
+    sqlc.narg(sio_event)::text,
     sqlc.arg(index_meta_id)::text,
     sqlc.arg(index_meta_correlation_id)::text,
     sqlc.arg(toolkit_id)::integer,

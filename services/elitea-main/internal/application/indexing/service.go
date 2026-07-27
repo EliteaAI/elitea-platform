@@ -76,11 +76,14 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 			ProjectionProjectID: projectID,
 			ActorID:             actorID,
 		},
-		IdempotencyKey: idempotencyKey,
-		CorrelationID:  correlationID,
-		ToolkitID:      int32(request.ToolkitID),
-		Initiator:      executiondomain.IndexIngestInitiatorUser,
-		Inputs:         inputs,
+		IdempotencyKey:  idempotencyKey,
+		CorrelationID:   correlationID,
+		ClientStreamID:  request.StreamID,
+		ClientMessageID: request.MessageID,
+		SIOEvent:        request.SIOEvent,
+		ToolkitID:       int32(request.ToolkitID),
+		Initiator:       executiondomain.IndexIngestInitiatorUser,
+		Inputs:          inputs,
 	})
 	if err != nil {
 		return StartOutcome{}, err

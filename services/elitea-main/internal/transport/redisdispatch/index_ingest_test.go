@@ -101,6 +101,9 @@ func TestIndexIngestProducerBuildsTypedReferenceOnlyCommand(t *testing.T) {
 		LLMModelEntryID:             command.GetIndexIngest().GetLlmModelEntryId(),
 		LLMConfigurationEntryID:     command.GetIndexIngest().GetLlmConfigurationEntryId(),
 		MCPTokensEntryID:            command.GetIndexIngest().GetMcpTokensEntryId(),
+		ClientStreamID:              command.GetIndexIngest().GetClientStreamId(),
+		ClientMessageID:             command.GetIndexIngest().GetClientMessageId(),
+		SIOEvent:                    command.GetIndexIngest().GetSioEvent(),
 	}
 	prepared, err := producer.PrepareIndexIngest(context.Background(), dispatch)
 	if err != nil {
@@ -117,7 +120,7 @@ func TestIndexIngestProducerBuildsTypedReferenceOnlyCommand(t *testing.T) {
 	if err := proto.Unmarshal(envelope.GetWorkerCommandBytes(), wire); err != nil {
 		t.Fatal(err)
 	}
-	if wire.GetInputBundleRef().GetInputBundleId() != dispatch.InputBundleID || wire.GetIndexIngest().GetToolkitConfigurationEntryId() != dispatch.ToolkitConfigurationEntryID || wire.GetIndexIngest().GetToolParametersEntryId() != dispatch.ToolParametersEntryID {
+	if wire.GetInputBundleRef().GetInputBundleId() != dispatch.InputBundleID || wire.GetIndexIngest().GetToolkitConfigurationEntryId() != dispatch.ToolkitConfigurationEntryID || wire.GetIndexIngest().GetToolParametersEntryId() != dispatch.ToolParametersEntryID || wire.GetIndexIngest().GetClientStreamId() != dispatch.ClientStreamID || wire.GetIndexIngest().GetClientMessageId() != dispatch.ClientMessageID || wire.GetIndexIngest().GetSioEvent() != dispatch.SIOEvent {
 		t.Fatalf("typed dispatch changed reference identities: %+v", wire)
 	}
 }
@@ -402,6 +405,9 @@ func validIndexIngestCommand() *runtimev1.WorkerCommandV1 {
 				LlmModelEntryId:             "llm-model",
 				LlmConfigurationEntryId:     "llm-config",
 				McpTokensEntryId:            "mcp-tokens",
+				ClientStreamId:              "stream-1",
+				ClientMessageId:             "message-1",
+				SioEvent:                    "chat_predict",
 			},
 		},
 	}

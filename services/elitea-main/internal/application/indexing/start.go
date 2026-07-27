@@ -16,6 +16,8 @@ const (
 	MaxRequestedLLMBytes      = 128 << 10
 	MaxClientCorrelationBytes = 512
 	MaxCurrentIndexNameRunes  = 32
+	CurrentIndexSIOEvent      = "chat_predict"
+	TestToolkitSIOEvent       = "test_toolkit_tool"
 )
 
 var (
@@ -39,6 +41,7 @@ type StartRequest struct {
 	RequestedLLMSettings json.RawMessage
 	StreamID             string
 	MessageID            string
+	SIOEvent             string
 }
 
 func (r StartRequest) Validate() error {
@@ -59,7 +62,14 @@ func (r StartRequest) Validate() error {
 		!validOptionalText(r.MessageID, MaxClientCorrelationBytes) {
 		return ErrInvalidIndexStart
 	}
+	if !validIndexSIOEvent(r.SIOEvent) {
+		return ErrInvalidIndexStart
+	}
 	return nil
+}
+
+func validIndexSIOEvent(value string) bool {
+	return value == "" || value == CurrentIndexSIOEvent || value == TestToolkitSIOEvent
 }
 
 // Clone prevents a use case from retaining aliases into an HTTP decoder's

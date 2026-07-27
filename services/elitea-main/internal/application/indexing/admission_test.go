@@ -101,10 +101,13 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 			ProjectionProjectID: "1",
 			ActorID:             "7",
 		},
-		IdempotencyKey: "index-request-1",
-		CorrelationID:  "message-1",
-		ToolkitID:      19,
-		Initiator:      executiondomain.IndexIngestInitiatorUser,
+		IdempotencyKey:  "index-request-1",
+		CorrelationID:   "message-1",
+		ClientStreamID:  "stream-1",
+		ClientMessageID: "message-1",
+		SIOEvent:        CurrentIndexSIOEvent,
+		ToolkitID:       19,
+		Initiator:       executiondomain.IndexIngestInitiatorUser,
 		Inputs: AuthoritativeInputs{
 			ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"confluence"}`),
 			ToolParameters:       json.RawMessage(`{"index_name":"docs"}`),
@@ -121,6 +124,9 @@ func TestAdmissionServiceBuildsIndexJobAndPreservesCurrentIdentity(t *testing.T)
 		store.admission.Binding.IndexName != "docs" ||
 		store.admission.Binding.IndexMetaID != "index-meta-1" ||
 		store.admission.Binding.IndexMetaCorrelationID != "message-1" ||
+		store.admission.Binding.ClientStreamID != "stream-1" ||
+		store.admission.Binding.ClientMessageID != "message-1" ||
+		store.admission.Binding.SIOEvent != CurrentIndexSIOEvent ||
 		store.admission.Binding.Initiator != executiondomain.IndexIngestInitiatorUser {
 		t.Fatalf("index identity was not preserved: %+v", store.admission)
 	}

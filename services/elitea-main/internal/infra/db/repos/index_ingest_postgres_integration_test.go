@@ -51,6 +51,7 @@ func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
 
 	var toolkitID int32
 	var indexName, initiator, streamName, indexMetaID, indexMetaCorrelationID string
+	var clientStreamID, clientMessageID, sioEvent string
 	var indexMetaInitialized bool
 	var validationColumns int
 	var runtimeGeneration, indexGeneration, preparedBytes, inputBytes int64
@@ -58,6 +59,7 @@ func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
 SELECT j.generation, i.index_generation,
        i.toolkit_id, i.index_name, i.initiator, o.stream_name,
        i.index_meta_id, i.index_meta_correlation_id,
+       i.client_stream_id, i.client_message_id, i.sio_event,
        i.index_meta_initialized_at IS NOT NULL,
        num_nonnulls(
            j.configuration_revision_id, j.configuration_type,
@@ -77,6 +79,7 @@ WHERE j.execution_id = $1
 GROUP BY j.generation, i.index_generation,
          i.toolkit_id, i.index_name, i.initiator, o.stream_name,
          i.index_meta_id, i.index_meta_correlation_id,
+         i.client_stream_id, i.client_message_id, i.sio_event,
          i.index_meta_initialized_at,
          j.configuration_revision_id, j.configuration_type,
          j.catalog_revision, j.catalog_digest, j.schema_id,
@@ -84,7 +87,8 @@ GROUP BY j.generation, i.index_generation,
          o.prepared_signed_envelope_bytes`, created.ExecutionID).Scan(
 		&runtimeGeneration, &indexGeneration,
 		&toolkitID, &indexName, &initiator, &streamName,
-		&indexMetaID, &indexMetaCorrelationID, &indexMetaInitialized,
+		&indexMetaID, &indexMetaCorrelationID,
+		&clientStreamID, &clientMessageID, &sioEvent, &indexMetaInitialized,
 		&validationColumns, &preparedBytes, &inputBytes,
 	); err != nil {
 		t.Fatal(err)
@@ -92,6 +96,9 @@ GROUP BY j.generation, i.index_generation,
 	if runtimeGeneration != 1 || indexGeneration != 1 ||
 		toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName ||
 		indexMetaID != created.IndexMetaID || indexMetaCorrelationID != created.IndexMetaCorrelationID ||
+		clientStreamID != request.ClientStreamID ||
+		clientMessageID != request.ClientMessageID ||
+		sioEvent != indexingapp.CurrentIndexSIOEvent ||
 		indexMetaInitialized || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
 		t.Fatalf(
 			"unexpected durable index binding: runtime_generation=%d index_generation=%d toolkit=%d index=%s initiator=%s stream=%s meta=%s correlation=%s initialized=%v validation=%d outbox_bytes=%d input_bytes=%d",
@@ -374,10 +381,13 @@ func postgresIndexSubmitRequest(idempotencyKey, indexName string) indexingapp.Su
 			ProjectionProjectID: "1",
 			ActorID:             "7",
 		},
-		IdempotencyKey: idempotencyKey,
-		CorrelationID:  "message-" + idempotencyKey,
-		ToolkitID:      19,
-		Initiator:      executiondomain.IndexIngestInitiatorUser,
+		IdempotencyKey:  idempotencyKey,
+		CorrelationID:   "message-" + idempotencyKey,
+		ClientStreamID:  "stream-" + idempotencyKey,
+		ClientMessageID: "message-" + idempotencyKey,
+		SIOEvent:        indexingapp.CurrentIndexSIOEvent,
+		ToolkitID:       19,
+		Initiator:       executiondomain.IndexIngestInitiatorUser,
 		Inputs: indexingapp.AuthoritativeInputs{
 			ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"confluence","settings":{"token":"secret-ref://toolkit/19"}}`),
 			ToolParameters:       json.RawMessage(fmt.Sprintf(`{"index_name":%q}`, indexName)),

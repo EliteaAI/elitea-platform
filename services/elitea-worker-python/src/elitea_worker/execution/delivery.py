@@ -335,6 +335,13 @@ class _IndexProgressOutput:
             # an ordinary terminal result here.
             raise
 
+    async def publish_from_delivery(
+        self, event: node_event_pb2.NodeEventV1
+    ) -> None:
+        """Publish a lifecycle event built after the synchronous SDK returns."""
+
+        await self._publish(event)
+
     async def _publish(self, event: node_event_pb2.NodeEventV1) -> None:
         async with self._publish_lock:
             if self._fatal is not None:
@@ -1291,12 +1298,17 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
         command = accepted.verified.command
         callback = CurrentIndexNodeEventCallback(
             CurrentIndexNodeEventContext(
-                stream_id=command.execution_id,
+                stream_id=command.index_ingest.client_stream_id,
                 task_id=command.execution_id,
                 initiator="user",
                 project_id=_current_numeric_identity(command.resource_project_id),
                 user_id=_current_user_identity(command.principal_ref),
                 toolkit_id=_current_toolkit_id(
+                    resolved_input.toolkit_configuration.value
+                ),
+                message_id=command.index_ingest.client_message_id,
+                sio_event=command.index_ingest.sio_event,
+                display_name=_current_toolkit_display_name(
                     resolved_input.toolkit_configuration.value
                 ),
             ),
@@ -1330,8 +1342,12 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             result = await handler.execute(request)
             callback.raise_if_failed()
             try:
-                return bind_result_summary(result)
+                projected = bind_result_summary(result)
             except InternalFailure as error:
+                tool_event = callback.finish_tool(success=False)
+                if tool_event is not None:
+                    await progress.publish_from_delivery(tool_event)
+                callback.raise_if_failed()
                 _emit_index_internal_failure(
                     stage="result_projection",
                     execution_id=receipt.identity.execution_id,
@@ -1339,11 +1355,24 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                     sdk_failure_category=_sdk_failure_category(result.sdk_result),
                 )
                 raise
+            tool_event = callback.finish_tool(success=True)
+            if tool_event is not None:
+                await progress.publish_from_delivery(tool_event)
+            callback.raise_if_failed()
+            return projected
         except _IndexProgressTransportFailure:
             raise
         except WorkerError:
+            tool_event = callback.finish_tool(success=False)
+            if tool_event is not None:
+                await progress.publish_from_delivery(tool_event)
+            callback.raise_if_failed()
             raise
         except Exception as error:
+            tool_event = callback.finish_tool(success=False)
+            if tool_event is not None:
+                await progress.publish_from_delivery(tool_event)
+            callback.raise_if_failed()
             _emit_index_internal_failure(
                 stage="execute",
                 execution_id=receipt.identity.execution_id,

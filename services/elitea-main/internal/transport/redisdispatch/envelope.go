@@ -109,6 +109,9 @@ func indexIngestWorkerCommand(protocolRevision string, dispatch indexingapp.Inde
 				LlmModelEntryId:             dispatch.LLMModelEntryID,
 				LlmConfigurationEntryId:     dispatch.LLMConfigurationEntryID,
 				McpTokensEntryId:            dispatch.MCPTokensEntryID,
+				ClientStreamId:              dispatch.ClientStreamID,
+				ClientMessageId:             dispatch.ClientMessageID,
+				SioEvent:                    dispatch.SIOEvent,
 			},
 		},
 	}, nil
@@ -141,7 +144,8 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 	if index := command.GetIndexIngest(); index != nil {
 		values = append(values,
 			index.GetToolkitConfigurationEntryId(), index.GetToolParametersEntryId(), index.GetLlmModelEntryId(),
-			index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(),
+			index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(), index.GetClientStreamId(),
+			index.GetClientMessageId(), index.GetSioEvent(),
 		)
 	}
 	for _, value := range values {

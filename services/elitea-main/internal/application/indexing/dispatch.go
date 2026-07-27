@@ -44,6 +44,9 @@ type IndexIngestDispatch struct {
 	LLMModelEntryID             string
 	LLMConfigurationEntryID     string
 	MCPTokensEntryID            string
+	ClientStreamID              string
+	ClientMessageID             string
+	SIOEvent                    string
 }
 
 func (d IndexIngestDispatch) Validate() error {
@@ -64,6 +67,14 @@ func (d IndexIngestDispatch) Validate() error {
 		if value != "" && !validDispatchText(value) {
 			return ErrInvalidIndexIngestDispatch
 		}
+	}
+	for _, value := range []string{d.ClientStreamID, d.ClientMessageID} {
+		if value != "" && !validDispatchTextWithLimit(value, MaxClientCorrelationBytes) {
+			return ErrInvalidIndexIngestDispatch
+		}
+	}
+	if !validIndexSIOEvent(d.SIOEvent) {
+		return ErrInvalidIndexIngestDispatch
 	}
 	if d.Generation == 0 || d.DispatchOrdinal == 0 || d.InputBundleByteLength == 0 || d.InputBundleDigest.IsZero() || d.Priority == 0 || d.Deadline.IsZero() {
 		return ErrInvalidIndexIngestDispatch
@@ -89,7 +100,11 @@ func (d IndexIngestDispatch) Validate() error {
 }
 
 func validDispatchText(value string) bool {
-	return value != "" && len(value) <= maxIndexAdmissionStringBytes && !strings.ContainsAny(value, "\x00\r\n")
+	return validDispatchTextWithLimit(value, maxIndexAdmissionStringBytes)
+}
+
+func validDispatchTextWithLimit(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 type PendingDispatchStore interface {

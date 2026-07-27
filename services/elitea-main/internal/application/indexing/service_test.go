@@ -84,6 +84,9 @@ func TestStartServiceResolvesThenAdmitsCurrentUserRequest(t *testing.T) {
 	if admissions.request.Identity != wantIdentity || admissions.request.ToolkitID != 42 ||
 		admissions.request.Initiator != executiondomain.IndexIngestInitiatorUser ||
 		admissions.request.CorrelationID != request.MessageID ||
+		admissions.request.ClientStreamID != request.StreamID ||
+		admissions.request.ClientMessageID != request.MessageID ||
+		admissions.request.SIOEvent != request.SIOEvent ||
 		!reflect.DeepEqual(admissions.request.Inputs, inputs) {
 		t.Fatalf("admission request=%+v", admissions.request)
 	}
@@ -247,6 +250,7 @@ func validStartServiceRequest() StartRequest {
 		RequestedLLMSettings: json.RawMessage(`{"temperature":0.1}`),
 		StreamID:             "stream-1",
 		MessageID:            "message-1",
+		SIOEvent:             CurrentIndexSIOEvent,
 	}
 }
 

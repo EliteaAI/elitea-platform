@@ -71,6 +71,9 @@ class CurrentIndexNodeEventContext:
     project_id: int | str
     user_id: int | str
     toolkit_id: int | str | None
+    message_id: str | None = None
+    sio_event: str | None = None
+    display_name: str = "index_data"
 
 
 class CurrentIndexNodeEventCallback(BaseCallbackHandler):
@@ -90,10 +93,109 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         publish: Callable[[node_event_pb2.NodeEventV1], None],
     ) -> None:
         super().__init__()
+        self.raise_error = True
         self._context = context
         self._publish = publish
         self._failure: Exception | None = None
         self._failure_lock = threading.Lock()
+        self._tool_lock = threading.Lock()
+        self._tool_run_id: str | None = None
+        self._tool_started_at: str | None = None
+        self._tool_finalized = False
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Create the current UI tool chip without forwarding invocation data."""
+
+        _ = serialized, input_str, tags, metadata, inputs, kwargs
+        try:
+            selected_run_id = _current_tool_run_id(run_id)
+            now = datetime.now(tz=timezone.utc).isoformat()
+            with self._tool_lock:
+                if self._tool_run_id is not None:
+                    if self._tool_run_id == selected_run_id:
+                        return
+                    return
+                self._tool_run_id = selected_run_id
+                self._tool_started_at = now
+            self._emit(
+                "agent_tool_start",
+                {
+                    "tool_name": "index_data",
+                    "tool_run_id": selected_run_id,
+                    "timestamp_start": now,
+                    "metadata": self._safe_tool_metadata(),
+                },
+                now=now,
+            )
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe completion; the typed SDK result remains terminal authority."""
+
+        _ = output, kwargs
+        self._validate_active_tool_run(run_id)
+
+    def on_tool_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: Any,
+        parent_run_id: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Observe failure without forwarding exceptions or tracebacks."""
+
+        _ = error, kwargs
+        self._validate_active_tool_run(run_id)
+
+    def finish_tool(
+        self, *, success: bool
+    ) -> node_event_pb2.NodeEventV1 | None:
+        """Build one safe lifecycle result for ordered async publication."""
+
+        try:
+            with self._tool_lock:
+                if self._tool_run_id is None or self._tool_finalized:
+                    return None
+                run_id = self._tool_run_id
+                started_at = self._tool_started_at
+                self._tool_finalized = True
+            now = datetime.now(tz=timezone.utc).isoformat()
+            payload = {
+                "tool_name": "index_data",
+                "tool_run_id": run_id,
+                "finish_reason": "stop" if success else "error",
+                "timestamp_start": started_at,
+                "timestamp_finish": now,
+            }
+            return self._build_event(
+                "agent_tool_end" if success else "agent_tool_error",
+                payload,
+                now=now,
+            )
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
 
     def on_custom_event(
         self,
@@ -107,7 +209,7 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
     ) -> None:
         """Handle the current progress callbacks emitted by index toolkits."""
 
-        _ = tags, kwargs
+        _ = tags, metadata, kwargs
         selected = _CURRENT_INDEX_CUSTOM_EVENTS.get(name)
         if selected is None:
             return
@@ -115,12 +217,16 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
             if not isinstance(data, dict):
                 raise InvalidInput("The index progress callback is malformed.")
             event_type, fields = selected
+            selected_run_id = _current_tool_run_id(run_id)
+            with self._tool_lock:
+                if self._tool_run_id is not None:
+                    selected_run_id = self._tool_run_id
             now = datetime.now(tz=timezone.utc).isoformat()
             payload = {
                 "name": name,
-                "run_id": str(run_id),
-                "tool_run_id": str(run_id),
-                "metadata": _current_json_value(metadata),
+                "run_id": selected_run_id,
+                "tool_run_id": selected_run_id,
+                "metadata": self._safe_tool_metadata(),
                 "datetime": now,
                 **{
                     field: _current_json_value(data[field])
@@ -151,33 +257,65 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                 ):
                     payload["toolkit_id"] = self._context.toolkit_id
 
-            raw = json.dumps(
-                {
-                    "type": event_type,
-                    "stream_id": self._context.stream_id,
-                    "content": None,
-                    "response_metadata": payload,
-                    "references": [],
-                    "created_at": now,
-                },
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES:
-                raise ResourceExhausted(
-                    "The index progress event exceeds the approved output limit."
-                )
-            try:
-                event = decode_current_node_event_json(raw)
-            except InvalidCurrentNodeEvent as exc:
-                raise InvalidInput("The index progress callback is malformed.") from exc
-            self._publish(event)
+            self._emit(event_type, payload, now=now)
         except Exception as exc:
-            with self._failure_lock:
-                if self._failure is None:
-                    self._failure = exc
+            self._record_failure(exc)
             raise
+
+    def _validate_active_tool_run(self, run_id: Any) -> None:
+        try:
+            selected_run_id = _current_tool_run_id(run_id)
+            with self._tool_lock:
+                if self._tool_run_id is not None and self._tool_run_id != selected_run_id:
+                    return
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
+    def _safe_tool_metadata(self) -> dict[str, str]:
+        display_name = self._context.display_name
+        if not _valid_text(display_name):
+            display_name = "index_data"
+        return {
+            "initiator": self._context.initiator,
+            "tool_name": "index_data",
+            "display_name": display_name,
+        }
+
+    def _emit(self, event_type: str, payload: dict[str, Any], *, now: str) -> None:
+        self._publish(self._build_event(event_type, payload, now=now))
+
+    def _build_event(
+        self, event_type: str, payload: dict[str, Any], *, now: str
+    ) -> node_event_pb2.NodeEventV1:
+        raw = json.dumps(
+            {
+                "type": event_type,
+                "stream_id": self._context.stream_id or None,
+                "message_id": self._context.message_id or None,
+                "content": None,
+                "response_metadata": payload,
+                "references": [],
+                "sio_event": self._context.sio_event or None,
+                "created_at": now,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(raw) > MAX_CURRENT_NODE_EVENT_JSON_BYTES:
+            raise ResourceExhausted(
+                "The index progress event exceeds the approved output limit."
+            )
+        try:
+            return decode_current_node_event_json(raw)
+        except InvalidCurrentNodeEvent as exc:
+            raise InvalidInput("The index progress callback is malformed.") from exc
+
+    def _record_failure(self, failure: Exception) -> None:
+        with self._failure_lock:
+            if self._failure is None:
+                self._failure = failure
 
     def raise_if_failed(self) -> None:
         """Surface callback errors that the synchronous SDK deliberately catches."""
@@ -203,6 +341,13 @@ def _current_json_value(value: Any) -> Any:
         )
     except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise InvalidInput("The index progress callback is malformed.") from exc
+
+
+def _current_tool_run_id(value: Any) -> str:
+    selected = str(value)
+    if not _valid_text(selected):
+        raise InvalidInput("The index callback run identity is malformed.")
+    return selected
 
 
 @dataclass(frozen=True, slots=True)

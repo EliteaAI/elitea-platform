@@ -174,6 +174,9 @@ type IndexIngestBinding struct {
 	LLMModelEntryID             string
 	LLMConfigurationEntryID     string
 	MCPTokensEntryID            string
+	ClientStreamID              string
+	ClientMessageID             string
+	SIOEvent                    string
 	IndexMetaID                 string
 	IndexMetaCorrelationID      string
 	ToolkitID                   int32
@@ -185,7 +188,12 @@ func (b IndexIngestBinding) Validate(bundle InputBundle) error {
 	if b.ToolkitConfigurationEntryID == "" || b.ToolParametersEntryID == "" ||
 		!validIndexMetaText(b.IndexMetaID, MaxIndexMetaIDBytes) ||
 		!validIndexMetaText(b.IndexMetaCorrelationID, MaxIndexMetaCorrelationBytes) ||
+		!validOptionalIndexMetaText(b.ClientStreamID, MaxIndexMetaCorrelationBytes) ||
+		!validOptionalIndexMetaText(b.ClientMessageID, MaxIndexMetaCorrelationBytes) ||
 		b.ToolkitID <= 0 || b.IndexName == "" || len(b.IndexName) > 256 || !b.Initiator.Valid() {
+		return ErrInvalidInputBundle
+	}
+	if b.SIOEvent != "" && b.SIOEvent != "chat_predict" && b.SIOEvent != "test_toolkit_tool" {
 		return ErrInvalidInputBundle
 	}
 	references := []struct {
@@ -227,6 +235,10 @@ func (b IndexIngestBinding) Validate(bundle InputBundle) error {
 func validIndexMetaText(value string, limit int) bool {
 	return value != "" && len(value) <= limit && utf8.ValidString(value) &&
 		!strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validOptionalIndexMetaText(value string, limit int) bool {
+	return value == "" || validIndexMetaText(value, limit)
 }
 
 type OutboxRecord struct {

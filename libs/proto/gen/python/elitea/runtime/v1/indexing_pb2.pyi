@@ -19,18 +19,24 @@ INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_ERROR: IndexIngestStatusV1
 
 class IndexIngestCommandV1(_message.Message):
-    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id")
+    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event")
     TOOLKIT_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_PARAMETERS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_MODEL_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     MCP_TOKENS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_STREAM_ID_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_MESSAGE_ID_FIELD_NUMBER: _ClassVar[int]
+    SIO_EVENT_FIELD_NUMBER: _ClassVar[int]
     toolkit_configuration_entry_id: str
     tool_parameters_entry_id: str
     llm_model_entry_id: str
     llm_configuration_entry_id: str
     mcp_tokens_entry_id: str
-    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ...) -> None: ...
+    client_stream_id: str
+    client_message_id: str
+    sio_event: str
+    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., client_stream_id: _Optional[str] = ..., client_message_id: _Optional[str] = ..., sio_event: _Optional[str] = ...) -> None: ...
 
 class IndexIngestInputBindingV1(_message.Message):
     __slots__ = ("entry_id", "immutable_version", "content_digest")

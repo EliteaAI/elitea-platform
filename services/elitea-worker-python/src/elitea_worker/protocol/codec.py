@@ -574,6 +574,25 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             or any(len(value.encode("utf-8")) > MAX_SAFE_STRING_BYTES for value in selected_entry_ids)
         ):
             raise InvalidInput("The index-ingest command bindings are malformed.")
+        client_correlations = (
+            command.index_ingest.client_stream_id,
+            command.index_ingest.client_message_id,
+        )
+        if any(len(value.encode("utf-8")) > 512 for value in client_correlations):
+            raise ResourceExhausted(
+                "An index-ingest client correlation exceeds the string limit."
+            )
+        if any(
+            any(character in value for character in ("\x00", "\r", "\n"))
+            for value in client_correlations
+        ):
+            raise InvalidInput("An index-ingest client correlation is malformed.")
+        if command.index_ingest.sio_event not in (
+            "",
+            "chat_predict",
+            "test_toolkit_tool",
+        ):
+            raise InvalidInput("The index-ingest event route is malformed.")
     if (
         command.input_bundle_ref.byte_length < 1
         or command.input_bundle_ref.byte_length > MAX_MANIFEST_BYTES

@@ -74,6 +74,7 @@ func TestStartMapsCurrentAsyncShapeWithoutTrustingClientToolkitSettings(t *testi
 		RequestedLLMSettings: json.RawMessage(`{"temperature":0.2,"max_tokens":512}`),
 		StreamID:             "stream-1",
 		MessageID:            "message-1",
+		SIOEvent:             indexingapp.CurrentIndexSIOEvent,
 	}
 	if !reflect.DeepEqual(useCase.request, want) {
 		t.Fatalf("request=%+v\nwant=%+v", useCase.request, want)

@@ -276,6 +276,9 @@ type EliteaRuntimeIndexIngestJob struct {
 	LlmModelEntryID                 *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
 	LlmConfigurationEntryID         *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
 	McpTokensEntryID                *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	ClientStreamID                  *string            `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID                 *string            `db:"client_message_id" json:"client_message_id"`
+	SioEvent                        *string            `db:"sio_event" json:"sio_event"`
 	IndexMetaID                     *string            `db:"index_meta_id" json:"index_meta_id"`
 	IndexMetaCorrelationID          *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
 	IndexMetaInitializedAt          pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`

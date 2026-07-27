@@ -223,6 +223,9 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		LlmModelEntryID:             optionalString(admission.Binding.LLMModelEntryID),
 		LlmConfigurationEntryID:     optionalString(admission.Binding.LLMConfigurationEntryID),
 		McpTokensEntryID:            optionalString(admission.Binding.MCPTokensEntryID),
+		ClientStreamID:              optionalString(admission.Binding.ClientStreamID),
+		ClientMessageID:             optionalString(admission.Binding.ClientMessageID),
+		SioEvent:                    optionalString(admission.Binding.SIOEvent),
 		IndexMetaID:                 admission.Binding.IndexMetaID,
 		IndexMetaCorrelationID:      admission.Binding.IndexMetaCorrelationID,
 		ToolkitID:                   admission.Binding.ToolkitID,
@@ -408,12 +411,16 @@ func boundedIndexAdmissionStrings(admission indexingapp.Admission) bool {
 			return false
 		}
 	}
-	for _, optional := range []string{binding.LLMModelEntryID, binding.LLMConfigurationEntryID, binding.MCPTokensEntryID} {
+	for _, optional := range []string{binding.LLMModelEntryID, binding.LLMConfigurationEntryID, binding.MCPTokensEntryID, binding.SIOEvent} {
 		if len(optional) > 256 || strings.ContainsRune(optional, '\x00') {
 			return false
 		}
 	}
-	return len(binding.IndexMetaCorrelationID) <= executiondomain.MaxIndexMetaCorrelationBytes &&
+	return len(binding.ClientStreamID) <= executiondomain.MaxIndexMetaCorrelationBytes &&
+		len(binding.ClientMessageID) <= executiondomain.MaxIndexMetaCorrelationBytes &&
+		!strings.ContainsAny(binding.ClientStreamID, "\x00\r\n") &&
+		!strings.ContainsAny(binding.ClientMessageID, "\x00\r\n") &&
+		len(binding.IndexMetaCorrelationID) <= executiondomain.MaxIndexMetaCorrelationBytes &&
 		!strings.ContainsRune(binding.IndexMetaCorrelationID, '\x00')
 }
 

@@ -168,6 +168,9 @@ def test_current_index_callback_maps_state_shape_without_redeemed_configuration(
             project_id=42,
             user_id=7,
             toolkit_id=9,
+            message_id="message-1",
+            sio_event="chat_predict",
+            display_name="configurations",
         ),
         events.append,
     )
@@ -283,6 +286,9 @@ def test_current_index_callback_maps_current_thinking_shape_without_enrichment(
             project_id=42,
             user_id=7,
             toolkit_id=9,
+            message_id="message-1",
+            sio_event="chat_predict",
+            display_name="configurations",
         ),
         events.append,
     )
@@ -317,6 +323,8 @@ def test_current_index_callback_maps_current_thinking_shape_without_enrichment(
     }
     assert current["type"] == event_type
     assert current["stream_id"] == "execution-1"
+    assert current["message_id"] == "message-1"
+    assert current["sio_event"] == "chat_predict"
     assert current["content"] is None
     assert current["references"] == []
     metadata = current["response_metadata"]
@@ -337,6 +345,117 @@ def test_current_index_callback_maps_current_thinking_shape_without_enrichment(
     assert "toolkit_id" not in metadata
     assert "task_id" not in metadata
     assert "redeemed-secret" not in json.dumps(current)
+
+
+def test_current_index_tool_lifecycle_is_correlated_and_credential_free() -> None:
+    events = []
+    canary = "REDEEMED_TOOL_LIFECYCLE_CANARY"
+    run_id = UUID("00000000-0000-0000-0000-000000000001")
+    parent_run_id = UUID("00000000-0000-0000-0000-000000000099")
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            message_id="message-1",
+            sio_event="chat_predict",
+            display_name="configurations",
+        ),
+        events.append,
+    )
+
+    callback.on_tool_start(
+        {"name": "index_data", "description": canary},
+        canary,
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+        metadata={"credential": canary},
+        inputs={"token": canary},
+    )
+    callback.on_custom_event(
+        "thinking_step",
+        {
+            "message": "10 files processed",
+            "tool_name": "loader",
+            "toolkit": "EliteaGitHubAPIWrapper",
+            "credential": canary,
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000003"),
+        metadata={"credential": canary},
+    )
+    callback.on_tool_end(
+        {"token": canary},
+        run_id=run_id,
+        parent_run_id=parent_run_id,
+    )
+    events.append(callback.finish_tool(success=True))
+    callback.raise_if_failed()
+
+    current = [
+        json.loads(encode_current_node_event_json(event)) for event in events
+    ]
+    assert [event["type"] for event in current] == [
+        "agent_tool_start",
+        "agent_thinking_step",
+        "agent_tool_end",
+    ]
+    assert {
+        (event["stream_id"], event["message_id"], event["sio_event"])
+        for event in current
+    } == {("conversation-1", "message-1", "chat_predict")}
+    assert {
+        event["response_metadata"]["tool_run_id"] for event in current
+    } == {str(run_id)}
+    assert current[0]["response_metadata"] == {
+        "tool_name": "index_data",
+        "tool_run_id": str(run_id),
+        "timestamp_start": current[0]["response_metadata"]["timestamp_start"],
+        "metadata": {
+            "initiator": "user",
+            "tool_name": "index_data",
+            "display_name": "configurations",
+        },
+    }
+    assert current[-1]["content"] is None
+    assert current[-1]["response_metadata"]["finish_reason"] == "stop"
+    assert canary not in json.dumps(current)
+
+
+def test_current_index_tool_error_omits_exception_detail() -> None:
+    events = []
+    canary = "RAW_EXCEPTION_CANARY"
+    run_id = UUID("00000000-0000-0000-0000-000000000002")
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            message_id="message-1",
+            sio_event="chat_predict",
+        ),
+        events.append,
+    )
+
+    callback.on_tool_start({}, canary, run_id=run_id)
+    callback.on_tool_error(RuntimeError(canary), run_id=run_id)
+    events.append(callback.finish_tool(success=False))
+
+    current = [
+        json.loads(encode_current_node_event_json(event)) for event in events
+    ]
+    assert [event["type"] for event in current] == [
+        "agent_tool_start",
+        "agent_tool_error",
+    ]
+    assert current[-1]["response_metadata"]["finish_reason"] == "error"
+    assert current[-1]["response_metadata"]["tool_run_id"] == str(run_id)
+    assert canary not in json.dumps(current)
 
 
 def test_current_index_callback_rejects_an_oversized_status() -> None:

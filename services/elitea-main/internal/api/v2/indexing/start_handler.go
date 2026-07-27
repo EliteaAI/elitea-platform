@@ -118,6 +118,7 @@ func (h *StartHandler) Start(w http.ResponseWriter, r *http.Request) {
 		RequestedLLMSettings: requestedSettings,
 		StreamID:             body.StreamID,
 		MessageID:            body.MessageID,
+		SIOEvent:             indexingapp.CurrentIndexSIOEvent,
 	}
 	if err := request.Validate(); err != nil {
 		writeValidationError(w, "body", "Invalid index_data request")

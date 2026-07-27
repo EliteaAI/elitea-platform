@@ -87,6 +87,9 @@ type IndexIngestCommandV1 struct {
 	LlmModelEntryId             string                 `protobuf:"bytes,3,opt,name=llm_model_entry_id,json=llmModelEntryId,proto3" json:"llm_model_entry_id,omitempty"`
 	LlmConfigurationEntryId     string                 `protobuf:"bytes,4,opt,name=llm_configuration_entry_id,json=llmConfigurationEntryId,proto3" json:"llm_configuration_entry_id,omitempty"`
 	McpTokensEntryId            string                 `protobuf:"bytes,5,opt,name=mcp_tokens_entry_id,json=mcpTokensEntryId,proto3" json:"mcp_tokens_entry_id,omitempty"`
+	ClientStreamId              string                 `protobuf:"bytes,6,opt,name=client_stream_id,json=clientStreamId,proto3" json:"client_stream_id,omitempty"`
+	ClientMessageId             string                 `protobuf:"bytes,7,opt,name=client_message_id,json=clientMessageId,proto3" json:"client_message_id,omitempty"`
+	SioEvent                    string                 `protobuf:"bytes,8,opt,name=sio_event,json=sioEvent,proto3" json:"sio_event,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -152,6 +155,27 @@ func (x *IndexIngestCommandV1) GetLlmConfigurationEntryId() string {
 func (x *IndexIngestCommandV1) GetMcpTokensEntryId() string {
 	if x != nil {
 		return x.McpTokensEntryId
+	}
+	return ""
+}
+
+func (x *IndexIngestCommandV1) GetClientStreamId() string {
+	if x != nil {
+		return x.ClientStreamId
+	}
+	return ""
+}
+
+func (x *IndexIngestCommandV1) GetClientMessageId() string {
+	if x != nil {
+		return x.ClientMessageId
+	}
+	return ""
+}
+
+func (x *IndexIngestCommandV1) GetSioEvent() string {
+	if x != nil {
+		return x.SioEvent
 	}
 	return ""
 }
@@ -477,13 +501,16 @@ var File_elitea_runtime_v1_indexing_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\n" +
-	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\xb3\x02\n" +
+	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\xa6\x03\n" +
 	"\x14IndexIngestCommandV1\x12C\n" +
 	"\x1etoolkit_configuration_entry_id\x18\x01 \x01(\tR\x1btoolkitConfigurationEntryId\x127\n" +
 	"\x18tool_parameters_entry_id\x18\x02 \x01(\tR\x15toolParametersEntryId\x12+\n" +
 	"\x12llm_model_entry_id\x18\x03 \x01(\tR\x0fllmModelEntryId\x12;\n" +
 	"\x1allm_configuration_entry_id\x18\x04 \x01(\tR\x17llmConfigurationEntryId\x12-\n" +
-	"\x13mcp_tokens_entry_id\x18\x05 \x01(\tR\x10mcpTokensEntryIdJ\x04\b\x06\x10\x10\"\xad\x01\n" +
+	"\x13mcp_tokens_entry_id\x18\x05 \x01(\tR\x10mcpTokensEntryId\x12(\n" +
+	"\x10client_stream_id\x18\x06 \x01(\tR\x0eclientStreamId\x12*\n" +
+	"\x11client_message_id\x18\a \x01(\tR\x0fclientMessageId\x12\x1b\n" +
+	"\tsio_event\x18\b \x01(\tR\bsioEventJ\x04\b\t\x10\x10\"\xad\x01\n" +
 	"\x19IndexIngestInputBindingV1\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12+\n" +
 	"\x11immutable_version\x18\x02 \x01(\tR\x10immutableVersion\x12B\n" +

@@ -321,7 +321,10 @@ SELECT o.outbox_id,
        i.tool_parameters_entry_id,
        COALESCE(i.llm_model_entry_id, ''),
        COALESCE(i.llm_configuration_entry_id, ''),
-       COALESCE(i.mcp_tokens_entry_id, '')
+       COALESCE(i.mcp_tokens_entry_id, ''),
+       COALESCE(i.client_stream_id, ''),
+       COALESCE(i.client_message_id, ''),
+       COALESCE(i.sio_event, '')
 FROM elitea_runtime.command_outbox AS o
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = o.execution_id AND j.generation = o.generation
@@ -370,6 +373,9 @@ WHERE o.outbox_id = $1
 		&dispatch.LLMModelEntryID,
 		&dispatch.LLMConfigurationEntryID,
 		&dispatch.MCPTokensEntryID,
+		&dispatch.ClientStreamID,
+		&dispatch.ClientMessageID,
+		&dispatch.SIOEvent,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexingapp.IndexIngestDispatch{}, ErrPendingIndexIngestDispatchNotFound

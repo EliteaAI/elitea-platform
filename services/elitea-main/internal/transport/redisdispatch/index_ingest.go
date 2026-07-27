@@ -154,6 +154,14 @@ func (p *IndexIngestProducer) validateCommand(command *runtimev1.WorkerCommandV1
 			return ErrInvalidIndexIngestCommand
 		}
 	}
+	for _, value := range []string{index.GetClientStreamId(), index.GetClientMessageId()} {
+		if value != "" && (len(value) > 512 || !validIndexIngestText(value, p.producer.config.Limits.MaxStringBytes)) {
+			return ErrInvalidIndexIngestCommand
+		}
+	}
+	if !validIndexIngestSIOEvent(index.GetSioEvent()) {
+		return ErrInvalidIndexIngestCommand
+	}
 	entryIDs := []string{
 		index.GetToolkitConfigurationEntryId(), index.GetToolParametersEntryId(), index.GetLlmModelEntryId(),
 		index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(),
@@ -175,6 +183,10 @@ func (p *IndexIngestProducer) validateCommand(command *runtimev1.WorkerCommandV1
 		return ErrInvalidIndexIngestCommand
 	}
 	return nil
+}
+
+func validIndexIngestSIOEvent(value string) bool {
+	return value == "" || value == "chat_predict" || value == "test_toolkit_tool"
 }
 
 func validIndexIngestRoutingName(value string) bool {

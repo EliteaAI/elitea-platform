@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -207,6 +208,16 @@ func validateIndexIngestCommand(command *runtimev1.WorkerCommandV1, config comma
 			return ErrMalformedWorkerCommand
 		}
 		seen[entryID] = struct{}{}
+	}
+	for _, value := range []string{indexing.GetClientStreamId(), indexing.GetClientMessageId()} {
+		if value != "" && (len(value) > 512 || len(value) > config.MaxStringBytes || strings.ContainsAny(value, "\x00\r\n")) {
+			return ErrMalformedWorkerCommand
+		}
+	}
+	switch indexing.GetSioEvent() {
+	case "", "chat_predict", "test_toolkit_tool":
+	default:
+		return ErrMalformedWorkerCommand
 	}
 	return nil
 }

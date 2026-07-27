@@ -15,6 +15,7 @@ import (
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/redisdispatch"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestPostgresServiceBackedIndexIngestDispatch is a real PostgreSQL 16-18
@@ -87,6 +88,7 @@ func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
 				t.Fatalf("injected append failure = %v", err)
 			}
 			prepared := assertPostgresIndexDispatchState(t, ctx, pool, outcome.ExecutionID, false, "PENDING", 0)
+			assertPreparedIndexCorrelations(t, prepared, "request-"+test.prefix)
 			if signer.callCount() != 1 || appender.callCount() != 1 || !bytes.Equal(prepared, appender.callBytes(0)) {
 				t.Fatal("failed append did not retain its exact prepared envelope")
 			}
@@ -189,6 +191,25 @@ func TestPostgresServiceBackedIndexIngestDispatch(t *testing.T) {
 			t.Fatalf("index command leaked into another stream: %v", wrongStreamIDs)
 		}
 	})
+}
+
+func assertPreparedIndexCorrelations(t *testing.T, prepared []byte, requestID string) {
+	t.Helper()
+	envelope := &runtimev1.SignedWorkerCommandEnvelopeV1{}
+	if err := proto.Unmarshal(prepared, envelope); err != nil {
+		t.Fatal(err)
+	}
+	command := &runtimev1.WorkerCommandV1{}
+	if err := proto.Unmarshal(envelope.GetWorkerCommandBytes(), command); err != nil {
+		t.Fatal(err)
+	}
+	index := command.GetIndexIngest()
+	if index == nil ||
+		index.GetClientStreamId() != "stream-"+requestID ||
+		index.GetClientMessageId() != "message-"+requestID ||
+		index.GetSioEvent() != indexingapp.CurrentIndexSIOEvent {
+		t.Fatalf("prepared index command lost browser correlation: %+v", index)
+	}
 }
 
 func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIngestJobsRepository, prefix string) (indexingapp.AdmissionOutcome, string) {

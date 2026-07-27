@@ -395,6 +395,7 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     execution_id, generation, index_generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
+    client_stream_id, client_message_id, sio_event,
     index_meta_id, index_meta_correlation_id,
     toolkit_id, index_name, initiator
 ) VALUES (
@@ -410,9 +411,12 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     $9::text,
     $10::text,
     $11::text,
-    $12::integer,
+    $12::text,
     $13::text,
-    $14::text
+    $14::text,
+    $15::integer,
+    $16::text,
+    $17::text
 )
 `
 
@@ -426,6 +430,9 @@ type InsertIndexIngestJobParams struct {
 	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
 	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
 	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	ClientStreamID              *string `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID             *string `db:"client_message_id" json:"client_message_id"`
+	SioEvent                    *string `db:"sio_event" json:"sio_event"`
 	IndexMetaID                 string  `db:"index_meta_id" json:"index_meta_id"`
 	IndexMetaCorrelationID      string  `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
 	ToolkitID                   int32   `db:"toolkit_id" json:"toolkit_id"`
@@ -444,6 +451,9 @@ func (q *Queries) InsertIndexIngestJob(ctx context.Context, arg InsertIndexInges
 		arg.LlmModelEntryID,
 		arg.LlmConfigurationEntryID,
 		arg.McpTokensEntryID,
+		arg.ClientStreamID,
+		arg.ClientMessageID,
+		arg.SioEvent,
 		arg.IndexMetaID,
 		arg.IndexMetaCorrelationID,
 		arg.ToolkitID,
