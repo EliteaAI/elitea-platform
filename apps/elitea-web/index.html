@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elitea</title>
+    <style>
+      /* Skeleton-only system font stack; brand-pack fonts are self-hosted by T1/S1 (§3.7). */
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      }
+    </style>
+    <!-- Runtime config (contract C5): nginx serves /app/config.js from the container;
+         the relative src survives deep links via the depth-tolerant alias (contract C8). -->
+    <script src="./config.js" vite-ignore></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/app/main.tsx"></script>
+  </body>
+</html>

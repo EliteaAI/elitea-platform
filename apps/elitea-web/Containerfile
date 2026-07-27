@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+# elitea-web image (spec §7.3). Lives WITH the app; every COPY path is
+# repo-root-relative so the build context is identical ('.') in docker-bake.hcl,
+# .github/workflows/publish.yml and Taskfile.yml — fixing defect D1 by
+# construction. Local builds: podman build -f apps/elitea-web/Containerfile .
+
+# ── Stage 1: build the SPA (three entries: app, admin, maintenance) ──────────
+FROM node:24-alpine AS builder
+
+WORKDIR /build
+
+# Lockfile-first for layer caching; npm ci needs the committed lockfile (D4).
+COPY apps/elitea-web/package.json apps/elitea-web/package-lock.json ./
+RUN npm ci
+
+COPY apps/elitea-web/index.html apps/elitea-web/tsconfig.json apps/elitea-web/vite.config.ts ./
+COPY apps/elitea-web/src/ ./src/
+
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN npm run build
+
+# ── Stage 2: serve the main SPA with nginx ────────────────────────────────────
+FROM nginx:1.27-alpine
+
+COPY --from=builder /build/dist/app /usr/share/nginx/html/spa
+COPY apps/elitea-web/nginx/spa.conf /etc/nginx/conf.d/default.conf
+COPY apps/elitea-web/docker-entrypoint.sh /docker-entrypoint-config.sh
+RUN chmod +x /docker-entrypoint-config.sh
+
+EXPOSE 80
+CMD ["/docker-entrypoint-config.sh"]
