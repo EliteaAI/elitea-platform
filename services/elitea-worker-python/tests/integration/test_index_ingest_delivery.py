@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -230,6 +231,41 @@ class GatedOutput(Output):
         await super().wait_for_ack(sequence, timeout_seconds)
 
 
+class BlockingInput:
+    """An async input edge that proves Stop cancels before SDK submission."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+
+    async def fetch_materialized(self, *args, **kwargs) -> bytes:
+        _ = args, kwargs
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("cancelled input fetch unexpectedly resumed")
+
+
+class BlockingSdk:
+    """A synchronous SDK call which cannot be preempted by Python."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    def ingest(self, **kwargs: Any) -> dict[str, Any]:
+        _ = kwargs
+        self.calls += 1
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        return {"success": True, "result": {"status": "ok", "message": "late"}}
+
+
 @dataclass
 class SharedPendingOutput:
     frame: output_pb2.ExecutionOutputFrameV1 | None = None
@@ -303,6 +339,8 @@ class Control:
         self.begin_dispositions = begin_dispositions or [
             control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW
         ]
+        self.desired_state = common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING
+        self.cancellation_observed = asyncio.Event()
 
     async def claim_command(self, request):
         disposition = (
@@ -325,9 +363,10 @@ class Control:
         return control_pb2.ClaimCommandResponseV1(receipt=receipt)
 
     async def renew_lease(self, request):
+        self._record_desired_state()
         return control_pb2.RenewLeaseResponseV1(
             lease_expires_at_unix_millis=_NOW + 180_000,
-            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+            desired_state=self.desired_state,
         )
 
     async def begin_execution(self, request):
@@ -342,9 +381,14 @@ class Control:
         )
 
     async def observe_desired_state(self, request):
+        self._record_desired_state()
         return control_pb2.ObserveDesiredStateResponseV1(
-            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
+            desired_state=self.desired_state,
         )
+
+    def _record_desired_state(self) -> None:
+        if self.desired_state == common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED:
+            self.cancellation_observed.set()
 
     async def prepare_settlement(self, request):
         self.settlements += 1
@@ -864,7 +908,19 @@ def test_progress_cancellation_winner_replaces_exact_sequence_and_settles(
                         "state": "in_progress",
                         "toolkit_id": 9,
                     },
-                )
+                ),
+                # Current synchronous SDKs may catch the first callback
+                # exception and continue emitting. The terminal cancellation
+                # winner must remain authoritative rather than becoming a
+                # retryable progress transport failure on this second event.
+                (
+                    "index_data_status",
+                    {
+                        "index_name": "docs",
+                        "state": "still_running",
+                        "toolkit_id": 9,
+                    },
+                ),
             ],
             # The current BaseIndexerToolkit catches callback failures and the
             # phase-one synchronous call remains non-preemptible.
@@ -913,6 +969,104 @@ def test_progress_cancellation_winner_replaces_exact_sequence_and_settles(
         assert not frames[0].terminal
         assert frames[1] == result.output_frame
         assert shared.frame is None
+        assert control.settlements == 1
+        assert acker.calls == 1
+
+    asyncio.run(run())
+
+
+def test_stop_cancels_async_index_input_and_settles_one_cancelled_terminal() -> None:
+    async def run() -> None:
+        case = _case()
+        control = Control(case)
+        input_client = BlockingInput()
+        acker = Acker()
+
+        async def forbidden_context(claim: IndexExecutionClaim) -> EliteaClientContext:
+            _ = claim
+            raise AssertionError("Stop before SDK input resolution reached client context")
+
+        processing = asyncio.create_task(
+            _processor(
+                case,
+                control=control,
+                input_client=input_client,
+                output=Output(),
+                acker=acker,
+                context_factory=forbidden_context,
+                lease_poll_interval_seconds=0.001,
+            ).process(case.delivery)
+        )
+        await asyncio.wait_for(input_client.started.wait(), timeout=1)
+        control.desired_state = common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED
+        await asyncio.wait_for(control.cancellation_observed.wait(), timeout=1)
+        result = await asyncio.wait_for(processing, timeout=1)
+
+        assert input_client.cancelled
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert (
+            result.output_frame.settlement_proposal.requested_outcome
+            == common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        assert control.settlements == 1
+        assert acker.calls == 1
+
+    asyncio.run(run())
+
+
+def test_stop_waits_for_sync_sdk_then_fences_its_late_success_as_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        sdk = BlockingSdk()
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            _ = claim
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        control = Control(case)
+        output = Output()
+        acker = Acker()
+        processing = asyncio.create_task(
+            _processor(
+                case,
+                control=control,
+                input_client=InputClient(case.values, []),
+                output=output,
+                acker=acker,
+                context_factory=context_factory,
+                lease_poll_interval_seconds=0.001,
+            ).process(case.delivery)
+        )
+        assert await asyncio.to_thread(sdk.started.wait, 1)
+        control.desired_state = common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED
+        await asyncio.wait_for(control.cancellation_observed.wait(), timeout=1)
+        assert not processing.done()
+        sdk.release.set()
+        result = await asyncio.wait_for(processing, timeout=1)
+
+        assert sdk.calls == 1
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert (
+            result.output_frame.settlement_proposal.requested_outcome
+            == common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        assert len(output.frames) == 1
+        assert output.frames[0] == result.output_frame
         assert control.settlements == 1
         assert acker.calls == 1
 
@@ -1065,6 +1219,7 @@ def _processor(
     clock=None,
     output_factory=None,
     supervisor=None,
+    lease_poll_interval_seconds=10,
 ):
     clock = clock or (lambda: _NOW)
     return IndexIngestDeliveryProcessor(
@@ -1081,7 +1236,7 @@ def _processor(
         workload_session_id=_WORKLOAD,
         producer_id=_PRODUCER,
         clock_unix_millis=clock,
-        lease_poll_interval_seconds=10,
+        lease_poll_interval_seconds=lease_poll_interval_seconds,
     )
 
 

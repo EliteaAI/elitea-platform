@@ -41,6 +41,7 @@ func TestCurrentIndexCancellationRepositoryBindsExactActiveTarget(t *testing.T) 
 	}
 	for _, predicate := range []string{
 		"job.execution_id = $1::text",
+		"job.tenant_id = ($2::integer)::text",
 		"job.resource_project_id = $2::integer",
 		"job.projection_project_id = $2::integer",
 		"job.capability_id = 'index.ingest.v1'",

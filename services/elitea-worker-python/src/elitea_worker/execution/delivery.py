@@ -320,10 +320,17 @@ class _IndexProgressOutput:
         self._started = False
         self._rejected_frame: output_pb2.ExecutionOutputFrameV1 | None = None
         self._fatal: _IndexProgressTransportFailure | None = None
+        self._terminal_winner: WorkerError | None = None
+        self._cancellation_check: Callable[[], None] | None = None
 
     @property
     def terminal_sequence(self) -> int:
         return self._next_sequence
+
+    def bind_cancellation_check(self, check: Callable[[], None]) -> None:
+        """Stop accepting new browser progress after durable cancellation."""
+
+        self._cancellation_check = check
 
     def publish_from_sdk(self, event: node_event_pb2.NodeEventV1) -> None:
         """Block the synchronous callback until Main durably ACKs its event."""
@@ -354,10 +361,23 @@ class _IndexProgressOutput:
         async with self._publish_lock:
             if self._fatal is not None:
                 raise self._fatal
-            if self._rejected_frame is not None:
-                raise _IndexProgressTransportFailure(
-                    "index progress output already has a terminal winner"
-                )
+            if self._terminal_winner is not None:
+                # The first rejected frame is retained for terminal
+                # replacement. Current synchronous SDKs can catch the first
+                # callback exception and keep emitting status events; those
+                # later callbacks must not turn an authoritative cancellation
+                # into a retryable transport failure.
+                return
+            if self._cancellation_check is not None:
+                try:
+                    self._cancellation_check()
+                except ExecutionCancelled as error:
+                    # Desired-state cancellation can arrive between SDK
+                    # callbacks, before a progress frame is sent. Remember it
+                    # so a sync SDK that swallows this first exception cannot
+                    # turn later callbacks into repeated failures.
+                    self._terminal_winner = error
+                    raise
             frame = build_node_event_output_frame(
                 self._verified,
                 event,
@@ -384,12 +404,14 @@ class _IndexProgressOutput:
                 except Exception as error:
                     if _is_output_cancellation_winner(error):
                         self._rejected_frame = frame
+                        self._terminal_winner = ExecutionCancelled()
                         await self._close_active()
-                        raise ExecutionCancelled() from error
+                        raise self._terminal_winner from error
                     if _is_output_deadline_winner(error):
                         self._rejected_frame = frame
+                        self._terminal_winner = DeadlineExceeded()
                         await self._close_active()
-                        raise DeadlineExceeded() from error
+                        raise self._terminal_winner from error
                     await self._close_active()
                     if (
                         attempt + 1 >= self._max_sessions
@@ -484,6 +506,7 @@ class _ClaimLeaseMonitor:
         self._renewal_sequence = 0
         self._failure: WorkerError | None = None
         self._cancellation: ExecutionCancelled | None = None
+        self._state_changed = asyncio.Event()
         self._stop = asyncio.Event()
         self._poll_lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -504,6 +527,12 @@ class _ClaimLeaseMonitor:
         self._raise_fatal_failure()
         if self._cancellation is not None:
             raise self._cancellation
+
+    async def wait_for_state_change(self) -> None:
+        """Wait for server-owned cancellation or a fatal lease failure."""
+
+        await self._state_changed.wait()
+        self.raise_if_failed()
 
     def _raise_fatal_failure(self) -> None:
         if self._failure is not None:
@@ -547,8 +576,10 @@ class _ClaimLeaseMonitor:
             # boundary, but is not a lease failure. Continue renewing while a
             # synchronous callable may still be running or producing effects.
             self._cancellation = error
+            self._state_changed.set()
         except WorkerError as error:
             self._failure = error
+            self._state_changed.set()
             raise
         except Exception as error:
             failure = DependencyUnavailable()
@@ -586,6 +617,37 @@ class _ClaimLeaseMonitor:
         self._lease_expires_at = renewed_expiry
         _require_running_desired_state(int(renewal.desired_state))
         _require_running_desired_state(int(observed.desired_state))
+
+
+async def _await_with_lease_state(
+    operation: Awaitable[object],
+    lease: _ClaimLeaseMonitor,
+) -> object:
+    """Race an async pre-SDK edge with durable desired-state observation.
+
+    Stop wins ties deliberately. The operation has not entered the bounded
+    synchronous SDK executor yet, so cancelling its task is cooperative and
+    cannot abandon an SDK thread or release its reservation prematurely.
+    """
+
+    operation_task = asyncio.create_task(operation)
+    state_task = asyncio.create_task(lease.wait_for_state_change())
+    try:
+        done, _ = await asyncio.wait(
+            (operation_task, state_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if state_task in done:
+            # ``wait_for_state_change`` raises the authoritative typed cause.
+            await state_task
+            raise AssertionError("lease state change returned without a cause")
+        return await operation_task
+    finally:
+        if not operation_task.done():
+            operation_task.cancel()
+        if not state_task.done():
+            state_task.cancel()
+        await asyncio.gather(operation_task, state_task, return_exceptions=True)
 
 
 class ConfigurationValidationDeliveryProcessor:
@@ -805,6 +867,8 @@ class ConfigurationValidationDeliveryProcessor:
             if not await self._begin_execution(receipt):
                 return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
             lease.start()
+            if progress is not None:
+                progress.bind_cancellation_check(lease.raise_if_failed)
             cancellation: ExecutionCancelled | None = None
             try:
                 await lease.check_now()
@@ -817,9 +881,10 @@ class ConfigurationValidationDeliveryProcessor:
                 try:
                     _raise_if_execution_deadline_exceeded(command, self._clock)
                     self._validate_capability_identity(command)
-                    resolved_input = await self._resolve_inputs(
+                    resolved_input = await self._resolve_inputs_with_lease(
                         accepted,
                         receipt=receipt,
+                        lease=lease,
                     )
                     _raise_if_execution_deadline_exceeded(command, self._clock)
                 except WorkerError as error:
@@ -982,6 +1047,25 @@ class ConfigurationValidationDeliveryProcessor:
             )
         )
         return await self._input_client.fetch(grant)
+
+    async def _resolve_inputs_with_lease(
+        self,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+        lease: _ClaimLeaseMonitor,
+    ) -> object:
+        """Cancel only pre-SDK asynchronous edges when the server says Stop.
+
+        The synchronous SDK bridge deliberately is not wrapped here: Python
+        cannot safely stop a running SDK thread. The lease remains live until
+        that callable exits and its terminal cancellation frame is fenced.
+        """
+
+        return await _await_with_lease_state(
+            self._resolve_inputs(accepted, receipt=receipt),
+            lease,
+        )
 
     async def _execute_resolved(
         self,
