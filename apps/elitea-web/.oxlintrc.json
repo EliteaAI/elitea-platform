@@ -31,7 +31,26 @@
     // Rule fixtures are deliberately-violating code, exercised only by
     // scripts/check-gates-selftest.mjs (which lints them per-case with this
     // same config, fixture-cwd-relative so the path-scoped overrides apply).
-    "tools/lint-rules/fixtures/**"
+    "tools/lint-rules/fixtures/**",
+    // unit S4: orval-emitted output (tags-split endpoint/mock files + zod
+    // models, including the scripted backfill for the handful orval's own
+    // zod-schema writer misses — see scripts/lib/orval-zod-backfill.mjs).
+    // Generated-code conventions apply (contract-tested per spec §6.3, not
+    // line-linted); this is the same treatment vitest.config.ts's coverage
+    // `exclude` already gives the directory. `mutator.ts` is deliberately
+    // OUTSIDE both globs below (it sits directly in `generated/`, not under
+    // a tag or `model/` subdirectory) — it is hand-written and stays linted.
+    "src/shared/api/generated/*/*",
+    "src/shared/api/generated/model/**",
+    // unit S5: scripts/gen-socket-contract.mjs output (spec §5.5). Same
+    // "generated-code conventions apply, contract-tested not line-linted"
+    // rationale as the S4 entries above — these two files are byte-for-byte
+    // reproducible from `node scripts/gen-socket-contract.mjs`
+    // (scripts/lib/socket-contract-render.mjs is the hand-authored,
+    // linted source of truth) and exceed max-lines purely because they
+    // enumerate 43 events / 34 discriminants with evidence comments.
+    "src/shared/api/socket/events.ts",
+    "src/shared/api/socket/messages.ts"
   ],
   "rules": {
     // ── hooks + a11y (D2: oxlint native react / jsx-a11y sets, R-C1) ──────
@@ -245,6 +264,46 @@
           "error",
           { "name": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts" },
           { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts" }
+        ]
+      }
+    },
+    {
+      // R-A1 sanctioned path (unit S6, spec §5.7 rows 1/3/5 + §2.4's http-core
+      // row: "the two exceptions... are the sanctioned deviations"). These
+      // three functions (S3 direct PUT, artifact blob/ZIP fetch, bucket/
+      // artifact list) are structurally incompatible with createHttpClient:
+      // they need a raw Blob body / response.blob() and, for the S3-proxy
+      // routes, a base URL with /api/v2 explicitly STRIPPED (the opposite of
+      // http.ts's contract) — http.ts's HttpResult<T> only ever parses
+      // text/JSON and never exposes response headers or blob bodies, and it
+      // cannot be edited here (F4 owns it). Spec errata: R-A1's table row
+      // ("fetch may only be called inside shared/api/http.ts") and the S6
+      // task's own framing only named 2 sanctioned deviations (this file's
+      // S3 PUT, and upload.ts's XHR); this override is the fix for the gap
+      // that left rows 3/5 unbuildable without it — flagged for folding back
+      // into the spec/decision-record.
+      "files": ["src/shared/api/artifacts.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts" },
+          { "name": "localStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" },
+          { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" }
+        ]
+      }
+    },
+    {
+      // R-A1 sanctioned path (unit S6, spec §5.7 row 4). Same rationale as
+      // the artifacts.ts override above: the markdown-export flow needs
+      // response.blob() + the Content-Disposition header, which
+      // createHttpClient cannot surface.
+      "files": ["src/shared/lib/download.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts" },
+          { "name": "localStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" },
+          { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" }
         ]
       }
     },

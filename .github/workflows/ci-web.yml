@@ -110,6 +110,33 @@ jobs:
           --coverage.thresholds.functions=100
           --coverage.thresholds.branches=100
           --coverage.thresholds.statements=100
+      - name: Generated-client mutator coverage (≥90%, §9.3 unit S4)
+        # src/shared/api/generated/** is blanket-excluded from the §6.3
+        # global coverage denominator (generated code is contract-tested,
+        # not line-covered) — but mutator.ts under that same directory is
+        # HAND-WRITTEN infra (unit S4's eliteaFetch adapter over F4's
+        # HttpClient), not orval output, and carries no coverage floor
+        # anywhere else. CLI-scoped `--coverage.exclude` overrides (does not
+        # append to) vitest.config.ts's array for this invocation only, so
+        # mutator.ts is the one file from that directory actually measured
+        # here; `--coverage.include` narrows the denominator to just it so
+        # the rest of generated/** (orval + backfill output) still doesn't
+        # count against these thresholds. Runs only once the file exists,
+        # matching this job's existing pending-unit convention.
+        run: |
+          if [ -f src/shared/api/generated/mutator.ts ]; then
+            npx vitest run --config vitest.config.ts --project node \
+              src/shared/api/generated/mutator.test.ts \
+              --coverage.enabled=true --coverage.all=false \
+              --coverage.include='src/shared/api/generated/mutator.ts' \
+              --coverage.exclude='src/shared/api/generated/mutator.test.ts' \
+              --coverage.thresholds.lines=90 \
+              --coverage.thresholds.functions=90 \
+              --coverage.thresholds.branches=85 \
+              --coverage.thresholds.statements=90
+          else
+            echo "mutator.ts pending (unit S4)"
+          fi
       - name: Complexity budgets (§3.5)
         run: node scripts/check-budgets.mjs
       - name: Endpoint manifest (R-A5)
