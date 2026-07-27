@@ -250,6 +250,65 @@ class EliteaSdkIndexingAdapter:
         )
 
 
+class EliteaSdkIndexSearchAdapter:
+    """Pinned adapter for the current index retrieval tool entrypoints.
+
+    ``search_index``, ``stepback_search_index`` and ``list_indexes`` are all
+    current toolkit tools, not Main-owned vector-store algorithms.  This seam
+    keeps their filters, full-text/extended search, reranking, model behavior,
+    result shapes and current exceptions in the admitted SDK.
+    """
+
+    _OPERATIONS = frozenset(
+        {"search_index", "stepback_search_index", "list_indexes"}
+    )
+
+    def __init__(self, client: Any) -> None:
+        client_type = _indexing_client_type()
+        if not isinstance(client, client_type):
+            raise TypeError(
+                "client must be an EliteAClient from the admitted SDK artifact"
+            )
+        self._client = client
+
+    @classmethod
+    def from_context(cls, context: EliteaClientContext) -> "EliteaSdkIndexSearchAdapter":
+        client_type = _indexing_client_type()
+        client = client_type(
+            project_id=context.project_id,
+            base_url=context.base_url,
+            auth_token=context.auth_token,
+        )
+        return cls(client)
+
+    def execute(
+        self,
+        *,
+        operation: str,
+        toolkit_config: dict[str, Any],
+        tool_params: dict[str, Any],
+        runtime_config: dict[str, Any],
+        llm_model: str | None,
+        llm_config: dict[str, Any],
+        mcp_tokens: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if operation not in self._OPERATIONS:
+            raise ValueError("unsupported index search operation")
+        # This mirrors indexer_test_toolkit.py: the current runtime passes the
+        # runtime config through and makes invocation-only copies of persisted
+        # toolkit/tool/LLM values. Do not validate, normalize, retry, cache or
+        # reformat the SDK result here.
+        return self._client.test_toolkit_tool(
+            toolkit_config=deepcopy(toolkit_config),
+            tool_name=operation,
+            tool_params=deepcopy(tool_params),
+            runtime_config=runtime_config,
+            llm_model=llm_model,
+            llm_config=deepcopy(llm_config),
+            mcp_tokens=mcp_tokens,
+        )
+
+
 def _current_index_tool_name_compatibility(
     toolkit_config: dict[str, Any],
 ) -> dict[str, Any]:

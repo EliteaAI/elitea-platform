@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// IndexSearchOperationV1 identifies the current SDK toolkit operation without
+// translating its tool parameters.  In particular, search_index,
+// stepback_search_index and list_indexes retain their different current
+// no-result and error result shapes.
+enum IndexSearchOperationV1 {
+  INDEX_SEARCH_OPERATION_V1_UNSPECIFIED = 0;
+  INDEX_SEARCH_OPERATION_V1_SEARCH_INDEX = 1;
+  INDEX_SEARCH_OPERATION_V1_STEPBACK_SEARCH_INDEX = 2;
+  INDEX_SEARCH_OPERATION_V1_LIST_INDEXES = 3;
+}
+
+// IndexSearchCommandV1 is the reference-only, language-neutral future command
+// for the three current index search toolkit operations.  It is deliberately
+// not attached to WorkerCommandV1 in this source-only slice, so no worker can
+// claim it before admission, RBAC, content retrieval and output composition
+// are implemented together.
+message IndexSearchCommandV1 {
+  IndexSearchOperationV1 operation = 1;
+  string toolkit_configuration_entry_id = 2;
+  string tool_parameters_entry_id = 3;
+  string llm_model_entry_id = 4;
+  string llm_configuration_entry_id = 5;
+  string mcp_tokens_entry_id = 6;
+  reserved 7 to 15;
+}
+
+// IndexSearchInputBindingV1 identifies exact immutable input content used by
+// the SDK.  The toolkit configuration remains authoritative for vector-store,
+// embedding model, dimension and collection compatibility; those values must
+// not be independently reconstructed by Main or a worker.
+message IndexSearchInputBindingV1 {
+  string entry_id = 1;
+  string immutable_version = 2;
+  DigestV1 content_digest = 3;
+  reserved 4 to 15;
+}
+
+// IndexSearchArtifactReferenceV1 identifies the canonical current-compatible
+// SDK response on the authenticated data plane.  Neither search documents,
+// no-result text, exception text, credentials nor toolkit configuration is
+// carried on the command or control plane.
+message IndexSearchArtifactReferenceV1 {
+  string artifact_id = 1;
+  string immutable_version = 2;
+  string media_type = 3;
+  uint64 byte_length = 4;
+  DigestV1 digest = 5;
+  string classification = 6;
+  reserved 7 to 15;
+}
+
+// IndexSearchResultV1 binds the SDK-owned response to its exact immutable
+// inputs.  The response artifact is intentionally opaque to Main: changing
+// filtering, full-text, extended-search, reranking, model or result rendering
+// is a separately evidenced SDK-port task, not a transport concern.
+message IndexSearchResultV1 {
+  IndexSearchOperationV1 operation = 1;
+  string input_bundle_id = 2;
+  DigestV1 input_bundle_digest = 3;
+  IndexSearchInputBindingV1 toolkit_configuration = 4;
+  IndexSearchInputBindingV1 tool_parameters = 5;
+  IndexSearchInputBindingV1 llm_model = 6;
+  IndexSearchInputBindingV1 llm_configuration = 7;
+  IndexSearchInputBindingV1 mcp_tokens = 8;
+  IndexSearchArtifactReferenceV1 result_artifact = 9;
+  reserved 10 to 15;
+}
