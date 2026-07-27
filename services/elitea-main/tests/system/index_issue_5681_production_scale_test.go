@@ -266,6 +266,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 		ctx,
 		harness,
 		executionID,
+		indexName,
 		environment.deniedCookie,
 		environment.secondProjectID,
 	)
@@ -750,6 +751,7 @@ func assertIssue5681PublicReadBoundaries(
 	ctx context.Context,
 	harness *indexComposeHarness,
 	executionID string,
+	indexName string,
 	deniedCookie string,
 	secondProjectID int64,
 ) {
@@ -788,6 +790,28 @@ func assertIssue5681PublicReadBoundaries(
 	response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("authenticated actor without replay permission reached SSE: status=%d", response.StatusCode)
+	}
+
+	stopEndpoint := fmt.Sprintf(
+		"%s/api/v2/elitea_core/index_cancel/prompt_lib/%d/%d/%s/%s",
+		harness.config.baseURL,
+		harness.config.projectID,
+		harness.config.toolkitID,
+		url.PathEscape(indexName),
+		executionID,
+	)
+	request, err = http.NewRequestWithContext(ctx, http.MethodDelete, stopEndpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Cookie", deniedCookie)
+	response, err = harness.config.httpClient.Do(request)
+	if err != nil {
+		t.Fatalf("exercise permission-denied Stop: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("authenticated actor without task-delete permission reached Stop: status=%d", response.StatusCode)
 	}
 
 	secondProjectEndpoint := fmt.Sprintf(
@@ -1081,7 +1105,7 @@ return cjson.encode({
 		evidence.MappingFieldBytes > 256 ||
 		evidence.MappingValueBytes <= 0 ||
 		evidence.MappingValueBytes > 64 {
-		t.Fatalf("invalid Redis command/delivery-index evidence: %+v", evidence)
+		t.Fatal("invalid Redis command/delivery-index evidence")
 	}
 	envelopeBytes, err := hex.DecodeString(evidence.EnvelopeHex)
 	if err != nil || int64(len(envelopeBytes)) != evidence.EnvelopeBytes {
@@ -1986,7 +2010,7 @@ func assertIssue5681PgVectorOutcome(
 		item.Metadata["state"] != "completed" ||
 		!issue5681JSONIntegerEquals(item.Metadata["indexed"], 1) ||
 		!issue5681JSONIntegerEquals(item.Metadata["updated"], 0) {
-		t.Fatalf("public PgVector metadata does not prove the exact completed business result: %+v", item)
+		t.Fatal("public PgVector metadata does not prove the exact completed business result")
 	}
 }
 
