@@ -1,0 +1,791 @@
+{
+  "$comment": "endpoints.manifest.json — the R-A5 contract (spec §3.4/§5.3, unit S4). Every network call the app makes must have an entry here; scripts/check-endpoint-manifest.mjs enforces it in CI. Seeded 2026-07-27 from the 78 operations orval's react-query generator produced (npx orval, src/shared/api/generated/**). APPEND CONVENTION for later Wave-2 units: add one object to `endpoints`, id unique (`<domain>.<action>`), source:'handwritten', operationId:null, responseSchema names the hand-authored zod export, fixture points at its Channel-B recording once M1's recorder has run, usedBy lists the consuming feature slice(s) — keep it current. Append only; never remove or renumber another unit's entries. See scripts/check-endpoint-manifest.mjs's header for the full convention.",
+  "version": 1,
+  "generatedFrom": {
+    "spec": "services/elitea-main/api/openapi/v2.yaml",
+    "tool": "orval@8.23.0",
+    "date": "2026-07-27"
+  },
+  "endpoints": [
+    {
+      "id": "admin.createModerationRequest",
+      "method": "POST",
+      "path": "/admin/moderation_status/default/{project_id}/{entity_id}",
+      "operationId": "createModerationRequest",
+      "source": "generated",
+      "responseSchema": "ModerationStatusResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.getPlatformSettings",
+      "method": "GET",
+      "path": "/elitea_core/platform_settings/prompt_lib",
+      "operationId": "getPlatformSettings",
+      "source": "generated",
+      "responseSchema": "PlatformSettings",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.getSupportAssistantConfig",
+      "method": "GET",
+      "path": "/support_assistant/config",
+      "operationId": "getSupportAssistantConfig",
+      "source": "generated",
+      "responseSchema": "SupportAssistantConfig",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.moderationStatus",
+      "method": "GET",
+      "path": "/admin/moderation_status/default/{project_id}/{entity_id}",
+      "operationId": "moderationStatus",
+      "source": "generated",
+      "responseSchema": "ModerationStatusResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.roleList",
+      "method": "GET",
+      "path": "/admin/roles/default/{project_id}",
+      "operationId": "roleList",
+      "source": "generated",
+      "responseSchema": "Role[]",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.userCreate",
+      "method": "POST",
+      "path": "/admin/users/default/{project_id}",
+      "operationId": "userCreate",
+      "source": "generated",
+      "responseSchema": "UserListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.userDelete",
+      "method": "DELETE",
+      "path": "/admin/users/default/{project_id}",
+      "operationId": "userDelete",
+      "source": "generated",
+      "responseSchema": "UserListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.userList",
+      "method": "GET",
+      "path": "/admin/users/default/{project_id}",
+      "operationId": "userList",
+      "source": "generated",
+      "responseSchema": "UserListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "admin.userUpdate",
+      "method": "PUT",
+      "path": "/admin/users/default/{project_id}",
+      "operationId": "userUpdate",
+      "source": "generated",
+      "responseSchema": "UserListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.getAnalyticsAgentDetail",
+      "method": "GET",
+      "path": "/elitea_core/analytics_agent_detail/prompt_lib/{project_id}",
+      "operationId": "getAnalyticsAgentDetail",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.getAnalyticsToolDetail",
+      "method": "GET",
+      "path": "/elitea_core/analytics_tool_detail/prompt_lib/{project_id}",
+      "operationId": "getAnalyticsToolDetail",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.getAnalyticsUserDetail",
+      "method": "GET",
+      "path": "/elitea_core/analytics_user_detail/prompt_lib/{project_id}",
+      "operationId": "getAnalyticsUserDetail",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.getProjectAnalytics",
+      "method": "GET",
+      "path": "/elitea_core/analytics/prompt_lib/{project_id}",
+      "operationId": "getProjectAnalytics",
+      "source": "generated",
+      "responseSchema": "ProjectAnalytics",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.listAnalyticsAgents",
+      "method": "GET",
+      "path": "/elitea_core/analytics_agents/prompt_lib/{project_id}",
+      "operationId": "listAnalyticsAgents",
+      "source": "generated",
+      "responseSchema": "AnalyticsAgentsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.listAnalyticsTools",
+      "method": "GET",
+      "path": "/elitea_core/analytics_tools/prompt_lib/{project_id}",
+      "operationId": "listAnalyticsTools",
+      "source": "generated",
+      "responseSchema": "AnalyticsToolsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "analytics.listAnalyticsUsers",
+      "method": "GET",
+      "path": "/elitea_core/analytics_users/prompt_lib/{project_id}",
+      "operationId": "listAnalyticsUsers",
+      "source": "generated",
+      "responseSchema": "AnalyticsUsersList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.batchReplaceVersionReferences",
+      "method": "POST",
+      "path": "/elitea_core/batch_replace_version/prompt_lib/{project_id}/{old_version_id}/{new_version_id}",
+      "operationId": "batchReplaceVersionReferences",
+      "source": "generated",
+      "responseSchema": "OkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.checkVersionInUse",
+      "method": "GET",
+      "path": "/elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "checkVersionInUse",
+      "source": "generated",
+      "responseSchema": "ApplicationRelationList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.convertLegacyApplication",
+      "method": "POST",
+      "path": "/elitea_core/export_converter/prompt_lib",
+      "operationId": "convertLegacyApplication",
+      "source": "generated",
+      "responseSchema": "ExportConverterResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.createApplication",
+      "method": "POST",
+      "path": "/elitea_core/applications/prompt_lib/{project_id}",
+      "operationId": "createApplication",
+      "source": "generated",
+      "responseSchema": "ApplicationCreatedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.deleteApplication",
+      "method": "DELETE",
+      "path": "/elitea_core/application/prompt_lib/{project_id}/{application_id}",
+      "operationId": "deleteApplication",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.deleteApplicationIcon",
+      "method": "DELETE",
+      "path": "/elitea_core/upload_icon/prompt_lib/{project_id}/{name}",
+      "operationId": "deleteApplicationIcon",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.deleteApplicationTool",
+      "method": "DELETE",
+      "path": "/elitea_core/tool/prompt_lib/{project_id}/{tool_id}",
+      "operationId": "deleteApplicationTool",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.deleteApplicationVersion",
+      "method": "DELETE",
+      "path": "/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "deleteApplicationVersion",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.editApplication",
+      "method": "PUT",
+      "path": "/elitea_core/application/prompt_lib/{project_id}/{id}",
+      "operationId": "editApplication",
+      "source": "generated",
+      "responseSchema": "ApplicationUpdatedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.exportApplication",
+      "method": "GET",
+      "path": "/elitea_core/export_import/prompt_lib/{project_id}/{id}",
+      "operationId": "exportApplication",
+      "source": "generated",
+      "responseSchema": "ApplicationExportResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.forkAgent",
+      "method": "POST",
+      "path": "/elitea_core/fork/prompt_lib/{project_id}",
+      "operationId": "forkAgent",
+      "source": "generated",
+      "responseSchema": "ForkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.generateAgentDraft",
+      "method": "POST",
+      "path": "/elitea_core/generate_application_draft/prompt_lib/{project_id}",
+      "operationId": "generateAgentDraft",
+      "source": "generated",
+      "responseSchema": "PredictResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getAgentCategories",
+      "method": "GET",
+      "path": "/elitea_core/agent_categories/prompt_lib/{project_id}",
+      "operationId": "getAgentCategories",
+      "source": "generated",
+      "responseSchema": "AgentCategoriesResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getApplication",
+      "method": "GET",
+      "path": "/elitea_core/application/prompt_lib/{project_id}/{application_id}",
+      "operationId": "getApplication",
+      "source": "generated",
+      "responseSchema": "ApplicationDetail",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getApplicationDefaultIcons",
+      "method": "GET",
+      "path": "/elitea_core/default_icons/prompt_lib/{project_id}",
+      "operationId": "getApplicationDefaultIcons",
+      "source": "generated",
+      "responseSchema": "DefaultIcon[]",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getApplicationIcons",
+      "method": "GET",
+      "path": "/elitea_core/upload_icon/prompt_lib/{project_id}",
+      "operationId": "getApplicationIcons",
+      "source": "generated",
+      "responseSchema": "UploadedIconsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getApplicationVersionDetail",
+      "method": "GET",
+      "path": "/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "getApplicationVersionDetail",
+      "source": "generated",
+      "responseSchema": "ApplicationVersionDetail",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getDocumentLoaders",
+      "method": "GET",
+      "path": "/elitea_core/index_types/prompt_lib/{project_id}",
+      "operationId": "getDocumentLoaders",
+      "source": "generated",
+      "responseSchema": "DocumentLoadersResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getPipelineTrigger",
+      "method": "GET",
+      "path": "/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger",
+      "operationId": "getPipelineTrigger",
+      "source": "generated",
+      "responseSchema": "PipelineTrigger",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getProjectContext",
+      "method": "GET",
+      "path": "/elitea_core/project_context/prompt_lib/{project_id}/project-context",
+      "operationId": "getProjectContext",
+      "source": "generated",
+      "responseSchema": "ProjectContext",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getPublicApplication",
+      "method": "GET",
+      "path": "/elitea_core/public_application/prompt_lib/{application_id}/{version_name}",
+      "operationId": "getPublicApplication",
+      "source": "generated",
+      "responseSchema": "PublicApplicationDetail",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getRecommendations",
+      "method": "GET",
+      "path": "/elitea_core/recommendations/prompt_lib/{project_id}",
+      "operationId": "getRecommendations",
+      "source": "generated",
+      "responseSchema": "RecommendationsResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.getTrendingAuthors",
+      "method": "GET",
+      "path": "/elitea_core/trending_authors/prompt_lib/{project_id}",
+      "operationId": "getTrendingAuthors",
+      "source": "generated",
+      "responseSchema": "TrendingAuthor[]",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.importWizard",
+      "method": "POST",
+      "path": "/elitea_core/import_wizard/prompt_lib/{project_id}",
+      "operationId": "importWizard",
+      "source": "generated",
+      "responseSchema": "ImportWizardResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.listApplications",
+      "method": "GET",
+      "path": "/elitea_core/applications/prompt_lib/{project_id}",
+      "operationId": "listApplications",
+      "source": "generated",
+      "responseSchema": "ApplicationList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.listGroups",
+      "method": "GET",
+      "path": "/projects/groups/prompt_lib",
+      "operationId": "listGroups",
+      "source": "generated",
+      "responseSchema": "GroupsListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.listProjects",
+      "method": "GET",
+      "path": "/projects/project/default/{public_project_id}",
+      "operationId": "listProjects",
+      "source": "generated",
+      "responseSchema": "Project[]",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.listPublicApplications",
+      "method": "GET",
+      "path": "/elitea_core/public_applications/prompt_lib",
+      "operationId": "listPublicApplications",
+      "source": "generated",
+      "responseSchema": "PublicApplicationList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.publishApplication",
+      "method": "POST",
+      "path": "/elitea_core/publish/prompt_lib/{project_id}/{version_id}",
+      "operationId": "publishApplication",
+      "source": "generated",
+      "responseSchema": "PublishSuccessResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.putProjectGroups",
+      "method": "PUT",
+      "path": "/projects/groups/prompt_lib/{project_id}",
+      "operationId": "putProjectGroups",
+      "source": "generated",
+      "responseSchema": "ProjectGroupsUpdate",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.replaceApplicationIcon",
+      "method": "PUT",
+      "path": "/elitea_core/upload_icon/prompt_lib/{project_id}/{version_id}",
+      "operationId": "replaceApplicationIcon",
+      "source": "generated",
+      "responseSchema": "OkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.saveApplicationNewVersion",
+      "method": "POST",
+      "path": "/elitea_core/versions/prompt_lib/{project_id}/{application_id}",
+      "operationId": "saveApplicationNewVersion",
+      "source": "generated",
+      "responseSchema": "ApplicationVersionDetail",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.setAgentAttachmentStorage",
+      "method": "PUT",
+      "path": "/elitea_core/application_attachment_storage/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "setAgentAttachmentStorage",
+      "source": "generated",
+      "responseSchema": "OkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.setApplicationDefaultVersion",
+      "method": "PATCH",
+      "path": "/elitea_core/default_version/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "setApplicationDefaultVersion",
+      "source": "generated",
+      "responseSchema": "OkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.unpublishApplication",
+      "method": "POST",
+      "path": "/elitea_core/unpublish/prompt_lib/{project_id}/{version_id}",
+      "operationId": "unpublishApplication",
+      "source": "generated",
+      "responseSchema": "UnpublishResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.updateApplicationRelation",
+      "method": "PATCH",
+      "path": "/elitea_core/application_relation/prompt_lib/{project_id}/{selected_application_id}/{selected_version_id}",
+      "operationId": "updateApplicationRelation",
+      "source": "generated",
+      "responseSchema": "ApplicationRelationUpdatedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.updateApplicationVersion",
+      "method": "PUT",
+      "path": "/elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "updateApplicationVersion",
+      "source": "generated",
+      "responseSchema": "ApplicationVersionDetail",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.updatePipelineTrigger",
+      "method": "PUT",
+      "path": "/elitea_core/pipeline_trigger/prompt_lib/{project_id}/pipeline/{version_id}/trigger",
+      "operationId": "updatePipelineTrigger",
+      "source": "generated",
+      "responseSchema": "PipelineTrigger",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.updateProjectContext",
+      "method": "PUT",
+      "path": "/elitea_core/project_context/prompt_lib/{project_id}/project-context",
+      "operationId": "updateProjectContext",
+      "source": "generated",
+      "responseSchema": "ProjectContext",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.uploadApplicationIcon",
+      "method": "POST",
+      "path": "/elitea_core/upload_icon/prompt_lib/{project_id}/{version_id}",
+      "operationId": "uploadApplicationIcon",
+      "source": "generated",
+      "responseSchema": "IconUploadResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.validateApplicationVersion",
+      "method": "GET",
+      "path": "/elitea_core/version_validator/prompt_lib/{project_id}/{application_id}/{version_id}",
+      "operationId": "validateApplicationVersion",
+      "source": "generated",
+      "responseSchema": "VersionValidatorResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "applications.validateForPublish",
+      "method": "POST",
+      "path": "/elitea_core/publish_validate/prompt_lib/{project_id}/{version_id}",
+      "operationId": "validateForPublish",
+      "source": "generated",
+      "responseSchema": "PublishValidationResult",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.artifactList",
+      "method": "GET",
+      "path": "/artifacts/s3/{bucket}",
+      "operationId": "artifactList",
+      "source": "generated",
+      "responseSchema": "S3ObjectListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.bucketList",
+      "method": "GET",
+      "path": "/artifacts/s3",
+      "operationId": "bucketList",
+      "source": "generated",
+      "responseSchema": "S3BucketListResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.createArtifact",
+      "method": "POST",
+      "path": "/artifacts/artifacts/default/{project_id}/{bucket}",
+      "operationId": "createArtifact",
+      "source": "generated",
+      "responseSchema": "ArtifactUploadResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.createBucket",
+      "method": "POST",
+      "path": "/artifacts/buckets/default/{project_id}",
+      "operationId": "createBucket",
+      "source": "generated",
+      "responseSchema": "BucketCreatedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.deleteArtifact",
+      "method": "DELETE",
+      "path": "/artifacts/artifact/default/{project_id}/{bucket}",
+      "operationId": "deleteArtifact",
+      "source": "generated",
+      "responseSchema": "ArtifactDeletedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.deleteArtifacts",
+      "method": "DELETE",
+      "path": "/artifacts/artifacts/default/{project_id}/{bucket}",
+      "operationId": "deleteArtifacts",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.deleteBucket",
+      "method": "DELETE",
+      "path": "/artifacts/buckets/default/{project_id}",
+      "operationId": "deleteBucket",
+      "source": "generated",
+      "responseSchema": "BucketDeletedResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.editBucket",
+      "method": "PUT",
+      "path": "/artifacts/buckets/default/{project_id}",
+      "operationId": "editBucket",
+      "source": "generated",
+      "responseSchema": "Bucket",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "artifacts.updateBucketPin",
+      "method": "PATCH",
+      "path": "/artifacts/buckets/default/{project_id}",
+      "operationId": "updateBucketPin",
+      "source": "generated",
+      "responseSchema": "Bucket",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "auth.permissionList",
+      "method": "GET",
+      "path": "/auth/permissions/prompt_lib/{project_id}",
+      "operationId": "permissionList",
+      "source": "generated",
+      "responseSchema": "Permission[]",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "chat.getChatConfig",
+      "method": "GET",
+      "path": "/elitea_core/chat_config/prompt_lib/{project_id}",
+      "operationId": "getChatConfig",
+      "source": "generated",
+      "responseSchema": "ChatConfig",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "chat.webchatSync",
+      "method": "POST",
+      "path": "/elitea_core/webchat/prompt_lib/{project_id}/{version_id}",
+      "operationId": "webchatSync",
+      "source": "generated",
+      "responseSchema": "PredictResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "default.getBrandingBootstrap",
+      "method": "GET",
+      "path": "/branding/bootstrap.js",
+      "operationId": "getBrandingBootstrap",
+      "source": "generated",
+      "responseSchema": null,
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "settings.patchEntitySettings",
+      "method": "PATCH",
+      "path": "/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}",
+      "operationId": "patchEntitySettings",
+      "source": "generated",
+      "responseSchema": "OkResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "settings.replaceParticipantSettings",
+      "method": "PUT",
+      "path": "/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}",
+      "operationId": "replaceParticipantSettings",
+      "source": "generated",
+      "responseSchema": "EntitySettingsUpdateResponse",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "skills.createSkill",
+      "method": "POST",
+      "path": "/elitea_core/skills/prompt_lib/{project_id}",
+      "operationId": "createSkill",
+      "source": "generated",
+      "responseSchema": "Skill",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "skills.listApplicationSkills",
+      "method": "GET",
+      "path": "/elitea_core/application_skills/prompt_lib/{project_id}/{app_version_id}",
+      "operationId": "listApplicationSkills",
+      "source": "generated",
+      "responseSchema": "SkillsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "skills.listSkills",
+      "method": "GET",
+      "path": "/elitea_core/skills/prompt_lib/{project_id}",
+      "operationId": "listSkills",
+      "source": "generated",
+      "responseSchema": "SkillsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "tags.listTags",
+      "method": "GET",
+      "path": "/elitea_core/tags/prompt_lib/{project_id}",
+      "operationId": "listTags",
+      "source": "generated",
+      "responseSchema": "TagsList",
+      "fixture": null,
+      "usedBy": []
+    },
+    {
+      "id": "toolkits.listToolkits",
+      "method": "GET",
+      "path": "/elitea_core/toolkits/prompt_lib/{project_id}",
+      "operationId": "listToolkits",
+      "source": "generated",
+      "responseSchema": "ToolkitTypeSchemas",
+      "fixture": null,
+      "usedBy": []
+    }
+  ]
+}
