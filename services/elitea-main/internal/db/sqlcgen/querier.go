@@ -83,6 +83,7 @@ type Querier interface {
 	// decoding before applying section-specific response shaping. ID order gives
 	// duplicate candidates a deterministic baseline order.
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
+	ListCurrentProjectAuthors(ctx context.Context, projectID int32) ([]ListCurrentProjectAuthorsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.

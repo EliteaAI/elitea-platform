@@ -151,6 +151,17 @@ type CentrySocialPin struct {
 	UpdatedAt pgtype.Timestamp `db:"updated_at" json:"updated_at"`
 }
 
+type CentrySocialUser struct {
+	ID                       int32   `db:"id" json:"id"`
+	UserID                   int32   `db:"user_id" json:"user_id"`
+	Avatar                   *string `db:"avatar" json:"avatar"`
+	Title                    *string `db:"title" json:"title"`
+	Description              *string `db:"description" json:"description"`
+	Personalization          []byte  `db:"personalization" json:"personalization"`
+	DefaultContextManagement []byte  `db:"default_context_management" json:"default_context_management"`
+	DefaultSummarization     []byte  `db:"default_summarization" json:"default_summarization"`
+}
+
 type Configuration struct {
 	ID          int32            `db:"id" json:"id"`
 	Uuid        pgtype.UUID      `db:"uuid" json:"uuid"`
