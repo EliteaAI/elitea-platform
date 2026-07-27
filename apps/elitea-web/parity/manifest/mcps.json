@@ -313,7 +313,7 @@
         "testId": "api > mcpOAuth.js > exchangeMcpOAuthToken"
       },
       "unit": "A5",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/mcps/index.ts",
         "min": 88
@@ -341,7 +341,7 @@
         "testId": "api > mcpOAuth.js > refreshMcpOAuthToken"
       },
       "unit": "A5",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/mcps/index.ts",
         "min": 88
@@ -369,7 +369,7 @@
         "testId": "api > mcpOAuth.js > registerMcpDynamicClient"
       },
       "unit": "A5",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/mcps/index.ts",
         "min": 88
@@ -397,7 +397,7 @@
         "testId": "transport > mcpClient.helpers.js:12"
       },
       "unit": "A5",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/mcps/index.ts",
         "min": 88
@@ -425,7 +425,7 @@
         "testId": "transport > mcpClient.helpers.js:83"
       },
       "unit": "A5",
-      "status": "todo",
+      "status": "implemented",
       "coverage": {
         "file": "src/features/mcps/index.ts",
         "min": 88

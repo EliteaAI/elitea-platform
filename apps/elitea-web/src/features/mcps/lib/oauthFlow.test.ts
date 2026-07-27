@@ -1,0 +1,288 @@
+/**
+ * §6.2 discipline: no `vi.mock()` of application modules (R-M1 — mocks are
+ * sanctioned ONLY for the network boundary (MSW, already used below) and
+ * the socket double). `window.ts`'s real `openAuthPopup`/
+ * `navigateAuthPopup`/`createAuthorizationMonitor` run for real here; the
+ * only stub is the actual browser global `window.open` (a real DOM API,
+ * the true I/O boundary a popup-based flow has), exactly like
+ * `window.test.ts`'s own technique. Because the OAuth `state` is generated
+ * INSIDE `startMcpAuthFlow` (unknown to the test up front), each test
+ * captures it by reading the fake popup's `location.href` the flow
+ * navigates to (real `buildAuthorizationUrl` output) and parsing out the
+ * `state` query param, then resolves the flow with a real `postMessage`
+ * `MessageEvent` — the same channel `createAuthorizationMonitor` really
+ * listens on.
+ */
+import { http, HttpResponse } from 'msw';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+
+import { server } from '../../../test/setup';
+
+import { getAccessToken } from './storage';
+import { startMcpAuthFlow } from './oauthFlow';
+
+interface FakePopup {
+  closed: boolean;
+  location: { href: string };
+  document: { body: { style: { cssText: string }; appendChild: (node: unknown) => void }; createElement: (tag: string) => { style: Record<string, unknown>; textContent: string } };
+}
+
+/** A fake `window.open()` return value shaped for BOTH `openAuthPopup` (writes a placeholder into `popup.document.body`) and `navigateAuthPopup` (sets `popup.location.href`). */
+function makeFakePopup(): FakePopup {
+  return {
+    closed: false,
+    location: { href: '' },
+    document: {
+      body: { style: { cssText: '' }, appendChild: () => {} },
+      createElement: () => ({ style: {}, textContent: '' }),
+    },
+  };
+}
+
+function stubPopup(): { popup: FakePopup; openSpy: MockInstance<typeof window.open> } {
+  const popup = makeFakePopup();
+  const openSpy: MockInstance<typeof window.open> = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+  return { popup, openSpy };
+}
+
+function stateFromPopupUrl(popup: FakePopup): string {
+  const url = new URL(popup.location.href);
+  const state = url.searchParams.get('state');
+  if (!state) throw new Error(`test setup: popup was never navigated to an authorize URL with a state param (got "${popup.location.href}")`);
+  return state;
+}
+
+/** Dispatches the SAME shape `pages/mcps`' callback page really sends, on the SAME channel `createAuthorizationMonitor` really listens on (`window` `message` events, spec §6.2: real browser messaging, not a mocked module). */
+function deliverAuthResult(result: { code?: string; error?: string; error_description?: string }, state: string): void {
+  window.dispatchEvent(
+    new MessageEvent('message', {
+      origin: window.location.origin,
+      data: { type: 'mcp-auth-result', state, ...result },
+    }),
+  );
+}
+
+afterEach(() => {
+  window.sessionStorage.clear();
+  resetGeneratedClient();
+  vi.restoreAllMocks();
+});
+
+describe('startMcpAuthFlow', () => {
+  it('rejects immediately when neither serverUrl nor a pre-built toolkitType is given', async () => {
+    const { openSpy } = stubPopup();
+    await expect(startMcpAuthFlow({ resourceMetadata: {} })).rejects.toThrow('Missing MCP server URL');
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects with POPUP_BLOCKED when window.open returns null', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    await expect(startMcpAuthFlow({ serverUrl: 'https://mcp.example.com', resourceMetadata: {} })).rejects.toThrow(/Popup blocked/);
+  });
+
+  it('rejects with MISSING_CLIENT_ID when the server has no DCR endpoint and no client_id was supplied', async () => {
+    stubPopup();
+    await expect(
+      startMcpAuthFlow({
+        serverUrl: 'https://mcp.example.com',
+        resourceMetadata: {
+          oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+        },
+      }),
+    ).rejects.toThrow(/Client ID is required/);
+  });
+
+  it('completes the full DCR + PKCE flow: registers a client, navigates the popup, exchanges the code, and persists the token', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let dcrBody: unknown;
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_dcr_proxy/7', async ({ request }) => {
+        dcrBody = await request.json();
+        return HttpResponse.json({ client_id: 'dcr-issued-client' });
+      }),
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/7', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'issued-access-token', expires_in: 3600, refresh_token: 'issued-refresh' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://mcp.example.com',
+      projectId: 7,
+      resourceMetadata: {
+        oauth_authorization_server: {
+          authorization_endpoint: 'https://as.example.com/authorize',
+          token_endpoint: 'https://as.example.com/token',
+          registration_endpoint: 'https://as.example.com/register',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-1' }, stateFromPopupUrl(popup));
+
+    const result = await flowPromise;
+
+    expect(result.access_token).toBe('issued-access-token');
+    expect(dcrBody).toMatchObject({ registration_endpoint: 'https://as.example.com/register' });
+    expect(exchangeBody).toMatchObject({ grant_type: 'authorization_code', code: 'auth-code-1', client_id: 'dcr-issued-client' });
+    expect(exchangeBody).toHaveProperty('code_verifier'); // PKCE used (no client_secret supplied)
+    expect(getAccessToken('https://mcp.example.com')).toBe('issued-access-token');
+  });
+
+  it('uses a caller-supplied client_id/secret when the server has no DCR endpoint, without PKCE', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'manual-flow-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://manual.example.com',
+      clientId: 'manual-client',
+      clientSecret: 'manual-secret',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    expect(popup.location.href).not.toContain('code_challenge'); // no PKCE: server doesn't advertise S256 AND a client_secret was supplied
+    deliverAuthResult({ code: 'auth-code-2' }, stateFromPopupUrl(popup));
+
+    await flowPromise;
+    expect(exchangeBody).toMatchObject({ client_id: 'manual-client', client_secret: 'manual-secret' });
+    expect(exchangeBody).not.toHaveProperty('code_verifier');
+  });
+
+  it('propagates a "no authorization code" rejection when the popup reports success with no code', async () => {
+    const { popup } = stubPopup();
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://no-code.example.com',
+      clientId: 'c',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+    const assertion = expect(flowPromise).rejects.toThrow('No authorization code received from popup');
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    // Reaching startMcpAuthFlow's OWN "no code" check (as opposed to
+    // createAuthorizationMonitor's own onError branch, covered by
+    // window.test.ts) needs `waitForAuthorizationResult` to RESOLVE
+    // without a `code` — the real success/tokenData-but-no-code shape
+    // `handleAuthResult` accepts (baseline: `mcpAuthWindow.helpers.js`'s
+    // `data.type === 'mcp-auth-result' && data.success && data.tokenData` branch).
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'mcp-auth-result', state: stateFromPopupUrl(popup), success: true, tokenData: {} },
+      }),
+    );
+
+    await assertion;
+  });
+
+  it('propagates a rejection when the OAuth provider reports an error (e.g. user cancelled)', async () => {
+    const { popup } = stubPopup();
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://cancelled.example.com',
+      clientId: 'c',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+    const assertion = expect(flowPromise).rejects.toThrow('Authorization cancelled by user');
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ error: 'Authorization cancelled by user' }, stateFromPopupUrl(popup));
+
+    await assertion;
+  });
+
+  it('rejects when the exchange call fails', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+    server.use(http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', () => HttpResponse.json({ error: 'invalid_grant' }, { status: 400 })));
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://exchange-fails.example.com',
+      clientId: 'c',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+    const assertion = expect(flowPromise).rejects.toThrow();
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-fail' }, stateFromPopupUrl(popup));
+
+    await assertion;
+  });
+
+  it('a pre-built MCP (toolkitType) omits its client_id/secret from the exchange UNLESS DCR was used', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'prebuild-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      toolkitType: 'mcp_github',
+      clientId: 'preset-client', // no DCR endpoint below -> credentials NOT sent for a pre-built MCP
+      clientSecret: 'preset-secret',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://github.com/login/oauth/authorize', token_endpoint: 'https://github.com/login/oauth/access_token' },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://github.com/login/oauth/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'prebuild-code' }, stateFromPopupUrl(popup));
+
+    const result = await flowPromise;
+    expect(result.access_token).toBe('prebuild-token');
+    expect(exchangeBody).not.toHaveProperty('client_id');
+    expect(exchangeBody).not.toHaveProperty('client_secret');
+    expect(exchangeBody).toMatchObject({ toolkit_type: 'mcp_github' });
+    expect(getAccessToken(undefined, 'mcp_github')).toBe('prebuild-token'); // stored under toolkitType, not serverUrl
+  });
+
+  it('reuses a caller-provided authWindow instead of opening a new popup', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup, openSpy } = stubPopup();
+    server.use(http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', () => HttpResponse.json({ access_token: 'reused-token' })));
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://reused.example.com',
+      clientId: 'c',
+      authWindow: popup as unknown as Window,
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    expect(openSpy).not.toHaveBeenCalled(); // the SUPPLIED window was navigated, window.open was never called
+    deliverAuthResult({ code: 'reused-window-code' }, stateFromPopupUrl(popup));
+
+    await expect(flowPromise).resolves.toMatchObject({ access_token: 'reused-token' });
+  });
+});

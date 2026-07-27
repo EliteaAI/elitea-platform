@@ -60,7 +60,6 @@
     "@hookform/resolvers",
     "@mui/x-date-pickers",
     "@xyflow/react",
-    "date-fns",
     "react-hook-form",
     "recharts",
     "@axe-core/playwright",
@@ -103,5 +102,9 @@
     // ignoreDependencies" configuration hints, confirmed empirically (see
     // note above the remaining list) — every one now has a real consumer
     // knip finds on its own, same pattern as every removal noted above.
+    // [A11] `date-fns` REMOVED from this list: `NotificationListItem.tsx`'s
+    // relative-time-ago string (`formatDistanceToNow`, ported from
+    // `NotificationListItem.jsx:3,105`) is its first real consumer — knip's
+    // own "Remove from ignoreDependencies" hint confirmed this empirically.
   ]
 }
