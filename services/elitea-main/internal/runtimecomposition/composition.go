@@ -268,6 +268,33 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			)
 		}
 	}
+	indexMetaTaskRestampReconciler, err :=
+		newConfiguredCurrentIndexMetaTaskRestampReconciler(
+			config.IndexIngestDispatchEnabled,
+			dependencies.TerminalEffectsPool,
+			dependencies.CurrentConfigurations,
+			currentIndexMetaWriter,
+			func(err error) {
+				dependencies.Logger.Error(
+					"current index metadata task restamp item requeued",
+					"err",
+					err,
+				)
+			},
+			func(err error) {
+				dependencies.Logger.Error(
+					"current index metadata task restamp reconciliation failed",
+					"err",
+					err,
+				)
+			},
+		)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"construct current index metadata task restamp reconciler: %w",
+			err,
+		)
+	}
 
 	outbox, err := repos.NewCommandOutboxRepository(dependencies.AdmissionPool, config.CommandStream)
 	if err != nil {
@@ -413,6 +440,16 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, fmt.Errorf(
 				"compose current index manual Stop cleanup reconciler: %w",
+				err,
+			)
+		}
+		publisherRoot, err = newPublisherSet(
+			publisherRoot,
+			indexMetaTaskRestampReconciler,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"compose current index metadata task restamp reconciler: %w",
 				err,
 			)
 		}

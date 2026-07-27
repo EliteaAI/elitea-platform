@@ -10,6 +10,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,10 +51,38 @@ type currentIndexMetaTaskRestampStore interface {
 	) error
 }
 
+func newConfiguredCurrentIndexMetaTaskRestampReconciler(
+	indexDispatchEnabled bool,
+	effectPool *pgxpool.Pool,
+	configurations *CurrentConfigurationsRuntime,
+	writer *pgvector.CurrentIndexMetaWriter,
+	reportItemFailure func(error),
+	reportCycleFailure func(error),
+) (*currentIndexMetaTaskRestampReconciler, error) {
+	if !indexDispatchEnabled {
+		return nil, nil
+	}
+	processor, err := newCurrentIndexMetaTaskRestampProcessor(
+		effectPool,
+		configurations,
+		writer,
+		reportItemFailure,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return newCurrentIndexMetaTaskRestampReconciler(
+		processor,
+		500*time.Millisecond,
+		2*processor.concurrency,
+		reportCycleFailure,
+	)
+}
+
 func newCurrentIndexMetaTaskRestampProcessor(
 	effectPool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
-	writer indexingapp.CurrentIndexMetaTaskRestampWriter,
+	writer *pgvector.CurrentIndexMetaWriter,
 	reportItemFailure func(error),
 ) (*currentIndexMetaTaskRestampProcessor, error) {
 	if effectPool == nil || configurations == nil || configurations.unsecreter == nil ||

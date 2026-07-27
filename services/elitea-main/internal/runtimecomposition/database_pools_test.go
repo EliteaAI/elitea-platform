@@ -39,8 +39,21 @@ func TestRuntimeDependenciesRejectSharedDatabaseCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dependencies.TerminalEffectsPool = dependencies.ReplayPool
-	if err := validateDependencies(dependencies); err == nil {
-		t.Fatal("shared replay/terminal-effects database pool was accepted")
+	isolatedTerminalEffects := dependencies.TerminalEffectsPool
+	for name, shared := range map[string]*pgxpool.Pool{
+		"admission": dependencies.AdmissionPool,
+		"control":   dependencies.ControlPool,
+		"output":    dependencies.OutputPool,
+		"replay":    dependencies.ReplayPool,
+		"content":   dependencies.ContentPool,
+	} {
+		dependencies.TerminalEffectsPool = shared
+		if err := validateDependencies(dependencies); err == nil {
+			t.Fatalf(
+				"shared %s/terminal-effects database pool was accepted",
+				name,
+			)
+		}
 	}
+	dependencies.TerminalEffectsPool = isolatedTerminalEffects
 }

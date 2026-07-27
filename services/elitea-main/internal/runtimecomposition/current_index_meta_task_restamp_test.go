@@ -8,6 +8,9 @@ import (
 	"time"
 
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type taskRestamperStub struct {
@@ -179,6 +182,96 @@ func TestCurrentIndexMetaTaskRestampConcurrencyFollowsEffectPoolCapacity(
 	}
 }
 
+func TestConfiguredCurrentIndexMetaTaskRestampMountedIffIndexDispatchEnabled(
+	t *testing.T,
+) {
+	disabled, err := newConfiguredCurrentIndexMetaTaskRestampReconciler(
+		false,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil || disabled != nil {
+		t.Fatalf("disabled reconciler=%v err=%v", disabled, err)
+	}
+
+	pool := newTaskRestampCompositionPool(t, 1)
+	configurations := newTaskRestampConfigurationsRuntime(t)
+	reconciler, err := newConfiguredCurrentIndexMetaTaskRestampReconciler(
+		true,
+		pool,
+		configurations,
+		pgvector.NewCurrentIndexMetaWriter(),
+		func(error) {},
+		func(error) {},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, ok := reconciler.service.(*currentIndexMetaTaskRestampProcessor)
+	if !ok || processor == nil {
+		t.Fatalf("configured service=%T", reconciler.service)
+	}
+	if processor.concurrency != 1 || reconciler.batchSize != 2 ||
+		reconciler.pollInterval != 500*time.Millisecond {
+		t.Fatalf(
+			"concurrency=%d batch=%d poll=%s",
+			processor.concurrency,
+			reconciler.batchSize,
+			reconciler.pollInterval,
+		)
+	}
+}
+
+func TestConfiguredCurrentIndexMetaTaskRestampFailsClosed(
+	t *testing.T,
+) {
+	pool := newTaskRestampCompositionPool(t, 1)
+	configurations := newTaskRestampConfigurationsRuntime(t)
+	writer := pgvector.NewCurrentIndexMetaWriter()
+	report := func(error) {}
+
+	for _, test := range []struct {
+		name           string
+		pool           *pgxpool.Pool
+		configurations *CurrentConfigurationsRuntime
+		writer         *pgvector.CurrentIndexMetaWriter
+	}{
+		{
+			name:           "terminal effects pool",
+			configurations: configurations,
+			writer:         writer,
+		},
+		{
+			name:   "Configurations runtime",
+			pool:   pool,
+			writer: writer,
+		},
+		{
+			name:           "shared metadata writer",
+			pool:           pool,
+			configurations: configurations,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reconciler, err :=
+				newConfiguredCurrentIndexMetaTaskRestampReconciler(
+					true,
+					test.pool,
+					test.configurations,
+					test.writer,
+					report,
+					report,
+				)
+			if err == nil || reconciler != nil {
+				t.Fatalf("reconciler=%v err=%v", reconciler, err)
+			}
+		})
+	}
+}
+
 func TestCurrentIndexMetaTaskRestampClaimBatchTracksConcurrency(t *testing.T) {
 	for _, concurrency := range []int{1, 2} {
 		store := &taskRestampStoreStub{
@@ -300,4 +393,53 @@ func validTaskRestampClaim(
 		},
 		ClaimToken: "placeholder",
 	}
+}
+
+type taskRestampVaultLoaderStub struct{}
+
+func (taskRestampVaultLoaderStub) LoadProjectVault(
+	context.Context,
+	int64,
+) (storage.SecretVault, error) {
+	return nil, errors.New("unused")
+}
+
+func (taskRestampVaultLoaderStub) LoadAdminVault(
+	context.Context,
+) (storage.SecretVault, error) {
+	return nil, errors.New("unused")
+}
+
+func newTaskRestampConfigurationsRuntime(
+	t *testing.T,
+) *CurrentConfigurationsRuntime {
+	t.Helper()
+	unsecreter, err := storage.NewCurrentVaultUnsecreter(
+		taskRestampVaultLoaderStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &CurrentConfigurationsRuntime{unsecreter: unsecreter}
+}
+
+func newTaskRestampCompositionPool(
+	t *testing.T,
+	maxConnections int32,
+) *pgxpool.Pool {
+	t.Helper()
+	config, err := pgxpool.ParseConfig(
+		"postgres://elitea:password@127.0.0.1:1/elitea?sslmode=disable",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MinConns = 0
+	config.MaxConns = maxConnections
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }

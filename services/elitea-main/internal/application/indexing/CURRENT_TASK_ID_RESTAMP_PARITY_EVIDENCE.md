@@ -64,15 +64,20 @@ rechecked against the admitted execution in the same event transaction.
 
 ## Composition and remaining UI gate
 
-The processor and reconciler are intentionally **not mounted in production
-composition in this slice**. Mounting remains gated on the combined
-PostgreSQL-to-Configurations-to-PgVector deployment test after this branch is
-rebased onto the active migration head. When mounted, the processor must use
-`Dependencies.TerminalEffectsPool`, not the output-ingestion pool, so slow
-external reconciliation cannot consume output transaction capacity.
+Production composition mounts the processor and reconciler if and only if
+index-ingest dispatch is enabled. The processor shares the single
+`CurrentIndexMetaWriter` instance already owned by terminal projection and
+manual Stop cleanup, and claims durable intents only through
+`Dependencies.TerminalEffectsPool`. Its concurrency and claim batch derive from
+that dedicated pool, so slow Configurations or PgVector reconciliation cannot
+consume output-ingestion transaction capacity. Enabled composition fails closed
+when the terminal-effects pool, Configurations runtime, writer, or failure
+reporters are absent.
 
-Separately, EliteaUI currently has a `sessionStorage` task fallback. A fresh
-browser session must be tested without that fallback after the reconciler is
-mounted: index metadata alone must reconstruct the active task and Stop must
-target the authoritative execution. That UI evidence is not claimed by this
-backend slice.
+The remaining live-browser gate is one deployment checkpoint against a real
+PostgreSQL, Configurations, project PgVector and Python worker path: after the
+SDK reset and authenticated `in_progress` event, close the original browser,
+open a fresh session with no `sessionStorage` task fallback, prove index metadata
+alone reconstructs the authoritative execution, and prove Stop targets that
+execution. The backend composition and cross-store service tests do not claim
+that final deployed UI evidence.
