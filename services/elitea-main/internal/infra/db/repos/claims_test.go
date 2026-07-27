@@ -970,6 +970,63 @@ func TestExpiredRunningIndexClaimReturnsRecoveryOnlyReplacement(t *testing.T) {
 	}
 }
 
+func TestExpiredCancelledRunningIndexClaimRecoversWithoutDurableOutput(t *testing.T) {
+	digest := runtimedomain.SHA256([]byte("published-cancelled-index-envelope"))
+	oldToken := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("old-cancelled-running-token")))
+	newToken := runtimedomain.FenceToken(runtimedomain.SHA256([]byte("new-cancelled-running-token")))
+	observedAt := time.Date(2026, time.July, 27, 13, 0, 0, 0, time.UTC)
+	expiresAt := observedAt.Add(executionapp.MaxClaimLeaseTTLMillis.Duration())
+	store := &scriptedStore{scriptedExecutor: &scriptedExecutor{
+		rowResults: []scriptedRow{
+			claimExecutionRow("CANCELLED", "RUNNING", true, digest[:], digest[:], true),
+			{values: []any{
+				"old-claim", "command-1", "execution-1", int64(1),
+				"spiffe://elitea.test/workload/old", "old-session", "old-producer",
+				int64(1), int64(1), oldToken[:],
+				observedAt.Add(-time.Minute), "CANCELLED", false, observedAt,
+			}},
+			// No output_inbox record exists, so only an expired predecessor claim
+			// can authorize the cancellation-only recovery fence.
+			{values: []any{false}},
+			{values: []any{true}},
+			{values: []any{int64(2)}},
+			{values: []any{expiresAt, observedAt, int64(0)}},
+			{err: pgx.ErrNoRows},
+		},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("UPDATE 1"),
+		},
+	}}
+	repository, err := newClaimsRepository(
+		store,
+		func() (string, error) { return "cancelled-replacement-claim", nil },
+		func() (runtimedomain.FenceToken, error) { return newToken, nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testClaimRequest(digest)
+	request.CapabilityID = executiondomain.IndexIngestCapability
+	request.WorkloadIdentity = "spiffe://elitea.test/workload/replacement"
+	request.WorkloadSessionID = "replacement-session"
+	request.ProducerID = "replacement-producer"
+
+	decision, err := repository.ClaimValidation(context.Background(), request, executionapp.MaxClaimLeaseTTLMillis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Disposition != executionapp.ClaimRecoverRunningNoACK || decision.Lease.DesiredState != runtimedomain.DesiredCancelled || decision.Lease.ClaimID != "cancelled-replacement-claim" || decision.SettlementRecovery != nil {
+		t.Fatalf("cancelled RUNNING execution did not receive recovery-only authority: %+v", decision)
+	}
+	if decision.ClaimHandoffWatermark != 0 || decision.Lease.Fence.Token != newToken || decision.Lease.Fence.ClaimAttempt != 2 {
+		t.Fatalf("cancelled recovery lease lost its exact handoff boundary: %+v", decision)
+	}
+	if len(store.rowCalls) != 7 || !strings.Contains(store.rowCalls[2].sql, "output_inbox") || !strings.Contains(store.rowCalls[3].sql, "release_reason = 'LEASE_EXPIRED'") {
+		t.Fatalf("cancelled recovery was not limited to an expired predecessor without durable output: rows=%d", len(store.rowCalls))
+	}
+}
+
 func claimExecutionRow(desiredState, jobState string, published bool, preparedDigest, publishedDigest []byte, authorityGranted bool) scriptedRow {
 	return scriptedRow{values: []any{
 		"command-1",

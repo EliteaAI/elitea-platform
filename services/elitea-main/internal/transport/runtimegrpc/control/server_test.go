@@ -246,6 +246,7 @@ func TestBeginExecutionReturnsStartedThenLostResponseReplayWithoutBusinessMateri
 func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
 	calls := []string{}
 	lease := validLease()
+	lease.DesiredState = runtimedomain.DesiredCancelled
 	server, err := NewServer(
 		testControlServerConfig(),
 		workloadAuthorizerStub{calls: &calls},
@@ -267,7 +268,7 @@ func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt := response.GetReceipt()
-	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK {
+	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK || receipt.GetDesiredState() != runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_CANCELLED {
 		t.Fatalf("unexpected running recovery receipt: %v", response)
 	}
 	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil {

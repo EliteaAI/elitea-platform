@@ -232,17 +232,28 @@ WHERE claim_id = $1 AND released_at IS NULL`, existing.ClaimID); err != nil {
 			}
 			return nil
 		}
-		recoveryOnly := false
+		terminalRecoveryOnly := false
+		runningRecoveryOnly := false
 		if desired == runtimedomain.DesiredCancelled {
 			recoverable, err := hasExpiredPredecessorTerminalOutput(ctx, tx, request.ExecutionID, request.Generation)
 			if err != nil {
 				return err
 			}
 			if recoverable {
-				recoveryOnly = true
+				terminalRecoveryOnly = true
+			} else if request.CapabilityID == executiondomain.IndexIngestCapability && state == executiondomain.JobRunning {
+				// A cancelled RUNNING index execution has no executable authority
+				// after its predecessor lease expires. Give a replacement worker a
+				// recovery-only fence so it can emit the canonical cancellation;
+				// it never receives inputs or may begin business execution.
+				expired, err := hasExpiredPredecessorClaim(ctx, tx, request.ExecutionID, request.Generation)
+				if err != nil {
+					return err
+				}
+				runningRecoveryOnly = expired
 			}
 		}
-		if desired != runtimedomain.DesiredRunning && !recoveryOnly {
+		if desired != runtimedomain.DesiredRunning && !terminalRecoveryOnly && !runningRecoveryOnly {
 			// CLAIMED/RUNNING and other ambiguous states require the existing live
 			// owner or explicit reconciliation; DRAINING remains non-terminal.
 			decision = executionapp.ClaimDecision{
@@ -404,11 +415,16 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 				decision.SettlementRecovery = &executionapp.SettlementRecovery{Proposal: &proposal}
 			} else if !errors.Is(recoveryErr, pgx.ErrNoRows) {
 				return recoveryErr
-			} else if recoveryOnly {
+			} else if terminalRecoveryOnly {
 				// Recovery-only authority must never commit as executable authority.
 				// The eligibility check above and this exact predecessor lookup run in
 				// one transaction, so a miss indicates inconsistent durable state.
 				return errors.New("cancelled terminal output is not recoverable from its expired predecessor")
+			} else if runningRecoveryOnly {
+				// The replacement may only settle the cancellation. Its transport
+				// receipt deliberately excludes an input bundle, and BeginExecution
+				// rejects a non-RUNNING desired state.
+				decision.Disposition = executionapp.ClaimRecoverRunningNoACK
 			} else if durable, durableErr := hasDurableTerminalOutput(ctx, tx, lease.Fence.ExecutionID, lease.Fence.Generation); durableErr != nil {
 				return durableErr
 			} else if durable {
@@ -1005,6 +1021,22 @@ SELECT EXISTS (
       AND source_claim.release_reason = 'LEASE_EXPIRED'
 )`, executionID, int64(generation)).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check expired predecessor terminal output: %w", err)
+	}
+	return exists, nil
+}
+
+func hasExpiredPredecessorClaim(ctx context.Context, tx sqlExecutor, executionID string, generation uint64) (bool, error) {
+	var exists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM elitea_runtime.execution_claims AS source_claim
+    WHERE source_claim.execution_id = $1
+      AND source_claim.generation = $2
+      AND source_claim.released_at IS NOT NULL
+      AND source_claim.release_reason = 'LEASE_EXPIRED'
+)`, executionID, int64(generation)).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check expired predecessor claim: %w", err)
 	}
 	return exists, nil
 }

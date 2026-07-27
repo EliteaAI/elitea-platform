@@ -1272,6 +1272,11 @@ class ConfigurationValidationDeliveryProcessor:
             if terminal:
                 # A terminal was already made durable locally before the
                 # restart. Its immutable result remains the single winner.
+                if not _pending_output_binding_matches(frame, receipt):
+                    raise AuthorizationFailure(
+                        "The durable terminal output spool uses a different "
+                        "claim fence; server-side recovery is required."
+                    )
                 return await self._recover_local_output(
                     delivery=delivery,
                     frame=frame,
@@ -1283,9 +1288,20 @@ class ConfigurationValidationDeliveryProcessor:
                 if watermark >= int(frame.sequence):
                     await output.reconcile_pending_through(watermark)
                 else:
-                    raise AuthorizationFailure(
-                        "The durable output spool uses a different claim fence; "
-                        "server-side recovery is required."
+                    # The old-fence progress frame was never accepted by Main:
+                    # the authenticated handoff watermark is still behind it.
+                    # It is non-terminal and therefore cannot decide the
+                    # outcome. Atomically replace the local-only frame with
+                    # the replacement fence's first contiguous cancellation;
+                    # do not publish, replay, or otherwise revive old SDK
+                    # progress under a new fence.
+                    return await self._settle_cancelled_recovery(
+                        delivery=delivery,
+                        receipt=receipt,
+                        verified=verified,
+                        sequence=terminal_sequence,
+                        initial_output=output,
+                        replace_pending=frame,
                     )
             else:
                 try:

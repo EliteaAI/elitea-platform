@@ -1367,6 +1367,130 @@ def test_cancelled_running_recovery_without_spool_uses_handoff_next_sequence() -
     asyncio.run(run())
 
 
+def test_cancelled_running_recovery_discards_uncommitted_old_fence_progress() -> None:
+    async def run() -> None:
+        case = _case()
+        old_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        old_fence.fence_token = b"o" * 32
+        replacement_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        replacement_fence.claim_attempt += 1
+        replacement_fence.lease_epoch += 1
+        replacement_fence.fence_token = b"n" * 32
+        # This is the production-shaped case: a local old-fence progress frame
+        # reached sequence 6, but Main has no durable progress (watermark 0).
+        pending = _pending_node_event(case, fence=old_fence, sequence=6)
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            claim_handoff_watermark=0,
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+            receipt_fence=replacement_fence,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame is not None
+        assert result.output_frame.terminal
+        assert result.output_frame.sequence == 1
+        assert result.output_frame.claim_handoff_watermark == 0
+        assert result.output_frame.fence == replacement_fence
+        assert output.frames == [result.output_frame]
+        assert output.frame is None
+        assert control.begins == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_cancelled_running_recovery_rejects_old_fence_terminal_spool() -> None:
+    async def run() -> None:
+        case = _case()
+        old_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        old_fence.fence_token = b"o" * 32
+        replacement_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        replacement_fence.claim_attempt += 1
+        replacement_fence.lease_epoch += 1
+        replacement_fence.fence_token = b"n" * 32
+        old_envelope = envelope_pb2.WorkerExecutionEnvelopeV1(
+            signed_command=case.signed,
+            fence=old_fence,
+        )
+        pending = build_output_frame(
+            VerifiedWorkerCommand(envelope=old_envelope, command=case.command),
+            bind_result_summary(_terminal_result()),
+            occurred_at_unix_millis=_NOW,
+            claim_handoff_watermark=0,
+        )
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
+            receipt_fence=replacement_fence,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("cancelled recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("cancelled recovery must not create SDK context")
+
+        with pytest.raises(AuthorizationFailure, match="terminal output spool"):
+            await _processor(
+                case,
+                control=control,
+                input_client=ForbiddenInput(),
+                output=output,
+                acker=acker,
+                context_factory=forbidden_context,
+                supervisor=supervisor,
+            ).process(case.delivery)
+
+        assert output.frame == pending
+        assert control.begins == 0
+        assert control.settlements == 0
+        assert acker.calls == 0
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
 def test_cancelled_running_recovery_replaces_rejected_progress_at_same_sequence() -> None:
     async def run() -> None:
         case = _case()
@@ -1706,6 +1830,7 @@ def _pending_node_event(
     case: Case,
     *,
     fence: common_pb2.ExecutionFenceV1 | None = None,
+    sequence: int = 1,
 ) -> output_pb2.ExecutionOutputFrameV1:
     envelope = envelope_pb2.WorkerExecutionEnvelopeV1(
         signed_command=case.signed,
@@ -1720,7 +1845,7 @@ def _pending_node_event(
             response_metadata=b"{}",
             references=b"[]",
         ),
-        sequence=1,
+        sequence=sequence,
         occurred_at_unix_millis=_NOW,
         claim_handoff_watermark=0,
     )
