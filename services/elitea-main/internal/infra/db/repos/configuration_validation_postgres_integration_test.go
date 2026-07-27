@@ -1385,7 +1385,7 @@ func newPostgresRuntimeFailureService(t *testing.T, pool *pgxpool.Pool) *outputa
 	if err != nil {
 		t.Fatal(err)
 	}
-	projector, err := NewConfigurationValidationResultsRepository(pool)
+	projector, err := NewRuntimeFailureResultsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
 	}

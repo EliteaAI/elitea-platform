@@ -62,7 +62,7 @@ func NewIndexIngestResultsRepository(pool *pgxpool.Pool, policy IndexIngestOutpu
 	if err != nil {
 		return nil, err
 	}
-	repository.activity = postgresCurrentIndexActivityProjector{}
+	repository.activity = &postgresCurrentIndexActivityProjector{}
 	return repository, nil
 }
 
@@ -346,7 +346,7 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 			}
 			if errors.Is(loadErr, pgx.ErrNoRows) {
 				if insertResult.CancellationRejected {
-					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
+					if err := materializeCanonicalCancellation(ctx, tx, record, true); err != nil {
 						return indexProjectionError(err)
 					}
 					if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityCancellation(record)); err != nil {

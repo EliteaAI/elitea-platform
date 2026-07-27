@@ -15,6 +15,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -126,7 +127,7 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 2 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 	insert := executor.rowCalls[9]
@@ -140,7 +141,6 @@ func TestConfigurationValidationProjectionDurablyMaterializesCancellationBeforeT
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
-	assertIndexTerminalIntentCall(t, executor.execCalls[1], cancelled, "cancelled")
 }
 
 func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejection(t *testing.T) {
@@ -166,18 +166,19 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 		{values: []any{"claim-1", "claim-1", "CANCELLED", false, false, false}},
 		{values: []any{int64(31)}},
 	}, execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")}}
-	repository, err := newConfigurationValidationResultsRepository(&scriptedProjectStore{scriptedExecutor: executor})
+	repository, err := newRuntimeFailureResultsRepository(&scriptedProjectStore{scriptedExecutor: executor})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = repository.ProjectRuntimeFailure(context.Background(), outputapp.RuntimeFailureProjection{
-		Frame:       frame,
-		BrowserData: []byte(`{"code":"UNSUPPORTED_CAPABILITY","safe_message":"Unsupported capability.","retryable":false}`),
+		Frame:        frame,
+		BrowserData:  []byte(`{"code":"UNSUPPORTED_CAPABILITY","safe_message":"Unsupported capability.","retryable":false}`),
+		CapabilityID: executiondomain.ConfigurationValidationCapability,
 	})
 	if !errors.Is(err, outputapp.ErrOutputCancelled) {
 		t.Fatalf("expected typed cancellation linearization, got %v", err)
 	}
-	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 2 {
+	if len(executor.rowCalls) != 11 || len(executor.execCalls) != 1 {
 		t.Fatalf("typed cancellation was returned before durable projection: rows=%d execs=%d", len(executor.rowCalls), len(executor.execCalls))
 	}
 	insert := executor.rowCalls[9]
@@ -191,10 +192,9 @@ func TestRuntimeFailureProjectionDurablyMaterializesCancellationBeforeTypedRejec
 	if replay.args[4] != replayEventRuntimeFailure || !bytes.Equal(replay.args[5].([]byte), browserData) {
 		t.Fatal("materialized cancellation did not append its durable browser event")
 	}
-	assertIndexTerminalIntentCall(t, executor.execCalls[1], cancelled, "cancelled")
 }
 
-func TestRuntimeFailureProjectionPersistsIdempotentIndexOnlyTerminalIntent(t *testing.T) {
+func TestRuntimeFailureProjectionSkipsIndexSideEffectsForConfigurationFailure(t *testing.T) {
 	frame := testRuntimeFailureFrame(t)
 	record, _, err := failureOutputRecord(frame)
 	if err != nil {
@@ -219,14 +219,17 @@ func TestRuntimeFailureProjectionPersistsIdempotentIndexOnlyTerminalIntent(t *te
 			pgconn.NewCommandTag("UPDATE 0"),
 		},
 	}
-	repository, err := newConfigurationValidationResultsRepository(
+	repository, err := newRuntimeFailureResultsRepository(
 		&scriptedProjectStore{scriptedExecutor: executor},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	activity := &recordingCurrentIndexActivityProjector{}
+	repository.activity = activity
 	projection := outputapp.RuntimeFailureProjection{
-		Frame: frame,
+		Frame:        frame,
+		CapabilityID: executiondomain.ConfigurationValidationCapability,
 		BrowserData: []byte(
 			`{"code":"UNSUPPORTED_CAPABILITY","safe_message":"Unsupported capability.","retryable":false}`,
 		),
@@ -241,7 +244,7 @@ func TestRuntimeFailureProjectionPersistsIdempotentIndexOnlyTerminalIntent(t *te
 	}
 	if !inserted.Inserted || inserted.Cursor != 41 ||
 		replayed.Inserted || replayed.Cursor != 41 ||
-		len(executor.execCalls) != 3 {
+		len(executor.execCalls) != 1 {
 		t.Fatalf(
 			"inserted=%+v replayed=%+v execs=%d",
 			inserted,
@@ -249,8 +252,9 @@ func TestRuntimeFailureProjectionPersistsIdempotentIndexOnlyTerminalIntent(t *te
 			len(executor.execCalls),
 		)
 	}
-	assertIndexTerminalIntentCall(t, executor.execCalls[1], record, "failed")
-	assertIndexTerminalIntentCall(t, executor.execCalls[2], record, "failed")
+	if len(activity.terminals) != 0 {
+		t.Fatalf("configuration failure reached index Activity projector: %+v", activity.terminals)
+	}
 }
 
 func TestConfigurationValidationProjectionReplayedOriginalReturnsTypedCancellationForDurableMaterialization(t *testing.T) {

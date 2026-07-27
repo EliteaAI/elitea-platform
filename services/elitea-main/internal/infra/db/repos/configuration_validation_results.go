@@ -11,6 +11,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,14 @@ const (
 
 type ConfigurationValidationResultsRepository struct {
 	projects projectStore
+}
+
+// RuntimeFailureResultsRepository owns the capability-neutral runtime failure
+// envelope and the index-only current Activity side effect. Keeping it separate
+// from configuration validation prevents configuration failures from acquiring
+// index projection dependencies or queries.
+type RuntimeFailureResultsRepository struct {
+	projects projectStore
 	activity currentIndexActivityProjector
 }
 
@@ -37,7 +46,6 @@ func NewConfigurationValidationResultsRepository(pool *pgxpool.Pool) (*Configura
 	}
 	return &ConfigurationValidationResultsRepository{
 		projects: projects,
-		activity: postgresCurrentIndexActivityProjector{},
 	}, nil
 }
 
@@ -46,6 +54,26 @@ func newConfigurationValidationResultsRepository(projects projectStore) (*Config
 		return nil, errors.New("tenant projection database is required")
 	}
 	return &ConfigurationValidationResultsRepository{
+		projects: projects,
+	}, nil
+}
+
+func NewRuntimeFailureResultsRepository(pool *pgxpool.Pool) (*RuntimeFailureResultsRepository, error) {
+	projects, err := newPostgresProjectStore(pool)
+	if err != nil {
+		return nil, err
+	}
+	return &RuntimeFailureResultsRepository{
+		projects: projects,
+		activity: &postgresCurrentIndexActivityProjector{},
+	}, nil
+}
+
+func newRuntimeFailureResultsRepository(projects projectStore) (*RuntimeFailureResultsRepository, error) {
+	if projects == nil {
+		return nil, errors.New("tenant projection database is required")
+	}
+	return &RuntimeFailureResultsRepository{
 		projects: projects,
 		activity: noopCurrentIndexActivityProjector{},
 	}, nil
@@ -127,7 +155,7 @@ func (r *ConfigurationValidationResultsRepository) ProjectConfigurationValidatio
 			}
 			if errors.Is(loadErr, pgx.ErrNoRows) {
 				if insertResult.CancellationRejected {
-					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
+					if err := materializeCanonicalCancellation(ctx, tx, record, false); err != nil {
 						return err
 					}
 					cancellationWon = true
@@ -224,9 +252,14 @@ RETURNING revision_id`,
 	return outcome, nil
 }
 
-func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx context.Context, projection outputapp.RuntimeFailureProjection) (outputapp.ProjectionOutcome, error) {
+func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Context, projection outputapp.RuntimeFailureProjection) (outputapp.ProjectionOutcome, error) {
 	if err := projection.Frame.Validate(); err != nil {
 		return outputapp.ProjectionOutcome{}, err
+	}
+	switch projection.CapabilityID {
+	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
+	default:
+		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
 	}
 	if len(projection.BrowserData) == 0 || len(projection.BrowserData) > outputapp.MaxConfigurationValidationResultBytes || !json.Valid(projection.BrowserData) {
 		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
@@ -242,7 +275,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		existing, err := loadExistingOutput(ctx, tx, record)
 		if err == nil {
 			if sameDurableOutput(existing, record) {
-				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+				if err := persistRuntimeIndexMetaTerminalIntent(
+					ctx, tx, projection.CapabilityID, record,
+				); err != nil {
 					return err
 				}
 				cursor, err := replayCursor(ctx, tx, record.EventID)
@@ -253,7 +288,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 				return nil
 			}
 			if sameCanonicalCancellation(existing, record) {
-				if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+				if err := persistRuntimeIndexMetaTerminalIntent(
+					ctx, tx, projection.CapabilityID, existing,
+				); err != nil {
 					return err
 				}
 				if _, err := replayCursor(ctx, tx, record.EventID); err != nil {
@@ -275,7 +312,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 			existing, loadErr := loadExistingOutput(ctx, tx, record)
 			if loadErr == nil {
 				if sameDurableOutput(existing, record) {
-					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+					if err := persistRuntimeIndexMetaTerminalIntent(
+						ctx, tx, projection.CapabilityID, record,
+					); err != nil {
 						return err
 					}
 					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
@@ -286,7 +325,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 					return nil
 				}
 				if sameCanonicalCancellation(existing, record) {
-					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+					if err := persistRuntimeIndexMetaTerminalIntent(
+						ctx, tx, projection.CapabilityID, existing,
+					); err != nil {
 						return err
 					}
 					if _, cursorErr := replayCursor(ctx, tx, record.EventID); cursorErr != nil {
@@ -299,10 +340,14 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 			}
 			if errors.Is(loadErr, pgx.ErrNoRows) {
 				if insertResult.CancellationRejected {
-					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
+					if err := materializeCanonicalCancellation(
+						ctx, tx, record, projection.CapabilityID == executiondomain.IndexIngestCapability,
+					); err != nil {
 						return err
 					}
-					if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityCancellation(record)); err != nil {
+					if err := r.projectCurrentIndexActivityTerminal(
+						ctx, tx, projectID, projection.CapabilityID, currentIndexActivityCancellation(record),
+					); err != nil {
 						return err
 					}
 					cancellationWon = true
@@ -319,7 +364,7 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		if err != nil {
 			return err
 		}
-		if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityTerminal{
+		if err := r.projectCurrentIndexActivityTerminal(ctx, tx, projectID, projection.CapabilityID, currentIndexActivityTerminal{
 			ExecutionID: record.ExecutionID,
 			Generation:  record.Generation,
 			OccurredAt:  record.OccurredAt,
@@ -331,7 +376,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
 			return err
 		}
-		if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+		if err := persistRuntimeIndexMetaTerminalIntent(
+			ctx, tx, projection.CapabilityID, record,
+		); err != nil {
 			return err
 		}
 		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: cursor, CommittedSequence: record.Sequence}
@@ -344,6 +391,31 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		return outputapp.ProjectionOutcome{}, outputapp.ErrOutputCancelled
 	}
 	return outcome, nil
+}
+
+func (r *RuntimeFailureResultsRepository) projectCurrentIndexActivityTerminal(
+	ctx context.Context,
+	tx sqlExecutor,
+	projectID int64,
+	capabilityID string,
+	terminal currentIndexActivityTerminal,
+) error {
+	if capabilityID != executiondomain.IndexIngestCapability {
+		return nil
+	}
+	return r.activity.projectTerminal(ctx, tx, projectID, terminal)
+}
+
+func persistRuntimeIndexMetaTerminalIntent(
+	ctx context.Context,
+	tx sqlExecutor,
+	capabilityID string,
+	record outputRecord,
+) error {
+	if capabilityID != executiondomain.IndexIngestCapability {
+		return nil
+	}
+	return persistCurrentIndexMetaTerminalIntent(ctx, tx, record)
 }
 
 func validationOutputRecord(frame outputapp.ConfigurationValidationFrame) (outputRecord, int64, error) {
@@ -481,7 +553,12 @@ func sameCanonicalCancellation(existing, source outputRecord) bool {
 	return err == nil && sameDurableOutput(existing, cancelled)
 }
 
-func materializeCanonicalCancellation(ctx context.Context, tx sqlExecutor, source outputRecord) error {
+func materializeCanonicalCancellation(
+	ctx context.Context,
+	tx sqlExecutor,
+	source outputRecord,
+	persistIndexMeta bool,
+) error {
 	cancelled, browserData, err := canonicalCancellationOutput(source)
 	if err != nil {
 		return err
@@ -504,7 +581,10 @@ func materializeCanonicalCancellation(ctx context.Context, tx sqlExecutor, sourc
 		if _, err := replayCursor(ctx, tx, cancelled.EventID); err != nil {
 			return fmt.Errorf("load canonical cancellation cursor: %w", err)
 		}
-		return persistCurrentIndexMetaTerminalIntent(ctx, tx, existing)
+		if persistIndexMeta {
+			return persistCurrentIndexMetaTerminalIntent(ctx, tx, existing)
+		}
+		return nil
 	}
 	if _, err := appendReplayEvent(ctx, tx, cancelled, replayEventRuntimeFailure, browserData); err != nil {
 		return err
@@ -512,7 +592,10 @@ func materializeCanonicalCancellation(ctx context.Context, tx sqlExecutor, sourc
 	if err := markOutputProjected(ctx, tx, cancelled.EventID); err != nil {
 		return err
 	}
-	return persistCurrentIndexMetaTerminalIntent(ctx, tx, cancelled)
+	if persistIndexMeta {
+		return persistCurrentIndexMetaTerminalIntent(ctx, tx, cancelled)
+	}
+	return nil
 }
 
 func validationIssuesJSON(issues []configurationdomain.ValidationIssue) ([]byte, error) {
@@ -613,4 +696,4 @@ WHERE execution_id = $1
 }
 
 var _ outputapp.ConfigurationValidationProjector = (*ConfigurationValidationResultsRepository)(nil)
-var _ outputapp.RuntimeFailureProjector = (*ConfigurationValidationResultsRepository)(nil)
+var _ outputapp.RuntimeFailureProjector = (*RuntimeFailureResultsRepository)(nil)

@@ -53,7 +53,7 @@ func NewCommandOutboxRepository(pool *pgxpool.Pool, expectedStream string) (*Com
 	if err != nil {
 		return nil, err
 	}
-	repository.activity = postgresCurrentIndexActivityProjector{}
+	repository.activity = &postgresCurrentIndexActivityProjector{}
 	return repository, nil
 }
 

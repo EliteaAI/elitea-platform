@@ -78,8 +78,9 @@ func (f RuntimeFailureFrame) Validate() error {
 }
 
 type RuntimeFailureProjection struct {
-	Frame       RuntimeFailureFrame
-	BrowserData json.RawMessage
+	Frame        RuntimeFailureFrame
+	BrowserData  json.RawMessage
+	CapabilityID string
 }
 
 // ExpectedRuntimeFailure is the capability-specific terminal identity derived
@@ -165,7 +166,11 @@ func (s *RuntimeFailureService) IngestFailure(ctx context.Context, frame Runtime
 	}
 	frame.EncodedFailure = append([]byte(nil), frame.EncodedFailure...)
 	frame.EncodedSettlement = append([]byte(nil), frame.EncodedSettlement...)
-	outcome, err := s.projector.ProjectRuntimeFailure(ctx, RuntimeFailureProjection{Frame: frame, BrowserData: browserData})
+	outcome, err := s.projector.ProjectRuntimeFailure(ctx, RuntimeFailureProjection{
+		Frame:        frame,
+		BrowserData:  browserData,
+		CapabilityID: expected.CapabilityID,
+	})
 	if err != nil {
 		return ProjectionOutcome{}, fmt.Errorf("project runtime failure: %w", err)
 	}

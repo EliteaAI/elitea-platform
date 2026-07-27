@@ -8,6 +8,7 @@ import (
 	"time"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -42,6 +43,8 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 		kind         string
 		text         string
 		finishReason string
+		stepType     string
+		modelName    string
 		isError      bool
 	}{
 		{
@@ -50,10 +53,12 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 			kind:  "tool_call",
 		},
 		{
-			name:  "thinking step",
-			event: `{"type":"agent_thinking_step","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"name":"thinking_step","run_id":"run-1","tool_run_id":"run-1","tool_name":"loader","message":"10 files processed","datetime":"2026-07-27T09:59:59Z","metadata":{"initiator":"user","tool_name":"index_data","display_name":"configurations"}},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T09:59:59Z"}`,
-			kind:  "thinking_step",
-			text:  "10 files processed",
+			name:      "thinking step",
+			event:     `{"type":"agent_thinking_step","stream_id":"event-controlled","message_id":"event-controlled","content":null,"response_metadata":{"name":"thinking_step","run_id":"run-1","tool_run_id":"run-1","tool_name":"loader","message":"10 files processed","datetime":"2026-07-27T09:59:59Z","timestamp_start":"2026-07-27T09:59:57Z","timestamp_finish":"2026-07-27T09:59:59Z","type":"ChatGenerationChunk","model_name":"index-progress-model","metadata":{"initiator":"user","tool_name":"index_data","display_name":"configurations"}},"references":[],"sio_event":"chat_predict","created_at":"2026-07-27T09:59:59Z"}`,
+			kind:      "thinking_step",
+			text:      "10 files processed",
+			stepType:  "ChatGenerationChunk",
+			modelName: "index-progress-model",
 		},
 		{
 			name:  "tool error",
@@ -76,8 +81,15 @@ func TestCurrentIndexActivityMapsCurrentWorkerEventsToCurrentTraceContract(t *te
 			}
 			if node.kind != test.kind || node.runID != "run-1" ||
 				node.text != test.text || node.finishReason != test.finishReason ||
+				node.stepType != test.stepType || node.modelName != test.modelName ||
 				node.isError != test.isError {
 				t.Fatalf("unexpected current Activity node: %+v", node)
+			}
+			if test.kind == "thinking_step" &&
+				(!node.startedAt.Equal(time.Date(2026, 7, 27, 9, 59, 57, 0, time.UTC)) ||
+					node.finishedAt == nil ||
+					!node.finishedAt.Equal(time.Date(2026, 7, 27, 9, 59, 59, 0, time.UTC))) {
+				t.Fatalf("thinking detail timestamps drifted: %+v", node)
 			}
 			if strings.Contains(string(node.attrs), "ignored") ||
 				strings.Contains(string(node.attrs), "event-controlled") {
@@ -110,61 +122,130 @@ func TestCurrentIndexActivityRejectsUnboundedOrUnsupportedNodeFields(t *testing.
 }
 
 func TestCurrentIndexActivityMissingCurrentSchemaIsSafeNoop(t *testing.T) {
-	executor := &scriptedExecutor{rowResults: []scriptedRow{
-		{values: []any{true}},
-		{values: []any{false}},
-	}}
-	groupID, ready, err := ensureCurrentIndexActivityGroup(
-		t.Context(), executor, 7, "execution-1", 1, time.Now().UTC(),
-	)
-	if err != nil || ready || groupID != 0 {
-		t.Fatalf("missing current schema: group=%d ready=%t err=%v", groupID, ready, err)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{false}}}}
+	projector := &postgresCurrentIndexActivityProjector{}
+	if err := projector.projectNodeEvent(t.Context(), executor, 7, currentActivityTestFrame()); err != nil {
+		t.Fatal(err)
 	}
-	if len(executor.rowCalls) != 2 ||
-		executor.rowCalls[1].args[0] != `"p_7".chat_conversations` {
+	if len(executor.rowCalls) != 1 ||
+		executor.rowCalls[0].args[0] != `"p_7".chat_conversations` {
 		t.Fatalf("schema preflight did not use trusted identifier: %+v", executor.rowCalls)
+	}
+	for _, table := range []string{
+		`"p_7".chat_conversations`,
+		`"p_7".chat_participants`,
+		`"p_7".chat_participant_mapping`,
+		`"p_7".chat_message_group`,
+		`"p_7".chat_message_trace_step`,
+		`"p_7".chat_message_items`,
+		`"p_7".chat_messages_text`,
+	} {
+		found := false
+		for _, argument := range executor.rowCalls[0].args {
+			if argument == table {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("schema preflight omitted %s: %+v", table, executor.rowCalls[0])
+		}
 	}
 }
 
-func TestCurrentIndexActivityConfigurationFailureDoesNotTouchChatSchema(t *testing.T) {
-	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{false}}}}
-	groupID, ready, err := ensureCurrentIndexActivityGroup(
-		t.Context(), executor, 7, "configuration-execution", 1, time.Now().UTC(),
-	)
-	if err != nil || ready || groupID != 0 {
-		t.Fatalf("configuration failure: group=%d ready=%t err=%v", groupID, ready, err)
+func TestCurrentIndexActivityUsesOneStatementPerEventAfterPositiveSchemaCapability(t *testing.T) {
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{true}},
+		{values: []any{int64(31)}},
+		{values: []any{int64(31)}},
+	}}
+	projector := &postgresCurrentIndexActivityProjector{}
+	frame := currentActivityTestFrame()
+	if err := projector.projectNodeEvent(t.Context(), executor, 7, frame); err != nil {
+		t.Fatal(err)
 	}
-	if len(executor.rowCalls) != 1 ||
-		strings.Contains(executor.rowCalls[0].sql, "chat_") {
-		t.Fatalf("configuration failure touched current chat schema: %+v", executor.rowCalls)
+	if err := projector.projectNodeEvent(t.Context(), executor, 7, frame); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.rowCalls) != 3 {
+		t.Fatalf("two events used %d queries, want one preflight plus one per event", len(executor.rowCalls))
+	}
+	for _, call := range executor.rowCalls[1:] {
+		for _, fragment := range []string{
+			"elitea_runtime.index_ingest_jobs",
+			"chat_conversations",
+			"chat_message_group",
+			"chat_message_trace_step",
+		} {
+			if !strings.Contains(call.sql, fragment) {
+				t.Fatalf("atomic Activity statement omitted %s", fragment)
+			}
+		}
+	}
+}
+
+func TestCurrentIndexActivityUsesOneStatementPerTerminalAfterPositiveSchemaCapability(t *testing.T) {
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{true}},
+		{values: []any{int64(41)}},
+		{values: []any{int64(41)}},
+	}}
+	projector := &postgresCurrentIndexActivityProjector{}
+	terminal := currentIndexActivityTerminal{
+		ExecutionID: "execution-1",
+		Generation:  1,
+		OccurredAt:  time.Date(2026, 7, 27, 10, 0, 1, 0, time.UTC),
+		Message:     "Successfully indexed 10 files.",
+	}
+	if err := projector.projectTerminal(t.Context(), executor, 7, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := projector.projectTerminal(t.Context(), executor, 7, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.rowCalls) != 3 || len(executor.execCalls) != 0 {
+		t.Fatalf(
+			"two terminals used QueryRow=%d Exec=%d, want one preflight plus one statement/terminal",
+			len(executor.rowCalls), len(executor.execCalls),
+		)
+	}
+	for _, fragment := range []string{
+		"elitea_runtime.index_ingest_jobs",
+		"chat_message_group",
+		"chat_message_items",
+		"chat_messages_text",
+	} {
+		if !strings.Contains(executor.rowCalls[1].sql, fragment) {
+			t.Fatalf("atomic terminal statement omitted %s", fragment)
+		}
 	}
 }
 
 func TestCurrentIndexActivityMissingOrCrossProjectTargetIsSafeNoop(t *testing.T) {
-	t.Run("missing or deleted current conversation", func(t *testing.T) {
-		executor := &scriptedExecutor{rowResults: []scriptedRow{
-			{values: []any{true}},
-			{values: []any{true}},
-			{err: pgx.ErrNoRows},
-		}}
-		groupID, ready, err := ensureCurrentIndexActivityGroup(
-			t.Context(), executor, 7, "execution-1", 1, time.Now().UTC(),
-		)
-		if err != nil || ready || groupID != 0 {
-			t.Fatalf("missing/deleted target: group=%d ready=%t err=%v", groupID, ready, err)
-		}
-	})
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{values: []any{true}},
+		{err: pgx.ErrNoRows},
+	}}
+	projector := &postgresCurrentIndexActivityProjector{}
+	if err := projector.projectNodeEvent(t.Context(), executor, 8, currentActivityTestFrame()); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.rowCalls) != 2 ||
+		strings.Contains(executor.rowCalls[1].sql, `"p_7"`) ||
+		!strings.Contains(executor.rowCalls[1].sql, `"p_8"`) {
+		t.Fatalf("cross-project lookup escaped trusted tenant: %+v", executor.rowCalls)
+	}
+}
 
-	t.Run("cross project admitted execution", func(t *testing.T) {
-		executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{false}}}}
-		groupID, ready, err := ensureCurrentIndexActivityGroup(
-			t.Context(), executor, 8, "project-7-execution", 1, time.Now().UTC(),
-		)
-		if err != nil || ready || groupID != 0 {
-			t.Fatalf("cross-project target: group=%d ready=%t err=%v", groupID, ready, err)
-		}
-		if len(executor.rowCalls) != 1 || strings.Contains(executor.rowCalls[0].sql, `"p_7"`) {
-			t.Fatalf("cross-project lookup touched another tenant: %+v", executor.rowCalls)
-		}
-	})
+func currentActivityTestFrame() outputapp.NodeEventFrame {
+	return outputapp.NodeEventFrame{
+		OccurredAt: time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC),
+		Fence: runtimedomain.Fence{
+			ExecutionID: "execution-1",
+			Generation:  1,
+		},
+		BrowserData: json.RawMessage(
+			`{"type":"agent_thinking_step","response_metadata":{"run_id":"run-1","message":"10 files processed","datetime":"2026-07-27T09:59:59Z"}}`,
+		),
+	}
 }

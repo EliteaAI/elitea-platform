@@ -63,7 +63,7 @@ func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) 
 	if err != nil {
 		return nil, err
 	}
-	repository.activity = postgresCurrentIndexActivityProjector{}
+	repository.activity = &postgresCurrentIndexActivityProjector{}
 	return repository, nil
 }
 

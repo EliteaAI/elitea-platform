@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
 )
@@ -93,7 +95,9 @@ func TestPostgresCurrentIndexActivityPreservesOrderedStepsAndTenantIsolation(t *
 			map[string]any{
 				"name": "thinking_step", "run_id": "index-run-1", "tool_run_id": "index-run-1",
 				"tool_name": "loader", "message": fmt.Sprintf("%d files processed", step*10),
-				"datetime": at.Format(time.RFC3339Nano),
+				"datetime": at.Format(time.RFC3339Nano), "timestamp_start": at.Format(time.RFC3339Nano),
+				"timestamp_finish": at.Format(time.RFC3339Nano), "type": "ChatGenerationChunk",
+				"model_name": "index-progress-model",
 				"metadata": map[string]string{
 					"initiator": "user", "tool_name": "index_data", "display_name": "configurations",
 				},
@@ -225,6 +229,7 @@ WHERE event_id = $1`, malformed.EventID).Scan(&malformedReplay); err != nil {
 	if p1Groups != 1 || p2Groups != 1 {
 		t.Fatalf("two-tenant current Activity isolation: p1=%d p2=%d", p1Groups, p2Groups)
 	}
+	assertCurrentActivityPostgresQueryBudget(t, pool, expected, fence, base)
 }
 
 func assertCurrentActivityUIReloadFixture(
@@ -298,7 +303,9 @@ ORDER BY trace.started_at NULLS LAST, trace.id`, qualified, qualified), messageU
 		t.Fatalf("tool-end lost current tool-start display metadata: %#v", toolAttrs)
 	}
 	thinking := fixtures[1]
-	if thinking["kind"] != "thinking_step" || thinking["step_type"] != "thinking_step" {
+	if thinking["kind"] != "thinking_step" ||
+		thinking["step_type"] != "ChatGenerationChunk" ||
+		thinking["model_name"] != "index-progress-model" {
 		t.Fatalf("current UI thinking fixture changed: %#v", thinking)
 	}
 	attrs, ok := thinking["attrs"].(map[string]any)
@@ -309,6 +316,103 @@ ORDER BY trace.started_at NULLS LAST, trace.id`, qualified, qualified), messageU
 	if !ok || responseMetadata["tool_name"] != "loader" {
 		t.Fatalf("current UI thinking label changed: %#v", attrs)
 	}
+}
+
+func assertCurrentActivityPostgresQueryBudget(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	expected outputapp.ExpectedIndexIngest,
+	fence runtimedomain.Fence,
+	base time.Time,
+) {
+	t.Helper()
+	for _, test := range []struct {
+		name       string
+		eventCount int
+		maxElapsed time.Duration
+	}{
+		{name: "golden-15", eventCount: 15, maxElapsed: 5 * time.Second},
+		{name: "admission-bound-2048", eventCount: 2048, maxElapsed: 45 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			frames := make([]outputapp.NodeEventFrame, 0, test.eventCount)
+			for index := 0; index < test.eventCount; index++ {
+				at := base.Add(time.Duration(index) * time.Microsecond)
+				frames = append(frames, postgresCurrentActivityNodeFrame(
+					t, expected, fence, uint64(index+1), at, "agent_thinking_step_update",
+					map[string]any{
+						"run_id": "query-budget-run", "tool_run_id": "query-budget-run",
+						"tool_name": "loader", "message": fmt.Sprintf("%d files processed", index+1),
+						"datetime": at.Format(time.RFC3339Nano),
+					},
+				))
+			}
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(t.Context()) }()
+			executor := &countingCurrentActivityExecutor{tx: tx}
+			projector := &postgresCurrentIndexActivityProjector{}
+			started := time.Now()
+			for _, frame := range frames {
+				if err := projector.projectNodeEvent(t.Context(), executor, 1, frame); err != nil {
+					t.Fatalf("project budget event %d: %v", frame.Sequence, err)
+				}
+			}
+			elapsed := time.Since(started)
+			if executor.queryRows != test.eventCount+1 || executor.queries != 0 || executor.execs != 0 {
+				t.Fatalf(
+					"%d events used QueryRow=%d Query=%d Exec=%d; want one schema preflight plus one statement/event",
+					test.eventCount, executor.queryRows, executor.queries, executor.execs,
+				)
+			}
+			if elapsed > test.maxElapsed {
+				t.Fatalf(
+					"%d current Activity events took %s, budget %s",
+					test.eventCount, elapsed, test.maxElapsed,
+				)
+			}
+			t.Logf(
+				"current Activity %d-event PostgreSQL budget: %d statements in %s",
+				test.eventCount, executor.queryRows, elapsed,
+			)
+		})
+	}
+}
+
+type countingCurrentActivityExecutor struct {
+	tx        pgx.Tx
+	queryRows int
+	queries   int
+	execs     int
+}
+
+func (e *countingCurrentActivityExecutor) QueryRow(
+	ctx context.Context,
+	query string,
+	args ...any,
+) sqlRow {
+	e.queryRows++
+	return e.tx.QueryRow(ctx, query, args...)
+}
+
+func (e *countingCurrentActivityExecutor) Query(
+	ctx context.Context,
+	query string,
+	args ...any,
+) (sqlRows, error) {
+	e.queries++
+	return e.tx.Query(ctx, query, args...)
+}
+
+func (e *countingCurrentActivityExecutor) Exec(
+	ctx context.Context,
+	query string,
+	args ...any,
+) (pgconn.CommandTag, error) {
+	e.execs++
+	return e.tx.Exec(ctx, query, args...)
 }
 
 func resequenceCurrentActivityTerminal(
@@ -488,8 +592,8 @@ func assertCurrentActivityProjection(
 	t.Helper()
 	qualified := pgx.Identifier{schema}.Sanitize()
 	var groups, toolCalls, thinking int
-	var streaming, toolVisible bool
-	var text, thinkingText string
+	var streaming, toolVisible, indexActivity, orphanLinkage bool
+	var text, thinkingText, taskID string
 	var thinkingAt time.Time
 	if err := pool.QueryRow(t.Context(), fmt.Sprintf(`
 SELECT count(*)::integer,
@@ -499,7 +603,10 @@ SELECT count(*)::integer,
        bool_and(trace.has_visible_content) FILTER (WHERE trace.kind = 'tool_call'),
        max(trace.text) FILTER (WHERE trace.kind = 'thinking_step'),
        max(trace.started_at) FILTER (WHERE trace.kind = 'thinking_step'),
-       max(message_text.content)
+       max(message_text.content),
+       bool_and(message_group.meta->>'activity_kind' = 'indexing'),
+       max(message_group.task_id),
+       bool_and(message_group.sent_to_id IS NULL AND message_group.reply_to_id IS NULL)
 FROM %s.chat_message_group AS message_group
 LEFT JOIN %s.chat_message_trace_step AS trace
   ON trace.message_group_id = message_group.id
@@ -511,15 +618,29 @@ LEFT JOIN %s.chat_messages_text AS message_text
 WHERE message_group.uuid = $1`,
 		qualified, qualified, qualified, qualified),
 		messageUUID,
-	).Scan(&groups, &streaming, &toolCalls, &thinking, &toolVisible, &thinkingText, &thinkingAt, &text); err != nil {
+	).Scan(
+		&groups,
+		&streaming,
+		&toolCalls,
+		&thinking,
+		&toolVisible,
+		&thinkingText,
+		&thinkingAt,
+		&text,
+		&indexActivity,
+		&taskID,
+		&orphanLinkage,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// The joins repeat the group/tool row for the text item, but exactly one
 	// text item exists, so these counts remain the actual trace cardinalities.
 	if groups != wantThinking+1 || streaming || toolCalls != 1 || !toolVisible ||
 		thinking != wantThinking || thinkingText != wantThinkingText ||
-		!thinkingAt.Equal(wantThinkingAt) || text != wantText {
-		t.Fatalf("current Activity projection: rows=%d streaming=%t tools=%d tool_visible=%t thinking=%d thinking_text=%q thinking_at=%s text=%q",
-			groups, streaming, toolCalls, toolVisible, thinking, thinkingText, thinkingAt, text)
+		!thinkingAt.Equal(wantThinkingAt) || text != wantText ||
+		!indexActivity || taskID == "" || !orphanLinkage {
+		t.Fatalf("current Activity projection: rows=%d streaming=%t tools=%d tool_visible=%t thinking=%d thinking_text=%q thinking_at=%s text=%q index_activity=%t task_id=%q orphan_linkage=%t",
+			groups, streaming, toolCalls, toolVisible, thinking, thinkingText, thinkingAt, text,
+			indexActivity, taskID, orphanLinkage)
 	}
 }

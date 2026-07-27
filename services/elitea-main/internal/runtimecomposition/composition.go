@@ -527,6 +527,10 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, fmt.Errorf("construct runtime validation projector: %w", err)
 	}
+	runtimeFailureResults, err := repos.NewRuntimeFailureResultsRepository(dependencies.OutputPool)
+	if err != nil {
+		return nil, fmt.Errorf("construct runtime failure projector: %w", err)
+	}
 	outputSessions, err := repos.NewWorkloadSessionsRepository(dependencies.OutputPool)
 	if err != nil {
 		return nil, fmt.Errorf("construct output workload sessions: %w", err)
@@ -550,7 +554,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	runtimeFailures, err := outputapp.NewRuntimeFailureService(
 		outputInbox,
 		outputClaims,
-		results,
+		runtimeFailureResults,
 	)
 	if err != nil {
 		return nil, err

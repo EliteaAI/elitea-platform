@@ -58,6 +58,9 @@ func TestRuntimeFailureServiceAcceptsOnlyExactAdmittedCapabilityIdentity(t *test
 				t.Fatalf("unexpected binding/projector calls: bindings=%d projections=%d", bindings.lookups, len(projector.projections))
 			}
 			projection := projector.projections[0]
+			if projection.CapabilityID != capabilityID {
+				t.Fatalf("projected capability = %q, want %q", projection.CapabilityID, capabilityID)
+			}
 			var replay struct {
 				Code        string `json:"code"`
 				SafeMessage string `json:"safe_message"`
