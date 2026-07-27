@@ -1,0 +1,86 @@
+name: Index reliability — issue 5681
+
+on:
+  pull_request:
+    paths:
+      - "services/elitea-main/tests/system/index_issue_5681_production_scale_test.go"
+      - "services/elitea-main/tests/reliability/index_5681/**"
+      - ".github/workflows/index-5681-reliability.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-harness:
+    name: Verify deterministic gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: |
+            services/elitea-main/go.sum
+            libs/proto/gen/go/go.sum
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify fixture and runner contracts
+        run: |
+          python3 -m unittest discover \
+            -s services/elitea-main/tests/reliability/index_5681 \
+            -p 'test_*.py' -v
+          bash -n services/elitea-main/tests/reliability/index_5681/run.sh
+          go test -count=1 ./services/elitea-main/tests/system \
+            -run '^TestIssue5681FixtureProfileIsExactlySixtyTwoMiB$'
+
+  production-scale:
+    name: Real compose 62 MiB gate
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify-harness
+    runs-on: [self-hosted, index-5681]
+    timeout-minutes: 20
+    env:
+      ELITEA_CENTRY_DIR: ${{ vars.ELITEA_INDEX_5681_CENTRY_DIR }}
+      ELITEA_AUTH_POV_RUNTIME_DIR: ${{ vars.ELITEA_INDEX_5681_RUNTIME_DIR }}
+      ELITEA_INDEX_TEST_COOKIE_FILE: ${{ vars.ELITEA_INDEX_5681_COOKIE_FILE }}
+      ELITEA_INDEX_TEST_REQUEST_FILE: ${{ vars.ELITEA_INDEX_5681_REQUEST_FILE }}
+      ELITEA_INDEX_TEST_PROJECT_ID: ${{ vars.ELITEA_INDEX_5681_PROJECT_ID }}
+      ELITEA_INDEX_5681_FIXTURE_PORT: ${{ vars.ELITEA_INDEX_5681_FIXTURE_PORT }}
+      ELITEA_INDEX_TEST_BASE_URL: ${{ vars.ELITEA_INDEX_5681_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run fail-fast production-scale gate
+        id: gate
+        shell: bash
+        run: |
+          set +e
+          services/elitea-main/tests/reliability/index_5681/run.sh
+          rc=$?
+          set -e
+          if [[ "${rc}" == "0" ]]; then
+            printf 'outcome=passed\n' >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${rc}" == "2" ]]; then
+            printf 'outcome=prerequisite-failure\n' >>"${GITHUB_OUTPUT}"
+            printf 'Issue #5681 gate did not run: provisioned environment prerequisite failed.\n' >>"${GITHUB_STEP_SUMMARY}"
+            exit 2
+          fi
+          printf 'outcome=test-failure\n' >>"${GITHUB_OUTPUT}"
+          printf 'Issue #5681 gate ran and failed with exit code %s.\n' "${rc}" >>"${GITHUB_STEP_SUMMARY}"
+          exit "${rc}"
+
+      - name: Record executed evidence
+        if: success()
+        run: |
+          printf 'Issue #5681 real cross-process 62 MiB gate passed.\n' >>"${GITHUB_STEP_SUMMARY}"
