@@ -50,6 +50,7 @@ func TestCurrentApplicationSkillsRoutePreservesExactCurrentContract(t *testing.T
 	}
 
 	versionID := int32(19)
+	missingVersionID := int32(29)
 	reader := &currentApplicationSkillsReaderStub{
 		skills: []handler.CurrentApplicationSkill{
 			{
@@ -65,6 +66,7 @@ func TestCurrentApplicationSkillsRoutePreservesExactCurrentContract(t *testing.T
 				Name:           "review",
 				Description:    "Review changes",
 				SkillID:        18,
+				VersionID:      &missingVersionID,
 				VersionName:    "unknown",
 				VersionMissing: true,
 				IconMeta:       json.RawMessage(`null`),
@@ -113,7 +115,7 @@ func TestCurrentApplicationSkillsRoutePreservesExactCurrentContract(t *testing.T
 		"\"version_id\":19,\"version_name\":\"release\",\"version_missing\":false," +
 		"\"icon_meta\":{\"url\":\"/icons/deploy.svg\",\"type\":\"image/svg+xml\"}}," +
 		"{\"name\":\"review\",\"description\":\"Review changes\",\"skill_id\":18," +
-		"\"version_id\":null,\"version_name\":\"unknown\",\"version_missing\":true," +
+		"\"version_id\":29,\"version_name\":\"unknown\",\"version_missing\":true," +
 		"\"icon_meta\":null}],\"max_skills\":5}\n"
 	if response.Code != http.StatusOK || response.Body.String() != want ||
 		reader.calls != 1 || reader.projectID != 7 || reader.appVersionID != 31 ||
@@ -173,7 +175,7 @@ func TestCurrentApplicationSkillsRouteAuthenticatesAndAuthorizesBeforeTenantRead
 			remoteAddr: "10.0.0.8:43120",
 			auth:       true,
 			allowed:    true,
-			wantStatus: http.StatusForbidden,
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "invalid application version",
@@ -182,7 +184,7 @@ func TestCurrentApplicationSkillsRouteAuthenticatesAndAuthorizesBeforeTenantRead
 			remoteAddr: "10.0.0.8:43120",
 			auth:       true,
 			allowed:    true,
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "wrong mode is not exposed",
@@ -286,11 +288,131 @@ func TestCurrentApplicationSkillsRoutePreservesEmptyListAndSafeGenericFailure(
 		true,
 		"10.0.0.8:43120",
 	))
-	if response.Code != http.StatusBadRequest ||
+	if response.Code != http.StatusInternalServerError ||
 		response.Body.String() !=
-			"{\"error\":\"Failed to list application skills\",\"ok\":false}\n" ||
+			"{\"message\":\"Internal Server Error\"}\n" ||
 		strings.Contains(response.Body.String(), "password") {
 		t.Fatalf("failure response status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestCurrentApplicationSkillsRouteAcceptsFlaskIntegerDomainAndBoundsPostgresIDs(
+	t *testing.T,
+) {
+	const tooLarge = "9999999999999999999999999999999999999999"
+	tests := []struct {
+		name              string
+		projectID         string
+		appVersionID      string
+		wantRBACProject   string
+		wantReaderCalls   int
+		wantReaderProject int32
+		wantReaderVersion int32
+	}{
+		{
+			name:            "zero application version is absent",
+			projectID:       "7",
+			appVersionID:    "0",
+			wantRBACProject: "7",
+		},
+		{
+			name:            "arbitrarily large application version is absent",
+			projectID:       "7",
+			appVersionID:    tooLarge,
+			wantRBACProject: "7",
+		},
+		{
+			name:            "zero project is accepted by routing",
+			projectID:       "0",
+			appVersionID:    "31",
+			wantRBACProject: "0",
+		},
+		{
+			name:            "arbitrarily large project is accepted by routing",
+			projectID:       tooLarge,
+			appVersionID:    "31",
+			wantRBACProject: tooLarge,
+		},
+		{
+			name:              "leading zeroes normalize like Flask integers",
+			projectID:         "0007",
+			appVersionID:      "00000000000031",
+			wantRBACProject:   "7",
+			wantReaderCalls:   1,
+			wantReaderProject: 7,
+			wantReaderVersion: 31,
+		},
+		{
+			name:              "maximum PostgreSQL integer is queried",
+			projectID:         "7",
+			appVersionID:      "2147483647",
+			wantRBACProject:   "7",
+			wantReaderCalls:   1,
+			wantReaderProject: 7,
+			wantReaderVersion: 2147483647,
+		},
+		{
+			name:            "one above PostgreSQL integer is absent",
+			projectID:       "7",
+			appVersionID:    "2147483648",
+			wantRBACProject: "7",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &currentApplicationSkillsReaderStub{}
+			route := newCurrentApplicationSkillsRoute(
+				t,
+				reader,
+				currentApplicationSkillsPermissionResolverFunc(
+					func(
+						_ context.Context,
+						_ auth.User,
+						mode string,
+						projectID string,
+					) (auth.PermissionResolution, error) {
+						if mode != auth.PermissionModeDefault ||
+							projectID != test.wantRBACProject {
+							t.Fatalf(
+								"mode=%q project=%q want_project=%q",
+								mode,
+								projectID,
+								test.wantRBACProject,
+							)
+						}
+						return auth.PermissionResolution{
+							UserID: 11,
+							Permissions: []string{
+								handler.CurrentApplicationSkillsPermission,
+							},
+						}, nil
+					},
+				),
+			)
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentApplicationSkillsRequest(
+				http.MethodGet,
+				"/api/v2/elitea_core/application_skills/prompt_lib/"+
+					test.projectID+"/"+test.appVersionID,
+				true,
+				"10.0.0.8:43120",
+			))
+			if response.Code != http.StatusOK ||
+				response.Body.String() != "{\"skills\":[],\"max_skills\":5}\n" ||
+				reader.calls != test.wantReaderCalls ||
+				reader.projectID != test.wantReaderProject ||
+				reader.appVersionID != test.wantReaderVersion {
+				t.Fatalf(
+					"status=%d body=%q reader_calls=%d project=%d version=%d",
+					response.Code,
+					response.Body.String(),
+					reader.calls,
+					reader.projectID,
+					reader.appVersionID,
+				)
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -24,14 +25,20 @@ const (
 	MaxCurrentApplicationSkills        = 5
 )
 
+const (
+	currentApplicationSkillsRoutePath     = "/api/v2/elitea_core/application_skills/prompt_lib/{projectID:[0-9]+}/{appVersionID:[0-9]+}"
+	maxCurrentApplicationSkillsPostgresID = "2147483647"
+)
+
 var (
 	ErrInvalidCurrentApplicationSkillsRoute   = errors.New("invalid current application-skills route dependencies")
 	ErrInvalidCurrentApplicationSkillsRequest = errors.New("current application-skills request is invalid")
 )
 
 // CurrentApplicationSkill is the exact presentation shape returned by the
-// current application_skills endpoint. VersionID remains nullable because
-// current tenant schemas allow a mapping whose selected version is absent.
+// current application_skills endpoint. Current schemas constrain VersionID,
+// but a pointer preserves the Python handler's defensive missing-version
+// projection without weakening the PostgreSQL fixture.
 type CurrentApplicationSkill struct {
 	Name           string          `json:"name"`
 	Description    string          `json:"description"`
@@ -169,7 +176,8 @@ func NewCurrentApplicationSkillsRoute(
 	endpoint = apimw.Auth(authConfig)(endpoint)
 
 	router := chi.NewRouter()
-	router.Method(http.MethodGet, CurrentApplicationSkillsPath, endpoint)
+	router.Method(http.MethodGet, currentApplicationSkillsRoutePath, endpoint)
+	router.NotFound(writeCurrentApplicationSkillsNotFound)
 	return &CurrentApplicationSkillsRoute{handler: router}, nil
 }
 
@@ -197,10 +205,21 @@ func (handler *currentApplicationSkillsHandler) list(
 	writer http.ResponseWriter,
 	request *http.Request,
 ) {
-	projectID, projectOK := currentApplicationSkillsID(chi.URLParam(request, "projectID"))
-	appVersionID, versionOK := currentApplicationSkillsID(chi.URLParam(request, "appVersionID"))
+	projectID, projectOK := currentApplicationSkillsPostgresID(
+		chi.URLParam(request, "projectID"),
+	)
+	appVersionID, versionOK := currentApplicationSkillsPostgresID(
+		chi.URLParam(request, "appVersionID"),
+	)
 	if !projectOK || !versionOK {
-		writeCurrentApplicationSkillsFailure(writer)
+		writeCurrentApplicationSkillsJSON(
+			writer,
+			http.StatusOK,
+			currentApplicationSkillsResponse{
+				Skills:    []CurrentApplicationSkill{},
+				MaxSkills: MaxCurrentApplicationSkills,
+			},
+		)
 		return
 	}
 
@@ -221,30 +240,55 @@ func (handler *currentApplicationSkillsHandler) list(
 }
 
 func currentApplicationSkillsProjectID(request *http.Request) (string, bool) {
-	projectID, ok := currentApplicationSkillsID(chi.URLParam(request, "projectID"))
+	projectID, ok := currentApplicationSkillsDecimal(
+		chi.URLParam(request, "projectID"),
+	)
 	if !ok {
 		return "", false
 	}
-	return strconv.FormatInt(int64(projectID), 10), true
+	return projectID, true
 }
 
-func currentApplicationSkillsID(value string) (int32, bool) {
+func currentApplicationSkillsDecimal(value string) (string, bool) {
 	if value == "" {
-		return 0, false
+		return "", false
 	}
 	for _, digit := range value {
 		if digit < '0' || digit > '9' {
-			return 0, false
+			return "", false
 		}
 	}
-	parsed, err := strconv.ParseInt(value, 10, 32)
-	return int32(parsed), err == nil && parsed > 0
+	normalized := strings.TrimLeft(value, "0")
+	if normalized == "" {
+		return "0", true
+	}
+	return normalized, true
+}
+
+func currentApplicationSkillsPostgresID(value string) (int32, bool) {
+	normalized, ok := currentApplicationSkillsDecimal(value)
+	if !ok || normalized == "0" ||
+		len(normalized) > len(maxCurrentApplicationSkillsPostgresID) ||
+		(len(normalized) == len(maxCurrentApplicationSkillsPostgresID) &&
+			normalized > maxCurrentApplicationSkillsPostgresID) {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(normalized, 10, 32)
+	return int32(parsed), err == nil
 }
 
 func writeCurrentApplicationSkillsFailure(writer http.ResponseWriter) {
-	writeCurrentApplicationSkillsJSON(writer, http.StatusBadRequest, map[string]any{
-		"ok":    false,
-		"error": "Failed to list application skills",
+	writeCurrentApplicationSkillsJSON(writer, http.StatusInternalServerError, map[string]string{
+		"message": "Internal Server Error",
+	})
+}
+
+func writeCurrentApplicationSkillsNotFound(
+	writer http.ResponseWriter,
+	_ *http.Request,
+) {
+	writeCurrentApplicationSkillsJSON(writer, http.StatusNotFound, map[string]string{
+		"message": "The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.",
 	})
 }
 

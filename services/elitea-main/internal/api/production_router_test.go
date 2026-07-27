@@ -15,6 +15,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
+	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
@@ -485,6 +486,178 @@ func TestProductionRouterMountsOnlyExactCurrentIndexTypesPathWhenComposed(t *tes
 	)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("uncomposed index-types status=%d", recorder.Code)
+	}
+}
+
+type productionApplicationSkillsReader struct {
+	calls        int
+	projectID    int32
+	appVersionID int32
+}
+
+func (reader *productionApplicationSkillsReader) ListCurrentApplicationSkills(
+	_ context.Context,
+	projectID int32,
+	appVersionID int32,
+) ([]applicationskillsapi.CurrentApplicationSkill, error) {
+	reader.calls++
+	reader.projectID = projectID
+	reader.appVersionID = appVersionID
+	versionID := int32(19)
+	return []applicationskillsapi.CurrentApplicationSkill{
+		{
+			Name:           "deploy",
+			Description:    "Deploy safely",
+			SkillID:        17,
+			VersionID:      &versionID,
+			VersionName:    "release",
+			VersionMissing: false,
+		},
+	}, nil
+}
+
+type productionApplicationSkillsPermissionResolver struct{}
+
+func (productionApplicationSkillsPermissionResolver) ResolvePermissions(
+	_ context.Context,
+	user auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	if user.UserID != "11" ||
+		mode != applicationskillsapi.CurrentApplicationSkillsMode ||
+		projectID != "7" {
+		return auth.PermissionResolution{}, errors.New(
+			"unexpected application-skills authorization input",
+		)
+	}
+	return auth.PermissionResolution{
+		UserID: 11,
+		Permissions: []string{
+			applicationskillsapi.CurrentApplicationSkillsPermission,
+		},
+	}, nil
+}
+
+func TestProductionRouterMountsOnlyExactCurrentApplicationSkillsPathWhenComposed(
+	t *testing.T,
+) {
+	reader := &productionApplicationSkillsReader{}
+	route, err := applicationskillsapi.NewCurrentApplicationSkillsRoute(
+		reader,
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionApplicationSkillsPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentApplicationSkills: route})
+
+	for _, test := range []struct {
+		method        string
+		path          string
+		authenticated bool
+		want          int
+		wantBody      string
+	}{
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/application_skills/prompt_lib/007/0031",
+			authenticated: true,
+			want:          http.StatusOK,
+			wantBody:      "{\"skills\":[{\"name\":\"deploy\",\"description\":\"Deploy safely\",\"skill_id\":17,\"version_id\":19,\"version_name\":\"release\",\"version_missing\":false,\"icon_meta\":null}],\"max_skills\":5}\n",
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/application_skills/prompt_lib/7/31",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/api/v2/elitea_core/application_skills/prompt_lib/7/31",
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/application_skills/prompt_lib/7/not-an-id",
+			authenticated: true,
+			want:          http.StatusNotFound,
+			wantBody:      "{\"message\":\"The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.\"}\n",
+		},
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/application_skills/prompt_lib/7/0",
+			authenticated: true,
+			want:          http.StatusOK,
+			wantBody:      "{\"skills\":[],\"max_skills\":5}\n",
+		},
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/application_skills/prompt_lib/7/9999999999999999999999999999999999999999",
+			authenticated: true,
+			want:          http.StatusOK,
+			wantBody:      "{\"skills\":[],\"max_skills\":5}\n",
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/application_skills/default/7/31",
+			want:   http.StatusNotFound,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/application_skills/prompt_lib/7/31/extra",
+			want:   http.StatusNotFound,
+		},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(test.method, test.path, nil)
+			if test.authenticated {
+				request.Header.Set("X-Auth-Type", "user")
+				request.Header.Set("X-Auth-ID", "11")
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf(
+					"status = %d, want %d; body=%s",
+					recorder.Code,
+					test.want,
+					recorder.Body.String(),
+				)
+			}
+			if test.wantBody != "" && recorder.Body.String() != test.wantBody {
+				t.Fatalf(
+					"body=%q want=%q",
+					recorder.Body.String(),
+					test.wantBody,
+				)
+			}
+		})
+	}
+	if reader.calls != 1 || reader.projectID != 7 || reader.appVersionID != 31 {
+		t.Fatalf(
+			"reader calls=%d project=%d app_version=%d",
+			reader.calls,
+			reader.projectID,
+			reader.appVersionID,
+		)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	recorder := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/api/v2/elitea_core/application_skills/prompt_lib/7/31",
+			nil,
+		),
+	)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed application-skills status=%d", recorder.Code)
 	}
 }
 

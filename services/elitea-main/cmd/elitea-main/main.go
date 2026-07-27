@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
@@ -223,6 +224,41 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			"entry_count",
 			currentIndexTypesSnapshot.EntryCount(),
 		)
+	}
+
+	currentApplicationSkillsSettings, err :=
+		currentApplicationSkillsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current application-skills settings: %w", err)
+	}
+	if currentApplicationSkillsSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_APPLICATION_SKILLS_ENABLED requires production authentication")
+	}
+	var currentApplicationSkills *applicationskillsapi.CurrentApplicationSkillsRoute
+	if currentApplicationSkillsSettings.Enabled {
+		currentApplicationSkillsRepository, repositoryErr :=
+			applicationskillsapi.NewCurrentApplicationSkillsRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf(
+				"compose current application-skills repository: %w",
+				repositoryErr,
+			)
+		}
+		currentApplicationSkills, err =
+			applicationskillsapi.NewCurrentApplicationSkillsRoute(
+				currentApplicationSkillsRepository,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+		if err != nil {
+			return fmt.Errorf("compose current application-skills route: %w", err)
+		}
+		logger.Info("current application-skills route enabled")
 	}
 
 	currentConfigurationsConfig, err := currentConfigurationsConfigFromEnv(os.LookupEnv)
@@ -455,6 +491,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectInfo:            currentProjectInfo,
 		CurrentIndexTypes:             currentIndexTypes,
+		CurrentApplicationSkills:      currentApplicationSkills,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,

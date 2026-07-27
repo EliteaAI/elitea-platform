@@ -15,6 +15,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/admin"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
 	v2apps "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applications"
+	v2applicationskills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2chat "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/chat"
@@ -82,6 +83,7 @@ type RouterConfig struct {
 	ProductionRuntime             *ProductionRuntimeRoutes
 	CurrentProjectInfo            *v2projectinfo.CurrentProjectInfoRoute
 	CurrentIndexTypes             *v2indextypes.CurrentIndexTypesRoute
+	CurrentApplicationSkills      *v2applicationskills.CurrentApplicationSkillsRoute
 	CurrentProjectList            *v2projects.CurrentProjectListRoute
 	CurrentSocialAuthors          *v2social.CurrentAuthorsRoute
 	CurrentConfigurationAvailable http.Handler
