@@ -316,6 +316,7 @@ WHERE execution_id = $1`, corruptAdmission.ExecutionID)
 			Generation:  corruptAdmission.Generation,
 			ClaimToken:  "corrupt-intent-claim",
 			Attempt:     1,
+			ExpiresAt:   time.Now().UTC().Add(time.Minute),
 		},
 		"INITIALIZATION_INTENT_INVALID",
 	); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {

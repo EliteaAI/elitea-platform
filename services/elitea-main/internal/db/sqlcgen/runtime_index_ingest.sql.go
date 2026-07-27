@@ -90,9 +90,11 @@ WITH claimed AS (
       AND o.retired_at IS NULL
     RETURNING i.execution_id,
               i.generation,
-              i.index_meta_initialization_attempt_count
+              i.index_meta_initialization_attempt_count,
+              i.index_meta_initialization_claim_expires_at
 )
-SELECT execution_id, generation, index_meta_initialization_attempt_count
+SELECT execution_id, generation, index_meta_initialization_attempt_count,
+       index_meta_initialization_claim_expires_at
 FROM claimed
 `
 
@@ -107,9 +109,10 @@ type ClaimExactIndexMetaInitializationParams struct {
 }
 
 type ClaimExactIndexMetaInitializationRow struct {
-	ExecutionID                         string `db:"execution_id" json:"execution_id"`
-	Generation                          int64  `db:"generation" json:"generation"`
-	IndexMetaInitializationAttemptCount int32  `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+	ExecutionID                           string             `db:"execution_id" json:"execution_id"`
+	Generation                            int64              `db:"generation" json:"generation"`
+	IndexMetaInitializationAttemptCount   int32              `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+	IndexMetaInitializationClaimExpiresAt pgtype.Timestamptz `db:"index_meta_initialization_claim_expires_at" json:"index_meta_initialization_claim_expires_at"`
 }
 
 func (q *Queries) ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error) {
@@ -123,7 +126,12 @@ func (q *Queries) ClaimExactIndexMetaInitialization(ctx context.Context, arg Cla
 		arg.IndexMetaCorrelationID,
 	)
 	var i ClaimExactIndexMetaInitializationRow
-	err := row.Scan(&i.ExecutionID, &i.Generation, &i.IndexMetaInitializationAttemptCount)
+	err := row.Scan(
+		&i.ExecutionID,
+		&i.Generation,
+		&i.IndexMetaInitializationAttemptCount,
+		&i.IndexMetaInitializationClaimExpiresAt,
+	)
 	return i, err
 }
 
@@ -184,9 +192,11 @@ claimed AS (
       AND i.generation = candidates.generation
     RETURNING i.execution_id,
               i.generation,
-              i.index_meta_initialization_attempt_count
+              i.index_meta_initialization_attempt_count,
+              i.index_meta_initialization_claim_expires_at
 )
-SELECT execution_id, generation, index_meta_initialization_attempt_count
+SELECT execution_id, generation, index_meta_initialization_attempt_count,
+       index_meta_initialization_claim_expires_at
 FROM claimed
 ORDER BY execution_id, generation
 `
@@ -198,9 +208,10 @@ type ClaimPendingIndexMetaInitializationsParams struct {
 }
 
 type ClaimPendingIndexMetaInitializationsRow struct {
-	ExecutionID                         string `db:"execution_id" json:"execution_id"`
-	Generation                          int64  `db:"generation" json:"generation"`
-	IndexMetaInitializationAttemptCount int32  `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+	ExecutionID                           string             `db:"execution_id" json:"execution_id"`
+	Generation                            int64              `db:"generation" json:"generation"`
+	IndexMetaInitializationAttemptCount   int32              `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+	IndexMetaInitializationClaimExpiresAt pgtype.Timestamptz `db:"index_meta_initialization_claim_expires_at" json:"index_meta_initialization_claim_expires_at"`
 }
 
 func (q *Queries) ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error) {
@@ -212,7 +223,12 @@ func (q *Queries) ClaimPendingIndexMetaInitializations(ctx context.Context, arg 
 	items := []ClaimPendingIndexMetaInitializationsRow{}
 	for rows.Next() {
 		var i ClaimPendingIndexMetaInitializationsRow
-		if err := rows.Scan(&i.ExecutionID, &i.Generation, &i.IndexMetaInitializationAttemptCount); err != nil {
+		if err := rows.Scan(
+			&i.ExecutionID,
+			&i.Generation,
+			&i.IndexMetaInitializationAttemptCount,
+			&i.IndexMetaInitializationClaimExpiresAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

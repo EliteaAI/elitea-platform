@@ -188,6 +188,7 @@ func validInitializationWork() IndexMetaInitializationWork {
 			Generation:  outcome.Generation,
 			ClaimToken:  "claim-token",
 			Attempt:     1,
+			ExpiresAt:   time.Now().UTC().Add(time.Minute),
 		},
 		Request: SubmitRequest{
 			Identity:      executionIdentityForTest(),
@@ -498,5 +499,189 @@ func TestDurableIndexMetaInitializerBoundsRecoveryConcurrency(t *testing.T) {
 	}
 	if got := materializer.maximum.Load(); got > 2 {
 		t.Fatalf("maximum concurrency=%d exceeded bound", got)
+	}
+}
+
+func TestDurableIndexMetaInitializerStopsMaterializationBeforeLeaseReentry(
+	t *testing.T,
+) {
+	const claimLease = 400 * time.Millisecond
+	firstStartedAt := time.Now().UTC()
+	firstWork := validInitializationWork()
+	firstWork.Outcome.AdmittedAt = firstStartedAt.Add(-time.Minute)
+	firstWork.Outcome.Deadline = firstStartedAt.Add(time.Minute)
+	firstWork.Claim.ExpiresAt = firstStartedAt.Add(claimLease)
+	firstStore := &indexMetaInitializationStoreStub{
+		work:          firstWork,
+		initializedAt: firstStartedAt,
+	}
+	release := make(chan struct{})
+	materializer := &indexMetaMaterializerStub{block: release}
+	newInitializer := func(
+		store *indexMetaInitializationStoreStub,
+		claimToken string,
+	) *DurableIndexMetaInitializer {
+		initializer, err := NewDurableIndexMetaInitializer(
+			store,
+			materializer,
+			func() (string, error) { return claimToken, nil },
+			IndexMetaInitializationReconcilerConfig{
+				PollInterval:  time.Millisecond,
+				ClaimLease:    claimLease,
+				BatchSize:     1,
+				MaxConcurrent: 1,
+				ReportFailure: func(error) {},
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return initializer
+	}
+
+	firstInitializer := newInitializer(firstStore, "first-claim")
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := firstInitializer.Initialize(
+			context.Background(),
+			firstWork.Outcome,
+		)
+		firstDone <- err
+	}()
+	waitForMaterializerCalls(t, materializer, 1)
+
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("first materialization error=%v", err)
+		}
+	case <-time.After(claimLease):
+		close(release)
+		t.Fatal("first materialization outlived its claim lease")
+	}
+	if firstStore.released != 1 ||
+		firstStore.lastErrorCode != "INITIALIZATION_ATTEMPT_DEADLINE" ||
+		firstStore.resolved != 0 {
+		t.Fatalf(
+			"first released=%d code=%q resolved=%d",
+			firstStore.released,
+			firstStore.lastErrorCode,
+			firstStore.resolved,
+		)
+	}
+
+	if remaining := time.Until(firstWork.Claim.ExpiresAt); remaining > 0 {
+		time.Sleep(remaining)
+	}
+	secondStartedAt := time.Now().UTC()
+	secondWork := validInitializationWork()
+	secondWork.Outcome.AdmittedAt = secondStartedAt.Add(-time.Minute)
+	secondWork.Outcome.Deadline = secondStartedAt.Add(time.Minute)
+	secondWork.Claim.ExpiresAt = secondStartedAt.Add(claimLease)
+	secondStore := &indexMetaInitializationStoreStub{
+		work:          secondWork,
+		initializedAt: secondStartedAt,
+	}
+	secondInitializer := newInitializer(secondStore, "second-claim")
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := secondInitializer.Initialize(
+			context.Background(),
+			secondWork.Outcome,
+		)
+		secondDone <- err
+	}()
+	waitForMaterializerCalls(t, materializer, 2)
+	close(release)
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if materializer.maximum.Load() != 1 || secondStore.resolved != 1 {
+		t.Fatalf(
+			"maximum concurrency=%d second resolved=%d",
+			materializer.maximum.Load(),
+			secondStore.resolved,
+		)
+	}
+}
+
+func TestDurableIndexMetaInitializerUsesEarliestMaterializationDeadline(
+	t *testing.T,
+) {
+	now := time.Date(2026, time.July, 27, 12, 0, 0, 0, time.UTC)
+	initializer := &DurableIndexMetaInitializer{
+		config: IndexMetaInitializationReconcilerConfig{
+			ClaimLease: 40 * time.Second,
+		},
+		now: func() time.Time { return now },
+	}
+	claim := IndexMetaInitializationClaim{
+		ExpiresAt: now.Add(40 * time.Second),
+	}
+	for _, test := range []struct {
+		name        string
+		jobDeadline time.Time
+		want        time.Time
+		wantOK      bool
+	}{
+		{
+			name:        "job deadline",
+			jobDeadline: now.Add(20 * time.Second),
+			want:        now.Add(20 * time.Second),
+			wantOK:      true,
+		},
+		{
+			name:        "claim lease reserve",
+			jobDeadline: now.Add(time.Minute),
+			want:        now.Add(35 * time.Second),
+			wantOK:      true,
+		},
+		{
+			name:        "expired claim reserve",
+			jobDeadline: now.Add(time.Minute),
+			want:        now,
+			wantOK:      false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := claim
+			if !test.wantOK {
+				candidate.ExpiresAt = now.Add(5 * time.Second)
+			}
+			got, ok := initializer.materializationDeadline(
+				candidate,
+				test.jobDeadline,
+			)
+			if ok != test.wantOK || !got.Equal(test.want) {
+				t.Fatalf(
+					"deadline=%v ok=%t want=%v wantOK=%t",
+					got,
+					ok,
+					test.want,
+					test.wantOK,
+				)
+			}
+		})
+	}
+}
+
+func waitForMaterializerCalls(
+	t *testing.T,
+	materializer *indexMetaMaterializerStub,
+	want int32,
+) {
+	t.Helper()
+	timeout := time.After(time.Second)
+	for materializer.calls.Load() < want {
+		select {
+		case <-timeout:
+			t.Fatalf(
+				"materializer calls=%d want=%d",
+				materializer.calls.Load(),
+				want,
+			)
+		default:
+			time.Sleep(time.Millisecond)
+		}
 	}
 }

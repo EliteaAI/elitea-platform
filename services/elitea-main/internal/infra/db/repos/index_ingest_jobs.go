@@ -364,6 +364,7 @@ func (r *IndexIngestJobsRepository) ClaimExactIndexMetaInitialization(
 		row.Generation,
 		row.IndexMetaInitializationAttemptCount,
 		claimToken,
+		row.IndexMetaInitializationClaimExpiresAt,
 	)
 }
 
@@ -399,6 +400,7 @@ func (r *IndexIngestJobsRepository) ClaimPendingIndexMetaInitializations(
 			row.Generation,
 			row.IndexMetaInitializationAttemptCount,
 			claimToken,
+			row.IndexMetaInitializationClaimExpiresAt,
 		)
 		if err != nil {
 			return nil, err
@@ -591,8 +593,10 @@ func indexMetaInitializationClaim(
 	generation int64,
 	attempt int32,
 	token string,
+	expiresAt pgtype.Timestamptz,
 ) (indexingapp.IndexMetaInitializationClaim, error) {
-	if generation <= 0 || attempt <= 0 {
+	if generation <= 0 || attempt <= 0 ||
+		!expiresAt.Valid || expiresAt.Time.IsZero() {
 		return indexingapp.IndexMetaInitializationClaim{},
 			indexingapp.ErrIndexMetaInitializationMismatch
 	}
@@ -601,6 +605,7 @@ func indexMetaInitializationClaim(
 		Generation:  uint64(generation),
 		ClaimToken:  token,
 		Attempt:     uint32(attempt),
+		ExpiresAt:   expiresAt.Time.UTC(),
 	}
 	if err := claim.Validate(); err != nil {
 		return indexingapp.IndexMetaInitializationClaim{}, err

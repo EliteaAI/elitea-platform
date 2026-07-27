@@ -253,10 +253,11 @@ func TestPostgresServiceBackedIndexBusinessFailure(t *testing.T) {
 		t.Fatalf("admit failed index execution: outcome=%+v err=%v", admitted, err)
 	}
 	if _, err := jobs.MarkIndexMetaInitialized(context.Background(), indexingapp.IndexMetaInitialization{
-		ExecutionID:   admitted.ExecutionID,
-		Generation:    admitted.Generation,
-		MetaID:        admitted.IndexMetaID,
-		CorrelationID: admitted.IndexMetaCorrelationID,
+		ExecutionID:     admitted.ExecutionID,
+		Generation:      admitted.Generation,
+		IndexGeneration: admitted.IndexGeneration,
+		MetaID:          admitted.IndexMetaID,
+		CorrelationID:   admitted.IndexMetaCorrelationID,
 	}); err != nil {
 		t.Fatal(err)
 	}

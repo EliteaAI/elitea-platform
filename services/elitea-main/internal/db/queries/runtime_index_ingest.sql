@@ -277,9 +277,11 @@ claimed AS (
       AND i.generation = candidates.generation
     RETURNING i.execution_id,
               i.generation,
-              i.index_meta_initialization_attempt_count
+              i.index_meta_initialization_attempt_count,
+              i.index_meta_initialization_claim_expires_at
 )
-SELECT execution_id, generation, index_meta_initialization_attempt_count
+SELECT execution_id, generation, index_meta_initialization_attempt_count,
+       index_meta_initialization_claim_expires_at
 FROM claimed
 ORDER BY execution_id, generation;
 
@@ -330,9 +332,11 @@ WITH claimed AS (
       AND o.retired_at IS NULL
     RETURNING i.execution_id,
               i.generation,
-              i.index_meta_initialization_attempt_count
+              i.index_meta_initialization_attempt_count,
+              i.index_meta_initialization_claim_expires_at
 )
-SELECT execution_id, generation, index_meta_initialization_attempt_count
+SELECT execution_id, generation, index_meta_initialization_attempt_count,
+       index_meta_initialization_claim_expires_at
 FROM claimed;
 
 -- name: LoadIndexMetaInitializationWork :one

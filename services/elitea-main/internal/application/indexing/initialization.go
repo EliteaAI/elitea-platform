@@ -48,7 +48,9 @@ func NewActiveIndexConflictError(taskID string) error {
 // IndexMetaMaterializer owns the idempotent external PgVector write for the
 // exact admission identity. It must reproduce the approved current initial
 // metadata contract and return only after that row is durably visible. It does
-// not open the command dispatch gate.
+// not open the command dispatch gate. Implementations must propagate and
+// honor context cancellation so a call cannot outlive its initialization
+// claim lease.
 type IndexMetaMaterializer interface {
 	MaterializeInitialIndexMeta(context.Context, SubmitRequest, AdmissionOutcome) error
 }
@@ -58,6 +60,7 @@ type IndexMetaInitializationClaim struct {
 	Generation  uint64
 	ClaimToken  string
 	Attempt     uint32
+	ExpiresAt   time.Time
 }
 
 func (c IndexMetaInitializationClaim) Validate() error {
@@ -67,7 +70,7 @@ func (c IndexMetaInitializationClaim) Validate() error {
 			c.ClaimToken,
 			maxIndexMetaInitializationClaimTokenBytes,
 		) ||
-		c.ClaimToken == "" || c.Attempt == 0 {
+		c.ClaimToken == "" || c.Attempt == 0 || c.ExpiresAt.IsZero() {
 		return ErrIndexMetaInitializationMismatch
 	}
 	return nil
@@ -143,7 +146,7 @@ type IndexMetaInitializationReconcilerConfig struct {
 
 func (c IndexMetaInitializationReconcilerConfig) validate() error {
 	if c.PollInterval <= 0 || c.PollInterval > time.Minute ||
-		c.ClaimLease <= 0 || c.ClaimLease > 10*time.Minute ||
+		c.ClaimLease < time.Millisecond || c.ClaimLease > 10*time.Minute ||
 		c.BatchSize <= 0 ||
 		c.BatchSize > executionapp.MaxOutboxPublisherBatchSize ||
 		c.MaxConcurrent <= 0 || c.MaxConcurrent > c.BatchSize ||
@@ -320,11 +323,38 @@ func (i *DurableIndexMetaInitializer) apply(
 
 	request := work.Request
 	request.Inputs = work.Request.Inputs.Clone()
-	if err := i.materializer.MaterializeInitialIndexMeta(
+	// Leave enough of the database-authoritative claim lease to release the
+	// attempt or commit its marker before another replica can reclaim it.
+	materializationDeadline, ok := i.materializationDeadline(
+		claim,
+		work.Outcome.Deadline,
+	)
+	if !ok {
+		return time.Time{}, i.finishFailure(
+			ctx,
+			claim,
+			ErrIndexMetaInitializationClaimUnavailable,
+		)
+	}
+	materializationCtx, cancel := context.WithTimeout(
 		ctx,
+		materializationDeadline.Sub(i.now().UTC()),
+	)
+	defer cancel()
+	if err := i.materializer.MaterializeInitialIndexMeta(
+		materializationCtx,
 		request,
 		cloneAdmissionOutcome(work.Outcome),
 	); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) &&
+			!work.Outcome.Deadline.After(i.now().UTC()) {
+			return time.Time{}, i.quarantine(
+				ctx,
+				claim,
+				"INITIALIZATION_DEADLINE_EXCEEDED",
+				context.DeadlineExceeded,
+			)
+		}
 		return time.Time{}, i.finishFailure(ctx, claim, err)
 	}
 
@@ -351,6 +381,22 @@ func (i *DurableIndexMetaInitializer) apply(
 		)
 	}
 	return initializedAt, nil
+}
+
+func (i *DurableIndexMetaInitializer) materializationDeadline(
+	claim IndexMetaInitializationClaim,
+	jobDeadline time.Time,
+) (time.Time, bool) {
+	reserve := min(i.config.ClaimLease/4, 5*time.Second)
+	if reserve <= 0 {
+		return time.Time{}, false
+	}
+	leaseDeadline := claim.ExpiresAt.UTC().Add(-reserve)
+	deadline := jobDeadline.UTC()
+	if leaseDeadline.Before(deadline) {
+		deadline = leaseDeadline
+	}
+	return deadline, deadline.After(i.now().UTC())
 }
 
 func (i *DurableIndexMetaInitializer) finishFailure(
