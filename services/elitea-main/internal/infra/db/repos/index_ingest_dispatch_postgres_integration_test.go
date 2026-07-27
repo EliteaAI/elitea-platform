@@ -13,6 +13,7 @@ import (
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/redisdispatch"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
@@ -207,14 +208,47 @@ func assertPreparedIndexCorrelations(t *testing.T, prepared []byte, requestID st
 	if index == nil ||
 		index.GetClientStreamId() != "stream-"+requestID ||
 		index.GetClientMessageId() != "message-"+requestID ||
-		index.GetSioEvent() != indexingapp.CurrentIndexSIOEvent {
+		index.GetSioEvent() != indexingapp.CurrentIndexSIOEvent ||
+		index.GetEmbeddingBinding().GetEntryId() != "embedding-binding" ||
+		len(index.GetEmbeddingBinding().GetContentDigest().GetValue()) != sha256.Size {
 		t.Fatalf("prepared index command lost browser correlation: %+v", index)
 	}
 }
 
 func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIngestJobsRepository, prefix string) (indexingapp.AdmissionOutcome, string) {
 	t.Helper()
-	outcome, err := newPostgresIndexAdmissionService(t, jobs, prefix).Submit(ctx, postgresIndexSubmitRequest("request-"+prefix, "idx"))
+	factory, err := indexingapp.NewInputBundleFactory(indexingapp.InputProfile{
+		Classification:        "project-confidential",
+		RequiredGrantAudience: "elitea.runtime.input.read.v1",
+	}, postgresIndexIDs(
+		prefix+"-bundle",
+		prefix+"-toolkit-content",
+		prefix+"-parameters-content",
+		prefix+"-embedding-content",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := indexingapp.NewAdmissionService(jobs, factory, time.Now, postgresIndexIDs(
+		prefix+"-execution",
+		prefix+"-command",
+		prefix+"-outbox",
+		prefix+"-index-meta",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := postgresIndexSubmitRequest("request-"+prefix, "idx-"+prefix)
+	request.Inputs.EmbeddingBinding = &indexingapp.EmbeddingBinding{
+		SchemaVersion:          indexingapp.CurrentEmbeddingBindingSchema,
+		ModelName:              "text-embedding-3-small",
+		ResolvedModelGroup:     "1_text-embedding-3-small",
+		ConfigurationProjectID: 1,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000111",
+		ConfigurationDigest:    runtimedomain.SHA256([]byte("configuration:" + prefix)),
+		Provider:               "openai",
+	}
+	outcome, err := service.Submit(ctx, request)
 	if err != nil || !outcome.Created {
 		t.Fatalf("admit %s index dispatch: outcome=%+v err=%v", prefix, outcome, err)
 	}

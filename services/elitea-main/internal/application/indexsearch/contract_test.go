@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,6 +27,7 @@ func TestRequestPreservesSDKOwnedSearchParameters(t *testing.T) {
 			LLMModel:             &model,
 			LLMConfiguration:     []byte(`{"temperature":0.1}`),
 			MCPTokens:            []byte(`{"server":"opaque-reference-only"}`),
+			EmbeddingBinding:     []byte(`{"schema_version":"elitea.index.embedding-binding.v1","model_name":"text-embedding-3-large"}`),
 		},
 	}
 	if err := request.Validate(); err != nil {
@@ -67,7 +69,7 @@ func TestCommandContainsOnlyReferenceIdentifiers(t *testing.T) {
 			t.Fatalf("control command leaked input content %q", forbidden)
 		}
 	}
-	if command.GetOperation() != runtimev1.IndexSearchOperationV1_INDEX_SEARCH_OPERATION_V1_STEPBACK_SEARCH_INDEX || command.GetToolkitConfigurationEntryId() != "toolkit" || command.GetToolParametersEntryId() != "params" || command.GetLlmModelEntryId() != "llm-model" || command.GetLlmConfigurationEntryId() != "llm-config" || command.GetMcpTokensEntryId() != "mcp-tokens" {
+	if command.GetOperation() != runtimev1.IndexSearchOperationV1_INDEX_SEARCH_OPERATION_V1_STEPBACK_SEARCH_INDEX || command.GetToolkitConfigurationEntryId() != "toolkit" || command.GetToolParametersEntryId() != "params" || command.GetLlmModelEntryId() != "llm-model" || command.GetLlmConfigurationEntryId() != "llm-config" || command.GetMcpTokensEntryId() != "mcp-tokens" || command.GetEmbeddingBinding().GetEntryId() != "embedding-binding" {
 		t.Fatalf("unexpected reference command: %+v", command)
 	}
 }
@@ -90,7 +92,7 @@ func TestResultBindsAllModelAndVectorConfigurationReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.GetToolkitConfiguration().GetEntryId() != "toolkit" || result.GetLlmModel().GetEntryId() != "llm-model" || result.GetLlmConfiguration().GetEntryId() != "llm-config" || result.GetMcpTokens().GetEntryId() != "mcp-tokens" || result.GetResultArtifact().GetArtifactId() != "artifact-1" {
+	if result.GetToolkitConfiguration().GetEntryId() != "toolkit" || result.GetLlmModel().GetEntryId() != "llm-model" || result.GetLlmConfiguration().GetEntryId() != "llm-config" || result.GetMcpTokens().GetEntryId() != "mcp-tokens" || result.GetEmbeddingBinding().GetEntryId() != "embedding-binding" || result.GetResultArtifact().GetArtifactId() != "artifact-1" {
 		t.Fatalf("result lost an immutable input/result binding: %+v", result)
 	}
 	if got := len(result.GetResultArtifact().GetDigest().GetValue()); got != 32 {
@@ -105,6 +107,7 @@ func validRequest() Request {
 		Inputs: AuthoritativeInputs{
 			ToolkitConfiguration: []byte(`{"type":"github","settings":{}}`),
 			ToolParameters:       []byte(`{}`),
+			EmbeddingBinding:     []byte(`{"schema_version":"elitea.index.embedding-binding.v1"}`),
 		},
 	}
 }
@@ -119,6 +122,74 @@ func bindings() Bindings {
 		LLMModel:             &model,
 		LLMConfiguration:     &config,
 		MCPTokens:            &mcp,
+		EmbeddingBinding:     InputBinding{EntryID: "embedding-binding", Version: "sha256:embedding", Digest: digest("embedding")},
+	}
+}
+
+func TestRequireRecordedEmbeddingBindingRejectsLegacyStaleScopeModelConfigurationAndDimensionDrift(t *testing.T) {
+	dimension := uint32(1536)
+	binding := indexingapp.EmbeddingBinding{
+		SchemaVersion:          indexingapp.CurrentEmbeddingBindingSchema,
+		ModelName:              "embed",
+		ResolvedModelGroup:     "7_embed",
+		ConfigurationProjectID: 7,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000701",
+		ConfigurationDigest:    digest("configuration"),
+		Provider:               "openai",
+		Dimension:              &dimension,
+	}
+	recorded := &RecordedEmbeddingBinding{
+		ResourceProjectID: "7",
+		ToolkitID:         19,
+		IndexName:         "docs",
+		IndexGeneration:   4,
+		Input:             InputBinding{EntryID: "embedding-binding", Version: "sha256:binding", Digest: digest("binding")},
+		Binding:           binding,
+	}
+	expectation := EmbeddingExpectation{
+		ResourceProjectID:   "7",
+		ToolkitID:           19,
+		IndexName:           "docs",
+		IndexGeneration:     4,
+		ModelName:           "embed",
+		ConfigurationUUID:   binding.ConfigurationUUID,
+		ConfigurationDigest: binding.ConfigurationDigest,
+		Dimension:           &dimension,
+	}
+	if err := RequireRecordedEmbeddingBinding(recorded, expectation); err != nil {
+		t.Fatal(err)
+	}
+
+	assertCompatibilityCode(t, nil, expectation, EmbeddingCompatibilityLegacyBindingMissing)
+	stale := expectation
+	stale.IndexGeneration++
+	assertCompatibilityCode(t, recorded, stale, EmbeddingCompatibilityStaleGeneration)
+	wrongScope := expectation
+	wrongScope.ResourceProjectID = "8"
+	assertCompatibilityCode(t, recorded, wrongScope, EmbeddingCompatibilityScopeMismatch)
+	wrongModel := expectation
+	wrongModel.ModelName = "embed-v2"
+	assertCompatibilityCode(t, recorded, wrongModel, EmbeddingCompatibilityModelMismatch)
+	wrongConfiguration := expectation
+	wrongConfiguration.ConfigurationDigest = digest("changed-configuration")
+	assertCompatibilityCode(t, recorded, wrongConfiguration, EmbeddingCompatibilityConfigurationMismatch)
+	wrongDimension := expectation
+	dimension3072 := uint32(3072)
+	wrongDimension.Dimension = &dimension3072
+	assertCompatibilityCode(t, recorded, wrongDimension, EmbeddingCompatibilityDimensionMismatch)
+}
+
+func assertCompatibilityCode(
+	t *testing.T,
+	recorded *RecordedEmbeddingBinding,
+	expectation EmbeddingExpectation,
+	code EmbeddingCompatibilityCode,
+) {
+	t.Helper()
+	err := RequireRecordedEmbeddingBinding(recorded, expectation)
+	var compatibility *EmbeddingCompatibilityError
+	if !errors.As(err, &compatibility) || compatibility.Code != code {
+		t.Fatalf("error=%v code=%q, want %q", err, compatibility.Code, code)
 	}
 }
 

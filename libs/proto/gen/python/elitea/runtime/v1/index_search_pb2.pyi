@@ -19,20 +19,22 @@ INDEX_SEARCH_OPERATION_V1_STEPBACK_SEARCH_INDEX: IndexSearchOperationV1
 INDEX_SEARCH_OPERATION_V1_LIST_INDEXES: IndexSearchOperationV1
 
 class IndexSearchCommandV1(_message.Message):
-    __slots__ = ("operation", "toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id")
+    __slots__ = ("operation", "toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "embedding_binding")
     OPERATION_FIELD_NUMBER: _ClassVar[int]
     TOOLKIT_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_PARAMETERS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_MODEL_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     MCP_TOKENS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
+    EMBEDDING_BINDING_FIELD_NUMBER: _ClassVar[int]
     operation: IndexSearchOperationV1
     toolkit_configuration_entry_id: str
     tool_parameters_entry_id: str
     llm_model_entry_id: str
     llm_configuration_entry_id: str
     mcp_tokens_entry_id: str
-    def __init__(self, operation: _Optional[_Union[IndexSearchOperationV1, str]] = ..., toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ...) -> None: ...
+    embedding_binding: IndexSearchInputBindingV1
+    def __init__(self, operation: _Optional[_Union[IndexSearchOperationV1, str]] = ..., toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., embedding_binding: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ...) -> None: ...
 
 class IndexSearchInputBindingV1(_message.Message):
     __slots__ = ("entry_id", "immutable_version", "content_digest")
@@ -61,7 +63,7 @@ class IndexSearchArtifactReferenceV1(_message.Message):
     def __init__(self, artifact_id: _Optional[str] = ..., immutable_version: _Optional[str] = ..., media_type: _Optional[str] = ..., byte_length: _Optional[int] = ..., digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., classification: _Optional[str] = ...) -> None: ...
 
 class IndexSearchResultV1(_message.Message):
-    __slots__ = ("operation", "input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact")
+    __slots__ = ("operation", "input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact", "embedding_binding")
     OPERATION_FIELD_NUMBER: _ClassVar[int]
     INPUT_BUNDLE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
@@ -71,6 +73,7 @@ class IndexSearchResultV1(_message.Message):
     LLM_CONFIGURATION_FIELD_NUMBER: _ClassVar[int]
     MCP_TOKENS_FIELD_NUMBER: _ClassVar[int]
     RESULT_ARTIFACT_FIELD_NUMBER: _ClassVar[int]
+    EMBEDDING_BINDING_FIELD_NUMBER: _ClassVar[int]
     operation: IndexSearchOperationV1
     input_bundle_id: str
     input_bundle_digest: _common_pb2.DigestV1
@@ -80,4 +83,5 @@ class IndexSearchResultV1(_message.Message):
     llm_configuration: IndexSearchInputBindingV1
     mcp_tokens: IndexSearchInputBindingV1
     result_artifact: IndexSearchArtifactReferenceV1
-    def __init__(self, operation: _Optional[_Union[IndexSearchOperationV1, str]] = ..., input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexSearchArtifactReferenceV1, _Mapping]] = ...) -> None: ...
+    embedding_binding: IndexSearchInputBindingV1
+    def __init__(self, operation: _Optional[_Union[IndexSearchOperationV1, str]] = ..., input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexSearchArtifactReferenceV1, _Mapping]] = ..., embedding_binding: _Optional[_Union[IndexSearchInputBindingV1, _Mapping]] = ...) -> None: ...

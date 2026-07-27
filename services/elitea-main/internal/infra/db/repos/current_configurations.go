@@ -11,6 +11,7 @@ import (
 	"time"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,6 +20,7 @@ import (
 
 type currentConfigurationQueries interface {
 	FindCurrentConfigurationByEliteaTitle(context.Context, sqlcgen.FindCurrentConfigurationByEliteaTitleParams) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error)
+	FindCurrentEmbeddingConfigurations(context.Context, sqlcgen.FindCurrentEmbeddingConfigurationsParams) ([]sqlcgen.FindCurrentEmbeddingConfigurationsRow, error)
 	ListCurrentConfigurationOptionCandidates(context.Context, sqlcgen.ListCurrentConfigurationOptionCandidatesParams) ([]sqlcgen.ListCurrentConfigurationOptionCandidatesRow, error)
 	ListCurrentConfigurationTypes(context.Context, sqlcgen.ListCurrentConfigurationTypesParams) ([]string, error)
 	CountCurrentConfigurations(context.Context, sqlcgen.CountCurrentConfigurationsParams) (int64, error)
@@ -29,6 +31,69 @@ type currentConfigurationQueries interface {
 	InsertCurrentConfiguration(context.Context, sqlcgen.InsertCurrentConfigurationParams) (sqlcgen.InsertCurrentConfigurationRow, error)
 	ReplaceCurrentConfiguration(context.Context, sqlcgen.ReplaceCurrentConfigurationParams) (sqlcgen.ReplaceCurrentConfigurationRow, error)
 	DeleteCurrentConfiguration(context.Context, sqlcgen.DeleteCurrentConfigurationParams) (int32, error)
+}
+
+// FindCurrentEmbeddingConfiguration resolves the exact saved Configurations
+// row that the current LiteLLM projection keys by data.name. It never expands
+// ai_credentials or reads secret values.
+func (r *CurrentConfigurationsRepository) FindCurrentEmbeddingConfiguration(
+	ctx context.Context,
+	projectID int32,
+	modelName string,
+	sharedOnly bool,
+) (indexingapp.CurrentEmbeddingConfiguration, bool, error) {
+	if ctx == nil || projectID <= 0 || modelName == "" ||
+		len(modelName) > configurationapp.MaxCurrentExpansionIdentifierLength {
+		return indexingapp.CurrentEmbeddingConfiguration{}, false, indexingapp.ErrInvalidCurrentEmbeddingBinding
+	}
+	if err := ctx.Err(); err != nil {
+		return indexingapp.CurrentEmbeddingConfiguration{}, false, err
+	}
+
+	var configuration indexingapp.CurrentEmbeddingConfiguration
+	found := false
+	err := r.projects.WithinProjectTx(ctx, int64(projectID), pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadOnly,
+	}, func(tx sqlExecutor) error {
+		queries, err := r.queries(tx)
+		if err != nil {
+			return err
+		}
+		rows, err := queries.FindCurrentEmbeddingConfigurations(ctx, sqlcgen.FindCurrentEmbeddingConfigurationsParams{
+			ProjectID:  projectID,
+			ModelName:  modelName,
+			SharedOnly: sharedOnly,
+		})
+		if err != nil {
+			return fmt.Errorf("find current embedding configuration: %w", err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		if len(rows) != 1 {
+			return indexingapp.ErrCurrentEmbeddingBindingAmbiguous
+		}
+		row := rows[0]
+		if row.ProjectID != projectID || row.Type != "embedding_model" ||
+			row.Section != "embedding" || (sharedOnly && !row.Shared) {
+			return errors.New("current embedding configuration escaped its authorized scope")
+		}
+		configuration = indexingapp.CurrentEmbeddingConfiguration{
+			UUID:      row.ConfigurationUuid,
+			ProjectID: row.ProjectID,
+			Type:      row.Type,
+			Section:   row.Section,
+			Data:      append(json.RawMessage(nil), row.Data...),
+			Shared:    row.Shared,
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return indexingapp.CurrentEmbeddingConfiguration{}, false, err
+	}
+	return configuration, found, nil
 }
 
 // FindByEliteaTitle performs the provider-neutral lookup used by current

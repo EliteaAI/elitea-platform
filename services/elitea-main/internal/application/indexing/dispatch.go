@@ -44,6 +44,8 @@ type IndexIngestDispatch struct {
 	LLMModelEntryID             string
 	LLMConfigurationEntryID     string
 	MCPTokensEntryID            string
+	EmbeddingBindingEntryID     string
+	EmbeddingBindingDigest      runtimedomain.Digest
 	ClientStreamID              string
 	ClientMessageID             string
 	SIOEvent                    string
@@ -63,7 +65,14 @@ func (d IndexIngestDispatch) Validate() error {
 			return ErrInvalidIndexIngestDispatch
 		}
 	}
-	for _, value := range []string{d.Traceparent, d.Tracestate, d.LLMModelEntryID, d.LLMConfigurationEntryID, d.MCPTokensEntryID} {
+	for _, value := range []string{
+		d.Traceparent,
+		d.Tracestate,
+		d.LLMModelEntryID,
+		d.LLMConfigurationEntryID,
+		d.MCPTokensEntryID,
+		d.EmbeddingBindingEntryID,
+	} {
 		if value != "" && !validDispatchText(value) {
 			return ErrInvalidIndexIngestDispatch
 		}
@@ -85,6 +94,7 @@ func (d IndexIngestDispatch) Validate() error {
 		d.LLMModelEntryID,
 		d.LLMConfigurationEntryID,
 		d.MCPTokensEntryID,
+		d.EmbeddingBindingEntryID,
 	}
 	for position, entryID := range entryIDs {
 		if entryID == "" {
@@ -95,6 +105,9 @@ func (d IndexIngestDispatch) Validate() error {
 				return ErrInvalidIndexIngestDispatch
 			}
 		}
+	}
+	if (d.EmbeddingBindingEntryID == "") != d.EmbeddingBindingDigest.IsZero() {
+		return ErrInvalidIndexIngestDispatch
 	}
 	return nil
 }

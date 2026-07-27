@@ -125,6 +125,69 @@ func (q *Queries) FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg
 	return i, err
 }
 
+const findCurrentEmbeddingConfigurations = `-- name: FindCurrentEmbeddingConfigurations :many
+SELECT uuid::text AS configuration_uuid,
+       project_id,
+       type,
+       section,
+       data,
+       shared
+FROM configuration
+WHERE project_id = $1::integer
+  AND type = 'embedding_model'
+  AND section = 'embedding'
+  AND status_ok = true
+  AND data->>'name' = $2::text
+  AND (NOT $3::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT 2
+`
+
+type FindCurrentEmbeddingConfigurationsParams struct {
+	ProjectID  int32  `db:"project_id" json:"project_id"`
+	ModelName  string `db:"model_name" json:"model_name"`
+	SharedOnly bool   `db:"shared_only" json:"shared_only"`
+}
+
+type FindCurrentEmbeddingConfigurationsRow struct {
+	ConfigurationUuid string `db:"configuration_uuid" json:"configuration_uuid"`
+	ProjectID         int32  `db:"project_id" json:"project_id"`
+	Type              string `db:"type" json:"type"`
+	Section           string `db:"section" json:"section"`
+	Data              []byte `db:"data" json:"data"`
+	Shared            bool   `db:"shared" json:"shared"`
+}
+
+// The current Configurations -> LiteLLM model projection keys embedding
+// models by data.name. A two-row sentinel lets the adapter reject duplicate
+// mutable definitions instead of selecting one silently.
+func (q *Queries) FindCurrentEmbeddingConfigurations(ctx context.Context, arg FindCurrentEmbeddingConfigurationsParams) ([]FindCurrentEmbeddingConfigurationsRow, error) {
+	rows, err := q.db.Query(ctx, findCurrentEmbeddingConfigurations, arg.ProjectID, arg.ModelName, arg.SharedOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindCurrentEmbeddingConfigurationsRow{}
+	for rows.Next() {
+		var i FindCurrentEmbeddingConfigurationsRow
+		if err := rows.Scan(
+			&i.ConfigurationUuid,
+			&i.ProjectID,
+			&i.Type,
+			&i.Section,
+			&i.Data,
+			&i.Shared,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCurrentConfiguration = `-- name: GetCurrentConfiguration :one
 SELECT configuration.id,
        configuration.uuid::text AS configuration_uuid,

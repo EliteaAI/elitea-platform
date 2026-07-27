@@ -57,6 +57,7 @@ func TestListPendingIndexIngestIDsIsCapabilityAndStreamScoped(t *testing.T) {
 
 func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 	manifestDigest := runtimedomain.SHA256([]byte("index-manifest"))
+	embeddingBindingDigest := runtimedomain.SHA256([]byte("embedding-binding"))
 	deadline := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
 		"index-outbox-1", "index-command-1", "index-execution-1", int64(1), int64(1),
@@ -64,6 +65,7 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 		"index-bundle-1", "admission:index-bundle-1", "application/x-protobuf", int64(256), manifestDigest[:],
 		"1", "indexing", "project", int32(1), deadline, "index-limits-v1", "", "",
 		"toolkit-configuration", "tool-parameters", "llm-model", "llm-configuration", "mcp-credential-references",
+		"embedding-binding", embeddingBindingDigest[:], int64(1),
 		"stream-1", "message-1", "chat_predict",
 	}}}}
 	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
@@ -74,13 +76,22 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatch.OutboxID != "index-outbox-1" || dispatch.InputBundleDigest != manifestDigest || dispatch.ToolkitConfigurationEntryID != "toolkit-configuration" || dispatch.MCPTokensEntryID != "mcp-credential-references" || dispatch.ClientStreamID != "stream-1" || dispatch.ClientMessageID != "message-1" || dispatch.SIOEvent != "chat_predict" {
+	if dispatch.OutboxID != "index-outbox-1" || dispatch.InputBundleDigest != manifestDigest ||
+		dispatch.ToolkitConfigurationEntryID != "toolkit-configuration" ||
+		dispatch.MCPTokensEntryID != "mcp-credential-references" ||
+		dispatch.EmbeddingBindingEntryID != "embedding-binding" ||
+		dispatch.EmbeddingBindingDigest != embeddingBindingDigest ||
+		dispatch.ClientStreamID != "stream-1" ||
+		dispatch.ClientMessageID != "message-1" ||
+		dispatch.SIOEvent != "chat_predict" {
 		t.Fatalf("unexpected index dispatch: %+v", dispatch)
 	}
 	query := executor.rowCalls[0].sql
 	for _, fragment := range []string{
 		"JOIN elitea_runtime.index_ingest_jobs AS i",
 		"JOIN elitea_runtime.input_bundles AS b",
+		"LEFT JOIN LATERAL",
+		"entry.semantic_role = 'index.embedding_binding'",
 		"i.input_bundle_id = j.input_bundle_id",
 		"j.capability_id = 'index.ingest.v1'",
 		"j.desired_state = 'RUNNING'",
@@ -90,10 +101,33 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 			t.Fatalf("index dispatch query is missing %q", fragment)
 		}
 	}
-	for _, forbidden := range []string{"manifest_bytes", "input_bundle_entries", "content_bytes"} {
+	for _, forbidden := range []string{"manifest_bytes", "content_bytes"} {
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("index dispatch query loads data-plane field %q", forbidden)
 		}
+	}
+}
+
+func TestLoadPendingIndexIngestRejectsAmbiguousEmbeddingBindings(t *testing.T) {
+	manifestDigest := runtimedomain.SHA256([]byte("index-manifest"))
+	embeddingBindingDigest := runtimedomain.SHA256([]byte("embedding-binding"))
+	deadline := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
+		"index-outbox-1", "index-command-1", "index-execution-1", int64(1), int64(1),
+		"tenant-1", "1", "1", "actor-1",
+		"index-bundle-1", "admission:index-bundle-1", "application/x-protobuf", int64(256), manifestDigest[:],
+		"1", "indexing", "project", int32(1), deadline, "index-limits-v1", "", "",
+		"toolkit-configuration", "tool-parameters", "llm-model", "llm-configuration", "mcp-credential-references",
+		"embedding-binding", embeddingBindingDigest[:], int64(2),
+		"stream-1", "message-1", "chat_predict",
+	}}}}
+	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.LoadPendingIndexIngest(context.Background(), "index-outbox-1"); err == nil ||
+		!strings.Contains(err.Error(), "ambiguous embedding bindings") {
+		t.Fatalf("ambiguous embedding binding error = %v", err)
 	}
 }
 

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -76,6 +78,52 @@ func TestInputBundleFactoryBuildsTypedReferenceManifestWithoutAliasing(t *testin
 	inputs.ToolkitConfiguration[2] = 'X'
 	if bytes.Equal(bundle.Entries[0].Content, inputs.ToolkitConfiguration) {
 		t.Fatal("durable toolkit configuration aliases resolver memory")
+	}
+}
+
+func TestInputBundleFactoryBindsEmbeddingByReferenceAndDigest(t *testing.T) {
+	factory, err := NewInputBundleFactory(InputProfile{
+		Classification:        "project-confidential",
+		RequiredGrantAudience: "elitea.runtime.input.read.v1",
+	}, sequenceIDs("bundle", "toolkit-content", "parameters-content", "embedding-content"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configurationDigest := runtimedomain.SHA256([]byte("non-secret-configuration"))
+	binding := EmbeddingBinding{
+		SchemaVersion:          CurrentEmbeddingBindingSchema,
+		ModelName:              "text-embedding-3-small",
+		ResolvedModelGroup:     "1_text-embedding-3-small",
+		ConfigurationProjectID: 1,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000101",
+		ConfigurationDigest:    configurationDigest,
+		Provider:               "openai",
+	}
+	bundle, indexBinding, err := factory.Build(context.Background(), AuthoritativeInputs{
+		ToolkitConfiguration: json.RawMessage(`{"id":19,"type":"github"}`),
+		ToolParameters:       json.RawMessage(`{"index_name":"docs"}`),
+		EmbeddingBinding:     &binding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Entries) != 3 ||
+		indexBinding.EmbeddingBindingEntryID != indexEmbeddingBindingEntryID ||
+		indexBinding.EmbeddingBindingDigest.IsZero() ||
+		indexBinding.EmbeddingBindingDigest != bundle.Entries[2].ContentDigest ||
+		bundle.Entries[2].SemanticRole != executiondomain.IndexEmbeddingBindingRole {
+		t.Fatalf("bundle=%+v binding=%+v", bundle, indexBinding)
+	}
+	indexBinding.IndexMetaID = "index-meta-1"
+	indexBinding.IndexMetaCorrelationID = "index-correlation-1"
+	indexBinding.ToolkitID = 19
+	indexBinding.IndexName = "docs"
+	indexBinding.Initiator = executiondomain.IndexIngestInitiatorUser
+	if err := indexBinding.Validate(bundle); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bundle.Entries[2].Content), "credential-current") {
+		t.Fatalf("embedding binding copied a configuration reference: %s", bundle.Entries[2].Content)
 	}
 }
 

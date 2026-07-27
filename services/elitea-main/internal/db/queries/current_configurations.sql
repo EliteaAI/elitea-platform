@@ -15,6 +15,26 @@ WHERE project_id = sqlc.arg('project_id')::integer
   AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
 LIMIT 1;
 
+-- The current Configurations -> LiteLLM model projection keys embedding
+-- models by data.name. A two-row sentinel lets the adapter reject duplicate
+-- mutable definitions instead of selecting one silently.
+-- name: FindCurrentEmbeddingConfigurations :many
+SELECT uuid::text AS configuration_uuid,
+       project_id,
+       type,
+       section,
+       data,
+       shared
+FROM configuration
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND type = 'embedding_model'
+  AND section = 'embedding'
+  AND status_ok = true
+  AND data->>'name' = sqlc.arg('model_name')::text
+  AND (NOT sqlc.arg('shared_only')::boolean OR shared = true)
+ORDER BY id ASC
+LIMIT 2;
+
 -- name: GetCurrentConfiguration :one
 SELECT configuration.id,
        configuration.uuid::text AS configuration_uuid,

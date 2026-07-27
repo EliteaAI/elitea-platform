@@ -83,13 +83,14 @@ func (IndexSearchOperationV1) EnumDescriptor() ([]byte, []int) {
 // claim it before admission, RBAC, content retrieval and output composition
 // are implemented together.
 type IndexSearchCommandV1 struct {
-	state                       protoimpl.MessageState `protogen:"open.v1"`
-	Operation                   IndexSearchOperationV1 `protobuf:"varint,1,opt,name=operation,proto3,enum=elitea.runtime.v1.IndexSearchOperationV1" json:"operation,omitempty"`
-	ToolkitConfigurationEntryId string                 `protobuf:"bytes,2,opt,name=toolkit_configuration_entry_id,json=toolkitConfigurationEntryId,proto3" json:"toolkit_configuration_entry_id,omitempty"`
-	ToolParametersEntryId       string                 `protobuf:"bytes,3,opt,name=tool_parameters_entry_id,json=toolParametersEntryId,proto3" json:"tool_parameters_entry_id,omitempty"`
-	LlmModelEntryId             string                 `protobuf:"bytes,4,opt,name=llm_model_entry_id,json=llmModelEntryId,proto3" json:"llm_model_entry_id,omitempty"`
-	LlmConfigurationEntryId     string                 `protobuf:"bytes,5,opt,name=llm_configuration_entry_id,json=llmConfigurationEntryId,proto3" json:"llm_configuration_entry_id,omitempty"`
-	McpTokensEntryId            string                 `protobuf:"bytes,6,opt,name=mcp_tokens_entry_id,json=mcpTokensEntryId,proto3" json:"mcp_tokens_entry_id,omitempty"`
+	state                       protoimpl.MessageState     `protogen:"open.v1"`
+	Operation                   IndexSearchOperationV1     `protobuf:"varint,1,opt,name=operation,proto3,enum=elitea.runtime.v1.IndexSearchOperationV1" json:"operation,omitempty"`
+	ToolkitConfigurationEntryId string                     `protobuf:"bytes,2,opt,name=toolkit_configuration_entry_id,json=toolkitConfigurationEntryId,proto3" json:"toolkit_configuration_entry_id,omitempty"`
+	ToolParametersEntryId       string                     `protobuf:"bytes,3,opt,name=tool_parameters_entry_id,json=toolParametersEntryId,proto3" json:"tool_parameters_entry_id,omitempty"`
+	LlmModelEntryId             string                     `protobuf:"bytes,4,opt,name=llm_model_entry_id,json=llmModelEntryId,proto3" json:"llm_model_entry_id,omitempty"`
+	LlmConfigurationEntryId     string                     `protobuf:"bytes,5,opt,name=llm_configuration_entry_id,json=llmConfigurationEntryId,proto3" json:"llm_configuration_entry_id,omitempty"`
+	McpTokensEntryId            string                     `protobuf:"bytes,6,opt,name=mcp_tokens_entry_id,json=mcpTokensEntryId,proto3" json:"mcp_tokens_entry_id,omitempty"`
+	EmbeddingBinding            *IndexSearchInputBindingV1 `protobuf:"bytes,7,opt,name=embedding_binding,json=embeddingBinding,proto3" json:"embedding_binding,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -166,10 +167,16 @@ func (x *IndexSearchCommandV1) GetMcpTokensEntryId() string {
 	return ""
 }
 
+func (x *IndexSearchCommandV1) GetEmbeddingBinding() *IndexSearchInputBindingV1 {
+	if x != nil {
+		return x.EmbeddingBinding
+	}
+	return nil
+}
+
 // IndexSearchInputBindingV1 identifies exact immutable input content used by
-// the SDK.  The toolkit configuration remains authoritative for vector-store,
-// embedding model, dimension and collection compatibility; those values must
-// not be independently reconstructed by Main or a worker.
+// the SDK. The separately recorded embedding binding is authoritative for the
+// exact index generation and must not be reconstructed from mutable defaults.
 type IndexSearchInputBindingV1 struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	EntryId          string                 `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
@@ -333,6 +340,7 @@ type IndexSearchResultV1 struct {
 	LlmConfiguration     *IndexSearchInputBindingV1      `protobuf:"bytes,7,opt,name=llm_configuration,json=llmConfiguration,proto3" json:"llm_configuration,omitempty"`
 	McpTokens            *IndexSearchInputBindingV1      `protobuf:"bytes,8,opt,name=mcp_tokens,json=mcpTokens,proto3" json:"mcp_tokens,omitempty"`
 	ResultArtifact       *IndexSearchArtifactReferenceV1 `protobuf:"bytes,9,opt,name=result_artifact,json=resultArtifact,proto3" json:"result_artifact,omitempty"`
+	EmbeddingBinding     *IndexSearchInputBindingV1      `protobuf:"bytes,10,opt,name=embedding_binding,json=embeddingBinding,proto3" json:"embedding_binding,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -430,18 +438,26 @@ func (x *IndexSearchResultV1) GetResultArtifact() *IndexSearchArtifactReferenceV
 	return nil
 }
 
+func (x *IndexSearchResultV1) GetEmbeddingBinding() *IndexSearchInputBindingV1 {
+	if x != nil {
+		return x.EmbeddingBinding
+	}
+	return nil
+}
+
 var File_elitea_runtime_v1_index_search_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_index_search_proto_rawDesc = "" +
 	"\n" +
-	"$elitea/runtime/v1/index_search.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\xfc\x02\n" +
+	"$elitea/runtime/v1/index_search.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\xd7\x03\n" +
 	"\x14IndexSearchCommandV1\x12G\n" +
 	"\toperation\x18\x01 \x01(\x0e2).elitea.runtime.v1.IndexSearchOperationV1R\toperation\x12C\n" +
 	"\x1etoolkit_configuration_entry_id\x18\x02 \x01(\tR\x1btoolkitConfigurationEntryId\x127\n" +
 	"\x18tool_parameters_entry_id\x18\x03 \x01(\tR\x15toolParametersEntryId\x12+\n" +
 	"\x12llm_model_entry_id\x18\x04 \x01(\tR\x0fllmModelEntryId\x12;\n" +
 	"\x1allm_configuration_entry_id\x18\x05 \x01(\tR\x17llmConfigurationEntryId\x12-\n" +
-	"\x13mcp_tokens_entry_id\x18\x06 \x01(\tR\x10mcpTokensEntryIdJ\x04\b\a\x10\x10\"\xad\x01\n" +
+	"\x13mcp_tokens_entry_id\x18\x06 \x01(\tR\x10mcpTokensEntryId\x12Y\n" +
+	"\x11embedding_binding\x18\a \x01(\v2,.elitea.runtime.v1.IndexSearchInputBindingV1R\x10embeddingBindingJ\x04\b\b\x10\x10\"\xad\x01\n" +
 	"\x19IndexSearchInputBindingV1\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12+\n" +
 	"\x11immutable_version\x18\x02 \x01(\tR\x10immutableVersion\x12B\n" +
@@ -455,7 +471,7 @@ const file_elitea_runtime_v1_index_search_proto_rawDesc = "" +
 	"\vbyte_length\x18\x04 \x01(\x04R\n" +
 	"byteLength\x123\n" +
 	"\x06digest\x18\x05 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x06digest\x12&\n" +
-	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"\xe2\x05\n" +
+	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"\xbd\x06\n" +
 	"\x13IndexSearchResultV1\x12G\n" +
 	"\toperation\x18\x01 \x01(\x0e2).elitea.runtime.v1.IndexSearchOperationV1R\toperation\x12&\n" +
 	"\x0finput_bundle_id\x18\x02 \x01(\tR\rinputBundleId\x12K\n" +
@@ -466,8 +482,9 @@ const file_elitea_runtime_v1_index_search_proto_rawDesc = "" +
 	"\x11llm_configuration\x18\a \x01(\v2,.elitea.runtime.v1.IndexSearchInputBindingV1R\x10llmConfiguration\x12K\n" +
 	"\n" +
 	"mcp_tokens\x18\b \x01(\v2,.elitea.runtime.v1.IndexSearchInputBindingV1R\tmcpTokens\x12Z\n" +
-	"\x0fresult_artifact\x18\t \x01(\v21.elitea.runtime.v1.IndexSearchArtifactReferenceV1R\x0eresultArtifactJ\x04\b\n" +
-	"\x10\x10*\xd0\x01\n" +
+	"\x0fresult_artifact\x18\t \x01(\v21.elitea.runtime.v1.IndexSearchArtifactReferenceV1R\x0eresultArtifact\x12Y\n" +
+	"\x11embedding_binding\x18\n" +
+	" \x01(\v2,.elitea.runtime.v1.IndexSearchInputBindingV1R\x10embeddingBindingJ\x04\b\v\x10\x10*\xd0\x01\n" +
 	"\x16IndexSearchOperationV1\x12)\n" +
 	"%INDEX_SEARCH_OPERATION_V1_UNSPECIFIED\x10\x00\x12*\n" +
 	"&INDEX_SEARCH_OPERATION_V1_SEARCH_INDEX\x10\x01\x123\n" +
@@ -498,21 +515,23 @@ var file_elitea_runtime_v1_index_search_proto_goTypes = []any{
 }
 var file_elitea_runtime_v1_index_search_proto_depIdxs = []int32{
 	0,  // 0: elitea.runtime.v1.IndexSearchCommandV1.operation:type_name -> elitea.runtime.v1.IndexSearchOperationV1
-	5,  // 1: elitea.runtime.v1.IndexSearchInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
-	5,  // 2: elitea.runtime.v1.IndexSearchArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
-	0,  // 3: elitea.runtime.v1.IndexSearchResultV1.operation:type_name -> elitea.runtime.v1.IndexSearchOperationV1
-	5,  // 4: elitea.runtime.v1.IndexSearchResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
-	2,  // 5: elitea.runtime.v1.IndexSearchResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
-	2,  // 6: elitea.runtime.v1.IndexSearchResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
-	2,  // 7: elitea.runtime.v1.IndexSearchResultV1.llm_model:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
-	2,  // 8: elitea.runtime.v1.IndexSearchResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
-	2,  // 9: elitea.runtime.v1.IndexSearchResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
-	3,  // 10: elitea.runtime.v1.IndexSearchResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexSearchArtifactReferenceV1
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	2,  // 1: elitea.runtime.v1.IndexSearchCommandV1.embedding_binding:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	5,  // 2: elitea.runtime.v1.IndexSearchInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
+	5,  // 3: elitea.runtime.v1.IndexSearchArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
+	0,  // 4: elitea.runtime.v1.IndexSearchResultV1.operation:type_name -> elitea.runtime.v1.IndexSearchOperationV1
+	5,  // 5: elitea.runtime.v1.IndexSearchResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
+	2,  // 6: elitea.runtime.v1.IndexSearchResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	2,  // 7: elitea.runtime.v1.IndexSearchResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	2,  // 8: elitea.runtime.v1.IndexSearchResultV1.llm_model:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	2,  // 9: elitea.runtime.v1.IndexSearchResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	2,  // 10: elitea.runtime.v1.IndexSearchResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	3,  // 11: elitea.runtime.v1.IndexSearchResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexSearchArtifactReferenceV1
+	2,  // 12: elitea.runtime.v1.IndexSearchResultV1.embedding_binding:type_name -> elitea.runtime.v1.IndexSearchInputBindingV1
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_index_search_proto_init() }

@@ -22,6 +22,7 @@ const (
 	indexLLMModelEntryID             = "llm-model"
 	indexLLMConfigurationEntryID     = "llm-configuration"
 	indexMCPReferencesEntryID        = "mcp-credential-references"
+	indexEmbeddingBindingEntryID     = "embedding-binding"
 	indexInputMediaType              = executiondomain.SettingsJSONMediaType
 	maxIndexAdmissionStringBytes     = 256
 )
@@ -42,6 +43,7 @@ type AuthoritativeInputs struct {
 	LLMModel             *string
 	LLMConfiguration     json.RawMessage
 	MCPReferences        json.RawMessage
+	EmbeddingBinding     *EmbeddingBinding
 }
 
 func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
@@ -49,6 +51,10 @@ func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
 	i.ToolParameters = append(json.RawMessage(nil), i.ToolParameters...)
 	i.LLMConfiguration = append(json.RawMessage(nil), i.LLMConfiguration...)
 	i.MCPReferences = append(json.RawMessage(nil), i.MCPReferences...)
+	if i.EmbeddingBinding != nil {
+		value := i.EmbeddingBinding.Clone()
+		i.EmbeddingBinding = &value
+	}
 	if i.LLMModel != nil {
 		value := *i.LLMModel
 		i.LLMModel = &value
@@ -68,6 +74,11 @@ func (i AuthoritativeInputs) validate() error {
 	}
 	for _, optional := range []json.RawMessage{i.LLMConfiguration, i.MCPReferences} {
 		if len(optional) > 0 && !validBoundedJSONObject(optional) {
+			return ErrInvalidAuthoritativeIndexInput
+		}
+	}
+	if i.EmbeddingBinding != nil {
+		if err := i.EmbeddingBinding.Validate(); err != nil {
 			return ErrInvalidAuthoritativeIndexInput
 		}
 	}
@@ -147,6 +158,17 @@ func (f *InputBundleFactory) Build(ctx context.Context, inputs AuthoritativeInpu
 	if len(inputs.MCPReferences) > 0 {
 		sources = append(sources, entrySource{id: indexMCPReferencesEntryID, role: executiondomain.IndexMCPTokensRole, content: inputs.MCPReferences})
 	}
+	if inputs.EmbeddingBinding != nil {
+		encoded, err := inputs.EmbeddingBinding.MarshalCanonical()
+		if err != nil {
+			return executiondomain.InputBundle{}, executiondomain.IndexIngestBinding{}, ErrInvalidAuthoritativeIndexInput
+		}
+		sources = append(sources, entrySource{
+			id:      indexEmbeddingBindingEntryID,
+			role:    executiondomain.IndexEmbeddingBindingRole,
+			content: encoded,
+		})
+	}
 
 	entries := make([]executiondomain.InputEntry, 0, len(sources))
 	wireEntries := make([]*runtimev1.ExecutionInputEntryV1, 0, len(sources))
@@ -220,6 +242,12 @@ func (f *InputBundleFactory) Build(ctx context.Context, inputs AuthoritativeInpu
 	}
 	if len(inputs.MCPReferences) > 0 {
 		binding.MCPTokensEntryID = indexMCPReferencesEntryID
+	}
+	if inputs.EmbeddingBinding != nil {
+		binding.EmbeddingBindingEntryID = indexEmbeddingBindingEntryID
+		binding.EmbeddingBindingDigest = runtimedomain.SHA256(
+			entries[len(entries)-1].Content,
+		)
 	}
 	return bundle, binding, nil
 }

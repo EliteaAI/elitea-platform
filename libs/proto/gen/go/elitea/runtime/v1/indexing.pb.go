@@ -90,8 +90,11 @@ type IndexIngestCommandV1 struct {
 	ClientStreamId              string                 `protobuf:"bytes,6,opt,name=client_stream_id,json=clientStreamId,proto3" json:"client_stream_id,omitempty"`
 	ClientMessageId             string                 `protobuf:"bytes,7,opt,name=client_message_id,json=clientMessageId,proto3" json:"client_message_id,omitempty"`
 	SioEvent                    string                 `protobuf:"bytes,8,opt,name=sio_event,json=sioEvent,proto3" json:"sio_event,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	// Exact non-secret embedding metadata stays in the input data plane.
+	// Redis carries only this immutable entry reference and digest.
+	EmbeddingBinding *IndexIngestInputBindingV1 `protobuf:"bytes,9,opt,name=embedding_binding,json=embeddingBinding,proto3" json:"embedding_binding,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *IndexIngestCommandV1) Reset() {
@@ -178,6 +181,13 @@ func (x *IndexIngestCommandV1) GetSioEvent() string {
 		return x.SioEvent
 	}
 	return ""
+}
+
+func (x *IndexIngestCommandV1) GetEmbeddingBinding() *IndexIngestInputBindingV1 {
+	if x != nil {
+		return x.EmbeddingBinding
+	}
+	return nil
 }
 
 // IndexIngestInputBindingV1 identifies one exact input value consumed by the SDK
@@ -400,6 +410,7 @@ type IndexIngestResultV1 struct {
 	McpTokens            *IndexIngestInputBindingV1      `protobuf:"bytes,7,opt,name=mcp_tokens,json=mcpTokens,proto3" json:"mcp_tokens,omitempty"`
 	ResultArtifact       *IndexIngestArtifactReferenceV1 `protobuf:"bytes,8,opt,name=result_artifact,json=resultArtifact,proto3" json:"result_artifact,omitempty"`
 	ResultSummary        *IndexIngestSummaryV1           `protobuf:"bytes,9,opt,name=result_summary,json=resultSummary,proto3" json:"result_summary,omitempty"`
+	EmbeddingBinding     *IndexIngestInputBindingV1      `protobuf:"bytes,10,opt,name=embedding_binding,json=embeddingBinding,proto3" json:"embedding_binding,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -497,11 +508,18 @@ func (x *IndexIngestResultV1) GetResultSummary() *IndexIngestSummaryV1 {
 	return nil
 }
 
+func (x *IndexIngestResultV1) GetEmbeddingBinding() *IndexIngestInputBindingV1 {
+	if x != nil {
+		return x.EmbeddingBinding
+	}
+	return nil
+}
+
 var File_elitea_runtime_v1_indexing_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\n" +
-	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\xa6\x03\n" +
+	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\x81\x04\n" +
 	"\x14IndexIngestCommandV1\x12C\n" +
 	"\x1etoolkit_configuration_entry_id\x18\x01 \x01(\tR\x1btoolkitConfigurationEntryId\x127\n" +
 	"\x18tool_parameters_entry_id\x18\x02 \x01(\tR\x15toolParametersEntryId\x12+\n" +
@@ -510,7 +528,9 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\x13mcp_tokens_entry_id\x18\x05 \x01(\tR\x10mcpTokensEntryId\x12(\n" +
 	"\x10client_stream_id\x18\x06 \x01(\tR\x0eclientStreamId\x12*\n" +
 	"\x11client_message_id\x18\a \x01(\tR\x0fclientMessageId\x12\x1b\n" +
-	"\tsio_event\x18\b \x01(\tR\bsioEventJ\x04\b\t\x10\x10\"\xad\x01\n" +
+	"\tsio_event\x18\b \x01(\tR\bsioEvent\x12Y\n" +
+	"\x11embedding_binding\x18\t \x01(\v2,.elitea.runtime.v1.IndexIngestInputBindingV1R\x10embeddingBindingJ\x04\b\n" +
+	"\x10\x10\"\xad\x01\n" +
 	"\x19IndexIngestInputBindingV1\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12+\n" +
 	"\x11immutable_version\x18\x02 \x01(\tR\x10immutableVersion\x12B\n" +
@@ -527,7 +547,7 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"v\n" +
 	"\x14IndexIngestSummaryV1\x12>\n" +
 	"\x06status\x18\x01 \x01(\x0e2&.elitea.runtime.v1.IndexIngestStatusV1R\x06status\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessageJ\x04\b\x03\x10\x10\"\xe9\x05\n" +
+	"\amessage\x18\x02 \x01(\tR\amessageJ\x04\b\x03\x10\x10\"\xc4\x06\n" +
 	"\x13IndexIngestResultV1\x12&\n" +
 	"\x0finput_bundle_id\x18\x01 \x01(\tR\rinputBundleId\x12K\n" +
 	"\x13input_bundle_digest\x18\x02 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x11inputBundleDigest\x12a\n" +
@@ -538,8 +558,9 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\n" +
 	"mcp_tokens\x18\a \x01(\v2,.elitea.runtime.v1.IndexIngestInputBindingV1R\tmcpTokens\x12Z\n" +
 	"\x0fresult_artifact\x18\b \x01(\v21.elitea.runtime.v1.IndexIngestArtifactReferenceV1R\x0eresultArtifact\x12N\n" +
-	"\x0eresult_summary\x18\t \x01(\v2'.elitea.runtime.v1.IndexIngestSummaryV1R\rresultSummaryJ\x04\b\n" +
-	"\x10\x10*\xa9\x01\n" +
+	"\x0eresult_summary\x18\t \x01(\v2'.elitea.runtime.v1.IndexIngestSummaryV1R\rresultSummary\x12Y\n" +
+	"\x11embedding_binding\x18\n" +
+	" \x01(\v2,.elitea.runtime.v1.IndexIngestInputBindingV1R\x10embeddingBindingJ\x04\b\v\x10\x10*\xa9\x01\n" +
 	"\x13IndexIngestStatusV1\x12&\n" +
 	"\"INDEX_INGEST_STATUS_V1_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19INDEX_INGEST_STATUS_V1_OK\x10\x01\x12)\n" +
@@ -570,22 +591,24 @@ var file_elitea_runtime_v1_indexing_proto_goTypes = []any{
 	(*DigestV1)(nil),                       // 6: elitea.runtime.v1.DigestV1
 }
 var file_elitea_runtime_v1_indexing_proto_depIdxs = []int32{
-	6,  // 0: elitea.runtime.v1.IndexIngestInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
-	6,  // 1: elitea.runtime.v1.IndexIngestArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
-	0,  // 2: elitea.runtime.v1.IndexIngestSummaryV1.status:type_name -> elitea.runtime.v1.IndexIngestStatusV1
-	6,  // 3: elitea.runtime.v1.IndexIngestResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
-	2,  // 4: elitea.runtime.v1.IndexIngestResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 5: elitea.runtime.v1.IndexIngestResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 6: elitea.runtime.v1.IndexIngestResultV1.llm_model:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 7: elitea.runtime.v1.IndexIngestResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 8: elitea.runtime.v1.IndexIngestResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	3,  // 9: elitea.runtime.v1.IndexIngestResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexIngestArtifactReferenceV1
-	4,  // 10: elitea.runtime.v1.IndexIngestResultV1.result_summary:type_name -> elitea.runtime.v1.IndexIngestSummaryV1
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	2,  // 0: elitea.runtime.v1.IndexIngestCommandV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	6,  // 1: elitea.runtime.v1.IndexIngestInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
+	6,  // 2: elitea.runtime.v1.IndexIngestArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
+	0,  // 3: elitea.runtime.v1.IndexIngestSummaryV1.status:type_name -> elitea.runtime.v1.IndexIngestStatusV1
+	6,  // 4: elitea.runtime.v1.IndexIngestResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
+	2,  // 5: elitea.runtime.v1.IndexIngestResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	2,  // 6: elitea.runtime.v1.IndexIngestResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	2,  // 7: elitea.runtime.v1.IndexIngestResultV1.llm_model:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	2,  // 8: elitea.runtime.v1.IndexIngestResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	2,  // 9: elitea.runtime.v1.IndexIngestResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	3,  // 10: elitea.runtime.v1.IndexIngestResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexIngestArtifactReferenceV1
+	4,  // 11: elitea.runtime.v1.IndexIngestResultV1.result_summary:type_name -> elitea.runtime.v1.IndexIngestSummaryV1
+	2,  // 12: elitea.runtime.v1.IndexIngestResultV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_indexing_proto_init() }

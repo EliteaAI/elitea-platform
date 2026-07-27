@@ -23,6 +23,7 @@ const (
 	IndexLLMModelRole             = "index.llm_model"
 	IndexLLMConfigurationRole     = "index.llm_configuration"
 	IndexMCPTokensRole            = "index.mcp_tokens"
+	IndexEmbeddingBindingRole     = "index.embedding_binding"
 	MaxIndexMetaIDBytes           = 256
 	MaxIndexMetaCorrelationBytes  = 512
 )
@@ -174,6 +175,8 @@ type IndexIngestBinding struct {
 	LLMModelEntryID             string
 	LLMConfigurationEntryID     string
 	MCPTokensEntryID            string
+	EmbeddingBindingEntryID     string
+	EmbeddingBindingDigest      runtimedomain.Digest
 	ClientStreamID              string
 	ClientMessageID             string
 	SIOEvent                    string
@@ -206,6 +209,7 @@ func (b IndexIngestBinding) Validate(bundle InputBundle) error {
 		{id: b.LLMModelEntryID, role: IndexLLMModelRole},
 		{id: b.LLMConfigurationEntryID, role: IndexLLMConfigurationRole},
 		{id: b.MCPTokensEntryID, role: IndexMCPTokensRole},
+		{id: b.EmbeddingBindingEntryID, role: IndexEmbeddingBindingRole},
 	}
 	seen := make(map[string]struct{}, len(references))
 	bound := 0
@@ -224,7 +228,14 @@ func (b IndexIngestBinding) Validate(bundle InputBundle) error {
 		if !found || entry.SemanticRole != reference.role {
 			return fmt.Errorf("%w: index input binding mismatch", ErrInvalidInputBundle)
 		}
+		if reference.id == b.EmbeddingBindingEntryID &&
+			(b.EmbeddingBindingDigest.IsZero() || entry.ContentDigest != b.EmbeddingBindingDigest) {
+			return fmt.Errorf("%w: embedding binding digest mismatch", ErrInvalidInputBundle)
+		}
 		bound++
+	}
+	if b.EmbeddingBindingEntryID == "" && !b.EmbeddingBindingDigest.IsZero() {
+		return fmt.Errorf("%w: incomplete embedding binding", ErrInvalidInputBundle)
 	}
 	if bound != len(bundle.Entries) {
 		return fmt.Errorf("%w: unbound index input entry", ErrInvalidInputBundle)

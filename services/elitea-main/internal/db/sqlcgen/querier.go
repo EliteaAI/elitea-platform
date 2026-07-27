@@ -38,6 +38,10 @@ type Querier interface {
 	// This file projects the existing 16-column tenant table; it does not define a
 	// replacement configuration store.
 	FindCurrentConfigurationByEliteaTitle(ctx context.Context, arg FindCurrentConfigurationByEliteaTitleParams) (FindCurrentConfigurationByEliteaTitleRow, error)
+	// The current Configurations -> LiteLLM model projection keys embedding
+	// models by data.name. A two-row sentinel lets the adapter reject duplicate
+	// mutable definitions instead of selecting one silently.
+	FindCurrentEmbeddingConfigurations(ctx context.Context, arg FindCurrentEmbeddingConfigurationsParams) ([]FindCurrentEmbeddingConfigurationsRow, error)
 	GetActivePATForUser(ctx context.Context, userID int32) (GetActivePATForUserRow, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)

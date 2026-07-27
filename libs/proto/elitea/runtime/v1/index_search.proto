@@ -29,13 +29,13 @@ message IndexSearchCommandV1 {
   string llm_model_entry_id = 4;
   string llm_configuration_entry_id = 5;
   string mcp_tokens_entry_id = 6;
-  reserved 7 to 15;
+  IndexSearchInputBindingV1 embedding_binding = 7;
+  reserved 8 to 15;
 }
 
 // IndexSearchInputBindingV1 identifies exact immutable input content used by
-// the SDK.  The toolkit configuration remains authoritative for vector-store,
-// embedding model, dimension and collection compatibility; those values must
-// not be independently reconstructed by Main or a worker.
+// the SDK. The separately recorded embedding binding is authoritative for the
+// exact index generation and must not be reconstructed from mutable defaults.
 message IndexSearchInputBindingV1 {
   string entry_id = 1;
   string immutable_version = 2;
@@ -71,5 +71,6 @@ message IndexSearchResultV1 {
   IndexSearchInputBindingV1 llm_configuration = 7;
   IndexSearchInputBindingV1 mcp_tokens = 8;
   IndexSearchArtifactReferenceV1 result_artifact = 9;
-  reserved 10 to 15;
+  IndexSearchInputBindingV1 embedding_binding = 10;
+  reserved 11 to 15;
 }

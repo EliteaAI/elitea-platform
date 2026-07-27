@@ -8,8 +8,63 @@ import (
 	"time"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestCurrentEmbeddingConfigurationPostgresResolutionIsTenantRoutedAndAmbiguitySafe(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	repository, err := NewCurrentConfigurationsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_1.configuration (
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+) VALUES (
+    2, '00000000-0000-0000-0000-000000000111', 1, 'Embedding', 'embedding_one',
+    'embedding_model', 'embedding',
+    '{"name":"text-embedding-3-small","ai_credentials":{"elitea_title":"credential-current","private":true}}'::jsonb,
+    '{}'::jsonb, true, true, 'user'
+)`); err != nil {
+		t.Fatal(err)
+	}
+
+	configuration, found, err := repository.FindCurrentEmbeddingConfiguration(
+		ctx, 1, "text-embedding-3-small", true,
+	)
+	if err != nil || !found {
+		t.Fatalf("configuration=%#v found=%t err=%v", configuration, found, err)
+	}
+	if configuration.UUID != "00000000-0000-0000-0000-000000000111" ||
+		!configuration.Shared ||
+		string(configuration.Data) == "" {
+		t.Fatalf("configuration=%#v", configuration)
+	}
+
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_1.configuration (
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+) VALUES (
+    3, '00000000-0000-0000-0000-000000000112', 1, 'Embedding duplicate', 'embedding_two',
+    'embedding_model', 'embedding',
+    '{"name":"text-embedding-3-small","ai_credentials":{"elitea_title":"credential-current","private":true}}'::jsonb,
+    '{}'::jsonb, true, true, 'user'
+)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repository.FindCurrentEmbeddingConfiguration(
+		ctx, 1, "text-embedding-3-small", true,
+	); !errors.Is(err, indexingapp.ErrCurrentEmbeddingBindingAmbiguous) {
+		t.Fatalf("duplicate error=%v", err)
+	}
+}
 
 func TestCurrentConfigurationsRepositoryPostgresParity(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)

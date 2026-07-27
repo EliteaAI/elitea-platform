@@ -19,7 +19,7 @@ INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_ERROR: IndexIngestStatusV1
 
 class IndexIngestCommandV1(_message.Message):
-    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event")
+    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event", "embedding_binding")
     TOOLKIT_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_PARAMETERS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_MODEL_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
@@ -28,6 +28,7 @@ class IndexIngestCommandV1(_message.Message):
     CLIENT_STREAM_ID_FIELD_NUMBER: _ClassVar[int]
     CLIENT_MESSAGE_ID_FIELD_NUMBER: _ClassVar[int]
     SIO_EVENT_FIELD_NUMBER: _ClassVar[int]
+    EMBEDDING_BINDING_FIELD_NUMBER: _ClassVar[int]
     toolkit_configuration_entry_id: str
     tool_parameters_entry_id: str
     llm_model_entry_id: str
@@ -36,7 +37,8 @@ class IndexIngestCommandV1(_message.Message):
     client_stream_id: str
     client_message_id: str
     sio_event: str
-    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., client_stream_id: _Optional[str] = ..., client_message_id: _Optional[str] = ..., sio_event: _Optional[str] = ...) -> None: ...
+    embedding_binding: IndexIngestInputBindingV1
+    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., client_stream_id: _Optional[str] = ..., client_message_id: _Optional[str] = ..., sio_event: _Optional[str] = ..., embedding_binding: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ...) -> None: ...
 
 class IndexIngestInputBindingV1(_message.Message):
     __slots__ = ("entry_id", "immutable_version", "content_digest")
@@ -73,7 +75,7 @@ class IndexIngestSummaryV1(_message.Message):
     def __init__(self, status: _Optional[_Union[IndexIngestStatusV1, str]] = ..., message: _Optional[str] = ...) -> None: ...
 
 class IndexIngestResultV1(_message.Message):
-    __slots__ = ("input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact", "result_summary")
+    __slots__ = ("input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact", "result_summary", "embedding_binding")
     INPUT_BUNDLE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
     TOOLKIT_CONFIGURATION_FIELD_NUMBER: _ClassVar[int]
@@ -83,6 +85,7 @@ class IndexIngestResultV1(_message.Message):
     MCP_TOKENS_FIELD_NUMBER: _ClassVar[int]
     RESULT_ARTIFACT_FIELD_NUMBER: _ClassVar[int]
     RESULT_SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    EMBEDDING_BINDING_FIELD_NUMBER: _ClassVar[int]
     input_bundle_id: str
     input_bundle_digest: _common_pb2.DigestV1
     toolkit_configuration: IndexIngestInputBindingV1
@@ -92,4 +95,5 @@ class IndexIngestResultV1(_message.Message):
     mcp_tokens: IndexIngestInputBindingV1
     result_artifact: IndexIngestArtifactReferenceV1
     result_summary: IndexIngestSummaryV1
-    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexIngestArtifactReferenceV1, _Mapping]] = ..., result_summary: _Optional[_Union[IndexIngestSummaryV1, _Mapping]] = ...) -> None: ...
+    embedding_binding: IndexIngestInputBindingV1
+    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., toolkit_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., tool_parameters: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_model: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., llm_configuration: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., mcp_tokens: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., result_artifact: _Optional[_Union[IndexIngestArtifactReferenceV1, _Mapping]] = ..., result_summary: _Optional[_Union[IndexIngestSummaryV1, _Mapping]] = ..., embedding_binding: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ...) -> None: ...

@@ -73,6 +73,23 @@ func indexIngestWorkerCommand(protocolRevision string, dispatch indexingapp.Inde
 	if err := dispatch.Validate(); err != nil {
 		return nil, err
 	}
+	indexCommand := &runtimev1.IndexIngestCommandV1{
+		ToolkitConfigurationEntryId: dispatch.ToolkitConfigurationEntryID,
+		ToolParametersEntryId:       dispatch.ToolParametersEntryID,
+		LlmModelEntryId:             dispatch.LLMModelEntryID,
+		LlmConfigurationEntryId:     dispatch.LLMConfigurationEntryID,
+		McpTokensEntryId:            dispatch.MCPTokensEntryID,
+		ClientStreamId:              dispatch.ClientStreamID,
+		ClientMessageId:             dispatch.ClientMessageID,
+		SioEvent:                    dispatch.SIOEvent,
+	}
+	if dispatch.EmbeddingBindingEntryID != "" {
+		indexCommand.EmbeddingBinding = &runtimev1.IndexIngestInputBindingV1{
+			EntryId:          dispatch.EmbeddingBindingEntryID,
+			ImmutableVersion: dispatch.EmbeddingBindingDigest.String(),
+			ContentDigest:    digestProto(dispatch.EmbeddingBindingDigest),
+		}
+	}
 	return &runtimev1.WorkerCommandV1{
 		ProtocolRevision:    protocolRevision,
 		CommandId:           dispatch.CommandID,
@@ -103,16 +120,7 @@ func indexIngestWorkerCommand(protocolRevision string, dispatch indexingapp.Inde
 		Tracestate:         dispatch.Tracestate,
 		LimitsRevision:     dispatch.LimitsRevision,
 		CapabilityCommand: &runtimev1.WorkerCommandV1_IndexIngest{
-			IndexIngest: &runtimev1.IndexIngestCommandV1{
-				ToolkitConfigurationEntryId: dispatch.ToolkitConfigurationEntryID,
-				ToolParametersEntryId:       dispatch.ToolParametersEntryID,
-				LlmModelEntryId:             dispatch.LLMModelEntryID,
-				LlmConfigurationEntryId:     dispatch.LLMConfigurationEntryID,
-				McpTokensEntryId:            dispatch.MCPTokensEntryID,
-				ClientStreamId:              dispatch.ClientStreamID,
-				ClientMessageId:             dispatch.ClientMessageID,
-				SioEvent:                    dispatch.SIOEvent,
-			},
+			IndexIngest: indexCommand,
 		},
 	}, nil
 }
@@ -147,6 +155,9 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 			index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(), index.GetClientStreamId(),
 			index.GetClientMessageId(), index.GetSioEvent(),
 		)
+		if binding := index.GetEmbeddingBinding(); binding != nil {
+			values = append(values, binding.GetEntryId(), binding.GetImmutableVersion())
+		}
 	}
 	for _, value := range values {
 		if len(value) > maximum || strings.ContainsRune(value, '\x00') {

@@ -283,9 +283,9 @@ LIMIT $2`, r.expectedStream, int32(limit), visibilityMillis)
 	return outboxIDs, nil
 }
 
-// LoadPendingIndexIngest joins only capability metadata and the immutable
-// input-bundle manifest identity. It deliberately never selects manifest_bytes
-// or input_bundle_entries.content_bytes.
+// LoadPendingIndexIngest joins only capability metadata, the immutable
+// input-bundle manifest identity, and the optional embedding-binding entry
+// identity. It deliberately never selects manifest_bytes or entry content.
 func (r *CommandOutboxRepository) LoadPendingIndexIngest(ctx context.Context, outboxID string) (indexingapp.IndexIngestDispatch, error) {
 	if outboxID == "" {
 		return indexingapp.IndexIngestDispatch{}, indexingapp.ErrInvalidIndexIngestDispatch
@@ -293,7 +293,8 @@ func (r *CommandOutboxRepository) LoadPendingIndexIngest(ctx context.Context, ou
 	var dispatch indexingapp.IndexIngestDispatch
 	var generation, ordinal, manifestSize int64
 	var priority int32
-	var bundleDigest []byte
+	var bundleDigest, embeddingBindingDigest []byte
+	var embeddingBindingCount int64
 	err := r.store.QueryRow(ctx, `
 SELECT o.outbox_id,
        j.command_id,
@@ -322,6 +323,9 @@ SELECT o.outbox_id,
        COALESCE(i.llm_model_entry_id, ''),
        COALESCE(i.llm_configuration_entry_id, ''),
        COALESCE(i.mcp_tokens_entry_id, ''),
+       COALESCE(embedding_binding.entry_id, ''),
+       COALESCE(embedding_binding.content_digest, ''::bytea),
+       COALESCE(embedding_binding.binding_count, 0),
        COALESCE(i.client_stream_id, ''),
        COALESCE(i.client_message_id, ''),
        COALESCE(i.sio_event, '')
@@ -335,6 +339,16 @@ JOIN elitea_runtime.index_ingest_jobs AS i
  AND i.input_bundle_id = j.input_bundle_id
 JOIN elitea_runtime.input_bundles AS b
   ON b.input_bundle_id = i.input_bundle_id
+LEFT JOIN LATERAL (
+    SELECT entry.entry_id,
+           entry.content_digest,
+           count(*) OVER () AS binding_count
+    FROM elitea_runtime.input_bundle_entries AS entry
+    WHERE entry.input_bundle_id = i.input_bundle_id
+      AND entry.semantic_role = 'index.embedding_binding'
+    ORDER BY entry.entry_id
+    LIMIT 1
+) AS embedding_binding ON true
 WHERE o.outbox_id = $1
   AND o.stream_name = $2
   AND o.published_at IS NULL
@@ -373,6 +387,9 @@ WHERE o.outbox_id = $1
 		&dispatch.LLMModelEntryID,
 		&dispatch.LLMConfigurationEntryID,
 		&dispatch.MCPTokensEntryID,
+		&dispatch.EmbeddingBindingEntryID,
+		&embeddingBindingDigest,
+		&embeddingBindingCount,
 		&dispatch.ClientStreamID,
 		&dispatch.ClientMessageID,
 		&dispatch.SIOEvent,
@@ -392,6 +409,19 @@ WHERE o.outbox_id = $1
 	dispatch.InputBundleByteLength = uint64(manifestSize)
 	if dispatch.InputBundleDigest, err = storedDigest(bundleDigest); err != nil {
 		return indexingapp.IndexIngestDispatch{}, fmt.Errorf("pending index ingest input digest: %w", err)
+	}
+	if embeddingBindingCount > 1 {
+		return indexingapp.IndexIngestDispatch{}, errors.New("pending index ingest has ambiguous embedding bindings")
+	}
+	if dispatch.EmbeddingBindingEntryID != "" {
+		if embeddingBindingCount != 1 {
+			return indexingapp.IndexIngestDispatch{}, errors.New("pending index ingest embedding binding count is invalid")
+		}
+		if dispatch.EmbeddingBindingDigest, err = storedDigest(embeddingBindingDigest); err != nil {
+			return indexingapp.IndexIngestDispatch{}, errors.New("pending index ingest embedding binding digest is invalid")
+		}
+	} else if embeddingBindingCount != 0 || len(embeddingBindingDigest) != 0 {
+		return indexingapp.IndexIngestDispatch{}, errors.New("pending index ingest embedding binding is incomplete")
 	}
 	if err := dispatch.Validate(); err != nil {
 		return indexingapp.IndexIngestDispatch{}, fmt.Errorf("invalid stored index ingest dispatch: %w", err)

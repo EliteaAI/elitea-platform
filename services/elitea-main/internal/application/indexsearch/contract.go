@@ -9,12 +9,32 @@ import (
 	"fmt"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
 const maxIdentityBytes = 256
 
 var ErrInvalidContract = errors.New("invalid index search contract")
+
+type EmbeddingCompatibilityCode string
+
+const (
+	EmbeddingCompatibilityLegacyBindingMissing  EmbeddingCompatibilityCode = "LEGACY_EMBEDDING_BINDING_MISSING"
+	EmbeddingCompatibilityStaleGeneration       EmbeddingCompatibilityCode = "STALE_INDEX_GENERATION"
+	EmbeddingCompatibilityScopeMismatch         EmbeddingCompatibilityCode = "EMBEDDING_BINDING_SCOPE_MISMATCH"
+	EmbeddingCompatibilityModelMismatch         EmbeddingCompatibilityCode = "EMBEDDING_MODEL_MISMATCH"
+	EmbeddingCompatibilityDimensionMismatch     EmbeddingCompatibilityCode = "EMBEDDING_DIMENSION_MISMATCH"
+	EmbeddingCompatibilityConfigurationMismatch EmbeddingCompatibilityCode = "EMBEDDING_CONFIGURATION_MISMATCH"
+)
+
+type EmbeddingCompatibilityError struct {
+	Code EmbeddingCompatibilityCode
+}
+
+func (e *EmbeddingCompatibilityError) Error() string {
+	return "index embedding binding is incompatible"
+}
 
 // Operation maps only the three current SDK tool names. It is not a search
 // implementation: filter interpretation, reranking, full-text, extended
@@ -50,14 +70,16 @@ func (s AuthorizedScope) Validate() error {
 // AuthoritativeInputs are loaded by an authorized server-side resolver. The
 // JSON values are intentionally opaque: accepting or rejecting individual
 // search fields here would drift from the SDK Pydantic/tool implementation.
-// ToolkitConfiguration binds the current vector-store, embedding-model,
-// dimension and collection settings as one immutable value.
+// ToolkitConfiguration binds the current vector-store and collection settings
+// as one immutable value. EmbeddingBinding separately records the exact
+// non-secret embedding identity selected for the index generation.
 type AuthoritativeInputs struct {
 	ToolkitConfiguration json.RawMessage
 	ToolParameters       json.RawMessage
 	LLMModel             *string
 	LLMConfiguration     json.RawMessage
 	MCPTokens            json.RawMessage
+	EmbeddingBinding     json.RawMessage
 }
 
 func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
@@ -65,6 +87,7 @@ func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
 	i.ToolParameters = append(json.RawMessage(nil), i.ToolParameters...)
 	i.LLMConfiguration = append(json.RawMessage(nil), i.LLMConfiguration...)
 	i.MCPTokens = append(json.RawMessage(nil), i.MCPTokens...)
+	i.EmbeddingBinding = append(json.RawMessage(nil), i.EmbeddingBinding...)
 	if i.LLMModel != nil {
 		value := *i.LLMModel
 		i.LLMModel = &value
@@ -73,7 +96,9 @@ func (i AuthoritativeInputs) Clone() AuthoritativeInputs {
 }
 
 func (i AuthoritativeInputs) Validate() error {
-	if !validJSONObject(i.ToolkitConfiguration) || !validJSONObject(i.ToolParameters) {
+	if !validJSONObject(i.ToolkitConfiguration) ||
+		!validJSONObject(i.ToolParameters) ||
+		!validJSONObject(i.EmbeddingBinding) {
 		return ErrInvalidContract
 	}
 	for _, optional := range []json.RawMessage{i.LLMConfiguration, i.MCPTokens} {
@@ -116,7 +141,7 @@ type InputBinding struct {
 }
 
 func (b InputBinding) Validate() error {
-	if !validIdentity(b.EntryID) || !validIdentity(b.Version) {
+	if !validIdentity(b.EntryID) || !validIdentity(b.Version) || b.Digest.IsZero() {
 		return ErrInvalidContract
 	}
 	return nil
@@ -131,6 +156,7 @@ type Bindings struct {
 	LLMModel             *InputBinding
 	LLMConfiguration     *InputBinding
 	MCPTokens            *InputBinding
+	EmbeddingBinding     InputBinding
 }
 
 func (b Bindings) Validate() error {
@@ -138,6 +164,9 @@ func (b Bindings) Validate() error {
 		return err
 	}
 	if err := b.ToolParameters.Validate(); err != nil {
+		return err
+	}
+	if err := b.EmbeddingBinding.Validate(); err != nil {
 		return err
 	}
 	for _, optional := range []*InputBinding{b.LLMModel, b.LLMConfiguration, b.MCPTokens} {
@@ -164,6 +193,7 @@ func Command(operation Operation, bindings Bindings) (*runtimev1.IndexSearchComm
 		Operation:                   wireOperation,
 		ToolkitConfigurationEntryId: bindings.ToolkitConfiguration.EntryID,
 		ToolParametersEntryId:       bindings.ToolParameters.EntryID,
+		EmbeddingBinding:            bindingProto(bindings.EmbeddingBinding),
 	}
 	if bindings.LLMModel != nil {
 		command.LlmModelEntryId = bindings.LLMModel.EntryID
@@ -221,6 +251,7 @@ func Result(
 		InputBundleDigest:    digestProto(inputBundleDigest),
 		ToolkitConfiguration: bindingProto(bindings.ToolkitConfiguration),
 		ToolParameters:       bindingProto(bindings.ToolParameters),
+		EmbeddingBinding:     bindingProto(bindings.EmbeddingBinding),
 		ResultArtifact: &runtimev1.IndexSearchArtifactReferenceV1{
 			ArtifactId:       artifact.ID,
 			ImmutableVersion: artifact.Version,
@@ -240,6 +271,75 @@ func Result(
 		result.McpTokens = bindingProto(*bindings.MCPTokens)
 	}
 	return result, nil
+}
+
+// RecordedEmbeddingBinding is loaded from the admitted index generation. A
+// legacy row is represented by nil and must never be upgraded by resolving the
+// current mutable default during a read.
+type RecordedEmbeddingBinding struct {
+	ResourceProjectID string
+	ToolkitID         int32
+	IndexName         string
+	IndexGeneration   uint64
+	Input             InputBinding
+	Binding           indexingapp.EmbeddingBinding
+}
+
+type EmbeddingExpectation struct {
+	ResourceProjectID   string
+	ToolkitID           int32
+	IndexName           string
+	IndexGeneration     uint64
+	ModelName           string
+	ConfigurationUUID   string
+	ConfigurationDigest runtimedomain.Digest
+	Dimension           *uint32
+}
+
+// RequireRecordedEmbeddingBinding gates search/list/stepback admission before
+// any SDK or vector-store work. It compares only immutable target identity and
+// explicitly authoritative fields; an absent dimension is never inferred.
+func RequireRecordedEmbeddingBinding(
+	recorded *RecordedEmbeddingBinding,
+	expectation EmbeddingExpectation,
+) error {
+	if recorded == nil {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityLegacyBindingMissing}
+	}
+	if !validIdentity(expectation.ResourceProjectID) ||
+		expectation.ToolkitID <= 0 ||
+		expectation.IndexName == "" ||
+		expectation.IndexGeneration == 0 ||
+		!validIdentity(expectation.ModelName) ||
+		recorded.Input.Validate() != nil ||
+		recorded.Binding.Validate() != nil {
+		return ErrInvalidContract
+	}
+	if recorded.ResourceProjectID != expectation.ResourceProjectID ||
+		recorded.ToolkitID != expectation.ToolkitID ||
+		recorded.IndexName != expectation.IndexName {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityScopeMismatch}
+	}
+	if recorded.IndexGeneration != expectation.IndexGeneration {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityStaleGeneration}
+	}
+	if recorded.Binding.ModelName != expectation.ModelName {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityModelMismatch}
+	}
+	if expectation.ConfigurationUUID != "" &&
+		recorded.Binding.ConfigurationUUID != expectation.ConfigurationUUID {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityConfigurationMismatch}
+	}
+	if !expectation.ConfigurationDigest.IsZero() &&
+		recorded.Binding.ConfigurationDigest != expectation.ConfigurationDigest {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityConfigurationMismatch}
+	}
+	if expectation.Dimension != nil &&
+		(recorded.Binding.Dimension == nil ||
+			*recorded.Binding.Dimension != *expectation.Dimension) {
+		return &EmbeddingCompatibilityError{Code: EmbeddingCompatibilityDimensionMismatch}
+	}
+	return nil
 }
 
 func (o Operation) proto() (runtimev1.IndexSearchOperationV1, error) {

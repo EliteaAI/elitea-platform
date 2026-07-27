@@ -11,11 +11,85 @@ import (
 	"time"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+func TestCurrentConfigurationsRepositoryFindsExactEmbeddingModelWithoutExpansion(t *testing.T) {
+	saved := []byte(`{"name":"text-embedding-3-small","ai_credentials":{"elitea_title":"credential-current","private":true}}`)
+	queries := &currentConfigurationQueriesStub{embeddingRows: []sqlcgen.FindCurrentEmbeddingConfigurationsRow{{
+		ConfigurationUuid: "00000000-0000-0000-0000-000000000101",
+		ProjectID:         7,
+		Type:              "embedding_model",
+		Section:           "embedding",
+		Data:              saved,
+	}}}
+	store := &currentConfigurationProjectStore{}
+	repository := newCurrentConfigurationsRepositoryForTest(t, store, queries)
+
+	configuration, found, err := repository.FindCurrentEmbeddingConfiguration(
+		context.Background(),
+		7,
+		"text-embedding-3-small",
+		false,
+	)
+	if err != nil || !found {
+		t.Fatalf("configuration=%#v found=%t err=%v", configuration, found, err)
+	}
+	if configuration.UUID != "00000000-0000-0000-0000-000000000101" ||
+		configuration.ProjectID != 7 ||
+		!reflect.DeepEqual([]byte(configuration.Data), saved) {
+		t.Fatalf("configuration=%#v", configuration)
+	}
+	if queries.embeddingParams != (sqlcgen.FindCurrentEmbeddingConfigurationsParams{
+		ProjectID: 7,
+		ModelName: "text-embedding-3-small",
+	}) {
+		t.Fatalf("params=%#v", queries.embeddingParams)
+	}
+	if !reflect.DeepEqual(store.projectIDs, []int64{7}) {
+		t.Fatalf("project transaction routing=%v", store.projectIDs)
+	}
+
+	saved[2] = 'X'
+	if configuration.Data[2] == 'X' {
+		t.Fatal("embedding configuration aliases database scan memory")
+	}
+}
+
+func TestCurrentConfigurationsRepositoryRejectsAmbiguousOrOutOfScopeEmbeddingModels(t *testing.T) {
+	valid := sqlcgen.FindCurrentEmbeddingConfigurationsRow{
+		ConfigurationUuid: "00000000-0000-0000-0000-000000000101",
+		ProjectID:         1,
+		Type:              "embedding_model",
+		Section:           "embedding",
+		Data:              []byte(`{"name":"embedding","ai_credentials":{"elitea_title":"credential","private":false}}`),
+		Shared:            true,
+	}
+	t.Run("duplicate", func(t *testing.T) {
+		queries := &currentConfigurationQueriesStub{embeddingRows: []sqlcgen.FindCurrentEmbeddingConfigurationsRow{valid, valid}}
+		repository := newCurrentConfigurationsRepositoryForTest(t, &currentConfigurationProjectStore{}, queries)
+		if _, _, err := repository.FindCurrentEmbeddingConfiguration(
+			context.Background(), 1, "embedding", true,
+		); !errors.Is(err, indexingapp.ErrCurrentEmbeddingBindingAmbiguous) {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("not shared", func(t *testing.T) {
+		notShared := valid
+		notShared.Shared = false
+		queries := &currentConfigurationQueriesStub{embeddingRows: []sqlcgen.FindCurrentEmbeddingConfigurationsRow{notShared}}
+		repository := newCurrentConfigurationsRepositoryForTest(t, &currentConfigurationProjectStore{}, queries)
+		if _, _, err := repository.FindCurrentEmbeddingConfiguration(
+			context.Background(), 1, "embedding", true,
+		); err == nil || !strings.Contains(err.Error(), "authorized scope") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+}
 
 func TestCurrentConfigurationsRepositoryRoutesCurrentAndSharedLists(t *testing.T) {
 	pinnedCurrentRow := sqlcgen.ListCurrentConfigurationsRow(currentConfigurationRow(7, 11))
@@ -350,11 +424,13 @@ type currentConfigurationQueriesStub struct {
 	currentRows      []sqlcgen.ListCurrentConfigurationsRow
 	sharedRows       []sqlcgen.ListCurrentSharedConfigurationsRow
 	findRow          sqlcgen.FindCurrentConfigurationByEliteaTitleRow
+	embeddingRows    []sqlcgen.FindCurrentEmbeddingConfigurationsRow
 	getRow           sqlcgen.GetCurrentConfigurationRow
 	insertRow        sqlcgen.InsertCurrentConfigurationRow
 	replaceRow       sqlcgen.ReplaceCurrentConfigurationRow
 	deleteID         int32
 	findErr          error
+	embeddingErr     error
 	getErr           error
 	insertErr        error
 	replaceErr       error
@@ -367,6 +443,7 @@ type currentConfigurationQueriesStub struct {
 	listCurrentParams  sqlcgen.ListCurrentConfigurationsParams
 	listSharedParams   sqlcgen.ListCurrentSharedConfigurationsParams
 	findParams         sqlcgen.FindCurrentConfigurationByEliteaTitleParams
+	embeddingParams    sqlcgen.FindCurrentEmbeddingConfigurationsParams
 	insertParams       sqlcgen.InsertCurrentConfigurationParams
 	replaceParams      sqlcgen.ReplaceCurrentConfigurationParams
 	deleteParams       sqlcgen.DeleteCurrentConfigurationParams
@@ -383,6 +460,14 @@ func (s *currentConfigurationQueriesStub) FindCurrentConfigurationByEliteaTitle(
 ) (sqlcgen.FindCurrentConfigurationByEliteaTitleRow, error) {
 	s.findParams = params
 	return s.findRow, s.findErr
+}
+
+func (s *currentConfigurationQueriesStub) FindCurrentEmbeddingConfigurations(
+	_ context.Context,
+	params sqlcgen.FindCurrentEmbeddingConfigurationsParams,
+) ([]sqlcgen.FindCurrentEmbeddingConfigurationsRow, error) {
+	s.embeddingParams = params
+	return s.embeddingRows, s.embeddingErr
 }
 
 func (s *currentConfigurationQueriesStub) ListCurrentConfigurationTypes(

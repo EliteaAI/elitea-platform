@@ -18,7 +18,10 @@ message IndexIngestCommandV1 {
   string client_stream_id = 6;
   string client_message_id = 7;
   string sio_event = 8;
-  reserved 9 to 15;
+  // Exact non-secret embedding metadata stays in the input data plane.
+  // Redis carries only this immutable entry reference and digest.
+  IndexIngestInputBindingV1 embedding_binding = 9;
+  reserved 10 to 15;
 }
 
 // IndexIngestInputBindingV1 identifies one exact input value consumed by the SDK
@@ -78,5 +81,6 @@ message IndexIngestResultV1 {
   IndexIngestInputBindingV1 mcp_tokens = 7;
   IndexIngestArtifactReferenceV1 result_artifact = 8;
   IndexIngestSummaryV1 result_summary = 9;
-  reserved 10 to 15;
+  IndexIngestInputBindingV1 embedding_binding = 10;
+  reserved 11 to 15;
 }
