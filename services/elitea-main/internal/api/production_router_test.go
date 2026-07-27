@@ -517,6 +517,62 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 	}
 }
 
+func TestProductionRouterKeepsIncompleteIndexDeleteScheduleAndSearchSourceOnly(t *testing.T) {
+	calls := 0
+	current := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls++
+	})
+	router := NewRouter(RouterConfig{
+		CurrentIndexStart:  current,
+		CurrentIndexCancel: current,
+		CurrentIndexMeta:   current,
+	})
+
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "delete",
+			method: indexingapi.SourceOnlyIndexDeleteMethod,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			name:   "schedule",
+			method: indexingapi.SourceOnlyIndexScheduleMethod,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			name:   "search",
+			method: indexingapi.SourceOnlyIndexSearchMethod,
+			path:   "/api/v2/elitea_core/search_options/prompt_lib/7?entities%5B%5D=toolkit",
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			router.ServeHTTP(
+				response,
+				httptest.NewRequest(test.method, test.path, nil),
+			)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf(
+					"%s %s status=%d want=%d body=%s",
+					test.method,
+					test.path,
+					response.Code,
+					http.StatusNotFound,
+					response.Body.String(),
+				)
+			}
+		})
+	}
+	if calls != 0 {
+		t.Fatalf("source-only index routes reached mounted handlers %d times", calls)
+	}
+}
+
 func TestProductionRouterMountsOnlyCurrentConfigurationReadMethods(t *testing.T) {
 	calls := 0
 	reader := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
