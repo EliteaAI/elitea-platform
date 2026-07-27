@@ -17,7 +17,7 @@ maps the required indexing behavior as follows:
 | --- | --- |
 | Confluence API, current hosting/auth modes and page loader | `atlassian-python-api`, `elitea_sdk.tools.confluence` and its current SDK loader |
 | Confluence image and PDF attachment analysis through the selected LLM | Pillow, `pdf2image`, Poppler, the SDK Confluence/image loaders, ReportLab/SVGLib and Cairo |
-| Current OCR fallback when attachment LLM analysis is disabled | `unstructured_pytesseract` plus the Tesseract executable |
+| Current OCR fallback when attachment LLM analysis is disabled | SDK 0.8.30 `EliteAConfluenceLoader.process_pdf/process_image/process_svg` delegates to `langchain-community==0.4.1`, whose corresponding methods import `pytesseract`; the image pins that wrapper, its wheel digest and license, Tesseract, and the deterministic DejaVu probe font |
 | Direct PDF loading, page extraction and image extraction | PyMuPDF, PyPDF, pypdfium2, the SDK PDF loader and Poppler |
 | Project-specific PGVector writes and reads | `langchain-postgres`, `pgvector`, psycopg 3 binary/pool and the unchanged SDK vector adapter |
 | Externalized LiteLLM-compatible chat and embedding calls | the current SDK client with the pinned OpenAI/Anthropic LangChain clients; model credentials remain claim-scoped runtime data, not image content |
@@ -37,9 +37,13 @@ The image build and every production `serve` startup verify:
   identity;
 - the canonical hash of the exact indexing dependency profile;
 - exact versions of every admitted direct indexing distribution;
+- the SHA-256 and declared Apache-2.0 license of the pinned `pytesseract`
+  wheel before installation;
 - importability of the Confluence, image, PDF and PGVector execution paths;
 - availability of `pdfinfo`, `pdftoppm`, `tesseract` and the Cairo shared
-  library.
+  library;
+- one deterministic OCR call through `pytesseract` into the image-local
+  Tesseract executable before any workload is accepted.
 
 Failures return only the stable `DEPENDENCY_UNAVAILABLE` public diagnostic.
 The chained local cause contains dependency identifiers and exception class

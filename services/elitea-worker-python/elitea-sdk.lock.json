@@ -19,7 +19,7 @@
   },
   "indexing_capability_profile": {
     "schema_revision": "elitea.indexing-runtime-capability-profile.v1",
-    "profile_sha256": "f391cce635303942c69c7b72b9a9a3837a0ff3d0945305402b62c1d352746ebb",
+    "profile_sha256": "5741a59a5689f18707935a70545437b9c9d32b0c59bbdcae82c5f7eac834d1e8",
     "python_requirements": [
       "anthropic==0.76.0",
       "atlassian-python-api==4.0.7",
@@ -48,6 +48,7 @@
       "pillow==11.1.0",
       "psycopg[binary]==3.3.4",
       "psycopg-pool==3.3.1",
+      "pytesseract==0.3.13",
       "pymupdf==1.24.9",
       "pypdf==4.3.1",
       "pypdfium2==5.8.0",
@@ -60,7 +61,6 @@
       "svglib==1.5.1",
       "tree-sitter==0.20.2",
       "tree-sitter-languages==1.10.2",
-      "unstructured_pytesseract==0.3.13",
       "xlrd==1.2.0"
     ],
     "verified_distributions": {
@@ -95,6 +95,7 @@
       "psycopg": "3.3.4",
       "psycopg-binary": "3.3.4",
       "psycopg-pool": "3.3.1",
+      "pytesseract": "0.3.13",
       "pymupdf": "1.24.9",
       "pypdf": "4.3.1",
       "pypdfium2": "5.8.0",
@@ -107,8 +108,14 @@
       "svglib": "1.5.1",
       "tree-sitter": "0.20.2",
       "tree-sitter-languages": "1.10.2",
-      "unstructured-pytesseract": "0.3.13",
       "xlrd": "1.2.0"
+    },
+    "verified_wheels": {
+      "pytesseract": {
+        "filename": "pytesseract-0.3.13-py3-none-any.whl",
+        "license": "Apache License 2.0",
+        "sha256": "7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34"
+      }
     },
     "required_imports": [
       "PIL.Image",
@@ -124,9 +131,9 @@
       "pdf2image",
       "pgvector",
       "psycopg",
+      "pytesseract",
       "pymupdf",
       "pypdfium2",
-      "unstructured_pytesseract",
       "reportlab.graphics.renderPM",
       "rlPyCairo",
       "svglib.svglib"
@@ -142,6 +149,7 @@
       "pangocairo-1.0"
     ],
     "system_packages": [
+      "fonts-dejavu-core",
       "libcairo2",
       "libpango-1.0-0",
       "libpangocairo-1.0-0",

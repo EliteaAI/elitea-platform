@@ -71,6 +71,18 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
         '"elitea-sdk @ file:///build/elitea-sdk"'
     ) in containerfile
     assert "git -C ./elitea-sdk archive --format=tar HEAD" in containerfile
+    pytesseract = lock["indexing_capability_profile"]["verified_wheels"][
+        "pytesseract"
+    ]
+    assert (
+        f"ARG PYTESSERACT_WHEEL_SHA256={pytesseract['sha256']}"
+        in containerfile
+    )
+    assert (
+        f"/wheels/{pytesseract['filename']}"
+        in containerfile
+    )
+    assert "fonts-dejavu-core" in containerfile
     go_ci = (_PLATFORM_ROOT / ".github/workflows/ci-go.yml").read_text()
     assert (
         "git+https://github.com/EliteaAI/elitea-sdk.git@"

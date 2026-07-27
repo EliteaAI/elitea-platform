@@ -18,6 +18,7 @@ from elitea_worker.execution.errors import DependencyUnavailable
 
 
 _PROFILE_SCHEMA = "elitea.indexing-runtime-capability-profile.v1"
+_OCR_PROBE_TEXT = "ELITEA OCR 5681"
 
 
 def require_indexing_runtime_capabilities(
@@ -28,6 +29,7 @@ def require_indexing_runtime_capabilities(
     find_executable: Callable[[str], str | None] = shutil.which,
     find_shared_library: Callable[[str], str | None] = find_library,
     package_tree_digest: Callable[[Path], str] | None = None,
+    ocr_probe: Callable[[], None] | None = None,
 ) -> str:
     """Verify the complete image-local indexing profile before opening Redis.
 
@@ -91,6 +93,10 @@ def require_indexing_runtime_capabilities(
         for library in profile["required_shared_libraries"]:
             if find_shared_library(library) is None:
                 failures.append(f"shared-library:{library}:missing")
+        try:
+            (ocr_probe or _verify_ocr_runtime)()
+        except Exception as exc:
+            failures.append(f"ocr-runtime:{type(exc).__name__}")
 
         if failures:
             raise RuntimeError(",".join(failures))
@@ -140,6 +146,29 @@ def _package_tree_digest(root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _verify_ocr_runtime() -> None:
+    """Exercise the exact Python wrapper and image-local Tesseract executable."""
+
+    import pytesseract
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("L", (1_000, 150), 255)
+    font = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        48,
+    )
+    ImageDraw.Draw(image).text((30, 35), _OCR_PROBE_TEXT, font=font, fill=0)
+    observed = " ".join(
+        pytesseract.image_to_string(
+            image,
+            config="--psm 7",
+            timeout=10,
+        ).split()
+    )
+    if observed != _OCR_PROBE_TEXT:
+        raise RuntimeError("ocr-output-mismatch")
 
 
 __all__ = ["require_indexing_runtime_capabilities"]

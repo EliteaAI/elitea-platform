@@ -57,6 +57,7 @@ indexing-current = [
   "pillow==11.1.0",
   "psycopg[binary]==3.3.4",
   "psycopg-pool==3.3.1",
+  "pytesseract==0.3.13",
   "pymupdf==1.24.9",
   "pypdf==4.3.1",
   "pypdfium2==5.8.0",
@@ -69,7 +70,6 @@ indexing-current = [
   "svglib==1.5.1",
   "tree-sitter==0.20.2",
   "tree-sitter-languages==1.10.2",
-  "unstructured_pytesseract==0.3.13",
   "xlrd==1.2.0",
 ]
 test = [

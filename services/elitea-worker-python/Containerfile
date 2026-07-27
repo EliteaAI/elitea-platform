@@ -2,6 +2,7 @@ FROM python:3.12.10-slim AS build
 
 ARG ELITEA_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b
 ARG ELITEA_SDK_ARCHIVE_SHA256=85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
+ARG PYTESSERACT_WHEEL_SHA256=7a99c6c2ac598360693d83a416e36e0b33a67638bb9d77fdcac094a3589d4b34
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -26,7 +27,8 @@ RUN python -m pip wheel \
     --wheel-dir /wheels \
     "elitea-sdk @ file:///build/elitea-sdk" \
     ./libs/proto \
-    "./services/elitea-worker-python[indexing-current]"
+    "./services/elitea-worker-python[indexing-current]" \
+    && test "$(sha256sum /wheels/pytesseract-0.3.13-py3-none-any.whl | cut -d ' ' -f 1)" = "${PYTESSERACT_WHEEL_SHA256}"
 
 FROM python:3.12.10-slim
 
@@ -36,6 +38,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
       libcairo2 \
+      fonts-dejavu-core \
       libpango-1.0-0 \
       libpangocairo-1.0-0 \
       poppler-utils \

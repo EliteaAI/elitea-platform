@@ -42,6 +42,7 @@ def _passing_check(**overrides) -> str:
         "package_tree_digest": lambda path: json.loads(
             _LOCK_PATH.read_bytes()
         )["installed_package_tree"]["sha256"],
+        "ocr_probe": lambda: None,
     }
     parameters.update(overrides)
     return require_indexing_runtime_capabilities(**parameters)
@@ -101,6 +102,14 @@ def test_complete_profile_is_admitted() -> None:
             {"find_shared_library": lambda name: None},
             "shared-library:cairo:missing",
         ),
+        (
+            {
+                "ocr_probe": lambda: (_ for _ in ()).throw(
+                    RuntimeError("probe failed")
+                )
+            },
+            "ocr-runtime:RuntimeError",
+        ),
     ],
 )
 def test_missing_capability_fails_with_safe_public_error(
@@ -116,6 +125,28 @@ def test_missing_capability_fails_with_safe_public_error(
     assert captured.value.retryable is True
     assert captured.value.__cause__ is not None
     assert expected_cause in str(captured.value.__cause__)
+
+
+def test_profile_admits_exact_langchain_ocr_wrapper_and_artifact() -> None:
+    profile = _profile()
+
+    assert "pytesseract==0.3.13" in profile["python_requirements"]
+    assert "unstructured_pytesseract==0.3.13" not in profile[
+        "python_requirements"
+    ]
+    assert profile["verified_distributions"]["pytesseract"] == "0.3.13"
+    assert "unstructured-pytesseract" not in profile["verified_distributions"]
+    assert "pytesseract" in profile["required_imports"]
+    assert "unstructured_pytesseract" not in profile["required_imports"]
+    assert "fonts-dejavu-core" in profile["system_packages"]
+    assert profile["verified_wheels"]["pytesseract"] == {
+        "filename": "pytesseract-0.3.13-py3-none-any.whl",
+        "license": "Apache License 2.0",
+        "sha256": (
+            "7a99c6c2ac598360693d83a416e36e0b"
+            "33a67638bb9d77fdcac094a3589d4b34"
+        ),
+    }
 
 
 def test_serve_verifies_profile_before_deployment(monkeypatch) -> None:
