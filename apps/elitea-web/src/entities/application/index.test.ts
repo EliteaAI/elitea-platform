@@ -16,6 +16,13 @@ const PUBLIC_SURFACE = [
   'isForkedApplication',
   'isOwnedApplication',
   'isPipelineApplication',
+  'normaliseApplication',
+  'normaliseApplicationCreatedResponse',
+  'normaliseApplicationDetail',
+  'normaliseApplicationPage',
+  'normaliseApplicationUpdatedResponse',
+  'normaliseApplicationVersionDetail',
+  'normaliseApplications',
   'sortApplicationsByRecency',
 ] as const;
 

@@ -18,3 +18,12 @@ export {
   isPipelineApplication,
   sortApplicationsByRecency,
 } from './model/selectors';
+export {
+  normaliseApplication,
+  normaliseApplicationCreatedResponse,
+  normaliseApplicationDetail,
+  normaliseApplicationPage,
+  normaliseApplicationUpdatedResponse,
+  normaliseApplicationVersionDetail,
+  normaliseApplications,
+} from './lib/normalise';

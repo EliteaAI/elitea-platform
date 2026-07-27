@@ -13,6 +13,9 @@ import * as entity from './index';
  */
 const PUBLIC_SURFACE = [
   'filterSkillsByQuery',
+  'normaliseSkill',
+  'normaliseSkills',
+  'normaliseSkillsPage',
   'skillDescription',
   'sortSkillsByName',
 ] as const;
