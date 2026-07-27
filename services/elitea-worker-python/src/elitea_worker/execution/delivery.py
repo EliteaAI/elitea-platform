@@ -171,6 +171,12 @@ class OutputSession(Protocol):
         expected: output_pb2.ExecutionOutputFrameV1,
         replacement: output_pb2.ExecutionOutputFrameV1,
     ) -> None: ...
+
+    async def replace_pending_cancelled_recovery(
+        self,
+        expected: output_pb2.ExecutionOutputFrameV1,
+        replacement: output_pb2.ExecutionOutputFrameV1,
+    ) -> None: ...
     async def start(self) -> None: ...
     async def send(self, frame: output_pb2.ExecutionOutputFrameV1) -> None: ...
     async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None: ...
@@ -1299,9 +1305,14 @@ class ConfigurationValidationDeliveryProcessor:
                         delivery=delivery,
                         receipt=receipt,
                         verified=verified,
-                        sequence=terminal_sequence,
+                        # The server did not accept this old-fence progress,
+                        # but its local spool sequence remains the durable CAS
+                        # key. The terminal result may use that sequence;
+                        # only progress projection requires contiguity.
+                        sequence=int(frame.sequence),
                         initial_output=output,
                         replace_pending=frame,
+                        allow_cancelled_fence_rebind=True,
                     )
             else:
                 try:
@@ -1339,6 +1350,7 @@ class ConfigurationValidationDeliveryProcessor:
         sequence: int,
         initial_output: OutputSession,
         replace_pending: output_pb2.ExecutionOutputFrameV1 | None = None,
+        allow_cancelled_fence_rebind: bool = False,
     ) -> DeliveryResult:
         if sequence <= int(receipt.claim_handoff_watermark):
             raise InvalidInput("The recovered cancellation sequence is malformed.")
@@ -1357,7 +1369,12 @@ class ConfigurationValidationDeliveryProcessor:
                 raise AuthorizationFailure(
                     "The rejected progress frame disappeared before cancellation recovery."
                 )
-            await initial_output.replace_pending_exact(replace_pending, frame)
+            if allow_cancelled_fence_rebind:
+                await initial_output.replace_pending_cancelled_recovery(
+                    replace_pending, frame
+                )
+            else:
+                await initial_output.replace_pending_exact(replace_pending, frame)
         frame = await self._publish_with_terminal_linearization(
             frame,
             verified=verified,

@@ -784,6 +784,298 @@ def test_fresh_session_cas_replaces_and_replays_exact_pending_frame(
     asyncio.run(run())
 
 
+def test_cancelled_recovery_rebinds_only_old_progress_to_new_fence(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        spool = _spool(tmp_path)
+        spool.put(6, original.SerializeToString(deterministic=True))
+        call = FakeCall()
+        call.write_gate.set()
+        session = OutputGrpcSession(
+            Stub(call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        await session.replace_pending_cancelled_recovery(original, replacement)
+        assert session.replays(replacement)
+        assert not session.replays(original)
+        assert spool.pending()[0].sequence == 6
+        assert spool.pending()[0].payload == replacement.SerializeToString(
+            deterministic=True
+        )
+
+        # A process crash immediately after the CAS must restore only the new
+        # replacement, never the old-fence progress frame.
+        restarted = OutputGrpcSession(
+            Stub(call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+        assert restarted.replays(replacement)
+        assert not restarted.replays(original)
+        await restarted.start()
+        await call.controls.put(_ack(0))
+        while not call.writes:
+            await asyncio.sleep(0)
+        assert call.writes == [replacement]
+        await call.controls.put(_ack(6, bind_identity=True, frame=replacement))
+        await restarted.wait_for_ack(6, 1)
+        assert spool.pending() == ()
+        await restarted.close()
+
+    asyncio.run(run())
+
+
+def test_cancelled_recovery_rebind_requires_one_fresh_exact_pending_frame(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+
+        wrong_expected = output_pb2.ExecutionOutputFrameV1.FromString(
+            original.SerializeToString(deterministic=True)
+        )
+        wrong_expected.event_id = "other-event"
+        wrong_root = tmp_path / "wrong"
+        wrong_root.mkdir()
+        spool = _spool(wrong_root)
+        spool.put(6, original.SerializeToString(deterministic=True))
+        session = OutputGrpcSession(
+            Stub(FakeCall()), spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1, max_queued_bytes=2048, max_frame_bytes=1024,
+        )
+        with pytest.raises(AuthorizationFailure, match="spool changed"):
+            await session.replace_pending_cancelled_recovery(wrong_expected, replacement)
+
+        replacement.sequence = 5
+        with pytest.raises(InvalidInput, match="sequence"):
+            await session.replace_pending_cancelled_recovery(original, replacement)
+
+        started_call = FakeCall()
+        started = OutputGrpcSession(
+            Stub(started_call), spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1, max_queued_bytes=2048, max_frame_bytes=1024,
+        )
+        await started.start()
+        with pytest.raises(RuntimeError, match="fresh"):
+            await started.replace_pending_cancelled_recovery(original, replacement)
+        await started.close()
+
+        multiple_root = tmp_path / "multiple"
+        multiple_root.mkdir()
+        multiple = _spool(multiple_root)
+        multiple.put(6, original.SerializeToString(deterministic=True))
+        second = _frame(7)
+        second.fence.CopyFrom(original.fence)
+        multiple.put(7, second.SerializeToString(deterministic=True))
+        session = OutputGrpcSession(
+            Stub(FakeCall()), spool=multiple,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=2, max_queued_bytes=2048, max_frame_bytes=1024,
+        )
+        with pytest.raises(AuthorizationFailure, match="spool changed"):
+            await session.replace_pending_cancelled_recovery(original, replacement)
+
+    asyncio.run(run())
+
+
+def test_cancelled_recovery_rebind_rejects_old_fence_ack(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        spool = _spool(tmp_path)
+        spool.put(6, original.SerializeToString(deterministic=True))
+        call = FakeCall()
+        call.write_gate.set()
+        session = OutputGrpcSession(
+            Stub(call), spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1, max_queued_bytes=2048, max_frame_bytes=1024,
+        )
+        await session.replace_pending_cancelled_recovery(original, replacement)
+        await session.start()
+        await call.controls.put(_ack(0))
+        while not call.writes:
+            await asyncio.sleep(0)
+        await call.controls.put(_ack(6, bind_identity=True, frame=original))
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await session.wait_for_ack(6, 1)
+        assert spool.pending()[0].payload == replacement.SerializeToString(
+            deterministic=True
+        )
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_cancelled_recovery_rebind_rejects_old_fence_terminal(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.fence.fence_token = b"o" * 32
+        original.terminal = True
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        spool = _spool(tmp_path)
+        encoded_original = original.SerializeToString(deterministic=True)
+        spool.put(6, encoded_original)
+        session = OutputGrpcSession(
+            Stub(FakeCall()), spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1, max_queued_bytes=2048, max_frame_bytes=1024,
+        )
+
+        with pytest.raises(AuthorizationFailure, match="cancellation recovery"):
+            await session.replace_pending_cancelled_recovery(original, replacement)
+        assert spool.pending()[0].payload == encoded_original
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda frame: setattr(frame, "stream_id", "other-stream"),
+        lambda frame: frame.identity.CopyFrom(_frame(6).identity) or setattr(frame.identity, "execution_id", "other-execution"),
+        lambda frame: setattr(frame, "claim_handoff_watermark", 0),
+        lambda frame: setattr(frame, "claim_handoff_watermark", 4),
+        lambda frame: setattr(frame, "claim_handoff_watermark", 6),
+        lambda frame: setattr(frame, "terminal", False),
+        lambda frame: setattr(
+            frame.runtime_error,
+            "code",
+            errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL,
+        ),
+    ),
+)
+def test_cancelled_recovery_rebind_rejects_arbitrary_stream_changes(
+    tmp_path: Path,
+    mutate,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        mutate(replacement)
+        spool = _spool(tmp_path)
+        encoded_original = original.SerializeToString(deterministic=True)
+        spool.put(6, encoded_original)
+        session = OutputGrpcSession(
+            Stub(FakeCall()),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        with pytest.raises(AuthorizationFailure, match="cancellation recovery"):
+            await session.replace_pending_cancelled_recovery(original, replacement)
+        assert spool.pending()[0].payload == encoded_original
+        assert session.replays(original)
+
+    asyncio.run(run())
+
+
+def test_cancelled_recovery_rebind_rejects_watermark_regression(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.claim_handoff_watermark = 3
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.claim_handoff_watermark = 2
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        spool = _spool(tmp_path)
+        encoded_original = original.SerializeToString(deterministic=True)
+        spool.put(6, encoded_original)
+        session = OutputGrpcSession(
+            Stub(FakeCall()),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        with pytest.raises(AuthorizationFailure, match="cancellation recovery"):
+            await session.replace_pending_cancelled_recovery(original, replacement)
+        assert spool.pending()[0].payload == encoded_original
+
+    asyncio.run(run())
+
+
 def test_spool_resume_rejects_corrupt_noncanonical_frame(tmp_path: Path) -> None:
     spool = _spool(tmp_path)
     spool.put(1, b"not-a-protobuf-frame")

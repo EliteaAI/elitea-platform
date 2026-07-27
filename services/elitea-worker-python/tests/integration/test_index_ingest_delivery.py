@@ -202,6 +202,11 @@ class Output:
         self.frame = replacement
         self.frames.append(replacement)
 
+    async def replace_pending_cancelled_recovery(self, expected, replacement) -> None:
+        assert self.frame == expected
+        self.frame = replacement
+        self.frames.append(replacement)
+
     async def start(self) -> None:
         self.started += 1
 
@@ -315,6 +320,11 @@ class CancellationWinnerOutput:
         return self.shared.frame == frame
 
     async def replace_pending_exact(self, expected, replacement) -> None:
+        assert self.shared.frame == expected
+        self.shared.frame = replacement
+        self.frames.append(replacement)
+
+    async def replace_pending_cancelled_recovery(self, expected, replacement) -> None:
         assert self.shared.frame == expected
         self.shared.frame = replacement
         self.frames.append(replacement)
@@ -1390,7 +1400,10 @@ def test_cancelled_running_recovery_discards_uncommitted_old_fence_progress() ->
             claim_disposition=(
                 control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
             ),
-            claim_handoff_watermark=0,
+            # Main has authenticated contiguous progress through 5 even
+            # though this worker's old fence still has only its local seq-6
+            # spool frame. The replacement terminal must be seq 6 / hwm 5.
+            claim_handoff_watermark=5,
             desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_CANCELLED,
             receipt_fence=replacement_fence,
         )
@@ -1417,8 +1430,8 @@ def test_cancelled_running_recovery_discards_uncommitted_old_fence_progress() ->
         assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
         assert result.output_frame is not None
         assert result.output_frame.terminal
-        assert result.output_frame.sequence == 1
-        assert result.output_frame.claim_handoff_watermark == 0
+        assert result.output_frame.sequence == 6
+        assert result.output_frame.claim_handoff_watermark == 5
         assert result.output_frame.fence == replacement_fence
         assert output.frames == [result.output_frame]
         assert output.frame is None
