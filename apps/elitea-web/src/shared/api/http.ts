@@ -1,0 +1,285 @@
+/**
+ * HTTP core — the only place `fetch` is called (R-A1, spec §5.4).
+ *
+ * A FACTORY, not a singleton: `createHttpClient(cfg)` takes a narrow
+ * `HttpConfig` so this unit (F4) stays decoupled from `shared/config`
+ * (unit F3); the app layer (R2) wires `getConfig()` → factory.
+ *
+ * The nine §5.4 behaviours implemented here or in `auth/`:
+ *  1. explicit `credentials`: 'same-origin', switching to 'include' when the
+ *     resolved base URL is cross-origin (old `fetchBaseQuery` set none —
+ *     apps/elitea-ui/src/api/eliteaApi.js:13-15).
+ *  2. real 401/403 → re-auth; redirect-sniff kept as SECONDARY signal
+ *     (old app had redirect-sniff only — eliteaApi.js:21-49; the genuine 401
+ *     from elitea-main middleware/auth.go:155 surfaced as a plain error).
+ *  3. single-flight re-auth: N concurrent 401s → one re-auth flow.
+ *  6. dev bearer ONLY under `import.meta.env.DEV` (statically eliminated from
+ *     production bundles; old app leaked it via runtime config —
+ *     eliteaApi.js:60-63).
+ *  8. AbortSignal on every request (react-query `signal` compatible).
+ *  9. W3C `traceparent` when tracing is enabled (shape preserved from
+ *     apps/elitea-ui/src/services/tracing/TraceService.js:55-61).
+ *  §3.6: discriminated `Result` return — 4xx/5xx/network/abort are values,
+ *     never throws; throws are reserved for programmer errors.
+ *  Replayability: bodies are serialized once and reused, so the post-re-auth
+ *     retry is byte-identical (old app retried a pre-cloned Request —
+ *     eliteaApi.js:17-18).
+ */
+
+export interface HttpConfig {
+  /** API base, relative (`/api/v2`) or absolute (`https://api.example/api/v2`). */
+  baseUrl: string;
+  /** Explicit override; when omitted it is derived from `baseUrl` vs the page origin. */
+  credentialsMode?: RequestCredentials;
+  tracingEnabled?: boolean;
+  /** Attached as `Authorization: Bearer …` ONLY under `import.meta.env.DEV`. */
+  devToken?: string;
+  /**
+   * Re-auth flow (auth/popup.ts): resolves once the session is restored,
+   * rejects when re-auth failed. Omit for clients that must never trigger
+   * re-auth (e.g. the callback page's session probe).
+   */
+  reauthenticate?: () => Promise<void>;
+}
+
+/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+export type HttpFailure =
+  | { kind: 'http'; status: number; url: string; body: unknown }
+  | { kind: 'auth'; status: number; url: string }
+  | { kind: 'network'; url: string; message: string; cause: unknown }
+  | { kind: 'aborted'; url: string };
+
+/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+export type HttpResult<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; error: HttpFailure };
+
+/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+export type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+/** @public Wave-1 surface: consumed by S4/S6 endpoint modules and R2. */
+export interface HttpRequestOptions {
+  /** react-query passes its per-query `signal` straight through here (§5.4). */
+  signal?: AbortSignal;
+  headers?: Readonly<Record<string, string>>;
+  /** JSON-serialized once (replayable); pass a string to send it verbatim. */
+  body?: unknown;
+  query?: Readonly<Record<string, string | number | boolean | undefined>>;
+}
+
+export interface HttpClient {
+  readonly baseUrl: string;
+  readonly credentials: RequestCredentials;
+  /**
+   * True when this client escalates 401/403 into the re-auth flow. Callers
+   * that must NOT trigger re-auth — the callback page's session probe above
+   * all — assert on it (see auth/verify-session.ts).
+   */
+  readonly reauthConfigured: boolean;
+  request<T>(method: HttpMethod, path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+  get<T>(path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+  post<T>(path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+  put<T>(path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+  patch<T>(path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+  delete<T>(path: string, options?: HttpRequestOptions): Promise<HttpResult<T>>;
+}
+
+/* ── behaviour 1: credentials resolution ─────────────────────────────────── */
+
+/**
+ * 'same-origin' explicitly, 'include' when the resolved base URL is
+ * cross-origin — pointing the API at another origin must not silently drop
+ * the session cookie (§5.4).
+ */
+export function resolveCredentialsMode(baseUrl: string, pageOrigin: string): RequestCredentials {
+  const resolved = new URL(baseUrl, pageOrigin);
+  return resolved.origin === new URL(pageOrigin).origin ? 'same-origin' : 'include';
+}
+
+/* ── behaviour 9: W3C traceparent (shape from TraceService.js:55-61) ─────── */
+
+function randomHex(chars: number): string {
+  const bytes = new Uint8Array(chars / 2);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** `{version}-{trace-id}-{span-id}-{trace-flags}`, e.g. `00-…32…-…16…-01`. */
+export function generateTraceparent(): string {
+  return `00-${randomHex(32)}-${randomHex(16)}-01`;
+}
+
+/* ── behaviour 2 (secondary): forward-auth redirect sniff ────────────────── */
+
+/**
+ * Old sniff retained as the SECONDARY signal (eliteaApi.js:26-28): the final
+ * URL, with `target_to` removed first so its VALUE cannot fake a match,
+ * containing both `/forward-auth/` and `/login`.
+ */
+function isAuthRedirect(finalUrl: string): boolean {
+  const url = new URL(finalUrl);
+  url.searchParams.delete('target_to');
+  const stripped = url.toString();
+  return stripped.includes('/forward-auth/') && stripped.includes('/login');
+}
+
+function needsReauth(response: Response): boolean {
+  if (response.status === 401 || response.status === 403) return true;
+  return response.redirected && isAuthRedirect(response.url);
+}
+
+/* ── request assembly ────────────────────────────────────────────────────── */
+
+function buildUrl(base: string, path: string, query?: HttpRequestOptions['query']): string {
+  const url = new URL(base.replace(/\/$/, '') + (path.startsWith('/') ? path : `/${path}`));
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+function serializeBody(method: HttpMethod, body: unknown, url: string): string | undefined {
+  if (body === undefined) return undefined;
+  if (method === 'GET' || method === 'HEAD') {
+    throw new TypeError(`http: ${method} ${url} cannot carry a request body`);
+  }
+  if (typeof body === 'string') return body;
+  try {
+    return JSON.stringify(body);
+  } catch (cause) {
+    // Programmer error — rethrown with context (§3.6).
+    throw new TypeError(`http: request body for ${method} ${url} is not JSON-serializable`, { cause });
+  }
+}
+
+interface PreparedRequest {
+  url: string;
+  init: RequestInit;
+}
+
+function prepare(cfg: HttpConfig, credentials: RequestCredentials, method: HttpMethod, path: string, options: HttpRequestOptions): PreparedRequest {
+  const url = buildUrl(new URL(cfg.baseUrl, window.location.origin).toString(), path, options.query);
+  const headers = new Headers(options.headers);
+  const body = serializeBody(method, options.body, url);
+  if (body !== undefined && typeof options.body !== 'string' && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  if (cfg.tracingEnabled === true) headers.set('traceparent', generateTraceparent());
+  // Behaviour 6: statically eliminated from production bundles — Vite
+  // replaces `import.meta.env.DEV` with `false` there, so no dev-token code
+  // path can exist outside dev builds (V4 proves this with a bundle grep).
+  if (import.meta.env.DEV) {
+    if (cfg.devToken !== undefined && cfg.devToken !== '') {
+      headers.set('Authorization', `Bearer ${cfg.devToken}`);
+    }
+    headers.set('Cache-Control', 'no-cache'); // parity: eliteaApi.js:63
+  }
+  const init: RequestInit = { method, headers, credentials };
+  if (body !== undefined) init.body = body;
+  if (options.signal !== undefined) init.signal = options.signal;
+  return { url, init };
+}
+
+/* ── Result construction (§3.6: errors are values at the boundary) ───────── */
+
+function isAbortError(cause: unknown): boolean {
+  // Realm-safe: under vitest/undici the DOMException comes from another
+  // realm, so `instanceof DOMException` would misclassify aborts as network
+  // failures. The name is the cross-realm contract.
+  return typeof cause === 'object' && cause !== null && (cause as { name?: unknown }).name === 'AbortError';
+}
+
+function failure<T>(error: HttpFailure): HttpResult<T> {
+  return { ok: false, error };
+}
+
+function fromException<T>(cause: unknown, url: string): HttpResult<T> {
+  if (isAbortError(cause)) return failure({ kind: 'aborted', url });
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return failure({ kind: 'network', url, message: `http: request to ${url} failed: ${message}`, cause });
+}
+
+async function toResult<T>(response: Response): Promise<HttpResult<T>> {
+  const text = await response.text();
+  let body: unknown = text === '' ? undefined : text;
+  if (text !== '' && (response.headers.get('content-type') ?? '').includes('application/json')) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // Handled (§3.6): a server lying about content-type is not a crash —
+      // the raw text is surfaced instead.
+    }
+  }
+  if (!response.ok) {
+    return failure({ kind: 'http', status: response.status, url: response.url, body });
+  }
+  return { ok: true, status: response.status, data: body as T };
+}
+
+/* ── factory ─────────────────────────────────────────────────────────────── */
+
+export function createHttpClient(cfg: HttpConfig): HttpClient {
+  if (typeof cfg.baseUrl !== 'string' || cfg.baseUrl === '') {
+    throw new TypeError('http: HttpConfig.baseUrl is required'); // programmer error
+  }
+  const credentials = cfg.credentialsMode ?? resolveCredentialsMode(cfg.baseUrl, window.location.origin);
+
+  // Behaviour 3: single-flight re-auth — client-scoped (no module-scope
+  // singletons, R-S2), one popup for N concurrent 401s.
+  let reauthInFlight: Promise<boolean> | null = null;
+  const runReauth = (): Promise<boolean> => {
+    const reauthenticate = cfg.reauthenticate;
+    if (reauthenticate === undefined) return Promise.resolve(false);
+    reauthInFlight ??= reauthenticate()
+      .then(
+        () => true,
+        () => false, // handled (§3.6): a failed re-auth becomes a Result below
+      )
+      .finally(() => {
+        reauthInFlight = null;
+      });
+    return reauthInFlight;
+  };
+
+  async function request<T>(method: HttpMethod, path: string, options: HttpRequestOptions = {}): Promise<HttpResult<T>> {
+    const { url, init } = prepare(cfg, credentials, method, path, options);
+
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (cause) {
+      return fromException<T>(cause, url);
+    }
+
+    if (needsReauth(response)) {
+      // Behaviour 2: real 401/403 is the PRIMARY signal, redirect-sniff the
+      // secondary one; both funnel into the same single-flight re-auth.
+      const restored = await runReauth();
+      if (!restored) return failure({ kind: 'auth', status: response.status, url: response.url });
+      if (options.signal?.aborted === true) return failure({ kind: 'aborted', url });
+      try {
+        // Byte-identical replay: same serialized body, same headers.
+        response = await fetch(url, init);
+      } catch (cause) {
+        return fromException<T>(cause, url);
+      }
+      if (needsReauth(response)) {
+        return failure({ kind: 'auth', status: response.status, url: response.url });
+      }
+    }
+
+    return toResult<T>(response);
+  }
+
+  return {
+    baseUrl: cfg.baseUrl,
+    credentials,
+    reauthConfigured: cfg.reauthenticate !== undefined,
+    request,
+    get: (path, options) => request('GET', path, options),
+    post: (path, options) => request('POST', path, options),
+    put: (path, options) => request('PUT', path, options),
+    patch: (path, options) => request('PATCH', path, options),
+    delete: (path, options) => request('DELETE', path, options),
+  };
+}

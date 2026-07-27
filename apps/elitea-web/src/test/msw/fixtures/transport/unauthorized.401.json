@@ -1,0 +1,6 @@
+{
+  "recordedAt": "2026-07-26",
+  "synthetic": true,
+  "note": "Synthetic (unit F4): byte-shape of the genuine 401 the Go auth middleware writes (services/elitea-main/internal/api/middleware/auth.go:155) — the body the old base query never handled (spec §5.4 behaviour 2).",
+  "body": { "error": "missing authorization header" }
+}
