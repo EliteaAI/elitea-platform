@@ -1,6 +1,7 @@
 import { URL, fileURLToPath } from 'node:url';
 
 import babel from '@rolldown/plugin-babel';
+import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import { defineConfig, type PluginOption, type UserConfig } from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -22,8 +23,20 @@ const resolvePath = (p: string): string => fileURLToPath(new URL(p, import.meta.
  * Vite keeps NODE_ENV=production for `vite build` regardless of a custom --mode
  * (mode and NODE_ENV are distinct), so all three outputs are production builds.
  *
- * The TanStack Router plugin (file-based routes, autoCodeSplitting) is wired by
- * unit R1 together with the route tree; the scaffold has no routes to generate.
+ * The TanStack Router plugin (unit R1, §2.3/§9.3): file-based routing over
+ * `src/routes/**`, `autoCodeSplitting: true`. Main-app target ONLY — admin
+ * and maintenance are plain single-entry SPAs with no route tree.
+ * `routeFileIgnorePattern` excludes `-`-prefixed helper directories
+ * (`-search/`, `-guards/`, `-ui/`) by TanStack's own default convention
+ * (`routeFileIgnorePrefix` defaults to `"-"`, verified against the
+ * installed `@tanstack/router-generator@1.168.23` — no override needed) and
+ * `__tests__/`, which is NOT excluded by default and must be listed
+ * explicitly.
+ *
+ * `splitBehavior` keeps `/auth-callback` OUT of the split (`[]` = no lazy
+ * chunk for that route, matching old `router.jsx:4`'s eager, non-lazy
+ * import of `AuthCallbackPage` — every other page in the old app is
+ * `ChunkHelpers.lazyWithRetry`-wrapped, this one deliberately is not).
  */
 export default defineConfig(({ mode }): UserConfig => {
   const basePlugins: PluginOption[] = [
@@ -31,7 +44,11 @@ export default defineConfig(({ mode }): UserConfig => {
     // React Compiler (spec §2.1): plugin-react 6 removed its `babel` option, so
     // the compiler is wired via @rolldown/plugin-babel + reactCompilerPreset().
     babel({ presets: [reactCompilerPreset()] }),
-    svgr(),
+    // svgrOptions.ref (unit S2, §3.7/R-T8): every icon in shared/ui/icons/** is imported via
+    // the `?react` convention and typed as a ref-forwarding component (see
+    // shared/ui/icons/svg-react.d.ts, which overrides the package's default,
+    // non-ref-forwarding `vite-plugin-svgr/client` typings to match).
+    svgr({ svgrOptions: { ref: true } }),
     tsconfigPaths({ projects: [resolvePath('./tsconfig.json')] }),
   ];
 
@@ -67,7 +84,29 @@ export default defineConfig(({ mode }): UserConfig => {
   }
 
   return {
-    plugins: basePlugins,
+    plugins: [
+      // Must run before @vitejs/plugin-react (react()): it rewrites route
+      // files' exports (autoCodeSplitting) before JSX/compiler transforms
+      // see them. Verified via the installed package's own vite.js plugin
+      // ordering example.
+      tanstackRouter({
+        target: 'react',
+        autoCodeSplitting: true,
+        routesDirectory: resolvePath('./src/routes'),
+        generatedRouteTree: resolvePath('./src/routeTree.gen.ts'),
+        // Matches `__tests__/` directories AND colocated `*.test.tsx`
+        // files (e.g. `routes/auth-callback.test.tsx`) — both patterns
+        // appear under src/routes/**; without the second alternative the
+        // generator warns "does not export a Route" for every colocated
+        // test file (harmless — they're excluded from the tree either
+        // way — but noisy, and worth silencing at the source).
+        routeFileIgnorePattern: '(__tests__|\\.test\\.tsx?$)',
+        codeSplittingOptions: {
+          splitBehavior: ({ routeId }) => (routeId === '/auth-callback' ? [] : undefined),
+        },
+      }),
+      ...basePlugins,
+    ],
     base: './', // contract C4: assets emitted with relative URLs
     build: {
       outDir: resolvePath('./dist/app'),
