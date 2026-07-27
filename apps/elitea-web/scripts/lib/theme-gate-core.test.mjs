@@ -34,6 +34,37 @@ describe('§4.6 check 2 — mode branches', () => {
       ]),
     ).toEqual([]);
   });
+
+  it('does not flag a doc comment that merely mentions the banned pattern', () => {
+    // Real bug found post-hoc: several shared/ui components document, in a
+    // JSDoc block, that they deliberately avoid `palette.mode === 'dark'` —
+    // the naive line-by-line grep flagged its own explanatory prose.
+    expect(
+      checkModeBranches([
+        file(
+          'src/a.ts',
+          [
+            '/**',
+            " * Banned outright: `palette.mode === 'dark' ? a : b` (elitea/no-mode-branch).",
+            ' * Ported via theme.applyStyles instead.',
+            ' */',
+            'const x = 1;',
+          ].join('\n'),
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('still flags real code on the line right after a clean block comment', () => {
+    expect(
+      checkModeBranches([
+        file(
+          'src/a.ts',
+          ['/** a clean comment, no mention */', "const x = theme.palette.mode === 'dark';"].join('\n'),
+        ),
+      ]),
+    ).toHaveLength(1);
+  });
 });
 
 describe('§4.6 check 3 — theme.palette outside shared/brand', () => {
@@ -65,6 +96,26 @@ describe('§4.6 check 4 — MUI internal selectors', () => {
       checkMuiSelectors([file('src/shared/brand/mui-overrides/button.tsx', "'& .MuiButton-root'")]),
     ).toEqual([]);
   });
+
+  it('does not flag a doc comment explaining why a MUI selector is avoided', () => {
+    // Real bug found post-hoc: multiple shared/ui components document, in a
+    // JSDoc block, exactly which `.Mui*-*` selector R-T6 bans and why they
+    // don't use it — the naive grep flagged the explanation itself.
+    expect(
+      checkMuiSelectors([
+        file(
+          'src/features/x/ui/A.tsx',
+          [
+            '/**',
+            " * R-T6 (`elitea/no-mui-internal-selector`) confines `.MuiSlider-*`",
+            ' * overrides to shared/brand/mui-overrides/, so this uses the real prop.',
+            ' */',
+            'const x = 1;',
+          ].join('\n'),
+        ),
+      ]),
+    ).toEqual([]);
+  });
 });
 
 describe('§4.6 check 5 — forked assets', () => {
@@ -93,5 +144,23 @@ describe('§4.6 check 6 — external origins', () => {
       file('src/c.ts', "const ok = '/app/assets/inter.woff2';"),
     ]);
     expect(hits).toHaveLength(3);
+  });
+
+  it('still flags a URL in real code even though block-comment stripping runs first', () => {
+    // Guards the fix for the check-2/3/4 comment false-positive: block
+    // comments are stripped before matching, but `//` line comments are
+    // deliberately left untouched (this check's own targets are `https://`
+    // URLs, which contain `//`) — this proves that decision didn't also
+    // blind this check to a real violation sitting right after one.
+    const hits = checkExternalOrigins([
+      file(
+        'src/a.ts',
+        [
+          '/** unrelated clean comment */',
+          "const u = 'https://fonts.gstatic.com/x.woff2';",
+        ].join('\n'),
+      ),
+    ]);
+    expect(hits).toHaveLength(1);
   });
 });

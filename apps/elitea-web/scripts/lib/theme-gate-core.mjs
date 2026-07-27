@@ -15,14 +15,29 @@ const MUI_SELECTOR_RE = /\.Mui[A-Za-z]+-|\.css-[a-z0-9]{5,}/;
 const FORKED_ASSET_RE = /-(light|dark)\.(svg|png)$/;
 const EXTERNAL_ORIGIN_RE = /fonts\.googleapis\.com|fonts\.gstatic\.com|avatars\.githubusercontent\.com/;
 
+/**
+ * Strips `/* ... *\/` block comments (including JSDoc), replacing each with
+ * an equal-length run of newlines so every remaining line keeps its real
+ * line number. Doc comments routinely MENTION a banned pattern to explain
+ * why a file avoids it (e.g. "banned by elitea/no-mode-branch") — without
+ * this, the checks below flag their own explanatory prose as a violation.
+ * Deliberately does NOT touch `//` line comments: check 6 matches literal
+ * URLs (`https://fonts.googleapis.com/...`), which contain `//` themselves —
+ * stripping from `//` onward would silently blind that check to real
+ * violations instead of just ignoring documentation.
+ */
+function stripBlockComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ''));
+}
+
 function grep(files, re, filterFile) {
   const hits = [];
   for (const file of files) {
     if (filterFile && !filterFile(file.path)) continue;
-    const lines = file.text.split('\n');
+    const lines = stripBlockComments(file.text).split('\n');
     for (let i = 0; i < lines.length; i++) {
       if (re.test(lines[i])) {
-        hits.push({ path: file.path, line: i + 1, text: lines[i].trim() });
+        hits.push({ path: file.path, line: i + 1, text: file.text.split('\n')[i].trim() });
       }
     }
   }
