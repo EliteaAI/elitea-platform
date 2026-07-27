@@ -98,9 +98,9 @@ FROM elitea_runtime.execution_jobs AS j
 JOIN centry.project AS p
   ON p.id = j.projection_project_id
 WHERE j.execution_id = $1
-  AND j.tenant_id = $2::text
-  AND j.resource_project_id = $2
-  AND j.projection_project_id = $2
+  AND j.tenant_id = ($2::bigint)::text
+  AND j.resource_project_id = $2::bigint
+  AND j.projection_project_id = $2::bigint
   AND j.capability_id IN (
       'configuration.validate.v1',
       'index.ingest.v1'

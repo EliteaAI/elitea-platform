@@ -174,9 +174,9 @@ func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *t
 		t.Fatal(err)
 	}
 	for _, binding := range []string{
-		"j.tenant_id = $2::text",
-		"j.resource_project_id = $2",
-		"j.projection_project_id = $2",
+		"j.tenant_id = ($2::bigint)::text",
+		"j.resource_project_id = $2::bigint",
+		"j.projection_project_id = $2::bigint",
 		"j.execution_id = $1",
 		"COUNT(*) = 1",
 	} {
