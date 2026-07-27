@@ -342,10 +342,7 @@ func (s *Server) ListPublicApplications(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"rows": items, "total": len(items)})
 }
 
-func (s *Server) ListPublicSkills(w http.ResponseWriter, r *http.Request, params generated.ListPublicSkillsParams) {
-	writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-}
-
-func (s *Server) CreatePublicSkill(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "public skills not yet supported"})
-}
+// NOTE(W1): ListPublicSkills / CreatePublicSkill were removed together with
+// the drifted 2-segment /elitea_core/skills/prompt_lib spec entry — the
+// router only serves /skills/{mode}/{projectID} and no UI call site used the
+// 2-segment shape.
