@@ -126,12 +126,11 @@ to silently skip. It:
 - runs the complete HTTP, model-client, binary-media, ordered-event, and real
   PgVector characterization suite.
 
-`pytesseract==0.3.13` is installed explicitly in this current-baseline job.
-That is intentional evidence of a remaining standalone-worker packaging gap:
-the worker lock/image currently contains `unstructured_pytesseract==0.3.13`,
-while the SDK's inherited Confluence loader imports `pytesseract`. Poppler/PDF
-works in the worker capability image; OCR does not until that production
-dependency mismatch is fixed.
+`pytesseract==0.3.13` is supplied only through the standalone worker's
+`indexing-current` profile. The job deliberately has no ad hoc OCR install:
+the mandatory import and real Tesseract tests must fail when the production
+worker lock or dependency declaration drifts from the SDK's inherited
+Confluence loader.
 
 ## Baseline transition evidence
 

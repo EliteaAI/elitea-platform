@@ -257,8 +257,7 @@ jobs:
           python -m pip install \
             "elitea-sdk @ file:///tmp/elitea-sdk-current" \
             ./libs/proto \
-            "./services/elitea-worker-python[indexing-current,test]" \
-            "pytesseract==0.3.13"
+            "./services/elitea-worker-python[indexing-current,test]"
           python -m pip check
 
       - name: Verify current binary-media prerequisites
