@@ -110,13 +110,16 @@ func (s *Server) ValidateApplicationVersion(w http.ResponseWriter, r *http.Reque
 }
 
 // SetApplicationDefaultVersion marks a version as the default for an application.
-func (s *Server) SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, applicationId int, params generated.SetApplicationDefaultVersionParams) {
+// NOTE(W1, waiver W-009): version_id is a PATH segment, matching the router's
+// real contract (internal/api/router.go:326); the former query-param variant
+// was removed from the spec.
+func (s *Server) SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, applicationId int, versionId int) {
 	if s.appsRepo == nil {
 		w.WriteHeader(http.StatusNotImplemented)
 		return
 	}
 
-	if err := s.appsRepo.SetDefaultVersion(r.Context(), projectId, strconv.Itoa(applicationId), strconv.Itoa(params.VersionId)); err != nil {
+	if err := s.appsRepo.SetDefaultVersion(r.Context(), projectId, strconv.Itoa(applicationId), strconv.Itoa(versionId)); err != nil {
 		apierr.Write(w, err)
 		return
 	}
@@ -246,7 +249,12 @@ func (s *Server) StopApplicationTask(w http.ResponseWriter, r *http.Request, pro
 }
 
 // SetAgentAttachmentStorage sets the attachment storage toolkit for a specific agent version.
-func (s *Server) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, applicationId int, versionId int, params generated.SetAgentAttachmentStorageParams) {
+// NOTE(W2): the spec's former required ?toolkit_id= query parameter was
+// spec-only drift — the live handler and the old SPA use a JSON body
+// {"toolkit_id": "..."} (internal/api/v2/eliteacore/handler.go:1764-1783,
+// apps/elitea-ui/src/api/applications.js:843-845). Mechanical update: read
+// the body instead of the removed params struct; same DB write.
+func (s *Server) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId generated.ProjectId, applicationId int, versionId int) {
 	if s.pool == nil {
 		w.WriteHeader(http.StatusNotImplemented)
 		return
@@ -255,7 +263,11 @@ func (s *Server) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Reques
 	schema := fmt.Sprintf("p_%s", projectId)
 	ctx := r.Context()
 
-	toolkitIDStr := strconv.Itoa(params.ToolkitId)
+	var body struct {
+		ToolkitID string `json:"toolkit_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // tolerate empty body like the live handler tolerates missing key
+	toolkitIDStr := body.ToolkitID
 	_, _ = s.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE %q.application_versions
 		SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb)

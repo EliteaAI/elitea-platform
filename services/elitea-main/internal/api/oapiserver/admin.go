@@ -156,17 +156,22 @@ func (s *Server) UserDelete(w http.ResponseWriter, r *http.Request, projectId ge
 	ctx := r.Context()
 	pid, _ := strconv.Atoi(projectId)
 
-	if params.Id == 0 {
+	// NOTE(W2): the spec parameter was aligned to the old SPA's repeated
+	// ?id[]= key (parity manifest API-084), so params.Id is now *[]int.
+	// Mechanical update: same single-id semantics, applied per id.
+	if params.Id == nil || len(*params.Id) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "user_id required"})
 		return
 	}
 
-	_, err := s.pool.Exec(ctx,
-		`DELETE FROM auth_core__project_user_role WHERE user_id = $1 AND project_id = $2`,
-		params.Id, pid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove user"})
-		return
+	for _, id := range *params.Id {
+		_, err := s.pool.Exec(ctx,
+			`DELETE FROM auth_core__project_user_role WHERE user_id = $1 AND project_id = $2`,
+			id, pid)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to remove user"})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

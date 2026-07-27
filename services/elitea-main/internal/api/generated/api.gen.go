@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
@@ -20,45 +22,204 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
-// Defines values for ErrorResponseOk.
+// Defines values for ApplicationExportType.
 const (
-	False ErrorResponseOk = false
+	Agent    ApplicationExportType = "agent"
+	Pipeline ApplicationExportType = "pipeline"
 )
 
-// Valid indicates whether the value is a known member of the ErrorResponseOk enum.
-func (e ErrorResponseOk) Valid() bool {
+// Valid indicates whether the value is a known member of the ApplicationExportType enum.
+func (e ApplicationExportType) Valid() bool {
 	switch e {
-	case False:
+	case Agent:
+		return true
+	case Pipeline:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for RateLimitErrorDetailCode.
+// Defines values for ApplicationRelationListItemsType.
 const (
-	RateLimitExceeded RateLimitErrorDetailCode = "rate_limit_exceeded"
+	ApplicationRelationListItemsTypeSkill ApplicationRelationListItemsType = "skill"
+	ApplicationRelationListItemsTypeTool  ApplicationRelationListItemsType = "tool"
 )
 
-// Valid indicates whether the value is a known member of the RateLimitErrorDetailCode enum.
-func (e RateLimitErrorDetailCode) Valid() bool {
+// Valid indicates whether the value is a known member of the ApplicationRelationListItemsType enum.
+func (e ApplicationRelationListItemsType) Valid() bool {
 	switch e {
-	case RateLimitExceeded:
+	case ApplicationRelationListItemsTypeSkill:
+		return true
+	case ApplicationRelationListItemsTypeTool:
 		return true
 	default:
 		return false
 	}
 }
 
-// Defines values for RateLimitErrorDetailType.
+// Defines values for ArtifactDeletedResponseMessage.
 const (
-	RateLimitError RateLimitErrorDetailType = "rate_limit_error"
+	ArtifactDeletedResponseMessageDeleted ArtifactDeletedResponseMessage = "Deleted"
 )
 
-// Valid indicates whether the value is a known member of the RateLimitErrorDetailType enum.
-func (e RateLimitErrorDetailType) Valid() bool {
+// Valid indicates whether the value is a known member of the ArtifactDeletedResponseMessage enum.
+func (e ArtifactDeletedResponseMessage) Valid() bool {
 	switch e {
-	case RateLimitError:
+	case ArtifactDeletedResponseMessageDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ArtifactUploadResponseMessage.
+const (
+	Done ArtifactUploadResponseMessage = "Done"
+)
+
+// Valid indicates whether the value is a known member of the ArtifactUploadResponseMessage enum.
+func (e ArtifactUploadResponseMessage) Valid() bool {
+	switch e {
+	case Done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketCreatedResponseMessage.
+const (
+	Created BucketCreatedResponseMessage = "Created"
+)
+
+// Valid indicates whether the value is a known member of the BucketCreatedResponseMessage enum.
+func (e BucketCreatedResponseMessage) Valid() bool {
+	switch e {
+	case Created:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketDeletedResponseMessage.
+const (
+	BucketDeletedResponseMessageDeleted BucketDeletedResponseMessage = "Deleted"
+)
+
+// Valid indicates whether the value is a known member of the BucketDeletedResponseMessage enum.
+func (e BucketDeletedResponseMessage) Valid() bool {
+	switch e {
+	case BucketDeletedResponseMessageDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProjectStatus.
+const (
+	Active    ProjectStatus = "active"
+	Suspended ProjectStatus = "suspended"
+)
+
+// Valid indicates whether the value is a known member of the ProjectStatus enum.
+func (e ProjectStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Suspended:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublishRequestCategory.
+const (
+	BusinessAnalyst        PublishRequestCategory = "Business Analyst"
+	DevOps                 PublishRequestCategory = "DevOps"
+	Development            PublishRequestCategory = "Development"
+	Elitea                 PublishRequestCategory = "Elitea"
+	Epam                   PublishRequestCategory = "Epam"
+	KnowledgeDocumentation PublishRequestCategory = "Knowledge & Documentation"
+	Other                  PublishRequestCategory = "Other"
+	ProjectManagement      PublishRequestCategory = "Project Management"
+	QualityAssurance       PublishRequestCategory = "Quality Assurance"
+)
+
+// Valid indicates whether the value is a known member of the PublishRequestCategory enum.
+func (e PublishRequestCategory) Valid() bool {
+	switch e {
+	case BusinessAnalyst:
+		return true
+	case DevOps:
+		return true
+	case Development:
+		return true
+	case Elitea:
+		return true
+	case Epam:
+		return true
+	case KnowledgeDocumentation:
+		return true
+	case Other:
+		return true
+	case ProjectManagement:
+		return true
+	case QualityAssurance:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublishValidationFailedResponseError.
+const (
+	ValidationFailed PublishValidationFailedResponseError = "validation_failed"
+)
+
+// Valid indicates whether the value is a known member of the PublishValidationFailedResponseError enum.
+func (e PublishValidationFailedResponseError) Valid() bool {
+	switch e {
+	case ValidationFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublishValidationResultStatus.
+const (
+	FAIL PublishValidationResultStatus = "FAIL"
+	PASS PublishValidationResultStatus = "PASS"
+	WARN PublishValidationResultStatus = "WARN"
+)
+
+// Valid indicates whether the value is a known member of the PublishValidationResultStatus enum.
+func (e PublishValidationResultStatus) Valid() bool {
+	switch e {
+	case FAIL:
+		return true
+	case PASS:
+		return true
+	case WARN:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UnpublishResponseStatus.
+const (
+	Deleted UnpublishResponseStatus = "deleted"
+)
+
+// Valid indicates whether the value is a known member of the UnpublishResponseStatus enum.
+func (e UnpublishResponseStatus) Valid() bool {
+	switch e {
+	case Deleted:
 		return true
 	default:
 		return false
@@ -77,6 +238,36 @@ func (e SortOrder) Valid() bool {
 	case SortOrderAsc:
 		return true
 	case SortOrderDesc:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BucketListParamsFormat.
+const (
+	BucketListParamsFormatJson BucketListParamsFormat = "json"
+)
+
+// Valid indicates whether the value is a known member of the BucketListParamsFormat enum.
+func (e BucketListParamsFormat) Valid() bool {
+	switch e {
+	case BucketListParamsFormatJson:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ArtifactListParamsFormat.
+const (
+	ArtifactListParamsFormatJson ArtifactListParamsFormat = "json"
+)
+
+// Valid indicates whether the value is a known member of the ArtifactListParamsFormat enum.
+func (e ArtifactListParamsFormat) Valid() bool {
+	switch e {
+	case ArtifactListParamsFormatJson:
 		return true
 	default:
 		return false
@@ -139,8 +330,8 @@ func (e ListAnalyticsUsersParamsSortOrder) Valid() bool {
 
 // Defines values for ExportApplicationParamsFormat.
 const (
-	Json     ExportApplicationParamsFormat = "json"
-	Markdown ExportApplicationParamsFormat = "markdown"
+	Json ExportApplicationParamsFormat = "json"
+	Md   ExportApplicationParamsFormat = "md"
 )
 
 // Valid indicates whether the value is a known member of the ExportApplicationParamsFormat enum.
@@ -148,91 +339,1246 @@ func (e ExportApplicationParamsFormat) Valid() bool {
 	switch e {
 	case Json:
 		return true
-	case Markdown:
+	case Md:
 		return true
 	default:
 		return false
 	}
 }
 
-// AdminPaginatedResponse defines model for AdminPaginatedResponse.
-type AdminPaginatedResponse struct {
-	// Items Items for the current page
-	Items []Struct `json:"items"`
+// AgentAnalytics NOTE(W2) internal/domain/analytics/types.go:22-29.
+type AgentAnalytics struct {
+	ApplicationId string  `json:"application_id"`
+	AvgDurationMs float32 `json:"avg_duration_ms"`
+	ErrorRate     float32 `json:"error_rate"`
+	Name          string  `json:"name"`
+	RunCount      int     `json:"run_count"`
+	TotalTokens   int     `json:"total_tokens"`
+}
 
-	// Page Current page number (1-based)
-	Page int `json:"page"`
-
-	// PageSize Number of items per page
-	PageSize int `json:"page_size"`
-
-	// Total Total number of matching records
+// AgentCategoriesResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:2960-2991 — nine static defaults merged with publishing_guardrail extras.
+type AgentCategoriesResponse struct {
+	Categories []struct {
+		IsDefault bool   `json:"is_default"`
+		Name      string `json:"name"`
+	} `json:"categories"`
 	Total int `json:"total"`
 }
 
-// Application Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Application = Struct
+// AnalyticsAgentsList NOTE(W2) internal/api/v2/analytics/handler.go:89.
+type AnalyticsAgentsList struct {
+	Items []AgentAnalytics `json:"items"`
+}
 
-// ApplicationVersion Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type ApplicationVersion = Struct
+// AnalyticsDetailEnvelope NOTE(W2): detail envelope, internal/api/v2/analytics/handler.go:76-87 (agents: users+tools), :101-112 (tools: users+agents), :126-137 (users: agents+tools). The pair of sibling arrays differs per entity, so the three sibling arrays (users/agents/tools) are declared optional; daily_usage is required — every variant emits it (:85, :110, :135).
+type AnalyticsDetailEnvelope struct {
+	Agents     *[]map[string]interface{} `json:"agents,omitempty"`
+	DailyUsage []map[string]interface{}  `json:"daily_usage"`
+	EntityName string                    `json:"entity_name"`
 
-// ArrayResponse Unpagianted array result
-type ArrayResponse = []Struct
+	// Kpis NOTE(W2): internal/api/v2/analytics/handler.go:48-59 (usage, includes total_tokens/total_cost) and :78-82, 103-107, 128-132 (detail views, 8-key variant). Most values are hardwired 0 today.
+	Kpis  AnalyticsKpis             `json:"kpis"`
+	Tools *[]map[string]interface{} `json:"tools,omitempty"`
+	Users *[]map[string]interface{} `json:"users,omitempty"`
+}
 
-// Artifact Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Artifact = Struct
+// AnalyticsKpis NOTE(W2): internal/api/v2/analytics/handler.go:48-59 (usage, includes total_tokens/total_cost) and :78-82, 103-107, 128-132 (detail views, 8-key variant). Most values are hardwired 0 today.
+type AnalyticsKpis struct {
+	AdoptionRate  float32 `json:"adoption_rate"`
+	AgentRuns     float32 `json:"agent_runs"`
+	AiActiveUsers float32 `json:"ai_active_users"`
+	ChatMsgs      float32 `json:"chat_msgs"`
+	LlmCalls      float32 `json:"llm_calls"`
+	ToolRuns      float32 `json:"tool_runs"`
 
-// Bucket Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Bucket = Struct
+	// TotalCost Present only in the project-usage kpis block.
+	TotalCost         *float32 `json:"total_cost,omitempty"`
+	TotalProjectUsers float32  `json:"total_project_users"`
 
-// ErrorResponse defines model for ErrorResponse.
+	// TotalTokens Present only in the project-usage kpis block.
+	TotalTokens *float32 `json:"total_tokens,omitempty"`
+	UniqueUsers float32  `json:"unique_users"`
+}
+
+// AnalyticsToolsList NOTE(W2) internal/api/v2/analytics/handler.go:114.
+type AnalyticsToolsList struct {
+	Items []ToolAnalytics `json:"items"`
+}
+
+// AnalyticsUsersList NOTE(W2) internal/api/v2/analytics/handler.go:139.
+type AnalyticsUsersList struct {
+	Items []UserActivity `json:"items"`
+}
+
+// Application NOTE(W2): internal/domain/applications/types.go:11-31 — required set = json tags WITHOUT omitempty (id, name, created_at, owner_id, is_forked, meta, has_interrupt) PLUS updated_at, whose omitempty is ineffective on a time.Time (always marshaled; zero sentinel when unscanned). Every other omitempty field is optional (absent when zero-valued).
+type Application struct {
+	AgentType    *string                 `json:"agent_type,omitempty"`
+	Authors      *[]Author               `json:"authors,omitempty"`
+	CreatedAt    time.Time               `json:"created_at"`
+	CreatedBy    *string                 `json:"created_by,omitempty"`
+	Description  *string                 `json:"description,omitempty"`
+	FolderId     *string                 `json:"folder_id,omitempty"`
+	HasInterrupt bool                    `json:"has_interrupt"`
+	Icon         *string                 `json:"icon,omitempty"`
+	Id           string                  `json:"id"`
+	IsForked     bool                    `json:"is_forked"`
+	Meta         *map[string]interface{} `json:"meta"`
+	Metadata     *map[string]interface{} `json:"metadata,omitempty"`
+	Name         string                  `json:"name"`
+	OwnerId      string                  `json:"owner_id"`
+	ProjectId    *string                 `json:"project_id,omitempty"`
+	Status       *string                 `json:"status,omitempty"`
+	Tags         *[]string               `json:"tags,omitempty"`
+	Type         *string                 `json:"type,omitempty"`
+
+	// UpdatedAt ALWAYS present despite the omitempty tag — encoding/json never omits struct types, and the List path never scans the column, so the wire carries the zero sentinel "0001-01-01T00:00:00Z" on every row (types.go:23; repos/applications.go:66-107).
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ApplicationCreateRequest defines model for ApplicationCreateRequest.
+type ApplicationCreateRequest struct {
+	Description *string `json:"description,omitempty"`
+	Icon        *string `json:"icon,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Type        *string `json:"type,omitempty"`
+
+	// Versions Only versions[0] is honoured; it seeds the first version (internal/api/v2/applications/handler.go:374-463).
+	Versions             *[]VersionWriteRequest `json:"versions,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// ApplicationCreatedResponse NOTE(W2): Create response map, internal/api/v2/applications/handler.go:465-478. version_details and versions (a single-element echo of version_details) appear only when the request carried a `versions` array (:374-463).
+type ApplicationCreatedResponse struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description string    `json:"description"`
+	Icon        string    `json:"icon"`
+	Id          string    `json:"id"`
+	Name        string    `json:"name"`
+	OwnerId     string    `json:"owner_id"`
+	Type        string    `json:"type"`
+
+	// VersionDetails NOTE(W2): union of the version-detail maps the handlers emit. Field presence varies by endpoint (hence the minimal required set): fetchVersionDetails always adds created_at/agent_type/instructions/ welcome_message/llm_settings/meta/conversation_starters/ pipeline_settings/author_id/tools/tags/variables (internal/api/v2/applications/handler.go:325-342); CreateVersion adds author + is_forked but no pipeline_settings (:783-801); UpdateVersion emits the 10-key subset without created_at/author/tools (:913-919); Fork adds is_forked and omits pipeline_settings (eliteacore/handler.go:2440-2456, is_forked at :2452); the import detail map (:2070-2082) has NO is_forked and also omits meta/variables/tags/created_at; publicApplicationDetail omits variables, created_at, author and is_forked (:1460-1475). Empty-vs-missing: instructions and welcome_message are always present as "" when the DB column is NULL (COALESCE / pointer deref to "" — applications/handler.go:222-229).
+	VersionDetails *ApplicationVersionDetail   `json:"version_details,omitempty"`
+	Versions       *[]ApplicationVersionDetail `json:"versions,omitempty"`
+}
+
+// ApplicationDetail NOTE(W2): Get response map, internal/api/v2/applications/handler.go:121-139. version_details is present only when the application has at least one version whose detail row loads (:132-137).
+type ApplicationDetail struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description string    `json:"description"`
+	Icon        string    `json:"icon"`
+	Id          string    `json:"id"`
+	Name        string    `json:"name"`
+
+	// OwnerId Populated from applications.created_by.
+	OwnerId string `json:"owner_id"`
+
+	// VersionDetails NOTE(W2): union of the version-detail maps the handlers emit. Field presence varies by endpoint (hence the minimal required set): fetchVersionDetails always adds created_at/agent_type/instructions/ welcome_message/llm_settings/meta/conversation_starters/ pipeline_settings/author_id/tools/tags/variables (internal/api/v2/applications/handler.go:325-342); CreateVersion adds author + is_forked but no pipeline_settings (:783-801); UpdateVersion emits the 10-key subset without created_at/author/tools (:913-919); Fork adds is_forked and omits pipeline_settings (eliteacore/handler.go:2440-2456, is_forked at :2452); the import detail map (:2070-2082) has NO is_forked and also omits meta/variables/tags/created_at; publicApplicationDetail omits variables, created_at, author and is_forked (:1460-1475). Empty-vs-missing: instructions and welcome_message are always present as "" when the DB column is NULL (COALESCE / pointer deref to "" — applications/handler.go:222-229).
+	VersionDetails *ApplicationVersionDetail   `json:"version_details,omitempty"`
+	Versions       []ApplicationVersionSummary `json:"versions"`
+}
+
+// ApplicationExport NOTE(W2): internal/api/v2/eliteacore/handler.go:2692-2712.
+type ApplicationExport struct {
+	Description string `json:"description"`
+	Id          string `json:"id"`
+	ImportUuid  string `json:"import_uuid"`
+	Name        string `json:"name"`
+
+	// OriginalExported Present only with ?fork=true.
+	OriginalExported *bool `json:"original_exported,omitempty"`
+
+	// OwnerId Present only with ?fork=true.
+	OwnerId *string `json:"owner_id,omitempty"`
+
+	// SharedId Present only with ?fork=true.
+	SharedId *string `json:"shared_id,omitempty"`
+
+	// SharedOwnerId Present only with ?fork=true.
+	SharedOwnerId *string                    `json:"shared_owner_id,omitempty"`
+	Type          ApplicationExportType      `json:"type"`
+	Versions      []ApplicationVersionExport `json:"versions"`
+}
+
+// ApplicationExportType defines model for ApplicationExport.Type.
+type ApplicationExportType string
+
+// ApplicationExportResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:2714-2718. With ?as_file=true the same JSON is sent with a Content-Disposition attachment header (:2720-2726). The handler also has a test-only degraded return: when h.pool == nil it writes {"ok": true} with no applications/toolkits keys (:2481-2484) — unreachable in production (cmd/elitea-main/main.go:54-58 exits when the pool cannot be built; internal/api/router.go:236 always passes it).
+type ApplicationExportResponse struct {
+	Applications []ApplicationExport `json:"applications"`
+	Ok           bool                `json:"ok"`
+	Toolkits     []ToolkitExport     `json:"toolkits"`
+}
+
+// ApplicationList NOTE(W2): internal/domain/applications/types.go:86-92 (ListResponse), marshaled directly by List (internal/api/v2/applications/handler.go:101-107).
+type ApplicationList struct {
+	Page       int           `json:"page"`
+	PageSize   int           `json:"page_size"`
+	Rows       []Application `json:"rows"`
+	Total      int           `json:"total"`
+	TotalPages int           `json:"total_pages"`
+}
+
+// ApplicationRelationList NOTE(W2): built by the ApplicationRelation handler, internal/api/v2/eliteacore/handler.go:1596-1626. The sole operation in this spec that references it is checkVersionInUse (internal/api/router.go:509 routes /check_version_in_use/... to that handler). The router ALSO serves GET /application_relation/... via the same handler (router.go:519), which is deliberately not specced — no manifest API item calls it.
+type ApplicationRelationList struct {
+	Items []struct {
+		Id   string                           `json:"id"`
+		Type ApplicationRelationListItemsType `json:"type"`
+	} `json:"items"`
+}
+
+// ApplicationRelationListItemsType defines model for ApplicationRelationList.Items.Type.
+type ApplicationRelationListItemsType string
+
+// ApplicationRelationUpdateRequest NOTE(W2): decoded into map[string]any; string and number are both accepted (internal/api/v2/eliteacore/handler.go:1636-1695) — the %v formatting happens only at the published-version guard (:1648); the duplicate-check/insert/delete paths pass the raw decoded values to pgx (:1668, :1687, :1695), which converts numerics itself.
+type ApplicationRelationUpdateRequest struct {
+	ApplicationId *ApplicationRelationUpdateRequest_ApplicationId `json:"application_id,omitempty"`
+	HasRelation   *bool                                           `json:"has_relation,omitempty"`
+	VersionId     *ApplicationRelationUpdateRequest_VersionId     `json:"version_id,omitempty"`
+}
+
+// ApplicationRelationUpdateRequestApplicationId0 defines model for .
+type ApplicationRelationUpdateRequestApplicationId0 = string
+
+// ApplicationRelationUpdateRequestApplicationId1 defines model for .
+type ApplicationRelationUpdateRequestApplicationId1 = int
+
+// ApplicationRelationUpdateRequest_ApplicationId defines model for ApplicationRelationUpdateRequest.ApplicationId.
+type ApplicationRelationUpdateRequest_ApplicationId struct {
+	union json.RawMessage
+}
+
+// ApplicationRelationUpdateRequestVersionId0 defines model for .
+type ApplicationRelationUpdateRequestVersionId0 = string
+
+// ApplicationRelationUpdateRequestVersionId1 defines model for .
+type ApplicationRelationUpdateRequestVersionId1 = int
+
+// ApplicationRelationUpdateRequest_VersionId defines model for ApplicationRelationUpdateRequest.VersionId.
+type ApplicationRelationUpdateRequest_VersionId struct {
+	union json.RawMessage
+}
+
+// ApplicationRelationUpdatedResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:1698-1702.
+type ApplicationRelationUpdatedResponse struct {
+	// ApplicationId Echo of the {selected_application_id} path segment.
+	ApplicationId string `json:"application_id"`
+	HasRelation   bool   `json:"has_relation"`
+
+	// VersionId Echo of the {selected_version_id} path segment.
+	VersionId string `json:"version_id"`
+}
+
+// ApplicationUpdateRequest defines model for ApplicationUpdateRequest.
+type ApplicationUpdateRequest struct {
+	Description          *string                           `json:"description,omitempty"`
+	Icon                 *string                           `json:"icon,omitempty"`
+	Name                 *string                           `json:"name,omitempty"`
+	Version              *ApplicationUpdateRequest_Version `json:"version,omitempty"`
+	AdditionalProperties map[string]interface{}            `json:"-"`
+}
+
+// ApplicationUpdateRequestVersionApplicationId0 defines model for .
+type ApplicationUpdateRequestVersionApplicationId0 = string
+
+// ApplicationUpdateRequestVersionApplicationId1 defines model for .
+type ApplicationUpdateRequestVersionApplicationId1 = int
+
+// ApplicationUpdateRequest_Version_ApplicationId defines model for ApplicationUpdateRequest.Version.ApplicationId.
+type ApplicationUpdateRequest_Version_ApplicationId struct {
+	union json.RawMessage
+}
+
+// ApplicationUpdateRequestVersionId0 defines model for .
+type ApplicationUpdateRequestVersionId0 = string
+
+// ApplicationUpdateRequestVersionId1 defines model for .
+type ApplicationUpdateRequestVersionId1 = int
+
+// ApplicationUpdateRequest_Version_Id defines model for ApplicationUpdateRequest.Version.Id.
+type ApplicationUpdateRequest_Version_Id struct {
+	union json.RawMessage
+}
+
+// ApplicationUpdateRequest_Version defines model for ApplicationUpdateRequest.Version.
+type ApplicationUpdateRequest_Version struct {
+	ApplicationId        ApplicationUpdateRequest_Version_ApplicationId `json:"application_id"`
+	Id                   ApplicationUpdateRequest_Version_Id            `json:"id"`
+	Instructions         *string                                        `json:"instructions,omitempty"`
+	Name                 *string                                        `json:"name,omitempty"`
+	AdditionalProperties map[string]interface{}                         `json:"-"`
+}
+
+// ApplicationUpdatedResponse NOTE(W2): Update response map, internal/api/v2/applications/handler.go:575-611.
+type ApplicationUpdatedResponse struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description string    `json:"description"`
+	Icon        string    `json:"icon"`
+	Id          string    `json:"id"`
+	Name        string    `json:"name"`
+	OwnerId     string    `json:"owner_id"`
+
+	// VersionDetails NOTE(W2): union of the version-detail maps the handlers emit. Field presence varies by endpoint (hence the minimal required set): fetchVersionDetails always adds created_at/agent_type/instructions/ welcome_message/llm_settings/meta/conversation_starters/ pipeline_settings/author_id/tools/tags/variables (internal/api/v2/applications/handler.go:325-342); CreateVersion adds author + is_forked but no pipeline_settings (:783-801); UpdateVersion emits the 10-key subset without created_at/author/tools (:913-919); Fork adds is_forked and omits pipeline_settings (eliteacore/handler.go:2440-2456, is_forked at :2452); the import detail map (:2070-2082) has NO is_forked and also omits meta/variables/tags/created_at; publicApplicationDetail omits variables, created_at, author and is_forked (:1460-1475). Empty-vs-missing: instructions and welcome_message are always present as "" when the DB column is NULL (COALESCE / pointer deref to "" — applications/handler.go:222-229).
+	VersionDetails *ApplicationVersionDetail `json:"version_details,omitempty"`
+}
+
+// ApplicationVersionDetail NOTE(W2): union of the version-detail maps the handlers emit. Field presence varies by endpoint (hence the minimal required set): fetchVersionDetails always adds created_at/agent_type/instructions/ welcome_message/llm_settings/meta/conversation_starters/ pipeline_settings/author_id/tools/tags/variables (internal/api/v2/applications/handler.go:325-342); CreateVersion adds author + is_forked but no pipeline_settings (:783-801); UpdateVersion emits the 10-key subset without created_at/author/tools (:913-919); Fork adds is_forked and omits pipeline_settings (eliteacore/handler.go:2440-2456, is_forked at :2452); the import detail map (:2070-2082) has NO is_forked and also omits meta/variables/tags/created_at; publicApplicationDetail omits variables, created_at, author and is_forked (:1460-1475). Empty-vs-missing: instructions and welcome_message are always present as "" when the DB column is NULL (COALESCE / pointer deref to "" — applications/handler.go:222-229).
+type ApplicationVersionDetail struct {
+	AgentType     *string `json:"agent_type,omitempty"`
+	ApplicationId string  `json:"application_id"`
+
+	// Author NOTE(W2): internal/domain/applications/types.go:5-9 (no omitempty on any field) and the inline author maps in internal/api/v2/applications/handler.go:451, 600, 790.
+	Author   *Author `json:"author,omitempty"`
+	AuthorId *string `json:"author_id,omitempty"`
+
+	// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+	ConversationStarters *ConversationStarters `json:"conversation_starters,omitempty"`
+	CreatedAt            *time.Time            `json:"created_at,omitempty"`
+
+	// Id Numeric id serialized as string.
+	Id               string             `json:"id"`
+	Instructions     *string            `json:"instructions,omitempty"`
+	IsForked         *bool              `json:"is_forked,omitempty"`
+	LlmSettings      *LlmSettings       `json:"llm_settings,omitempty"`
+	Meta             *VersionMeta       `json:"meta,omitempty"`
+	Name             string             `json:"name"`
+	PipelineSettings *PipelineSettings  `json:"pipeline_settings,omitempty"`
+	Status           string             `json:"status"`
+	Tags             *[]VersionTag      `json:"tags,omitempty"`
+	Tools            *[]VersionToolRef  `json:"tools,omitempty"`
+	Variables        *[]VersionVariable `json:"variables,omitempty"`
+	WelcomeMessage   *string            `json:"welcome_message,omitempty"`
+}
+
+// ApplicationVersionExport NOTE(W2): ExportImportGet version entry, internal/api/v2/eliteacore/handler.go:2670-2683.
+type ApplicationVersionExport struct {
+	AgentType     string `json:"agent_type"`
+	ApplicationId string `json:"application_id"`
+	AuthorId      string `json:"author_id"`
+
+	// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+	ConversationStarters ConversationStarters `json:"conversation_starters"`
+	Id                   string               `json:"id"`
+
+	// ImportVersionUuid Present only when the version row has a uuid.
+	ImportVersionUuid *string      `json:"import_version_uuid,omitempty"`
+	Instructions      string       `json:"instructions"`
+	IsForked          bool         `json:"is_forked"`
+	LlmSettings       LlmSettings  `json:"llm_settings"`
+	Meta              VersionMeta  `json:"meta"`
+	Name              string       `json:"name"`
+	Status            string       `json:"status"`
+	Tags              []VersionTag `json:"tags"`
+	Tools             []struct {
+		ImportUuid string `json:"import_uuid"`
+
+		// SelectedTools Opaque selected-tools blob (object or null) — see marker.
+		SelectedTools SelectedTools `json:"selected_tools"`
+	} `json:"tools"`
+	Variables      []VersionVariable `json:"variables"`
+	WelcomeMessage string            `json:"welcome_message"`
+}
+
+// ApplicationVersionSummary NOTE(W2): getVersions row map, internal/api/v2/applications/handler.go:159-165.
+type ApplicationVersionSummary struct {
+	AgentType string    `json:"agent_type"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// Id Numeric id serialized as string (strconv.Itoa).
+	Id     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// ArtifactDeletedResponse NOTE(W2): DeleteArtifact response, internal/api/v2/artifacts/handler.go:267-275.
+type ArtifactDeletedResponse struct {
+	Message ArtifactDeletedResponseMessage `json:"message"`
+
+	// Size Size of the removed object; 0 when stat failed.
+	Size int64 `json:"size"`
+}
+
+// ArtifactDeletedResponseMessage defines model for ArtifactDeletedResponse.Message.
+type ArtifactDeletedResponseMessage string
+
+// ArtifactUploadResponse NOTE(W2): UploadArtifact response, internal/api/v2/artifacts/handler.go:319-323.
+type ArtifactUploadResponse struct {
+	Message ArtifactUploadResponseMessage `json:"message"`
+	Name    string                        `json:"name"`
+	Size    int64                         `json:"size"`
+}
+
+// ArtifactUploadResponseMessage defines model for ArtifactUploadResponse.Message.
+type ArtifactUploadResponseMessage string
+
+// Author NOTE(W2): internal/domain/applications/types.go:5-9 (no omitempty on any field) and the inline author maps in internal/api/v2/applications/handler.go:451, 600, 790.
+type Author struct {
+	Email string `json:"email"`
+	Id    string `json:"id"`
+	Name  string `json:"name"`
+}
+
+// BatchEntitySettingsRequest NOTE(W2): batch of per-participant settings maps — see items marker.
+type BatchEntitySettingsRequest = []map[string]interface{}
+
+// Bucket NOTE(W2): internal/api/v2/artifacts/handler.go:21-26 (struct json tags, no omitempty), returned whole by UpdateBucket (:126) and PatchBucket (:149).
+type Bucket struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        string    `json:"id"`
+	IsPinned  bool      `json:"is_pinned"`
+	Name      string    `json:"name"`
+}
+
+// BucketCreateRequest NOTE(W2): typed decode, internal/api/v2/artifacts/handler.go:89-95 — name is NOT server-enforced: a body without it decodes to "" and the handler proceeds to create an empty-named bucket (:96), so per the wire-truth convention it is optional.
+type BucketCreateRequest struct {
+	Name *string `json:"name,omitempty"`
+}
+
+// BucketCreatedResponse NOTE(W2): internal/api/v2/artifacts/handler.go:101-105.
+type BucketCreatedResponse struct {
+	Id      string                       `json:"id"`
+	Message BucketCreatedResponseMessage `json:"message"`
+	Name    string                       `json:"name"`
+}
+
+// BucketCreatedResponseMessage defines model for BucketCreatedResponse.Message.
+type BucketCreatedResponseMessage string
+
+// BucketDeletedResponse NOTE(W2): internal/api/v2/artifacts/handler.go:164.
+type BucketDeletedResponse struct {
+	Message BucketDeletedResponseMessage `json:"message"`
+}
+
+// BucketDeletedResponseMessage defines model for BucketDeletedResponse.Message.
+type BucketDeletedResponseMessage string
+
+// BucketPinRequest NOTE(W2): typed decode, internal/api/v2/artifacts/handler.go:137-143 — presence is NOT server-enforced: an empty body {} is accepted and silently treated as is_pinned=false (unpin), so the field is optional per the wire-truth convention.
+type BucketPinRequest struct {
+	IsPinned *bool `json:"is_pinned,omitempty"`
+}
+
+// BucketUpdateRequest defines model for BucketUpdateRequest.
+type BucketUpdateRequest struct {
+	// Name New bucket name (rename).
+	Name                 *string                `json:"name,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// ChatConfig NOTE(W2): internal/api/v2/eliteacore/handler.go:301-338.
+type ChatConfig struct {
+	// DefaultModel First configured model title; "" when none.
+	DefaultModel string `json:"default_model"`
+	Models       []struct {
+		ConfigType string `json:"config_type"`
+		Name       string `json:"name"`
+	} `json:"models"`
+}
+
+// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+type ConversationStarters = []interface{}
+
+// DefaultIcon NOTE(W2): static list, internal/api/v2/eliteacore/handler.go:1786-1795.
+type DefaultIcon struct {
+	Name string `json:"name"`
+	Url  string `json:"url"`
+}
+
+// DocumentLoadersResponse NOTE(W2): static list, internal/api/v2/toolkits/handler.go:466-510.
+type DocumentLoadersResponse struct {
+	Items []struct {
+		Description         string   `json:"description"`
+		Name                string   `json:"name"`
+		SupportedExtensions []string `json:"supported_extensions"`
+		Type                string   `json:"type"`
+	} `json:"items"`
+	Total int `json:"total"`
+}
+
+// EntitySettingsUpdateResponse NOTE(W2): internal/api/v2/conversations/handler.go:624.
+type EntitySettingsUpdateResponse struct {
+	// EntitySettings Echo of the (possibly llm_settings-stripped) request body.
+	EntitySettings ParticipantSettingsRequest `json:"entity_settings"`
+}
+
+// ErrorResponse NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type ErrorResponse struct {
 	// Error Human-readable error message
-	Error string          `json:"error"`
-	Ok    ErrorResponseOk `json:"ok"`
+	Error string `json:"error"`
 }
 
-// ErrorResponseOk defines model for ErrorResponse.Ok.
-type ErrorResponseOk bool
+// ExportConverterRequest defines model for ExportConverterRequest.
+type ExportConverterRequest map[string]interface{}
 
-// GenericResponse Generic success response. Shape varies by endpoint; see individual endpoint descriptions. No envelope wrapper.
-type GenericResponse map[string]interface{}
+// ExportConverterResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:2726-2730 — the "converter" is currently an echo stub.
+type ExportConverterResponse struct {
+	Converted interface{} `json:"converted"`
+	Ok        bool        `json:"ok"`
+}
 
-// PaginatedResponse defines model for PaginatedResponse.
-type PaginatedResponse struct {
-	// Rows Items for the current page
-	Rows []Struct `json:"rows"`
+// ForkAgentResult NOTE(W2): internal/api/v2/eliteacore/handler.go:2459-2472 — version_details is required+nullable (always marshaled); only version_id is genuinely conditional (:2468-2470).
+type ForkAgentResult struct {
+	Description string `json:"description"`
+	Id          string `json:"id"`
+	Name        string `json:"name"`
 
-	// Total Total number of matching records across all pages
+	// OwnerId Target project id (quirk — not a user id).
+	OwnerId string `json:"owner_id"`
+
+	// VersionDetails Key ALWAYS present (null when no versions were created) — unconditionally set in the agentResult map (handler.go:2459-2467).
+	VersionDetails *ApplicationVersionDetail `json:"version_details"`
+	VersionId      *string                   `json:"version_id,omitempty"`
+	Versions       []struct {
+		ApplicationId string `json:"application_id"`
+		Id            string `json:"id"`
+		Name          string `json:"name"`
+		Status        string `json:"status"`
+	} `json:"versions"`
+
+	// WebhookSecret Always null today (handler.go:2465).
+	WebhookSecret interface{} `json:"webhook_secret"`
+}
+
+// ForkApplicationInput defines model for ForkApplicationInput.
+type ForkApplicationInput struct {
+	Description          *string                `json:"description,omitempty"`
+	Id                   *string                `json:"id,omitempty"`
+	Name                 *string                `json:"name,omitempty"`
+	OwnerId              *string                `json:"owner_id,omitempty"`
+	Versions             *[]ForkVersionInput    `json:"versions,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// ForkRequest NOTE(W2): internal/api/v2/eliteacore/handler.go:2254 — NOT required: a body without the key (or a non-array) decodes to nil, len==0, and takes the fast path returning 201 with the empty envelope (:2255-2260); the handler never enforces presence.
+type ForkRequest struct {
+	Applications *[]ForkApplicationInput `json:"applications,omitempty"`
+}
+
+// ForkResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:2475-2478 (normal) and :2256-2260 (fast-path variant with datasources/prompts keys). The fast path fires when `len(apps) == 0 || h.pool == nil` (:2255) — not only on empty input.
+type ForkResponse struct {
+	Errors struct {
+		Agents []struct {
+			Error string `json:"error"`
+			Name  string `json:"name"`
+		} `json:"agents"`
+		Datasources *[]map[string]interface{} `json:"datasources,omitempty"`
+		Prompts     *[]map[string]interface{} `json:"prompts,omitempty"`
+	} `json:"errors"`
+	Result struct {
+		Agents []ForkAgentResult `json:"agents"`
+
+		// Datasources Present (empty) only on the fast path (empty input OR nil pool, handler.go:2255).
+		Datasources *[]map[string]interface{} `json:"datasources,omitempty"`
+
+		// Prompts Present (empty) only on the fast path (empty input OR nil pool, handler.go:2255).
+		Prompts *[]map[string]interface{} `json:"prompts,omitempty"`
+	} `json:"result"`
+}
+
+// ForkVersionInput defines model for ForkVersionInput.
+type ForkVersionInput struct {
+	AgentType *string `json:"agent_type,omitempty"`
+
+	// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+	ConversationStarters *ConversationStarters  `json:"conversation_starters,omitempty"`
+	Instructions         *string                `json:"instructions,omitempty"`
+	LlmSettings          *LlmSettings           `json:"llm_settings,omitempty"`
+	Meta                 *VersionMeta           `json:"meta,omitempty"`
+	Name                 *string                `json:"name,omitempty"`
+	Tags                 *[]VersionTag          `json:"tags,omitempty"`
+	Variables            *[]VersionVariable     `json:"variables,omitempty"`
+	WelcomeMessage       *string                `json:"welcome_message,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// GroupsListResponse NOTE(W2): internal/api/v2/projects/handler.go:104-130.
+type GroupsListResponse struct {
+	Items []struct {
+		Id   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"items"`
 	Total int `json:"total"`
 }
 
-// RateLimitErrorDetail defines model for RateLimitErrorDetail.
-type RateLimitErrorDetail struct {
-	Code    RateLimitErrorDetailCode `json:"code"`
-	Message string                   `json:"message"`
-	Type    RateLimitErrorDetailType `json:"type"`
+// IconMetaRequest defines model for IconMetaRequest.
+type IconMetaRequest map[string]interface{}
+
+// IconUploadResponse NOTE(W2): UploadIcon, internal/api/v2/eliteacore/handler.go:1797-1837 (no-file fast path :1802-1805; success :1828-1836 with fixed 64x64).
+type IconUploadResponse struct {
+	// IconMeta Present only when a file was stored.
+	IconMeta *struct {
+		Height int    `json:"height"`
+		Url    string `json:"url"`
+		Width  int    `json:"width"`
+	} `json:"icon_meta,omitempty"`
+	Ok bool `json:"ok"`
+
+	// Url Empty string when no file field was supplied.
+	Url string `json:"url"`
 }
 
-// RateLimitErrorDetailCode defines model for RateLimitErrorDetail.Code.
-type RateLimitErrorDetailCode string
+// IgnoredRequestBody Request body accepted but ignored by the Go handler.
+type IgnoredRequestBody map[string]interface{}
 
-// RateLimitErrorDetailType defines model for RateLimitErrorDetail.Type.
-type RateLimitErrorDetailType string
+// ImportEntity defines model for ImportEntity.
+type ImportEntity struct {
+	Description *string `json:"description,omitempty"`
 
-// RateLimitErrorResponse defines model for RateLimitErrorResponse.
-type RateLimitErrorResponse struct {
-	Error RateLimitErrorDetail `json:"error"`
+	// Entity "toolkits" routes to toolkit import; anything else is an agent.
+	Entity               *string                 `json:"entity,omitempty"`
+	ImportUuid           *string                 `json:"import_uuid,omitempty"`
+	Name                 *string                 `json:"name,omitempty"`
+	Settings             *map[string]interface{} `json:"settings,omitempty"`
+	Type                 *string                 `json:"type,omitempty"`
+	Versions             *[]VersionWriteRequest  `json:"versions,omitempty"`
+	AdditionalProperties map[string]interface{}  `json:"-"`
 }
 
-// Role Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Role = Struct
+// ImportError NOTE(W2): all six emit sites include index — internal/api/v2/eliteacore/handler.go:1966, 1974, 1986, 2125-2129, 2152, 2218-2222.
+type ImportError struct {
+	// Index Position of the failed entity in the request array.
+	Index int    `json:"index"`
+	Msg   string `json:"msg"`
+	Name  string `json:"name"`
+}
 
-// Struct Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Struct map[string]interface{}
+// ImportWizardRequest NOTE(W2): the handler accepts a bare entity array (import_wizard) or a {"applications": [...]} envelope (internal/api/v2/eliteacore/handler.go:1887-1898).
+type ImportWizardRequest struct {
+	union json.RawMessage
+}
 
-// User Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type User = Struct
+// ImportWizardRequest0 defines model for .
+type ImportWizardRequest0 = []ImportEntity
+
+// ImportWizardRequest1 defines model for .
+type ImportWizardRequest1 struct {
+	Applications []ImportEntity `json:"applications"`
+}
+
+// ImportWizardResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:2238-2241 (the writeJSON of the {result, errors} envelope); empty-input fast path at :1900-1906 omits the toolkits keys. Status is 201 when all entities imported, 207 on partial failure, 400 when all failed (:2226-2237).
+type ImportWizardResponse struct {
+	Errors struct {
+		Agents   []ImportError  `json:"agents"`
+		Toolkits *[]ImportError `json:"toolkits,omitempty"`
+	} `json:"errors"`
+	Result struct {
+		Agents   []ImportedAgent    `json:"agents"`
+		Toolkits *[]ImportedToolkit `json:"toolkits,omitempty"`
+	} `json:"result"`
+}
+
+// ImportedAgent NOTE(W2): internal/api/v2/eliteacore/handler.go:2085-2093 — version_details unconditionally present (hence required+nullable).
+type ImportedAgent struct {
+	Description string `json:"description"`
+	Id          string `json:"id"`
+	Name        string `json:"name"`
+
+	// OwnerId Target project id (quirk — not a user id).
+	OwnerId string `json:"owner_id"`
+
+	// VersionDetails Key ALWAYS present in the marshaled map — null only when every version insert failed (versionDetails stays nil, :1997).
+	VersionDetails *ApplicationVersionDetail `json:"version_details"`
+	Versions       []struct {
+		ApplicationId string `json:"application_id"`
+		Id            string `json:"id"`
+		Name          string `json:"name"`
+		Status        string `json:"status"`
+	} `json:"versions"`
+}
+
+// ImportedToolkit NOTE(W2): internal/api/v2/eliteacore/handler.go:2148-2150.
+type ImportedToolkit struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// LlmSettings defines model for LlmSettings.
+type LlmSettings struct {
+	MaxTokens *int    `json:"max_tokens,omitempty"`
+	ModelName *string `json:"model_name,omitempty"`
+
+	// ModelProjectId Stored as string or number depending on writer; ExportImportGet normalizes float64 to a numeric string (internal/api/v2/eliteacore/handler.go:2590-2597).
+	ModelProjectId       *LlmSettings_ModelProjectId `json:"model_project_id,omitempty"`
+	Temperature          *float32                    `json:"temperature,omitempty"`
+	TopP                 *float32                    `json:"top_p,omitempty"`
+	AdditionalProperties map[string]interface{}      `json:"-"`
+}
+
+// LlmSettingsModelProjectId0 defines model for .
+type LlmSettingsModelProjectId0 = string
+
+// LlmSettingsModelProjectId1 defines model for .
+type LlmSettingsModelProjectId1 = int
+
+// LlmSettings_ModelProjectId Stored as string or number depending on writer; ExportImportGet normalizes float64 to a numeric string (internal/api/v2/eliteacore/handler.go:2590-2597).
+type LlmSettings_ModelProjectId struct {
+	union json.RawMessage
+}
+
+// ModelUsage NOTE(W2): internal/domain/analytics/types.go:14-20.
+type ModelUsage struct {
+	CompletionTokens int     `json:"completion_tokens"`
+	Model            string  `json:"model"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	RunCount         int     `json:"run_count"`
+	TotalCost        float32 `json:"total_cost"`
+}
+
+// ModerationStatusResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:1586-1588 — static stub; GET and POST return the same body and the POST body is ignored.
+type ModerationStatusResponse struct {
+	// Status Always "approved" in the current stub.
+	Status string `json:"status"`
+}
+
+// OkResponse NOTE(W2): `{"ok": true}` acknowledgements — SetDefaultVersion (internal/api/v2/applications/handler.go:981), BatchReplaceVersion (:994), UpdateAttachmentStorage (internal/api/v2/eliteacore/handler.go:1783), UpdateIcon (:1860), BatchUpdateEntitySettings (internal/api/v2/conversations/handler.go:675).
+type OkResponse struct {
+	Ok bool `json:"ok"`
+}
+
+// ParticipantSettingsRequest defines model for ParticipantSettingsRequest.
+type ParticipantSettingsRequest struct {
+	LlmSettings          *LlmSettings                          `json:"llm_settings,omitempty"`
+	VersionId            *ParticipantSettingsRequest_VersionId `json:"version_id,omitempty"`
+	AdditionalProperties map[string]interface{}                `json:"-"`
+}
+
+// ParticipantSettingsRequestVersionId0 defines model for .
+type ParticipantSettingsRequestVersionId0 = string
+
+// ParticipantSettingsRequestVersionId1 defines model for .
+type ParticipantSettingsRequestVersionId1 = int
+
+// ParticipantSettingsRequest_VersionId defines model for ParticipantSettingsRequest.VersionId.
+type ParticipantSettingsRequest_VersionId struct {
+	union json.RawMessage
+}
+
+// Permission NOTE(W2): defaultPermissions(), internal/api/v2/eliteacore/handler.go:3003-3018 — static list, enabled always true; empty array when the request carries no user identity.
+type Permission struct {
+	Enabled bool   `json:"enabled"`
+	Name    string `json:"name"`
+}
+
+// PipelineSettings defines model for PipelineSettings.
+type PipelineSettings map[string]interface{}
+
+// PipelineTrigger NOTE(W2): GetTrigger/UpdateTrigger response maps, internal/api/v2/pipelines/handler.go:122-127, 136-141, 153-158, 187-192, plus the nil-pool UpdateTrigger whole-body echo (:171-174 — version_id set, extra client keys pass through additionalProperties). Keys read from the settings.trigger jsonb are null when absent.
+type PipelineTrigger struct {
+	Enabled   *bool       `json:"enabled,omitempty"`
+	Schedule  interface{} `json:"schedule,omitempty"`
+	Type      *string     `json:"type,omitempty"`
+	VersionId string      `json:"version_id"`
+}
+
+// PipelineTriggerUpdateRequest defines model for PipelineTriggerUpdateRequest.
+type PipelineTriggerUpdateRequest struct {
+	Enabled              *bool                  `json:"enabled,omitempty"`
+	Schedule             interface{}            `json:"schedule,omitempty"`
+	Type                 *string                `json:"type,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// PlatformSettings NOTE(W2): defaults at eliteacore/handler.go:52-63 — the ten booleans are built unconditionally and the DB overlay (:74-76) can only add or override, never delete, so they are always present (hence required). On the sole documented route (project-less) the DB branch is skipped entirely and the response is exactly the ten booleans.
+type PlatformSettings struct {
+	ApplicationsEnabled  bool                   `json:"applications_enabled"`
+	ChatEnabled          bool                   `json:"chat_enabled"`
+	DatasourcesEnabled   bool                   `json:"datasources_enabled"`
+	McpEnabled           bool                   `json:"mcp_enabled"`
+	ModerationEnabled    bool                   `json:"moderation_enabled"`
+	PipelinesEnabled     bool                   `json:"pipelines_enabled"`
+	PublishingEnabled    bool                   `json:"publishing_enabled"`
+	SkillsEnabled        bool                   `json:"skills_enabled"`
+	SupportChatEnabled   bool                   `json:"support_chat_enabled"`
+	ToolkitsEnabled      bool                   `json:"toolkits_enabled"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// PredictChildMessage NOTE(W2) internal/domain/predict/types.go:38-42.
+type PredictChildMessage struct {
+	AgentId *string `json:"agent_id,omitempty"`
+	Content string  `json:"content"`
+	Role    string  `json:"role"`
+}
+
+// PredictRequest NOTE(W2): internal/domain/predict/types.go:5-13, decoded in internal/api/v2/predict/handler.go:41-49.
+type PredictRequest struct {
+	Input *string `json:"input,omitempty"`
+	Mode  *string `json:"mode,omitempty"`
+
+	// Stream When true the response is text/event-stream, not JSON.
+	Stream    *bool                   `json:"stream,omitempty"`
+	Variables *map[string]interface{} `json:"variables,omitempty"`
+}
+
+// PredictResponse NOTE(W2): internal/domain/predict/types.go:15-22, marshaled by internal/api/v2/predict/handler.go:56-61. With stream=true the endpoint switches to SSE (handler.go:51-53) and this JSON body is not produced.
+type PredictResponse struct {
+	ChildMessages   *[]PredictChildMessage `json:"child_messages,omitempty"`
+	Content         *string                `json:"content,omitempty"`
+	IsStreaming     bool                   `json:"is_streaming"`
+	MessageGroupUid string                 `json:"message_group_uid"`
+	ToolCalls       *[]PredictToolCall     `json:"tool_calls,omitempty"`
+
+	// Usage NOTE(W2) internal/domain/predict/types.go:24-28.
+	Usage *PredictUsage `json:"usage,omitempty"`
+}
+
+// PredictToolCall NOTE(W2) internal/domain/predict/types.go:30-37.
+type PredictToolCall struct {
+	DurationMs *int    `json:"duration_ms,omitempty"`
+	Id         string  `json:"id"`
+	Input      string  `json:"input"`
+	Name       string  `json:"name"`
+	Output     *string `json:"output,omitempty"`
+	Status     string  `json:"status"`
+}
+
+// PredictUsage NOTE(W2) internal/domain/predict/types.go:24-28.
+type PredictUsage struct {
+	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens     int `json:"prompt_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// Project NOTE(W2): internal/api/v2/projects/handler.go:33-40 (json tags; description/role omitempty) and :84-99.
+type Project struct {
+	Description *string       `json:"description,omitempty"`
+	Id          int           `json:"id"`
+	Name        string        `json:"name"`
+	Role        *string       `json:"role,omitempty"`
+	Status      ProjectStatus `json:"status"`
+	Suspended   bool          `json:"suspended"`
+}
+
+// ProjectStatus defines model for Project.Status.
+type ProjectStatus string
+
+// ProjectAnalytics NOTE(W2): Usage response map, internal/api/v2/analytics/handler.go:47-63.
+type ProjectAnalytics struct {
+	DailyActivity []map[string]interface{} `json:"daily_activity"`
+
+	// Kpis NOTE(W2): internal/api/v2/analytics/handler.go:48-59 (usage, includes total_tokens/total_cost) and :78-82, 103-107, 128-132 (detail views, 8-key variant). Most values are hardwired 0 today.
+	Kpis       AnalyticsKpis            `json:"kpis"`
+	Models     []ModelUsage             `json:"models"`
+	TopAiUsers []map[string]interface{} `json:"top_ai_users"`
+}
+
+// ProjectContext NOTE(W2): internal/api/v2/eliteacore/handler.go:110-134 — keys always present; "" / false when no configuration row exists, null possible when the stored jsonb lacks the key (:130-133). Update echoes the typed request back (:164), so nulls never appear after a write — EXCEPT the test-only nil-pool branch of updateProjectContext (:143-146), which returns {"ok": true} instead; unreachable in production (main.go exits when the pool cannot be built, and router.go:236 always passes cfg.Pool).
+type ProjectContext struct {
+	Content *string `json:"content"`
+	Enabled *bool   `json:"enabled"`
+}
+
+// ProjectContextUpdateRequest NOTE(W2): typed decode, internal/api/v2/eliteacore/handler.go:137-141.
+type ProjectContextUpdateRequest struct {
+	Content *string `json:"content,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
+}
+
+// ProjectGroupsUpdate NOTE(W2): request AND response of putProjectGroups — the handler echoes the parsed body verbatim (projects/handler.go:180).
+type ProjectGroupsUpdate struct {
+	Groups               *[]string              `json:"groups,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// PublicApplicationDetail NOTE(W2): publicApplicationDetail response, internal/api/v2/eliteacore/handler.go:1477-1483.
+type PublicApplicationDetail struct {
+	Description string `json:"description"`
+	Id          string `json:"id"`
+	Name        string `json:"name"`
+
+	// VersionDetails NOTE(W2): union of the version-detail maps the handlers emit. Field presence varies by endpoint (hence the minimal required set): fetchVersionDetails always adds created_at/agent_type/instructions/ welcome_message/llm_settings/meta/conversation_starters/ pipeline_settings/author_id/tools/tags/variables (internal/api/v2/applications/handler.go:325-342); CreateVersion adds author + is_forked but no pipeline_settings (:783-801); UpdateVersion emits the 10-key subset without created_at/author/tools (:913-919); Fork adds is_forked and omits pipeline_settings (eliteacore/handler.go:2440-2456, is_forked at :2452); the import detail map (:2070-2082) has NO is_forked and also omits meta/variables/tags/created_at; publicApplicationDetail omits variables, created_at, author and is_forked (:1460-1475). Empty-vs-missing: instructions and welcome_message are always present as "" when the DB column is NULL (COALESCE / pointer deref to "" — applications/handler.go:222-229).
+	VersionDetails ApplicationVersionDetail `json:"version_details"`
+}
+
+// PublicApplicationList NOTE(W2): internal/api/v2/eliteacore/handler.go:1316.
+type PublicApplicationList struct {
+	Rows  []PublicApplicationSummary `json:"rows"`
+	Total int                        `json:"total"`
+}
+
+// PublicApplicationSummary NOTE(W2): internal/api/v2/eliteacore/handler.go:1303-1312.
+type PublicApplicationSummary struct {
+	AgentType   string       `json:"agent_type"`
+	Description string       `json:"description"`
+	Id          string       `json:"id"`
+	Meta        *VersionMeta `json:"meta"`
+	Name        string       `json:"name"`
+
+	// ProjectId Always the public project id.
+	ProjectId   string `json:"project_id"`
+	VersionId   string `json:"version_id"`
+	VersionName string `json:"version_name"`
+}
+
+// PublishBadRequestResponse NOTE(W2): union of the 400 bodies written by Publish (internal/api/v2/eliteacore/handler.go:452, 456-461, 467-473, 486, 547, 585) and PublishValidate (1197, 1203-1218).
+type PublishBadRequestResponse struct {
+	// Error Either a plain message (e.g. "llm_not_shared", "pipeline_not_publishable") or a pydantic-style field error list.
+	Error PublishBadRequestResponse_Error `json:"error"`
+
+	// Msg Present only alongside error="pipeline_not_publishable".
+	Msg *string `json:"msg,omitempty"`
+}
+
+// PublishBadRequestResponseError0 defines model for .
+type PublishBadRequestResponseError0 = string
+
+// PublishBadRequestResponseError1 defines model for .
+type PublishBadRequestResponseError1 = []ValidationFieldError
+
+// PublishBadRequestResponse_Error Either a plain message (e.g. "llm_not_shared", "pipeline_not_publishable") or a pydantic-style field error list.
+type PublishBadRequestResponse_Error struct {
+	union json.RawMessage
+}
+
+// PublishRequest NOTE(W2): internal/api/v2/eliteacore/handler.go:446-450; category whitelist at :512-516.
+type PublishRequest struct {
+	Category *PublishRequestCategory `json:"category,omitempty"`
+
+	// ValidationToken Hex token from validateForPublish; when present, inline validation is skipped (handler.go:554-588).
+	ValidationToken *string `json:"validation_token,omitempty"`
+	VersionName     string  `json:"version_name"`
+}
+
+// PublishRequestCategory defines model for PublishRequest.Category.
+type PublishRequestCategory string
+
+// PublishSuccessResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:633-638.
+type PublishSuccessResponse struct {
+	PublicAgentId   string `json:"public_agent_id"`
+	PublicVersionId string `json:"public_version_id"`
+
+	// SourceVersionId NOTE(W2) quirk preserved bug-for-bug — set to the CLONE id, not the source (handler.go:637).
+	SourceVersionId string `json:"source_version_id"`
+	VersionName     string `json:"version_name"`
+}
+
+// PublishValidationFailedResponse NOTE(W2): 422 envelope written by Publish (internal/api/v2/eliteacore/handler.go:500-509, 518-527, 566-570, 610-618).
+type PublishValidationFailedResponse struct {
+	Error PublishValidationFailedResponseError `json:"error"`
+
+	// ValidationResult NOTE(W2): built by runPublishValidation (internal/api/v2/eliteacore/handler.go:1155-1182). validateForPublish's own 200/422 always carries status..validation_token; the publishApplication 422 short-circuits carry only `issues`. No field is therefore marked required.
+	ValidationResult PublishValidationResult `json:"validation_result"`
+}
+
+// PublishValidationFailedResponseError defines model for PublishValidationFailedResponse.Error.
+type PublishValidationFailedResponseError string
+
+// PublishValidationResult NOTE(W2): built by runPublishValidation (internal/api/v2/eliteacore/handler.go:1155-1182). validateForPublish's own 200/422 always carries status..validation_token; the publishApplication 422 short-circuits carry only `issues`. No field is therefore marked required.
+type PublishValidationResult struct {
+	AiValidationAvailable *bool `json:"ai_validation_available,omitempty"`
+	Counts                *struct {
+		Critical    *int `json:"critical,omitempty"`
+		Suggestions *int `json:"suggestions,omitempty"`
+		Warnings    *int `json:"warnings,omitempty"`
+	} `json:"counts,omitempty"`
+	CriticalIssues *[]ValidationIssue `json:"critical_issues,omitempty"`
+
+	// Issues Present only in publishApplication's 422 body (handler.go:556-565) and in the deterministic short-circuit 422s (500-509, 518-527, 610-618), where it may be the ONLY key.
+	Issues          *[]ValidationIssue             `json:"issues,omitempty"`
+	Recommendations *[]ValidationIssue             `json:"recommendations,omitempty"`
+	Status          *PublishValidationResultStatus `json:"status,omitempty"`
+	Summary         *string                        `json:"summary,omitempty"`
+
+	// ValidationToken Hex token generated for non-FAIL results; null on FAIL (handler.go:1164-1169). Pass it to publishApplication to skip re-validation.
+	ValidationToken *string            `json:"validation_token,omitempty"`
+	Warnings        *[]ValidationIssue `json:"warnings,omitempty"`
+}
+
+// PublishValidationResultStatus defines model for PublishValidationResult.Status.
+type PublishValidationResultStatus string
+
+// RecommendationsResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:1729-1734. The limit/days query params are accepted but not read by the handler.
+type RecommendationsResponse struct {
+	Applications []struct {
+		Description string `json:"description"`
+		Id          string `json:"id"`
+		Likes       int    `json:"likes"`
+		Name        string `json:"name"`
+	} `json:"applications"`
+	Total int `json:"total"`
+}
+
+// Role NOTE(W2): internal/api/v2/eliteacore/handler.go:283, with global defaults admin/editor/viewer when the project has no roles (:289-295).
+type Role struct {
+	// Id Numeric id serialized as string.
+	Id   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// S3BucketListResponse NOTE(W2): ?format=json branch of S3Handler.ListBuckets, internal/api/v2/artifacts/s3handler.go:40-47. Without format=json the endpoint returns XML (ListAllMyBucketsResult, :49-55). Casing of DisplayName/ID is the wire truth.
+type S3BucketListResponse struct {
+	Buckets []struct {
+		CreationDate time.Time `json:"creation_date"`
+		Name         string    `json:"name"`
+	} `json:"buckets"`
+	Owner struct {
+		// DisplayName Always "elitea".
+		DisplayName string `json:"DisplayName"`
+
+		// ID The requesting project id.
+		ID string `json:"ID"`
+	} `json:"owner"`
+}
+
+// S3ObjectListResponse NOTE(W2): ?format=json branch of S3Handler.ListObjects, internal/api/v2/artifacts/s3handler.go:76-82; XML otherwise (:85-91).
+type S3ObjectListResponse struct {
+	Contents []struct {
+		Key string `json:"key"`
+
+		// LastModified camelCase on the wire (s3handler.go:71).
+		LastModified time.Time `json:"lastModified"`
+		Size         int64     `json:"size"`
+	} `json:"contents"`
+
+	// Name The bucket name.
+	Name string `json:"name"`
+}
+
+// SearchOptions NOTE(W2): internal/api/v2/eliteacore/handler.go:167-188.
+type SearchOptions struct {
+	// Collections Always empty today (handler.go:187).
+	Collections []map[string]interface{} `json:"collections"`
+	Tags        []string                 `json:"tags"`
+}
+
+// SelectedTools Opaque selected-tools blob (object or null) — see marker.
+type SelectedTools = interface{}
+
+// SetDefaultVersionRequest NOTE(W2): decode struct at internal/api/v2/applications/handler.go:965-970 — the body is optional (decode errors are ignored) and exists for old-SPA compatibility; router.go:343 registers only the 3-segment route.
+type SetDefaultVersionRequest struct {
+	// VersionId When present and non-empty, this OVERRIDES the path segment; the path {version_id} is only the fallback (internal/api/v2/applications/handler.go:963-970). A numeric value fails the string decode and silently falls back to the path.
+	VersionId *string `json:"version_id,omitempty"`
+}
+
+// Skill NOTE(W2): internal/api/v2/skills/handler.go:15-25 (json tags; description/config omitempty). Degenerate constants with the wired Pg repository (repos/skills.go:42-53, 79-92, 102-112, 122-135; DDL migrations/001_initial.sql:128-136 — no updated_at/is_default columns): `config` is never populated in responses, `is_default` is always false, `type` is always the literal "skill", and `updated_at` is always the zero sentinel "0001-01-01T00:00:00Z". Wire shape still matches this schema; typed clients should not rely on those fields carrying data yet.
+type Skill struct {
+	Config      *map[string]interface{} `json:"config,omitempty"`
+	CreatedAt   time.Time               `json:"created_at"`
+	Description *string                 `json:"description,omitempty"`
+	Id          string                  `json:"id"`
+	IsDefault   bool                    `json:"is_default"`
+	Name        string                  `json:"name"`
+	ProjectId   string                  `json:"project_id"`
+	Type        string                  `json:"type"`
+	UpdatedAt   time.Time               `json:"updated_at"`
+}
+
+// SkillCreateRequest NOTE(W2): decoded into the Skill struct (internal/api/v2/skills/handler.go:95-99), but the wired Pg repository persists ONLY name and description (repos/skills.go: 97-105, wired via internal/api/router.go:351 cfg.SkillsRepo); type/config/is_default are silently discarded, and the response Type is hardcoded "skill" (:110-112).
+type SkillCreateRequest struct {
+	Config      *map[string]interface{} `json:"config,omitempty"`
+	Description *string                 `json:"description,omitempty"`
+
+	// IsDefault Accepted but NOT persisted (repos/skills.go:97-112).
+	IsDefault *bool   `json:"is_default,omitempty"`
+	Name      *string `json:"name,omitempty"`
+
+	// Type Accepted but NOT persisted (repos/skills.go:97-112).
+	Type *string `json:"type,omitempty"`
+}
+
+// SkillsList NOTE(W2): internal/api/v2/skills/handler.go:27-33, returned whole by List (:72-77). Pagination comes from ?page/?page_size (:63-70) — the limit/offset params are accepted for old-SPA parity but not read.
+type SkillsList struct {
+	Items      []Skill `json:"items"`
+	Page       int     `json:"page"`
+	PageSize   int     `json:"page_size"`
+	Total      int     `json:"total"`
+	TotalPages int     `json:"total_pages"`
+}
+
+// SupportAssistantConfig NOTE(W2): static stub, internal/api/v2/eliteacore/handler.go:2944-2946.
+type SupportAssistantConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// Tag NOTE(W2): internal/api/v2/tags/handler.go:13-17.
+type Tag struct {
+	Data interface{} `json:"data"`
+	Id   int         `json:"id"`
+	Name string      `json:"name"`
+}
+
+// TagsList NOTE(W2): internal/api/v2/tags/handler.go:48.
+type TagsList struct {
+	Rows  []Tag `json:"rows"`
+	Total int   `json:"total"`
+}
+
+// ToolAnalytics NOTE(W2) internal/domain/analytics/types.go:31-37.
+type ToolAnalytics struct {
+	AvgDurationMs float32 `json:"avg_duration_ms"`
+	ErrorRate     float32 `json:"error_rate"`
+	RunCount      int     `json:"run_count"`
+	ToolName      string  `json:"tool_name"`
+	ToolkitId     string  `json:"toolkit_id"`
+}
+
+// ToolSettings Opaque tool/toolkit settings blob — see marker.
+type ToolSettings = interface{}
+
+// ToolkitExport NOTE(W2): internal/api/v2/eliteacore/handler.go:2544-2547.
+type ToolkitExport struct {
+	Id         int                    `json:"id"`
+	ImportUuid string                 `json:"import_uuid"`
+	Name       string                 `json:"name"`
+	Settings   map[string]interface{} `json:"settings"`
+	Type       string                 `json:"type"`
+}
+
+// ToolkitTypeSchemas NOTE(W2): toolkit-type → settings-JSON-Schema map (pylon_indexer /toolkits/ parity).
+type ToolkitTypeSchemas map[string]map[string]interface{}
+
+// TrendingAuthor Trending-author element — never emitted today (stub).
+type TrendingAuthor = map[string]interface{}
+
+// UnpublishRequest NOTE(W2): internal/api/v2/eliteacore/handler.go:799-802 (optional, decode errors ignored).
+type UnpublishRequest struct {
+	Reason *string `json:"reason,omitempty"`
+}
+
+// UnpublishResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:859.
+type UnpublishResponse struct {
+	Status UnpublishResponseStatus `json:"status"`
+}
+
+// UnpublishResponseStatus defines model for UnpublishResponse.Status.
+type UnpublishResponseStatus string
+
+// UploadedIconsList NOTE(W2): stub — see rows marker.
+type UploadedIconsList struct {
+	Rows  []map[string]interface{} `json:"rows"`
+	Total int                      `json:"total"`
+}
+
+// UserActivity NOTE(W2) internal/domain/analytics/types.go:39-44.
+type UserActivity struct {
+	Email        string    `json:"email"`
+	LastActiveAt time.Time `json:"last_active_at"`
+	RunCount     int       `json:"run_count"`
+	UserId       string    `json:"user_id"`
+}
+
+// UserListResponse NOTE(W2): Users response map, internal/api/v2/eliteacore/handler.go:263. The router registers GET/POST/PUT/DELETE on /admin/users/{mode}/{projectID} all onto this same handler (internal/api/router.go:282-285), which ignores the method and any request body — create/update/delete are therefore list-echo no-ops on the Go router today (bug-for-bug parity, §7.1).
+type UserListResponse struct {
+	Rows  []UserRecord `json:"rows"`
+	Total int          `json:"total"`
+}
+
+// UserRecord NOTE(W2): internal/api/v2/eliteacore/handler.go:256-258.
+type UserRecord struct {
+	Email string `json:"email"`
+
+	// Id Numeric id serialized as string (fmt.Sprintf("%d")).
+	Id    string   `json:"id"`
+	Name  string   `json:"name"`
+	Roles []string `json:"roles"`
+}
+
+// ValidateForPublishRequest NOTE(W2): internal/api/v2/eliteacore/handler.go:1192-1195.
+type ValidateForPublishRequest struct {
+	Category    *string `json:"category,omitempty"`
+	VersionName string  `json:"version_name"`
+}
+
+// ValidationFieldError NOTE(W2): pydantic-parity field error emitted by Publish/PublishValidate for a missing or malformed version_name (internal/api/v2/eliteacore/handler.go:455-474, 1202-1219).
+type ValidationFieldError struct {
+	// Loc Field path, e.g. ["body", "version_name"]
+	Loc []string `json:"loc"`
+	Msg string   `json:"msg"`
+
+	// Type pydantic-style error code, e.g. value_error.missing
+	Type string `json:"type"`
+}
+
+// ValidationIssue NOTE(W2): issue maps assembled in runPublishValidation (internal/api/v2/eliteacore/handler.go:876, 885, 891, 981-1005 cycle/ depth FAILs with fix + explicit-null context, 1043 recommendations with suggestion, 1107-1121, 1146-1151) and re-shaped in Publish's 422 path (556-565: {rule, message}). Key set varies per rule; all keys optional by construction.
+type ValidationIssue struct {
+	// Context Emitted as explicit JSON null in the cycle/depth FAIL issues (handler.go:985, 1003).
+	Context *string `json:"context,omitempty"`
+	Field   *string `json:"field,omitempty"`
+
+	// Fix Remediation text carried by the cycle/depth FAIL critical issues (handler.go:986, 1004).
+	Fix     *string `json:"fix,omitempty"`
+	Issue   *string `json:"issue,omitempty"`
+	Message *string `json:"message,omitempty"`
+	Rule    *string `json:"rule,omitempty"`
+	Source  *string `json:"source,omitempty"`
+
+	// Suggestion The ONLY human-readable text on recommendation issues — they have no issue/message key (handler.go:1043).
+	Suggestion *string `json:"suggestion,omitempty"`
+}
+
+// VersionMeta defines model for VersionMeta.
+type VersionMeta struct {
+	// AttachmentStorage Written by UpdateAttachmentStorage as {"toolkit_id": "..."} (eliteacore/handler.go:1777-1781).
+	AttachmentStorage *struct {
+		ToolkitId *string `json:"toolkit_id,omitempty"`
+	} `json:"attachment_storage,omitempty"`
+	Category        *string                 `json:"category,omitempty"`
+	IconMeta        *map[string]interface{} `json:"icon_meta,omitempty"`
+	ParentAuthorId  *string                 `json:"parent_author_id,omitempty"`
+	ParentEntityId  *string                 `json:"parent_entity_id,omitempty"`
+	ParentProjectId *string                 `json:"parent_project_id,omitempty"`
+	SourceVersionId *string                 `json:"source_version_id,omitempty"`
+	StepLimit       *int                    `json:"step_limit,omitempty"`
+
+	// Variables Written into meta on create when the request carries variables (applications/handler.go:430, 747-752).
+	Variables            *[]VersionVariable     `json:"variables,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// VersionTag NOTE(W2): tag entries emitted by ExportImportGet (eliteacore/handler.go:2650-2655 — name always a scanned string there) and Fork's response echo (:2431-2438), which builds entries from unvalidated client maps: a fork payload tag without a name yields {"name": null, ...}. Hence name is nullable and not required.
+type VersionTag struct {
+	Data interface{} `json:"data,omitempty"`
+	Name *string     `json:"name,omitempty"`
+}
+
+// VersionToolRef NOTE(W2): two row shapes merged into one `tools` array — entity_tool_mapping rows carry id/tool_id/entity_type/selected_tools, plus the joined elitea_tools payload under `config` in fetchVersionDetails (applications/handler.go:256-271) but under `settings` in GetVersionExpanded (:1101-1114) and publicApplicationDetail (eliteacore/handler.go:1411-1425); application_tools rows carry id/name/type/settings plus author_id in fetchVersionDetails (:295-301), author_id+project_id in GetVersionExpanded (:1140-1147), and project_id WITHOUT author_id in publicApplicationDetail (:1445-1451). Only `id` is common to all.
+type VersionToolRef struct {
+	AuthorId *string `json:"author_id,omitempty"`
+
+	// Config Opaque tool/toolkit settings blob — see marker.
+	Config     *ToolSettings `json:"config,omitempty"`
+	EntityType *string       `json:"entity_type,omitempty"`
+
+	// Id entity_tool_mapping.id or application_tools.id
+	Id        int     `json:"id"`
+	Name      *string `json:"name,omitempty"`
+	ProjectId *int    `json:"project_id,omitempty"`
+
+	// SelectedTools Opaque selected-tools blob (object or null) — see marker.
+	SelectedTools *SelectedTools `json:"selected_tools,omitempty"`
+
+	// Settings Opaque tool/toolkit settings blob — see marker.
+	Settings *ToolSettings `json:"settings,omitempty"`
+	ToolId   *int          `json:"tool_id,omitempty"`
+	Type     *string       `json:"type,omitempty"`
+}
+
+// VersionValidatorResponse NOTE(W2): internal/api/v2/eliteacore/handler.go:1239-1249.
+type VersionValidatorResponse struct {
+	Valid bool `json:"valid"`
+}
+
+// VersionVariable NOTE(W2): DB-backed paths always emit both keys as strings (applications/handler.go:318-321; eliteacore ExportImportGet :2629). The echo paths do NOT guarantee that: CreateVersion returns the client's raw variables array verbatim (applications/handler.go: 772-778, 797 — keys may be absent entirely) and Fork rebuilds entries from unvalidated client maps (eliteacore/handler.go:2421-2428 — "name"/"value" marshal as null when missing). Hence no required list and nullable on both.
+type VersionVariable struct {
+	Name  *string `json:"name,omitempty"`
+	Value *string `json:"value,omitempty"`
+}
+
+// VersionWriteRequest defines model for VersionWriteRequest.
+type VersionWriteRequest struct {
+	// AgentType Defaults to "openai" when empty (handler.go:398-400, 731-733).
+	AgentType *string `json:"agent_type,omitempty"`
+
+	// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+	ConversationStarters *ConversationStarters  `json:"conversation_starters,omitempty"`
+	Instructions         *string                `json:"instructions,omitempty"`
+	LlmSettings          *LlmSettings           `json:"llm_settings,omitempty"`
+	Meta                 *VersionMeta           `json:"meta,omitempty"`
+	Name                 *string                `json:"name,omitempty"`
+	Variables            *[]VersionVariable     `json:"variables,omitempty"`
+	WelcomeMessage       *string                `json:"welcome_message,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
 
 // DateFrom defines model for DateFrom.
 type DateFrom = openapi_types.Date
@@ -258,41 +1604,23 @@ type SortBy = string
 // SortOrder defines model for SortOrder.
 type SortOrder string
 
-// N400 defines model for 400.
+// N400 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N400 = ErrorResponse
 
-// N401 defines model for 401.
+// N401 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N401 = ErrorResponse
 
-// N403 defines model for 403.
+// N403 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N403 = ErrorResponse
 
-// N404 defines model for 404.
+// N404 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N404 = ErrorResponse
 
-// N409 defines model for 409.
+// N409 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N409 = ErrorResponse
 
-// N429 defines model for 429.
-type N429 = RateLimitErrorResponse
-
-// N500 defines model for 500.
+// N500 NOTE(W2): wire truth from pkg/apierr/apierr.go:47-59 (apierr.Write encodes `{"error": message}`) and the handlers' inline `map[string]any{"error": ...}` writes. No operation documented in this spec emits the pylon `ok` field; ten sites on UNDOCUMENTED paths still write `{"ok": false, "error": ...}` (social/handler.go:268, 301, 321, 341, 419; toolkits/handler.go:286, 312, 324, 350, 362).
 type N500 = ErrorResponse
-
-// AdminPaginated200 defines model for AdminPaginated200.
-type AdminPaginated200 = AdminPaginatedResponse
-
-// Array200 Unpagianted array result
-type Array200 = ArrayResponse
-
-// Generic200 Generic success response. Shape varies by endpoint; see individual endpoint descriptions. No envelope wrapper.
-type Generic200 = GenericResponse
-
-// Object200 Arbitrary JSON object. Used for request/response bodies that are not yet strongly typed (mirrors google.protobuf.Struct semantics).
-type Object200 = Struct
-
-// Paginated200 defines model for Paginated200.
-type Paginated200 = PaginatedResponse
 
 // RoleListParams defines parameters for RoleList.
 type RoleListParams struct {
@@ -305,8 +1633,8 @@ type RoleListParams struct {
 
 // UserDeleteParams defines parameters for UserDelete.
 type UserDeleteParams struct {
-	// Id ID of the user to delete
-	Id int `form:"id" json:"id"`
+	// Id IDs of the users to delete. The old SPA sends ONE occurrence with the ids comma-joined — `?id[]=1,2,3` (apps/elitea-ui/src/api/admin.js:120), hence explode:false. Ignored by the Go handler either way (router.go:285 → eliteacore/handler.go:190-263 never reads the query).
+	Id *[]int `form:"id[],omitempty" json:"id[],omitempty"`
 }
 
 // UserListParams defines parameters for UserList.
@@ -320,22 +1648,29 @@ type UserListParams struct {
 
 // DeleteArtifactParams defines parameters for DeleteArtifact.
 type DeleteArtifactParams struct {
-	IntegrationId *int   `form:"integration_id,omitempty" json:"integration_id,omitempty"`
-	IsLocal       *bool  `form:"is_local,omitempty" json:"is_local,omitempty"`
-	Filename      string `form:"filename" json:"filename"`
+	// IntegrationId Old-SPA parameter; accepted but not read.
+	IntegrationId *int `form:"integration_id,omitempty" json:"integration_id,omitempty"`
+
+	// IsLocal Old-SPA parameter; accepted but not read.
+	IsLocal  *bool  `form:"is_local,omitempty" json:"is_local,omitempty"`
+	Filename string `form:"filename" json:"filename"`
 }
 
 // DeleteArtifactsParams defines parameters for DeleteArtifacts.
 type DeleteArtifactsParams struct {
-	// Fnames List of filenames to delete
-	Fnames *[]string `form:"fnames,omitempty" json:"fnames,omitempty"`
+	// Fname Filenames to delete (repeated fname[]= keys).
+	Fname []string `form:"fname[]" json:"fname[]"`
 }
 
 // CreateArtifactMultipartBody defines parameters for CreateArtifact.
 type CreateArtifactMultipartBody struct {
-	File                 *openapi_types.File `json:"file,omitempty"`
-	Filename             *string             `json:"filename,omitempty"`
-	OverwriteAttachments *bool               `json:"overwrite_attachments,omitempty"`
+	File openapi_types.File `json:"file"`
+
+	// Filename Old-SPA field; accepted but not read.
+	Filename *string `json:"filename,omitempty"`
+
+	// OverwriteAttachments Old-SPA field; accepted but not read.
+	OverwriteAttachments *bool `json:"overwrite_attachments,omitempty"`
 }
 
 // DeleteBucketParams defines parameters for DeleteBucket.
@@ -349,16 +1684,38 @@ type UpdateBucketPinParams struct {
 	Name string `form:"name" json:"name"`
 }
 
+// EditBucketParams defines parameters for EditBucket.
+type EditBucketParams struct {
+	// Name Name of the bucket to update.
+	Name string `form:"name" json:"name"`
+}
+
 // BucketListParams defines parameters for BucketList.
 type BucketListParams struct {
-	ProjectId int     `form:"project_id" json:"project_id"`
-	Format    *string `form:"format,omitempty" json:"format,omitempty"`
+	ProjectId int `form:"project_id" json:"project_id"`
+
+	// Format format=json selects the JSON shape; omit for XML.
+	Format *BucketListParamsFormat `form:"format,omitempty" json:"format,omitempty"`
 }
+
+// BucketListParamsFormat defines parameters for BucketList.
+type BucketListParamsFormat string
 
 // ArtifactListParams defines parameters for ArtifactList.
 type ArtifactListParams struct {
-	ProjectId int     `form:"project_id" json:"project_id"`
-	Format    *string `form:"format,omitempty" json:"format,omitempty"`
+	ProjectId int `form:"project_id" json:"project_id"`
+
+	// Format format=json selects the JSON shape; omit for XML.
+	Format *ArtifactListParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// ArtifactListParamsFormat defines parameters for ArtifactList.
+type ArtifactListParamsFormat string
+
+// GetBrandingBootstrapParams defines parameters for GetBrandingBootstrap.
+type GetBrandingBootstrapParams struct {
+	// V Content version token — the current ETag value without quotes. Matching requests are cached as immutable; mismatches are redirected to the current version.
+	V *string `form:"v,omitempty" json:"v,omitempty"`
 }
 
 // GetProjectAnalyticsParams defines parameters for GetProjectAnalytics.
@@ -372,14 +1729,25 @@ type GetProjectAnalyticsParams struct {
 
 // GetAnalyticsAgentDetailParams defines parameters for GetAnalyticsAgentDetail.
 type GetAnalyticsAgentDetailParams struct {
-	EntityIdString *string `form:"entity_id_string,omitempty" json:"entity_id_string,omitempty"`
-	EntityIdInt    *int    `form:"entity_id_int,omitempty" json:"entity_id_int,omitempty"`
+	// ApplicationId Dispatch parameter read by the handler (handler.go:75).
+	ApplicationId *string `form:"application_id,omitempty" json:"application_id,omitempty"`
+
+	// AgentId Dispatch parameter read by the handler (handler.go:75).
+	AgentId *string `form:"agent_id,omitempty" json:"agent_id,omitempty"`
+
+	// EntityId What the old SPA actually sends (analyticsApi.js:134) — accepted but NOT read by the handler, so it does not select the detail envelope.
+	EntityId *string `form:"entity_id,omitempty" json:"entity_id,omitempty"`
 
 	// DateFrom Start of date range (inclusive)
 	DateFrom *DateFrom `form:"date_from,omitempty" json:"date_from,omitempty"`
 
 	// DateTo End of date range (inclusive)
 	DateTo *DateTo `form:"date_to,omitempty" json:"date_to,omitempty"`
+}
+
+// GetAnalyticsAgentDetail200JSONResponseBody defines parameters for GetAnalyticsAgentDetail.
+type GetAnalyticsAgentDetail200JSONResponseBody struct {
+	union json.RawMessage
 }
 
 // ListAnalyticsAgentsParams defines parameters for ListAnalyticsAgents.
@@ -411,6 +1779,13 @@ type ListAnalyticsAgentsParamsSortOrder string
 
 // GetAnalyticsToolDetailParams defines parameters for GetAnalyticsToolDetail.
 type GetAnalyticsToolDetailParams struct {
+	// ToolId Dispatch parameter read by the handler.
+	ToolId *string `form:"tool_id,omitempty" json:"tool_id,omitempty"`
+
+	// ToolkitId Dispatch parameter read by the handler.
+	ToolkitId *string `form:"toolkit_id,omitempty" json:"toolkit_id,omitempty"`
+
+	// ToolName Old-SPA parameter; accepted but not read.
 	ToolName *string `form:"tool_name,omitempty" json:"tool_name,omitempty"`
 
 	// DateFrom Start of date range (inclusive)
@@ -418,6 +1793,11 @@ type GetAnalyticsToolDetailParams struct {
 
 	// DateTo End of date range (inclusive)
 	DateTo *DateTo `form:"date_to,omitempty" json:"date_to,omitempty"`
+}
+
+// GetAnalyticsToolDetail200JSONResponseBody defines parameters for GetAnalyticsToolDetail.
+type GetAnalyticsToolDetail200JSONResponseBody struct {
+	union json.RawMessage
 }
 
 // ListAnalyticsToolsParams defines parameters for ListAnalyticsTools.
@@ -449,14 +1829,19 @@ type ListAnalyticsToolsParamsSortOrder string
 
 // GetAnalyticsUserDetailParams defines parameters for GetAnalyticsUserDetail.
 type GetAnalyticsUserDetailParams struct {
-	UserIdString *string `form:"user_id_string,omitempty" json:"user_id_string,omitempty"`
-	UserIdInt    *int    `form:"user_id_int,omitempty" json:"user_id_int,omitempty"`
+	// UserId Dispatch parameter — read by the handler (analytics/handler.go:125) and sent by the old SPA (analyticsApi.js:56). Absent it, the response is the list shape.
+	UserId *string `form:"user_id,omitempty" json:"user_id,omitempty"`
 
 	// DateFrom Start of date range (inclusive)
 	DateFrom *DateFrom `form:"date_from,omitempty" json:"date_from,omitempty"`
 
 	// DateTo End of date range (inclusive)
 	DateTo *DateTo `form:"date_to,omitempty" json:"date_to,omitempty"`
+}
+
+// GetAnalyticsUserDetail200JSONResponseBody defines parameters for GetAnalyticsUserDetail.
+type GetAnalyticsUserDetail200JSONResponseBody struct {
+	union json.RawMessage
 }
 
 // ListAnalyticsUsersParams defines parameters for ListAnalyticsUsers.
@@ -486,9 +1871,10 @@ type ListAnalyticsUsersParams struct {
 // ListAnalyticsUsersParamsSortOrder defines parameters for ListAnalyticsUsers.
 type ListAnalyticsUsersParamsSortOrder string
 
-// SetAgentAttachmentStorageParams defines parameters for SetAgentAttachmentStorage.
-type SetAgentAttachmentStorageParams struct {
-	ToolkitId int `form:"toolkit_id" json:"toolkit_id"`
+// SetAgentAttachmentStorageJSONBody defines parameters for SetAgentAttachmentStorage.
+type SetAgentAttachmentStorageJSONBody struct {
+	// ToolkitId Read as a string; non-string values degrade to "" and are stored as such (handler.go:1773).
+	ToolkitId *string `json:"toolkit_id,omitempty"`
 }
 
 // ListApplicationsParams defines parameters for ListApplications.
@@ -498,6 +1884,12 @@ type ListApplicationsParams struct {
 
 	// Offset Number of items to skip before starting to collect results
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Query Search text (preferred over `search` by the handler).
+	Query      *string `form:"query,omitempty" json:"query,omitempty"`
+	Tags       *string `form:"tags,omitempty" json:"tags,omitempty"`
+	FolderId   *string `form:"folder_id,omitempty" json:"folder_id,omitempty"`
+	AgentsType *string `form:"agents_type,omitempty" json:"agents_type,omitempty"`
 }
 
 // BatchReplaceVersionReferencesParams defines parameters for BatchReplaceVersionReferences.
@@ -506,16 +1898,18 @@ type BatchReplaceVersionReferencesParams struct {
 	DeleteOld *bool `form:"delete_old,omitempty" json:"delete_old,omitempty"`
 }
 
-// SetApplicationDefaultVersionParams defines parameters for SetApplicationDefaultVersion.
-type SetApplicationDefaultVersionParams struct {
-	VersionId int `form:"version_id" json:"version_id"`
-}
-
 // ExportApplicationParams defines parameters for ExportApplication.
 type ExportApplicationParams struct {
-	Fork             *bool                          `form:"fork,omitempty" json:"fork,omitempty"`
-	FollowVersionIds *[]int                         `form:"follow_version_ids,omitempty" json:"follow_version_ids,omitempty"`
-	Format           *ExportApplicationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+	Fork *bool `form:"fork,omitempty" json:"fork,omitempty"`
+
+	// AsFile Serve as attachment (read at handler.go:2720).
+	AsFile *bool `form:"as_file,omitempty" json:"as_file,omitempty"`
+
+	// FollowVersionIds Old-SPA parameter; accepted but not read.
+	FollowVersionIds *[]int `form:"follow_version_ids,omitempty" json:"follow_version_ids,omitempty"`
+
+	// Format Old-SPA parameter; accepted but NOT read — the handler always emits JSON (eliteacore/handler.go:2682, 2716 read only fork and as_file). The enum records what the SPA actually sends: `md`, not `markdown` (apps/elitea-ui/src/api/applications.js:592).
+	Format *ExportApplicationParamsFormat `form:"format,omitempty" json:"format,omitempty"`
 }
 
 // ExportApplicationParamsFormat defines parameters for ExportApplication.
@@ -528,6 +1922,9 @@ type ListPublicApplicationsParams struct {
 
 	// Offset Number of items to skip before starting to collect results
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Category Marketplace category filter (read at handler.go:1270-1280).
+	Category *string `form:"category,omitempty" json:"category,omitempty"`
 }
 
 // GetRecommendationsParams defines parameters for GetRecommendations.
@@ -535,17 +1932,8 @@ type GetRecommendationsParams struct {
 	// Limit Maximum number of items to return
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
-	// Days Number of days of history to base recommendations on
+	// Days Old-SPA parameter; accepted but not read.
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
-}
-
-// ListPublicSkillsParams defines parameters for ListPublicSkills.
-type ListPublicSkillsParams struct {
-	// Limit Maximum number of items to return
-	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
-
-	// Offset Number of items to skip before starting to collect results
-	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
 // ListSkillsParams defines parameters for ListSkills.
@@ -555,6 +1943,12 @@ type ListSkillsParams struct {
 
 	// Offset Number of items to skip before starting to collect results
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
+
+	// Page Pagination parameter the handler actually reads.
+	Page *int `form:"page,omitempty" json:"page,omitempty"`
+
+	// PageSize Pagination parameter the handler actually reads.
+	PageSize *int `form:"page_size,omitempty" json:"page_size,omitempty"`
 }
 
 // GetApplicationIconsParams defines parameters for GetApplicationIcons.
@@ -566,10 +1960,7 @@ type GetApplicationIconsParams struct {
 
 // UploadApplicationIconMultipartBody defines parameters for UploadApplicationIcon.
 type UploadApplicationIconMultipartBody struct {
-	FileContent *openapi_types.File `json:"file_content,omitempty"`
-	FileName    *string             `json:"file_name,omitempty"`
-	Height      *int                `json:"height,omitempty"`
-	Width       *int                `json:"width,omitempty"`
+	File openapi_types.File `json:"file"`
 }
 
 // DeleteApplicationVersionParams defines parameters for DeleteApplicationVersion.
@@ -578,103 +1969,2781 @@ type DeleteApplicationVersionParams struct {
 	ReplacementVersionId *int `form:"replacement_version_id,omitempty" json:"replacement_version_id,omitempty"`
 }
 
+// SaveApplicationNewVersionJSONBody defines parameters for SaveApplicationNewVersion.
+type SaveApplicationNewVersionJSONBody struct {
+	// AgentType Defaults to "openai" when empty (handler.go:398-400, 731-733).
+	AgentType *string `json:"agent_type,omitempty"`
+
+	// ConversationStarters NOTE(W2): opaque jsonb array round-trip — see items marker. One caveat to the "never inspects" claim: runPublishValidation decodes the column as []string (eliteacore/handler.go:1028-1029), so non-string elements are silently read as an empty list there (spurious "no conversation starters" warning); the store/return round-trip itself is untyped.
+	ConversationStarters *ConversationStarters  `json:"conversation_starters,omitempty"`
+	Instructions         *string                `json:"instructions,omitempty"`
+	LlmSettings          *LlmSettings           `json:"llm_settings,omitempty"`
+	Meta                 *VersionMeta           `json:"meta,omitempty"`
+	Name                 string                 `json:"name"`
+	Variables            *[]VersionVariable     `json:"variables,omitempty"`
+	WelcomeMessage       *string                `json:"welcome_message,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
 // ListProjectsParams defines parameters for ListProjects.
 type ListProjectsParams struct {
+	// CheckPublicRole Old-SPA parameter; accepted but not read.
 	CheckPublicRole *bool `form:"check_public_role,omitempty" json:"check_public_role,omitempty"`
 }
 
 // CreateModerationRequestJSONRequestBody defines body for CreateModerationRequest for application/json ContentType.
-type CreateModerationRequestJSONRequestBody = Struct
+type CreateModerationRequestJSONRequestBody = IgnoredRequestBody
 
 // UserCreateJSONRequestBody defines body for UserCreate for application/json ContentType.
-type UserCreateJSONRequestBody = Struct
+type UserCreateJSONRequestBody = IgnoredRequestBody
 
 // UserUpdateJSONRequestBody defines body for UserUpdate for application/json ContentType.
-type UserUpdateJSONRequestBody = Struct
+type UserUpdateJSONRequestBody = IgnoredRequestBody
 
 // CreateArtifactMultipartRequestBody defines body for CreateArtifact for multipart/form-data ContentType.
 type CreateArtifactMultipartRequestBody CreateArtifactMultipartBody
 
 // UpdateBucketPinJSONRequestBody defines body for UpdateBucketPin for application/json ContentType.
-type UpdateBucketPinJSONRequestBody = Struct
+type UpdateBucketPinJSONRequestBody = BucketPinRequest
 
 // CreateBucketJSONRequestBody defines body for CreateBucket for application/json ContentType.
-type CreateBucketJSONRequestBody = Struct
+type CreateBucketJSONRequestBody = BucketCreateRequest
 
 // EditBucketJSONRequestBody defines body for EditBucket for application/json ContentType.
-type EditBucketJSONRequestBody = Struct
-
-// WebchatSyncJSONRequestBody defines body for WebchatSync for application/json ContentType.
-type WebchatSyncJSONRequestBody = Struct
+type EditBucketJSONRequestBody = BucketUpdateRequest
 
 // EditApplicationJSONRequestBody defines body for EditApplication for application/json ContentType.
-type EditApplicationJSONRequestBody = Struct
+type EditApplicationJSONRequestBody = ApplicationUpdateRequest
+
+// SetAgentAttachmentStorageJSONRequestBody defines body for SetAgentAttachmentStorage for application/json ContentType.
+type SetAgentAttachmentStorageJSONRequestBody SetAgentAttachmentStorageJSONBody
 
 // UpdateApplicationRelationJSONRequestBody defines body for UpdateApplicationRelation for application/json ContentType.
-type UpdateApplicationRelationJSONRequestBody = Struct
+type UpdateApplicationRelationJSONRequestBody = ApplicationRelationUpdateRequest
 
 // CreateApplicationJSONRequestBody defines body for CreateApplication for application/json ContentType.
-type CreateApplicationJSONRequestBody = Struct
+type CreateApplicationJSONRequestBody = ApplicationCreateRequest
+
+// SetApplicationDefaultVersionJSONRequestBody defines body for SetApplicationDefaultVersion for application/json ContentType.
+type SetApplicationDefaultVersionJSONRequestBody = SetDefaultVersionRequest
 
 // PatchEntitySettingsJSONRequestBody defines body for PatchEntitySettings for application/json ContentType.
-type PatchEntitySettingsJSONRequestBody = Struct
-
-// ReplaceEntitySettingsJSONRequestBody defines body for ReplaceEntitySettings for application/json ContentType.
-type ReplaceEntitySettingsJSONRequestBody = Struct
-
-// PatchParticipantSettingsJSONRequestBody defines body for PatchParticipantSettings for application/json ContentType.
-type PatchParticipantSettingsJSONRequestBody = Struct
+type PatchEntitySettingsJSONRequestBody = BatchEntitySettingsRequest
 
 // ReplaceParticipantSettingsJSONRequestBody defines body for ReplaceParticipantSettings for application/json ContentType.
-type ReplaceParticipantSettingsJSONRequestBody = Struct
+type ReplaceParticipantSettingsJSONRequestBody = ParticipantSettingsRequest
 
 // ConvertLegacyApplicationJSONRequestBody defines body for ConvertLegacyApplication for application/json ContentType.
-type ConvertLegacyApplicationJSONRequestBody = Struct
+type ConvertLegacyApplicationJSONRequestBody = ExportConverterRequest
 
 // ForkAgentJSONRequestBody defines body for ForkAgent for application/json ContentType.
-type ForkAgentJSONRequestBody = Struct
+type ForkAgentJSONRequestBody = ForkRequest
 
 // GenerateAgentDraftJSONRequestBody defines body for GenerateAgentDraft for application/json ContentType.
-type GenerateAgentDraftJSONRequestBody = Struct
+type GenerateAgentDraftJSONRequestBody = PredictRequest
 
 // ImportWizardJSONRequestBody defines body for ImportWizard for application/json ContentType.
-type ImportWizardJSONRequestBody = Struct
+type ImportWizardJSONRequestBody = ImportWizardRequest
 
 // UpdatePipelineTriggerJSONRequestBody defines body for UpdatePipelineTrigger for application/json ContentType.
-type UpdatePipelineTriggerJSONRequestBody = Struct
+type UpdatePipelineTriggerJSONRequestBody = PipelineTriggerUpdateRequest
 
 // UpdateProjectContextJSONRequestBody defines body for UpdateProjectContext for application/json ContentType.
-type UpdateProjectContextJSONRequestBody = Struct
+type UpdateProjectContextJSONRequestBody = ProjectContextUpdateRequest
 
 // PublishApplicationJSONRequestBody defines body for PublishApplication for application/json ContentType.
-type PublishApplicationJSONRequestBody = Struct
+type PublishApplicationJSONRequestBody = PublishRequest
 
 // ValidateForPublishJSONRequestBody defines body for ValidateForPublish for application/json ContentType.
-type ValidateForPublishJSONRequestBody = Struct
-
-// CreatePublicSkillJSONRequestBody defines body for CreatePublicSkill for application/json ContentType.
-type CreatePublicSkillJSONRequestBody = Struct
+type ValidateForPublishJSONRequestBody = ValidateForPublishRequest
 
 // CreateSkillJSONRequestBody defines body for CreateSkill for application/json ContentType.
-type CreateSkillJSONRequestBody = Struct
+type CreateSkillJSONRequestBody = SkillCreateRequest
 
 // UnpublishApplicationJSONRequestBody defines body for UnpublishApplication for application/json ContentType.
-type UnpublishApplicationJSONRequestBody = Struct
+type UnpublishApplicationJSONRequestBody = UnpublishRequest
 
 // UploadApplicationIconMultipartRequestBody defines body for UploadApplicationIcon for multipart/form-data ContentType.
 type UploadApplicationIconMultipartRequestBody UploadApplicationIconMultipartBody
 
 // ReplaceApplicationIconJSONRequestBody defines body for ReplaceApplicationIcon for application/json ContentType.
-type ReplaceApplicationIconJSONRequestBody = Struct
+type ReplaceApplicationIconJSONRequestBody = IconMetaRequest
 
 // UpdateApplicationVersionJSONRequestBody defines body for UpdateApplicationVersion for application/json ContentType.
-type UpdateApplicationVersionJSONRequestBody = Struct
+type UpdateApplicationVersionJSONRequestBody = VersionWriteRequest
 
 // SaveApplicationNewVersionJSONRequestBody defines body for SaveApplicationNewVersion for application/json ContentType.
-type SaveApplicationNewVersionJSONRequestBody = Struct
+type SaveApplicationNewVersionJSONRequestBody SaveApplicationNewVersionJSONBody
+
+// WebchatSyncJSONRequestBody defines body for WebchatSync for application/json ContentType.
+type WebchatSyncJSONRequestBody = PredictRequest
 
 // PutProjectGroupsJSONRequestBody defines body for PutProjectGroups for application/json ContentType.
-type PutProjectGroupsJSONRequestBody = Struct
+type PutProjectGroupsJSONRequestBody = ProjectGroupsUpdate
+
+// Getter for additional properties for ApplicationCreateRequest. Returns the specified
+// element and whether it was found
+func (a ApplicationCreateRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ApplicationCreateRequest
+func (a *ApplicationCreateRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ApplicationCreateRequest to handle AdditionalProperties
+func (a *ApplicationCreateRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["icon"]; found {
+		err = json.Unmarshal(raw, &a.Icon)
+		if err != nil {
+			return fmt.Errorf("error reading 'icon': %w", err)
+		}
+		delete(object, "icon")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if raw, found := object["versions"]; found {
+		err = json.Unmarshal(raw, &a.Versions)
+		if err != nil {
+			return fmt.Errorf("error reading 'versions': %w", err)
+		}
+		delete(object, "versions")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ApplicationCreateRequest to handle AdditionalProperties
+func (a ApplicationCreateRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Icon != nil {
+		object["icon"], err = json.Marshal(a.Icon)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'icon': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.Type != nil {
+		object["type"], err = json.Marshal(a.Type)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'type': %w", err)
+		}
+	}
+
+	if a.Versions != nil {
+		object["versions"], err = json.Marshal(a.Versions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'versions': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ApplicationUpdateRequest. Returns the specified
+// element and whether it was found
+func (a ApplicationUpdateRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ApplicationUpdateRequest
+func (a *ApplicationUpdateRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ApplicationUpdateRequest to handle AdditionalProperties
+func (a *ApplicationUpdateRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["icon"]; found {
+		err = json.Unmarshal(raw, &a.Icon)
+		if err != nil {
+			return fmt.Errorf("error reading 'icon': %w", err)
+		}
+		delete(object, "icon")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["version"]; found {
+		err = json.Unmarshal(raw, &a.Version)
+		if err != nil {
+			return fmt.Errorf("error reading 'version': %w", err)
+		}
+		delete(object, "version")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ApplicationUpdateRequest to handle AdditionalProperties
+func (a ApplicationUpdateRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Icon != nil {
+		object["icon"], err = json.Marshal(a.Icon)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'icon': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.Version != nil {
+		object["version"], err = json.Marshal(a.Version)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'version': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ApplicationUpdateRequest_Version. Returns the specified
+// element and whether it was found
+func (a ApplicationUpdateRequest_Version) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ApplicationUpdateRequest_Version
+func (a *ApplicationUpdateRequest_Version) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ApplicationUpdateRequest_Version to handle AdditionalProperties
+func (a *ApplicationUpdateRequest_Version) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["application_id"]; found {
+		err = json.Unmarshal(raw, &a.ApplicationId)
+		if err != nil {
+			return fmt.Errorf("error reading 'application_id': %w", err)
+		}
+		delete(object, "application_id")
+	}
+
+	if raw, found := object["id"]; found {
+		err = json.Unmarshal(raw, &a.Id)
+		if err != nil {
+			return fmt.Errorf("error reading 'id': %w", err)
+		}
+		delete(object, "id")
+	}
+
+	if raw, found := object["instructions"]; found {
+		err = json.Unmarshal(raw, &a.Instructions)
+		if err != nil {
+			return fmt.Errorf("error reading 'instructions': %w", err)
+		}
+		delete(object, "instructions")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ApplicationUpdateRequest_Version to handle AdditionalProperties
+func (a ApplicationUpdateRequest_Version) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["application_id"], err = json.Marshal(a.ApplicationId)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'application_id': %w", err)
+	}
+
+	object["id"], err = json.Marshal(a.Id)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'id': %w", err)
+	}
+
+	if a.Instructions != nil {
+		object["instructions"], err = json.Marshal(a.Instructions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'instructions': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for BucketUpdateRequest. Returns the specified
+// element and whether it was found
+func (a BucketUpdateRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for BucketUpdateRequest
+func (a *BucketUpdateRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for BucketUpdateRequest to handle AdditionalProperties
+func (a *BucketUpdateRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for BucketUpdateRequest to handle AdditionalProperties
+func (a BucketUpdateRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ForkApplicationInput. Returns the specified
+// element and whether it was found
+func (a ForkApplicationInput) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ForkApplicationInput
+func (a *ForkApplicationInput) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ForkApplicationInput to handle AdditionalProperties
+func (a *ForkApplicationInput) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["id"]; found {
+		err = json.Unmarshal(raw, &a.Id)
+		if err != nil {
+			return fmt.Errorf("error reading 'id': %w", err)
+		}
+		delete(object, "id")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["owner_id"]; found {
+		err = json.Unmarshal(raw, &a.OwnerId)
+		if err != nil {
+			return fmt.Errorf("error reading 'owner_id': %w", err)
+		}
+		delete(object, "owner_id")
+	}
+
+	if raw, found := object["versions"]; found {
+		err = json.Unmarshal(raw, &a.Versions)
+		if err != nil {
+			return fmt.Errorf("error reading 'versions': %w", err)
+		}
+		delete(object, "versions")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ForkApplicationInput to handle AdditionalProperties
+func (a ForkApplicationInput) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Id != nil {
+		object["id"], err = json.Marshal(a.Id)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'id': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.OwnerId != nil {
+		object["owner_id"], err = json.Marshal(a.OwnerId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'owner_id': %w", err)
+		}
+	}
+
+	if a.Versions != nil {
+		object["versions"], err = json.Marshal(a.Versions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'versions': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ForkVersionInput. Returns the specified
+// element and whether it was found
+func (a ForkVersionInput) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ForkVersionInput
+func (a *ForkVersionInput) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ForkVersionInput to handle AdditionalProperties
+func (a *ForkVersionInput) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["agent_type"]; found {
+		err = json.Unmarshal(raw, &a.AgentType)
+		if err != nil {
+			return fmt.Errorf("error reading 'agent_type': %w", err)
+		}
+		delete(object, "agent_type")
+	}
+
+	if raw, found := object["conversation_starters"]; found {
+		err = json.Unmarshal(raw, &a.ConversationStarters)
+		if err != nil {
+			return fmt.Errorf("error reading 'conversation_starters': %w", err)
+		}
+		delete(object, "conversation_starters")
+	}
+
+	if raw, found := object["instructions"]; found {
+		err = json.Unmarshal(raw, &a.Instructions)
+		if err != nil {
+			return fmt.Errorf("error reading 'instructions': %w", err)
+		}
+		delete(object, "instructions")
+	}
+
+	if raw, found := object["llm_settings"]; found {
+		err = json.Unmarshal(raw, &a.LlmSettings)
+		if err != nil {
+			return fmt.Errorf("error reading 'llm_settings': %w", err)
+		}
+		delete(object, "llm_settings")
+	}
+
+	if raw, found := object["meta"]; found {
+		err = json.Unmarshal(raw, &a.Meta)
+		if err != nil {
+			return fmt.Errorf("error reading 'meta': %w", err)
+		}
+		delete(object, "meta")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["tags"]; found {
+		err = json.Unmarshal(raw, &a.Tags)
+		if err != nil {
+			return fmt.Errorf("error reading 'tags': %w", err)
+		}
+		delete(object, "tags")
+	}
+
+	if raw, found := object["variables"]; found {
+		err = json.Unmarshal(raw, &a.Variables)
+		if err != nil {
+			return fmt.Errorf("error reading 'variables': %w", err)
+		}
+		delete(object, "variables")
+	}
+
+	if raw, found := object["welcome_message"]; found {
+		err = json.Unmarshal(raw, &a.WelcomeMessage)
+		if err != nil {
+			return fmt.Errorf("error reading 'welcome_message': %w", err)
+		}
+		delete(object, "welcome_message")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ForkVersionInput to handle AdditionalProperties
+func (a ForkVersionInput) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.AgentType != nil {
+		object["agent_type"], err = json.Marshal(a.AgentType)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'agent_type': %w", err)
+		}
+	}
+
+	if a.ConversationStarters != nil {
+		object["conversation_starters"], err = json.Marshal(a.ConversationStarters)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'conversation_starters': %w", err)
+		}
+	}
+
+	if a.Instructions != nil {
+		object["instructions"], err = json.Marshal(a.Instructions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'instructions': %w", err)
+		}
+	}
+
+	if a.LlmSettings != nil {
+		object["llm_settings"], err = json.Marshal(a.LlmSettings)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'llm_settings': %w", err)
+		}
+	}
+
+	if a.Meta != nil {
+		object["meta"], err = json.Marshal(a.Meta)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'meta': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.Tags != nil {
+		object["tags"], err = json.Marshal(a.Tags)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'tags': %w", err)
+		}
+	}
+
+	if a.Variables != nil {
+		object["variables"], err = json.Marshal(a.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'variables': %w", err)
+		}
+	}
+
+	if a.WelcomeMessage != nil {
+		object["welcome_message"], err = json.Marshal(a.WelcomeMessage)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'welcome_message': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ImportEntity. Returns the specified
+// element and whether it was found
+func (a ImportEntity) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ImportEntity
+func (a *ImportEntity) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ImportEntity to handle AdditionalProperties
+func (a *ImportEntity) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["description"]; found {
+		err = json.Unmarshal(raw, &a.Description)
+		if err != nil {
+			return fmt.Errorf("error reading 'description': %w", err)
+		}
+		delete(object, "description")
+	}
+
+	if raw, found := object["entity"]; found {
+		err = json.Unmarshal(raw, &a.Entity)
+		if err != nil {
+			return fmt.Errorf("error reading 'entity': %w", err)
+		}
+		delete(object, "entity")
+	}
+
+	if raw, found := object["import_uuid"]; found {
+		err = json.Unmarshal(raw, &a.ImportUuid)
+		if err != nil {
+			return fmt.Errorf("error reading 'import_uuid': %w", err)
+		}
+		delete(object, "import_uuid")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["settings"]; found {
+		err = json.Unmarshal(raw, &a.Settings)
+		if err != nil {
+			return fmt.Errorf("error reading 'settings': %w", err)
+		}
+		delete(object, "settings")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if raw, found := object["versions"]; found {
+		err = json.Unmarshal(raw, &a.Versions)
+		if err != nil {
+			return fmt.Errorf("error reading 'versions': %w", err)
+		}
+		delete(object, "versions")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ImportEntity to handle AdditionalProperties
+func (a ImportEntity) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Description != nil {
+		object["description"], err = json.Marshal(a.Description)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'description': %w", err)
+		}
+	}
+
+	if a.Entity != nil {
+		object["entity"], err = json.Marshal(a.Entity)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'entity': %w", err)
+		}
+	}
+
+	if a.ImportUuid != nil {
+		object["import_uuid"], err = json.Marshal(a.ImportUuid)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'import_uuid': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.Settings != nil {
+		object["settings"], err = json.Marshal(a.Settings)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'settings': %w", err)
+		}
+	}
+
+	if a.Type != nil {
+		object["type"], err = json.Marshal(a.Type)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'type': %w", err)
+		}
+	}
+
+	if a.Versions != nil {
+		object["versions"], err = json.Marshal(a.Versions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'versions': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for LlmSettings. Returns the specified
+// element and whether it was found
+func (a LlmSettings) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for LlmSettings
+func (a *LlmSettings) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for LlmSettings to handle AdditionalProperties
+func (a *LlmSettings) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["max_tokens"]; found {
+		err = json.Unmarshal(raw, &a.MaxTokens)
+		if err != nil {
+			return fmt.Errorf("error reading 'max_tokens': %w", err)
+		}
+		delete(object, "max_tokens")
+	}
+
+	if raw, found := object["model_name"]; found {
+		err = json.Unmarshal(raw, &a.ModelName)
+		if err != nil {
+			return fmt.Errorf("error reading 'model_name': %w", err)
+		}
+		delete(object, "model_name")
+	}
+
+	if raw, found := object["model_project_id"]; found {
+		err = json.Unmarshal(raw, &a.ModelProjectId)
+		if err != nil {
+			return fmt.Errorf("error reading 'model_project_id': %w", err)
+		}
+		delete(object, "model_project_id")
+	}
+
+	if raw, found := object["temperature"]; found {
+		err = json.Unmarshal(raw, &a.Temperature)
+		if err != nil {
+			return fmt.Errorf("error reading 'temperature': %w", err)
+		}
+		delete(object, "temperature")
+	}
+
+	if raw, found := object["top_p"]; found {
+		err = json.Unmarshal(raw, &a.TopP)
+		if err != nil {
+			return fmt.Errorf("error reading 'top_p': %w", err)
+		}
+		delete(object, "top_p")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for LlmSettings to handle AdditionalProperties
+func (a LlmSettings) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.MaxTokens != nil {
+		object["max_tokens"], err = json.Marshal(a.MaxTokens)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'max_tokens': %w", err)
+		}
+	}
+
+	if a.ModelName != nil {
+		object["model_name"], err = json.Marshal(a.ModelName)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'model_name': %w", err)
+		}
+	}
+
+	if a.ModelProjectId != nil {
+		object["model_project_id"], err = json.Marshal(a.ModelProjectId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'model_project_id': %w", err)
+		}
+	}
+
+	if a.Temperature != nil {
+		object["temperature"], err = json.Marshal(a.Temperature)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'temperature': %w", err)
+		}
+	}
+
+	if a.TopP != nil {
+		object["top_p"], err = json.Marshal(a.TopP)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'top_p': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ParticipantSettingsRequest. Returns the specified
+// element and whether it was found
+func (a ParticipantSettingsRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ParticipantSettingsRequest
+func (a *ParticipantSettingsRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ParticipantSettingsRequest to handle AdditionalProperties
+func (a *ParticipantSettingsRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["llm_settings"]; found {
+		err = json.Unmarshal(raw, &a.LlmSettings)
+		if err != nil {
+			return fmt.Errorf("error reading 'llm_settings': %w", err)
+		}
+		delete(object, "llm_settings")
+	}
+
+	if raw, found := object["version_id"]; found {
+		err = json.Unmarshal(raw, &a.VersionId)
+		if err != nil {
+			return fmt.Errorf("error reading 'version_id': %w", err)
+		}
+		delete(object, "version_id")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ParticipantSettingsRequest to handle AdditionalProperties
+func (a ParticipantSettingsRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.LlmSettings != nil {
+		object["llm_settings"], err = json.Marshal(a.LlmSettings)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'llm_settings': %w", err)
+		}
+	}
+
+	if a.VersionId != nil {
+		object["version_id"], err = json.Marshal(a.VersionId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'version_id': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for PipelineTriggerUpdateRequest. Returns the specified
+// element and whether it was found
+func (a PipelineTriggerUpdateRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for PipelineTriggerUpdateRequest
+func (a *PipelineTriggerUpdateRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for PipelineTriggerUpdateRequest to handle AdditionalProperties
+func (a *PipelineTriggerUpdateRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["enabled"]; found {
+		err = json.Unmarshal(raw, &a.Enabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'enabled': %w", err)
+		}
+		delete(object, "enabled")
+	}
+
+	if raw, found := object["schedule"]; found {
+		err = json.Unmarshal(raw, &a.Schedule)
+		if err != nil {
+			return fmt.Errorf("error reading 'schedule': %w", err)
+		}
+		delete(object, "schedule")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for PipelineTriggerUpdateRequest to handle AdditionalProperties
+func (a PipelineTriggerUpdateRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Enabled != nil {
+		object["enabled"], err = json.Marshal(a.Enabled)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'enabled': %w", err)
+		}
+	}
+
+	object["schedule"], err = json.Marshal(a.Schedule)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'schedule': %w", err)
+	}
+
+	if a.Type != nil {
+		object["type"], err = json.Marshal(a.Type)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'type': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for PlatformSettings. Returns the specified
+// element and whether it was found
+func (a PlatformSettings) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for PlatformSettings
+func (a *PlatformSettings) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for PlatformSettings to handle AdditionalProperties
+func (a *PlatformSettings) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["applications_enabled"]; found {
+		err = json.Unmarshal(raw, &a.ApplicationsEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'applications_enabled': %w", err)
+		}
+		delete(object, "applications_enabled")
+	}
+
+	if raw, found := object["chat_enabled"]; found {
+		err = json.Unmarshal(raw, &a.ChatEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'chat_enabled': %w", err)
+		}
+		delete(object, "chat_enabled")
+	}
+
+	if raw, found := object["datasources_enabled"]; found {
+		err = json.Unmarshal(raw, &a.DatasourcesEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'datasources_enabled': %w", err)
+		}
+		delete(object, "datasources_enabled")
+	}
+
+	if raw, found := object["mcp_enabled"]; found {
+		err = json.Unmarshal(raw, &a.McpEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'mcp_enabled': %w", err)
+		}
+		delete(object, "mcp_enabled")
+	}
+
+	if raw, found := object["moderation_enabled"]; found {
+		err = json.Unmarshal(raw, &a.ModerationEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'moderation_enabled': %w", err)
+		}
+		delete(object, "moderation_enabled")
+	}
+
+	if raw, found := object["pipelines_enabled"]; found {
+		err = json.Unmarshal(raw, &a.PipelinesEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'pipelines_enabled': %w", err)
+		}
+		delete(object, "pipelines_enabled")
+	}
+
+	if raw, found := object["publishing_enabled"]; found {
+		err = json.Unmarshal(raw, &a.PublishingEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'publishing_enabled': %w", err)
+		}
+		delete(object, "publishing_enabled")
+	}
+
+	if raw, found := object["skills_enabled"]; found {
+		err = json.Unmarshal(raw, &a.SkillsEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'skills_enabled': %w", err)
+		}
+		delete(object, "skills_enabled")
+	}
+
+	if raw, found := object["support_chat_enabled"]; found {
+		err = json.Unmarshal(raw, &a.SupportChatEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'support_chat_enabled': %w", err)
+		}
+		delete(object, "support_chat_enabled")
+	}
+
+	if raw, found := object["toolkits_enabled"]; found {
+		err = json.Unmarshal(raw, &a.ToolkitsEnabled)
+		if err != nil {
+			return fmt.Errorf("error reading 'toolkits_enabled': %w", err)
+		}
+		delete(object, "toolkits_enabled")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for PlatformSettings to handle AdditionalProperties
+func (a PlatformSettings) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	object["applications_enabled"], err = json.Marshal(a.ApplicationsEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'applications_enabled': %w", err)
+	}
+
+	object["chat_enabled"], err = json.Marshal(a.ChatEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'chat_enabled': %w", err)
+	}
+
+	object["datasources_enabled"], err = json.Marshal(a.DatasourcesEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'datasources_enabled': %w", err)
+	}
+
+	object["mcp_enabled"], err = json.Marshal(a.McpEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'mcp_enabled': %w", err)
+	}
+
+	object["moderation_enabled"], err = json.Marshal(a.ModerationEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'moderation_enabled': %w", err)
+	}
+
+	object["pipelines_enabled"], err = json.Marshal(a.PipelinesEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'pipelines_enabled': %w", err)
+	}
+
+	object["publishing_enabled"], err = json.Marshal(a.PublishingEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'publishing_enabled': %w", err)
+	}
+
+	object["skills_enabled"], err = json.Marshal(a.SkillsEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'skills_enabled': %w", err)
+	}
+
+	object["support_chat_enabled"], err = json.Marshal(a.SupportChatEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'support_chat_enabled': %w", err)
+	}
+
+	object["toolkits_enabled"], err = json.Marshal(a.ToolkitsEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'toolkits_enabled': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for ProjectGroupsUpdate. Returns the specified
+// element and whether it was found
+func (a ProjectGroupsUpdate) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for ProjectGroupsUpdate
+func (a *ProjectGroupsUpdate) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for ProjectGroupsUpdate to handle AdditionalProperties
+func (a *ProjectGroupsUpdate) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["groups"]; found {
+		err = json.Unmarshal(raw, &a.Groups)
+		if err != nil {
+			return fmt.Errorf("error reading 'groups': %w", err)
+		}
+		delete(object, "groups")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for ProjectGroupsUpdate to handle AdditionalProperties
+func (a ProjectGroupsUpdate) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Groups != nil {
+		object["groups"], err = json.Marshal(a.Groups)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'groups': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for VersionMeta. Returns the specified
+// element and whether it was found
+func (a VersionMeta) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for VersionMeta
+func (a *VersionMeta) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for VersionMeta to handle AdditionalProperties
+func (a *VersionMeta) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["attachment_storage"]; found {
+		err = json.Unmarshal(raw, &a.AttachmentStorage)
+		if err != nil {
+			return fmt.Errorf("error reading 'attachment_storage': %w", err)
+		}
+		delete(object, "attachment_storage")
+	}
+
+	if raw, found := object["category"]; found {
+		err = json.Unmarshal(raw, &a.Category)
+		if err != nil {
+			return fmt.Errorf("error reading 'category': %w", err)
+		}
+		delete(object, "category")
+	}
+
+	if raw, found := object["icon_meta"]; found {
+		err = json.Unmarshal(raw, &a.IconMeta)
+		if err != nil {
+			return fmt.Errorf("error reading 'icon_meta': %w", err)
+		}
+		delete(object, "icon_meta")
+	}
+
+	if raw, found := object["parent_author_id"]; found {
+		err = json.Unmarshal(raw, &a.ParentAuthorId)
+		if err != nil {
+			return fmt.Errorf("error reading 'parent_author_id': %w", err)
+		}
+		delete(object, "parent_author_id")
+	}
+
+	if raw, found := object["parent_entity_id"]; found {
+		err = json.Unmarshal(raw, &a.ParentEntityId)
+		if err != nil {
+			return fmt.Errorf("error reading 'parent_entity_id': %w", err)
+		}
+		delete(object, "parent_entity_id")
+	}
+
+	if raw, found := object["parent_project_id"]; found {
+		err = json.Unmarshal(raw, &a.ParentProjectId)
+		if err != nil {
+			return fmt.Errorf("error reading 'parent_project_id': %w", err)
+		}
+		delete(object, "parent_project_id")
+	}
+
+	if raw, found := object["source_version_id"]; found {
+		err = json.Unmarshal(raw, &a.SourceVersionId)
+		if err != nil {
+			return fmt.Errorf("error reading 'source_version_id': %w", err)
+		}
+		delete(object, "source_version_id")
+	}
+
+	if raw, found := object["step_limit"]; found {
+		err = json.Unmarshal(raw, &a.StepLimit)
+		if err != nil {
+			return fmt.Errorf("error reading 'step_limit': %w", err)
+		}
+		delete(object, "step_limit")
+	}
+
+	if raw, found := object["variables"]; found {
+		err = json.Unmarshal(raw, &a.Variables)
+		if err != nil {
+			return fmt.Errorf("error reading 'variables': %w", err)
+		}
+		delete(object, "variables")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for VersionMeta to handle AdditionalProperties
+func (a VersionMeta) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.AttachmentStorage != nil {
+		object["attachment_storage"], err = json.Marshal(a.AttachmentStorage)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'attachment_storage': %w", err)
+		}
+	}
+
+	if a.Category != nil {
+		object["category"], err = json.Marshal(a.Category)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'category': %w", err)
+		}
+	}
+
+	if a.IconMeta != nil {
+		object["icon_meta"], err = json.Marshal(a.IconMeta)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'icon_meta': %w", err)
+		}
+	}
+
+	if a.ParentAuthorId != nil {
+		object["parent_author_id"], err = json.Marshal(a.ParentAuthorId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'parent_author_id': %w", err)
+		}
+	}
+
+	if a.ParentEntityId != nil {
+		object["parent_entity_id"], err = json.Marshal(a.ParentEntityId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'parent_entity_id': %w", err)
+		}
+	}
+
+	if a.ParentProjectId != nil {
+		object["parent_project_id"], err = json.Marshal(a.ParentProjectId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'parent_project_id': %w", err)
+		}
+	}
+
+	if a.SourceVersionId != nil {
+		object["source_version_id"], err = json.Marshal(a.SourceVersionId)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'source_version_id': %w", err)
+		}
+	}
+
+	if a.StepLimit != nil {
+		object["step_limit"], err = json.Marshal(a.StepLimit)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'step_limit': %w", err)
+		}
+	}
+
+	if a.Variables != nil {
+		object["variables"], err = json.Marshal(a.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'variables': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for VersionWriteRequest. Returns the specified
+// element and whether it was found
+func (a VersionWriteRequest) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for VersionWriteRequest
+func (a *VersionWriteRequest) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for VersionWriteRequest to handle AdditionalProperties
+func (a *VersionWriteRequest) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["agent_type"]; found {
+		err = json.Unmarshal(raw, &a.AgentType)
+		if err != nil {
+			return fmt.Errorf("error reading 'agent_type': %w", err)
+		}
+		delete(object, "agent_type")
+	}
+
+	if raw, found := object["conversation_starters"]; found {
+		err = json.Unmarshal(raw, &a.ConversationStarters)
+		if err != nil {
+			return fmt.Errorf("error reading 'conversation_starters': %w", err)
+		}
+		delete(object, "conversation_starters")
+	}
+
+	if raw, found := object["instructions"]; found {
+		err = json.Unmarshal(raw, &a.Instructions)
+		if err != nil {
+			return fmt.Errorf("error reading 'instructions': %w", err)
+		}
+		delete(object, "instructions")
+	}
+
+	if raw, found := object["llm_settings"]; found {
+		err = json.Unmarshal(raw, &a.LlmSettings)
+		if err != nil {
+			return fmt.Errorf("error reading 'llm_settings': %w", err)
+		}
+		delete(object, "llm_settings")
+	}
+
+	if raw, found := object["meta"]; found {
+		err = json.Unmarshal(raw, &a.Meta)
+		if err != nil {
+			return fmt.Errorf("error reading 'meta': %w", err)
+		}
+		delete(object, "meta")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["variables"]; found {
+		err = json.Unmarshal(raw, &a.Variables)
+		if err != nil {
+			return fmt.Errorf("error reading 'variables': %w", err)
+		}
+		delete(object, "variables")
+	}
+
+	if raw, found := object["welcome_message"]; found {
+		err = json.Unmarshal(raw, &a.WelcomeMessage)
+		if err != nil {
+			return fmt.Errorf("error reading 'welcome_message': %w", err)
+		}
+		delete(object, "welcome_message")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for VersionWriteRequest to handle AdditionalProperties
+func (a VersionWriteRequest) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.AgentType != nil {
+		object["agent_type"], err = json.Marshal(a.AgentType)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'agent_type': %w", err)
+		}
+	}
+
+	if a.ConversationStarters != nil {
+		object["conversation_starters"], err = json.Marshal(a.ConversationStarters)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'conversation_starters': %w", err)
+		}
+	}
+
+	if a.Instructions != nil {
+		object["instructions"], err = json.Marshal(a.Instructions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'instructions': %w", err)
+		}
+	}
+
+	if a.LlmSettings != nil {
+		object["llm_settings"], err = json.Marshal(a.LlmSettings)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'llm_settings': %w", err)
+		}
+	}
+
+	if a.Meta != nil {
+		object["meta"], err = json.Marshal(a.Meta)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'meta': %w", err)
+		}
+	}
+
+	if a.Name != nil {
+		object["name"], err = json.Marshal(a.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'name': %w", err)
+		}
+	}
+
+	if a.Variables != nil {
+		object["variables"], err = json.Marshal(a.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'variables': %w", err)
+		}
+	}
+
+	if a.WelcomeMessage != nil {
+		object["welcome_message"], err = json.Marshal(a.WelcomeMessage)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'welcome_message': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// Getter for additional properties for SaveApplicationNewVersionJSONBody. Returns the specified
+// element and whether it was found
+func (a SaveApplicationNewVersionJSONBody) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for SaveApplicationNewVersionJSONBody
+func (a *SaveApplicationNewVersionJSONBody) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for SaveApplicationNewVersionJSONBody to handle AdditionalProperties
+func (a *SaveApplicationNewVersionJSONBody) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["agent_type"]; found {
+		err = json.Unmarshal(raw, &a.AgentType)
+		if err != nil {
+			return fmt.Errorf("error reading 'agent_type': %w", err)
+		}
+		delete(object, "agent_type")
+	}
+
+	if raw, found := object["conversation_starters"]; found {
+		err = json.Unmarshal(raw, &a.ConversationStarters)
+		if err != nil {
+			return fmt.Errorf("error reading 'conversation_starters': %w", err)
+		}
+		delete(object, "conversation_starters")
+	}
+
+	if raw, found := object["instructions"]; found {
+		err = json.Unmarshal(raw, &a.Instructions)
+		if err != nil {
+			return fmt.Errorf("error reading 'instructions': %w", err)
+		}
+		delete(object, "instructions")
+	}
+
+	if raw, found := object["llm_settings"]; found {
+		err = json.Unmarshal(raw, &a.LlmSettings)
+		if err != nil {
+			return fmt.Errorf("error reading 'llm_settings': %w", err)
+		}
+		delete(object, "llm_settings")
+	}
+
+	if raw, found := object["meta"]; found {
+		err = json.Unmarshal(raw, &a.Meta)
+		if err != nil {
+			return fmt.Errorf("error reading 'meta': %w", err)
+		}
+		delete(object, "meta")
+	}
+
+	if raw, found := object["name"]; found {
+		err = json.Unmarshal(raw, &a.Name)
+		if err != nil {
+			return fmt.Errorf("error reading 'name': %w", err)
+		}
+		delete(object, "name")
+	}
+
+	if raw, found := object["variables"]; found {
+		err = json.Unmarshal(raw, &a.Variables)
+		if err != nil {
+			return fmt.Errorf("error reading 'variables': %w", err)
+		}
+		delete(object, "variables")
+	}
+
+	if raw, found := object["welcome_message"]; found {
+		err = json.Unmarshal(raw, &a.WelcomeMessage)
+		if err != nil {
+			return fmt.Errorf("error reading 'welcome_message': %w", err)
+		}
+		delete(object, "welcome_message")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for SaveApplicationNewVersionJSONBody to handle AdditionalProperties
+func (a SaveApplicationNewVersionJSONBody) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.AgentType != nil {
+		object["agent_type"], err = json.Marshal(a.AgentType)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'agent_type': %w", err)
+		}
+	}
+
+	if a.ConversationStarters != nil {
+		object["conversation_starters"], err = json.Marshal(a.ConversationStarters)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'conversation_starters': %w", err)
+		}
+	}
+
+	if a.Instructions != nil {
+		object["instructions"], err = json.Marshal(a.Instructions)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'instructions': %w", err)
+		}
+	}
+
+	if a.LlmSettings != nil {
+		object["llm_settings"], err = json.Marshal(a.LlmSettings)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'llm_settings': %w", err)
+		}
+	}
+
+	if a.Meta != nil {
+		object["meta"], err = json.Marshal(a.Meta)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'meta': %w", err)
+		}
+	}
+
+	object["name"], err = json.Marshal(a.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'name': %w", err)
+	}
+
+	if a.Variables != nil {
+		object["variables"], err = json.Marshal(a.Variables)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'variables': %w", err)
+		}
+	}
+
+	if a.WelcomeMessage != nil {
+		object["welcome_message"], err = json.Marshal(a.WelcomeMessage)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'welcome_message': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
+
+// AsApplicationRelationUpdateRequestApplicationId0 returns the union data inside the ApplicationRelationUpdateRequest_ApplicationId as a ApplicationRelationUpdateRequestApplicationId0
+func (t ApplicationRelationUpdateRequest_ApplicationId) AsApplicationRelationUpdateRequestApplicationId0() (ApplicationRelationUpdateRequestApplicationId0, error) {
+	var body ApplicationRelationUpdateRequestApplicationId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationRelationUpdateRequestApplicationId0 overwrites any union data inside the ApplicationRelationUpdateRequest_ApplicationId as the provided ApplicationRelationUpdateRequestApplicationId0
+func (t *ApplicationRelationUpdateRequest_ApplicationId) FromApplicationRelationUpdateRequestApplicationId0(v ApplicationRelationUpdateRequestApplicationId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationRelationUpdateRequestApplicationId0 performs a merge with any union data inside the ApplicationRelationUpdateRequest_ApplicationId, using the provided ApplicationRelationUpdateRequestApplicationId0
+func (t *ApplicationRelationUpdateRequest_ApplicationId) MergeApplicationRelationUpdateRequestApplicationId0(v ApplicationRelationUpdateRequestApplicationId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsApplicationRelationUpdateRequestApplicationId1 returns the union data inside the ApplicationRelationUpdateRequest_ApplicationId as a ApplicationRelationUpdateRequestApplicationId1
+func (t ApplicationRelationUpdateRequest_ApplicationId) AsApplicationRelationUpdateRequestApplicationId1() (ApplicationRelationUpdateRequestApplicationId1, error) {
+	var body ApplicationRelationUpdateRequestApplicationId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationRelationUpdateRequestApplicationId1 overwrites any union data inside the ApplicationRelationUpdateRequest_ApplicationId as the provided ApplicationRelationUpdateRequestApplicationId1
+func (t *ApplicationRelationUpdateRequest_ApplicationId) FromApplicationRelationUpdateRequestApplicationId1(v ApplicationRelationUpdateRequestApplicationId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationRelationUpdateRequestApplicationId1 performs a merge with any union data inside the ApplicationRelationUpdateRequest_ApplicationId, using the provided ApplicationRelationUpdateRequestApplicationId1
+func (t *ApplicationRelationUpdateRequest_ApplicationId) MergeApplicationRelationUpdateRequestApplicationId1(v ApplicationRelationUpdateRequestApplicationId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ApplicationRelationUpdateRequest_ApplicationId) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ApplicationRelationUpdateRequest_ApplicationId) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsApplicationRelationUpdateRequestVersionId0 returns the union data inside the ApplicationRelationUpdateRequest_VersionId as a ApplicationRelationUpdateRequestVersionId0
+func (t ApplicationRelationUpdateRequest_VersionId) AsApplicationRelationUpdateRequestVersionId0() (ApplicationRelationUpdateRequestVersionId0, error) {
+	var body ApplicationRelationUpdateRequestVersionId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationRelationUpdateRequestVersionId0 overwrites any union data inside the ApplicationRelationUpdateRequest_VersionId as the provided ApplicationRelationUpdateRequestVersionId0
+func (t *ApplicationRelationUpdateRequest_VersionId) FromApplicationRelationUpdateRequestVersionId0(v ApplicationRelationUpdateRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationRelationUpdateRequestVersionId0 performs a merge with any union data inside the ApplicationRelationUpdateRequest_VersionId, using the provided ApplicationRelationUpdateRequestVersionId0
+func (t *ApplicationRelationUpdateRequest_VersionId) MergeApplicationRelationUpdateRequestVersionId0(v ApplicationRelationUpdateRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsApplicationRelationUpdateRequestVersionId1 returns the union data inside the ApplicationRelationUpdateRequest_VersionId as a ApplicationRelationUpdateRequestVersionId1
+func (t ApplicationRelationUpdateRequest_VersionId) AsApplicationRelationUpdateRequestVersionId1() (ApplicationRelationUpdateRequestVersionId1, error) {
+	var body ApplicationRelationUpdateRequestVersionId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationRelationUpdateRequestVersionId1 overwrites any union data inside the ApplicationRelationUpdateRequest_VersionId as the provided ApplicationRelationUpdateRequestVersionId1
+func (t *ApplicationRelationUpdateRequest_VersionId) FromApplicationRelationUpdateRequestVersionId1(v ApplicationRelationUpdateRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationRelationUpdateRequestVersionId1 performs a merge with any union data inside the ApplicationRelationUpdateRequest_VersionId, using the provided ApplicationRelationUpdateRequestVersionId1
+func (t *ApplicationRelationUpdateRequest_VersionId) MergeApplicationRelationUpdateRequestVersionId1(v ApplicationRelationUpdateRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ApplicationRelationUpdateRequest_VersionId) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ApplicationRelationUpdateRequest_VersionId) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsApplicationUpdateRequestVersionApplicationId0 returns the union data inside the ApplicationUpdateRequest_Version_ApplicationId as a ApplicationUpdateRequestVersionApplicationId0
+func (t ApplicationUpdateRequest_Version_ApplicationId) AsApplicationUpdateRequestVersionApplicationId0() (ApplicationUpdateRequestVersionApplicationId0, error) {
+	var body ApplicationUpdateRequestVersionApplicationId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationUpdateRequestVersionApplicationId0 overwrites any union data inside the ApplicationUpdateRequest_Version_ApplicationId as the provided ApplicationUpdateRequestVersionApplicationId0
+func (t *ApplicationUpdateRequest_Version_ApplicationId) FromApplicationUpdateRequestVersionApplicationId0(v ApplicationUpdateRequestVersionApplicationId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationUpdateRequestVersionApplicationId0 performs a merge with any union data inside the ApplicationUpdateRequest_Version_ApplicationId, using the provided ApplicationUpdateRequestVersionApplicationId0
+func (t *ApplicationUpdateRequest_Version_ApplicationId) MergeApplicationUpdateRequestVersionApplicationId0(v ApplicationUpdateRequestVersionApplicationId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsApplicationUpdateRequestVersionApplicationId1 returns the union data inside the ApplicationUpdateRequest_Version_ApplicationId as a ApplicationUpdateRequestVersionApplicationId1
+func (t ApplicationUpdateRequest_Version_ApplicationId) AsApplicationUpdateRequestVersionApplicationId1() (ApplicationUpdateRequestVersionApplicationId1, error) {
+	var body ApplicationUpdateRequestVersionApplicationId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationUpdateRequestVersionApplicationId1 overwrites any union data inside the ApplicationUpdateRequest_Version_ApplicationId as the provided ApplicationUpdateRequestVersionApplicationId1
+func (t *ApplicationUpdateRequest_Version_ApplicationId) FromApplicationUpdateRequestVersionApplicationId1(v ApplicationUpdateRequestVersionApplicationId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationUpdateRequestVersionApplicationId1 performs a merge with any union data inside the ApplicationUpdateRequest_Version_ApplicationId, using the provided ApplicationUpdateRequestVersionApplicationId1
+func (t *ApplicationUpdateRequest_Version_ApplicationId) MergeApplicationUpdateRequestVersionApplicationId1(v ApplicationUpdateRequestVersionApplicationId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ApplicationUpdateRequest_Version_ApplicationId) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ApplicationUpdateRequest_Version_ApplicationId) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsApplicationUpdateRequestVersionId0 returns the union data inside the ApplicationUpdateRequest_Version_Id as a ApplicationUpdateRequestVersionId0
+func (t ApplicationUpdateRequest_Version_Id) AsApplicationUpdateRequestVersionId0() (ApplicationUpdateRequestVersionId0, error) {
+	var body ApplicationUpdateRequestVersionId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationUpdateRequestVersionId0 overwrites any union data inside the ApplicationUpdateRequest_Version_Id as the provided ApplicationUpdateRequestVersionId0
+func (t *ApplicationUpdateRequest_Version_Id) FromApplicationUpdateRequestVersionId0(v ApplicationUpdateRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationUpdateRequestVersionId0 performs a merge with any union data inside the ApplicationUpdateRequest_Version_Id, using the provided ApplicationUpdateRequestVersionId0
+func (t *ApplicationUpdateRequest_Version_Id) MergeApplicationUpdateRequestVersionId0(v ApplicationUpdateRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsApplicationUpdateRequestVersionId1 returns the union data inside the ApplicationUpdateRequest_Version_Id as a ApplicationUpdateRequestVersionId1
+func (t ApplicationUpdateRequest_Version_Id) AsApplicationUpdateRequestVersionId1() (ApplicationUpdateRequestVersionId1, error) {
+	var body ApplicationUpdateRequestVersionId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApplicationUpdateRequestVersionId1 overwrites any union data inside the ApplicationUpdateRequest_Version_Id as the provided ApplicationUpdateRequestVersionId1
+func (t *ApplicationUpdateRequest_Version_Id) FromApplicationUpdateRequestVersionId1(v ApplicationUpdateRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApplicationUpdateRequestVersionId1 performs a merge with any union data inside the ApplicationUpdateRequest_Version_Id, using the provided ApplicationUpdateRequestVersionId1
+func (t *ApplicationUpdateRequest_Version_Id) MergeApplicationUpdateRequestVersionId1(v ApplicationUpdateRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ApplicationUpdateRequest_Version_Id) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ApplicationUpdateRequest_Version_Id) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsImportWizardRequest0 returns the union data inside the ImportWizardRequest as a ImportWizardRequest0
+func (t ImportWizardRequest) AsImportWizardRequest0() (ImportWizardRequest0, error) {
+	var body ImportWizardRequest0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportWizardRequest0 overwrites any union data inside the ImportWizardRequest as the provided ImportWizardRequest0
+func (t *ImportWizardRequest) FromImportWizardRequest0(v ImportWizardRequest0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportWizardRequest0 performs a merge with any union data inside the ImportWizardRequest, using the provided ImportWizardRequest0
+func (t *ImportWizardRequest) MergeImportWizardRequest0(v ImportWizardRequest0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsImportWizardRequest1 returns the union data inside the ImportWizardRequest as a ImportWizardRequest1
+func (t ImportWizardRequest) AsImportWizardRequest1() (ImportWizardRequest1, error) {
+	var body ImportWizardRequest1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromImportWizardRequest1 overwrites any union data inside the ImportWizardRequest as the provided ImportWizardRequest1
+func (t *ImportWizardRequest) FromImportWizardRequest1(v ImportWizardRequest1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeImportWizardRequest1 performs a merge with any union data inside the ImportWizardRequest, using the provided ImportWizardRequest1
+func (t *ImportWizardRequest) MergeImportWizardRequest1(v ImportWizardRequest1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ImportWizardRequest) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ImportWizardRequest) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsLlmSettingsModelProjectId0 returns the union data inside the LlmSettings_ModelProjectId as a LlmSettingsModelProjectId0
+func (t LlmSettings_ModelProjectId) AsLlmSettingsModelProjectId0() (LlmSettingsModelProjectId0, error) {
+	var body LlmSettingsModelProjectId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromLlmSettingsModelProjectId0 overwrites any union data inside the LlmSettings_ModelProjectId as the provided LlmSettingsModelProjectId0
+func (t *LlmSettings_ModelProjectId) FromLlmSettingsModelProjectId0(v LlmSettingsModelProjectId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeLlmSettingsModelProjectId0 performs a merge with any union data inside the LlmSettings_ModelProjectId, using the provided LlmSettingsModelProjectId0
+func (t *LlmSettings_ModelProjectId) MergeLlmSettingsModelProjectId0(v LlmSettingsModelProjectId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsLlmSettingsModelProjectId1 returns the union data inside the LlmSettings_ModelProjectId as a LlmSettingsModelProjectId1
+func (t LlmSettings_ModelProjectId) AsLlmSettingsModelProjectId1() (LlmSettingsModelProjectId1, error) {
+	var body LlmSettingsModelProjectId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromLlmSettingsModelProjectId1 overwrites any union data inside the LlmSettings_ModelProjectId as the provided LlmSettingsModelProjectId1
+func (t *LlmSettings_ModelProjectId) FromLlmSettingsModelProjectId1(v LlmSettingsModelProjectId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeLlmSettingsModelProjectId1 performs a merge with any union data inside the LlmSettings_ModelProjectId, using the provided LlmSettingsModelProjectId1
+func (t *LlmSettings_ModelProjectId) MergeLlmSettingsModelProjectId1(v LlmSettingsModelProjectId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t LlmSettings_ModelProjectId) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *LlmSettings_ModelProjectId) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsParticipantSettingsRequestVersionId0 returns the union data inside the ParticipantSettingsRequest_VersionId as a ParticipantSettingsRequestVersionId0
+func (t ParticipantSettingsRequest_VersionId) AsParticipantSettingsRequestVersionId0() (ParticipantSettingsRequestVersionId0, error) {
+	var body ParticipantSettingsRequestVersionId0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromParticipantSettingsRequestVersionId0 overwrites any union data inside the ParticipantSettingsRequest_VersionId as the provided ParticipantSettingsRequestVersionId0
+func (t *ParticipantSettingsRequest_VersionId) FromParticipantSettingsRequestVersionId0(v ParticipantSettingsRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeParticipantSettingsRequestVersionId0 performs a merge with any union data inside the ParticipantSettingsRequest_VersionId, using the provided ParticipantSettingsRequestVersionId0
+func (t *ParticipantSettingsRequest_VersionId) MergeParticipantSettingsRequestVersionId0(v ParticipantSettingsRequestVersionId0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsParticipantSettingsRequestVersionId1 returns the union data inside the ParticipantSettingsRequest_VersionId as a ParticipantSettingsRequestVersionId1
+func (t ParticipantSettingsRequest_VersionId) AsParticipantSettingsRequestVersionId1() (ParticipantSettingsRequestVersionId1, error) {
+	var body ParticipantSettingsRequestVersionId1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromParticipantSettingsRequestVersionId1 overwrites any union data inside the ParticipantSettingsRequest_VersionId as the provided ParticipantSettingsRequestVersionId1
+func (t *ParticipantSettingsRequest_VersionId) FromParticipantSettingsRequestVersionId1(v ParticipantSettingsRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeParticipantSettingsRequestVersionId1 performs a merge with any union data inside the ParticipantSettingsRequest_VersionId, using the provided ParticipantSettingsRequestVersionId1
+func (t *ParticipantSettingsRequest_VersionId) MergeParticipantSettingsRequestVersionId1(v ParticipantSettingsRequestVersionId1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t ParticipantSettingsRequest_VersionId) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *ParticipantSettingsRequest_VersionId) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsPublishBadRequestResponseError0 returns the union data inside the PublishBadRequestResponse_Error as a PublishBadRequestResponseError0
+func (t PublishBadRequestResponse_Error) AsPublishBadRequestResponseError0() (PublishBadRequestResponseError0, error) {
+	var body PublishBadRequestResponseError0
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublishBadRequestResponseError0 overwrites any union data inside the PublishBadRequestResponse_Error as the provided PublishBadRequestResponseError0
+func (t *PublishBadRequestResponse_Error) FromPublishBadRequestResponseError0(v PublishBadRequestResponseError0) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublishBadRequestResponseError0 performs a merge with any union data inside the PublishBadRequestResponse_Error, using the provided PublishBadRequestResponseError0
+func (t *PublishBadRequestResponse_Error) MergePublishBadRequestResponseError0(v PublishBadRequestResponseError0) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPublishBadRequestResponseError1 returns the union data inside the PublishBadRequestResponse_Error as a PublishBadRequestResponseError1
+func (t PublishBadRequestResponse_Error) AsPublishBadRequestResponseError1() (PublishBadRequestResponseError1, error) {
+	var body PublishBadRequestResponseError1
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPublishBadRequestResponseError1 overwrites any union data inside the PublishBadRequestResponse_Error as the provided PublishBadRequestResponseError1
+func (t *PublishBadRequestResponse_Error) FromPublishBadRequestResponseError1(v PublishBadRequestResponseError1) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePublishBadRequestResponseError1 performs a merge with any union data inside the PublishBadRequestResponse_Error, using the provided PublishBadRequestResponseError1
+func (t *PublishBadRequestResponse_Error) MergePublishBadRequestResponseError1(v PublishBadRequestResponseError1) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublishBadRequestResponse_Error) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublishBadRequestResponse_Error) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsAnalyticsDetailEnvelope returns the union data inside the GetAnalyticsAgentDetail200JSONResponseBody as a AnalyticsDetailEnvelope
+func (t GetAnalyticsAgentDetail200JSONResponseBody) AsAnalyticsDetailEnvelope() (AnalyticsDetailEnvelope, error) {
+	var body AnalyticsDetailEnvelope
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsDetailEnvelope overwrites any union data inside the GetAnalyticsAgentDetail200JSONResponseBody as the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsAgentDetail200JSONResponseBody) FromAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsDetailEnvelope performs a merge with any union data inside the GetAnalyticsAgentDetail200JSONResponseBody, using the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsAgentDetail200JSONResponseBody) MergeAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAnalyticsAgentsList returns the union data inside the GetAnalyticsAgentDetail200JSONResponseBody as a AnalyticsAgentsList
+func (t GetAnalyticsAgentDetail200JSONResponseBody) AsAnalyticsAgentsList() (AnalyticsAgentsList, error) {
+	var body AnalyticsAgentsList
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsAgentsList overwrites any union data inside the GetAnalyticsAgentDetail200JSONResponseBody as the provided AnalyticsAgentsList
+func (t *GetAnalyticsAgentDetail200JSONResponseBody) FromAnalyticsAgentsList(v AnalyticsAgentsList) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsAgentsList performs a merge with any union data inside the GetAnalyticsAgentDetail200JSONResponseBody, using the provided AnalyticsAgentsList
+func (t *GetAnalyticsAgentDetail200JSONResponseBody) MergeAnalyticsAgentsList(v AnalyticsAgentsList) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GetAnalyticsAgentDetail200JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GetAnalyticsAgentDetail200JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsAnalyticsDetailEnvelope returns the union data inside the GetAnalyticsToolDetail200JSONResponseBody as a AnalyticsDetailEnvelope
+func (t GetAnalyticsToolDetail200JSONResponseBody) AsAnalyticsDetailEnvelope() (AnalyticsDetailEnvelope, error) {
+	var body AnalyticsDetailEnvelope
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsDetailEnvelope overwrites any union data inside the GetAnalyticsToolDetail200JSONResponseBody as the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsToolDetail200JSONResponseBody) FromAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsDetailEnvelope performs a merge with any union data inside the GetAnalyticsToolDetail200JSONResponseBody, using the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsToolDetail200JSONResponseBody) MergeAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAnalyticsToolsList returns the union data inside the GetAnalyticsToolDetail200JSONResponseBody as a AnalyticsToolsList
+func (t GetAnalyticsToolDetail200JSONResponseBody) AsAnalyticsToolsList() (AnalyticsToolsList, error) {
+	var body AnalyticsToolsList
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsToolsList overwrites any union data inside the GetAnalyticsToolDetail200JSONResponseBody as the provided AnalyticsToolsList
+func (t *GetAnalyticsToolDetail200JSONResponseBody) FromAnalyticsToolsList(v AnalyticsToolsList) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsToolsList performs a merge with any union data inside the GetAnalyticsToolDetail200JSONResponseBody, using the provided AnalyticsToolsList
+func (t *GetAnalyticsToolDetail200JSONResponseBody) MergeAnalyticsToolsList(v AnalyticsToolsList) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GetAnalyticsToolDetail200JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GetAnalyticsToolDetail200JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsAnalyticsDetailEnvelope returns the union data inside the GetAnalyticsUserDetail200JSONResponseBody as a AnalyticsDetailEnvelope
+func (t GetAnalyticsUserDetail200JSONResponseBody) AsAnalyticsDetailEnvelope() (AnalyticsDetailEnvelope, error) {
+	var body AnalyticsDetailEnvelope
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsDetailEnvelope overwrites any union data inside the GetAnalyticsUserDetail200JSONResponseBody as the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsUserDetail200JSONResponseBody) FromAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsDetailEnvelope performs a merge with any union data inside the GetAnalyticsUserDetail200JSONResponseBody, using the provided AnalyticsDetailEnvelope
+func (t *GetAnalyticsUserDetail200JSONResponseBody) MergeAnalyticsDetailEnvelope(v AnalyticsDetailEnvelope) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsAnalyticsUsersList returns the union data inside the GetAnalyticsUserDetail200JSONResponseBody as a AnalyticsUsersList
+func (t GetAnalyticsUserDetail200JSONResponseBody) AsAnalyticsUsersList() (AnalyticsUsersList, error) {
+	var body AnalyticsUsersList
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromAnalyticsUsersList overwrites any union data inside the GetAnalyticsUserDetail200JSONResponseBody as the provided AnalyticsUsersList
+func (t *GetAnalyticsUserDetail200JSONResponseBody) FromAnalyticsUsersList(v AnalyticsUsersList) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeAnalyticsUsersList performs a merge with any union data inside the GetAnalyticsUserDetail200JSONResponseBody, using the provided AnalyticsUsersList
+func (t *GetAnalyticsUserDetail200JSONResponseBody) MergeAnalyticsUsersList(v AnalyticsUsersList) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t GetAnalyticsUserDetail200JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *GetAnalyticsUserDetail200JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -687,16 +4756,16 @@ type ServerInterface interface {
 	// List roles for a project
 	// (GET /admin/roles/default/{project_id})
 	RoleList(w http.ResponseWriter, r *http.Request, projectId ProjectId, params RoleListParams)
-	// Remove one or more users from a project
+	// Remove one or more users from a project (live no-op)
 	// (DELETE /admin/users/default/{project_id})
 	UserDelete(w http.ResponseWriter, r *http.Request, projectId ProjectId, params UserDeleteParams)
 	// List users for a project
 	// (GET /admin/users/default/{project_id})
 	UserList(w http.ResponseWriter, r *http.Request, projectId ProjectId, params UserListParams)
-	// Create a user inside a project
+	// Create a user inside a project (live no-op)
 	// (POST /admin/users/default/{project_id})
 	UserCreate(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Replace an existing user record
+	// Replace an existing user record (live no-op)
 	// (PUT /admin/users/default/{project_id})
 	UserUpdate(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 	// Remove a single named artifact from a bucket
@@ -717,27 +4786,21 @@ type ServerInterface interface {
 	// Create a new storage bucket for the specified project
 	// (POST /artifacts/buckets/default/{project_id})
 	CreateBucket(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Fully replace the configuration of an existing bucket
+	// Update (rename) an existing bucket
 	// (PUT /artifacts/buckets/default/{project_id})
-	EditBucket(w http.ResponseWriter, r *http.Request, projectId ProjectId)
+	EditBucket(w http.ResponseWriter, r *http.Request, projectId ProjectId, params EditBucketParams)
 	// List all storage buckets visible to the given project
 	// (GET /artifacts/s3)
 	BucketList(w http.ResponseWriter, r *http.Request, params BucketListParams)
 	// List all artifacts stored in the specified bucket
 	// (GET /artifacts/s3/{bucket})
 	ArtifactList(w http.ResponseWriter, r *http.Request, bucket string, params ArtifactListParams)
-	// List permissions for a project (public/unauthenticated context)
-	// (GET /auth/permissions/prompt_lib/public/{public_project_id})
-	PublicPermissionList(w http.ResponseWriter, r *http.Request, publicProjectId int)
 	// List permissions for a project (authenticated)
 	// (GET /auth/permissions/prompt_lib/{project_id})
 	PermissionList(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Get chat configuration (model defaults etc.)
-	// (GET /chat/{project_id})
-	GetChatConfig(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Synchronous chat endpoint for embedded widgets
-	// (POST /chat/{project_id}/{version_id})
-	WebchatSync(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int)
+	// Branding bootstrap script (window.elitea_brand)
+	// (GET /branding/bootstrap.js)
+	GetBrandingBootstrap(w http.ResponseWriter, r *http.Request, params GetBrandingBootstrapParams)
 	// Get taxonomy used to classify published agents
 	// (GET /elitea_core/agent_categories/prompt_lib/{project_id})
 	GetAgentCategories(w http.ResponseWriter, r *http.Request, projectId ProjectId)
@@ -747,19 +4810,19 @@ type ServerInterface interface {
 	// Detailed analytics for a specific agent within a project
 	// (GET /elitea_core/analytics_agent_detail/prompt_lib/{project_id})
 	GetAnalyticsAgentDetail(w http.ResponseWriter, r *http.Request, projectId ProjectId, params GetAnalyticsAgentDetailParams)
-	// Paginated agent analytics for a project's prompt library
+	// Agent analytics for a project's prompt library
 	// (GET /elitea_core/analytics_agents/prompt_lib/{project_id})
 	ListAnalyticsAgents(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsAgentsParams)
 	// Detailed analytics for a specific tool within a project
 	// (GET /elitea_core/analytics_tool_detail/prompt_lib/{project_id})
 	GetAnalyticsToolDetail(w http.ResponseWriter, r *http.Request, projectId ProjectId, params GetAnalyticsToolDetailParams)
-	// Paginated tool analytics for a project's prompt library
+	// Tool analytics for a project's prompt library
 	// (GET /elitea_core/analytics_tools/prompt_lib/{project_id})
 	ListAnalyticsTools(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsToolsParams)
 	// Detailed analytics for a specific user within a project
 	// (GET /elitea_core/analytics_user_detail/prompt_lib/{project_id})
 	GetAnalyticsUserDetail(w http.ResponseWriter, r *http.Request, projectId ProjectId, params GetAnalyticsUserDetailParams)
-	// Paginated user analytics for a project's prompt library
+	// User analytics for a project's prompt library
 	// (GET /elitea_core/analytics_users/prompt_lib/{project_id})
 	ListAnalyticsUsers(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsUsersParams)
 	// Remove an application and all associated versions
@@ -773,16 +4836,13 @@ type ServerInterface interface {
 	EditApplication(w http.ResponseWriter, r *http.Request, projectId ProjectId, id int)
 	// Configure file-attachment storage toolkit for an agent version
 	// (PUT /elitea_core/application_attachment_storage/prompt_lib/{project_id}/{application_id}/{version_id})
-	SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int, params SetAgentAttachmentStorageParams)
+	SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int)
 	// Update the typed relationship between two application versions
 	// (PATCH /elitea_core/application_relation/prompt_lib/{project_id}/{selected_application_id}/{selected_version_id})
 	UpdateApplicationRelation(w http.ResponseWriter, r *http.Request, projectId ProjectId, selectedApplicationId int, selectedVersionId int)
 	// List skills attached to an agent version
 	// (GET /elitea_core/application_skills/prompt_lib/{project_id}/{app_version_id})
 	ListApplicationSkills(w http.ResponseWriter, r *http.Request, projectId ProjectId, appVersionId int)
-	// Cancel a running asynchronous application task
-	// (DELETE /elitea_core/application_task/prompt_lib/{project_id}/{task_id})
-	StopApplicationTask(w http.ResponseWriter, r *http.Request, projectId ProjectId, taskId string)
 	// List applications for a project
 	// (GET /elitea_core/applications/prompt_lib/{project_id})
 	ListApplications(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListApplicationsParams)
@@ -792,6 +4852,9 @@ type ServerInterface interface {
 	// Atomically repoint all references from old to new version
 	// (POST /elitea_core/batch_replace_version/prompt_lib/{project_id}/{old_version_id}/{new_version_id})
 	BatchReplaceVersionReferences(w http.ResponseWriter, r *http.Request, projectId ProjectId, oldVersionId int, newVersionId int, params BatchReplaceVersionReferencesParams)
+	// Get chat configuration (model defaults etc.)
+	// (GET /elitea_core/chat_config/prompt_lib/{project_id})
+	GetChatConfig(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 	// Report whether a version is referenced by other entities
 	// (GET /elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id})
 	CheckVersionInUse(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int)
@@ -799,24 +4862,18 @@ type ServerInterface interface {
 	// (GET /elitea_core/default_icons/prompt_lib/{project_id})
 	GetApplicationDefaultIcons(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 	// Mark a version as the default for its parent application
-	// (PATCH /elitea_core/default_version/prompt_lib/{project_id}/{application_id})
-	SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, params SetApplicationDefaultVersionParams)
-	// Partial settings update
+	// (PATCH /elitea_core/default_version/prompt_lib/{project_id}/{application_id}/{version_id})
+	SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int)
+	// Batch update of per-participant settings
 	// (PATCH /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id})
 	PatchEntitySettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int)
-	// Replace participant/conversation settings
-	// (PUT /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id})
-	ReplaceEntitySettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int)
-	// Partial update for a specific participant's settings
-	// (PATCH /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id})
-	PatchParticipantSettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int, participantId int)
 	// Replace settings for a specific participant
 	// (PUT /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id})
 	ReplaceParticipantSettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int, participantId int)
 	// Convert a legacy-format application payload into the current schema
 	// (POST /elitea_core/export_converter/prompt_lib)
 	ConvertLegacyApplication(w http.ResponseWriter, r *http.Request)
-	// Export an application as JSON or Markdown
+	// Export an application (with toolkits) as JSON
 	// (GET /elitea_core/export_import/prompt_lib/{project_id}/{id})
 	ExportApplication(w http.ResponseWriter, r *http.Request, projectId ProjectId, id int, params ExportApplicationParams)
 	// Copy a published application into the caller's project
@@ -825,7 +4882,7 @@ type ServerInterface interface {
 	// AI-assisted agent scaffolding — returns a pre-populated draft
 	// (POST /elitea_core/generate_application_draft/prompt_lib/{project_id})
 	GenerateAgentDraft(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Guided multi-step import flow for an application
+	// Guided multi-step import flow for applications and toolkits
 	// (POST /elitea_core/import_wizard/prompt_lib/{project_id})
 	ImportWizard(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 	// Get available document loader / index type configurations
@@ -861,15 +4918,6 @@ type ServerInterface interface {
 	// Get recommended applications for a project
 	// (GET /elitea_core/recommendations/prompt_lib/{project_id})
 	GetRecommendations(w http.ResponseWriter, r *http.Request, projectId ProjectId, params GetRecommendationsParams)
-	// Get search filter options (models, etc.)
-	// (GET /elitea_core/search/prompt_lib/{project_id})
-	GetSearchOptions(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// List all skills (no project scope)
-	// (GET /elitea_core/skills/prompt_lib)
-	ListPublicSkills(w http.ResponseWriter, r *http.Request, params ListPublicSkillsParams)
-	// Create a platform-scoped skill
-	// (POST /elitea_core/skills/prompt_lib)
-	CreatePublicSkill(w http.ResponseWriter, r *http.Request)
 	// Paginated list of skills for a project
 	// (GET /elitea_core/skills/prompt_lib/{project_id})
 	ListSkills(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListSkillsParams)
@@ -879,10 +4927,10 @@ type ServerInterface interface {
 	// Get all tags for a project
 	// (GET /elitea_core/tags/prompt_lib/{project_id})
 	ListTags(w http.ResponseWriter, r *http.Request, projectId ProjectId)
-	// Remove a tool (skill entity)
+	// Remove a tool (toolkit instance)
 	// (DELETE /elitea_core/tool/prompt_lib/{project_id}/{tool_id})
 	DeleteApplicationTool(w http.ResponseWriter, r *http.Request, projectId ProjectId, toolId int)
-	// List installed toolkit instances for a project
+	// Toolkit-type settings schemas
 	// (GET /elitea_core/toolkits/prompt_lib/{project_id})
 	ListToolkits(w http.ResponseWriter, r *http.Request, projectId ProjectId)
 	// Get list of authors with trending published agents
@@ -900,7 +4948,7 @@ type ServerInterface interface {
 	// Upload a new icon for a specific application version
 	// (POST /elitea_core/upload_icon/prompt_lib/{project_id}/{version_id})
 	UploadApplicationIcon(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int)
-	// Replace an existing icon's metadata / file for a version
+	// Replace an existing icon's metadata for a version
 	// (PUT /elitea_core/upload_icon/prompt_lib/{project_id}/{version_id})
 	ReplaceApplicationIcon(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int)
 	// Remove a version
@@ -912,12 +4960,15 @@ type ServerInterface interface {
 	// Update mutable fields of a specific version
 	// (PUT /elitea_core/version/prompt_lib/{project_id}/{application_id}/{version_id})
 	UpdateApplicationVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int)
-	// Validate a version's configuration against current platform constraints
+	// Validate that a version belongs to the application
 	// (GET /elitea_core/version_validator/prompt_lib/{project_id}/{application_id}/{version_id})
 	ValidateApplicationVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int)
 	// Create a new version for an existing application
 	// (POST /elitea_core/versions/prompt_lib/{project_id}/{application_id})
 	SaveApplicationNewVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int)
+	// Synchronous chat endpoint for embedded widgets
+	// (POST /elitea_core/webchat/prompt_lib/{project_id}/{version_id})
+	WebchatSync(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int)
 	// List all prompt-lib groups
 	// (GET /projects/groups/prompt_lib)
 	ListGroups(w http.ResponseWriter, r *http.Request)
@@ -954,7 +5005,7 @@ func (_ Unimplemented) RoleList(w http.ResponseWriter, r *http.Request, projectI
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Remove one or more users from a project
+// Remove one or more users from a project (live no-op)
 // (DELETE /admin/users/default/{project_id})
 func (_ Unimplemented) UserDelete(w http.ResponseWriter, r *http.Request, projectId ProjectId, params UserDeleteParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -966,13 +5017,13 @@ func (_ Unimplemented) UserList(w http.ResponseWriter, r *http.Request, projectI
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Create a user inside a project
+// Create a user inside a project (live no-op)
 // (POST /admin/users/default/{project_id})
 func (_ Unimplemented) UserCreate(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Replace an existing user record
+// Replace an existing user record (live no-op)
 // (PUT /admin/users/default/{project_id})
 func (_ Unimplemented) UserUpdate(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1014,9 +5065,9 @@ func (_ Unimplemented) CreateBucket(w http.ResponseWriter, r *http.Request, proj
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fully replace the configuration of an existing bucket
+// Update (rename) an existing bucket
 // (PUT /artifacts/buckets/default/{project_id})
-func (_ Unimplemented) EditBucket(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+func (_ Unimplemented) EditBucket(w http.ResponseWriter, r *http.Request, projectId ProjectId, params EditBucketParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1032,27 +5083,15 @@ func (_ Unimplemented) ArtifactList(w http.ResponseWriter, r *http.Request, buck
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// List permissions for a project (public/unauthenticated context)
-// (GET /auth/permissions/prompt_lib/public/{public_project_id})
-func (_ Unimplemented) PublicPermissionList(w http.ResponseWriter, r *http.Request, publicProjectId int) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // List permissions for a project (authenticated)
 // (GET /auth/permissions/prompt_lib/{project_id})
 func (_ Unimplemented) PermissionList(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Get chat configuration (model defaults etc.)
-// (GET /chat/{project_id})
-func (_ Unimplemented) GetChatConfig(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Synchronous chat endpoint for embedded widgets
-// (POST /chat/{project_id}/{version_id})
-func (_ Unimplemented) WebchatSync(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int) {
+// Branding bootstrap script (window.elitea_brand)
+// (GET /branding/bootstrap.js)
+func (_ Unimplemented) GetBrandingBootstrap(w http.ResponseWriter, r *http.Request, params GetBrandingBootstrapParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1074,7 +5113,7 @@ func (_ Unimplemented) GetAnalyticsAgentDetail(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Paginated agent analytics for a project's prompt library
+// Agent analytics for a project's prompt library
 // (GET /elitea_core/analytics_agents/prompt_lib/{project_id})
 func (_ Unimplemented) ListAnalyticsAgents(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsAgentsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1086,7 +5125,7 @@ func (_ Unimplemented) GetAnalyticsToolDetail(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Paginated tool analytics for a project's prompt library
+// Tool analytics for a project's prompt library
 // (GET /elitea_core/analytics_tools/prompt_lib/{project_id})
 func (_ Unimplemented) ListAnalyticsTools(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsToolsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1098,7 +5137,7 @@ func (_ Unimplemented) GetAnalyticsUserDetail(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Paginated user analytics for a project's prompt library
+// User analytics for a project's prompt library
 // (GET /elitea_core/analytics_users/prompt_lib/{project_id})
 func (_ Unimplemented) ListAnalyticsUsers(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListAnalyticsUsersParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1124,7 +5163,7 @@ func (_ Unimplemented) EditApplication(w http.ResponseWriter, r *http.Request, p
 
 // Configure file-attachment storage toolkit for an agent version
 // (PUT /elitea_core/application_attachment_storage/prompt_lib/{project_id}/{application_id}/{version_id})
-func (_ Unimplemented) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int, params SetAgentAttachmentStorageParams) {
+func (_ Unimplemented) SetAgentAttachmentStorage(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1137,12 +5176,6 @@ func (_ Unimplemented) UpdateApplicationRelation(w http.ResponseWriter, r *http.
 // List skills attached to an agent version
 // (GET /elitea_core/application_skills/prompt_lib/{project_id}/{app_version_id})
 func (_ Unimplemented) ListApplicationSkills(w http.ResponseWriter, r *http.Request, projectId ProjectId, appVersionId int) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Cancel a running asynchronous application task
-// (DELETE /elitea_core/application_task/prompt_lib/{project_id}/{task_id})
-func (_ Unimplemented) StopApplicationTask(w http.ResponseWriter, r *http.Request, projectId ProjectId, taskId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1164,6 +5197,12 @@ func (_ Unimplemented) BatchReplaceVersionReferences(w http.ResponseWriter, r *h
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Get chat configuration (model defaults etc.)
+// (GET /elitea_core/chat_config/prompt_lib/{project_id})
+func (_ Unimplemented) GetChatConfig(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Report whether a version is referenced by other entities
 // (GET /elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id})
 func (_ Unimplemented) CheckVersionInUse(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int) {
@@ -1177,26 +5216,14 @@ func (_ Unimplemented) GetApplicationDefaultIcons(w http.ResponseWriter, r *http
 }
 
 // Mark a version as the default for its parent application
-// (PATCH /elitea_core/default_version/prompt_lib/{project_id}/{application_id})
-func (_ Unimplemented) SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, params SetApplicationDefaultVersionParams) {
+// (PATCH /elitea_core/default_version/prompt_lib/{project_id}/{application_id}/{version_id})
+func (_ Unimplemented) SetApplicationDefaultVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Partial settings update
+// Batch update of per-participant settings
 // (PATCH /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id})
 func (_ Unimplemented) PatchEntitySettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Replace participant/conversation settings
-// (PUT /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id})
-func (_ Unimplemented) ReplaceEntitySettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Partial update for a specific participant's settings
-// (PATCH /elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id})
-func (_ Unimplemented) PatchParticipantSettings(w http.ResponseWriter, r *http.Request, projectId ProjectId, conversationId int, participantId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1212,7 +5239,7 @@ func (_ Unimplemented) ConvertLegacyApplication(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Export an application as JSON or Markdown
+// Export an application (with toolkits) as JSON
 // (GET /elitea_core/export_import/prompt_lib/{project_id}/{id})
 func (_ Unimplemented) ExportApplication(w http.ResponseWriter, r *http.Request, projectId ProjectId, id int, params ExportApplicationParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1230,7 +5257,7 @@ func (_ Unimplemented) GenerateAgentDraft(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Guided multi-step import flow for an application
+// Guided multi-step import flow for applications and toolkits
 // (POST /elitea_core/import_wizard/prompt_lib/{project_id})
 func (_ Unimplemented) ImportWizard(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1302,24 +5329,6 @@ func (_ Unimplemented) GetRecommendations(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Get search filter options (models, etc.)
-// (GET /elitea_core/search/prompt_lib/{project_id})
-func (_ Unimplemented) GetSearchOptions(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// List all skills (no project scope)
-// (GET /elitea_core/skills/prompt_lib)
-func (_ Unimplemented) ListPublicSkills(w http.ResponseWriter, r *http.Request, params ListPublicSkillsParams) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// Create a platform-scoped skill
-// (POST /elitea_core/skills/prompt_lib)
-func (_ Unimplemented) CreatePublicSkill(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // Paginated list of skills for a project
 // (GET /elitea_core/skills/prompt_lib/{project_id})
 func (_ Unimplemented) ListSkills(w http.ResponseWriter, r *http.Request, projectId ProjectId, params ListSkillsParams) {
@@ -1338,13 +5347,13 @@ func (_ Unimplemented) ListTags(w http.ResponseWriter, r *http.Request, projectI
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Remove a tool (skill entity)
+// Remove a tool (toolkit instance)
 // (DELETE /elitea_core/tool/prompt_lib/{project_id}/{tool_id})
 func (_ Unimplemented) DeleteApplicationTool(w http.ResponseWriter, r *http.Request, projectId ProjectId, toolId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// List installed toolkit instances for a project
+// Toolkit-type settings schemas
 // (GET /elitea_core/toolkits/prompt_lib/{project_id})
 func (_ Unimplemented) ListToolkits(w http.ResponseWriter, r *http.Request, projectId ProjectId) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1380,7 +5389,7 @@ func (_ Unimplemented) UploadApplicationIcon(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Replace an existing icon's metadata / file for a version
+// Replace an existing icon's metadata for a version
 // (PUT /elitea_core/upload_icon/prompt_lib/{project_id}/{version_id})
 func (_ Unimplemented) ReplaceApplicationIcon(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1404,7 +5413,7 @@ func (_ Unimplemented) UpdateApplicationVersion(w http.ResponseWriter, r *http.R
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Validate a version's configuration against current platform constraints
+// Validate that a version belongs to the application
 // (GET /elitea_core/version_validator/prompt_lib/{project_id}/{application_id}/{version_id})
 func (_ Unimplemented) ValidateApplicationVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int, versionId int) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -1413,6 +5422,12 @@ func (_ Unimplemented) ValidateApplicationVersion(w http.ResponseWriter, r *http
 // Create a new version for an existing application
 // (POST /elitea_core/versions/prompt_lib/{project_id}/{application_id})
 func (_ Unimplemented) SaveApplicationNewVersion(w http.ResponseWriter, r *http.Request, projectId ProjectId, applicationId int) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Synchronous chat endpoint for embedded widgets
+// (POST /elitea_core/webchat/prompt_lib/{project_id}/{version_id})
+func (_ Unimplemented) WebchatSync(w http.ResponseWriter, r *http.Request, projectId ProjectId, versionId int) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1592,15 +5607,15 @@ func (siw *ServerInterfaceWrapper) UserDelete(w http.ResponseWriter, r *http.Req
 	// Parameter object where we will unmarshal all parameters from the context
 	var params UserDeleteParams
 
-	// ------------- Required query parameter "id" -------------
+	// ------------- Optional query parameter "id[]" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "id", r.URL.Query(), &params.Id, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", false, false, "id[]", r.URL.Query(), &params.Id, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "id"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "id[]"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id[]", Err: err})
 		}
 		return
 	}
@@ -1827,15 +5842,15 @@ func (siw *ServerInterfaceWrapper) DeleteArtifacts(w http.ResponseWriter, r *htt
 	// Parameter object where we will unmarshal all parameters from the context
 	var params DeleteArtifactsParams
 
-	// ------------- Optional query parameter "fnames" -------------
+	// ------------- Required query parameter "fname[]" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "fnames", r.URL.Query(), &params.Fnames, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "fname[]", r.URL.Query(), &params.Fname, runtime.BindQueryParameterOptions{Type: "array", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "fnames"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "fname[]"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fnames", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fname[]", Err: err})
 		}
 		return
 	}
@@ -2011,8 +6026,24 @@ func (siw *ServerInterfaceWrapper) EditBucket(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params EditBucketParams
+
+	// ------------- Required query parameter "name" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "name", r.URL.Query(), &params.Name, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "name"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.EditBucket(w, r, projectId)
+		siw.Handler.EditBucket(w, r, projectId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2123,32 +6154,6 @@ func (siw *ServerInterfaceWrapper) ArtifactList(w http.ResponseWriter, r *http.R
 	handler.ServeHTTP(w, r)
 }
 
-// PublicPermissionList operation middleware
-func (siw *ServerInterfaceWrapper) PublicPermissionList(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "public_project_id" -------------
-	var publicProjectId int
-
-	err = runtime.BindStyledParameterWithOptions("simple", "public_project_id", chi.URLParam(r, "public_project_id"), &publicProjectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "public_project_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PublicPermissionList(w, r, publicProjectId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // PermissionList operation middleware
 func (siw *ServerInterfaceWrapper) PermissionList(w http.ResponseWriter, r *http.Request) {
 
@@ -2175,58 +6180,30 @@ func (siw *ServerInterfaceWrapper) PermissionList(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
-// GetChatConfig operation middleware
-func (siw *ServerInterfaceWrapper) GetChatConfig(w http.ResponseWriter, r *http.Request) {
+// GetBrandingBootstrap operation middleware
+func (siw *ServerInterfaceWrapper) GetBrandingBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 	_ = err
 
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetBrandingBootstrapParams
 
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	// ------------- Optional query parameter "v" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "v", r.URL.Query(), &params.V, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "v"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "v", Err: err})
+		}
 		return
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetChatConfig(w, r, projectId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// WebchatSync operation middleware
-func (siw *ServerInterfaceWrapper) WebchatSync(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "version_id" -------------
-	var versionId int
-
-	err = runtime.BindStyledParameterWithOptions("simple", "version_id", chi.URLParam(r, "version_id"), &versionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.WebchatSync(w, r, projectId, versionId)
+		siw.Handler.GetBrandingBootstrap(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2335,28 +6312,41 @@ func (siw *ServerInterfaceWrapper) GetAnalyticsAgentDetail(w http.ResponseWriter
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetAnalyticsAgentDetailParams
 
-	// ------------- Optional query parameter "entity_id_string" -------------
+	// ------------- Optional query parameter "application_id" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "entity_id_string", r.URL.Query(), &params.EntityIdString, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "application_id", r.URL.Query(), &params.ApplicationId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "entity_id_string"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "application_id"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entity_id_string", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "application_id", Err: err})
 		}
 		return
 	}
 
-	// ------------- Optional query parameter "entity_id_int" -------------
+	// ------------- Optional query parameter "agent_id" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "entity_id_int", r.URL.Query(), &params.EntityIdInt, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "agent_id", r.URL.Query(), &params.AgentId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "entity_id_int"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "agent_id"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entity_id_int", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agent_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "entity_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "entity_id", r.URL.Query(), &params.EntityId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "entity_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "entity_id", Err: err})
 		}
 		return
 	}
@@ -2535,6 +6525,32 @@ func (siw *ServerInterfaceWrapper) GetAnalyticsToolDetail(w http.ResponseWriter,
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetAnalyticsToolDetailParams
+
+	// ------------- Optional query parameter "tool_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tool_id", r.URL.Query(), &params.ToolId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tool_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tool_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "toolkit_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "toolkit_id", r.URL.Query(), &params.ToolkitId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "toolkit_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "toolkit_id", Err: err})
+		}
+		return
+	}
 
 	// ------------- Optional query parameter "tool_name" -------------
 
@@ -2724,28 +6740,15 @@ func (siw *ServerInterfaceWrapper) GetAnalyticsUserDetail(w http.ResponseWriter,
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetAnalyticsUserDetailParams
 
-	// ------------- Optional query parameter "user_id_string" -------------
+	// ------------- Optional query parameter "user_id" -------------
 
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "user_id_string", r.URL.Query(), &params.UserIdString, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "user_id", r.URL.Query(), &params.UserId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
 	if err != nil {
 		var requiredError *runtime.RequiredParameterError
 		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "user_id_string"})
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "user_id"})
 		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id_string", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "user_id_int" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "user_id_int", r.URL.Query(), &params.UserIdInt, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "user_id_int"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id_int", Err: err})
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user_id", Err: err})
 		}
 		return
 	}
@@ -3045,24 +7048,8 @@ func (siw *ServerInterfaceWrapper) SetAgentAttachmentStorage(w http.ResponseWrit
 		return
 	}
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params SetAgentAttachmentStorageParams
-
-	// ------------- Required query parameter "toolkit_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "toolkit_id", r.URL.Query(), &params.ToolkitId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "toolkit_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "toolkit_id", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SetAgentAttachmentStorage(w, r, projectId, applicationId, versionId, params)
+		siw.Handler.SetAgentAttachmentStorage(w, r, projectId, applicationId, versionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3151,41 +7138,6 @@ func (siw *ServerInterfaceWrapper) ListApplicationSkills(w http.ResponseWriter, 
 	handler.ServeHTTP(w, r)
 }
 
-// StopApplicationTask operation middleware
-func (siw *ServerInterfaceWrapper) StopApplicationTask(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "task_id" -------------
-	var taskId string
-
-	err = runtime.BindStyledParameterWithOptions("simple", "task_id", chi.URLParam(r, "task_id"), &taskId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "task_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.StopApplicationTask(w, r, projectId, taskId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // ListApplications operation middleware
 func (siw *ServerInterfaceWrapper) ListApplications(w http.ResponseWriter, r *http.Request) {
 
@@ -3226,6 +7178,58 @@ func (siw *ServerInterfaceWrapper) ListApplications(w http.ResponseWriter, r *ht
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "query" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "query", r.URL.Query(), &params.Query, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "query"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "query", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "tags" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "tags", r.URL.Query(), &params.Tags, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "tags"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tags", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "folder_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "folder_id", r.URL.Query(), &params.FolderId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "folder_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "folder_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "agents_type" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "agents_type", r.URL.Query(), &params.AgentsType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "agents_type"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "agents_type", Err: err})
 		}
 		return
 	}
@@ -3318,6 +7322,32 @@ func (siw *ServerInterfaceWrapper) BatchReplaceVersionReferences(w http.Response
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.BatchReplaceVersionReferences(w, r, projectId, oldVersionId, newVersionId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetChatConfig operation middleware
+func (siw *ServerInterfaceWrapper) GetChatConfig(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetChatConfig(w, r, projectId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3421,24 +7451,17 @@ func (siw *ServerInterfaceWrapper) SetApplicationDefaultVersion(w http.ResponseW
 		return
 	}
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params SetApplicationDefaultVersionParams
+	// ------------- Path parameter "version_id" -------------
+	var versionId int
 
-	// ------------- Required query parameter "version_id" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "version_id", r.URL.Query(), &params.VersionId, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	err = runtime.BindStyledParameterWithOptions("simple", "version_id", chi.URLParam(r, "version_id"), &versionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
 	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "version_id"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version_id", Err: err})
-		}
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version_id", Err: err})
 		return
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.SetApplicationDefaultVersion(w, r, projectId, applicationId, params)
+		siw.Handler.SetApplicationDefaultVersion(w, r, projectId, applicationId, versionId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3474,85 +7497,6 @@ func (siw *ServerInterfaceWrapper) PatchEntitySettings(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchEntitySettings(w, r, projectId, conversationId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReplaceEntitySettings operation middleware
-func (siw *ServerInterfaceWrapper) ReplaceEntitySettings(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "conversation_id" -------------
-	var conversationId int
-
-	err = runtime.BindStyledParameterWithOptions("simple", "conversation_id", chi.URLParam(r, "conversation_id"), &conversationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "conversation_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReplaceEntitySettings(w, r, projectId, conversationId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// PatchParticipantSettings operation middleware
-func (siw *ServerInterfaceWrapper) PatchParticipantSettings(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "conversation_id" -------------
-	var conversationId int
-
-	err = runtime.BindStyledParameterWithOptions("simple", "conversation_id", chi.URLParam(r, "conversation_id"), &conversationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "conversation_id", Err: err})
-		return
-	}
-
-	// ------------- Path parameter "participant_id" -------------
-	var participantId int
-
-	err = runtime.BindStyledParameterWithOptions("simple", "participant_id", chi.URLParam(r, "participant_id"), &participantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "participant_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PatchParticipantSettings(w, r, projectId, conversationId, participantId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3656,6 +7600,19 @@ func (siw *ServerInterfaceWrapper) ExportApplication(w http.ResponseWriter, r *h
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "fork"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "fork", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "as_file" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "as_file", r.URL.Query(), &params.AsFile, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "as_file"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "as_file", Err: err})
 		}
 		return
 	}
@@ -4007,6 +7964,19 @@ func (siw *ServerInterfaceWrapper) ListPublicApplications(w http.ResponseWriter,
 		return
 	}
 
+	// ------------- Optional query parameter "category" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "category", r.URL.Query(), &params.Category, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "category"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "category", Err: err})
+		}
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListPublicApplications(w, r, params)
 	}))
@@ -4143,92 +8113,6 @@ func (siw *ServerInterfaceWrapper) GetRecommendations(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
-// GetSearchOptions operation middleware
-func (siw *ServerInterfaceWrapper) GetSearchOptions(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "project_id" -------------
-	var projectId ProjectId
-
-	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetSearchOptions(w, r, projectId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ListPublicSkills operation middleware
-func (siw *ServerInterfaceWrapper) ListPublicSkills(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListPublicSkillsParams
-
-	// ------------- Optional query parameter "limit" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
-		}
-		return
-	}
-
-	// ------------- Optional query parameter "offset" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListPublicSkills(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// CreatePublicSkill operation middleware
-func (siw *ServerInterfaceWrapper) CreatePublicSkill(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreatePublicSkill(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // ListSkills operation middleware
 func (siw *ServerInterfaceWrapper) ListSkills(w http.ResponseWriter, r *http.Request) {
 
@@ -4269,6 +8153,32 @@ func (siw *ServerInterfaceWrapper) ListSkills(w http.ResponseWriter, r *http.Req
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", r.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "page"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "page", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "page_size" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page_size", r.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "page_size"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "page_size", Err: err})
 		}
 		return
 	}
@@ -4845,6 +8755,41 @@ func (siw *ServerInterfaceWrapper) SaveApplicationNewVersion(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
+// WebchatSync operation middleware
+func (siw *ServerInterfaceWrapper) WebchatSync(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "project_id" -------------
+	var projectId ProjectId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "project_id", chi.URLParam(r, "project_id"), &projectId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project_id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "version_id" -------------
+	var versionId int
+
+	err = runtime.BindStyledParameterWithOptions("simple", "version_id", chi.URLParam(r, "version_id"), &versionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.WebchatSync(w, r, projectId, versionId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListGroups operation middleware
 func (siw *ServerInterfaceWrapper) ListGroups(w http.ResponseWriter, r *http.Request) {
 
@@ -5103,16 +9048,10 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/artifacts/s3/{bucket}", wrapper.ArtifactList)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/auth/permissions/prompt_lib/public/{public_project_id}", wrapper.PublicPermissionList)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/auth/permissions/prompt_lib/{project_id}", wrapper.PermissionList)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/chat/{project_id}", wrapper.GetChatConfig)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/chat/{project_id}/{version_id}", wrapper.WebchatSync)
+		r.Get(options.BaseURL+"/branding/bootstrap.js", wrapper.GetBrandingBootstrap)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/elitea_core/agent_categories/prompt_lib/{project_id}", wrapper.GetAgentCategories)
@@ -5157,9 +9096,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/elitea_core/application_skills/prompt_lib/{project_id}/{app_version_id}", wrapper.ListApplicationSkills)
 	})
 	r.Group(func(r chi.Router) {
-		r.Delete(options.BaseURL+"/elitea_core/application_task/prompt_lib/{project_id}/{task_id}", wrapper.StopApplicationTask)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/elitea_core/applications/prompt_lib/{project_id}", wrapper.ListApplications)
 	})
 	r.Group(func(r chi.Router) {
@@ -5169,22 +9105,19 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/elitea_core/batch_replace_version/prompt_lib/{project_id}/{old_version_id}/{new_version_id}", wrapper.BatchReplaceVersionReferences)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/elitea_core/chat_config/prompt_lib/{project_id}", wrapper.GetChatConfig)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/elitea_core/check_version_in_use/prompt_lib/{project_id}/{application_id}/{version_id}", wrapper.CheckVersionInUse)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/elitea_core/default_icons/prompt_lib/{project_id}", wrapper.GetApplicationDefaultIcons)
 	})
 	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/elitea_core/default_version/prompt_lib/{project_id}/{application_id}", wrapper.SetApplicationDefaultVersion)
+		r.Patch(options.BaseURL+"/elitea_core/default_version/prompt_lib/{project_id}/{application_id}/{version_id}", wrapper.SetApplicationDefaultVersion)
 	})
 	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}", wrapper.PatchEntitySettings)
-	})
-	r.Group(func(r chi.Router) {
-		r.Put(options.BaseURL+"/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}", wrapper.ReplaceEntitySettings)
-	})
-	r.Group(func(r chi.Router) {
-		r.Patch(options.BaseURL+"/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}", wrapper.PatchParticipantSettings)
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/elitea_core/entity_settings/prompt_lib/{project_id}/{conversation_id}/{participant_id}", wrapper.ReplaceParticipantSettings)
@@ -5238,15 +9171,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/elitea_core/recommendations/prompt_lib/{project_id}", wrapper.GetRecommendations)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/elitea_core/search/prompt_lib/{project_id}", wrapper.GetSearchOptions)
-	})
-	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/elitea_core/skills/prompt_lib", wrapper.ListPublicSkills)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/elitea_core/skills/prompt_lib", wrapper.CreatePublicSkill)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/elitea_core/skills/prompt_lib/{project_id}", wrapper.ListSkills)
 	})
 	r.Group(func(r chi.Router) {
@@ -5295,6 +9219,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/elitea_core/versions/prompt_lib/{project_id}/{application_id}", wrapper.SaveApplicationNewVersion)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/elitea_core/webchat/prompt_lib/{project_id}/{version_id}", wrapper.WebchatSync)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/projects/groups/prompt_lib", wrapper.ListGroups)
 	})
 	r.Group(func(r chi.Router) {
@@ -5315,121 +9242,453 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
+	"g7FNjo2d1Ll14Kp4kKvfMFegU9ye7p7+GwAA//8=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,
