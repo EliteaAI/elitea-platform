@@ -86,7 +86,11 @@ function scanGoEventLiterals(serverGoSource, pattern) {
   const seen = new Set();
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+    // Both current callers pass a flag-less regex literal, so this always
+    // appends 'g'; simplified from a flags.includes('g') branch that was
+    // provably dead for every real caller (confirmed by grep: 2 call sites,
+    // both flag-less literals) rather than kept as untested defensive code.
+    const re = new RegExp(pattern.source, `${pattern.flags}g`);
     let m;
     while ((m = re.exec(lines[i])) !== null) {
       const event = m[1];

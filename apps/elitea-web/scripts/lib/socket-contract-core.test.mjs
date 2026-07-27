@@ -251,4 +251,28 @@ describe('renderCoverageReport', () => {
     const report = renderCoverageReport(catalogue, crossReference, diff);
     expect(report).toContain('NEW GAP (unreviewed)');
   });
+
+  it('defaults hasServerHandler/serverEmits to false for a catalogue entry with no matching cross-reference row', () => {
+    // Defensive path: the catalogue and crossReference.rows are normally kept
+    // in lockstep by the caller, but this function doesn't assume it — an
+    // entry absent from `rows` (byEvent.get returns undefined) must render
+    // as "not handled" rather than throw.
+    const catalogue = [{ name: 'ghost', direction: 'receive' }];
+    const crossReference = { rows: [] };
+    const diff = { clientOnlyGaps: [], newClientOnlyGaps: [] };
+    const report = renderCoverageReport(catalogue, crossReference, diff);
+    const dataLine = report.split('\n').find((l) => l.startsWith('ghost'));
+    expect(dataLine).toBeDefined();
+    expect(dataLine.includes('Y')).toBe(false);
+    expect(dataLine).toContain('known gap (allow-listed)');
+  });
+
+  it('renders Y for serverEmits when the row says the server does emit the event', () => {
+    const catalogue = [{ name: 'a', direction: 'receive' }];
+    const crossReference = { rows: [{ event: 'a', hasServerHandler: true, serverEmits: true }] };
+    const diff = { clientOnlyGaps: [], newClientOnlyGaps: [] };
+    const report = renderCoverageReport(catalogue, crossReference, diff);
+    const dataLine = report.split('\n').find((l) => l.startsWith('a'));
+    expect(dataLine).toContain('Y');
+  });
 });

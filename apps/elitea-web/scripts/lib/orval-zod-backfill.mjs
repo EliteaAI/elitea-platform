@@ -129,9 +129,13 @@ function writeBackfilledModels(modelDir, files) {
 
 function reportBackfillResult({ files, warnings, skipped }) {
   if (files.length > 0 || warnings.length > 0) {
+    // planBackfill's only warnings-producing loop (Params candidates) always
+    // pushes a file entry in the same iteration before adding a warning, so
+    // warnings.length > 0 implies files.length > 0 here too -- the `|| 'none'`
+    // fallback this used to have was unreachable for any real plan.
     process.stdout.write(
       `orval-zod-backfill: wrote ${files.length} model file(s) orval's zod-schema writer left ` +
-        `undefined (${files.map((f) => f.name).join(', ') || 'none'})\n`,
+        `undefined (${files.map((f) => f.name).join(', ')})\n`,
     );
   }
   for (const w of warnings) process.stdout.write(`orval-zod-backfill: WARNING ${w}\n`);

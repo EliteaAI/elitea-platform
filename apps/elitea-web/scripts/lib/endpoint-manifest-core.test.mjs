@@ -131,6 +131,16 @@ describe('validateManifest — whole-document checks', () => {
     expect(validateManifest({}, GENERATED)).toEqual({ violations: [], duplicateIds: [], total: 0 });
   });
 
+  it('falls back to a null id (not counted as a duplicate) for an entry with no id at all', () => {
+    const doc = { endpoints: [{ method: 'GET', path: '/x', source: 'bogus' }] };
+    const { violations, duplicateIds, total } = validateManifest(doc, GENERATED);
+    expect(total).toBe(1);
+    expect(violations).toEqual([
+      { id: null, messages: expect.arrayContaining([expect.stringContaining('missing required field "id"')]) },
+    ]);
+    expect(duplicateIds).toEqual([]); // an id-less entry is never tracked as a duplicate
+  });
+
   it('GREEN: an all-valid document has no violations and no duplicates', () => {
     const doc = {
       endpoints: [

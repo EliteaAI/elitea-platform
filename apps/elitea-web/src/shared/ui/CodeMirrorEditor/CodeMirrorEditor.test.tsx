@@ -28,16 +28,25 @@ describe('CodeMirrorEditor', () => {
   });
 
   it('calls onChange with the edited text, debounced', async () => {
+    // Deliberately does NOT assert `not.toHaveBeenCalled()` immediately
+    // after the keystroke: that raced the real 30ms debounce timer against
+    // userEvent's own real (non-fake-timer) inter-action delays, and was
+    // observed to fail intermittently on a slower CI runner where those
+    // delays alone could exceed 30ms. Debouncing is proven instead by
+    // typing several keystrokes in a row and confirming onChange coalesces
+    // them into exactly one call with the final value -- a call-count
+    // assertion that is deterministic regardless of how much real wall-clock
+    // time each keystroke happens to take.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { container } = renderWithTheme(<CodeMirrorEditor value="abc" onChange={onChange} />);
     const content = getContent(container);
     await user.click(content);
-    await user.keyboard('X');
-    expect(onChange).not.toHaveBeenCalled();
+    await user.keyboard('XYZ');
     await vi.waitFor(() => {
-      expect(onChange).toHaveBeenCalledWith('Xabc');
+      expect(onChange).toHaveBeenCalledWith('XYZabc');
     });
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   it('does not accept edits when readOnly', async () => {

@@ -133,6 +133,17 @@ describe('computeResponseAliasCandidates', () => {
     expect(computeResponseAliasCandidates({})).toEqual([]);
     expect(computeResponseAliasCandidates({ components: {} })).toEqual([]);
   });
+
+  it('a $ref response schema pointing outside #/components/schemas/ has a null target (regex miss)', () => {
+    const doc = {
+      components: {
+        responses: {
+          303: { content: { 'application/json': { schema: { $ref: '#/components/responses/Other' } } } },
+        },
+      },
+    };
+    expect(computeResponseAliasCandidates(doc)).toEqual([{ name: 'N303Response', target: null, sourceKey: '303' }]);
+  });
 });
 
 describe('computeParamsCandidates', () => {
@@ -238,6 +249,52 @@ describe('computeParamsCandidates', () => {
 
   it('returns [] for a spec with no paths', () => {
     expect(computeParamsCandidates({})).toEqual([]);
+  });
+
+  it('falls back to [] for an operation object with no `parameters` key at all', () => {
+    const doc = {
+      components: { parameters: {} },
+      paths: {
+        '/x': {
+          parameters: [{ name: 'a', in: 'query', schema: { type: 'string' } }],
+          get: { operationId: 'opX' }, // no `parameters` key on the operation itself
+        },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([
+      { name: 'OpXParams', operationId: 'opX', fields: [{ propName: 'a', schema: { type: 'string' } }] },
+    ]);
+  });
+
+  it('a $ref parameter pointing outside #/components/parameters/ resolves to undefined (regex miss) and is dropped', () => {
+    const doc = {
+      components: { parameters: {} },
+      paths: {
+        '/x': {
+          get: { operationId: 'opX', parameters: [{ $ref: '#/components/schemas/NotAParam' }] },
+        },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([]);
+  });
+
+  it('skips a falsy entry mixed into a parameters array without crashing', () => {
+    const doc = {
+      components: { parameters: {} },
+      paths: {
+        '/x': {
+          get: { operationId: 'opX', parameters: [null, { name: 'v', in: 'query', schema: { type: 'string' } }] },
+        },
+      },
+    };
+    expect(computeParamsCandidates(doc)).toEqual([
+      { name: 'OpXParams', operationId: 'opX', fields: [{ propName: 'v', schema: { type: 'string' } }] },
+    ]);
+  });
+
+  it('ignores a non-object path item value (e.g. null) instead of throwing', () => {
+    const doc = { components: { parameters: {} }, paths: { '/weird': null } };
+    expect(computeParamsCandidates(doc)).toEqual([]);
   });
 });
 

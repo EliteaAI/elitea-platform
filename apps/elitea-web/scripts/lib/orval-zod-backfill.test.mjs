@@ -40,6 +40,39 @@ const SPEC_YAML = [
   "        - $ref: '#/components/parameters/Limit'",
 ].join('\n');
 
+/** Response-only spec (no paths at all) — used to prove existingFileBases's
+ * readdirSync-ENOENT branch without also producing a Params file, which
+ * would otherwise try to writeFileSync into the deliberately-absent modelDir. */
+const SPEC_YAML_RESPONSE_ONLY = [
+  'components:',
+  '  responses:',
+  "    '400':",
+  '      content:',
+  '        application/json:',
+  '          schema:',
+  '            $ref: "#/components/schemas/ErrorResponse"',
+  'paths: {}',
+].join('\n');
+
+/** A query param with a JSON-Schema shape schemaToZodExpr doesn't support
+ * (array), so renderParamsFile surfaces a warning while still writing the
+ * zod.unknown() fallback field. */
+const SPEC_YAML_WARNING_PARAM = [
+  'components:',
+  '  parameters:',
+  '    Blob:',
+  '      name: blob',
+  '      in: query',
+  '      schema:',
+  '        type: array',
+  'paths:',
+  '  /roles:',
+  '    get:',
+  '      operationId: roleList',
+  '      parameters:',
+  "        - $ref: '#/components/parameters/Blob'",
+].join('\n');
+
 let dirs = [];
 
 function makeTempDir(prefix) {
@@ -132,6 +165,77 @@ describe('backfillMissingZodModels', () => {
 
     const barrel = readFileSync(join(modelDir, 'index.ts'), 'utf8');
     expect(barrel.match(/n400Response\.zod/g)).toHaveLength(1);
+  });
+
+  it('does not rewrite index.ts when every newly backfilled name already has a barrel line (no-op early return)', async () => {
+    const { specPath, modelDir, generatedDir } = setUpTree();
+    // index.ts already carries the RoleListParams barrel line, even though
+    // roleListParams.zod.ts itself isn't on disk yet — planBackfill still
+    // finds it missing (it only looks at .zod.ts files), so patchIndexBarrel
+    // runs, but the filtered `additions` list ends up empty.
+    writeFileSync(
+      join(modelDir, 'index.ts'),
+      'export * from "./errorResponse.zod";\nexport * from "./roleListParams.zod";\n',
+    );
+    writeFileSync(join(modelDir, 'n400Response.zod.ts'), 'export const N400Response = 1;\n');
+
+    const before = readFileSync(join(modelDir, 'index.ts'), 'utf8');
+    const result = await backfillMissingZodModels({ specPath, modelDir, generatedDir });
+    const after = readFileSync(join(modelDir, 'index.ts'), 'utf8');
+
+    expect(result.files.map((f) => f.name)).toEqual(['RoleListParams']);
+    expect(after).toBe(before);
+  });
+
+  it('creates a new export line and adds a leading newline when index.ts has no matching lines / no trailing newline', async () => {
+    const { specPath, modelDir, generatedDir } = setUpTree();
+    // No `export * from "...";` lines at all, and no trailing newline —
+    // `.match()` returns null (the `?? []` fallback) and the separator must
+    // be inserted rather than assumed already present.
+    writeFileSync(join(modelDir, 'index.ts'), 'export const notAModelBarrel = true;');
+    writeFileSync(join(modelDir, 'n400Response.zod.ts'), 'export const N400Response = 1;\n');
+
+    await backfillMissingZodModels({ specPath, modelDir, generatedDir });
+
+    const barrel = readFileSync(join(modelDir, 'index.ts'), 'utf8');
+    expect(barrel).toBe('export const notAModelBarrel = true;\nexport * from "./roleListParams.zod";\n');
+  });
+
+  it('treats a completely missing model directory as having no existing files (readdirSync ENOENT branch)', async () => {
+    const root = makeTempDir('s4-backfill-missing-modeldir-');
+    const specPath = join(root, 'v2.yaml');
+    const modelDir = join(root, 'generated', 'model'); // deliberately never created
+    const generatedDir = join(root, 'generated');
+    writeFileSync(specPath, SPEC_YAML_RESPONSE_ONLY);
+
+    const result = await backfillMissingZodModels({ specPath, modelDir, generatedDir });
+
+    // With no directory to read, existingFileBases is empty, so the response
+    // alias is a candidate — but its target ("ErrorResponse") also isn't on
+    // disk, so it's skipped rather than written (which would otherwise throw
+    // trying to writeFileSync into a directory that doesn't exist).
+    expect(result.files).toEqual([]);
+    expect(result.skipped).toContainEqual({
+      name: 'N400Response',
+      reason: 'alias target "ErrorResponse" has no model file either',
+    });
+  });
+
+  it('logs a per-field warning for an unsupported query-param schema, still writing the zod.unknown() fallback field', async () => {
+    const root = makeTempDir('s4-backfill-warning-');
+    const specPath = join(root, 'v2.yaml');
+    const modelDir = join(root, 'generated', 'model');
+    const generatedDir = join(root, 'generated');
+    writeFileSync(specPath, SPEC_YAML_WARNING_PARAM);
+    mkdirSync(modelDir, { recursive: true });
+    writeFileSync(join(modelDir, 'index.ts'), '');
+
+    const result = await backfillMissingZodModels({ specPath, modelDir, generatedDir });
+
+    expect(result.warnings).toEqual([
+      'RoleListParams.blob: unsupported schema shape {"type":"array"} — falling back to zod.unknown()',
+    ]);
+    expect(result.files.map((f) => f.name)).toEqual(['RoleListParams']);
   });
 
   it('writes nothing when every candidate already exists on disk', async () => {

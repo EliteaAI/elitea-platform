@@ -16,7 +16,7 @@
     "build:maintenance": "vite build --mode maintenance",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint -c .oxlintrc.json",
-    "test:unit": "vitest run --config vitest.config.ts",
+    "test:unit": "vitest run --config vitest.config.ts --project node",
     "test:storybook": "vitest run --config vitest.config.ts --project storybook",
     "theme-gate": "node scripts/theme-gate.mjs",
     "check-handlers": "node scripts/check-handlers.mjs",

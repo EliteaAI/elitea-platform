@@ -59,8 +59,11 @@ export function toFileBase(pascalName) {
   return pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
 }
 
+// Sole call site (`schema?.$ref ? refSchemaName(schema.$ref) : null`) only
+// invokes this when $ref is already truthy, so `ref` is never null/undefined
+// here — no `?? ''` fallback needed.
 function refSchemaName(ref) {
-  const m = RESPONSE_REF_RE.exec(ref ?? '');
+  const m = RESPONSE_REF_RE.exec(ref);
   return m ? m[1] : null;
 }
 
