@@ -235,6 +235,131 @@ func TestProductionRouterMountsOnlyExactCurrentSocialAuthorsPaths(t *testing.T) 
 	}
 }
 
+type productionProjectInfoReader struct {
+	calls     int
+	projectID int32
+}
+
+func (reader *productionProjectInfoReader) GetCurrentProjectInfo(
+	_ context.Context,
+	projectID int32,
+) (projectinfoapi.CurrentProjectInfo, error) {
+	reader.calls++
+	reader.projectID = projectID
+	return projectinfoapi.CurrentProjectInfo{
+		TeammatesCount: 2,
+		IconMeta:       []byte(`{"url":"/project-icons/seven.svg"}`),
+	}, nil
+}
+
+type productionProjectInfoPermissionResolver struct{}
+
+func (productionProjectInfoPermissionResolver) ResolvePermissions(
+	_ context.Context,
+	user auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	if user.UserID != "11" || mode != projectinfoapi.CurrentProjectInfoMode ||
+		projectID != "7" {
+		return auth.PermissionResolution{}, errors.New("unexpected project-info authorization input")
+	}
+	return auth.PermissionResolution{
+		UserID:      11,
+		Permissions: []string{projectinfoapi.CurrentProjectInfoPermission},
+	}, nil
+}
+
+func TestProductionRouterMountsOnlyExactCurrentProjectInfoPathWhenComposed(t *testing.T) {
+	reader := &productionProjectInfoReader{}
+	projectInfo, err := projectinfoapi.NewCurrentProjectInfoRoute(
+		reader,
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionProjectInfoPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentProjectInfo: projectInfo})
+
+	for _, test := range []struct {
+		method        string
+		path          string
+		authenticated bool
+		want          int
+	}{
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/project_info/prompt_lib/007/project-info",
+			authenticated: true,
+			want:          http.StatusOK,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/project_info/prompt_lib/7/project-info",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			method: http.MethodPut,
+			path:   "/api/v2/elitea_core/project_info/prompt_lib/7/project-info",
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/project_info/default/7/project-info",
+			want:   http.StatusNotFound,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/project_info/prompt_lib/7/project-info/extra",
+			want:   http.StatusNotFound,
+		},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(test.method, test.path, nil)
+			if test.authenticated {
+				request.Header.Set("X-Auth-Type", "user")
+				request.Header.Set("X-Auth-ID", "11")
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf(
+					"status = %d, want %d; body=%s",
+					recorder.Code,
+					test.want,
+					recorder.Body.String(),
+				)
+			}
+			if test.want == http.StatusOK &&
+				recorder.Body.String() !=
+					"{\"teammates_count\":2,\"icon_meta\":{\"url\":\"/project-icons/seven.svg\"}}\n" {
+				t.Fatalf("successful body=%q", recorder.Body.String())
+			}
+		})
+	}
+	if reader.calls != 1 || reader.projectID != 7 {
+		t.Fatalf("reader calls=%d project=%d", reader.calls, reader.projectID)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	recorder := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/api/v2/elitea_core/project_info/prompt_lib/7/project-info",
+			nil,
+		),
+	)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed project-info status=%d", recorder.Code)
+	}
+}
+
 func TestProductionRouterMountsOnlyExactCurrentIndexStartPathWhenComposed(t *testing.T) {
 	calls := 0
 	indexStart := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

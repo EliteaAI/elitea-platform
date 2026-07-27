@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	platformapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
@@ -19,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testing.T) {
+func TestProductionProjectInfoHTTPPostgresContractRBACAndTenantIsolation(t *testing.T) {
 	pool := newCurrentProjectInfoPostgresPool(t)
 	prepareCurrentProjectInfoProjects(t, pool)
 
@@ -33,10 +36,14 @@ func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testin
 			PrincipalValidator: authsvc.NewPrincipalValidator(pool),
 			ForwardedIdentityVerifier: currentProjectInfoPeerVerifierFunc(
 				func(request *http.Request) error {
-					if request.RemoteAddr != "10.0.0.8:43120" {
-						return fmt.Errorf("untrusted peer")
+					if request.RemoteAddr == "10.0.0.8:43120" {
+						return nil
 					}
-					return nil
+					host, _, splitErr := net.SplitHostPort(request.RemoteAddr)
+					if splitErr == nil && (host == "127.0.0.1" || host == "::1") {
+						return nil
+					}
+					return fmt.Errorf("untrusted peer")
 				},
 			),
 		},
@@ -45,22 +52,38 @@ func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	publicRouter := platformapi.NewRouter(platformapi.RouterConfig{
+		CurrentProjectInfo: route,
+	})
+	publicServer := httptest.NewServer(publicRouter)
+	defer publicServer.Close()
 
 	t.Run("object icon and distinct teammates excluding project system user", func(t *testing.T) {
-		response := httptest.NewRecorder()
-		route.ServeHTTP(response, currentProjectInfoRequest(
+		request, err := http.NewRequest(
 			http.MethodGet,
-			"/api/v2/elitea_core/project_info/prompt_lib/1/project-info",
-			true,
-			"10.0.0.8:43120",
-			"11",
-		))
-		if response.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			publicServer.URL+"/api/v2/elitea_core/project_info/prompt_lib/1/project-info",
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("X-Auth-Type", "user")
+		request.Header.Set("X-Auth-ID", "11")
+		response, err := publicServer.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		payload, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.StatusCode, payload)
 		}
 
 		var body handler.CurrentProjectInfo
-		if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		if err := json.Unmarshal(payload, &body); err != nil {
 			t.Fatal(err)
 		}
 		// User 12 has two role rows but is counted once. The current user,
@@ -68,7 +91,7 @@ func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testin
 		// null-email member remain in the current baseline count. Only the
 		// project-specific system_user_1 identity is filtered.
 		if body.TeammatesCount != 6 {
-			t.Fatalf("teammates=%d want=6 body=%s", body.TeammatesCount, response.Body.String())
+			t.Fatalf("teammates=%d want=6 body=%s", body.TeammatesCount, payload)
 		}
 		var icon map[string]string
 		if err := json.Unmarshal(body.IconMeta, &icon); err != nil ||
@@ -80,7 +103,7 @@ func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testin
 
 	t.Run("missing project system user and missing icon preserve count and null", func(t *testing.T) {
 		response := httptest.NewRecorder()
-		route.ServeHTTP(response, currentProjectInfoRequest(
+		publicRouter.ServeHTTP(response, currentProjectInfoRequest(
 			http.MethodGet,
 			"/api/v2/elitea_core/project_info/prompt_lib/3/project-info",
 			true,
@@ -121,7 +144,7 @@ func TestCurrentProjectInfoRoutePostgresContractRBACAndTenantIsolation(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			route.ServeHTTP(response, currentProjectInfoRequest(
+			publicRouter.ServeHTTP(response, currentProjectInfoRequest(
 				http.MethodGet,
 				"/api/v2/elitea_core/project_info/prompt_lib/"+test.projectID+"/project-info",
 				true,

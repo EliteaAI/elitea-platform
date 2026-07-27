@@ -19,6 +19,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -155,6 +156,36 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
+	}
+
+	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current project-info settings: %w", err)
+	}
+	if currentProjectInfoSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_PROJECT_INFO_ENABLED requires production authentication")
+	}
+	var currentProjectInfo *projectinfoapi.CurrentProjectInfoRoute
+	if currentProjectInfoSettings.Enabled {
+		currentProjectInfoRepository, repositoryErr :=
+			projectinfoapi.NewCurrentProjectInfoRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current project-info repository: %w", repositoryErr)
+		}
+		currentProjectInfo, err = projectinfoapi.NewCurrentProjectInfoRoute(
+			currentProjectInfoRepository,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current project-info route: %w", err)
+		}
+		logger.Info("current project-info route enabled")
 	}
 
 	currentConfigurationsConfig, err := currentConfigurationsConfigFromEnv(os.LookupEnv)
@@ -384,6 +415,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		},
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
+		CurrentProjectInfo:            currentProjectInfo,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,
