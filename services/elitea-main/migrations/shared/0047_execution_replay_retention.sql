@@ -1,6 +1,6 @@
 -- Progress replay is intentionally bounded independently from terminal history.
--- This state preserves the monotonic worker sequence and the exact latest
--- progress receipt after older browser events have been pruned.
+-- This state preserves the actual latest durable worker sequence and the exact
+-- latest progress receipt after older browser events have been pruned.
 CREATE TABLE elitea_runtime.execution_replay_state (
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
@@ -56,12 +56,18 @@ WITH progress AS (
     SELECT DISTINCT ON (r.execution_id, r.generation)
            r.execution_id,
            r.generation,
+           substring(r.event_id FROM length(j.command_id) + 2)::bigint AS sequence,
            r.event_id,
            r.event_bytes,
            r.event_digest,
            r.cursor
     FROM elitea_runtime.execution_replay_events AS r
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = r.execution_id
+     AND j.generation = r.generation
     WHERE r.event_type = 'execution.node_event'
+      AND left(r.event_id, length(j.command_id) + 1) = j.command_id || ':'
+      AND substring(r.event_id FROM length(j.command_id) + 2) ~ '^[0-9]+$'
     ORDER BY r.execution_id, r.generation, r.cursor DESC
 )
 INSERT INTO elitea_runtime.execution_replay_state (
@@ -79,7 +85,7 @@ INSERT INTO elitea_runtime.execution_replay_state (
 SELECT j.execution_id,
        j.generation,
        j.projection_project_id,
-       COALESCE(progress.retained_events, 0),
+       COALESCE(latest.sequence, 0),
        latest.event_id,
        latest.event_bytes,
        latest.event_digest,
@@ -99,7 +105,18 @@ CREATE INDEX execution_replay_state_project_execution_idx
         projection_project_id, execution_id, generation
     );
 
+CREATE INDEX execution_replay_state_last_node_event_idx
+    ON elitea_runtime.execution_replay_state (last_node_event_id)
+    WHERE last_node_event_id IS NOT NULL;
+
+CREATE INDEX execution_replay_progress_project_execution_generation_idx
+    ON elitea_runtime.execution_replay_events (
+        projection_project_id, execution_id, generation, cursor DESC
+    )
+    INCLUDE (created_at)
+    WHERE event_type = 'execution.node_event';
+
 CREATE INDEX execution_replay_progress_expiry_idx
     ON elitea_runtime.execution_replay_events (created_at, cursor)
-    INCLUDE (execution_id, generation)
+    INCLUDE (projection_project_id, execution_id, generation)
     WHERE event_type = 'execution.node_event';

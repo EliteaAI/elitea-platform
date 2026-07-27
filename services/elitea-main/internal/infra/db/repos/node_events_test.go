@@ -46,7 +46,7 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 		t.Fatal("node event did not serialize the retained sequence state")
 	}
 	query := executor.rowCalls[3]
-	for _, evidence := range []string{"ranked_progress", "deleted_progress", "output_inbox", "execution_replay_events", "execution_replay_state", "c.initial_output_watermark = $18"} {
+	for _, evidence := range []string{"ranked_progress", "deleted_progress", "output_inbox", "execution_replay_events", "execution_replay_state", "r.projection_project_id = $4", "c.initial_output_watermark = $18"} {
 		if !strings.Contains(query.sql, evidence) {
 			t.Fatalf("node event projection SQL is missing %q", evidence)
 		}

@@ -204,7 +204,8 @@ WITH authority AS MATERIALIZED (
                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
            ) AS newest_bytes
     FROM elitea_runtime.execution_replay_events AS r
-    WHERE r.execution_id = $2
+    WHERE r.projection_project_id = $4
+      AND r.execution_id = $2
       AND r.generation = $3
       AND r.event_type = $5
 ), deleted_progress AS (
