@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -15,6 +17,7 @@ import (
 
 const (
 	CurrentFeedbackCreatePath       = "/api/v2/social/feedbacks/default/{projectID}"
+	CurrentFeedbackCreateAliasPath  = "/api/v2/social/feedbacks/{projectID}"
 	CurrentFeedbackCreateMode       = auth.PermissionModeDefault
 	CurrentFeedbackCreatePermission = "models.social.feedbacks.create"
 	MaxCurrentFeedbackBodyBytes     = 64 << 10
@@ -64,6 +67,7 @@ func NewCurrentFeedbackCreateRoute(
 	endpoint = apimw.Auth(authConfig)(endpoint)
 
 	router := chi.NewRouter()
+	router.Method(http.MethodPost, CurrentFeedbackCreateAliasPath, endpoint)
 	router.Method(http.MethodPost, CurrentFeedbackCreatePath, endpoint)
 	return &CurrentFeedbackCreateRoute{handler: router}, nil
 }
@@ -98,6 +102,12 @@ func (handler *currentFeedbackCreateHandler) create(writer http.ResponseWriter, 
 	userID, ok := principal.OwningUserID()
 	if !ok {
 		writeCurrentFeedbackError(writer, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		writeCurrentFeedbackError(writer, http.StatusUnsupportedMediaType, "unsupported media type")
 		return
 	}
 

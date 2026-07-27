@@ -62,11 +62,13 @@ func (function currentFeedbackPermissionResolverFunc) ResolvePermissions(
 
 func TestCurrentFeedbackCreateRoutePreservesContractAndDerivesProtectedFields(t *testing.T) {
 	if handler.CurrentFeedbackCreatePath != "/api/v2/social/feedbacks/default/{projectID}" ||
+		handler.CurrentFeedbackCreateAliasPath != "/api/v2/social/feedbacks/{projectID}" ||
 		handler.CurrentFeedbackCreateMode != auth.PermissionModeDefault ||
 		handler.CurrentFeedbackCreatePermission != "models.social.feedbacks.create" {
 		t.Fatalf(
-			"current feedback route drifted: path=%q mode=%q permission=%q",
+			"current feedback route drifted: path=%q alias=%q mode=%q permission=%q",
 			handler.CurrentFeedbackCreatePath,
+			handler.CurrentFeedbackCreateAliasPath,
 			handler.CurrentFeedbackCreateMode,
 			handler.CurrentFeedbackCreatePermission,
 		)
@@ -129,6 +131,55 @@ func TestCurrentFeedbackCreateRoutePreservesContractAndDerivesProtectedFields(t 
 	}
 }
 
+func TestCurrentFeedbackCreateRouteSupportsCurrentProjectScopedAliases(t *testing.T) {
+	for _, target := range []string{
+		"/api/v2/social/feedbacks/default/7",
+		"/api/v2/social/feedbacks/7",
+	} {
+		t.Run(target, func(t *testing.T) {
+			creator := &currentFeedbackCreatorStub{
+				create: func(
+					_ context.Context,
+					userID int64,
+					description string,
+					rating int,
+					referrer *string,
+					userAgent string,
+				) (int64, error) {
+					if userID != 41 || description != "feedback" || rating != 5 ||
+						referrer != nil || userAgent != "" {
+						t.Fatalf(
+							"feedback input user=%d description=%q rating=%d referrer=%v user_agent=%q",
+							userID,
+							description,
+							rating,
+							referrer,
+							userAgent,
+						)
+					}
+					return 73, nil
+				},
+			}
+			route := newAuthorizedCurrentFeedbackCreateRoute(t, creator)
+			request := currentFeedbackRequest(`{"description":"feedback","rating":5}`)
+			request.URL.Path = target
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, request)
+
+			if response.Code != http.StatusCreated ||
+				response.Body.String() != "{\"id\":73}\n" ||
+				creator.calls != 1 {
+				t.Fatalf(
+					"status=%d creator_calls=%d body=%q",
+					response.Code,
+					creator.calls,
+					response.Body.String(),
+				)
+			}
+		})
+	}
+}
+
 func TestCurrentFeedbackCreateRouteRejectsBeforeReadingDeniedBody(t *testing.T) {
 	creator := &currentFeedbackCreatorStub{}
 	permissions := currentFeedbackPermissionResolverFunc(
@@ -185,8 +236,14 @@ func TestCurrentFeedbackCreateRouteValidatesBoundedBody(t *testing.T) {
 			response := httptest.NewRecorder()
 			route.ServeHTTP(response, currentFeedbackRequest(body))
 
-			if response.Code != http.StatusBadRequest || creator.calls != 0 {
-				t.Fatalf("status=%d creator_calls=%d body=%s", response.Code, creator.calls, response.Body.String())
+			if response.Code != http.StatusBadRequest || creator.calls != 0 ||
+				response.Body.String() != "{\"error\":\"invalid request\"}\n" {
+				t.Fatalf(
+					"status=%d creator_calls=%d body=%q",
+					response.Code,
+					creator.calls,
+					response.Body.String(),
+				)
 			}
 		})
 	}
@@ -197,8 +254,74 @@ func TestCurrentFeedbackCreateRouteValidatesBoundedBody(t *testing.T) {
 	route.ServeHTTP(response, currentFeedbackRequest(
 		`{"description":"`+strings.Repeat("x", handler.MaxCurrentFeedbackBodyBytes)+`","rating":5}`,
 	))
-	if response.Code != http.StatusRequestEntityTooLarge || creator.calls != 0 {
-		t.Fatalf("oversize status=%d creator_calls=%d body=%s", response.Code, creator.calls, response.Body.String())
+	if response.Code != http.StatusRequestEntityTooLarge || creator.calls != 0 ||
+		response.Body.String() != "{\"error\":\"request body is too large\"}\n" {
+		t.Fatalf(
+			"oversize status=%d creator_calls=%d body=%q",
+			response.Code,
+			creator.calls,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestCurrentFeedbackCreateRoutePreservesCurrentJSONMediaTypeRequirement(t *testing.T) {
+	for name, test := range map[string]struct {
+		contentType string
+		wantStatus  int
+		wantBody    string
+		wantCalls   int
+	}{
+		"missing": {
+			wantStatus: http.StatusUnsupportedMediaType,
+			wantBody:   "{\"error\":\"unsupported media type\"}\n",
+		},
+		"text": {
+			contentType: "text/plain",
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantBody:    "{\"error\":\"unsupported media type\"}\n",
+		},
+		"vendor JSON": {
+			contentType: "application/vnd.elitea+json; charset=utf-8",
+			wantStatus:  http.StatusCreated,
+			wantBody:    "{\"id\":73}\n",
+			wantCalls:   1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			creator := &currentFeedbackCreatorStub{
+				create: func(
+					context.Context,
+					int64,
+					string,
+					int,
+					*string,
+					string,
+				) (int64, error) {
+					return 73, nil
+				},
+			}
+			route := newAuthorizedCurrentFeedbackCreateRoute(t, creator)
+			request := currentFeedbackRequest(`{"description":"feedback","rating":5}`)
+			if test.contentType == "" {
+				request.Header.Del("Content-Type")
+			} else {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus ||
+				response.Body.String() != test.wantBody ||
+				creator.calls != test.wantCalls {
+				t.Fatalf(
+					"status=%d creator_calls=%d body=%q",
+					response.Code,
+					creator.calls,
+					response.Body.String(),
+				)
+			}
+		})
 	}
 }
 
