@@ -82,6 +82,9 @@ jobs:
       - name: Run tests (workspace)
         run: |
           go test -race -count=1 -coverprofile=coverage.out ./services/... ./libs/...
+          python3 -m unittest discover \
+            -s services/elitea-main/tests/reliability/index_5681 \
+            -p 'test_*.py' -v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7

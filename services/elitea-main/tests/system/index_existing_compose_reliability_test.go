@@ -41,14 +41,18 @@ var (
 type indexReliabilityConfig struct {
 	centryDir  string
 	runtimeDir string
-	baseURL    string
-	projectID  int64
-	cookie     string
-	startBody  map[string]any
-	toolkitID  int64
-	httpClient *http.Client
-	composeEnv []string
-	timeout    time.Duration
+	// composeProject is optional for the inherited local reliability test.
+	// Production-scale gates require it so every lifecycle operation targets
+	// one explicitly disposable Compose namespace.
+	composeProject string
+	baseURL        string
+	projectID      int64
+	cookie         string
+	startBody      map[string]any
+	toolkitID      int64
+	httpClient     *http.Client
+	composeEnv     []string
+	timeout        time.Duration
 }
 
 type indexJobSnapshot struct {
@@ -284,13 +288,14 @@ func loadIndexReliabilityConfig(t *testing.T) indexReliabilityConfig {
 	)
 
 	return indexReliabilityConfig{
-		centryDir:  centryDir,
-		runtimeDir: runtimeDir,
-		baseURL:    baseURL,
-		projectID:  projectID,
-		cookie:     cookie,
-		startBody:  startBody,
-		toolkitID:  toolkitID,
+		centryDir:      centryDir,
+		runtimeDir:     runtimeDir,
+		composeProject: strings.TrimSpace(os.Getenv("ELITEA_INDEX_5681_COMPOSE_PROJECT")),
+		baseURL:        baseURL,
+		projectID:      projectID,
+		cookie:         cookie,
+		startBody:      startBody,
+		toolkitID:      toolkitID,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -501,7 +506,7 @@ func (h *indexComposeHarness) startIndex(t *testing.T, ctx context.Context, body
 		t.Fatalf("read public index start response: %v", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("public index start status=%d body=%s", response.StatusCode, boundedSafeHTTPBody(responseBody))
+		t.Fatalf("public index start status=%d", response.StatusCode)
 	}
 	var result struct {
 		TaskID string `json:"task_id"`
@@ -535,18 +540,9 @@ func (h *indexComposeHarness) stopIndex(ctx context.Context, executionID, indexN
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("status=%d body=%s", response.StatusCode, boundedSafeHTTPBody(body))
+		return fmt.Errorf("status=%d", response.StatusCode)
 	}
 	return nil
-}
-
-func boundedSafeHTTPBody(body []byte) string {
-	value := strings.TrimSpace(string(body))
-	if len(value) > 512 {
-		value = value[:512] + "..."
-	}
-	return strconv.QuoteToASCII(value)
 }
 
 func (h *indexComposeHarness) observeSSE(
@@ -606,12 +602,10 @@ func (h *indexComposeHarness) collectSSE(
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK ||
 		!strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return indexSSEObservation{}, fmt.Errorf(
-			"status=%d content-type=%q body=%s",
+			"status=%d content-type=%q",
 			response.StatusCode,
 			response.Header.Get("Content-Type"),
-			boundedSafeHTTPBody(body),
 		)
 	}
 	ready <- nil
@@ -1040,15 +1034,18 @@ exec redis-cli --user "$role" --tls \
 }
 
 func (h *indexComposeHarness) compose(ctx context.Context, arguments ...string) (string, error) {
-	base := []string{
-		"compose",
+	base := []string{"compose"}
+	if h.config.composeProject != "" {
+		base = append(base, "--project-name", h.config.composeProject)
+	}
+	base = append(base,
 		"--project-directory", h.config.centryDir,
 		"--env-file", filepath.Join(h.config.centryDir, "envs", "default.env"),
 		"--env-file", filepath.Join(h.config.centryDir, "envs", "override.env"),
 		"-f", filepath.Join(h.config.centryDir, "docker-compose.yml"),
 		"-f", filepath.Join(h.config.centryDir, "hybrid_auth", "docker-compose.pov.yml"),
 		"--profile", "runtime",
-	}
+	)
 	command := exec.CommandContext(ctx, "docker", append(base, arguments...)...)
 	command.Dir = h.config.centryDir
 	command.Env = h.config.composeEnv
@@ -1057,10 +1054,9 @@ func (h *indexComposeHarness) compose(ctx context.Context, arguments ...string) 
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
 		return "", fmt.Errorf(
-			"docker compose %s: %w: %s",
+			"docker compose %s: %w",
 			strings.Join(arguments[:min(len(arguments), 3)], " "),
 			err,
-			boundedSafeHTTPBody(stderr.Bytes()),
 		)
 	}
 	return stdout.String(), nil

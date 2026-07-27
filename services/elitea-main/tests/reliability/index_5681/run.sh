@@ -13,9 +13,24 @@ required=(
   ELITEA_CENTRY_DIR
   ELITEA_AUTH_POV_RUNTIME_DIR
   ELITEA_INDEX_TEST_COOKIE_FILE
+  ELITEA_INDEX_5681_DENIED_COOKIE_FILE
   ELITEA_INDEX_TEST_REQUEST_FILE
   ELITEA_INDEX_TEST_PROJECT_ID
+  ELITEA_INDEX_5681_SECOND_PROJECT_ID
+  ELITEA_INDEX_5681_SECOND_TOOLKIT_ID
   ELITEA_INDEX_5681_FIXTURE_PORT
+  ELITEA_INDEX_5681_COMPOSE_PROJECT
+  ELITEA_INDEX_5681_WORKLOAD_IDENTITY
+  ELITEA_INDEX_5681_SOURCE_AUTH_SHA256
+  ELITEA_INDEX_5681_MODEL_AUTH_SHA256
+  ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256
+  ELITEA_INDEX_5681_PLATFORM_SHA
+  ELITEA_INDEX_5681_MAIN_IMAGE_ID
+  ELITEA_INDEX_5681_WORKER_IMAGE_ID
+  ELITEA_INDEX_5681_LITELLM_IMAGE_ID
+  ELITEA_INDEX_5681_LITELLM_SERVICE
+  ELITEA_INDEX_5681_LITELLM_REVISION
+  ELITEA_INDEX_5681_SDK_REVISION
 )
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -44,7 +59,10 @@ for required_path in \
     || prerequisite_failure "required regular non-symlink file is absent"
 done
 
-for file_name in ELITEA_INDEX_TEST_COOKIE_FILE ELITEA_INDEX_TEST_REQUEST_FILE; do
+for file_name in \
+  ELITEA_INDEX_TEST_COOKIE_FILE \
+  ELITEA_INDEX_5681_DENIED_COOKIE_FILE \
+  ELITEA_INDEX_TEST_REQUEST_FILE; do
   file_value="${!file_name}"
   [[ "${file_value}" == /* && -f "${file_value}" && ! -L "${file_value}" && -r "${file_value}" ]] \
     || prerequisite_failure "${file_name} must be a readable absolute regular non-symlink file"
@@ -54,22 +72,70 @@ if [[ ! "${ELITEA_INDEX_5681_FIXTURE_PORT}" =~ ^[0-9]+$ ]] \
   || (( 10#${ELITEA_INDEX_5681_FIXTURE_PORT} < 1024 || 10#${ELITEA_INDEX_5681_FIXTURE_PORT} > 65535 )); then
   prerequisite_failure "ELITEA_INDEX_5681_FIXTURE_PORT must be an unprivileged TCP port"
 fi
-if [[ ! "${ELITEA_INDEX_TEST_PROJECT_ID}" =~ ^[0-9]+$ ]] \
-  || (( 10#${ELITEA_INDEX_TEST_PROJECT_ID} < 1 || 10#${ELITEA_INDEX_TEST_PROJECT_ID} > 2147483647 )); then
-  prerequisite_failure "ELITEA_INDEX_TEST_PROJECT_ID must be a positive PostgreSQL integer"
+for name in \
+  ELITEA_INDEX_TEST_PROJECT_ID \
+  ELITEA_INDEX_5681_SECOND_PROJECT_ID \
+  ELITEA_INDEX_5681_SECOND_TOOLKIT_ID; do
+  value="${!name}"
+  if [[ ! "${value}" =~ ^[0-9]+$ ]] \
+    || (( 10#${value} < 1 || 10#${value} > 2147483647 )); then
+    prerequisite_failure "${name} must be a positive PostgreSQL integer"
+  fi
+done
+if [[ "${ELITEA_INDEX_TEST_PROJECT_ID}" == "${ELITEA_INDEX_5681_SECOND_PROJECT_ID}" ]]; then
+  prerequisite_failure "the second project must differ from the execution project"
+fi
+if [[ "${ELITEA_INDEX_5681_COMPOSE_PROJECT}" != elitea-5681-* ]] \
+  || (( ${#ELITEA_INDEX_5681_COMPOSE_PROJECT} > 64 )); then
+  prerequisite_failure "ELITEA_INDEX_5681_COMPOSE_PROJECT must use the dedicated elitea-5681-* namespace"
+fi
+if [[ "${ELITEA_INDEX_5681_WORKLOAD_IDENTITY}" != spiffe://* ]]; then
+  prerequisite_failure "ELITEA_INDEX_5681_WORKLOAD_IDENTITY must be the exact expected SPIFFE identity"
+fi
+if [[ ! "${ELITEA_INDEX_5681_LITELLM_SERVICE}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  prerequisite_failure "ELITEA_INDEX_5681_LITELLM_SERVICE must be one Compose service name"
 fi
 
+for name in \
+  ELITEA_INDEX_5681_SOURCE_AUTH_SHA256 \
+  ELITEA_INDEX_5681_MODEL_AUTH_SHA256 \
+  ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256; do
+  value="${!name}"
+  [[ "${value}" =~ ^[0-9a-f]{64}$ ]] \
+    || prerequisite_failure "${name} must be one lowercase SHA-256 digest"
+done
+for name in \
+  ELITEA_INDEX_5681_MAIN_IMAGE_ID \
+  ELITEA_INDEX_5681_WORKER_IMAGE_ID \
+  ELITEA_INDEX_5681_LITELLM_IMAGE_ID; do
+  value="${!name}"
+  [[ "${value}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || prerequisite_failure "${name} must be one immutable Docker image ID"
+done
+for name in \
+  ELITEA_INDEX_5681_PLATFORM_SHA \
+  ELITEA_INDEX_5681_LITELLM_REVISION \
+  ELITEA_INDEX_5681_SDK_REVISION; do
+  value="${!name}"
+  [[ "${value}" =~ ^[0-9a-f]{40}$ ]] \
+    || prerequisite_failure "${name} must be one full immutable Git revision"
+done
+
 python="${ELITEA_INDEX_5681_PYTHON:-python3}"
-if ! "${python}" -c '
+for private_file in \
+  "${ELITEA_INDEX_TEST_COOKIE_FILE}" \
+  "${ELITEA_INDEX_5681_DENIED_COOKIE_FILE}"; do
+  if ! "${python}" -c '
 import os
 import stat
 import sys
 
 mode = os.lstat(sys.argv[1]).st_mode
 raise SystemExit(0 if stat.S_ISREG(mode) and mode & 0o077 == 0 else 1)
-' "${ELITEA_INDEX_TEST_COOKIE_FILE}"; then
-  prerequisite_failure "ELITEA_INDEX_TEST_COOKIE_FILE must grant no group or other permissions"
-fi
+' "${private_file}"; then
+    prerequisite_failure "browser-session files must grant no group or other permissions"
+  fi
+done
 
 if ! "${python}" -c '
 import socket
@@ -83,6 +149,7 @@ fi
 
 compose_args=(
   compose
+  --project-name "${ELITEA_INDEX_5681_COMPOSE_PROJECT}"
   --project-directory "${ELITEA_CENTRY_DIR}"
   --env-file "${ELITEA_CENTRY_DIR}/envs/default.env"
   --env-file "${ELITEA_CENTRY_DIR}/envs/override.env"
@@ -99,19 +166,41 @@ if ! running_services="$(
 )"; then
   prerequisite_failure "Docker Compose runtime cannot be inspected"
 fi
-for service_name in postgres runtime_redis elitea-main auth_gateway elitea-indexer-worker; do
+worker_was_running=false
+for service_name in \
+  postgres \
+  runtime_redis \
+  elitea-main \
+  auth_gateway \
+  elitea-indexer-worker \
+  "${ELITEA_INDEX_5681_LITELLM_SERVICE}"; do
   if ! grep -Fqx "${service_name}" <<<"${running_services}"; then
     prerequisite_failure "required Compose service ${service_name} is not running"
   fi
+  if [[ "${service_name}" == "elitea-indexer-worker" ]]; then
+    worker_was_running=true
+  fi
 done
+
+restore_worker() {
+  if [[ "${worker_was_running}" == true ]]; then
+    ELITEA_AUTH_POV_RUNTIME_DIR="${ELITEA_AUTH_POV_RUNTIME_DIR}" \
+      docker "${compose_args[@]}" start elitea-indexer-worker >/dev/null 2>&1 || true
+  fi
+}
+trap restore_worker EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 "${python}" "${SCRIPT_DIR}/fixture_server.py" --describe >/dev/null
 "${python}" -m unittest discover -s "${SCRIPT_DIR}" -p 'test_*.py' -v
 
 export ELITEA_INDEX_5681_SYSTEM_TEST=1
-export ELITEA_INDEX_TEST_TIMEOUT="${ELITEA_INDEX_TEST_TIMEOUT:-15m}"
+export ELITEA_INDEX_5681_DEDICATED=1
+export ELITEA_INDEX_TEST_TIMEOUT="${ELITEA_INDEX_TEST_TIMEOUT:-12m}"
 export GOCACHE="${GOCACHE:-/tmp/elitea-index-5681-go-cache}"
 
 cd "${REPOSITORY_ROOT}"
-go test -count=1 -v ./services/elitea-main/tests/system \
-  -run '^TestExistingComposeIndexIssue5681ProductionScale$'
+"${python}" "${SCRIPT_DIR}/run_with_timeout.py" 900 \
+  go test -count=1 -v -timeout=14m ./services/elitea-main/tests/system \
+    -run '^TestExistingComposeIndexIssue5681ProductionScale$'

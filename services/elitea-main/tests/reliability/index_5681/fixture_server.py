@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -33,6 +34,7 @@ PROFILE_SCHEMA = "elitea.issue-5681.confluence-images.v1"
 RECEIPT_PATH = "/__elitea_issue_5681/receipt"
 HEALTH_PATH = "/__elitea_issue_5681/health"
 MAX_MODEL_REQUEST_BYTES = 64 * MIB
+PROXY_ATTESTATION_HEADER = "X-Elitea-5681-Proxy-Attestation"
 
 
 def _png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -115,7 +117,9 @@ class Receipt:
     max_chat_request_bytes: int = 0
     embedding_requests: int = 0
     max_embedding_request_bytes: int = 0
+    rejected_source_requests: int = 0
     rejected_model_requests: int = 0
+    rejected_proxy_requests: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> dict[str, object]:
@@ -134,7 +138,9 @@ class Receipt:
                 "max_chat_request_bytes": self.max_chat_request_bytes,
                 "embedding_requests": self.embedding_requests,
                 "max_embedding_request_bytes": self.max_embedding_request_bytes,
+                "rejected_source_requests": self.rejected_source_requests,
                 "rejected_model_requests": self.rejected_model_requests,
+                "rejected_proxy_requests": self.rejected_proxy_requests,
             }
 
     def record_source(self, name: str, byte_length: int) -> None:
@@ -157,9 +163,15 @@ class Receipt:
                     self.max_embedding_request_bytes, byte_length
                 )
 
-    def reject_model(self) -> None:
+    def reject_source(self) -> None:
+        with self.lock:
+            self.rejected_source_requests += 1
+
+    def reject_model(self, *, proxy: bool = False) -> None:
         with self.lock:
             self.rejected_model_requests += 1
+            if proxy:
+                self.rejected_proxy_requests += 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +179,9 @@ class Fixture:
     root: Path
     small_path: Path
     large_path: Path
+    source_authorization_sha256: str
+    model_authorization_sha256: str
+    proxy_attestation_sha256: str
     receipt: Receipt
 
     @property
@@ -249,6 +264,8 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
         if path == RECEIPT_PATH:
             self._json(200, self.fixture.receipt.snapshot())
+            return
+        if not self._authorized_source_request():
             return
         if path.endswith("/rest/api/content"):
             start = int(parse_qs(parsed.query).get("start", ["0"])[0])
@@ -359,13 +376,23 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def _authorized_model_request(self) -> bool:
         authorization = self.headers.get("Authorization", "")
         organization = self.headers.get("OpenAI-Organization", "")
+        proxy_attestation = self.headers.get(PROXY_ATTESTATION_HEADER, "")
+        valid_authorization = _matches_header_digest(
+            authorization,
+            self.fixture.model_authorization_sha256,
+        )
+        valid_proxy = _matches_header_digest(
+            proxy_attestation,
+            self.fixture.proxy_attestation_sha256,
+        )
         valid = (
-            authorization.startswith("Bearer ")
-            and len(authorization) > len("Bearer ")
+            valid_authorization
+            and valid_proxy
             and organization == str(self.fixture.receipt.project_id)
         )
         if not valid:
-            self.fixture.receipt.reject_model()
+            self.fixture.receipt.reject_model(proxy=not valid_proxy)
+            self.close_connection = True
             self._json(
                 401,
                 {
@@ -377,6 +404,17 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 },
             )
         return valid
+
+    def _authorized_source_request(self) -> bool:
+        authorization = self.headers.get("Authorization", "")
+        if _matches_header_digest(
+            authorization,
+            self.fixture.source_authorization_sha256,
+        ):
+            return True
+        self.fixture.receipt.reject_source()
+        self._json(401, {"message": "fixture source authorization rejected"})
+        return False
 
     def _chat_completion(self) -> None:
         if not self._authorized_model_request():
@@ -458,7 +496,29 @@ class FixtureHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def prepare_fixture(root: Path, project_id: int) -> Fixture:
+def _matches_header_digest(value: str, expected_sha256: str) -> bool:
+    if not value or len(value) > 16 * 1024:
+        return False
+    actual = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(actual, expected_sha256)
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def prepare_fixture(
+    root: Path,
+    project_id: int,
+    *,
+    source_authorization_sha256: str,
+    model_authorization_sha256: str,
+    proxy_attestation_sha256: str,
+) -> Fixture:
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     small_path = root / "diagram-3mib.png"
@@ -481,6 +541,9 @@ def prepare_fixture(root: Path, project_id: int) -> Fixture:
         root=root,
         small_path=small_path,
         large_path=large_path,
+        source_authorization_sha256=source_authorization_sha256,
+        model_authorization_sha256=model_authorization_sha256,
+        proxy_attestation_sha256=proxy_attestation_sha256,
         receipt=Receipt(
             project_id=project_id,
             small_sha256=small_sha256,
@@ -510,6 +573,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int)
     parser.add_argument("--project-id", type=int)
     parser.add_argument("--root", type=Path)
+    parser.add_argument("--source-authorization-sha256")
+    parser.add_argument("--model-authorization-sha256")
+    parser.add_argument("--proxy-attestation-sha256")
     return parser.parse_args()
 
 
@@ -525,11 +591,20 @@ def main() -> int:
         or args.project_id <= 0
         or args.root is None
         or not args.root.is_absolute()
+        or not _valid_sha256(args.source_authorization_sha256)
+        or not _valid_sha256(args.model_authorization_sha256)
+        or not _valid_sha256(args.proxy_attestation_sha256)
     ):
         raise SystemExit(
-            "--port, --project-id and an absolute --root are required"
+            "--port, --project-id, absolute --root and three SHA-256 header fingerprints are required"
         )
-    fixture = prepare_fixture(args.root.resolve(), args.project_id)
+    fixture = prepare_fixture(
+        args.root.resolve(),
+        args.project_id,
+        source_authorization_sha256=args.source_authorization_sha256,
+        model_authorization_sha256=args.model_authorization_sha256,
+        proxy_attestation_sha256=args.proxy_attestation_sha256,
+    )
     server = ThreadingHTTPServer((args.host, args.port), FixtureHandler)
     server.fixture = fixture  # type: ignore[attr-defined]
     print(

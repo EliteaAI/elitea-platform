@@ -11,6 +11,8 @@ from fixture_server import (
     RECEIPT_SCHEMA,
     SOURCE_PAYLOAD_BYTES,
     Receipt,
+    _matches_header_digest,
+    _valid_sha256,
     generate_deterministic_png,
     profile_description,
 )
@@ -65,6 +67,15 @@ class FixtureProfileTest(unittest.TestCase):
         self.assertEqual(value["max_chat_request_bytes"], (32 << 20) + 1)
         self.assertNotIn("authorization", value)
         self.assertNotIn("project_id", value)
+
+    def test_authorization_uses_only_exact_sha256_fingerprints(self) -> None:
+        header = "Bearer fixture-only-value"
+        fingerprint = hashlib.sha256(header.encode()).hexdigest()
+        self.assertTrue(_valid_sha256(fingerprint))
+        self.assertTrue(_matches_header_digest(header, fingerprint))
+        self.assertFalse(_matches_header_digest(header + "-other", fingerprint))
+        self.assertFalse(_matches_header_digest("", fingerprint))
+        self.assertFalse(_valid_sha256("A" * 64))
 
 
 if __name__ == "__main__":
