@@ -1,0 +1,8 @@
+{
+  "route.notFound.message": "Page not found. Try ",
+  "route.notFound.homeLink": "Home page",
+  "route.projectSwitcher.switching": "Switching project…",
+  "app.errorBoundary.title": "Something went wrong",
+  "app.errorBoundary.description": "An unexpected error occurred. Reloading the page usually fixes it.",
+  "app.errorBoundary.reload": "Reload"
+}
