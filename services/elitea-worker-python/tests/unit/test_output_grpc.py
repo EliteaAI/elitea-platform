@@ -609,6 +609,141 @@ def test_existing_spool_replays_exact_frame_and_clears_only_after_bound_ack(
     asyncio.run(run())
 
 
+def test_existing_spool_replay_waits_for_each_bound_ack(tmp_path: Path) -> None:
+    async def run() -> None:
+        first = _frame(1)
+        second = _frame(2)
+        spool = _spool(tmp_path)
+        spool.put(1, first.SerializeToString(deterministic=True))
+        spool.put(2, second.SerializeToString(deterministic=True))
+        call = FakeCall()
+        call.write_gate.set()
+        session = OutputGrpcSession(
+            Stub(call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=2,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        await session.start()
+        await call.controls.put(_ack(0, credit_frames=2, credit_bytes=2048))
+        while not call.writes:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert call.writes == [first]
+        assert [item.sequence for item in spool.pending()] == [1, 2]
+
+        await call.controls.put(
+            _ack(
+                1,
+                credit_frames=1,
+                credit_bytes=1024,
+                bind_identity=True,
+                frame=first,
+            )
+        )
+        while len(call.writes) < 2:
+            await asyncio.sleep(0)
+        assert call.writes == [first, second]
+        assert [item.sequence for item in spool.pending()] == [2]
+
+        await call.controls.put(
+            _ack(
+                2,
+                credit_frames=1,
+                credit_bytes=1024,
+                bind_identity=True,
+                frame=second,
+            )
+        )
+        await session.wait_for_ack(2, 1)
+        assert spool.pending() == ()
+        await session.close()
+
+    asyncio.run(run())
+
+
+def test_ack_loss_preserves_exact_spool_for_restart_replay(tmp_path: Path) -> None:
+    async def run() -> None:
+        frame = _frame(1)
+        encoded = frame.SerializeToString(deterministic=True)
+        spool = _spool(tmp_path)
+        spool.put(1, encoded)
+
+        lost_ack_call = FakeCall()
+        lost_ack_call.write_gate.set()
+        lost_ack = OutputGrpcSession(
+            Stub(lost_ack_call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=1024,
+            max_frame_bytes=1024,
+        )
+        await lost_ack.start()
+        await lost_ack_call.controls.put(_ack(0))
+        while not lost_ack_call.writes:
+            await asyncio.sleep(0)
+        await lost_ack.close()
+        assert spool.pending()[0].payload == encoded
+
+        restart_call = FakeCall()
+        restart_call.write_gate.set()
+        restarted = OutputGrpcSession(
+            Stub(restart_call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=1024,
+            max_frame_bytes=1024,
+        )
+        await restarted.start()
+        await restart_call.controls.put(_ack(0))
+        while not restart_call.writes:
+            await asyncio.sleep(0)
+        assert restart_call.writes[0].SerializeToString(deterministic=True) == encoded
+        await restart_call.controls.put(_ack(1, bind_identity=True, frame=frame))
+        await restarted.wait_for_ack(1, 1)
+        assert spool.pending() == ()
+        await restarted.close()
+
+    asyncio.run(run())
+
+
+def test_fresh_session_reconciliation_preserves_spool_until_watermark_covers_all(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        spool = _spool(tmp_path)
+        spool.put(1, _frame(1).SerializeToString(deterministic=True))
+        spool.put(2, _frame(2).SerializeToString(deterministic=True))
+        session = OutputGrpcSession(
+            Stub(FakeCall()),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=2,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        with pytest.raises(InvalidInput, match="watermark"):
+            await session.reconcile_pending_through(0)
+        assert [item.sequence for item in spool.pending()] == [1, 2]
+
+        with pytest.raises(AuthorizationFailure, match="does not cover"):
+            await session.reconcile_pending_through(1)
+        assert [item.sequence for item in spool.pending()] == [1, 2]
+        assert session.has_pending_replay
+
+        await session.reconcile_pending_through(2)
+        assert spool.pending() == ()
+        assert not session.has_pending_replay
+
+    asyncio.run(run())
+
+
 def test_fresh_session_cas_replaces_and_replays_exact_pending_frame(
     tmp_path: Path,
 ) -> None:

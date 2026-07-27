@@ -43,6 +43,7 @@ from elitea_worker.constants import (
     MAX_BUNDLE_ENTRIES,
     MAX_SAFE_STRING_BYTES,
     MAX_SETTINGS_BYTES,
+    OUTPUT_SCHEMA_REVISION,
 )
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
@@ -88,6 +89,10 @@ from elitea_worker.protocol.codec import (
     validation_request_from,
 )
 from elitea_worker.protocol.indexing import bind_result_summary, request_from
+from elitea_worker.protocol.node_event import (
+    InvalidCurrentNodeEvent,
+    encode_current_node_event_json,
+)
 from elitea_worker.transport.input_content import (
     ClaimBoundInputReference,
     ClaimBoundInputRequestBuilder,
@@ -160,6 +165,7 @@ class OutputSession(Protocol):
     @property
     def pending_replay_frame(self) -> output_pb2.ExecutionOutputFrameV1 | None: ...
     def replays(self, frame: output_pb2.ExecutionOutputFrameV1) -> bool: ...
+    async def reconcile_pending_through(self, sequence: int) -> None: ...
     async def replace_pending_exact(
         self,
         expected: output_pb2.ExecutionOutputFrameV1,
@@ -764,13 +770,13 @@ class ConfigurationValidationDeliveryProcessor:
                 raise InvalidInput("The durable output spool state is inconsistent.")
             if pending is None:
                 return DeliveryResult(DeliveryDisposition.OWNED_ELSEWHERE_NOACK)
-            self._validate_pending_output(pending, command=command, receipt=receipt)
-            return await self._recover_local_output(
+            return await self._recover_pending_output(
                 delivery=delivery,
                 frame=pending,
                 output=output,
                 receipt=receipt,
                 verified=_verified_claim_command(signed, command, receipt),
+                allow_nonterminal=True,
             )
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK:
             _require_no_recovery(receipt)
@@ -782,6 +788,19 @@ class ConfigurationValidationDeliveryProcessor:
                 producer_id=self._producer_id,
                 now_unix_millis=_runtime_now(self._clock),
             )
+            output = self._output_session_factory()
+            pending = output.pending_replay_frame
+            if output.has_pending_replay != (pending is not None):
+                raise InvalidInput("The durable output spool state is inconsistent.")
+            if pending is not None:
+                return await self._recover_pending_output(
+                    delivery=delivery,
+                    frame=pending,
+                    output=output,
+                    receipt=receipt,
+                    verified=_verified_claim_command(signed, command, receipt),
+                    allow_nonterminal=True,
+                )
             return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK:
             now = _runtime_now(self._clock)
@@ -846,13 +865,13 @@ class ConfigurationValidationDeliveryProcessor:
         if output.has_pending_replay != (pending is not None):
             raise InvalidInput("The durable output spool state is inconsistent.")
         if pending is not None:
-            self._validate_pending_output(pending, command=command, receipt=receipt)
-            return await self._recover_local_output(
+            return await self._recover_pending_output(
                 delivery=delivery,
                 frame=pending,
                 output=output,
                 receipt=receipt,
                 verified=accepted.verified,
+                allow_nonterminal=False,
             )
 
         progress = self._new_progress_output(accepted, output)
@@ -1101,8 +1120,86 @@ class ConfigurationValidationDeliveryProcessor:
         *,
         command: command_pb2.WorkerCommandV1,
         receipt: control_pb2.ClaimReceiptV1,
-    ) -> None:
-        _validate_pending_output(frame, command=command, receipt=receipt)
+    ) -> bool:
+        return _validate_pending_output(frame, command=command, receipt=receipt)
+
+    async def _recover_pending_output(
+        self,
+        *,
+        delivery: RedisCommandDelivery,
+        frame: output_pb2.ExecutionOutputFrameV1,
+        output: OutputSession,
+        receipt: control_pb2.ClaimReceiptV1,
+        verified: VerifiedWorkerCommand,
+        allow_nonterminal: bool,
+    ) -> DeliveryResult:
+        terminal = self._validate_pending_output(
+            frame,
+            command=verified.command,
+            receipt=receipt,
+        )
+        if not _pending_output_binding_matches(frame, receipt):
+            if (
+                not terminal
+                and int(receipt.claim_handoff_watermark) >= int(frame.sequence)
+            ):
+                # ClaimCommand is authenticated control-plane state. Its
+                # contiguous handoff watermark proves this stale-fence event is
+                # already durable without trusting or re-sending local bytes.
+                await output.reconcile_pending_through(
+                    int(receipt.claim_handoff_watermark)
+                )
+                return DeliveryResult(
+                    DeliveryDisposition.RECOVERY_REQUIRED_NOACK,
+                    output_frame=frame,
+                )
+            raise AuthorizationFailure(
+                "The durable output spool uses a different claim fence; "
+                "server-side recovery is required."
+            )
+        if terminal:
+            return await self._recover_local_output(
+                delivery=delivery,
+                frame=frame,
+                output=output,
+                receipt=receipt,
+                verified=verified,
+            )
+        if not allow_nonterminal:
+            raise AuthorizationFailure(
+                "A durable NodeEvent requires running execution recovery."
+            )
+        return await self._recover_local_node_event(
+            frame=frame,
+            output=output,
+            receipt=receipt,
+        )
+
+    async def _recover_local_node_event(
+        self,
+        *,
+        frame: output_pb2.ExecutionOutputFrameV1,
+        output: OutputSession,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> DeliveryResult:
+        lease = _ClaimLeaseMonitor(
+            control=self._control,
+            receipt=receipt,
+            clock_unix_millis=self._clock,
+            interval_seconds=self._lease_poll_interval,
+        )
+        lease.start()
+        try:
+            # A non-terminal replay has no settlement proposal and never ACKs
+            # the Redis command. Future redelivery remains recovery-only, so
+            # the SDK cannot be invoked twice.
+            await self._publish_output(frame, initial_output=output)
+            return DeliveryResult(
+                DeliveryDisposition.RECOVERY_REQUIRED_NOACK,
+                output_frame=frame,
+            )
+        finally:
+            await lease.stop()
 
     async def _recover_local_output(
         self,
@@ -1746,7 +1843,7 @@ def _validate_pending_output(
     *,
     command: command_pb2.WorkerCommandV1,
     receipt: control_pb2.ClaimReceiptV1,
-) -> None:
+) -> bool:
     expected_stream = f"{command.execution_id}:{command.generation}"
     selected_capability = command.WhichOneof("capability_command")
     if selected_capability == "configuration_validation":
@@ -1763,26 +1860,50 @@ def _validate_pending_output(
         )
     else:
         raise UnsupportedCapability()
-    proposal = frame.settlement_proposal
     if not frame.HasField("identity") or frame.identity != receipt.identity:
         raise AuthorizationFailure(
             "The durable output spool belongs to a different execution identity."
         )
-    if not frame.HasField("fence") or frame.fence != receipt.fence:
-        raise AuthorizationFailure(
-            "The durable output spool uses a different claim fence; "
-            "server-side recovery is required."
-        )
-    if int(frame.claim_handoff_watermark) != int(receipt.claim_handoff_watermark):
-        raise AuthorizationFailure(
-            "The durable output spool uses a different claim handoff watermark."
-        )
     if (
-        frame.stream_id != expected_stream
-        or frame.logical_output_id != expected_logical_output
+        frame.output_schema_revision != OUTPUT_SCHEMA_REVISION
+        or frame.stream_id != expected_stream
         or frame.event_id != f"{command.command_id}:{frame.sequence}"
         or not valid_sequence
-        or not frame.terminal
+        or frame.occurred_at_unix_millis <= 0
+        or not _valid_sha256(frame.payload_digest)
+    ):
+        raise InvalidInput("The durable output frame is malformed.")
+
+    if not frame.terminal:
+        payload = frame.node_event
+        payload_raw = payload.SerializeToString(deterministic=True)
+        expected_progress_output = (
+            f"node-event:{command.execution_id}:{frame.sequence}"
+        )
+        if (
+            selected_capability != "index_ingest"
+            or frame.logical_output_id != expected_progress_output
+            or frame.event_type
+            != output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT
+            or frame.WhichOneof("payload") != "node_event"
+            or frame.HasField("settlement_proposal")
+            or not hmac.compare_digest(
+                hashlib.sha256(payload_raw).digest(),
+                frame.payload_digest.value,
+            )
+        ):
+            raise InvalidInput("The durable NodeEvent output frame is malformed.")
+        try:
+            encode_current_node_event_json(payload)
+        except InvalidCurrentNodeEvent as error:
+            raise InvalidInput(
+                "The durable NodeEvent output frame is malformed."
+            ) from error
+        return False
+
+    proposal = frame.settlement_proposal
+    if (
+        frame.logical_output_id != expected_logical_output
         or not frame.HasField("settlement_proposal")
         or proposal.proposal_id != f"{command.command_id}:settlement"
         or proposal.terminal_logical_output_id != frame.logical_output_id
@@ -1794,6 +1915,19 @@ def _validate_pending_output(
         or int(proposal.requested_outcome) not in _TERMINAL_OUTCOMES
     ):
         raise InvalidInput("The durable terminal output frame is malformed.")
+    return True
+
+
+def _pending_output_binding_matches(
+    frame: output_pb2.ExecutionOutputFrameV1,
+    receipt: control_pb2.ClaimReceiptV1,
+) -> bool:
+    return (
+        frame.HasField("fence")
+        and frame.fence == receipt.fence
+        and int(frame.claim_handoff_watermark)
+        == int(receipt.claim_handoff_watermark)
+    )
 
 
 def _require_running_desired_state(state: int) -> None:

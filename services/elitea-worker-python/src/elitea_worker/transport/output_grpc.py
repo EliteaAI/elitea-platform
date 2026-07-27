@@ -163,6 +163,29 @@ class OutputGrpcSession:
             for queued in self._pending_replay
         )
 
+    async def reconcile_pending_through(self, sequence: int) -> None:
+        """Clear frames covered by an authenticated durable server watermark.
+
+        The caller owns validation of the control-plane receipt that supplied
+        the watermark. This fresh-session operation is the only non-output-ACK
+        path that may retire stale-fence spool entries.
+        """
+
+        if self._call is not None or self._closing:
+            raise RuntimeError("output reconciliation requires a fresh session")
+        if sequence < 1 or sequence > _MAX_SEQUENCE:
+            raise InvalidInput("The output reconciliation watermark is malformed.")
+        if not self._pending_replay:
+            return
+        if sequence < self._pending_replay[-1].sequence:
+            raise AuthorizationFailure(
+                "The output reconciliation watermark does not cover the durable spool."
+            )
+        await asyncio.to_thread(self._spool.acknowledge_through, sequence)
+        self._pending_replay = ()
+        self._acked_sequence = sequence
+        self._replay_done.set()
+
     async def replace_pending_exact(
         self,
         expected: output_pb2.ExecutionOutputFrameV1,
@@ -301,6 +324,14 @@ class OutputGrpcSession:
                     self._queued_frames += 1
                     self._queued_bytes += item.encoded_bytes
                     self._queue.put_nowait(item)
+                    await self._condition.wait_for(
+                        lambda: self._failure is not None
+                        or self._draining
+                        or self._closing
+                        or self._acked_sequence >= item.sequence
+                    )
+                    if self._acked_sequence < item.sequence:
+                        self._raise_if_unavailable()
         except asyncio.CancelledError:
             if not self._closing:
                 await self._record_failure(RuntimeError("output replay task was cancelled"))

@@ -18,6 +18,7 @@ from elitea.runtime.v1 import (
     errors_pb2,
     indexing_pb2,
     input_pb2,
+    node_event_pb2,
     output_pb2,
 )
 
@@ -33,6 +34,7 @@ from elitea_worker.execution.delivery import (
     IndexIngestDeliveryProcessor,
 )
 from elitea_worker.execution.errors import (
+    AuthorizationFailure,
     InternalFailure,
     InvalidInput,
     OutputCancellationWon,
@@ -40,6 +42,7 @@ from elitea_worker.execution.errors import (
 from elitea_worker.protocol.codec import (
     TestOnlyConformanceHmacAuthenticator,
     VerifiedWorkerCommand,
+    build_node_event_output_frame,
     build_output_frame,
 )
 from elitea_worker.protocol.indexing import (
@@ -215,8 +218,24 @@ class Output:
         )
         self.frame = None
 
+    async def reconcile_pending_through(self, sequence: int) -> None:
+        assert self.frame is not None
+        assert int(self.frame.sequence) <= sequence
+        self.frame = None
+
     async def close(self) -> None:
         return None
+
+
+class AckLossOutput(Output):
+    def __init__(self, pending: output_pb2.ExecutionOutputFrameV1) -> None:
+        super().__init__(pending)
+        self.lose_ack = True
+
+    async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
+        if self.lose_ack:
+            raise RuntimeError("output stream is unavailable")
+        await super().wait_for_ack(sequence, timeout_seconds)
 
 
 class GatedOutput(Output):
@@ -330,10 +349,16 @@ class Control:
         active: bool = False,
         claim_handoff_watermark: int = 0,
         begin_dispositions: list[int] | None = None,
+        claim_disposition: int | None = None,
+        receipt_fence: common_pb2.ExecutionFenceV1 | None = None,
     ) -> None:
         self.case = case
         self.active = active
         self.claim_handoff_watermark = claim_handoff_watermark
+        self.claim_disposition = claim_disposition
+        self.receipt_fence = (
+            receipt_fence if receipt_fence is not None else case.fence
+        )
         self.settlements = 0
         self.begins = 0
         self.begin_dispositions = begin_dispositions or [
@@ -344,20 +369,24 @@ class Control:
 
     async def claim_command(self, request):
         disposition = (
-            control_pb2.CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK
-            if self.active
-            else control_pb2.CLAIM_DISPOSITION_V1_ACCEPTED
+            self.claim_disposition
+            if self.claim_disposition is not None
+            else (
+                control_pb2.CLAIM_DISPOSITION_V1_ACTIVE_LEASE_NOACK
+                if self.active
+                else control_pb2.CLAIM_DISPOSITION_V1_ACCEPTED
+            )
         )
         receipt = control_pb2.ClaimReceiptV1(
             disposition=disposition,
             claim_id="claim-1",
             identity=_identity(self.case.command),
-            fence=self.case.fence,
+            fence=self.receipt_fence,
             lease_expires_at_unix_millis=_NOW + 120_000,
             desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
             claim_handoff_watermark=self.claim_handoff_watermark,
         )
-        if not self.active:
+        if disposition == control_pb2.CLAIM_DISPOSITION_V1_ACCEPTED:
             receipt.input_bundle_ref.CopyFrom(self.case.command.input_bundle_ref)
             receipt.input_bundle.CopyFrom(self.case.manifest)
         return control_pb2.ClaimCommandResponseV1(receipt=receipt)
@@ -1124,6 +1153,197 @@ def test_pending_index_output_recovers_without_input_context_or_sdk(
     asyncio.run(run())
 
 
+def test_pending_node_event_replays_without_settlement_input_or_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        pending = _pending_node_event(case)
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("NodeEvent recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("NodeEvent recovery must not fetch SDK authority")
+
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: (_ for _ in ()).throw(AssertionError())),
+        )
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+        assert result.output_frame == pending
+        assert not pending.terminal
+        assert not pending.HasField("settlement_proposal")
+        assert output.frame is None
+        assert output.sent == 0
+        assert output.started == 1
+        assert control.begins == 0
+        assert control.settlements == 0
+        assert acker.calls == 0
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_node_event_ack_loss_replays_on_redis_redelivery_without_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        pending = _pending_node_event(case)
+        output = AckLossOutput(pending)
+        acker = Acker()
+        supervisor = InlineSupervisor()
+        controls: list[Control] = []
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("NodeEvent recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("NodeEvent recovery must not fetch SDK authority")
+
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: (_ for _ in ()).throw(AssertionError())),
+        )
+
+        def processor() -> IndexIngestDeliveryProcessor:
+            control = Control(
+                case,
+                claim_disposition=(
+                    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+                ),
+            )
+            controls.append(control)
+            return _processor(
+                case,
+                control=control,
+                input_client=ForbiddenInput(),
+                output=output,
+                acker=acker,
+                context_factory=forbidden_context,
+                supervisor=supervisor,
+            )
+
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await processor().process(case.delivery)
+        assert output.frame == pending
+        assert acker.calls == 0
+
+        output.lose_ack = False
+        result = await processor().process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+        assert result.output_frame == pending
+        assert output.frame is None
+        assert output.sent == 0
+        assert output.started == 3
+        assert all(control.begins == 0 for control in controls)
+        assert all(control.settlements == 0 for control in controls)
+        assert acker.calls == 0
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("handoff_watermark", "reconciled"),
+    [(1, True), (0, False)],
+)
+def test_stale_node_event_spool_requires_authenticated_handoff_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    handoff_watermark: int,
+    reconciled: bool,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        old_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        old_fence.fence_token = b"o" * 32
+        current_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        current_fence.claim_attempt += 1
+        current_fence.lease_epoch += 1
+        current_fence.fence_token = b"n" * 32
+        pending = _pending_node_event(case, fence=old_fence)
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+            claim_handoff_watermark=handoff_watermark,
+            receipt_fence=current_fence,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("stale recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("stale recovery must not fetch SDK authority")
+
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: (_ for _ in ()).throw(AssertionError())),
+        )
+        processing = _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+        if reconciled:
+            result = await processing
+            assert result.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+            assert result.output_frame == pending
+            assert output.frame is None
+        else:
+            with pytest.raises(AuthorizationFailure, match="server-side recovery"):
+                await processing
+            assert output.frame == pending
+
+        assert output.started == 0
+        assert output.sent == 0
+        assert control.begins == 0
+        assert control.settlements == 0
+        assert acker.calls == 0
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
 def test_deadline_during_context_acquisition_prevents_sdk_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1237,6 +1457,30 @@ def _processor(
         producer_id=_PRODUCER,
         clock_unix_millis=clock,
         lease_poll_interval_seconds=lease_poll_interval_seconds,
+    )
+
+
+def _pending_node_event(
+    case: Case,
+    *,
+    fence: common_pb2.ExecutionFenceV1 | None = None,
+) -> output_pb2.ExecutionOutputFrameV1:
+    envelope = envelope_pb2.WorkerExecutionEnvelopeV1(
+        signed_command=case.signed,
+        fence=fence if fence is not None else case.fence,
+    )
+    return build_node_event_output_frame(
+        VerifiedWorkerCommand(envelope=envelope, command=case.command),
+        node_event_pb2.NodeEventV1(
+            type="agent_thinking_step",
+            stream_id=case.command.execution_id,
+            content=b"null",
+            response_metadata=b"{}",
+            references=b"[]",
+        ),
+        sequence=1,
+        occurred_at_unix_millis=_NOW,
+        claim_handoff_watermark=0,
     )
 
 
