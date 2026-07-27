@@ -1,0 +1,101 @@
+{
+  "$schema": "./manifest.schema.json",
+  "version": 1,
+  "generatedFrom": {
+    "repo": "apps/elitea-ui",
+    "commit": "a55f36cfb5ecb3834bb00bbc8d9cd9a1393168af",
+    "date": "2026-07-26"
+  },
+  "shards": [
+    {
+      "path": "manifest/shell.json",
+      "domain": "shell",
+      "items": 377
+    },
+    {
+      "path": "manifest/chat.json",
+      "domain": "chat",
+      "items": 214
+    },
+    {
+      "path": "manifest/agents.json",
+      "domain": "agents",
+      "items": 156
+    },
+    {
+      "path": "manifest/pipelines.json",
+      "domain": "pipelines",
+      "items": 71
+    },
+    {
+      "path": "manifest/skills.json",
+      "domain": "skills",
+      "items": 61
+    },
+    {
+      "path": "manifest/toolkits.json",
+      "domain": "toolkits",
+      "items": 76
+    },
+    {
+      "path": "manifest/mcps.json",
+      "domain": "mcps",
+      "items": 31
+    },
+    {
+      "path": "manifest/apps.json",
+      "domain": "apps",
+      "items": 8
+    },
+    {
+      "path": "manifest/credentials.json",
+      "domain": "credentials",
+      "items": 57
+    },
+    {
+      "path": "manifest/artifacts.json",
+      "domain": "artifacts",
+      "items": 57
+    },
+    {
+      "path": "manifest/indexes.json",
+      "domain": "indexes",
+      "items": 25
+    },
+    {
+      "path": "manifest/secrets.json",
+      "domain": "secrets",
+      "items": 12
+    },
+    {
+      "path": "manifest/users.json",
+      "domain": "users",
+      "items": 9
+    },
+    {
+      "path": "manifest/tokens.json",
+      "domain": "tokens",
+      "items": 5
+    },
+    {
+      "path": "manifest/notifications.json",
+      "domain": "notifications",
+      "items": 11
+    },
+    {
+      "path": "manifest/analytics.json",
+      "domain": "analytics",
+      "items": 21
+    },
+    {
+      "path": "manifest/public.json",
+      "domain": "public",
+      "items": 20
+    },
+    {
+      "path": "manifest/admin.json",
+      "domain": "admin",
+      "items": 9
+    }
+  ]
+}

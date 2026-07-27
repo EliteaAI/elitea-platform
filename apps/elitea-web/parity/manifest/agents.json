@@ -1,0 +1,4507 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "agents",
+  "items": [
+    {
+      "id": "ROUTE-006",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents-hub` renders AgentHub",
+      "source": [
+        "apps/elitea-ui/src/routes.js:75",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:161"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents-hub",
+        "THEN the agent hub screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-006"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-009",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents` renders index redirect",
+      "source": [
+        "apps/elitea-ui/src/routes.js:9",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:168"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents",
+        "THEN the index redirect screen is displayed at that URL",
+        "AND index redirects to the first Applications tab, preserving query string and history state"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-009"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-010",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents/create` renders CreateApplication",
+      "source": [
+        "apps/elitea-ui/src/routes.js:11",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:169"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents/create",
+        "THEN the create application screen is displayed at that URL",
+        "AND navigation is blocked while the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-010"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-011",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents/:tab` renders Applications",
+      "source": [
+        "apps/elitea-ui/src/routes.js:10",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:170"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents/:tab",
+        "THEN the applications screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-011"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-012",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents/:tab/:agentId` renders EditApplication",
+      "source": [
+        "apps/elitea-ui/src/routes.js:12",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:171"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents/:tab/:agentId",
+        "THEN the edit application screen is displayed at that URL",
+        "AND navigation is blocked when the viewer owns the agent and the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-012"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-067",
+      "domain": "agents",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/agents/:tab/:agentId/:version` renders EditApplication (version child)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:12",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /agents/:tab/:agentId/:version",
+        "THEN the edit application screen is displayed at that URL",
+        "AND empty child element: the parent renders and reads the version parameter"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-067"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-001",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `destTab` on /agents/:tab (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:324"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the destTab query parameter with a valid value",
+        "THEN the named tab (History) is activated on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > destTab"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-002",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `destTab` on /agents/:tab/:agentId (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:324"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the destTab query parameter with a valid value",
+        "THEN the named tab (History) is activated on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > destTab"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-003",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `edited_participant_id` on /agents/:tab (spec QP-007)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:312",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:314"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the edited_participant_id query parameter with a valid value",
+        "THEN the participant editor opens for that participant on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > edited_participant_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-004",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `edited_participant_id` on /agents/:tab/:agentId (spec QP-007)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:312",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:314"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the edited_participant_id query parameter with a valid value",
+        "THEN the participant editor opens for that participant on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > edited_participant_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-005",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `isFromCreation` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the isFromCreation query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > isFromCreation"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-006",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `isFromCreation` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the isFromCreation query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > isFromCreation"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-007",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `mcp` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:218",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:317",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:326"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the mcp query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > mcp"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-008",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `mcp` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:218",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:317",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:326"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the mcp query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > mcp"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-009",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newToolkitId` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:192",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:200",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:217"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the newToolkitId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > newToolkitId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-010",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newToolkitId` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:192",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:200",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:217"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the newToolkitId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > newToolkitId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-011",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /agents/:tab [write-only URL contract]",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+      ],
+      "acceptance": [
+        "GIVEN the feature that generates links carrying the return_url parameter",
+        "WHEN such a link is produced",
+        "THEN the URL contains return_url with the same value semantics as the baseline",
+        "AND this is a URL contract: the parameter shape must be preserved even though no in-app reader consumes it, because external consumers and shared links depend on it"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-012",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /agents/:tab/:agentId [write-only URL contract]",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+      ],
+      "acceptance": [
+        "GIVEN the feature that generates links carrying the return_url parameter",
+        "WHEN such a link is produced",
+        "THEN the URL contains return_url with the same value semantics as the baseline",
+        "AND this is a URL contract: the parameter shape must be preserved even though no in-app reader consumes it, because external consumers and shared links depend on it"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-013",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_by` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:100"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the sort_by query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > sort_by"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-014",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_by` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:34",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:100"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the sort_by query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > sort_by"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-015",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_order` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:36",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:102"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the sort_order query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > sort_order"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-016",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `sort_order` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:36",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:102"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the sort_order query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > sort_order"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-017",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /agents/:tab [write-only URL contract]",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+      ],
+      "acceptance": [
+        "GIVEN the feature that generates links carrying the source_application_id parameter",
+        "WHEN such a link is produced",
+        "THEN the URL contains source_application_id with the same value semantics as the baseline",
+        "AND this is a URL contract: the parameter shape must be preserved even though no in-app reader consumes it, because external consumers and shared links depend on it"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-018",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /agents/:tab/:agentId [write-only URL contract]",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:331"
+      ],
+      "acceptance": [
+        "GIVEN the feature that generates links carrying the source_application_id parameter",
+        "WHEN such a link is produced",
+        "THEN the URL contains source_application_id with the same value semantics as the baseline",
+        "AND this is a URL contract: the parameter shape must be preserved even though no in-app reader consumes it, because external consumers and shared links depend on it"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-019",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `viewMode` on /agents/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:61",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:226",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:231"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab",
+        "WHEN the URL contains the viewMode query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > viewMode"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-020",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `viewMode` on /agents/:tab/:agentId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:61",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:226",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:231"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the viewMode query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.agents.test.tsx",
+        "testId": "search-params > agents > viewMode"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-058",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `history_run_id` on /agents/:tab/:agentId (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /agents/:tab/:agentId",
+        "WHEN the URL contains the history_run_id query parameter with a valid value",
+        "THEN the run-history detail opens on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.run-history.test.tsx",
+        "testId": "search-params > run-history > history_run_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-059",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `history_run_id` on /pipelines/:tab/:agentId (History tab) (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /pipelines/:tab/:agentId (History tab)",
+        "WHEN the URL contains the history_run_id query parameter with a valid value",
+        "THEN the run-history detail opens on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.run-history.test.tsx",
+        "testId": "search-params > run-history > history_run_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-001",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/import_wizard/prompt_lib/{projectId} (importWizard)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/api/importWizardApi.js:15-23"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the import wizard operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/import_wizard/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/importWizardApi.contract.test.ts",
+        "testId": "api > importWizardApi.js > importWizard"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-002",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/fork/prompt_lib/{projectId} (forkAgent)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/api/importWizardApi.js:25-33"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the fork agent operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/fork/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/importWizardApi.contract.test.ts",
+        "testId": "api > importWizardApi.js > forkAgent"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-003",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/conversations/prompt_lib/{projectId} (getRunHistoryList)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:15-37"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get run history list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/conversations/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/runHistoryApi.contract.test.ts",
+        "testId": "api > runHistoryApi.js > getRunHistoryList"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-004",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/conversation/prompt_lib/{projectId}/{conversationId} (getRunHistoryDetails)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:38-46"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get run history details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/conversation/prompt_lib/{projectId}/{conversationId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/runHistoryApi.contract.test.ts",
+        "testId": "api > runHistoryApi.js > getRunHistoryDetails"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-005",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/conversation/prompt_lib/{projectId}/{historyId} (deleteRunHistoryItem)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/api/runHistoryApi.js:47-56"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete run history item operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/conversation/prompt_lib/{projectId}/{historyId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/runHistoryApi.contract.test.ts",
+        "testId": "api > runHistoryApi.js > deleteRunHistoryItem"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-006",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/agent_categories/prompt_lib/{projectId} (getAgentCategories)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/api/agentCategoriesApi.js:13-18"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get agent categories operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/agent_categories/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/agentCategoriesApi.contract.test.ts",
+        "testId": "api > agentCategoriesApi.js > getAgentCategories"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-007",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/generate_application_draft/prompt_lib/{projectId} (generateAgentDraft)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/api/generateAgentDraftApi.js:5-11"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the generate agent draft operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/generate_application_draft/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/generateAgentDraftApi.contract.test.ts",
+        "testId": "api > generateAgentDraftApi.js > generateAgentDraft"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-087",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/applications/prompt_lib/{projectId} (applicationList)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:56-98"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/applications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationList"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-088",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/applications/prompt_lib/{projectId} (totalApplications)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:99-109"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the total applications operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/applications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > totalApplications"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-089",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/public_applications/prompt_lib/ (publicApplicationsList)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:110-152"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the public applications list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/public_applications/prompt_lib/ with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > publicApplicationsList"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-090",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/public_applications/prompt_lib (totalPublicApplications)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:153-163"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the total public applications operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/public_applications/prompt_lib with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > totalPublicApplications"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-091",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/public_applications/prompt_lib (totalMyLikedPublicApplications)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:164-174"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the total my liked public applications operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/public_applications/prompt_lib with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > totalMyLikedPublicApplications"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-092",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/public_applications/prompt_lib (totalTrendingPublicApplications)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:175-185"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the total trending public applications operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/public_applications/prompt_lib with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > totalTrendingPublicApplications"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-093",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /social/like/prompt_lib/{PUBLIC_PROJECT_ID}/application/{applicationId} (likeApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:186-194"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the like application operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /social/like/prompt_lib/{PUBLIC_PROJECT_ID}/application/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > likeApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-094",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /social/like/prompt_lib/{PUBLIC_PROJECT_ID}/application/{applicationId} (unlikeApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:195-203"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the unlike application operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /social/like/prompt_lib/{PUBLIC_PROJECT_ID}/application/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > unlikeApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-095",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/applications/prompt_lib/{projectId} (applicationCreate)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:204-236"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application create operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/applications/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationCreate"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-096",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/application/prompt_lib/{projectId}/{id} (applicationEdit)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:237-263"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application edit operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/application/prompt_lib/{projectId}/{id} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationEdit"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-097",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/application/prompt_lib/{projectId}/{applicationId} (deleteApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:264-285"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete application operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/application/prompt_lib/{projectId}/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > deleteApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-098",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/tool/prompt_lib/{projectId}/{toolId} (deleteApplicationTool)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:286-294"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete application tool operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/tool/prompt_lib/{projectId}/{toolId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > deleteApplicationTool"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-099",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/publish/prompt_lib/{projectId}/{versionId} (publishApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:295-309"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the publish application operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/publish/prompt_lib/{projectId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > publishApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-100",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/unpublish/prompt_lib/{projectId}/{versionId} (unpublishApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:310-324"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the unpublish application operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/unpublish/prompt_lib/{projectId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > unpublishApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-101",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/publish_validate/prompt_lib/{projectId}/{versionId} (validateForPublish)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:325-334"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the validate for publish operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/publish_validate/prompt_lib/{projectId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > validateForPublish"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-102",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "waived",
+      "title": "Endpoint DELETE /elitea_core/application_task/prompt_lib/{projectId}/{task_id} (stopApplicationTask) — dead surface, not ported (waiver W-008)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:335-346"
+      ],
+      "acceptance": [
+        "GIVEN the old client declares a stop-application-task request that no component ever invokes",
+        "WHEN the reimplementation ships",
+        "THEN this request is not ported: it is dead surface, and the router does not serve it",
+        "AND live task stopping continues to work through the served stop-task route, which has its own manifest item"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-manifest --validate",
+        "testId": "waived > W-008 > stopApplicationTask"
+      },
+      "unit": "A1",
+      "status": "waived",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": {
+        "reason": "W-008: dead surface — endpoint has zero importers in the old SPA and is not served by the Go router; live stop paths use the served stop-task route",
+        "decidedBy": "unit W1 contract correction (decision record 2026-07-26, flagged for operator veto)",
+        "date": "2026-07-26",
+        "replacesBehaviour": "old SPA declared DELETE /elitea_core/application_task/prompt_lib/{projectId}/{taskId} but never called it"
+      }
+    },
+    {
+      "id": "API-103",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} (applicationDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:347-370"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationDetails"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-104",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} (forkedFromApplicationDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:371-394"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the forked from application details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > forkedFromApplicationDetails"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-105",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} (applicationSelectItemDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:395-421"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application select item details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/application/prompt_lib/{projectId}/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationSelectItemDetails"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-106",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/public_application/prompt_lib/{applicationId} (publicApplicationDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:422-448"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the public application details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/public_application/prompt_lib/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > publicApplicationDetails"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-107",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} (getApplicationVersionDetail)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:449-457"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get application version detail operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getApplicationVersionDetail"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-108",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/versions/prompt_lib/{projectId}/{applicationId} (saveApplicationNewVersion)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:458-468"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the save application new version operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/versions/prompt_lib/{projectId}/{applicationId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > saveApplicationNewVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-109",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} (updateApplicationVersion)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:469-502"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update application version operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > updateApplicationVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-110",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /elitea_core/default_version/prompt_lib/{projectId}/{applicationId}/{versionId} (setApplicationDefaultVersion) — router-aligned shape (waiver W-009)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:503-522"
+      ],
+      "acceptance": [
+        "GIVEN the user sets an application version as the default",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /elitea_core/default_version/prompt_lib/{projectId}/{applicationId}/{versionId} — the three-segment shape the router actually serves (waiver W-009)",
+        "AND the old client's two-segment call carrying the version in the body is NOT reproduced: it is rejected with a method-not-allowed error by the served router, i.e. set-default-version is live-broken in the baseline today",
+        "AND on success the version list shows the new default without a manual refresh"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > setApplicationDefaultVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-111",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId}{?replacement_version_id={replacementVersionId}|} (deleteApplicationVersion) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:523-540"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete application version operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId}{?replacement_version_id={replacementVersionId}|} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > deleteApplicationVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-112",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/check_version_in_use/prompt_lib/{projectId}/{applicationId}/{versionId} (checkVersionInUse)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:541-553"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the check version in use operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/check_version_in_use/prompt_lib/{projectId}/{applicationId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > checkVersionInUse"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-113",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/batch_replace_version/prompt_lib/{projectId}/{oldVersionId}/{newVersionId}{?delete_old=true|?delete_old=false} (batchReplaceVersionReferences) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:554-571"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the batch replace version references operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/batch_replace_version/prompt_lib/{projectId}/{oldVersionId}/{newVersionId}{?delete_old=true|?delete_old=false} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > batchReplaceVersionReferences"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-114",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/export_import/prompt_lib/{projectId}/{id}{expr} (applicationExport) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:572-587"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application export operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/export_import/prompt_lib/{projectId}/{id}{expr} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationExport"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-115",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/export_import/prompt_lib/{projectId}/{id}?{params} (applicationExportMd)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:589-611"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application export md operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/export_import/prompt_lib/{projectId}/{id}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > applicationExportMd"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-116",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core{/upload_icon/prompt_lib/{projectId}/{versionId}|/upload_icon/prompt_lib/{projectId}} (uploadApplicationIcon) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:612-637"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the upload application icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core{/upload_icon/prompt_lib/{projectId}/{versionId}|/upload_icon/prompt_lib/{projectId}} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > uploadApplicationIcon"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-117",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/upload_icon/prompt_lib/{projectId}/{versionId} (replaceApplicationIcon)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:638-679"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the replace application icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/upload_icon/prompt_lib/{projectId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > replaceApplicationIcon"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-118",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/upload_icon/prompt_lib/{projectId}/{name} (deleteApplicationIcon)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:680-716"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete application icon operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/upload_icon/prompt_lib/{projectId}/{name} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > deleteApplicationIcon"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-119",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/upload_icon/prompt_lib/{projectId} (getApplicationIcons)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:717-762"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get application icons operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/upload_icon/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getApplicationIcons"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-120",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/default_icons/prompt_lib/{projectId} (getApplicationDefaultIcons)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:763-771"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get application default icons operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/default_icons/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getApplicationDefaultIcons"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-121",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/export_converter/prompt_lib (convertLegacyApplication)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:772-784"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the convert legacy application operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/export_converter/prompt_lib with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > convertLegacyApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-122",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /elitea_core/application_relation/prompt_lib/{projectId}/{selectedApplicationId}/{selectedVersionId} (updateApplicationRelation)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:786-799"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update application relation operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /elitea_core/application_relation/prompt_lib/{projectId}/{selectedApplicationId}/{selectedVersionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > updateApplicationRelation"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-123",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/recommendations/prompt_lib/{projectId} (getRecommendations)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:800-809"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get recommendations operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/recommendations/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getRecommendations"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-124",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/version_validator/prompt_lib/{projectId}/{applicationId}/{versionId} (validateApplicationVersion)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:810-831"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the validate application version operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/version_validator/prompt_lib/{projectId}/{applicationId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > validateApplicationVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-125",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/application_attachment_storage/prompt_lib/{projectId}/{applicationId}/{versionId} (setAgentAttachmentStorage)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:832-848"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the set agent attachment storage operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/application_attachment_storage/prompt_lib/{projectId}/{applicationId}/{versionId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > setAgentAttachmentStorage"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-126",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/index_types/prompt_lib/{projectId} (getDocumentLoaders)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:849-854"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get document loaders operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/index_types/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getDocumentLoaders"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-127",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger (getPipelineTrigger)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:857-864"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get pipeline trigger operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > getPipelineTrigger"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-128",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger (updatePipelineTrigger)",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:865-876"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update pipeline trigger operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/pipeline_trigger/prompt_lib/{projectId}/pipeline/{versionId}/trigger with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/applications.contract.test.ts",
+        "testId": "api > applications.js > updatePipelineTrigger"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-024",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.application.update` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:544",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentButton.jsx:13",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:19",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:20",
+        "apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/AgentEditorPanel.jsx:63",
+        "apps/elitea-ui/src/[fsd]/features/skill/ui/generate-skill-modal/GenerateSkillButton.jsx:13"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.application.update",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.application.update"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-025",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.applications.create` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:538",
+        "apps/elitea-ui/src/common/constants.js:548",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:12",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:13",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:70",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:71",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:72"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.applications.create",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.applications.create"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-027",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.export_import.export` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:540",
+        "apps/elitea-ui/src/common/constants.js:550",
+        "apps/elitea-ui/src/[fsd]/entities/application-tab-bar/ui/ApplicationControls.jsx:136",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsControls.jsx:60"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.export_import.export",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.export_import.export"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-028",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.export_import.import` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/index.jsx:52"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.export_import.import",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.export_import.import"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-029",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.fork.post` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:541",
+        "apps/elitea-ui/src/common/constants.js:551",
+        "apps/elitea-ui/src/common/constants.js:593"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.fork.post",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.fork.post"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-031",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.public_applications.list` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:537",
+        "apps/elitea-ui/src/common/constants.js:547"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.public_applications.list",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.public_applications.list"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-036",
+      "domain": "agents",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tool.patch` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:592",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/switch/AttachmentSwitch.jsx:40"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tool.patch",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tool.patch"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-001",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: application create via onApprove/onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:58",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationTabBar.jsx:74",
+        "apps/elitea-ui/src/api/applications.js:204"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to application create",
+        "THEN a POST request to /elitea_core/applications/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > applicationCreate"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-002",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: application edit via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
+        "apps/elitea-ui/src/api/applications.js:237"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to application edit",
+        "THEN a PUT request to /elitea_core/application/prompt_lib/{projectId}/{id} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > applicationEdit"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-003",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: delete application via onDelete",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:89",
+        "apps/elitea-ui/src/api/applications.js:264"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to delete application",
+        "THEN a DELETE request to /elitea_core/application/prompt_lib/{projectId}/{applicationId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > deleteApplication"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-004",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: generate agent draft via onGenerate",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:323",
+        "apps/elitea-ui/src/[fsd]/features/agent/api/generateAgentDraftApi.js:5"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to generate agent draft",
+        "THEN a POST request to /elitea_core/generate_application_draft/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > generateAgentDraft"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-005",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: save application new version via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:100",
+        "apps/elitea-ui/src/api/applications.js:458"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to save application new version",
+        "THEN a POST request to /elitea_core/versions/prompt_lib/{projectId}/{applicationId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > saveApplicationNewVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-006",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: toolkit associate via onApprove/onConfirm/onScroll",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:668",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:689",
+        "apps/elitea-ui/src/api/toolkits.js:385"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to toolkit associate",
+        "THEN a PATCH request to /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > toolkitAssociate"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-007",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: update application relation via onApprove/onClick/onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:373",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:649",
+        "apps/elitea-ui/src/api/applications.js:786"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update application relation",
+        "THEN a PATCH request to /elitea_core/application_relation/prompt_lib/{projectId}/{selectedApplicationId}/{selectedVersionId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > updateApplicationRelation"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-008",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: update application version via onDiscard",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/EditApplication.jsx:80",
+        "apps/elitea-ui/src/api/applications.js:469"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update application version",
+        "THEN a PUT request to /elitea_core/version/prompt_lib/{projectId}/{applicationId}/{versionId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > updateApplicationVersion"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-009",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on agents: update skill relation via onApprove",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:328",
+        "apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:308"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update skill relation",
+        "THEN a PATCH request to /elitea_core/skill/prompt_lib/{projectId}/{skillId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions agents\"",
+        "testId": "action > agents > updateSkillRelation"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-042",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on import-wizard: fork agent via onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:269",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/api/importWizardApi.js:25"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to fork agent",
+        "THEN a POST request to /elitea_core/fork/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions import-wizard\"",
+        "testId": "action > import-wizard > forkAgent"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-043",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on import-wizard: import wizard via onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalImportButton.jsx:141",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/api/importWizardApi.js:15"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to import wizard",
+        "THEN a POST request to /elitea_core/import_wizard/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions import-wizard\"",
+        "testId": "action > import-wizard > importWizard"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-044",
+      "domain": "agents",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on import-wizard: toolkit fork via onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:269",
+        "apps/elitea-ui/src/api/toolkits.js:224"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to toolkit fork",
+        "THEN a POST request to /elitea_core/fork_toolkit/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions import-wizard\"",
+        "testId": "action > import-wizard > toolkitFork"
+      },
+      "unit": "A1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/agents/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-008",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalActions.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:29",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalActions.jsx:40"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Got it\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalActions.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-009",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalContent.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:81",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalContent.jsx:108"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Project:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-010",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalDetails.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalDetails.jsx:75",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalDetails.jsx:95"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Main entity\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalDetails.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-011",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalEntityCard.jsx (12 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:55",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCard.jsx:162"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 12 strings from this component (for example \"Description\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalEntityCard.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-012",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalEntityCardWrapper.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:48",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityCardWrapper.jsx:48"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Hide details\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalEntityCardWrapper.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-013",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalEntityTextField.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityTextField.jsx:17"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Full screen view\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalEntityTextField.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-014",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalEntityToolkitsField.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalEntityToolkitsField.jsx:17"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Toolkits:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalEntityToolkitsField.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-015",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalForkButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalForkButton.jsx:270"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Fork\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalForkButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-016",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalImportButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalImportButton.jsx:142"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Import\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalImportButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-017",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ImportWizardModal/IWModalSucceedContent.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalSucceedContent.jsx:68",
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ImportWizardModal/IWModalSucceedContent.jsx:118"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Imported entities use the project's default LLM, Embedding, \") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > IWModalSucceedContent.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-018",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/ToolbarImportButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/import-wizard/ui/ToolbarImportButton.jsx:22"
+      ],
+      "acceptance": [
+        "GIVEN the import-wizard screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Import\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > import-wizard > ToolbarImportButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-020",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/RunHistoryContainer.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:77",
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryContainer.jsx:85"
+      ],
+      "acceptance": [
+        "GIVEN the run-history screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"clear the chat\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > run-history > RunHistoryContainer.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-021",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: RunHistoryList/index.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:65",
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/index.jsx:67"
+      ],
+      "acceptance": [
+        "GIVEN the run-history screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Date\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > run-history > index.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-022",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: RunHistoryList/RunHistoryListItem.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/RunHistoryListItem.jsx:189",
+        "apps/elitea-ui/src/[fsd]/entities/run-history/ui/RunHistoryList/RunHistoryListItem.jsx:233"
+      ],
+      "acceptance": [
+        "GIVEN the run-history screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Share link\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > run-history > RunHistoryListItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-034",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AgentCard.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCard.jsx:55"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Untitled\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentCard.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-035",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AgentCategorySection.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCategorySection.jsx:85",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentCategorySection.jsx:131"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Reload the category items\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentCategorySection.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-036",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AgentConversationStarters.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:23",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentConversationStarters.jsx:40"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"CONVERSATION STARTERS\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentConversationStarters.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-037",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AgentModal.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:193",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentModal.jsx:257"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Author\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-038",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AgentWelcomeMessage.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:14",
+        "apps/elitea-ui/src/[fsd]/features/agent-hub/ui/AgentWelcomeMessage.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Welcome Message\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentWelcomeMessage.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-039",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: configurations/ApplicationAdvanceSettings.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:87",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationAdvanceSettings.jsx:119"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Advanced\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ApplicationAdvanceSettings.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-040",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: configurations/ApplicationEditorNotes.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:30",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationEditorNotes.jsx:42"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"EDITOR NOTES\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ApplicationEditorNotes.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-041",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: configurations/ApplicationTools.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationTools.jsx:151",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/ApplicationTools.jsx:170"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"INTERNAL TOOLS\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ApplicationTools.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-042",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: form/CreateAgentForm.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:104",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/form/CreateAgentForm.jsx:183"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"General\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > CreateAgentForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-043",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: input/InstructionsInput.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:335",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsInput.jsx:346"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Instructions\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > InstructionsInput.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-044",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: input/InstructionsSlashSuggestionList.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/input/InstructionsSlashSuggestionList.jsx:84"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Mention toolkit, mcp, agent or pipeline\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > InstructionsSlashSuggestionList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-045",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: modal/ModalMessage.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/modal/ModalMessage.jsx:52"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Copy to clipboard\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ModalMessage.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-046",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: modal/StyledShowContextModal.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/configurations/modal/StyledShowContextModal.jsx:84"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Copy to clipboard\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > StyledShowContextModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-047",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: version/VersionReplacementModal.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/version/VersionReplacementModal.jsx:128",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/agent-details/version/VersionReplacementModal.jsx:199"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"Version in use\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > VersionReplacementModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-048",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: generate-agent-modal/GenerateAgentModal.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentModal.jsx:322"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Describe your agent's goal, key tasks, and preferred tone or\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > GenerateAgentModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-049",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: generate-agent-modal/GenerateAgentReviewForm.jsx (12 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentReviewForm.jsx:92",
+        "apps/elitea-ui/src/[fsd]/features/agent/ui/generate-agent-modal/GenerateAgentReviewForm.jsx:242"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 12 strings from this component (for example \"Name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > GenerateAgentReviewForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-414",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/Applications.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Applications.jsx:105"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Agents\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > Applications.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-415",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/ApplicationEditForm.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:93",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationEditForm.jsx:168"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"General\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ApplicationEditForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-416",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/ApplicationInformation.jsx (13 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:78",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ApplicationInformation.jsx:158"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 13 strings from this component (for example \"Information\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ApplicationInformation.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-417",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/ConfigurationTab.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ConfigurationTab.jsx:295"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Initializing chat...\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ConfigurationTab.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-418",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/CreateApplicationSaveButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationSaveButton.jsx:61"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > CreateApplicationSaveButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-419",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/CreateApplicationTabBar.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationTabBar.jsx:75",
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/CreateApplicationTabBar.jsx:80"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > CreateApplicationTabBar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-420",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/DeleteApplicationButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/DeleteApplicationButton.jsx:62"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Delete\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > DeleteApplicationButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-421",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/ExportApplicationButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/ExportApplicationButton.jsx:46"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Export\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ExportApplicationButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-422",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/SaveApplicationButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveApplicationButton.jsx:77"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > SaveApplicationButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-423",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/SaveNewVersionButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Applications/SaveNewVersionButton.jsx:87"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Save As Version\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > SaveNewVersionButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-424",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Components/StatusFilterSelect.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/StatusFilterSelect.jsx:29",
+        "apps/elitea-ui/src/pages/Applications/Components/StatusFilterSelect.jsx:29"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Statuses:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > StatusFilterSelect.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-425",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/AgentPipelineVersionSelector.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:340",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/AgentPipelineVersionSelector.jsx:389"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Versions\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > AgentPipelineVersionSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-426",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: CardActions/EnhancedCardToolActions.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:63",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardActions/EnhancedCardToolActions.jsx:90"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Copy the tool name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > EnhancedCardToolActions.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-427",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: CardBodies/BaseCardBody.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:29",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/BaseCardBody.jsx:29"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Hide tools\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > BaseCardBody.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-428",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: CardBodies/OpenAPICardBody.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/OpenAPICardBody.jsx:24",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/CardBodies/OpenAPICardBody.jsx:24"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Hide Actions\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > OpenAPICardBody.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-429",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/consts.js (38 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/consts.js:48",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/consts.js:216"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 38 strings from this component (for example \"ADO Boards\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > consts.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-430",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/ToolCard.jsx (16 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:355",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolCard.jsx:623"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 16 strings from this component (for example \"Your configuration does not match any available configuratio\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ToolCard.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-431",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/ToolConfigurationForm.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolConfigurationForm.jsx:203",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolConfigurationForm.jsx:248"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Configuration\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ToolConfigurationForm.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-432",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/ToolMenu.jsx (12 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:580",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/ToolMenu.jsx:724"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 12 strings from this component (for example \"Toolkit\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > ToolMenu.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-433",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Tools/toolOptions.js (164 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/toolOptions.js:2",
+        "apps/elitea-ui/src/pages/Applications/Components/Tools/toolOptions.js:232"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 164 strings from this component (for example \"Wiki\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > toolOptions.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-434",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/CreateApplication.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/CreateApplication.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"New Agent\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > CreateApplication.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-435",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/Latest.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Latest.jsx:16",
+        "apps/elitea-ui/src/pages/Applications/Latest.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"No public agents yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > Latest.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-436",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/MyLiked.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/MyLiked.jsx:16",
+        "apps/elitea-ui/src/pages/Applications/MyLiked.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"You have not liked any agents yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > MyLiked.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-437",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/PrivateAgentsList.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/PrivateAgentsList.jsx:25",
+        "apps/elitea-ui/src/pages/Applications/PrivateAgentsList.jsx:117"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"No agents yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > PrivateAgentsList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-438",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/Trending.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/Trending.jsx:16",
+        "apps/elitea-ui/src/pages/Applications/Trending.jsx:23"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"No public agents yet.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > Trending.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-439",
+      "domain": "agents",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Applications/useApplicationTabs.jsx (10 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:43",
+        "apps/elitea-ui/src/pages/Applications/useApplicationTabs.jsx:193"
+      ],
+      "acceptance": [
+        "GIVEN the agents screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 10 strings from this component (for example \"Latest\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > agents > useApplicationTabs.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-005",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 5: Deep link to an agent version cold-loads",
+      "source": [
+        "apps/elitea-ui/src/routes.js:12",
+        "apps/elitea-ui/src/routes.js:12"
+      ],
+      "acceptance": [
+        "GIVEN a shared deep link to a specific agent version",
+        "WHEN it is opened in a fresh session",
+        "THEN the agent detail opens on that version",
+        "AND the URL is preserved"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-05\"",
+        "testId": "journey > 05 > Deep link to an agent version cold-loads"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-014",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 14: Create agent, save, publish, unpublish",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:204",
+        "apps/elitea-ui/src/api/applications.js:295",
+        "apps/elitea-ui/src/api/applications.js:310"
+      ],
+      "acceptance": [
+        "GIVEN the create-agent flow",
+        "WHEN the user saves, publishes and later unpublishes the agent",
+        "THEN each state change is reflected in the lists and detail view",
+        "AND publish validation failures are surfaced"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-14\"",
+        "testId": "journey > 14 > Create agent, save, publish, unpublish"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-015",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 15: Create a new version, set default, delete old",
+      "source": [
+        "apps/elitea-ui/src/api/applications.js:458",
+        "apps/elitea-ui/src/api/applications.js:503",
+        "apps/elitea-ui/src/api/applications.js:523"
+      ],
+      "acceptance": [
+        "GIVEN an agent with an existing version",
+        "WHEN the user saves a new version, makes it the default and deletes the old one",
+        "THEN the version list and default marker update accordingly",
+        "AND deleting a version still in use is prevented with a clear message"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-15\"",
+        "testId": "journey > 15 > Create a new version, set default, delete old"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-025",
+      "domain": "agents",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 25: Unsaved-changes navigation block",
+      "source": [
+        "apps/elitea-ui/src/routes.js:12"
+      ],
+      "acceptance": [
+        "GIVEN a dirty agent form",
+        "WHEN the user navigates away",
+        "THEN a confirmation dialog appears and cancel keeps the user on the page with state intact",
+        "AND confirming leaves without saving"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-25\"",
+        "testId": "journey > 25 > Unsaved-changes navigation block"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

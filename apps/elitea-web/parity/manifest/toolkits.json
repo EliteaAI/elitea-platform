@@ -1,0 +1,2215 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "toolkits",
+  "items": [
+    {
+      "id": "ROUTE-026",
+      "domain": "toolkits",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits` renders index redirect",
+      "source": [
+        "apps/elitea-ui/src/routes.js:30",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:214"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits",
+        "THEN the index redirect screen is displayed at that URL",
+        "AND index redirects to the first Toolkits tab, preserving query string and history state"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-026"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-027",
+      "domain": "toolkits",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/create` renders CreateToolkit",
+      "source": [
+        "apps/elitea-ui/src/routes.js:32",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:215"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/create",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-027"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-028",
+      "domain": "toolkits",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/create/:toolkitType` renders CreateToolkit",
+      "source": [
+        "apps/elitea-ui/src/routes.js:33",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:216"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/create/:toolkitType",
+        "THEN the create toolkit screen is displayed at that URL",
+        "AND navigation is blocked while the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-028"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-029",
+      "domain": "toolkits",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab` renders Toolkits",
+      "source": [
+        "apps/elitea-ui/src/routes.js:31",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:217"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab",
+        "THEN the toolkits screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-029"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-030",
+      "domain": "toolkits",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/toolkits/:tab/:toolkitId` renders EditToolkit",
+      "source": [
+        "apps/elitea-ui/src/routes.js:34",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:218"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /toolkits/:tab/:toolkitId",
+        "THEN the edit toolkit screen is displayed at that URL",
+        "AND navigation is blocked while anything on the page is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-030"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-094",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `destTab` on /toolkits/:tab (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:314"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the destTab query parameter with a valid value",
+        "THEN the named tab (History) is activated on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > destTab"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-095",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `destTab` on /toolkits/:tab/:toolkitId (spec QP-006)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:314"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the destTab query parameter with a valid value",
+        "THEN the named tab (History) is activated on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > destTab"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-096",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `edited_participant_id` on /toolkits/:tab (spec QP-007)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:132",
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:135",
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:137"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the edited_participant_id query parameter with a valid value",
+        "THEN the participant editor opens for that participant on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > edited_participant_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-097",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `edited_participant_id` on /toolkits/:tab/:toolkitId (spec QP-007)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:132",
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:135",
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:137"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the edited_participant_id query parameter with a valid value",
+        "THEN the participant editor opens for that participant on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > edited_participant_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-098",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `forceCustom` on /toolkits/:tab",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:187"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the forceCustom query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > forceCustom"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-099",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `forceCustom` on /toolkits/:tab/:toolkitId",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:187"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the forceCustom query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > forceCustom"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-100",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `name` on /toolkits/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:318",
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:320"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the name query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > name"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-101",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `name` on /toolkits/:tab/:toolkitId",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:318",
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:320"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the name query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > name"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-102",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newToolkitId` on /toolkits/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:133"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the newToolkitId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > newToolkitId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-103",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `newToolkitId` on /toolkits/:tab/:toolkitId",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:133"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the newToolkitId query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > newToolkitId"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-104",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /toolkits/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:124"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the return_url query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-105",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `return_url` on /toolkits/:tab/:toolkitId",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:124"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the return_url query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > return_url"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-106",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /toolkits/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:125"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab",
+        "WHEN the URL contains the source_application_id query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-107",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `source_application_id` on /toolkits/:tab/:toolkitId",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:125"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId",
+        "WHEN the URL contains the source_application_id query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND removing the parameter returns the screen to its default state",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.toolkits.test.tsx",
+        "testId": "search-params > toolkits > source_application_id"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-195",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/toolkits/prompt_lib/{projectId} (toolkitTypes)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:32-41"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit types operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/toolkits/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitTypes"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-196",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/tools/prompt_lib/{projectId}?{queryParams} (toolkitsList)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:43-120"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkits list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/tools/prompt_lib/{projectId}?{queryParams} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitsList"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-197",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} (toolkitsDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:122-144"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkits details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitsDetails"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-198",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/tools/prompt_lib/{projectId} (toolkitCreate)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:146-162"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit create operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/tools/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitCreate"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-199",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId} (toolkitEdit)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:164-188"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit edit operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitEdit"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-200",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} (toolkitDelete)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:190-222"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit delete operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitDelete"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-201",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/fork_toolkit/prompt_lib/{projectId} (toolkitFork)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:224-294"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit fork operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/fork_toolkit/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitFork"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-202",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/export_toolkit/prompt_lib/{projectId}/{id}{?fork=true|} (toolkitExport) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:296-302"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit export operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/export_toolkit/prompt_lib/{projectId}/{id}{?fork=true|} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitExport"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-203",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/test_tool/prompt_lib/{projectId}/{id}?await_response=true (toolkitTest)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:304-313"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit test operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/test_tool/prompt_lib/{projectId}/{id}?await_response=true with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitTest"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-204",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/mcp_sync_tools/prompt_lib/{projectId}?await_response={awaitResponse} (mcpSyncTools)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:314-342"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the mcp sync tools operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/mcp_sync_tools/prompt_lib/{projectId}?await_response={awaitResponse} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > mcpSyncTools"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-205",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /elitea_core/toolkit_discover_tools/prompt_lib/{projectId}/{toolkitType} (discoverMcpTools)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:346-355"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the discover mcp tools operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /elitea_core/toolkit_discover_tools/prompt_lib/{projectId}/{toolkitType} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > discoverMcpTools"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-206",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} (toolkitAssociate)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:385-467"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit associate operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitAssociate"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-207",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/toolkit_validator/prompt_lib/{projectId}/{toolkitId} (validateToolkit)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:468-476"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the validate toolkit operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/toolkit_validator/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > validateToolkit"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-208",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/toolkit_available_tools/prompt_lib/{projectId}/{toolkitId} (toolkitAvailableTools)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:478-486"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toolkit available tools operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/toolkit_available_tools/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > toolkitAvailableTools"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-209",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/toolkit_types/prompt_lib/{projectId} (listToolkitTypes)",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:487-493"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the list toolkit types operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/toolkit_types/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/toolkits.contract.test.ts",
+        "testId": "api > toolkits.js > listToolkitTypes"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-023",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.application.delete` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:543",
+        "apps/elitea-ui/src/common/constants.js:553",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsControls.jsx:68"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.application.delete",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.application.delete"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-034",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tool.delete` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:591",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsControls.jsx:68"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tool.delete",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tool.delete"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-035",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tool.details` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:588"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tool.details",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tool.details"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-038",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tools.create` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:589",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:14",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/lib/constants/participant.constants.js:15",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:73",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:74",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:75"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tools.create",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tools.create"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-039",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tools.export` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:594",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsControls.jsx:60"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tools.export",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tools.export"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-040",
+      "domain": "toolkits",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.tools.list` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:587"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.tools.list",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.tools.list"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-097",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: add participant into conversation via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:124"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to add participant into conversation",
+        "THEN a POST request to /elitea_core/participants/prompt_lib/{projectId}/{id} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > addParticipantIntoConversation"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-098",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: conversation create via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to conversation create",
+        "THEN a POST request to /elitea_core/conversations/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > conversationCreate"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-099",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: create configuration via onCreateConfiguration/onTestConnection",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:527",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:528",
+        "apps/elitea-ui/src/api/configurations.js:246"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to create configuration",
+        "THEN a POST request to /configurations/configurations/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > createConfiguration"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-100",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: mcp sync tools via onClick",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolActionsSelector.jsx:111",
+        "apps/elitea-ui/src/api/toolkits.js:314"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to mcp sync tools",
+        "THEN a POST request to /elitea_core/mcp_sync_tools/prompt_lib/{projectId}?await_response={awaitResponse} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > mcpSyncTools"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-101",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: socket chat_enter_room via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/common/constants.js:886"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_enter_room exchange",
+        "THEN the socket event chat_enter_room is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > sio:chat_enter_room"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-102",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: socket chat_leave_rooms via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/common/constants.js:887"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_leave_rooms exchange",
+        "THEN the socket event chat_leave_rooms is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > sio:chat_leave_rooms"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-103",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: socket chat_predict via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/common/constants.js:883"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_predict exchange",
+        "THEN the socket event chat_predict is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > sio:chat_predict"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-104",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: stop indexing item via onClear/onRunTool/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:195",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:236",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:239",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestTools.jsx:241",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to stop indexing item",
+        "THEN a DELETE request to elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > stopIndexingItem"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-105",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: test configuration connection via onCreateConfiguration/onTestConnection",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:527",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitForm.jsx:528",
+        "apps/elitea-ui/src/api/configurations.js:378"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to test configuration connection",
+        "THEN a POST request to /configurations/check_connection/{projectId}/{configType} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > testConfigurationConnection"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-106",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: toolkit delete via onDelete",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/DeleteToolkitButton.jsx:96",
+        "apps/elitea-ui/src/api/toolkits.js:190"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to toolkit delete",
+        "THEN a DELETE request to /elitea_core/tool/prompt_lib/{projectId}/{toolkitId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > toolkitDelete"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-107",
+      "domain": "toolkits",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on toolkits: toolkit edit via onClick",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/SaveToolkitButton.jsx:94",
+        "apps/elitea-ui/src/api/toolkits.js:164"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to toolkit edit",
+        "THEN a PUT request to /elitea_core/tool/prompt_lib/{projectId}/{toolId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions toolkits\"",
+        "testId": "action > toolkits > toolkitEdit"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-263",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: constants/toolkitForm.constants.js (35 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/constants/toolkitForm.constants.js:12",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/constants/toolkitForm.constants.js:46"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 35 strings from this component (for example \"ADO Boards\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > toolkitForm.constants.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-264",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/toolkitForm.helpers.js (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/helpers/toolkitForm.helpers.js:16",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/lib/helpers/toolkitForm.helpers.js:20"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Your configuration does not match any available configuratio\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > toolkitForm.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-265",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: form/NameDescriptionInput.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/NameDescriptionInput.jsx:72",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/NameDescriptionInput.jsx:99"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Toolkit Name\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > NameDescriptionInput.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-266",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolBase/EmptyMcpTools.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/EmptyMcpTools.jsx:19"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"No tools to display for now. To get tools from MCP press but\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > EmptyMcpTools.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-267",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolBase/ToolActionsItems.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolActionsItems.jsx:31"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Tool is not available\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolActionsItems.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-268",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolBase/ToolActionsSelector.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolActionsSelector.jsx:105",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolActionsSelector.jsx:137"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Tools\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolActionsSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-269",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolBase/ToolBase.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolBase.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolBase.jsx:587"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Advanced Settings\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolBase.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-270",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolBase/ToolSection.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolBase/ToolSection.jsx:51"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Anonymous\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolSection.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-271",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: form/ToolCustom.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolCustom.jsx:193"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"JSON\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolCustom.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-272",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolkitForm/ToolkitsOperationButtons.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitsOperationButtons.jsx:258",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolkitForm/ToolkitsOperationButtons.jsx:312"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Some fields have missing or invalid data!\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolkitsOperationButtons.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-273",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolOpenAPI/OpenAPIActions.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolOpenAPI/OpenAPIActions.jsx:39"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Api Endpoints\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > OpenAPIActions.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-274",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolOpenAPI/OpenAPIActionsTable.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolOpenAPI/OpenAPIActionsTable.jsx:109",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolOpenAPI/OpenAPIActionsTable.jsx:326"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Description:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > OpenAPIActionsTable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-275",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ToolOpenAPI/OpenAPISchemaInput.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolOpenAPI/OpenAPISchemaInput.jsx:135",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/ToolOpenAPI/OpenAPISchemaInput.jsx:198"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Schema\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > OpenAPISchemaInput.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-276",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: list/AuthorEmptyListPlaceHolder.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/list/AuthorEmptyListPlaceHolder.jsx:13"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Nothing found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > AuthorEmptyListPlaceHolder.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-277",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: list/ToolkitsEmptyListPlaceHolder.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/list/ToolkitsEmptyListPlaceHolder.jsx:14",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/list/ToolkitsEmptyListPlaceHolder.jsx:15"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Nothing found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolkitsEmptyListPlaceHolder.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-278",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: list/ToolkitsList.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/list/ToolkitsList.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/list/ToolkitsList.jsx:200"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Types\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolkitsList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-279",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: test-tools/TestToolSettings.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestToolSettings.jsx:115",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/test-tools/TestToolSettings.jsx:163"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Test Settings\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > TestToolSettings.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-280",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: toolkits-tab-bar/ToolkitsTabBar.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsTabBar.jsx:154",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/ui/toolkits-tab-bar/ToolkitsTabBar.jsx:190"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Save Credentials\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolkitsTabBar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-495",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/CreateToolkitToolTabBar.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:195",
+        "apps/elitea-ui/src/pages/Toolkits/CreateToolkitToolTabBar.jsx:201"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"Save Credentials\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > CreateToolkitToolTabBar.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-496",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/DeleteToolkitButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/DeleteToolkitButton.jsx:69"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Delete\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > DeleteToolkitButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-497",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/EditToolkit.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:230",
+        "apps/elitea-ui/src/pages/Toolkits/EditToolkit.jsx:419"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Configuration\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > EditToolkit.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-498",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/ExportToolkitButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/ExportToolkitButton.jsx:40"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Export\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ExportToolkitButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-499",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/SaveToolkitButton.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/SaveToolkitButton.jsx:95"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Save\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > SaveToolkitButton.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-500",
+      "domain": "toolkits",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: Toolkits/ToolkitTypeSelector.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/Toolkits/ToolkitTypeSelector.jsx:176",
+        "apps/elitea-ui/src/pages/Toolkits/ToolkitTypeSelector.jsx:182"
+      ],
+      "acceptance": [
+        "GIVEN the toolkits screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Still no local MCP available. Follow creation guides in our \") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > toolkits > ToolkitTypeSelector.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-017",
+      "domain": "toolkits",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 17: Create toolkit, configure, test connection",
+      "source": [
+        "apps/elitea-ui/src/api/toolkits.js:146",
+        "apps/elitea-ui/src/api/toolkits.js:304"
+      ],
+      "acceptance": [
+        "GIVEN the create-toolkit flow",
+        "WHEN the user configures the toolkit and runs the connection test",
+        "THEN the test result is displayed",
+        "AND the saved toolkit appears in the list"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-17\"",
+        "testId": "journey > 17 > Create toolkit, configure, test connection"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

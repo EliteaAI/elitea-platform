@@ -1,0 +1,258 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "admin",
+  "items": [
+    {
+      "id": "API-080",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /admin/users/default/{projectId} (userList)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:18-65"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the user list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /admin/users/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > userList"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-081",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /admin/roles/default/{projectId} (roleList)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:66-96"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the role list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /admin/roles/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > roleList"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-082",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /admin/users/default/{projectId} (userCreate)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:97-106"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the user create operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /admin/users/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > userCreate"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-083",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /admin/users/default/{projectId} (userUpdate)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:107-116"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the user update operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /admin/users/default/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > userUpdate"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-084",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE /admin/users/default/{projectId}?id[]={expr} (userDelete) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:117-125"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the user delete operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE /admin/users/default/{projectId}?id[]={expr} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > userDelete"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-085",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /admin/moderation_status/default/{projectId}/{entityId} (moderationStatus)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:126-134"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the moderation status operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /admin/moderation_status/default/{projectId}/{entityId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > moderationStatus"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-086",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /admin/moderation_status/default/{projectId}/{entityId} (createModerationRequest)",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:135-145"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the create moderation request operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /admin/moderation_status/default/{projectId}/{entityId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/admin.contract.test.ts",
+        "testId": "api > admin.js > createModerationRequest"
+      },
+      "unit": "A14",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/admin/index.ts",
+        "min": 85
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-027",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 27: Admin users screen loads with server-injected config",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:18"
+      ],
+      "acceptance": [
+        "GIVEN an administrator",
+        "WHEN the admin users screen is opened",
+        "THEN the user list loads under the admin base path with server-provided configuration",
+        "AND non-admin users cannot reach it"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-27\"",
+        "testId": "journey > 27 > Admin users screen loads with server-injected config"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-028",
+      "domain": "admin",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 28: Admin role permission matrix edit",
+      "source": [
+        "apps/elitea-ui/src/api/admin.js:66"
+      ],
+      "acceptance": [
+        "GIVEN the admin roles screen",
+        "WHEN a permission cell is toggled and saved",
+        "THEN the role matrix persists the change",
+        "AND affected users see the permission change after reload"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-28\"",
+        "testId": "journey > 28 > Admin role permission matrix edit"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

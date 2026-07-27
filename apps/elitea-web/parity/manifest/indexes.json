@@ -1,0 +1,738 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "indexes",
+  "items": [
+    {
+      "id": "PARAM-047",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `index_name` on /toolkits/:tab/:toolkitId (indexes panel) (spec QP-008)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:73",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:163"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /toolkits/:tab/:toolkitId (indexes panel)",
+        "WHEN the URL contains the index_name query parameter with a valid value",
+        "THEN the index detail view opens on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.indexes.test.tsx",
+        "testId": "search-params > indexes > index_name"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-074",
+      "domain": "indexes",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId} (getIndexesList)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:12-22"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get indexes list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/indexesApi.contract.test.ts",
+        "testId": "api > indexesApi.js > getIndexesList"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-075",
+      "domain": "indexes",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexId} (deleteIndexItem)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:23-32"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the delete index item operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/indexesApi.contract.test.ts",
+        "testId": "api > indexesApi.js > deleteIndexItem"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-076",
+      "domain": "indexes",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint DELETE elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId} (stopIndexingItem)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33-39"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the stop indexing item operation",
+        "WHEN the client issues the request",
+        "THEN it targets DELETE elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/indexesApi.contract.test.ts",
+        "testId": "api > indexesApi.js > stopIndexingItem"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-077",
+      "domain": "indexes",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PATCH elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName} (updateIndexSchedule)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:40-47"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the update index schedule operation",
+        "WHEN the client issues the request",
+        "THEN it targets PATCH elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/indexesApi.contract.test.ts",
+        "testId": "api > indexesApi.js > updateIndexSchedule"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-078",
+      "domain": "indexes",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET elitea_core/tool/prompt_lib/{projectId}/{toolkitId} (getIndexSchedule)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:48-62"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the get index schedule operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET elitea_core/tool/prompt_lib/{projectId}/{toolkitId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/indexesApi.contract.test.ts",
+        "testId": "api > indexesApi.js > getIndexSchedule"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-030",
+      "domain": "indexes",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `models.applications.index_meta.edit` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:605",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:99"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include models.applications.index_meta.edit",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > models.applications.index_meta.edit"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-045",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: add participant into conversation via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:124"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to add participant into conversation",
+        "THEN a POST request to /elitea_core/participants/prompt_lib/{projectId}/{id} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > addParticipantIntoConversation"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-046",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: conversation create via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/[fsd]/features/chat/api/chat.api.js:100"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to conversation create",
+        "THEN a POST request to /elitea_core/conversations/prompt_lib/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > conversationCreate"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-047",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: delete index item via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:218",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:23"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to delete index item",
+        "THEN a DELETE request to elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > deleteIndexItem"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-048",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: socket chat_enter_room via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/common/constants.js:886"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_enter_room exchange",
+        "THEN the socket event chat_enter_room is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > sio:chat_enter_room"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-049",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: socket chat_leave_rooms via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/common/constants.js:887"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_leave_rooms exchange",
+        "THEN the socket event chat_leave_rooms is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > sio:chat_leave_rooms"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-050",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: socket chat_predict via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/common/constants.js:883"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to the chat_predict exchange",
+        "THEN the socket event chat_predict is emitted",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > sio:chat_predict"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-051",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: stop indexing item via onCancelIndexing/onSelectModel/onSetLLMSettings",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:330",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:361",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/index.jsx:364",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:33"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to stop indexing item",
+        "THEN a DELETE request to elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > stopIndexingItem"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-052",
+      "domain": "indexes",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on indexes: update index schedule via onChange/onSubmit",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:205",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:277",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/api/indexesApi.js:40"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to update index schedule",
+        "THEN a PATCH request to elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions indexes\"",
+        "testId": "action > indexes > updateIndexSchedule"
+      },
+      "unit": "A4",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/toolkits/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-253",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: helpers/indexSchedule.helpers.js (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:44",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:149"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Invalid hour step value. Step cannot be 0.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > indexSchedule.helpers.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-254",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexActions.jsx (6 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:171",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexActions.jsx:266"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 6 strings from this component (for example \"Delete\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexActions.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-255",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexConfig.jsx (5 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexConfig.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexConfig.jsx:82"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 5 strings from this component (for example \"Search Index\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexConfig.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-256",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexHistory.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexHistory.jsx:55",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexHistory.jsx:56"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Event\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexHistory.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-257",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexNameWrapper.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexNameWrapper.jsx:73"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"In Progress\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexNameWrapper.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-258",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexScheduleModal.jsx (8 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:72",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:164"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 8 strings from this component (for example \"Schedule settings\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexScheduleModal.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-259",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexDetails/IndexViewToggler.jsx (1 strings) [aria-only]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexViewToggler.jsx:19"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders",
+        "WHEN its accessibility labels are inspected with assistive technology",
+        "THEN all 1 assistive-technology strings from this component (for example \"Edit Index Toggler\") match the baseline verbatim",
+        "AND every labelled control remains reachable and announced by a screen reader"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "npm run test:storybook",
+        "testId": "a11y > indexes > IndexViewToggler.jsx"
+      },
+      "unit": "S1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/ui/index.ts",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-260",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/IndexesContainer.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesContainer.jsx:223"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Item no longer exists\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexesContainer.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-261",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexesList/index.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/index.jsx:17",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/index.jsx:30"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"INDEXES\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > index.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-262",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: IndexesList/IndexListItem.jsx (3 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/IndexListItem.jsx:36",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexesList/IndexListItem.jsx:108"
+      ],
+      "acceptance": [
+        "GIVEN the indexes screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 3 strings from this component (for example \"reindexed / total indexed\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > indexes > IndexListItem.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

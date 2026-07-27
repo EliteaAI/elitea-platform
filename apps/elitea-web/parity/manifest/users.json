@@ -1,0 +1,277 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "users",
+  "items": [
+    {
+      "id": "ROUTE-059",
+      "domain": "users",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/users` renders Users",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:327",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/users",
+        "THEN the users screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-059"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-061",
+      "domain": "users",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `inviteUsers` on /settings/users (spec QP-002)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:34",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:43"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /settings/users",
+        "WHEN the URL contains the inviteUsers query parameter with a valid value",
+        "THEN the invite-users modal opens on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.settings-users.test.tsx",
+        "testId": "search-params > settings-users > inviteUsers"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-017",
+      "domain": "users",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.users.users.create` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:559",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:195",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/lib/constants/createEntity.constant.js:83",
+        "apps/elitea-ui/src/[fsd]/widgets/sidebar-root/ui/button/CreateEntityButton.jsx:57"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.users.users.create",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.users.users.create"
+      },
+      "unit": "A9",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/settings/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-018",
+      "domain": "users",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.users.users.delete` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:560",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:157",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:222"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.users.users.delete",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.users.users.delete"
+      },
+      "unit": "A9",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/settings/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-019",
+      "domain": "users",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.users.users.edit` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:558",
+        "apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx:150",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:211"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.users.users.edit",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.users.users.edit"
+      },
+      "unit": "A9",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/settings/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "PERM-020",
+      "domain": "users",
+      "kind": "permission",
+      "priority": "must",
+      "title": "Permission `configuration.users.users.view` gates its UI",
+      "source": [
+        "apps/elitea-ui/src/common/constants.js:557",
+        "apps/elitea-ui/src/[fsd]/features/chat/participants/ui/ParticipantsWrapper.jsx:39",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:54",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:69",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:196",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:235"
+      ],
+      "acceptance": [
+        "GIVEN a user whose project role does not include configuration.users.users.view",
+        "WHEN the screens that reference this permission render",
+        "THEN the gated controls, tabs or routes are hidden or disabled exactly as in the baseline",
+        "AND granting the permission makes them available without any other change"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- --grep permissions",
+        "testId": "permissions > configuration.users.users.view"
+      },
+      "unit": "A9",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/settings/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "ACT-069",
+      "domain": "users",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Action on settings-users: user create via onConfirm",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:267",
+        "apps/elitea-ui/src/api/admin.js:97"
+      ],
+      "acceptance": [
+        "GIVEN the settings-users screen is displayed with the relevant entity available",
+        "WHEN the user activates the control wired to user create",
+        "THEN a POST request to /admin/users/default/{projectId} is dispatched",
+        "AND the visible outcome matches the baseline: success updates the view, failure surfaces an error without losing user input"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- --grep \"actions settings-users\"",
+        "testId": "action > settings-users > userCreate"
+      },
+      "unit": "A9",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/settings/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-292",
+      "domain": "users",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: settings/Users.jsx (4 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:194",
+        "apps/elitea-ui/src/[fsd]/pages/settings/Users.jsx:263"
+      ],
+      "acceptance": [
+        "GIVEN the settings-users screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 4 strings from this component (for example \"Users\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > settings-users > Users.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-022",
+      "domain": "users",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 22: Settings: invite user and change role",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:327",
+        "apps/elitea-ui/src/api/admin.js:97",
+        "apps/elitea-ui/src/api/admin.js:107"
+      ],
+      "acceptance": [
+        "GIVEN the users settings tab",
+        "WHEN the user invites a member and changes their role",
+        "THEN the member list reflects both changes",
+        "AND the invite modal is reachable directly by URL"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-22\"",
+        "testId": "journey > 22 > Settings: invite user and change role"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

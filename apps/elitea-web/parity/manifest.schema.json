@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://elitea.ai/schemas/parity-manifest.schema.json",
+  "title": "Elitea Web UI parity manifest (spec-ui-reimplementation §8.3), sharded layout",
+  "description": "The manifest is sharded so no tracked file trips the repo's 1 MiB no-binaries gate and CI diffs stay per-domain: parity/manifest.json is the ROOT INDEX (top-level §8.3 fields + shard list); parity/manifest/<domain>.json are the SHARDS carrying the items, one per §8.6 domain. Item format is exactly §8.3 — sharding is packaging only. This schema validates both file shapes. uictl parity-manifest merges the shards and enforces every rule (including duplicate-id detection) globally.",
+  "oneOf": [
+    { "$ref": "#/$defs/rootIndex" },
+    { "$ref": "#/$defs/shard" }
+  ],
+  "$defs": {
+    "rootIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$schema", "version", "generatedFrom", "shards"],
+      "properties": {
+        "$schema": { "const": "./manifest.schema.json" },
+        "version": { "const": 1 },
+        "generatedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repo", "commit", "date"],
+          "properties": {
+            "repo": { "const": "apps/elitea-ui" },
+            "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+          }
+        },
+        "shards": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "domain", "items"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^manifest/[a-z-]+\\.json$" },
+              "domain": { "$ref": "#/$defs/domain" },
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Item count in the shard; uictl fails the load when it disagrees with the shard file."
+              }
+            }
+          }
+        }
+      }
+    },
+    "shard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$schema", "domain", "items"],
+      "properties": {
+        "$schema": { "const": "../manifest.schema.json" },
+        "domain": { "$ref": "#/$defs/domain" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/item" },
+          "description": "Every item's domain must equal the shard's domain (uictl enforces)."
+        }
+      }
+    },
+    "domain": {
+      "enum": [
+        "shell", "chat", "agents", "pipelines", "skills", "toolkits",
+        "mcps", "apps", "credentials", "artifacts", "indexes", "secrets",
+        "users", "tokens", "notifications", "analytics", "public", "admin"
+      ]
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "domain", "kind", "priority", "title", "source",
+        "acceptance", "verify", "unit", "status", "coverage", "waiver"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z]{3,8}-\\d{3}$",
+          "description": "Stable, immutable, unique across ALL shards."
+        },
+        "domain": { "$ref": "#/$defs/domain" },
+        "kind": {
+          "enum": ["route", "behaviour", "integration", "permission", "shell", "visual"]
+        },
+        "priority": { "enum": ["must", "should", "waived"] },
+        "title": { "type": "string", "minLength": 8 },
+        "source": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^apps/elitea-ui/.+:\\d+(-\\d+)?$",
+            "description": "file:line or file:line-line; must resolve in the pinned baseline commit."
+          }
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 3,
+          "items": { "type": "string", "pattern": "^(GIVEN|WHEN|THEN|AND) " },
+          "description": "GIVEN/WHEN/THEN, observable behaviour only, no implementation detail. Immutable once committed (uictl enforces against the git baseline)."
+        },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "command", "testId"],
+          "properties": {
+            "type": { "enum": ["vitest", "playwright", "command"] },
+            "command": { "type": "string", "minLength": 4 },
+            "testId": { "type": "string", "minLength": 3 }
+          }
+        },
+        "unit": {
+          "enum": [
+            "F1", "F2", "F3", "F4", "F5", "P1", "T1", "T2", "W1", "W2", "W3",
+            "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8",
+            "R1", "R2", "R3", "M1", "E1",
+            "C1", "C2", "C3", "C4", "C5", "C6",
+            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10",
+            "A11", "A12", "A13", "A14", "A15",
+            "W-shell", "V1", "V2", "V3", "V4", "X4", "X5", "X6"
+          ]
+        },
+        "status": { "enum": ["todo", "in-progress", "implemented", "verified", "waived"] },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "min"],
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "min": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        },
+        "waiver": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reason", "decidedBy", "date", "replacesBehaviour"],
+              "properties": {
+                "reason": { "type": "string", "minLength": 3 },
+                "decidedBy": { "type": "string", "minLength": 3 },
+                "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+                "replacesBehaviour": { "type": "string", "minLength": 3 }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "priority": { "const": "waived" } } },
+          "then": { "properties": { "waiver": { "type": "object" } } },
+          "else": { "properties": { "waiver": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

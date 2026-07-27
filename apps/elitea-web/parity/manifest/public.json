@@ -1,0 +1,577 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "public",
+  "items": [
+    {
+      "id": "ROUTE-041",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/:tab` renders UserPublic",
+      "source": [
+        "apps/elitea-ui/src/routes.js:51",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:235"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/:tab",
+        "THEN the user public screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-041"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-042",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/agents/:agentId` renders EditApplication",
+      "source": [
+        "apps/elitea-ui/src/routes.js:52",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:236"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/agents/:agentId",
+        "THEN the edit application screen is displayed at that URL",
+        "AND navigation is blocked while the form is dirty"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-042"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-043",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/pipelines/:agentId` renders EditPipeline",
+      "source": [
+        "apps/elitea-ui/src/routes.js:53",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:237"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/pipelines/:agentId",
+        "THEN the edit pipeline screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-043"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-044",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/toolkits/:toolkitId` renders EditToolkit",
+      "source": [
+        "apps/elitea-ui/src/routes.js:54",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:238"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/toolkits/:toolkitId",
+        "THEN the edit toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-044"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-045",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/mcps/:mcpId` renders EditToolkit (MCP mode)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:55",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:239"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/mcps/:mcpId",
+        "THEN the edit toolkit screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-045"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-046",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/apps/:appId` renders AppDetail",
+      "source": [
+        "apps/elitea-ui/src/routes.js:56",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:240"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/apps/:appId",
+        "THEN the app detail screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-046"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-072",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/agents/:agentId/:version` renders EditApplication (version child) (spec §8.1 id ROUTE-069b)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:52",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/agents/:agentId/:version",
+        "THEN the edit application screen is displayed at that URL",
+        "AND empty child element: the parent renders and reads the version parameter"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-072"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-073",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/user-public/pipelines/:agentId/:version` renders EditPipeline (version child) (spec §8.1 id ROUTE-069c)",
+      "source": [
+        "apps/elitea-ui/src/routes.js:53",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:281-286"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /user-public/pipelines/:agentId/:version",
+        "THEN the edit pipeline screen is displayed at that URL",
+        "AND empty child element: the parent renders and reads the version parameter"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-073"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "ROUTE-075",
+      "domain": "public",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route anomaly `/user-public` — declared but not mounted, reproduced bug-for-bug",
+      "source": [
+        "apps/elitea-ui/src/routes.js:50",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:386"
+      ],
+      "acceptance": [
+        "GIVEN the application is running with the baseline route table",
+        "WHEN the browser navigates to /user-public",
+        "THEN the latent baseline behaviour is reproduced exactly: declared in the route table but never mounted; the project-switcher catch-all swallows it and treats \"user-public\" as a project id",
+        "AND no redirect, 404 page or new screen is introduced for this path"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-075"
+      },
+      "unit": "R3",
+      "status": "todo",
+      "coverage": {
+        "file": "src/routes/$projectId.$.tsx",
+        "min": 95
+      },
+      "waiver": null
+    },
+    {
+      "id": "PARAM-108",
+      "domain": "public",
+      "kind": "behaviour",
+      "priority": "must",
+      "title": "Query param `statuses` on /user-public/:tab",
+      "source": [
+        "apps/elitea-ui/src/pages/UserPublic/UserPublic.jsx:61",
+        "apps/elitea-ui/src/pages/UserPublic/UserPublic.jsx:261"
+      ],
+      "acceptance": [
+        "GIVEN the application is at /user-public/:tab",
+        "WHEN the URL contains the statuses query parameter with a valid value",
+        "THEN the corresponding panel or view state is applied on cold load, without a full page reload",
+        "AND the same state change performed by interaction updates the URL parameter accordingly",
+        "AND a malformed value is rejected without crashing the screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/routes/__tests__/searchParams.user-public.test.tsx",
+        "testId": "search-params > user-public > statuses"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-187",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /social/authors/{projectId}{?{queryString}|} (authorList) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/api/social.js:103-119"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the author list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /social/authors/{projectId}{?{queryString}|} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/social.contract.test.ts",
+        "testId": "api > social.js > authorList"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-188",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /social/author/ (authorDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/social.js:120-138"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the author details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /social/author/ with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/social.contract.test.ts",
+        "testId": "api > social.js > authorDetails"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-189",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint PUT /social/author/ (authorDescription)",
+      "source": [
+        "apps/elitea-ui/src/api/social.js:139-148"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the author description operation",
+        "WHEN the client issues the request",
+        "THEN it targets PUT /social/author/ with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/social.contract.test.ts",
+        "testId": "api > social.js > authorDescription"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-190",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint POST /social/feedbacks/default/{PUBLIC_PROJECT_ID} (feedback)",
+      "source": [
+        "apps/elitea-ui/src/api/social.js:149-157"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the feedback operation",
+        "WHEN the client issues the request",
+        "THEN it targets POST /social/feedbacks/default/{PUBLIC_PROJECT_ID} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/social.contract.test.ts",
+        "testId": "api > social.js > feedback"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-191",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /social/pin/prompt_lib/{projectId}/{entityType}/{entityId} (togglePinItem)",
+      "source": [
+        "apps/elitea-ui/src/api/social.js:158-196"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the toggle pin item operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /social/pin/prompt_lib/{projectId}/{entityType}/{entityId} with the same parameters, body shape and semantics as the baseline",
+        "AND on success the affected lists and detail views reflect the change without a manual refresh, while failures surface an error state"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/social.contract.test.ts",
+        "testId": "api > social.js > togglePinItem"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-210",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/trending_authors/prompt_lib/{projectId} (trendingAuthorsList)",
+      "source": [
+        "apps/elitea-ui/src/api/trendingAuthor.js:13-23"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the trending authors list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/trending_authors/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/trendingAuthor.contract.test.ts",
+        "testId": "api > trendingAuthor.js > trendingAuthorsList"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-211",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/trending_authors/prompt_lib/{projectId} (applicationTrendingAuthorsList)",
+      "source": [
+        "apps/elitea-ui/src/api/trendingAuthor.js:24-34"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the application trending authors list operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/trending_authors/prompt_lib/{projectId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/trendingAuthor.contract.test.ts",
+        "testId": "api > trendingAuthor.js > applicationTrendingAuthorsList"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-212",
+      "domain": "public",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/author/prompt_lib/{authorId} (trendingAuthorsDetails)",
+      "source": [
+        "apps/elitea-ui/src/api/trendingAuthor.js:35-45"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the trending authors details operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/author/prompt_lib/{authorId} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/trendingAuthor.contract.test.ts",
+        "testId": "api > trendingAuthor.js > trendingAuthorsDetails"
+      },
+      "unit": "A12",
+      "status": "todo",
+      "coverage": {
+        "file": "src/pages/user-public/index.ts",
+        "min": 80
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-501",
+      "domain": "public",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: UserPublic/AllStuffList.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/UserPublic/AllStuffList.jsx:29"
+      ],
+      "acceptance": [
+        "GIVEN the user-public screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Nothing found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > user-public > AllStuffList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-502",
+      "domain": "public",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: UserPublic/ApplicationsList.jsx (1 strings)",
+      "source": [
+        "apps/elitea-ui/src/pages/UserPublic/ApplicationsList.jsx:26"
+      ],
+      "acceptance": [
+        "GIVEN the user-public screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 1 strings from this component (for example \"Nothing found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > user-public > ApplicationsList.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}

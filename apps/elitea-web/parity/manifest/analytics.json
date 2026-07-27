@@ -1,0 +1,607 @@
+{
+  "$schema": "../manifest.schema.json",
+  "domain": "analytics",
+  "items": [
+    {
+      "id": "ROUTE-060",
+      "domain": "analytics",
+      "kind": "route",
+      "priority": "must",
+      "title": "Route `/settings/analytics` renders AnalyticsContainer",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:331",
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:290"
+      ],
+      "acceptance": [
+        "GIVEN an authenticated user with a selected project",
+        "WHEN the browser navigates to a URL matching /settings/analytics",
+        "THEN the analytics container screen is displayed at that URL",
+        "AND the location, parameters and history behave exactly as in the baseline application"
+      ],
+      "verify": {
+        "type": "command",
+        "command": "go run ./tools/uictl parity-routes --baseline apps/elitea-ui",
+        "testId": "ROUTE-060"
+      },
+      "unit": "R1",
+      "status": "todo",
+      "coverage": {
+        "file": "src/app/router.tsx",
+        "min": 90
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-008",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics/prompt_lib/{projectId}{expr} (projectAnalytics) [dynamic path template]",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:12-26"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the project analytics operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics/prompt_lib/{projectId}{expr} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > projectAnalytics"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-009",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_users/prompt_lib/{projectId}?{params} (analyticsUsers)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:27-52"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics users operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_users/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsUsers"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-010",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_user_detail/prompt_lib/{projectId}?{params} (analyticsUserDetail)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:53-65"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics user detail operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_user_detail/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsUserDetail"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-011",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_tools/prompt_lib/{projectId}?{params} (analyticsTools)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:66-91"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics tools operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_tools/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsTools"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-012",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_tool_detail/prompt_lib/{projectId}?{params} (analyticsToolDetail)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:92-104"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics tool detail operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_tool_detail/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsToolDetail"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-013",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_agents/prompt_lib/{projectId}?{params} (analyticsAgents)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:105-130"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics agents operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_agents/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsAgents"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "API-014",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Endpoint GET /elitea_core/analytics_agent_detail/prompt_lib/{projectId}?{params} (analyticsAgentDetail)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/api/analyticsApi.js:131-143"
+      ],
+      "acceptance": [
+        "GIVEN the user performs the analytics agent detail operation",
+        "WHEN the client issues the request",
+        "THEN it targets GET /elitea_core/analytics_agent_detail/prompt_lib/{projectId}?{params} with the same parameters, body shape and semantics as the baseline",
+        "AND the response payload drives the same visible data as in the baseline, with error responses surfaced as an error state instead of a blank screen"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:integration -- src/shared/api/__tests__/analyticsApi.contract.test.ts",
+        "testId": "api > analyticsApi.js > analyticsAgentDetail"
+      },
+      "unit": "A10",
+      "status": "todo",
+      "coverage": {
+        "file": "src/features/analytics/index.ts",
+        "min": 88
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-050",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: constants/analyticsCommon.constants.js (34 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/lib/constants/analyticsCommon.constants.js:28",
+        "apps/elitea-ui/src/[fsd]/features/analytics/lib/constants/analyticsCommon.constants.js:215"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 34 strings from this component (for example \"Overview Tab\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > analyticsCommon.constants.js"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-051",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsAgentDetailed.jsx (19 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgentDetailed.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgentDetailed.jsx:255"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 19 strings from this component (for example \"No data found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsAgentDetailed.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-052",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsAgents.jsx (13 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgents.jsx:97",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsAgents.jsx:235"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 13 strings from this component (for example \"Chat Messages\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsAgents.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-053",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsContainer.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsContainer.jsx:28",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsContainer.jsx:213"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"Last 24h\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsContainer.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-054",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsGuide.jsx (2 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsGuide.jsx:45",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsGuide.jsx:61"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 2 strings from this component (for example \"Calculation:\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsGuide.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-055",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsHealth.jsx (9 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsHealth.jsx:36",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsHealth.jsx:123"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 9 strings from this component (for example \"No health data available.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsHealth.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-056",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsOverview.jsx (18 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsOverview.jsx:31",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsOverview.jsx:203"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 18 strings from this component (for example \"TEAM\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsOverview.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-057",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsToolDetailed.jsx (19 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsToolDetailed.jsx:38",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsToolDetailed.jsx:255"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 19 strings from this component (for example \"No data found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsToolDetailed.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-058",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsTools.jsx (11 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsTools.jsx:85",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsTools.jsx:174"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 11 strings from this component (for example \"Most Popular Tools\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsTools.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-059",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsUserDetailed.jsx (19 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUserDetailed.jsx:39",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUserDetailed.jsx:328"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 19 strings from this component (for example \"No data found.\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsUserDetailed.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-060",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: ui/AnalyticsUsers.jsx (11 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUsers.jsx:84",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUsers.jsx:110"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 11 strings from this component (for example \"User Activity\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > AnalyticsUsers.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "COPY-061",
+      "domain": "analytics",
+      "kind": "visual",
+      "priority": "should",
+      "title": "Copy: components/ModelUsageTable.jsx (7 strings)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/components/ModelUsageTable.jsx:22",
+        "apps/elitea-ui/src/[fsd]/features/analytics/ui/components/ModelUsageTable.jsx:71"
+      ],
+      "acceptance": [
+        "GIVEN the analytics screen renders with the default brand in both colour schemes",
+        "WHEN its user-visible texts are compared with the baseline application",
+        "THEN all 7 strings from this component (for example \"Model Usage Breakdown\") appear verbatim",
+        "AND no string is dropped, truncated or reworded"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test --grep @visual",
+        "testId": "visual > analytics > ModelUsageTable.jsx"
+      },
+      "unit": "V2",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/visual/visual.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    },
+    {
+      "id": "JRNY-024",
+      "domain": "analytics",
+      "kind": "integration",
+      "priority": "must",
+      "title": "Journey 24: Settings: analytics loads",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/app/routes/ProtectedRoutes.jsx:331"
+      ],
+      "acceptance": [
+        "GIVEN the analytics settings tab",
+        "WHEN it loads",
+        "THEN the dashboards render with project data",
+        "AND loading failures show an error state instead of empty charts"
+      ],
+      "verify": {
+        "type": "playwright",
+        "command": "npx playwright test e2e/journeys --grep \"journey-24\"",
+        "testId": "journey > 24 > Settings: analytics loads"
+      },
+      "unit": "V1",
+      "status": "todo",
+      "coverage": {
+        "file": "e2e/journeys.spec.ts",
+        "min": 0
+      },
+      "waiver": null
+    }
+  ]
+}
