@@ -8,11 +8,14 @@
  * ## Response shape conventions
  * - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
  * - **General errors (4xx/5xx)**: `{"error": "message"}` (pkg/apierr/apierr.go:47-59
- *   and the handlers' inline `map[string]any{"error": ...}` writes). No operation
- *   documented in this spec produces the pylon-era `{"ok": false, "error": ...}`
- *   envelope; a handful of UNDOCUMENTED paths still do (social/handler.go:268,
- *   301, 321, 341, 419 and toolkits/handler.go:286, 312, 324, 350, 362) — scope
- *   that shape there when those domains are spec'd.
+ *   and the handlers' inline `map[string]any{"error": ...}` writes). One
+ *   documented shape deviates: the five social/handler.go 500 sites (Like
+ *   :268, Unlike :301, Pin :321, Unpin :341, CreateFeedback :419) emit the
+ *   pylon-era `{"ok": false, "error": ...}` envelope instead, modeled as
+ *   the named `SocialActionErrorResponse` schema and referenced only on
+ *   those specific operations. Five more UNDOCUMENTED sites of the same
+ *   envelope remain on toolkits/handler.go (:286, 312, 324, 350, 362) —
+ *   scope that shape there when those domains are spec'd.
  * - **Rate limit (429)**: intentionally NOT documented. The Go RateLimit
  *   middleware is a pass-through stub (internal/api/middleware/ratelimit.go:9-14)
  *   and no elitea-main code emits a 429 body — documenting one would be contract
@@ -63,6 +66,8 @@ export * from "./artifactDeletedResponse.zod";
 export * from "./artifactListParams.zod";
 export * from "./artifactUploadResponse.zod";
 export * from "./author.zod";
+export * from "./authorDetail.zod";
+export * from "./authorUpdateRequest.zod";
 export * from "./batchEntitySettingsRequest.zod";
 export * from "./batchReplaceVersionReferencesParams.zod";
 export * from "./bucket.zod";
@@ -75,6 +80,7 @@ export * from "./bucketUpdateRequest.zod";
 export * from "./chatConfig.zod";
 export * from "./conversationStarters.zod";
 export * from "./createArtifactBody.zod";
+export * from "./createFeedbackResponse.zod";
 export * from "./defaultIcon.zod";
 export * from "./deleteApplicationVersionParams.zod";
 export * from "./deleteArtifactParams.zod";
@@ -87,6 +93,9 @@ export * from "./errorResponse.zod";
 export * from "./exportApplicationParams.zod";
 export * from "./exportConverterRequest.zod";
 export * from "./exportConverterResponse.zod";
+export * from "./feedbackCreateRequest.zod";
+export * from "./feedbackItem.zod";
+export * from "./feedbackListResponse.zod";
 export * from "./forkAgentResult.zod";
 export * from "./forkApplicationInput.zod";
 export * from "./forkRequest.zod";
@@ -96,6 +105,8 @@ export * from "./getAnalyticsAgentDetailParams.zod";
 export * from "./getAnalyticsToolDetailParams.zod";
 export * from "./getAnalyticsUserDetailParams.zod";
 export * from "./getApplicationIconsParams.zod";
+export * from "./getBrandingBootstrapParams.zod";
+export * from "./getProjectAnalyticsParams.zod";
 export * from "./getRecommendationsParams.zod";
 export * from "./groupsListResponse.zod";
 export * from "./iconMetaRequest.zod";
@@ -107,6 +118,9 @@ export * from "./importWizardRequest.zod";
 export * from "./importWizardResponse.zod";
 export * from "./importedAgent.zod";
 export * from "./importedToolkit.zod";
+export * from "./listAnalyticsAgentsParams.zod";
+export * from "./listAnalyticsToolsParams.zod";
+export * from "./listAnalyticsUsersParams.zod";
 export * from "./listApplicationsParams.zod";
 export * from "./listProjectsParams.zod";
 export * from "./listPublicApplicationsParams.zod";
@@ -114,6 +128,12 @@ export * from "./listSkillsParams.zod";
 export * from "./llmSettings.zod";
 export * from "./modelUsage.zod";
 export * from "./moderationStatusResponse.zod";
+export * from "./n400Response.zod";
+export * from "./n401Response.zod";
+export * from "./n403Response.zod";
+export * from "./n404Response.zod";
+export * from "./n409Response.zod";
+export * from "./n500Response.zod";
 export * from "./okResponse.zod";
 export * from "./participantSettingsRequest.zod";
 export * from "./permission.zod";
@@ -141,6 +161,7 @@ export * from "./publishValidationFailedResponse.zod";
 export * from "./publishValidationResult.zod";
 export * from "./recommendationsResponse.zod";
 export * from "./role.zod";
+export * from "./roleListParams.zod";
 export * from "./s3BucketListResponse.zod";
 export * from "./s3ObjectListResponse.zod";
 export * from "./saveApplicationNewVersionBody.zod";
@@ -151,12 +172,18 @@ export * from "./setDefaultVersionRequest.zod";
 export * from "./skill.zod";
 export * from "./skillCreateRequest.zod";
 export * from "./skillsList.zod";
+export * from "./socialActionErrorResponse.zod";
+export * from "./socialAuthorProfile.zod";
+export * from "./socialAuthorSummary.zod";
+export * from "./socialTrendingAuthor.zod";
 export * from "./supportAssistantConfig.zod";
 export * from "./tag.zod";
 export * from "./tagsList.zod";
 export * from "./toolAnalytics.zod";
 export * from "./toolSettings.zod";
 export * from "./toolkitExport.zod";
+export * from "./toolkitInstance.zod";
+export * from "./toolkitInstanceListResponse.zod";
 export * from "./toolkitTypeSchemas.zod";
 export * from "./trendingAuthor.zod";
 export * from "./unpublishRequest.zod";
@@ -166,6 +193,7 @@ export * from "./uploadApplicationIconBody.zod";
 export * from "./uploadedIconsList.zod";
 export * from "./userActivity.zod";
 export * from "./userDeleteParams.zod";
+export * from "./userListParams.zod";
 export * from "./userListResponse.zod";
 export * from "./userRecord.zod";
 export * from "./validateForPublishRequest.zod";
@@ -177,16 +205,4 @@ export * from "./versionToolRef.zod";
 export * from "./versionValidatorResponse.zod";
 export * from "./versionVariable.zod";
 export * from "./versionWriteRequest.zod";
-export * from "./n400Response.zod";
-export * from "./n401Response.zod";
-export * from "./n403Response.zod";
-export * from "./n404Response.zod";
-export * from "./n409Response.zod";
-export * from "./n500Response.zod";
-export * from "./userListParams.zod";
-export * from "./roleListParams.zod";
-export * from "./getBrandingBootstrapParams.zod";
-export * from "./getProjectAnalyticsParams.zod";
-export * from "./listAnalyticsUsersParams.zod";
-export * from "./listAnalyticsToolsParams.zod";
-export * from "./listAnalyticsAgentsParams.zod";
+export * from "./listToolkitInstancesParams.zod";

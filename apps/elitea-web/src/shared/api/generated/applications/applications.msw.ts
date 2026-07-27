@@ -8,11 +8,14 @@
  * ## Response shape conventions
  * - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
  * - **General errors (4xx/5xx)**: `{"error": "message"}` (pkg/apierr/apierr.go:47-59
- *   and the handlers' inline `map[string]any{"error": ...}` writes). No operation
- *   documented in this spec produces the pylon-era `{"ok": false, "error": ...}`
- *   envelope; a handful of UNDOCUMENTED paths still do (social/handler.go:268,
- *   301, 321, 341, 419 and toolkits/handler.go:286, 312, 324, 350, 362) — scope
- *   that shape there when those domains are spec'd.
+ *   and the handlers' inline `map[string]any{"error": ...}` writes). One
+ *   documented shape deviates: the five social/handler.go 500 sites (Like
+ *   :268, Unlike :301, Pin :321, Unpin :341, CreateFeedback :419) emit the
+ *   pylon-era `{"ok": false, "error": ...}` envelope instead, modeled as
+ *   the named `SocialActionErrorResponse` schema and referenced only on
+ *   those specific operations. Five more UNDOCUMENTED sites of the same
+ *   envelope remain on toolkits/handler.go (:286, 312, 324, 350, 362) —
+ *   scope that shape there when those domains are spec'd.
  * - **Rate limit (429)**: intentionally NOT documented. The Go RateLimit
  *   middleware is a pass-through stub (internal/api/middleware/ratelimit.go:9-14)
  *   and no elitea-main code emits a 429 body — documenting one would be contract
@@ -51,6 +54,7 @@ import type {
   ApplicationRelationUpdatedResponse,
   ApplicationUpdatedResponse,
   ApplicationVersionDetail,
+  AuthorDetail,
   DefaultIcon,
   DocumentLoadersResponse,
   ExportConverterResponse,
@@ -3081,6 +3085,61 @@ export const getUpdatePipelineTriggerResponseMock = (
   ...overrideResponse,
 });
 
+export const getGetAuthorDetailResponseMock = (
+  overrideResponse: Partial<Extract<AuthorDetail, object>> = {},
+): AuthorDetail => ({
+  id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  name: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  email: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  avatar: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  title: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  description: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  total_conversations: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  public_conversations: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  public_applications: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  total_applications: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  public_pipelines: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  total_pipelines: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  total_toolkits: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  public_collections: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  total_collections: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  rewards: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  ...overrideResponse,
+});
+
 export const getGetTrendingAuthorsResponseMock = (): TrendingAuthor[] =>
   Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
@@ -4345,6 +4404,32 @@ export const getUpdatePipelineTriggerMockHandler = (
   );
 };
 
+export const getGetAuthorDetailMockHandler = (
+  overrideResponse?:
+    | AuthorDetail
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<AuthorDetail> | AuthorDetail),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/author/prompt_lib/:authorId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAuthorDetailResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetTrendingAuthorsMockHandler = (
   overrideResponse?:
     | TrendingAuthor[]
@@ -4612,6 +4697,7 @@ export const getApplicationsMock = () => [
   getGetDocumentLoadersMockHandler(),
   getGetPipelineTriggerMockHandler(),
   getUpdatePipelineTriggerMockHandler(),
+  getGetAuthorDetailMockHandler(),
   getGetTrendingAuthorsMockHandler(),
   getForkAgentMockHandler(),
   getGetAgentCategoriesMockHandler(),

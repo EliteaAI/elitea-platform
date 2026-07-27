@@ -8,11 +8,14 @@
  * ## Response shape conventions
  * - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
  * - **General errors (4xx/5xx)**: `{"error": "message"}` (pkg/apierr/apierr.go:47-59
- *   and the handlers' inline `map[string]any{"error": ...}` writes). No operation
- *   documented in this spec produces the pylon-era `{"ok": false, "error": ...}`
- *   envelope; a handful of UNDOCUMENTED paths still do (social/handler.go:268,
- *   301, 321, 341, 419 and toolkits/handler.go:286, 312, 324, 350, 362) — scope
- *   that shape there when those domains are spec'd.
+ *   and the handlers' inline `map[string]any{"error": ...}` writes). One
+ *   documented shape deviates: the five social/handler.go 500 sites (Like
+ *   :268, Unlike :301, Pin :321, Unpin :341, CreateFeedback :419) emit the
+ *   pylon-era `{"ok": false, "error": ...}` envelope instead, modeled as
+ *   the named `SocialActionErrorResponse` schema and referenced only on
+ *   those specific operations. Five more UNDOCUMENTED sites of the same
+ *   envelope remain on toolkits/handler.go (:286, 312, 324, 350, 362) —
+ *   scope that shape there when those domains are spec'd.
  * - **Rate limit (429)**: intentionally NOT documented. The Go RateLimit
  *   middleware is a pass-through stub (internal/api/middleware/ratelimit.go:9-14)
  *   and no elitea-main code emits a 429 body — documenting one would be contract
@@ -41,10 +44,44 @@ import { faker } from "@faker-js/faker";
 import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
-import type { ToolkitTypeSchemas } from "../model";
+import type { ToolkitInstanceListResponse, ToolkitTypeSchemas } from "../model";
 
 export const getListToolkitsResponseMock = (): ToolkitTypeSchemas => ({
   [faker.string.alphanumeric(5)]: {},
+});
+
+export const getListToolkitInstancesResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitInstanceListResponse, object>> = {},
+): ToolkitInstanceListResponse => ({
+  rows: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    settings: {},
+    meta: {},
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    updated_at: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        null,
+      ]),
+      undefined,
+    ]),
+    author_id: faker.number.int(),
+    shared_id: faker.helpers.arrayElement([
+      faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        faker.number.int(),
+      ]),
+      null,
+    ]),
+  })),
+  total: faker.number.int(),
+  ...overrideResponse,
 });
 
 export const getListToolkitsMockHandler = (
@@ -72,4 +109,33 @@ export const getListToolkitsMockHandler = (
     options,
   );
 };
-export const getToolkitsMock = () => [getListToolkitsMockHandler()];
+
+export const getListToolkitInstancesMockHandler = (
+  overrideResponse?:
+    | ToolkitInstanceListResponse
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ToolkitInstanceListResponse> | ToolkitInstanceListResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/tools/prompt_lib/:projectId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListToolkitInstancesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+export const getToolkitsMock = () => [
+  getListToolkitsMockHandler(),
+  getListToolkitInstancesMockHandler(),
+];

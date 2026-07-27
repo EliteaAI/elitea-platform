@@ -8,11 +8,14 @@
  * ## Response shape conventions
  * - **Single resource**: returned directly at top level — `{"id": 42, "name": "..."}`
  * - **General errors (4xx/5xx)**: `{"error": "message"}` (pkg/apierr/apierr.go:47-59
- *   and the handlers' inline `map[string]any{"error": ...}` writes). No operation
- *   documented in this spec produces the pylon-era `{"ok": false, "error": ...}`
- *   envelope; a handful of UNDOCUMENTED paths still do (social/handler.go:268,
- *   301, 321, 341, 419 and toolkits/handler.go:286, 312, 324, 350, 362) — scope
- *   that shape there when those domains are spec'd.
+ *   and the handlers' inline `map[string]any{"error": ...}` writes). One
+ *   documented shape deviates: the five social/handler.go 500 sites (Like
+ *   :268, Unlike :301, Pin :321, Unpin :341, CreateFeedback :419) emit the
+ *   pylon-era `{"ok": false, "error": ...}` envelope instead, modeled as
+ *   the named `SocialActionErrorResponse` schema and referenced only on
+ *   those specific operations. Five more UNDOCUMENTED sites of the same
+ *   envelope remain on toolkits/handler.go (:286, 312, 324, 350, 362) —
+ *   scope that shape there when those domains are spec'd.
  * - **Rate limit (429)**: intentionally NOT documented. The Go RateLimit
  *   middleware is a pass-through stub (internal/api/middleware/ratelimit.go:9-14)
  *   and no elitea-main code emits a 429 body — documenting one would be contract
@@ -43,7 +46,7 @@ export const OkResponse = zod
     ok: zod.boolean(),
   })
   .describe(
-    'NOTE(W2): `{\"ok\": true}` acknowledgements — SetDefaultVersion (internal\/api\/v2\/applications\/handler.go:981), BatchReplaceVersion (:994), UpdateAttachmentStorage (internal\/api\/v2\/eliteacore\/handler.go:1783), UpdateIcon (:1860), BatchUpdateEntitySettings (internal\/api\/v2\/conversations\/handler.go:675).\n',
+    'NOTE(W2): `{\"ok\": true}` acknowledgements — SetDefaultVersion (internal\/api\/v2\/applications\/handler.go:981), BatchReplaceVersion (:994), UpdateAttachmentStorage (internal\/api\/v2\/eliteacore\/handler.go:1783), UpdateIcon (:1860), BatchUpdateEntitySettings (internal\/api\/v2\/conversations\/handler.go:675), and social\/handler.go\'s UpdateAuthor (:133, 166), Like (:271, plus the no-op shortcuts at :253, 258), Unlike (:304, plus :288, 293), Pin (:324, plus :315), and Unpin (:344, plus :335).\n',
   );
 
 export type OkResponse = zod.input<typeof OkResponse>;
