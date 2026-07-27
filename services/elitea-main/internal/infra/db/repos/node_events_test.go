@@ -17,7 +17,8 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	executor := &scriptedExecutor{rowResults: []scriptedRow{
 		{err: pgx.ErrNoRows},
 		{values: []any{"claim-node-1"}},
-		{values: []any{int64(17), "claim-node-1", "RUNNING", false, true, false}},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
 	}}
 	store := &scriptedStore{scriptedExecutor: executor}
 	repository, err := newNodeEventsRepository(store)
@@ -31,7 +32,7 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	if !outcome.Inserted || outcome.Cursor != 17 || outcome.CommittedSequence != 1 || store.txCalls != 1 {
 		t.Fatalf("unexpected node event projection: %+v tx=%d", outcome, store.txCalls)
 	}
-	if len(executor.rowCalls) != 3 {
+	if len(executor.rowCalls) != 4 {
 		t.Fatalf("unexpected node event query count: %d", len(executor.rowCalls))
 	}
 	lockQuery := executor.rowCalls[1]
@@ -40,8 +41,12 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 			t.Fatalf("node event authority lock SQL is missing %q", evidence)
 		}
 	}
-	query := executor.rowCalls[2]
-	for _, evidence := range []string{"previous_sequence", "output_inbox", "execution_replay_events", "c.initial_output_watermark = $18"} {
+	stateQuery := executor.rowCalls[2]
+	if !strings.Contains(stateQuery.sql, "execution_replay_state") || !strings.Contains(stateQuery.sql, "FOR UPDATE") {
+		t.Fatal("node event did not serialize the retained sequence state")
+	}
+	query := executor.rowCalls[3]
+	for _, evidence := range []string{"ranked_progress", "deleted_progress", "output_inbox", "execution_replay_events", "execution_replay_state", "c.initial_output_watermark = $18"} {
 		if !strings.Contains(query.sql, evidence) {
 			t.Fatalf("node event projection SQL is missing %q", evidence)
 		}
@@ -89,8 +94,7 @@ func TestNodeEventsRepositoryRejectsSequenceGapBeforeDurableAppend(t *testing.T)
 	executor := &scriptedExecutor{rowResults: []scriptedRow{
 		{err: pgx.ErrNoRows},
 		{values: []any{"claim-node-1"}},
-		{values: []any{int64(0), "claim-node-1", "RUNNING", false, false, false}},
-		{err: pgx.ErrNoRows},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
 	}}
 	repository, err := newNodeEventsRepository(&scriptedStore{scriptedExecutor: executor})
 	if err != nil {

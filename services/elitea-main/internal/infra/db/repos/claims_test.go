@@ -306,7 +306,7 @@ func TestClaimValidationAllocatesMonotonicAttemptAndLeaseEpoch(t *testing.T) {
 	if decision.Disposition != executionapp.ClaimAccepted || decision.Lease.Fence.ClaimAttempt != 1 || decision.Lease.Fence.LeaseEpoch != 1 || decision.LeaseObservedAt != leaseObservedAt || decision.ClaimHandoffWatermark != 0 {
 		t.Fatalf("first claim did not allocate matching monotonic authority: %+v", decision)
 	}
-	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8,") || !strings.Contains(store.rowCalls[3].sql, "clock_timestamp() AS observed_at") || !strings.Contains(store.rowCalls[3].sql, "$9::bigint * interval '1 millisecond'") || !strings.Contains(store.rowCalls[3].sql, "initial_output_watermark") || !strings.Contains(store.rowCalls[3].sql, "event_type = 'execution.node_event'") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
+	if !strings.Contains(store.rowCalls[3].sql, "$7, $7, $8,") || !strings.Contains(store.rowCalls[3].sql, "clock_timestamp() AS observed_at") || !strings.Contains(store.rowCalls[3].sql, "$9::bigint * interval '1 millisecond'") || !strings.Contains(store.rowCalls[3].sql, "initial_output_watermark") || !strings.Contains(store.rowCalls[3].sql, "execution_replay_state") || !strings.Contains(store.rowCalls[3].sql, "last_node_sequence") || !strings.Contains(store.execCalls[0].sql, "authority_granted_at = clock_timestamp()") {
 		t.Fatal("claim insert does not derive lease_epoch from the monotonic claim attempt")
 	}
 }

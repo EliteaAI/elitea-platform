@@ -22,7 +22,6 @@ const (
 
 var (
 	ErrExecutionEventsForbidden = errors.New("execution events are forbidden")
-	ErrCursorExpired            = errors.New("execution event cursor expired")
 	ErrInvalidEventStream       = errors.New("invalid durable execution event stream")
 )
 
@@ -108,10 +107,6 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 	initial, err := h.repository.Replay(r.Context(), projectID, executionID, cursor, h.batchSize)
 	if err != nil {
-		if errors.Is(err, ErrCursorExpired) {
-			http.Error(w, "event cursor expired", http.StatusConflict)
-			return
-		}
 		http.Error(w, "event replay failed", http.StatusInternalServerError)
 		return
 	}

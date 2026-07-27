@@ -13,6 +13,8 @@ import (
 
 const maxReplayBatch = 100
 
+const replayEventReset = "execution.replay_reset"
+
 type ReplayEventsRepository struct {
 	store sqlExecutor
 }
@@ -34,6 +36,78 @@ func (r *ReplayEventsRepository) Replay(ctx context.Context, projectID, executio
 	if err != nil || executionID == "" || afterCursor > math.MaxInt64 || limit <= 0 || limit > maxReplayBatch {
 		return nil, executionsapi.ErrInvalidEventStream
 	}
+	var prunedThrough, highCursor int64
+	var executionPresent, cursorRecognized bool
+	err = r.store.QueryRow(ctx, `
+WITH matching_execution AS MATERIALIZED (
+    SELECT execution_id, generation
+    FROM elitea_runtime.execution_jobs
+    WHERE projection_project_id = $1
+      AND execution_id = $2
+), replay_bounds AS MATERIALIZED (
+    SELECT COALESCE(max(s.pruned_through_cursor), 0) AS pruned_through,
+           greatest(
+               COALESCE(max(s.last_node_cursor), 0),
+               COALESCE((
+                   SELECT max(r.cursor)
+                   FROM elitea_runtime.execution_replay_events AS r
+                   WHERE r.projection_project_id = $1
+                     AND r.execution_id = $2
+               ), 0)
+           ) AS high_cursor
+    FROM elitea_runtime.execution_replay_state AS s
+    JOIN matching_execution AS m
+      ON m.execution_id = s.execution_id
+     AND m.generation = s.generation
+)
+SELECT replay_bounds.pruned_through,
+       replay_bounds.high_cursor,
+       EXISTS (SELECT 1 FROM matching_execution),
+       $3::bigint = 0
+       OR $3::bigint = replay_bounds.pruned_through
+       OR EXISTS (
+           SELECT 1
+           FROM elitea_runtime.execution_replay_events AS r
+           WHERE r.projection_project_id = $1
+             AND r.execution_id = $2
+             AND r.cursor = $3
+       )
+FROM replay_bounds`,
+		projectionProjectID,
+		executionID,
+		int64(afterCursor),
+	).Scan(&prunedThrough, &highCursor, &executionPresent, &cursorRecognized)
+	if err != nil {
+		return nil, fmt.Errorf("query durable execution replay bounds: %w", err)
+	}
+	if !executionPresent || prunedThrough < 0 || highCursor < prunedThrough {
+		return nil, executionsapi.ErrInvalidEventStream
+	}
+
+	effectiveCursor := int64(afterCursor)
+	events := make([]executionsapi.DurableEvent, 0, limit)
+	if effectiveCursor < prunedThrough {
+		resetData, marshalErr := json.Marshal(struct {
+			Reason string `json:"reason"`
+		}{
+			Reason: "progress_retention_window_elapsed",
+		})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode execution replay reset: %w", marshalErr)
+		}
+		events = append(events, executionsapi.DurableEvent{
+			Cursor: uint64(prunedThrough),
+			Type:   replayEventReset,
+			Data:   resetData,
+		})
+		effectiveCursor = prunedThrough
+	} else if effectiveCursor > highCursor || !cursorRecognized {
+		return nil, executionsapi.ErrInvalidEventStream
+	}
+	if len(events) == limit {
+		return events, nil
+	}
+
 	rows, err := r.store.Query(ctx, `
 SELECT cursor, event_type, event_bytes, event_digest
 FROM elitea_runtime.execution_replay_events
@@ -41,13 +115,12 @@ WHERE projection_project_id = $1
   AND execution_id = $2
   AND cursor > $3
 ORDER BY cursor
-LIMIT $4`, projectionProjectID, executionID, int64(afterCursor), limit)
+LIMIT $4`, projectionProjectID, executionID, effectiveCursor, limit-len(events))
 	if err != nil {
 		return nil, fmt.Errorf("query durable execution replay: %w", err)
 	}
 	defer rows.Close()
 
-	events := make([]executionsapi.DurableEvent, 0, limit)
 	for rows.Next() {
 		var cursor int64
 		var event executionsapi.DurableEvent

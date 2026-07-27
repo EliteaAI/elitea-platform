@@ -121,10 +121,20 @@ func TestEventHandlerReplaysFromDurableLastEventIDAndNeverAcceptsPayloadFromWait
 	}
 }
 
-func TestEventHandlerRejectsExpiredAndConflictingCursorsBeforeStreaming(t *testing.T) {
+func TestEventHandlerStreamsReplayResetInsteadOfRetryingExpiredCursor(t *testing.T) {
 	t.Run("expired", func(t *testing.T) {
 		authorizer := &eventAuthorizerStub{}
-		repository := &eventRepositoryStub{err: ErrCursorExpired}
+		repository := &eventRepositoryStub{events: map[uint64][]DurableEvent{
+			9: {{
+				Cursor: 12,
+				Type:   "execution.replay_reset",
+				Data:   json.RawMessage(`{"reason":"progress_retention_window_elapsed"}`),
+			}, {
+				Cursor: 13,
+				Type:   "index.ingest.completed",
+				Data:   json.RawMessage(`{"status":"ok"}`),
+			}},
+		}}
 		handler, err := NewEventHandler(authorizer, repository, &replayWaiterStub{})
 		if err != nil {
 			t.Fatal(err)
@@ -133,11 +143,15 @@ func TestEventHandlerRejectsExpiredAndConflictingCursorsBeforeStreaming(t *testi
 		request.Header.Set("Last-Event-ID", "9")
 		response := newStreamingRecorder()
 		handler.Stream(response, request)
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "cursor expired") {
-			t.Fatalf("unexpected expired-cursor response %d %s", response.Code, response.Body.String())
+		if response.Code != http.StatusOK ||
+			!strings.Contains(response.Body.String(), "id: 12\nevent: execution.replay_reset\ndata:") ||
+			!strings.Contains(response.Body.String(), "id: 13\nevent: index.ingest.completed\ndata:") {
+			t.Fatalf("unexpected expired-cursor reset %d %s", response.Code, response.Body.String())
 		}
 	})
+}
 
+func TestEventHandlerRejectsConflictingCursorSourcesBeforeStreaming(t *testing.T) {
 	t.Run("conflicting", func(t *testing.T) {
 		authorizer := &eventAuthorizerStub{}
 		repository := &eventRepositoryStub{}

@@ -216,7 +216,7 @@ func TestInsertOutputInboxRequiresPriorNodeEventForLaterTerminalSequence(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Inserted || !strings.Contains(accepted.rowCalls[1].sql, "previous_sequence") || !strings.Contains(accepted.rowCalls[1].sql, "event_type = 'execution.node_event'") {
+	if !result.Inserted || !strings.Contains(accepted.rowCalls[1].sql, "previous_sequence") || !strings.Contains(accepted.rowCalls[1].sql, "execution_replay_state") || !strings.Contains(accepted.rowCalls[1].sql, "last_node_sequence") {
 		t.Fatalf("later terminal sequence was not bound to durable node progress: result=%+v", result)
 	}
 

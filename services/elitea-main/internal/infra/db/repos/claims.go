@@ -317,11 +317,12 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 WITH authority_clock AS MATERIALIZED (
     SELECT clock_timestamp() AS observed_at
 ), output_watermark AS MATERIALIZED (
-    SELECT count(*) AS value
-    FROM elitea_runtime.execution_replay_events
-    WHERE execution_id = $2
-      AND generation = $3
-      AND event_type = 'execution.node_event'
+    SELECT COALESCE((
+        SELECT last_node_sequence
+        FROM elitea_runtime.execution_replay_state
+        WHERE execution_id = $2
+          AND generation = $3
+    ), 0) AS value
 )
 INSERT INTO elitea_runtime.execution_claims (
     claim_id, execution_id, generation, workload_session_id,

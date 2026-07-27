@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
@@ -13,12 +14,42 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const replayEventNodeEvent = "execution.node_event"
+const (
+	replayEventNodeEvent          = "execution.node_event"
+	defaultMaxProgressEvents      = int64(2048)
+	defaultMaxProgressBytes       = int64(8 * 1024 * 1024)
+	defaultMaxProgressAge         = 5 * time.Minute
+	defaultReplayJanitorBatchSize = 100
+)
+
+type replayRetentionPolicy struct {
+	maxProgressEvents int64
+	maxProgressBytes  int64
+	maxProgressAge    time.Duration
+	janitorBatchSize  int
+}
+
+func defaultReplayRetentionPolicy() replayRetentionPolicy {
+	return replayRetentionPolicy{
+		maxProgressEvents: defaultMaxProgressEvents,
+		maxProgressBytes:  defaultMaxProgressBytes,
+		maxProgressAge:    defaultMaxProgressAge,
+		janitorBatchSize:  defaultReplayJanitorBatchSize,
+	}
+}
+
+func (p replayRetentionPolicy) validate() error {
+	if p.maxProgressEvents <= 0 || p.maxProgressBytes <= 0 || p.maxProgressAge <= 0 || p.janitorBatchSize <= 0 || p.janitorBatchSize > 1000 {
+		return errors.New("invalid execution replay retention policy")
+	}
+	return nil
+}
 
 // NodeEventsRepository appends current-NodeEvent JSON directly to the durable
 // execution replay log. Redis is deliberately absent from this data path.
 type NodeEventsRepository struct {
-	store sharedStore
+	store     sharedStore
+	retention replayRetentionPolicy
 }
 
 func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) {
@@ -26,14 +57,21 @@ func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &NodeEventsRepository{store: store}, nil
+	return newNodeEventsRepository(store)
 }
 
 func newNodeEventsRepository(store sharedStore) (*NodeEventsRepository, error) {
+	return newNodeEventsRepositoryWithPolicy(store, defaultReplayRetentionPolicy())
+}
+
+func newNodeEventsRepositoryWithPolicy(store sharedStore, retention replayRetentionPolicy) (*NodeEventsRepository, error) {
 	if store == nil {
 		return nil, errors.New("node event database is required")
 	}
-	return &NodeEventsRepository{store: store}, nil
+	if err := retention.validate(); err != nil {
+		return nil, err
+	}
+	return &NodeEventsRepository{store: store, retention: retention}, nil
 }
 
 type durableNodeEvent struct {
@@ -46,8 +84,22 @@ type durableNodeEvent struct {
 	EventDigest         runtimedomain.Digest
 }
 
+type replayExecutionState struct {
+	LastNodeSequence       int64
+	LastNodeEventID        string
+	LastNodeEventBytes     []byte
+	LastNodeEventDigest    runtimedomain.Digest
+	LastNodeCursor         int64
+	PrunedThroughCursor    int64
+	RetainedProgressEvents int64
+	RetainedProgressBytes  int64
+}
+
 func (r *NodeEventsRepository) ProjectNodeEvent(ctx context.Context, frame outputapp.NodeEventFrame) (outputapp.ProjectionOutcome, error) {
 	if err := frame.Validate(); err != nil || frame.Sequence > math.MaxInt64 || frame.Fence.Generation > math.MaxInt64 || frame.Fence.ClaimAttempt > math.MaxInt64 || frame.Fence.LeaseEpoch > math.MaxInt64 {
+		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidNodeEventOutput
+	}
+	if int64(len(frame.BrowserData)) > r.retention.maxProgressBytes {
 		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidNodeEventOutput
 	}
 	resourceProjectID, err := parseProjectID(frame.ResourceProjectID)
@@ -83,10 +135,33 @@ func (r *NodeEventsRepository) ProjectNodeEvent(ctx context.Context, frame outpu
 		if !locked {
 			return runtimedomain.ErrStaleFence
 		}
+		if err := initializeReplayExecutionState(ctx, tx, frame.Fence.ExecutionID, int64(frame.Fence.Generation), projectionProjectID); err != nil {
+			return err
+		}
+		state, stateErr := lockReplayExecutionState(ctx, tx, frame.Fence.ExecutionID, int64(frame.Fence.Generation), projectionProjectID)
+		if stateErr != nil {
+			return stateErr
+		}
+		switch {
+		case int64(frame.Sequence) == state.LastNodeSequence:
+			if state.LastNodeEventID != frame.EventID ||
+				state.LastNodeEventDigest != eventDigest ||
+				!bytes.Equal(state.LastNodeEventBytes, frame.BrowserData) {
+				return outputapp.ErrNodeEventOutputConflict
+			}
+			outcome = outputapp.ProjectionOutcome{
+				Inserted:          false,
+				Cursor:            uint64(state.LastNodeCursor),
+				CommittedSequence: frame.Sequence,
+			}
+			return nil
+		case int64(frame.Sequence) != state.LastNodeSequence+1:
+			return outputapp.ErrNodeEventOutputConflict
+		}
 
 		var cursor int64
 		var authorityClaimID, desiredState string
-		var deadlineExpired, sequenceReady, terminalPresent bool
+		var deadlineExpired, terminalPresent bool
 		err := tx.QueryRow(ctx, `
 WITH authority AS MATERIALIZED (
     SELECT c.claim_id, j.desired_state,
@@ -114,19 +189,43 @@ WITH authority AS MATERIALIZED (
       AND c.lease_expires_at > clock_timestamp()
       AND o.retired_at IS NULL
       AND o.authority_granted_at IS NOT NULL
-), previous_sequence AS MATERIALIZED (
-    SELECT TRUE AS present
-    FROM elitea_runtime.execution_replay_events
-    WHERE event_id = $10 || ':' || (($17::bigint - 1)::text)
-      AND execution_id = $2
-      AND generation = $3
-      AND event_type = $5
-    LIMIT 1
 ), terminal_output AS MATERIALIZED (
     SELECT TRUE AS present
     FROM elitea_runtime.output_inbox
     WHERE execution_id = $2 AND generation = $3
     LIMIT 1
+), ranked_progress AS MATERIALIZED (
+    SELECT r.cursor,
+           r.created_at,
+           octet_length(r.event_bytes) AS event_size,
+           row_number() OVER (ORDER BY r.cursor DESC) AS newest_rank,
+           sum(octet_length(r.event_bytes)) OVER (
+               ORDER BY r.cursor DESC
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+           ) AS newest_bytes
+    FROM elitea_runtime.execution_replay_events AS r
+    WHERE r.execution_id = $2
+      AND r.generation = $3
+      AND r.event_type = $5
+), deleted_progress AS (
+    DELETE FROM elitea_runtime.execution_replay_events AS r
+    USING ranked_progress, authority
+    WHERE r.cursor = ranked_progress.cursor
+      AND authority.desired_state = 'RUNNING'
+      AND NOT authority.deadline_expired
+      AND NOT EXISTS (SELECT 1 FROM terminal_output)
+      AND (
+          ranked_progress.created_at
+              < clock_timestamp() - ($19::bigint * interval '1 millisecond')
+          OR ranked_progress.newest_rank > ($20::bigint - 1)
+          OR ranked_progress.newest_bytes > ($21::bigint - octet_length($6::bytea))
+      )
+    RETURNING r.cursor, octet_length(r.event_bytes) AS event_size
+), deleted_summary AS MATERIALIZED (
+    SELECT count(*) AS event_count,
+           COALESCE(sum(event_size), 0) AS byte_count,
+           COALESCE(max(cursor), 0) AS max_cursor
+    FROM deleted_progress
 ), inserted AS (
     INSERT INTO elitea_runtime.execution_replay_events (
         event_id, execution_id, generation, projection_project_id,
@@ -136,16 +235,35 @@ WITH authority AS MATERIALIZED (
     FROM authority
     WHERE authority.desired_state = 'RUNNING'
       AND NOT authority.deadline_expired
-      AND ($17::bigint = 1 OR EXISTS (SELECT 1 FROM previous_sequence))
       AND NOT EXISTS (SELECT 1 FROM terminal_output)
     ON CONFLICT DO NOTHING
     RETURNING cursor
+), updated_state AS (
+    UPDATE elitea_runtime.execution_replay_state AS s
+    SET last_node_sequence = $17,
+        last_node_event_id = $1,
+        last_node_event_bytes = $6,
+        last_node_event_digest = $7,
+        last_node_cursor = inserted.cursor,
+        pruned_through_cursor = greatest(
+            s.pruned_through_cursor,
+            deleted_summary.max_cursor
+        ),
+        retained_progress_events =
+            s.retained_progress_events - deleted_summary.event_count + 1,
+        retained_progress_bytes =
+            s.retained_progress_bytes - deleted_summary.byte_count
+            + octet_length($6::bytea),
+        updated_at = clock_timestamp()
+    FROM inserted, deleted_summary
+    WHERE s.execution_id = $2
+      AND s.generation = $3
+    RETURNING inserted.cursor
 )
-SELECT COALESCE((SELECT cursor FROM inserted LIMIT 1), 0),
+SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
        COALESCE((SELECT claim_id FROM authority LIMIT 1), ''),
        COALESCE((SELECT desired_state FROM authority LIMIT 1), ''),
        COALESCE((SELECT deadline_expired FROM authority LIMIT 1), FALSE),
-       ($17::bigint = 1 OR EXISTS (SELECT 1 FROM previous_sequence)),
        EXISTS (SELECT 1 FROM terminal_output)`,
 			frame.EventID,
 			frame.Fence.ExecutionID,
@@ -165,7 +283,10 @@ SELECT COALESCE((SELECT cursor FROM inserted LIMIT 1), 0),
 			frame.Fence.Token[:],
 			int64(frame.Sequence),
 			int64(frame.ClaimHandoffWatermark),
-		).Scan(&cursor, &authorityClaimID, &desiredState, &deadlineExpired, &sequenceReady, &terminalPresent)
+			r.retention.maxProgressAge.Milliseconds(),
+			r.retention.maxProgressEvents,
+			r.retention.maxProgressBytes,
+		).Scan(&cursor, &authorityClaimID, &desiredState, &deadlineExpired, &terminalPresent)
 		if err != nil {
 			return fmt.Errorf("append durable node event: %w", err)
 		}
@@ -187,7 +308,7 @@ SELECT COALESCE((SELECT cursor FROM inserted LIMIT 1), 0),
 		if !errors.Is(loadErr, pgx.ErrNoRows) {
 			return fmt.Errorf("reload durable node event: %w", loadErr)
 		}
-		if terminalPresent || !sequenceReady {
+		if terminalPresent {
 			return outputapp.ErrNodeEventOutputConflict
 		}
 		if authorityClaimID == "" {
@@ -205,6 +326,88 @@ SELECT COALESCE((SELECT cursor FROM inserted LIMIT 1), 0),
 		return outputapp.ProjectionOutcome{}, err
 	}
 	return outcome, nil
+}
+
+func initializeReplayExecutionState(ctx context.Context, tx sqlExecutor, executionID string, generation, projectionProjectID int64) error {
+	tag, err := tx.Exec(ctx, `
+INSERT INTO elitea_runtime.execution_replay_state (
+    execution_id, generation, projection_project_id
+)
+SELECT execution_id, generation, projection_project_id
+FROM elitea_runtime.execution_jobs
+WHERE execution_id = $1
+  AND generation = $2
+  AND projection_project_id = $3
+ON CONFLICT (execution_id, generation) DO NOTHING`,
+		executionID,
+		generation,
+		projectionProjectID,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize execution replay state: %w", err)
+	}
+	if tag.RowsAffected() > 1 {
+		return errors.New("execution replay state initialization affected multiple rows")
+	}
+	return nil
+}
+
+func lockReplayExecutionState(ctx context.Context, tx sqlExecutor, executionID string, generation, projectionProjectID int64) (replayExecutionState, error) {
+	var state replayExecutionState
+	var digest []byte
+	err := tx.QueryRow(ctx, `
+SELECT last_node_sequence,
+       COALESCE(last_node_event_id, ''),
+       COALESCE(last_node_event_bytes, ''::bytea),
+       COALESCE(last_node_event_digest, ''::bytea),
+       COALESCE(last_node_cursor, 0),
+       pruned_through_cursor,
+       retained_progress_events,
+       retained_progress_bytes
+FROM elitea_runtime.execution_replay_state
+WHERE execution_id = $1
+  AND generation = $2
+  AND projection_project_id = $3
+FOR UPDATE`,
+		executionID,
+		generation,
+		projectionProjectID,
+	).Scan(
+		&state.LastNodeSequence,
+		&state.LastNodeEventID,
+		&state.LastNodeEventBytes,
+		&digest,
+		&state.LastNodeCursor,
+		&state.PrunedThroughCursor,
+		&state.RetainedProgressEvents,
+		&state.RetainedProgressBytes,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return replayExecutionState{}, runtimedomain.ErrStaleFence
+	}
+	if err != nil {
+		return replayExecutionState{}, fmt.Errorf("lock execution replay state: %w", err)
+	}
+	if state.LastNodeSequence == 0 {
+		if state.LastNodeEventID != "" || len(state.LastNodeEventBytes) != 0 || len(digest) != 0 || state.LastNodeCursor != 0 {
+			return replayExecutionState{}, errors.New("empty execution replay state contains a node receipt")
+		}
+	} else {
+		if state.LastNodeEventID == "" || state.LastNodeCursor <= 0 {
+			return replayExecutionState{}, errors.New("execution replay state is missing its latest node receipt")
+		}
+		stored, digestErr := storedDigest(digest)
+		if digestErr != nil || runtimedomain.SHA256(state.LastNodeEventBytes) != stored {
+			return replayExecutionState{}, errors.New("execution replay state contains an invalid latest node receipt")
+		}
+		state.LastNodeEventDigest = stored
+	}
+	if state.LastNodeSequence < 0 || state.PrunedThroughCursor < 0 ||
+		state.RetainedProgressEvents < 0 || state.RetainedProgressBytes < 0 ||
+		(state.LastNodeCursor > 0 && state.PrunedThroughCursor > state.LastNodeCursor) {
+		return replayExecutionState{}, errors.New("execution replay state contains invalid retention counters")
+	}
+	return state, nil
 }
 
 func lockNodeEventAuthority(ctx context.Context, tx sqlExecutor, frame outputapp.NodeEventFrame, resourceProjectID, projectionProjectID int64) (bool, error) {
@@ -268,7 +471,18 @@ func loadDurableNodeEvent(ctx context.Context, tx sqlExecutor, eventID string) (
 SELECT cursor, execution_id, generation, projection_project_id,
        event_type, event_bytes, event_digest
 FROM elitea_runtime.execution_replay_events
-WHERE event_id = $1`, eventID).Scan(
+WHERE event_id = $1
+UNION ALL
+SELECT last_node_cursor, execution_id, generation, projection_project_id,
+       $2, last_node_event_bytes, last_node_event_digest
+FROM elitea_runtime.execution_replay_state
+WHERE last_node_event_id = $1
+  AND NOT EXISTS (
+      SELECT 1
+      FROM elitea_runtime.execution_replay_events
+      WHERE event_id = $1
+  )
+LIMIT 1`, eventID, replayEventNodeEvent).Scan(
 		&event.Cursor,
 		&event.ExecutionID,
 		&event.Generation,

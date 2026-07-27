@@ -303,11 +303,11 @@ WITH authority AS MATERIALIZED (
       AND o.authority_granted_at IS NOT NULL
 ), previous_sequence AS MATERIALIZED (
     SELECT TRUE AS present
-    FROM elitea_runtime.execution_replay_events
-    WHERE event_id = $26 || ':' || (($12::bigint - 1)::text)
-      AND execution_id = $3
+    FROM elitea_runtime.execution_replay_state
+    WHERE execution_id = $3
       AND generation = $4
-      AND event_type = 'execution.node_event'
+      AND last_node_sequence = $12::bigint - 1
+      AND last_node_event_id = $26 || ':' || (($12::bigint - 1)::text)
     LIMIT 1
 ), conflicting_output AS MATERIALIZED (
     SELECT TRUE AS present
@@ -320,6 +320,10 @@ WITH authority AS MATERIALIZED (
     SELECT TRUE AS present
     FROM elitea_runtime.execution_replay_events
     WHERE event_id = $1
+    UNION ALL
+    SELECT TRUE
+    FROM elitea_runtime.execution_replay_state
+    WHERE last_node_event_id = $1
     UNION ALL
     SELECT TRUE
     WHERE $12::bigint > 1

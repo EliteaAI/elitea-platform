@@ -3,11 +3,13 @@ package repos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executionsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
@@ -142,6 +144,213 @@ WHERE execution_id = $1
 	}
 	if count != 2 {
 		t.Fatalf("unexpected replay event count: %d", count)
+	}
+}
+
+func TestPostgresReplayRetentionBoundsProgressAndResetsExpiredCursor(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	progress, terminal := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention")
+	store, err := newPostgresSharedStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeRepository, err := newNodeEventsRepositoryWithPolicy(store, replayRetentionPolicy{
+		maxProgressEvents: 10,
+		maxProgressBytes:  180,
+		maxProgressAge:    time.Hour,
+		janitorBatchSize:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var lastProgress outputapp.ProjectionOutcome
+	for sequence := uint64(1); sequence <= 4; sequence++ {
+		frame := progress
+		frame.Sequence = sequence
+		frame.EventID = frame.Fence.CommandID + ":" + fmt.Sprint(sequence)
+		frame.LogicalOutputID = outputapp.NodeEventLogicalOutputID(frame.Fence.ExecutionID, sequence)
+		frame.EncodedEvent = []byte(fmt.Sprintf("retained-wire-event-%d", sequence))
+		frame.PayloadDigest = runtimedomain.SHA256(frame.EncodedEvent)
+		frame.BrowserData = []byte(fmt.Sprintf(
+			`{"type":"agent_thinking_step","content":null,"response_metadata":{"message":"progress-%d"}}`,
+			sequence,
+		))
+		lastProgress, err = nodeRepository.ProjectNodeEvent(ctx, frame)
+		if err != nil || !lastProgress.Inserted || lastProgress.CommittedSequence != sequence {
+			t.Fatalf("append progress %d: outcome=%+v err=%v", sequence, lastProgress, err)
+		}
+	}
+	assertPostgresCount(t, ctx, pool, 2, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID)
+	var lastSequence, retainedEvents, retainedBytes, prunedThrough int64
+	if err := pool.QueryRow(ctx, `
+SELECT last_node_sequence,
+       retained_progress_events,
+       retained_progress_bytes,
+       pruned_through_cursor
+FROM elitea_runtime.execution_replay_state
+WHERE execution_id = $1 AND generation = 1`,
+		progress.Fence.ExecutionID,
+	).Scan(&lastSequence, &retainedEvents, &retainedBytes, &prunedThrough); err != nil {
+		t.Fatal(err)
+	}
+	if lastSequence != 4 || retainedEvents != 2 || retainedBytes <= 0 || retainedBytes > 180 || prunedThrough <= 0 {
+		t.Fatalf(
+			"unexpected bounded replay state: sequence=%d events=%d bytes=%d pruned=%d",
+			lastSequence,
+			retainedEvents,
+			retainedBytes,
+			prunedThrough,
+		)
+	}
+
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_replay_events
+SET created_at = clock_timestamp() - interval '2 hours'
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := nodeRepository.PruneExpiredReplayProgress(ctx)
+	if err != nil || deleted != 2 {
+		t.Fatalf("expire replay progress: deleted=%d err=%v", deleted, err)
+	}
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID)
+
+	retry := progress
+	retry.Sequence = 4
+	retry.EventID = retry.Fence.CommandID + ":4"
+	retry.LogicalOutputID = outputapp.NodeEventLogicalOutputID(retry.Fence.ExecutionID, 4)
+	retry.EncodedEvent = []byte("retained-wire-event-4")
+	retry.PayloadDigest = runtimedomain.SHA256(retry.EncodedEvent)
+	retry.BrowserData = []byte(`{"type":"agent_thinking_step","content":null,"response_metadata":{"message":"progress-4"}}`)
+	retryOutcome, err := nodeRepository.ProjectNodeEvent(ctx, retry)
+	if err != nil || retryOutcome.Inserted || retryOutcome.Cursor != lastProgress.Cursor || retryOutcome.CommittedSequence != 4 {
+		t.Fatalf("retry pruned latest receipt: outcome=%+v err=%v", retryOutcome, err)
+	}
+
+	terminal.Sequence = 5
+	terminal.EventID = terminal.Fence.CommandID + ":5"
+	terminal.Settlement.TerminalSequence = 5
+	terminal.Settlement.TerminalEventID = terminal.EventID
+	wireProposal := &runtimev1.SettlementProposalV1{
+		ProposalId:              terminal.Settlement.ProposalID,
+		RequestedOutcome:        runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED,
+		TerminalLogicalOutputId: terminal.Settlement.TerminalLogicalOutputID,
+		TerminalEventId:         terminal.Settlement.TerminalEventID,
+		TerminalSequence:        terminal.Settlement.TerminalSequence,
+		TerminalPayloadDigest:   postgresDigestV1(terminal.Settlement.TerminalPayloadDigest),
+		PrepareIdempotencyKey:   terminal.Settlement.IdempotencyKey,
+	}
+	terminal.EncodedSettlement, err = proto.MarshalOptions{Deterministic: true}.Marshal(wireProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal.Settlement.ProposalDigest = runtimedomain.SHA256(terminal.EncodedSettlement)
+	results, err := NewIndexIngestResultsRepository(pool, IndexIngestOutputPolicy{
+		LimitsRevision:    "index-limits-v1",
+		ArtifactMediaType: "application/json",
+		MaxArtifactBytes:  1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalOutcome, err := newPostgresIndexOutputService(t, pool, results).IngestIndex(ctx, terminal)
+	if err != nil || !terminalOutcome.Inserted || terminalOutcome.CommittedSequence != 5 {
+		t.Fatalf("terminal after pruned progress: outcome=%+v err=%v", terminalOutcome, err)
+	}
+	if deleted, err := nodeRepository.PruneExpiredReplayProgress(ctx); err != nil || deleted != 0 {
+		t.Fatalf("terminal-only janitor pass: deleted=%d err=%v", deleted, err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'index.ingest.completed'`, progress.Fence.ExecutionID)
+
+	replay, err := NewReplayEventsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := replay.Replay(ctx, terminal.ProjectionProjectID, terminal.Fence.ExecutionID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 ||
+		events[0].Type != replayEventReset ||
+		events[0].Cursor != lastProgress.Cursor ||
+		events[1].Type != "index.ingest.completed" ||
+		events[1].Cursor != terminalOutcome.Cursor {
+		t.Fatalf("unexpected reset plus terminal replay: %+v", events)
+	}
+	if _, err := replay.Replay(ctx, "2", terminal.Fence.ExecutionID, 0, 10); !errors.Is(err, executionsapi.ErrInvalidEventStream) {
+		t.Fatalf("cross-project replay was not rejected: %v", err)
+	}
+}
+
+func TestPostgresReplayRetentionCountCap(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	progress, _ := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention-count")
+	store, err := newPostgresSharedStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeRepository, err := newNodeEventsRepositoryWithPolicy(store, replayRetentionPolicy{
+		maxProgressEvents: 2,
+		maxProgressBytes:  1024,
+		maxProgressAge:    time.Hour,
+		janitorBatchSize:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for sequence := uint64(1); sequence <= 3; sequence++ {
+		frame := progress
+		frame.Sequence = sequence
+		frame.EventID = frame.Fence.CommandID + ":" + fmt.Sprint(sequence)
+		frame.LogicalOutputID = outputapp.NodeEventLogicalOutputID(frame.Fence.ExecutionID, sequence)
+		frame.EncodedEvent = []byte(fmt.Sprintf("count-wire-event-%d", sequence))
+		frame.PayloadDigest = runtimedomain.SHA256(frame.EncodedEvent)
+		frame.BrowserData = []byte(fmt.Sprintf(`{"type":"agent_thinking_step","content":"%d"}`, sequence))
+		if outcome, err := nodeRepository.ProjectNodeEvent(ctx, frame); err != nil || !outcome.Inserted {
+			t.Fatalf("append count-capped progress %d: outcome=%+v err=%v", sequence, outcome, err)
+		}
+	}
+	assertPostgresCount(t, ctx, pool, 2, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID)
+	var sequence, retained, pruned int64
+	if err := pool.QueryRow(ctx, `
+SELECT last_node_sequence, retained_progress_events, pruned_through_cursor
+FROM elitea_runtime.execution_replay_state
+WHERE execution_id = $1 AND generation = 1`,
+		progress.Fence.ExecutionID,
+	).Scan(&sequence, &retained, &pruned); err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 3 || retained != 2 || pruned <= 0 {
+		t.Fatalf("unexpected count-capped state: sequence=%d retained=%d pruned=%d", sequence, retained, pruned)
 	}
 }
 

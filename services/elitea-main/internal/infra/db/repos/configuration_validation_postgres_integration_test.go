@@ -578,6 +578,9 @@ type postgresOutboxOrderingFixture struct {
 func newPostgresIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
+	if databaseURL == "" && os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
+		databaseURL = os.Getenv("DATABASE_URL")
+	}
 	if databaseURL == "" {
 		t.Skipf("set %s to run the PostgreSQL 16-18 service-integration test", postgresIntegrationDatabaseURL)
 	}
