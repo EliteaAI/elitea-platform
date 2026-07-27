@@ -42,6 +42,16 @@ import { resetConfigForTests } from '../get-config';
  *    aliasing above.
  *  - swap sources 1↔2 → the five "window.elitea_ui_config wins…" rows fail.
  * The order is thus pinned pairwise across all four sources.
+ *
+ * `allow_project_own_llms` (§7.1 C7 gap found by unit R1 while porting
+ * IntegrationGuard.jsx; folded into ConfigSchema here) is NOT part of the
+ * ALL_KEYS-driven matrix above: unlike its five siblings, the old app's own
+ * call site passed it to getEnvVar already lower-case
+ * (`getEnvVar('allow_project_own_llms', true)`, constants.js:15), so sources
+ * 2-4 look it up by its VERBATIM lower-case name, not `.toUpperCase()`. It
+ * gets its own parallel matrix + default/no-coercion tests below instead of
+ * being folded into the generic one, which would silently paper over that
+ * casing difference.
  */
 
 const REQUIRED_KEYS = ['vite_server_url', 'vite_base_uri', 'vite_public_project_id'] as const;
@@ -58,6 +68,14 @@ const VALID_TRIO = {
   vite_base_uri: '/app/',
   vite_public_project_id: '11',
 } as const;
+
+/** VALID_TRIO plus the default-true 6th key every 'ok' config now carries. */
+const VALID_TRIO_KEYS_SORTED = [
+  'allow_project_own_llms',
+  'vite_base_uri',
+  'vite_public_project_id',
+  'vite_server_url',
+] as const;
 
 const g = globalThis as unknown as Record<string, unknown>;
 const realProcessEnv = (g['process'] as { env: Record<string, string | undefined> }).env;
@@ -100,6 +118,8 @@ beforeEach(() => {
     delete realProcessEnv[key.toUpperCase()];
   }
   delete realProcessEnv['VITE_DEV_TOKEN'];
+  // allow_project_own_llms uses its VERBATIM (lower-case) name, not .toUpperCase().
+  delete realProcessEnv['allow_project_own_llms'];
 });
 
 afterEach(() => {
@@ -142,6 +162,98 @@ describe.each([...ALL_KEYS])('C6 resolution order for %s', (key: ConfigKey) => {
     const result = getConfigWithStubbedProcess({ env: { [envName]: 'from-process-env' } });
 
     expect(expectOk(result)[key]).toBe('from-process-env');
+  });
+});
+
+describe('C6 resolution order for allow_project_own_llms (verbatim lower-case name)', () => {
+  const KEY = 'allow_project_own_llms';
+
+  it('window.elitea_ui_config wins over import.meta.env, __ENV__ and process.env', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: 'from-window' });
+    vi.stubEnv(KEY, 'from-import-meta-env');
+    setEnvGlobal({ [KEY]: 'from-env-global' });
+
+    expect(expectOk(getConfig())[KEY]).toBe('from-window');
+  });
+
+  it('import.meta.env wins over __ENV__ (and everything below it)', () => {
+    setWindowConfig({ ...VALID_TRIO });
+    vi.stubEnv(KEY, 'from-import-meta-env');
+    setEnvGlobal({ [KEY]: 'from-env-global' });
+
+    expect(expectOk(getConfig())[KEY]).toBe('from-import-meta-env');
+  });
+
+  it('globalThis.__ENV__ wins over process.env', () => {
+    setWindowConfig({ ...VALID_TRIO });
+    setEnvGlobal({ [KEY]: 'from-env-global' });
+    const result = getConfigWithStubbedProcess({ env: { [KEY]: 'from-process-env' } });
+
+    expect(expectOk(result)[KEY]).toBe('from-env-global');
+  });
+
+  it('process.env is the last-resort source', () => {
+    setWindowConfig({ ...VALID_TRIO });
+    const result = getConfigWithStubbedProcess({ env: { [KEY]: 'from-process-env' } });
+
+    expect(expectOk(result)[KEY]).toBe('from-process-env');
+  });
+
+  // A dedicated proof that this key's lookup name is NOT `.toUpperCase()`-d
+  // like its five siblings: setting only the UPPER-CASE variant must be
+  // invisible to every source, leaving the true default (true) in place.
+  it('the UPPER_CASE variant of the name is never consulted by any source', () => {
+    setWindowConfig({ ...VALID_TRIO, ALLOW_PROJECT_OWN_LLMS: 'wrong-cased-window-hit' });
+    vi.stubEnv('ALLOW_PROJECT_OWN_LLMS', 'wrong-cased-env');
+    setEnvGlobal({ ALLOW_PROJECT_OWN_LLMS: 'wrong-cased-global' });
+
+    expect(expectOk(getConfig())[KEY]).toBe(true);
+  });
+});
+
+describe('allow_project_own_llms — unparsed passthrough + getEnvVar(key, true) default (§7.1 C7 gap, unit R1)', () => {
+  const KEY = 'allow_project_own_llms';
+
+  it('defaults to the literal `true` old getEnvVar passed as its fallback when no source defines it', () => {
+    setWindowConfig({ ...VALID_TRIO }); // key present nowhere
+
+    expect(expectOk(getConfig())[KEY]).toBe(true);
+  });
+
+  it('passes through a raw string "false" WITHOUT coercing it to boolean (IntegrationGuard.jsx:13 strict === false parity)', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: 'false' });
+
+    const value = expectOk(getConfig())[KEY];
+    expect(value).toBe('false');
+    expect(value).not.toBe(false);
+    // eslint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- deliberately asserting the OLD app's surprising non-coercion (N4), not writing idiomatic boolean logic.
+    expect(value === false).toBe(false);
+  });
+
+  it('passes through a raw boolean false unchanged', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: false });
+
+    expect(expectOk(getConfig())[KEY]).toBe(false);
+  });
+
+  it('passes through a raw number unchanged (never validated as a boolean)', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: 0 });
+
+    expect(expectOk(getConfig())[KEY]).toBe(0);
+  });
+
+  it('an own key defined as undefined resolves to the true default (documented zod-default simplification, schema.ts)', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: undefined });
+    setEnvGlobal({ [KEY]: 'from-env-global' }); // shadowed; must not be reached
+
+    expect(expectOk(getConfig())[KEY]).toBe(true);
+  });
+
+  it('never appears in a zod-invalid `reasons` entry — z.unknown() cannot fail validation', () => {
+    setWindowConfig({ ...VALID_TRIO, [KEY]: { nested: 'object' } });
+
+    const config = expectOk(getConfig());
+    expect(config[KEY]).toEqual({ nested: 'object' });
   });
 });
 
@@ -208,6 +320,7 @@ describe('C7b — vite_dev_token and dev are removed from the contract (D10)', (
         'vite_socket_server',
         'vite_socket_path',
         'vite_public_project_id',
+        'allow_project_own_llms',
       ].sort(),
     );
     expect('vite_dev_token' in config).toBe(false);
@@ -276,15 +389,22 @@ describe('missing required vars → discriminated result (§3.6: errors are valu
     expect(result.missing).toEqual(['vite_server_url', 'vite_base_uri', 'vite_public_project_id']);
   });
 
-  it('missing optional keys do not affect the ok result', () => {
+  it('missing optional keys with no default do not affect the ok result', () => {
     setWindowConfig({ ...VALID_TRIO });
 
     const config = expectOk(getConfig());
     expect('vite_socket_server' in config).toBe(false);
     expect('vite_socket_path' in config).toBe(false);
-    expect(Object.keys(config).sort()).toEqual(
-      ['vite_server_url', 'vite_base_uri', 'vite_public_project_id'].sort(),
-    );
+    // allow_project_own_llms is also optional, but unlike the socket keys it
+    // HAS a default (true) — so it IS present, unlike the socket keys.
+    expect(Object.keys(config).sort()).toEqual([...VALID_TRIO_KEYS_SORTED]);
+  });
+
+  it('allow_project_own_llms being absent everywhere never appears in `missing`, even as the only unresolved key', () => {
+    setWindowConfig({ ...VALID_TRIO }); // required trio present; 6th key absent from all 4 sources
+
+    const result = getConfig();
+    expect(result.status).toBe('ok');
   });
 });
 

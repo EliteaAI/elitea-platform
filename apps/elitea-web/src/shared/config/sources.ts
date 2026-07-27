@@ -13,8 +13,14 @@ import type { ConfigKey } from './schema';
  * Key-casing parity with apps/elitea-ui/src/utils/env.js:4-33: the runtime
  * config object is read with the lower-cased C7 key (env.js:12 — the nginx
  * heredoc emits lowercase keys, Containerfile.elitea-ui:50-54), while the
- * three env-var sources are read with the upper-cased VITE_* name
- * (env.js:18,25,29 — the old callers passed 'VITE_SERVER_URL' etc.).
+ * three env-var sources (2-4) are read with whatever exact string the old
+ * CALL SITE passed as `key` — env.js:18,25,29 use `key` verbatim, no case
+ * transform ever happens inside getEnvVar itself. Five of the six C7 keys
+ * were called as `getEnvVar('VITE_SERVER_URL')` etc. (upper-case); the sixth,
+ * `allow_project_own_llms`, was called as `getEnvVar('allow_project_own_llms',
+ * true)` (constants.js:15) — already lower-case, unlike its siblings. `ENV_VAR_NAME`
+ * below records the exact string each key's old call site used, so sources
+ * 2-4 reconstruct the real lookup instead of assuming one casing for all six.
  *
  * Deviations from env.js, none observable in a browser:
  *  - env.js checks `globalThis.elitea_ui_config` before `window.…` (its
@@ -64,6 +70,20 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/**
+ * The exact string each key's old `getEnvVar(...)` call site passed as its
+ * `key` argument (constants.js:5-16) — used verbatim by sources 2-4, which
+ * never transform casing themselves.
+ */
+const ENV_VAR_NAME: Record<ConfigKey, string> = {
+  vite_server_url: 'VITE_SERVER_URL',
+  vite_base_uri: 'VITE_BASE_URI',
+  vite_socket_server: 'VITE_SOCKET_SERVER',
+  vite_socket_path: 'VITE_SOCKET_PATH',
+  vite_public_project_id: 'VITE_PUBLIC_PROJECT_ID',
+  allow_project_own_llms: 'allow_project_own_llms',
+};
+
 /** env.js:6-11 — truthy globalThis.elitea_ui_config first, then window's. */
 function runtimeConfigHolder(): Record<string, unknown> | undefined {
   const fromGlobalThis = globals['elitea_ui_config'];
@@ -100,7 +120,7 @@ const CONFIG_SOURCES: readonly ConfigSource[] = [
     name: 'import.meta.env',
     read(key) {
       const env = import.meta.env as Record<string, unknown>;
-      const envName = key.toUpperCase();
+      const envName = ENV_VAR_NAME[key];
       return envName in env ? { value: env[envName] } : undefined;
     },
   },
@@ -112,7 +132,7 @@ const CONFIG_SOURCES: readonly ConfigSource[] = [
       if (env === undefined) {
         return undefined;
       }
-      const envName = key.toUpperCase();
+      const envName = ENV_VAR_NAME[key];
       return envName in env ? { value: env[envName] } : undefined;
     },
   },
@@ -125,7 +145,7 @@ const CONFIG_SOURCES: readonly ConfigSource[] = [
       if (env === undefined) {
         return undefined;
       }
-      const envName = key.toUpperCase();
+      const envName = ENV_VAR_NAME[key];
       return envName in env ? { value: env[envName] } : undefined;
     },
   },

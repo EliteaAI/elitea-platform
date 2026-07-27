@@ -28,7 +28,9 @@ export type ConfigResult =
     };
 
 function resolveConfig(): ConfigResult {
-  const values: Partial<Record<ConfigKey, string>> = {};
+  // `unknown`, not `string`: `allow_project_own_llms` is deliberately
+  // unparsed passthrough (schema.ts) — it can hold any raw source value.
+  const values: Partial<Record<ConfigKey, unknown>> = {};
   const reasons: Record<string, string> = {};
 
   for (const key of CONFIG_KEYS) {
@@ -43,9 +45,7 @@ function resolveConfig(): ConfigResult {
     }
     const parsed = ConfigSchema.shape[key].safeParse(hit.value);
     if (parsed.success) {
-      // Every field schema is a (possibly optional) string, so success on a
-      // non-undefined input can only ever produce a string.
-      values[key] = parsed.data as string;
+      values[key] = parsed.data;
     } else {
       // Zod-invalid ⇒ treated as missing (C7 contract). Deliberate deviation
       // from the old app, which passed any non-null junk value downstream.
