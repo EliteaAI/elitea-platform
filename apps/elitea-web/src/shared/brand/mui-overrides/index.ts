@@ -16,9 +16,9 @@ import { MuiFormControl } from './MuiFormControl';
 import { MuiFormHelperText } from './MuiFormHelperText';
 import { MuiIconButton } from './MuiIconButton';
 import { MuiInput } from './MuiInput';
+import { MuiList } from './MuiList';
 import { MuiMenu } from './MuiMenu';
 import { MuiMenuItem } from './MuiMenuItem';
-import { MuiMenuList } from './MuiMenuList';
 import { MuiPaper } from './MuiPaper';
 import { MuiRadio } from './MuiRadio';
 import { MuiSelect } from './MuiSelect';
@@ -83,9 +83,9 @@ export function muiOverrides(): EliteaComponents {
     MuiFormHelperText,
     MuiIconButton,
     MuiInput,
+    MuiList,
     MuiMenu,
     MuiMenuItem,
-    MuiMenuList,
     MuiPaper,
     MuiRadio,
     MuiSelect,

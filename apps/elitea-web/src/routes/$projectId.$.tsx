@@ -101,7 +101,7 @@ import { NotFoundPage } from './__404';
  * Project store — minimal local stand-in, see doc comment above.
  * ---------------------------------------------------------------------- */
 
-export interface SelectedProject {
+interface SelectedProject {
   readonly id: number;
   readonly name: string;
 }
@@ -111,8 +111,13 @@ interface ProjectStoreState {
   setProject: (project: SelectedProject) => void;
 }
 
-/** R-S2 factory: `create()` called inside a function, not at module scope. */
-export function createProjectStore() {
+/**
+ * R-S2 factory: `create()` called inside a function, not at module scope.
+ * Not exported: `getProjectStore()` below is this file's actual public
+ * entry point (the lazy singleton every real caller uses); this factory
+ * has no consumer outside it.
+ */
+function createProjectStore() {
   return create<ProjectStoreState>((set) => ({
     selectedProject: null,
     setProject: (project) => {

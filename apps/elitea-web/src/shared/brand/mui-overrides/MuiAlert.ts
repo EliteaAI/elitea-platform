@@ -14,32 +14,47 @@ import type { EliteaComponents } from '../theme-types';
  * defect). `contrastText` (not a hard-coded `'white'`) keeps each filled
  * surface's text colour correct for a brand pack whose role colours are not
  * necessarily white-on-dark.
+ *
+ * Matches on `severity`, not `color`: verified against the installed
+ * `@mui/material/Alert/Alert.js` — MUI's OWN built-in filled/standard/
+ * outlined variants (lines ~63-103) key off a runtime-only `colorSeverity`
+ * ownerState field computed as `color || severity` (Alert.js:177), which is
+ * not part of the public `AlertProps`/`AlertOwnerState` types, so a
+ * same-shape override here can't type-check against it directly. Matching
+ * on `color` (the literal prop) instead, as this file originally did, only
+ * fires when a caller passes BOTH `severity` and an explicit `color` —
+ * every real usage in this app (see `__tests__/surfaces.tsx`, the only
+ * current consumer) passes `severity` alone, so `color` stays `undefined`
+ * and none of these variants ever matched: caught by a real functions-
+ * coverage regression (0% on this file), not by inspection. `severity` is
+ * a typed `AlertProps` field and is what `colorSeverity` resolves to for
+ * every current and, per that same grep, every historical call site.
  */
 export const MuiAlert: EliteaComponents['MuiAlert'] = {
   variants: [
     {
-      props: { variant: 'filled', color: 'success' },
+      props: { variant: 'filled', severity: 'success' },
       style: ({ theme }) => ({
         backgroundColor: theme.vars.palette.success.main,
         color: theme.vars.palette.success.contrastText,
       }),
     },
     {
-      props: { variant: 'filled', color: 'error' },
+      props: { variant: 'filled', severity: 'error' },
       style: ({ theme }) => ({
         backgroundColor: theme.vars.palette.error.main,
         color: theme.vars.palette.error.contrastText,
       }),
     },
     {
-      props: { variant: 'filled', color: 'info' },
+      props: { variant: 'filled', severity: 'info' },
       style: ({ theme }) => ({
         backgroundColor: theme.vars.palette.info.main,
         color: theme.vars.palette.info.contrastText,
       }),
     },
     {
-      props: { variant: 'filled', color: 'warning' },
+      props: { variant: 'filled', severity: 'warning' },
       style: ({ theme }) => ({
         backgroundColor: theme.vars.palette.warning.main,
         color: theme.vars.palette.warning.contrastText,

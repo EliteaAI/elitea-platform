@@ -50,7 +50,7 @@ export interface SingleSelectProps {
 /**
  * A single-value select built on MUI's `Select`/`FormControl`/`InputLabel`,
  * styled entirely through `shared/brand/mui-overrides/{MuiSelect,MuiMenu,
- * MuiMenuList,MuiMenuItem}.ts` (R-T12, already wired) plus this file's own
+ * MuiList,MuiMenuItem}.ts` (R-T12, already wired) plus this file's own
  * layout `sx`.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/shared/ui/select/SingleSelect.jsx`,

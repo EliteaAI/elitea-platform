@@ -173,13 +173,22 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
     </Dialog>
   ),
   MuiDrawer: () => (
-    <Drawer
-      open
-      variant="permanent"
-      anchor="left"
-    >
-      <div style={{ padding: 8 }}>drawer</div>
-    </Drawer>
+    <>
+      <Drawer
+        open
+        variant="permanent"
+        anchor="left"
+      >
+        <div style={{ padding: 8 }}>drawer left</div>
+      </Drawer>
+      <Drawer
+        open
+        variant="permanent"
+        anchor="right"
+      >
+        <div style={{ padding: 8 }}>drawer right</div>
+      </Drawer>
+    </>
   ),
   MuiFormControl: () => (
     <FormControl error>
@@ -218,7 +227,7 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
       <MenuItem selected>selected</MenuItem>
     </MenuList>
   ),
-  MuiMenuList: () => (
+  MuiList: () => (
     <MenuList>
       <MenuItem>item</MenuItem>
     </MenuList>
@@ -250,6 +259,7 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
     <Tabs value={0}>
       <Tab label="one" />
       <Tab label="two" />
+      <Tab icon={<span>icon</span>} />
     </Tabs>
   ),
   MuiTablePagination: () => (

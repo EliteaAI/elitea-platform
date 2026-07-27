@@ -3,7 +3,7 @@ import type { EliteaComponents } from '../theme-types';
 /**
  * `MuiMenuItem` (R-T12). Simplified from
  * `apps/elitea-ui/src/theme/menuListVariants.js`'s `eliteaMenuItemVariants`
- * to the default (untagged) variant, for the same reason as `MuiMenuList`
+ * to the default (untagged) variant, for the same reason as `MuiList`
  * (see that file's comment): the baseline's other variants read
  * un-tokenised MUI `palette.action`/`error` roles with no shared/ui call
  * site. `background.select.hover` / `background.select.selected.default`

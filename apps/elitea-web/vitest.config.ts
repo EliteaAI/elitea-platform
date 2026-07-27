@@ -86,6 +86,12 @@ export default defineConfig({
         'src/**/*.d.ts',
         'src/shared/api/generated/**', // generated: covered by contract tests, not line coverage
         'src/shared/api/sse.ts', //       no consumer at ship (§5.6); REMOVE this line when one lands
+        // Deliberately unwired (knip.json's ignoreFiles has the same entry,
+        // same reason): its target library (@mui/x-tree-view) is not a
+        // dependency of this app (spec §2.2/P1, "the file tree is hand-
+        // rolled") -- REMOVE this line if that ever changes and something
+        // actually wires it into mui-overrides/index.ts.
+        'src/shared/brand/mui-overrides/MuiTreeItem.ts',
         'src/test/**',
         'src/**/__mocks__/**',
         'src/app/main.tsx',

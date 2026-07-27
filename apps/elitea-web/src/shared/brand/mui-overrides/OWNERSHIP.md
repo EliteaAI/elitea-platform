@@ -24,7 +24,7 @@ The baseline's canonical `components` map is `apps/elitea-ui/src/MainTheme.js:11
 ## Owned by unit S1 — 28 keys
 
 `MuiToggleButton`, `MuiTextField`, `MuiInput`, `MuiIconButton`, `MuiDataGrid`,
-`MuiDialog`, `MuiTreeItem`, `MuiMenuList`, `MuiMenuItem`, `MuiFormControl`,
+`MuiDialog`, `MuiTreeItem`, `MuiList`, `MuiMenuItem`, `MuiFormControl`,
 `MuiFormHelperText`, `MuiCssBaseline`, `MuiAvatar`, `MuiPaper`, `MuiSelect`,
 `MuiMenu`, `MuiTablePagination`, `MuiTab`, `MuiTabs`, `MuiAlert`, `MuiRadio`,
 `MuiCheckbox`, `MuiSwitch`, `MuiDrawer`, `MuiAppBar`, `MuiBadge`, `MuiTooltip`,

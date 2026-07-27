@@ -84,7 +84,7 @@ function hasNestedItems(row: ControlsDropdownItem | ControlsDropdownLeafItem): r
  * `shared/ui` component with no Redux/features access. It is intentionally
  * NOT a thin wrapper over `DotMenu`: this component owns its own
  * `Menu`/`MenuItem`/`MenuList` composition (the MUI 9.2 primitives S1
- * already themed via `shared/brand/mui-overrides/{MuiMenu,MuiMenuList,
+ * already themed via `shared/brand/mui-overrides/{MuiMenu,MuiList,
  * MuiMenuItem}.ts`), with no Redux/features import anywhere in the file.
  *
  * Keyboard/focus: arrow-key traversal, `Home`/`End`, typeahead and `Escape`
