@@ -200,6 +200,7 @@ class Output:
     async def replace_pending_exact(self, expected, replacement) -> None:
         assert self.frame == expected
         self.frame = replacement
+        self.frames.append(replacement)
 
     async def start(self) -> None:
         self.started += 1
