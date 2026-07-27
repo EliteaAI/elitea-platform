@@ -34,8 +34,9 @@ type CurrentIndexTypesReader interface {
 	GetCurrentIndexTypes(context.Context, int32) (CurrentIndexTypes, error)
 }
 
-// CurrentIndexTypesRoute owns only the current read-only GET contract. It is
-// deliberately not mounted by production composition until cutover review.
+// CurrentIndexTypesRoute owns only the current read-only GET contract.
+// Production composition mounts it atomically behind an explicit default-off
+// feature gate.
 type CurrentIndexTypesRoute struct {
 	handler http.Handler
 }

@@ -19,6 +19,7 @@ import (
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
@@ -186,6 +187,42 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose current project-info route: %w", err)
 		}
 		logger.Info("current project-info route enabled")
+	}
+
+	currentIndexTypesSettings, err := currentIndexTypesConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current index-types settings: %w", err)
+	}
+	if currentIndexTypesSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_INDEX_TYPES_ENABLED requires production authentication")
+	}
+	var currentIndexTypes *indextypesapi.CurrentIndexTypesRoute
+	if currentIndexTypesSettings.Enabled {
+		currentIndexTypesSnapshot, snapshotErr :=
+			runtimecomposition.LoadPinnedCurrentIndexTypesSnapshot()
+		if snapshotErr != nil {
+			return fmt.Errorf("load pinned current index-types snapshot: %w", snapshotErr)
+		}
+		currentIndexTypes, err = indextypesapi.NewCurrentIndexTypesRoute(
+			currentIndexTypesSnapshot,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current index-types route: %w", err)
+		}
+		logger.Info(
+			"current index-types route enabled",
+			"sdk_revision",
+			currentIndexTypesSnapshot.SDKRevision(),
+			"entry_count",
+			currentIndexTypesSnapshot.EntryCount(),
+		)
 	}
 
 	currentConfigurationsConfig, err := currentConfigurationsConfigFromEnv(os.LookupEnv)
@@ -417,6 +454,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
 		CurrentProjectInfo:            currentProjectInfo,
+		CurrentIndexTypes:             currentIndexTypes,
 		CurrentProjectList:            currentProjectList,
 		CurrentSocialAuthors:          currentSocialAuthors,
 		CurrentConfigurationAvailable: currentConfigurationAvailable,

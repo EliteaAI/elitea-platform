@@ -1,7 +1,8 @@
 # Current `index_types` parity evidence
 
-Status: source-complete and integration-tested; intentionally unmounted from
-production composition pending the indexing cutover/browser checkpoint.
+Status: source-complete, production-composed behind the explicit default-off
+`ELITEA_INDEX_TYPES_ENABLED` gate, and integration-tested. It is not deployed;
+the live browser checkpoint remains open.
 
 ## Observable contract
 
@@ -14,6 +15,7 @@ production composition pending the indexing cutover/browser checkpoint.
 | Image compatibility | The current producer reads `image_loaders_map`, not `image_loaders_map_converted`. | Generated snapshot excludes `.bmp` and `.svg`. | Exact current behavior. EliteaUI independently adds `.svg` in `fileTypes.js`; the API must not silently widen during this port. |
 | UI consumer | `EliteaUI/src/api/applications.js:getDocumentLoaders`, `hooks/useFileTypes.js`, and `slices/fileTypes.js` consume the three maps directly. | `testdata/current_index_types_ui_response.json` | Full unchanged-UI fixture is returned byte-for-byte by the Go route tests. |
 | Tenant boundary | The payload is process-global, but access is project-scoped by the current decorator. | Auth and PostgreSQL permission resolution execute before snapshot read. | Cross-project membership, suspended project/user, wrong permission, viewer/editor, and platform-admin cases are integration-tested. |
+| Production ownership | The current Pylon handler remains the owner until an individual route is cut over. | `ELITEA_INDEX_TYPES_ENABLED` is strict and defaults to disabled; disabled composition registers no Go route, while enabled composition registers exactly the reviewed GET path. | Atomic ownership: the Go route either owns the exact path or falls through as absent. The incompatible prototype handler is never composed by `NewRouter`. |
 
 ## Snapshot identity and bounds
 
@@ -53,7 +55,14 @@ for this snapshot.
 - A disposable PostgreSQL HTTP integration matrix passes for project viewer,
   project editor, second-project viewer, cross-project denial, wrong
   permission, suspended principal, suspended project, and platform-admin
-  non-inheritance. Tenant canaries are not returned.
+  non-inheritance through the production `NewRouter` composition. Tenant
+  canaries are not returned.
+- Gate tests reject ambiguous values and prove that unset, empty and `false`
+  settings leave the route disabled. Production-router tests prove exact
+  gate-on method/path ownership and gate-off absence.
+- The production router's global OpenTelemetry middleware covers this route.
+  This service has no route-local OpenAPI generation/registration pattern, so
+  no separate OpenAPI artifact is introduced by this composition-only change.
 
 ## Deliberate safe differences and remaining cutover gates
 
@@ -65,8 +74,14 @@ already-composed reader fails during a request, the Go handler returns a
 generic `500 {"error":"Failed to get index types"}` without dependency details;
 the current in-memory handler has no equivalent runtime failure branch.
 
-The route is not added to `elitea-main` production composition in this slice.
-Consequently, live browser routing through Traefik and a real signed browser
-session remains a cutover gate, not claimed evidence. Mounting should be one
-default-off composition change followed by a browser comparison of the current
-and Go responses for the same project and user. No EliteaUI change is required.
+Production composition loads and validates the pinned snapshot before serving
+when `ELITEA_INDEX_TYPES_ENABLED=true`. It also requires the complete
+production authentication graph and constructs the PostgreSQL RBAC resolver;
+an invalid gate, missing authentication composition, invalid route dependency,
+or invalid snapshot fails startup instead of exposing a partial route.
+
+Live routing through Traefik with the gate explicitly enabled and a real signed
+browser session remains a deployment checkpoint, not claimed evidence. That
+checkpoint must compare the current and Go response bytes for the same project
+and user, then confirm an unauthorized project is denied. No EliteaUI change is
+required.

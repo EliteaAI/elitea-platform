@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	platformapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
@@ -49,7 +50,9 @@ func TestCurrentIndexTypesHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(route)
+	server := httptest.NewServer(platformapi.NewRouter(platformapi.RouterConfig{
+		CurrentIndexTypes: route,
+	}))
 	defer server.Close()
 
 	fixture, err := os.ReadFile("testdata/current_index_types_ui_response.json")

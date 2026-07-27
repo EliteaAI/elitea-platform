@@ -18,6 +18,7 @@ import (
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
@@ -358,6 +359,132 @@ func TestProductionRouterMountsOnlyExactCurrentProjectInfoPathWhenComposed(t *te
 	)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("uncomposed project-info status=%d", recorder.Code)
+	}
+}
+
+type productionIndexTypesReader struct {
+	calls     int
+	projectID int32
+}
+
+func (reader *productionIndexTypesReader) GetCurrentIndexTypes(
+	_ context.Context,
+	projectID int32,
+) (indextypesapi.CurrentIndexTypes, error) {
+	reader.calls++
+	reader.projectID = projectID
+	return indextypesapi.CurrentIndexTypes{
+		DocumentTypes: map[string]string{".txt": "text/plain"},
+		ImageTypes:    map[string]string{".png": "image/png"},
+		CodeTypes:     map[string]string{".go": "text/x-go"},
+	}, nil
+}
+
+type productionIndexTypesPermissionResolver struct{}
+
+func (productionIndexTypesPermissionResolver) ResolvePermissions(
+	_ context.Context,
+	user auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	if user.UserID != "11" || mode != indextypesapi.CurrentIndexTypesMode ||
+		projectID != "7" {
+		return auth.PermissionResolution{}, errors.New("unexpected index-types authorization input")
+	}
+	return auth.PermissionResolution{
+		UserID:      11,
+		Permissions: []string{indextypesapi.CurrentIndexTypesPermission},
+	}, nil
+}
+
+func TestProductionRouterMountsOnlyExactCurrentIndexTypesPathWhenComposed(t *testing.T) {
+	reader := &productionIndexTypesReader{}
+	indexTypes, err := indextypesapi.NewCurrentIndexTypesRoute(
+		reader,
+		middleware.AuthConfig{
+			PrincipalValidator:        productionProjectPrincipalValidator{},
+			ForwardedIdentityVerifier: productionProjectPeerVerifier{},
+		},
+		productionIndexTypesPermissionResolver{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(RouterConfig{CurrentIndexTypes: indexTypes})
+
+	for _, test := range []struct {
+		method        string
+		path          string
+		authenticated bool
+		want          int
+	}{
+		{
+			method:        http.MethodGet,
+			path:          "/api/v2/elitea_core/index_types/prompt_lib/007",
+			authenticated: true,
+			want:          http.StatusOK,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/index_types/prompt_lib/7",
+			want:   http.StatusUnauthorized,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/api/v2/elitea_core/index_types/prompt_lib/7",
+			want:   http.StatusMethodNotAllowed,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/index_types/default/7",
+			want:   http.StatusNotFound,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/api/v2/elitea_core/index_types/prompt_lib/7/extra",
+			want:   http.StatusNotFound,
+		},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(test.method, test.path, nil)
+			if test.authenticated {
+				request.Header.Set("X-Auth-Type", "user")
+				request.Header.Set("X-Auth-ID", "11")
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf(
+					"status = %d, want %d; body=%s",
+					recorder.Code,
+					test.want,
+					recorder.Body.String(),
+				)
+			}
+			if test.want == http.StatusOK &&
+				recorder.Body.String() !=
+					"{\"document_types\":{\".txt\":\"text/plain\"},\"image_types\":{\".png\":\"image/png\"},\"code_types\":{\".go\":\"text/x-go\"}}\n" {
+				t.Fatalf("successful body=%q", recorder.Body.String())
+			}
+		})
+	}
+	if reader.calls != 1 || reader.projectID != 7 {
+		t.Fatalf("reader calls=%d project=%d", reader.calls, reader.projectID)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	recorder := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		recorder,
+		httptest.NewRequest(
+			http.MethodGet,
+			"/api/v2/elitea_core/index_types/prompt_lib/7",
+			nil,
+		),
+	)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed index-types status=%d", recorder.Code)
 	}
 }
 

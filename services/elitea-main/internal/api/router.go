@@ -24,6 +24,7 @@ import (
 	v2core "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
 	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
 	v2folders "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/folders"
+	v2indextypes "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
 	v2pipelines "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/pipelines"
 	v2predict "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/predict"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
@@ -80,6 +81,7 @@ type RouterConfig struct {
 	ProductionAuth                *ProductionAuthRoutes
 	ProductionRuntime             *ProductionRuntimeRoutes
 	CurrentProjectInfo            *v2projectinfo.CurrentProjectInfoRoute
+	CurrentIndexTypes             *v2indextypes.CurrentIndexTypesRoute
 	CurrentProjectList            *v2projects.CurrentProjectListRoute
 	CurrentSocialAuthors          *v2social.CurrentAuthorsRoute
 	CurrentConfigurationAvailable http.Handler
