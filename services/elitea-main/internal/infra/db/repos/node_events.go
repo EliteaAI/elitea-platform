@@ -51,6 +51,7 @@ func (p replayRetentionPolicy) validate() error {
 type NodeEventsRepository struct {
 	store     sharedStore
 	retention replayRetentionPolicy
+	activity  currentIndexActivityProjector
 }
 
 func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) {
@@ -58,7 +59,12 @@ func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) 
 	if err != nil {
 		return nil, err
 	}
-	return newNodeEventsRepository(store)
+	repository, err := newNodeEventsRepository(store)
+	if err != nil {
+		return nil, err
+	}
+	repository.activity = postgresCurrentIndexActivityProjector{}
+	return repository, nil
 }
 
 func newNodeEventsRepository(store sharedStore) (*NodeEventsRepository, error) {
@@ -72,7 +78,11 @@ func newNodeEventsRepositoryWithPolicy(store sharedStore, retention replayRetent
 	if err := retention.validate(); err != nil {
 		return nil, err
 	}
-	return &NodeEventsRepository{store: store, retention: retention}, nil
+	return &NodeEventsRepository{
+		store:     store,
+		retention: retention,
+		activity:  noopCurrentIndexActivityProjector{},
+	}, nil
 }
 
 type durableNodeEvent struct {
@@ -297,6 +307,14 @@ SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
 			return fmt.Errorf("append durable node event: %w", err)
 		}
 		if cursor > 0 {
+			if err := r.activity.projectNodeEvent(
+				ctx,
+				tx,
+				projectionProjectID,
+				frame,
+			); err != nil {
+				return err
+			}
 			if persistTaskRestamp {
 				if err := persistCurrentIndexMetaTaskRestampIntent(
 					ctx,

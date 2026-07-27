@@ -47,6 +47,7 @@ type IndexIngestResultsRepository struct {
 	queries  indexIngestReadQueries
 	projects projectStore
 	policy   IndexIngestOutputPolicy
+	activity currentIndexActivityProjector
 }
 
 func NewIndexIngestResultsRepository(pool *pgxpool.Pool, policy IndexIngestOutputPolicy) (*IndexIngestResultsRepository, error) {
@@ -57,7 +58,12 @@ func NewIndexIngestResultsRepository(pool *pgxpool.Pool, policy IndexIngestOutpu
 	if err != nil {
 		return nil, err
 	}
-	return newIndexIngestResultsRepository(sqlcgen.New(pool), projects, policy)
+	repository, err := newIndexIngestResultsRepository(sqlcgen.New(pool), projects, policy)
+	if err != nil {
+		return nil, err
+	}
+	repository.activity = postgresCurrentIndexActivityProjector{}
+	return repository, nil
 }
 
 func newIndexIngestResultsRepository(queries indexIngestReadQueries, projects projectStore, policy IndexIngestOutputPolicy) (*IndexIngestResultsRepository, error) {
@@ -67,7 +73,10 @@ func newIndexIngestResultsRepository(queries indexIngestReadQueries, projects pr
 	if err := policy.validate(); err != nil {
 		return nil, err
 	}
-	return &IndexIngestResultsRepository{queries: queries, projects: projects, policy: policy}, nil
+	return &IndexIngestResultsRepository{
+		queries: queries, projects: projects, policy: policy,
+		activity: noopCurrentIndexActivityProjector{},
+	}, nil
 }
 
 func (r *IndexIngestResultsRepository) ExpectedIndexIngest(ctx context.Context, executionID string, generation uint64) (outputapp.ExpectedIndexIngest, error) {
@@ -340,6 +349,9 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
 						return indexProjectionError(err)
 					}
+					if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityCancellation(record)); err != nil {
+						return err
+					}
 					cancellationWon = true
 					return nil
 				}
@@ -361,6 +373,21 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 		}
 		cursor, err := appendReplayEvent(ctx, tx, record, replayEventIndexIngest, browserData)
 		if err != nil {
+			return err
+		}
+		message := "Indexing completed successfully."
+		isError := false
+		if projection.Frame.Result.ResultSummary != (outputapp.IndexIngestSummary{}) {
+			message = projection.Frame.Result.ResultSummary.Message
+			isError = projection.Frame.Result.ResultSummary.Status == outputapp.IndexIngestStatusError
+		}
+		if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityTerminal{
+			ExecutionID: record.ExecutionID,
+			Generation:  record.Generation,
+			OccurredAt:  record.OccurredAt,
+			Message:     message,
+			IsError:     isError,
+		}); err != nil {
 			return err
 		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {

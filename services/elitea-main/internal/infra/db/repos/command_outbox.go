@@ -41,6 +41,7 @@ type noAuthorityRetirementCandidate struct {
 type CommandOutboxRepository struct {
 	store          sharedStore
 	expectedStream string
+	activity       currentIndexActivityProjector
 }
 
 func NewCommandOutboxRepository(pool *pgxpool.Pool, expectedStream string) (*CommandOutboxRepository, error) {
@@ -48,14 +49,22 @@ func NewCommandOutboxRepository(pool *pgxpool.Pool, expectedStream string) (*Com
 	if err != nil {
 		return nil, err
 	}
-	return newCommandOutboxRepository(store, expectedStream)
+	repository, err := newCommandOutboxRepository(store, expectedStream)
+	if err != nil {
+		return nil, err
+	}
+	repository.activity = postgresCurrentIndexActivityProjector{}
+	return repository, nil
 }
 
 func newCommandOutboxRepository(store sharedStore, expectedStream string) (*CommandOutboxRepository, error) {
 	if store == nil || expectedStream == "" {
 		return nil, errors.New("command outbox database and expected stream are required")
 	}
-	return &CommandOutboxRepository{store: store, expectedStream: expectedStream}, nil
+	return &CommandOutboxRepository{
+		store: store, expectedStream: expectedStream,
+		activity: noopCurrentIndexActivityProjector{},
+	}, nil
 }
 
 func insertCommandOutbox(ctx context.Context, tx sqlExecutor, policy ExecutionDispatchPolicy, record executiondomain.Admission, timing admissionTiming) error {

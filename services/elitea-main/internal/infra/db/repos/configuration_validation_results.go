@@ -27,6 +27,7 @@ const (
 
 type ConfigurationValidationResultsRepository struct {
 	projects projectStore
+	activity currentIndexActivityProjector
 }
 
 func NewConfigurationValidationResultsRepository(pool *pgxpool.Pool) (*ConfigurationValidationResultsRepository, error) {
@@ -34,14 +35,20 @@ func NewConfigurationValidationResultsRepository(pool *pgxpool.Pool) (*Configura
 	if err != nil {
 		return nil, err
 	}
-	return &ConfigurationValidationResultsRepository{projects: projects}, nil
+	return &ConfigurationValidationResultsRepository{
+		projects: projects,
+		activity: postgresCurrentIndexActivityProjector{},
+	}, nil
 }
 
 func newConfigurationValidationResultsRepository(projects projectStore) (*ConfigurationValidationResultsRepository, error) {
 	if projects == nil {
 		return nil, errors.New("tenant projection database is required")
 	}
-	return &ConfigurationValidationResultsRepository{projects: projects}, nil
+	return &ConfigurationValidationResultsRepository{
+		projects: projects,
+		activity: noopCurrentIndexActivityProjector{},
+	}, nil
 }
 
 func (r *ConfigurationValidationResultsRepository) ProjectConfigurationValidation(ctx context.Context, projection outputapp.ValidationProjection) (outputapp.ProjectionOutcome, error) {
@@ -295,6 +302,9 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 					if err := materializeCanonicalCancellation(ctx, tx, record); err != nil {
 						return err
 					}
+					if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityCancellation(record)); err != nil {
+						return err
+					}
 					cancellationWon = true
 					return nil
 				}
@@ -307,6 +317,15 @@ func (r *ConfigurationValidationResultsRepository) ProjectRuntimeFailure(ctx con
 		}
 		cursor, err := appendReplayEvent(ctx, tx, record, replayEventRuntimeFailure, projection.BrowserData)
 		if err != nil {
+			return err
+		}
+		if err := r.activity.projectTerminal(ctx, tx, projectID, currentIndexActivityTerminal{
+			ExecutionID: record.ExecutionID,
+			Generation:  record.Generation,
+			OccurredAt:  record.OccurredAt,
+			Message:     projection.Frame.Failure.SafeMessage,
+			IsError:     true,
+		}); err != nil {
 			return err
 		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {

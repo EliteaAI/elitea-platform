@@ -38,6 +38,14 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
 					return err
 				}
+				if err := r.activity.projectTerminal(
+					ctx,
+					tx,
+					candidate.ProjectionProjectID,
+					currentIndexActivityRetirement(candidate),
+				); err != nil {
+					return err
+				}
 				retiredCount++
 			}
 		}
@@ -59,6 +67,14 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
 					return err
 				}
+				if err := r.activity.projectTerminal(
+					ctx,
+					tx,
+					candidate.ProjectionProjectID,
+					currentIndexActivityRetirement(candidate),
+				); err != nil {
+					return err
+				}
 				retiredCount++
 			}
 		}
@@ -68,6 +84,22 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 		return 0, err
 	}
 	return retiredCount, nil
+}
+
+func currentIndexActivityRetirement(
+	candidate noAuthorityRetirementCandidate,
+) currentIndexActivityTerminal {
+	message := "The execution deadline was exceeded before worker authority was granted."
+	if candidate.DesiredState == string(runtimedomain.DesiredCancelled) {
+		message = "Execution was cancelled."
+	}
+	return currentIndexActivityTerminal{
+		ExecutionID: candidate.ExecutionID,
+		Generation:  uint64(candidate.Generation),
+		OccurredAt:  time.Now().UTC(),
+		Message:     message,
+		IsError:     true,
+	}
 }
 
 // persistCurrentIndexMetaRetirementIntent runs after the durable no-authority

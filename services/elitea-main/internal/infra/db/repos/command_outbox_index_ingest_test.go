@@ -240,6 +240,8 @@ func TestRetireNoAuthorityIndexIngestPersistsTerminalIntentInSameTransaction(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	activity := &recordingCurrentIndexActivityProjector{}
+	repository.activity = activity
 	retired, err := repository.RetireNoAuthorityIndexIngest(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +279,13 @@ func TestRetireNoAuthorityIndexIngestPersistsTerminalIntentInSameTransaction(t *
 		retirementCodeCancelled,
 	}) {
 		t.Fatalf("retirement intent args=%#v", intent.args)
+	}
+	if len(activity.terminals) != 1 ||
+		activity.terminals[0].ExecutionID != "index-execution-1" ||
+		activity.terminals[0].Generation != 1 ||
+		activity.terminals[0].Message != "Execution was cancelled." ||
+		!activity.terminals[0].IsError {
+		t.Fatalf("manual Stop did not terminalize current Activity: %+v", activity.terminals)
 	}
 }
 
