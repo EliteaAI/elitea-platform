@@ -9,3 +9,9 @@ import _ "embed"
 //
 //go:embed auth_core_baseline.sql
 var AuthCoreBaselineSQLCProjection string
+
+// CentryProjectsBaselineSQLCProjection is the matching compile/test projection
+// for current project lifecycle and tenancy fields.
+//
+//go:embed centry_projects_baseline.sql
+var CentryProjectsBaselineSQLCProjection string

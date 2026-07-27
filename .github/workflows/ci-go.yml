@@ -173,14 +173,15 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: services/elitea-main/go.sum
 
-      - name: Exercise current-baseline PAT and identity provisioning persistence
+      - name: Exercise current-baseline PAT, runtime identity, and provisioning persistence
         env:
           ELITEA_AUTH_TEST_DATABASE_URL: postgres://elitea:elitea@127.0.0.1:5432/elitea?sslmode=disable
         run: >-
           go test -race -count=1
           ./services/elitea-main/internal/api/v2/auth
+          ./services/elitea-main/internal/infra/authsvc
           ./services/elitea-main/internal/infra/identityrepo
-          -run '^TestPostgres(TokenRepositoryLifecycle|IdentityProvisioning(CurrentBaseline|Rollback))$'
+          -run '^TestPostgres(TokenRepositoryLifecycle|IndexRuntimeCurrentIdentityPATSelection|IdentityProvisioning(CurrentBaseline|Rollback))$'
 
   build:
     name: Build

@@ -138,6 +138,59 @@ func (q *Queries) GetActivePATPrincipalByUUID(ctx context.Context, uuid string) 
 	return i, err
 }
 
+const getActiveProjectSystemPAT = `-- name: GetActiveProjectSystemPAT :one
+SELECT
+    project.id AS project_id,
+    owner.id AS user_id,
+    token.id AS token_id,
+    token.uuid,
+    token.expires,
+    COALESCE(owner.email, '')::text AS email
+FROM centry.project AS project
+JOIN public.auth_core__user AS owner
+  ON owner.email = ('system_user_' || project.id::text || '@centry.user')
+JOIN public.auth_core__project_user_role AS assignment
+  ON assignment.project_id = project.id
+ AND assignment.user_id = owner.id
+JOIN public.auth_core__project_role AS project_role
+  ON project_role.id = assignment.role_id
+ AND project_role.project_id = project.id
+JOIN public.auth_core__token AS token
+  ON token.user_id = owner.id
+WHERE project.id = $1::integer
+  AND project.create_success = true
+  AND project.suspended = false
+  AND owner.suspended = false
+  AND token.name = 'api'
+  AND token.uuid IS NOT NULL
+  AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'))
+ORDER BY token.id
+LIMIT 1
+`
+
+type GetActiveProjectSystemPATRow struct {
+	ProjectID int32            `db:"project_id" json:"project_id"`
+	UserID    int32            `db:"user_id" json:"user_id"`
+	TokenID   int32            `db:"token_id" json:"token_id"`
+	Uuid      *string          `db:"uuid" json:"uuid"`
+	Expires   pgtype.Timestamp `db:"expires" json:"expires"`
+	Email     string           `db:"email" json:"email"`
+}
+
+func (q *Queries) GetActiveProjectSystemPAT(ctx context.Context, projectID int32) (GetActiveProjectSystemPATRow, error) {
+	row := q.db.QueryRow(ctx, getActiveProjectSystemPAT, projectID)
+	var i GetActiveProjectSystemPATRow
+	err := row.Scan(
+		&i.ProjectID,
+		&i.UserID,
+		&i.TokenID,
+		&i.Uuid,
+		&i.Expires,
+		&i.Email,
+	)
+	return i, err
+}
+
 const getOwnedPAT = `-- name: GetOwnedPAT :one
 SELECT
     token.id,
