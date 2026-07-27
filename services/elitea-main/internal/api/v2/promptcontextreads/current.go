@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -32,8 +34,8 @@ const (
 )
 
 const (
-	currentChatConfigRoutePath     = "/api/v2/elitea_core/chat_config/prompt_lib/{projectID:[0-9]+}"
-	currentProjectContextRoutePath = "/api/v2/elitea_core/project_context/prompt_lib/{projectID:[0-9]+}/project-context"
+	currentChatConfigRoutePath     = "/api/v2/elitea_core/chat_config/prompt_lib/{projectID}"
+	currentProjectContextRoutePath = "/api/v2/elitea_core/project_context/prompt_lib/{projectID}/project-context"
 )
 
 var (
@@ -249,9 +251,6 @@ LIMIT 1`,
 
 func parseCurrentProjectContextData(data []byte) (string, bool, error) {
 	trimmed := bytes.TrimSpace(data)
-	if currentPythonFalseyJSON(trimmed) {
-		return "", true, nil
-	}
 	var fields map[string]json.RawMessage
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	if err := decoder.Decode(&fields); err != nil || fields == nil {
@@ -278,27 +277,6 @@ func parseCurrentProjectContextData(data []byte) (string, bool, error) {
 		}
 	}
 	return content, enabled, nil
-}
-
-func currentPythonFalseyJSON(value []byte) bool {
-	if len(value) == 0 || bytes.Equal(value, []byte("null")) ||
-		bytes.Equal(value, []byte("false")) ||
-		bytes.Equal(value, []byte(`""`)) ||
-		bytes.Equal(value, []byte("[]")) ||
-		bytes.Equal(value, []byte("{}")) {
-		return true
-	}
-	if bytes.Equal(value, []byte("0")) || bytes.Equal(value, []byte("-0")) {
-		return true
-	}
-	var number json.Number
-	decoder := json.NewDecoder(bytes.NewReader(value))
-	decoder.UseNumber()
-	if err := decoder.Decode(&number); err == nil && expectCurrentJSONEnd(decoder) == nil {
-		floating, err := strconv.ParseFloat(number.String(), 64)
-		return err == nil && floating == 0
-	}
-	return false
 }
 
 func parseCurrentPydanticBool(raw json.RawMessage) (bool, bool) {
@@ -391,6 +369,7 @@ func NewCurrentRoutes(
 		CurrentChatConfigPermission,
 	)(chatEndpoint)
 	chatEndpoint = authenticate(chatEndpoint)
+	chatEndpoint = requireCurrentIntegerConverter(chatEndpoint)
 
 	contextEndpoint := http.Handler(http.HandlerFunc(
 		(&currentHandler{chat: chat, projectContext: projectContext}).getProjectContext,
@@ -402,6 +381,7 @@ func NewCurrentRoutes(
 		CurrentProjectContextPermission,
 	)(contextEndpoint)
 	contextEndpoint = authenticate(contextEndpoint)
+	contextEndpoint = requireCurrentIntegerConverter(contextEndpoint)
 
 	router := chi.NewRouter()
 	router.Method(http.MethodGet, currentChatConfigRoutePath, chatEndpoint)
@@ -452,32 +432,59 @@ func (handler *currentHandler) getProjectContext(writer http.ResponseWriter, req
 }
 
 func currentPromptProjectID(request *http.Request) (string, bool) {
-	value := chi.URLParam(request, "projectID")
-	if value == "" {
+	projectID, ok := parseCurrentIntegerConverter(chi.URLParam(request, "projectID"))
+	if !ok {
 		return "", false
 	}
-	for _, digit := range value {
-		if digit < '0' || digit > '9' {
-			return "", false
-		}
-	}
-	normalized := strings.TrimLeft(value, "0")
-	if normalized == "" {
-		return "0", true
-	}
-	if _, err := strconv.ParseInt(normalized, 10, 64); err != nil {
-		return "", false
-	}
-	return normalized, true
+	return strconv.FormatInt(projectID, 10), true
 }
 
 func currentPromptPostgresID(value string) (int64, bool) {
-	normalized := strings.TrimLeft(value, "0")
-	if normalized == "" {
+	projectID, ok := parseCurrentIntegerConverter(value)
+	return projectID, ok && projectID > 0
+}
+
+func requireCurrentIntegerConverter(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if _, ok := parseCurrentIntegerConverter(chi.URLParam(request, "projectID")); !ok {
+			writeCurrentNotFound(writer, request)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func parseCurrentIntegerConverter(value string) (int64, bool) {
+	if value == "" {
 		return 0, false
 	}
-	parsed, err := strconv.ParseInt(normalized, 10, 64)
-	return parsed, err == nil && parsed > 0
+	var result int64
+	for _, candidate := range value {
+		digit, ok := currentDecimalDigit(candidate)
+		if !ok || result > (math.MaxInt64-digit)/10 {
+			return 0, false
+		}
+		result = result*10 + digit
+	}
+	return result, true
+}
+
+func currentDecimalDigit(value rune) (int64, bool) {
+	for _, range16 := range unicode.Digit.R16 {
+		if value < rune(range16.Lo) || value > rune(range16.Hi) ||
+			(value-rune(range16.Lo))%rune(range16.Stride) != 0 {
+			continue
+		}
+		return int64(((value - rune(range16.Lo)) / rune(range16.Stride)) % 10), true
+	}
+	for _, range32 := range unicode.Digit.R32 {
+		if value < rune(range32.Lo) || value > rune(range32.Hi) ||
+			(value-rune(range32.Lo))%rune(range32.Stride) != 0 {
+			continue
+		}
+		return int64(((value - rune(range32.Lo)) / rune(range32.Stride)) % 10), true
+	}
+	return 0, false
 }
 
 func writeCurrentFailure(writer http.ResponseWriter) {

@@ -105,8 +105,13 @@ func TestPostgresResolverRejectsIncompleteCachedTokenBeforeLookup(t *testing.T) 
 // TestPostgresResolverLegacyCompatibility crosses the real PostgreSQL protocol
 // in an isolated opt-in database. It rolls all legacy-schema fixtures back.
 func TestPostgresResolverLegacyCompatibility(t *testing.T) {
+	const requireEnvironment = "ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST"
+	required := os.Getenv(requireEnvironment) == "true"
 	databaseURL := os.Getenv("ELITEA_LEGACY_RBAC_TEST_DATABASE_URL")
 	if databaseURL == "" {
+		if required {
+			t.Fatal("ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST requires ELITEA_LEGACY_RBAC_TEST_DATABASE_URL")
+		}
 		t.Skip("set ELITEA_LEGACY_RBAC_TEST_DATABASE_URL to an isolated PostgreSQL database")
 	}
 
@@ -129,6 +134,9 @@ func TestPostgresResolverLegacyCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	if existing != nil {
+		if required {
+			t.Fatal("required RBAC integration database already contains legacy auth_core tables")
+		}
 		t.Skip("RBAC integration test requires a database without legacy auth_core tables")
 	}
 	var centrySchema *string
@@ -136,6 +144,9 @@ func TestPostgresResolverLegacyCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	if centrySchema != nil {
+		if required {
+			t.Fatal("required RBAC integration database already contains the centry schema")
+		}
 		t.Skip("RBAC integration test requires a database without the centry schema")
 	}
 

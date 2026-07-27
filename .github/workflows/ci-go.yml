@@ -153,6 +153,24 @@ jobs:
           ./services/elitea-main/internal/infra/db/repos
           -run '^(TestPostgresServiceBacked|TestSharedMigration0051)'
 
+      - name: Exercise prompt-context current-baseline RBAC and tenant reads
+        env:
+          ELITEA_TEST_DATABASE_URL: postgres://elitea:elitea@127.0.0.1:5432/elitea?sslmode=disable
+          ELITEA_REQUIRE_PROMPT_CONTEXT_POSTGRES_TEST: "true"
+        run: >-
+          go test -race -count=1
+          ./services/elitea-main/internal/api/v2/promptcontextreads
+          -run '^TestCurrentPromptContextReadsPostgresHTTPRBACAndTenantIsolation$'
+
+      - name: Exercise current-baseline central role-name permission fallback
+        env:
+          ELITEA_LEGACY_RBAC_TEST_DATABASE_URL: postgres://elitea:elitea@127.0.0.1:5432/elitea?sslmode=disable
+          ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST: "true"
+        run: >-
+          go test -race -count=1
+          ./services/elitea-main/internal/infra/legacyrbac
+          -run '^TestPostgresResolverLegacyCompatibility$'
+
   pgvector-index-meta-integration:
     name: PgVector and pinned SDK index-meta integration
     runs-on: ubuntu-latest

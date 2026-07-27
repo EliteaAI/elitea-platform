@@ -121,6 +121,45 @@ func TestCurrentChatConfigReaderPreservesDefaultsPrecedenceAndBigIntegers(t *tes
 	}
 }
 
+func TestCurrentChatConfigMaximumPython312ResponseIsBounded(t *testing.T) {
+	const pythonMaxDigits = 4300
+	maximum := "-" + strings.Repeat("9", pythonMaxDigits)
+	projectValues := make(map[string]centrysecrets.Secret, len(currentChatIntegerDefaults))
+	for _, item := range currentChatIntegerDefaults {
+		projectValues[item.name] = centrysecrets.Secret{Value: maximum}
+	}
+	reader, err := NewCurrentChatConfigVaultReader(&currentChatVaultLoader{
+		project: &currentChatVault{project: projectValues},
+		admin:   &currentChatVault{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.GetCurrentChatConfig(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroEncoded, err := json.Marshal(CurrentChatConfig{
+		ChatMaxUploadCount:       json.Number("0"),
+		ChatMaxUploadSizeMB:      json.Number("0"),
+		ChatMaxFileUploadSizeMB:  json.Number("0"),
+		ChatMaxImageUploadCount:  json.Number("0"),
+		ChatMaxImageUploadSizeMB: json.Number("0"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes := len(zeroEncoded) - len(currentChatIntegerDefaults) +
+		len(currentChatIntegerDefaults)*(pythonMaxDigits+1)
+	if len(encoded) != wantBytes {
+		t.Fatalf("maximum response bytes=%d want=%d", len(encoded), wantBytes)
+	}
+}
+
 func TestCurrentChatConfigReaderFailsOnPresentMalformedOrUnavailableVault(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -174,19 +213,21 @@ func TestCurrentProjectContextDataMatchesCurrentPydanticProjection(t *testing.T)
 		wantEnabled bool
 		wantError   bool
 	}{
-		{name: "null data defaults", data: "null", wantEnabled: true},
-		{name: "false data defaults", data: "false", wantEnabled: true},
-		{name: "zero data defaults", data: "0.0", wantEnabled: true},
-		{name: "empty array defaults", data: "[]", wantEnabled: true},
 		{name: "empty object defaults", data: "{}", wantEnabled: true},
 		{name: "content only", data: `{"content":"Project context"}`, wantContent: "Project context", wantEnabled: true},
 		{name: "boolean false", data: `{"enabled":false}`, wantEnabled: false},
 		{name: "pydantic string false", data: `{"enabled":"off"}`, wantEnabled: false},
 		{name: "pydantic numeric true", data: `{"enabled":1.0}`, wantEnabled: true},
+		{name: "sql null corrupt", data: "", wantError: true},
+		{name: "json null corrupt", data: "null", wantError: true},
+		{name: "false scalar corrupt", data: "false", wantError: true},
+		{name: "zero scalar corrupt", data: "0", wantError: true},
+		{name: "empty string corrupt", data: `""`, wantError: true},
+		{name: "truthy string corrupt", data: `"context"`, wantError: true},
+		{name: "empty list corrupt", data: "[]", wantError: true},
+		{name: "truthy list corrupt", data: "[1]", wantError: true},
 		{name: "null content corrupt", data: `{"content":null}`, wantError: true},
 		{name: "invalid boolean corrupt", data: `{"enabled":"truthy"}`, wantError: true},
-		{name: "truthy array corrupt", data: `[1]`, wantError: true},
-		{name: "truthy string corrupt", data: `"context"`, wantError: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -298,6 +339,14 @@ func TestCurrentRoutesPreservePathsPermissionsAndResponseShapes(t *testing.T) {
 			path: "/api/v2/elitea_core/project_context/prompt_lib/007/project-context",
 			want: `{"id":19,"content":"Context","enabled":true,"updated_at":"2026-07-27T13:14:15.120000"}` + "\n",
 		},
+		{
+			path: "/api/v2/elitea_core/chat_config/prompt_lib/٠٠٧",
+			want: `{"chat_max_upload_count":10,"chat_max_upload_size_mb":150,"chat_max_file_upload_size_mb":150,"chat_max_image_upload_count":10,"chat_max_image_upload_size_mb":3}` + "\n",
+		},
+		{
+			path: "/api/v2/elitea_core/project_context/prompt_lib/००७/project-context",
+			want: `{"id":19,"content":"Context","enabled":true,"updated_at":"2026-07-27T13:14:15.120000"}` + "\n",
+		},
 	} {
 		response := httptest.NewRecorder()
 		routes.ServeHTTP(response, currentRequest(http.MethodGet, test.path, true, "10.0.0.8:43120"))
@@ -305,7 +354,7 @@ func TestCurrentRoutesPreservePathsPermissionsAndResponseShapes(t *testing.T) {
 			t.Fatalf("path=%s status=%d body=%q", test.path, response.Code, response.Body.String())
 		}
 	}
-	if chat.calls != 1 || chat.projectID != 7 || project.calls != 1 || project.projectID != 7 {
+	if chat.calls != 2 || chat.projectID != 7 || project.calls != 2 || project.projectID != 7 {
 		t.Fatalf("chat=%d/%d project=%d/%d", chat.calls, chat.projectID, project.calls, project.projectID)
 	}
 }
@@ -324,6 +373,8 @@ func TestCurrentRoutesAuthenticateAndAuthorizeBeforeReads(t *testing.T) {
 		{name: "chat permission denied", path: "/api/v2/elitea_core/chat_config/prompt_lib/7", auth: true, trusted: true, permissions: []string{CurrentProjectContextPermission}, want: http.StatusForbidden},
 		{name: "context permission denied", path: "/api/v2/elitea_core/project_context/prompt_lib/7/project-context", auth: true, trusted: true, permissions: []string{CurrentChatConfigPermission}, want: http.StatusForbidden},
 		{name: "invalid converter path", path: "/api/v2/elitea_core/chat_config/prompt_lib/not-an-id", auth: true, trusted: true, permissions: []string{CurrentChatConfigPermission}, want: http.StatusNotFound},
+		{name: "unicode numeric but non-decimal path", path: "/api/v2/elitea_core/project_context/prompt_lib/²/project-context", auth: true, trusted: true, permissions: []string{CurrentProjectContextPermission}, want: http.StatusNotFound},
+		{name: "overflowing decimal path", path: "/api/v2/elitea_core/chat_config/prompt_lib/9223372036854775808", auth: true, trusted: true, permissions: []string{CurrentChatConfigPermission}, want: http.StatusNotFound},
 		{name: "wrong mode", path: "/api/v2/elitea_core/chat_config/default/7", auth: true, trusted: true, permissions: []string{CurrentChatConfigPermission}, want: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {

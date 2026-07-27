@@ -338,6 +338,53 @@ func TestLookupPythonIntegerMatchesCurrentChatConfigIntContract(t *testing.T) {
 	}
 }
 
+func TestLookupPythonIntegerEnforcesPython312DecimalDigitLimit(t *testing.T) {
+	maxDigits := strings.Repeat("9", pythonDefaultMaxStringDigits)
+	maxUnderscoredDigits := strings.Repeat("9_", pythonDefaultMaxStringDigits-1) + "9"
+	maxUnicodeDigits := strings.Repeat("٩_", pythonDefaultMaxStringDigits-1) + "٩"
+	overDigits := maxDigits + "9"
+	overUnicodeDigits := maxUnicodeDigits + "_٩"
+
+	vault := &Vault{
+		regular: map[string]json.RawMessage{
+			"raw_max":             json.RawMessage(maxDigits),
+			"raw_signed_max":      json.RawMessage("-" + maxDigits),
+			"string_signed_max":   mustJSONRawMessage(t, "+"+maxUnderscoredDigits),
+			"unicode_signed_max":  mustJSONRawMessage(t, "-"+maxUnicodeDigits),
+			"raw_over":            json.RawMessage(overDigits),
+			"string_signed_over":  mustJSONRawMessage(t, "+"+strings.Repeat("9_", pythonDefaultMaxStringDigits)+"9"),
+			"unicode_signed_over": mustJSONRawMessage(t, "-"+overUnicodeDigits),
+			"leading_zero_over":   mustJSONRawMessage(t, strings.Repeat("0", pythonDefaultMaxStringDigits+1)),
+		},
+		hidden: map[string]json.RawMessage{},
+	}
+
+	for name, want := range map[string]string{
+		"raw_max":            maxDigits,
+		"raw_signed_max":     "-" + maxDigits,
+		"string_signed_max":  maxDigits,
+		"unicode_signed_max": "-" + maxDigits,
+	} {
+		secret, err := vault.LookupPythonInteger(name)
+		if err != nil || secret.Value != want {
+			t.Fatalf("lookup %q length=%d error=%v", name, len(secret.Value), err)
+		}
+		if digitCount := len(strings.TrimPrefix(secret.Value, "-")); digitCount != pythonDefaultMaxStringDigits {
+			t.Fatalf("lookup %q digit count=%d", name, digitCount)
+		}
+	}
+	for _, name := range []string{
+		"raw_over",
+		"string_signed_over",
+		"unicode_signed_over",
+		"leading_zero_over",
+	} {
+		if _, err := vault.LookupPythonInteger(name); !errors.Is(err, ErrInvalidSecret) {
+			t.Fatalf("over-limit lookup %q error=%v", name, err)
+		}
+	}
+}
+
 func TestLookupProjectIDRejectsInvalidShapesAndRangeWithoutLeakingValues(t *testing.T) {
 	invalid := map[string]json.RawMessage{
 		"bool-canary":      json.RawMessage(`true`),
@@ -370,6 +417,15 @@ func TestLookupProjectIDRejectsInvalidShapesAndRangeWithoutLeakingValues(t *test
 	if _, err := nilVault.LookupRegularProjectID("canary"); !errors.Is(err, ErrInvalidVault) {
 		t.Fatalf("nil regular lookup error=%v", err)
 	}
+}
+
+func mustJSONRawMessage(t *testing.T, value string) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func assertLookup(t *testing.T, vault *Vault, name, value string, hidden bool) {

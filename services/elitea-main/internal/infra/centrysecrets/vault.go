@@ -31,6 +31,8 @@ const (
 	fernetMinimumRaw  = fernetHeaderBytes + aes.BlockSize + fernetMACBytes
 	maxProjectIDBytes = 10
 	maxProjectIDJSON  = 64
+	// Python 3.12 defaults sys.int_info.default_max_str_digits to 4300.
+	pythonDefaultMaxStringDigits = 4300
 )
 
 var (
@@ -354,11 +356,7 @@ func decodeInteger(raw json.RawMessage) (string, bool) {
 
 func decodePythonInteger(raw json.RawMessage) (string, bool) {
 	trimmed := bytes.TrimSpace(raw)
-	// The current writer already rejects a rewritten vault above 8 MiB.
-	// Reusing that durable compatibility ceiling prevents one integer from
-	// creating an unbounded big.Int/HTTP response without narrowing any value
-	// that the current writer can persist.
-	if len(trimmed) == 0 || len(trimmed) > maxRewrittenVaultPlaintextBytes {
+	if len(trimmed) == 0 {
 		return "", false
 	}
 	if bytes.Equal(trimmed, []byte("true")) {
@@ -375,6 +373,13 @@ func decodePythonInteger(raw json.RawMessage) (string, bool) {
 		return parsePythonDecimalString(value)
 	}
 	if bytes.IndexAny(trimmed, ".eE") < 0 {
+		digitCount := len(trimmed)
+		if trimmed[0] == '-' {
+			digitCount--
+		}
+		if digitCount > pythonDefaultMaxStringDigits {
+			return "", false
+		}
 		value := new(big.Int)
 		if _, ok := value.SetString(string(trimmed), 10); !ok {
 			return "", false
@@ -420,6 +425,7 @@ func parsePythonDecimalString(value string) (string, bool) {
 	if sign != 0 {
 		decimal = append(decimal, sign)
 	}
+	digitCount := 0
 	digitBefore := false
 	for index := start; index < end; index++ {
 		current := runes[index]
@@ -435,6 +441,10 @@ func parsePythonDecimalString(value string) (string, bool) {
 		}
 		digit, ok := pythonDecimalDigit(current)
 		if !ok {
+			return "", false
+		}
+		digitCount++
+		if digitCount > pythonDefaultMaxStringDigits {
 			return "", false
 		}
 		decimal = append(decimal, byte('0'+digit))
