@@ -229,6 +229,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 
 	var indexMetaTerminalEffect *currentIndexMetaTerminalProcessor
+	var indexManualStopCleanupEffect *currentIndexManualStopCleanupProcessor
 	var currentIndexMetaWriter *pgvector.CurrentIndexMetaWriter
 	if config.IndexIngestDispatchEnabled {
 		currentIndexMetaWriter = pgvector.NewCurrentIndexMetaWriter()
@@ -246,6 +247,25 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		)
 		if err != nil {
 			return nil, fmt.Errorf("construct current index metadata terminal effect: %w", err)
+		}
+		indexManualStopCleanupEffect, err =
+			newCurrentIndexManualStopCleanupProcessor(
+				dependencies.TerminalEffectsPool,
+				dependencies.CurrentConfigurations,
+				currentIndexMetaWriter,
+				func(err error) {
+					dependencies.Logger.Error(
+						"current index manual Stop cleanup item requeued",
+						"err",
+						err,
+					)
+				},
+			)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"construct current index manual Stop cleanup effect: %w",
+				err,
+			)
 		}
 	}
 
@@ -364,6 +384,35 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, fmt.Errorf(
 				"compose current index metadata terminal reconciler: %w",
+				err,
+			)
+		}
+		indexManualStopCleanupReconciler, reconcileErr :=
+			newCurrentIndexManualStopCleanupReconciler(
+				indexManualStopCleanupEffect,
+				500*time.Millisecond,
+				4,
+				func(err error) {
+					dependencies.Logger.Error(
+						"current index manual Stop cleanup reconciliation failed",
+						"err",
+						err,
+					)
+				},
+			)
+		if reconcileErr != nil {
+			return nil, fmt.Errorf(
+				"construct current index manual Stop cleanup reconciler: %w",
+				reconcileErr,
+			)
+		}
+		publisherRoot, err = newPublisherSet(
+			publisherRoot,
+			indexManualStopCleanupReconciler,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"compose current index manual Stop cleanup reconciler: %w",
 				err,
 			)
 		}

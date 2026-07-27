@@ -1,5 +1,5 @@
 -- name: RequestCurrentIndexIngestCancellation :one
-WITH transitioned AS (
+WITH transitioned AS MATERIALIZED (
     UPDATE elitea_runtime.execution_jobs AS job
     SET desired_state = 'CANCELLED'
     FROM elitea_runtime.index_ingest_jobs AS ingest
@@ -18,6 +18,22 @@ WITH transitioned AS (
       AND ingest.capability_id = job.capability_id
       AND ingest.toolkit_id = sqlc.arg(toolkit_id)::integer
       AND ingest.index_name = sqlc.arg(index_name)::text
-    RETURNING job.execution_id
+    RETURNING job.execution_id,
+              job.generation
+),
+cleanup_intent AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS ingest
+    SET index_manual_stop_requested_at = clock_timestamp(),
+        index_manual_cleanup_status = 'PENDING',
+        index_manual_cleanup_attempt_count = 0,
+        index_manual_cleanup_next_attempt_at = clock_timestamp(),
+        index_manual_cleanup_last_error_code = NULL
+    FROM transitioned
+    WHERE ingest.execution_id = transitioned.execution_id
+      AND ingest.generation = transitioned.generation
+      AND ingest.capability_id = 'index.ingest.v1'
+      AND ingest.index_meta_initialized_at IS NOT NULL
+      AND ingest.index_manual_cleanup_status IS NULL
+    RETURNING ingest.execution_id
 )
 SELECT EXISTS (SELECT 1 FROM transitioned) AS transitioned;

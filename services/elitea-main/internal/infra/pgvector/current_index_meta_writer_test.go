@@ -457,6 +457,157 @@ func TestPlanCurrentTerminalMarksOlderGenerationSuperseded(t *testing.T) {
 	}
 }
 
+func TestPlanCurrentManualStopCleanupRequiresExactCancelledGeneration(
+	t *testing.T,
+) {
+	initial := currentIndexMetaRecordForTest(
+		"meta-1",
+		"execution-1",
+		"message-1",
+	)
+	created, err := planCurrentInitialIndexMeta(initial, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := created.document
+	existing := currentStoredIndexMeta{
+		id:       created.id,
+		document: &document,
+		metadata: mustDecodeCurrentIndexMeta(t, created.metadata),
+	}
+	cleanup := indexingapp.CurrentManualStopCleanup{
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+	}
+	if err := planCurrentManualStopCleanup(
+		cleanup,
+		[]currentStoredIndexMeta{existing},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+		t.Fatalf("active cleanup error=%v", err)
+	}
+
+	cancelled := indexingapp.CurrentTerminalIndexMeta{
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaCancelled,
+		OccurredAt:      time.Now(),
+	}
+	terminal, err := planCurrentTerminalIndexMeta(
+		cancelled,
+		[]currentStoredIndexMeta{existing},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing.metadata = mustDecodeCurrentIndexMeta(t, terminal.metadata)
+	if err := planCurrentManualStopCleanup(
+		cleanup,
+		[]currentStoredIndexMeta{existing},
+	); err != nil {
+		t.Fatalf("cancelled cleanup error=%v", err)
+	}
+
+	newer := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest(
+			"meta-2",
+			"execution-2",
+			"message-2",
+		),
+		2,
+	)
+	next, err := planCurrentInitialIndexMeta(
+		newer,
+		[]currentStoredIndexMeta{existing},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing.metadata = mustDecodeCurrentIndexMeta(t, next.metadata)
+	if err := planCurrentManualStopCleanup(
+		cleanup,
+		[]currentStoredIndexMeta{existing},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
+		t.Fatalf("stale cleanup error=%v", err)
+	}
+}
+
+func TestPlanCurrentManualStopCleanupRejectsToolkitOrHistoryDrift(t *testing.T) {
+	initial := currentIndexMetaRecordForTest(
+		"meta-1",
+		"execution-1",
+		"message-1",
+	)
+	created, err := planCurrentInitialIndexMeta(initial, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := created.document
+	metadata := mustDecodeCurrentIndexMeta(t, created.metadata)
+	metadata["state"] = "cancelled"
+	metadata["task_id"] = nil
+	history := currentIndexMetaHistory(metadata["history"])
+	last := history[len(history)-1].(map[string]any)
+	last["state"] = "cancelled"
+	last["task_id"] = nil
+	encoded, err := encodeCurrentIndexMetaWithHistory(
+		func() map[string]any {
+			value := cloneCurrentIndexMetaObject(metadata)
+			delete(value, "history")
+			return value
+		}(),
+		history,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup := indexingapp.CurrentManualStopCleanup{
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"toolkit": func(value map[string]any) {
+			value["toolkit_id"] = json.Number("20")
+		},
+		"history": func(value map[string]any) {
+			items := currentIndexMetaHistory(value["history"])
+			items[len(items)-1].(map[string]any)["execution_id"] = "other"
+			historyBytes, marshalErr := json.Marshal(items)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			value["history"] = string(historyBytes)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := mustDecodeCurrentIndexMeta(t, encoded)
+			mutate(value)
+			if err := planCurrentManualStopCleanup(
+				cleanup,
+				[]currentStoredIndexMeta{{
+					id:       created.id,
+					document: &document,
+					metadata: value,
+				}},
+			); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestPlanCurrentInitialIndexMetaUsesLegacyGenerationFallback(t *testing.T) {
 	next := currentIndexMetaRecordWithGeneration(
 		t,

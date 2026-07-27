@@ -52,10 +52,26 @@ func TestCurrentIndexCancellationRepositoryBindsExactActiveTarget(t *testing.T) 
 		"ingest.capability_id = job.capability_id",
 		"ingest.toolkit_id = $3::integer",
 		"ingest.index_name = $4::text",
+		"SET index_manual_stop_requested_at = clock_timestamp()",
+		"index_manual_cleanup_status = 'PENDING'",
+		"index_manual_cleanup_attempt_count = 0",
+		"ingest.index_meta_initialized_at IS NOT NULL",
+		"ingest.index_manual_cleanup_status IS NULL",
+		"SELECT EXISTS (SELECT 1 FROM transitioned)",
 	} {
 		if !strings.Contains(call.sql, predicate) {
 			t.Errorf("generated cancellation query missing %q:\n%s", predicate, call.sql)
 		}
+	}
+	transitionEnd := strings.Index(call.sql, "RETURNING job.execution_id")
+	initializationGate := strings.Index(
+		call.sql,
+		"ingest.index_meta_initialized_at IS NOT NULL",
+	)
+	if transitionEnd < 0 || initializationGate < transitionEnd {
+		t.Fatal(
+			"metadata initialization incorrectly gates the cancellation transition",
+		)
 	}
 }
 

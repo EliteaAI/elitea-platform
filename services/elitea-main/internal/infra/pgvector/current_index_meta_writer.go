@@ -274,6 +274,125 @@ WHERE id = $1`,
 	return nil
 }
 
+func (w *CurrentIndexMetaWriter) CleanupManualStop(
+	ctx context.Context,
+	target indexingapp.CurrentIndexMetaTarget,
+	record indexingapp.CurrentManualStopCleanup,
+) error {
+	if w == nil || ctx == nil || w.queryTimeout <= 0 || w.gate == nil ||
+		cap(w.gate) <= 0 ||
+		target.SchemaID <= 0 || target.SchemaID != record.ToolkitID ||
+		len(target.ConnectionString) == 0 ||
+		len(target.ConnectionString) >
+			indexingapp.MaxCurrentIndexMetaConnectionStringBytes ||
+		record.Validate() != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case w.gate <- struct{}{}:
+		defer func() { <-w.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
+	if !ok {
+		return ErrCurrentIndexMetaWrite
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	queryContext, cancel := context.WithTimeout(ctx, w.queryTimeout)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(queryContext, config)
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeContext, closeCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer closeCancel()
+			_ = connection.Close(closeContext)
+		}
+	}()
+
+	transaction, err := connection.BeginTx(queryContext, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	})
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackContext, rollbackCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer rollbackCancel()
+			_ = transaction.Rollback(rollbackContext)
+		}
+	}()
+
+	schema := pgx.Identifier{
+		strconv.FormatInt(int64(target.SchemaID), 10),
+	}.Sanitize()
+	if _, err := transaction.Exec(
+		queryContext,
+		`SELECT pg_advisory_xact_lock($1::integer, 0)`,
+		target.SchemaID,
+	); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	existing, err := loadCurrentIndexMetaForUpdate(
+		queryContext,
+		transaction,
+		schema,
+		record.IndexName,
+	)
+	if err != nil {
+		return err
+	}
+	if len(existing) != 0 {
+		if err := planCurrentManualStopCleanup(record, existing); err != nil {
+			return err
+		}
+		if _, err := transaction.Exec(
+			queryContext,
+			`DELETE FROM `+schema+`.langchain_pg_embedding
+WHERE cmetadata->>'collection' = $1
+  AND cmetadata->>'type' <> 'index_meta'`,
+			record.IndexName,
+		); err != nil {
+			return currentIndexMetaWriteError(queryContext, err)
+		}
+	}
+
+	if err := transaction.Commit(queryContext); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed = true
+	closeContext, closeCancel := context.WithTimeout(
+		context.Background(),
+		currentIndexMetaCloseTimeout,
+	)
+	defer closeCancel()
+	if err := connection.Close(closeContext); err != nil {
+		return currentIndexMetaWriteError(closeContext, err)
+	}
+	closed = true
+	return nil
+}
+
 func currentIndexMetaSchemaStatements(schema string) []string {
 	return []string{
 		`CREATE SCHEMA IF NOT EXISTS ` + schema,
@@ -499,6 +618,62 @@ func planCurrentTerminalIndexMeta(
 	return currentIndexMetaWritePlan{id: stored.id, metadata: metadata}, nil
 }
 
+func planCurrentManualStopCleanup(
+	record indexingapp.CurrentManualStopCleanup,
+	existing []currentStoredIndexMeta,
+) error {
+	if record.Validate() != nil || len(existing) != 1 {
+		return indexingapp.ErrCurrentIndexMetaConflict
+	}
+	stored := existing[0]
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaLogicalGeneration(stored.metadata)
+	if indexGenerationOK &&
+		indexGeneration > int64(record.IndexGeneration) {
+		return indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	executionGeneration, executionGenerationOK :=
+		currentIndexMetaInt64(stored.metadata["execution_generation"])
+	toolkitID, toolkitIDOK :=
+		currentIndexMetaInt64(stored.metadata["toolkit_id"])
+	if stored.metadata["index_meta_id"] != record.MetaID ||
+		stored.metadata["execution_id"] != record.ExecutionID ||
+		!indexGenerationOK ||
+		indexGeneration != int64(record.IndexGeneration) ||
+		!executionGenerationOK ||
+		executionGeneration != int64(record.Generation) ||
+		!toolkitIDOK ||
+		toolkitID != int64(record.ToolkitID) ||
+		stored.metadata["state"] !=
+			string(indexingapp.CurrentIndexMetaCancelled) ||
+		stored.metadata["task_id"] != nil {
+		return indexingapp.ErrCurrentIndexMetaConflict
+	}
+	history := currentIndexMetaHistory(stored.metadata["history"])
+	if len(history) == 0 {
+		return indexingapp.ErrCurrentIndexMetaConflict
+	}
+	last, ok := history[len(history)-1].(map[string]any)
+	if !ok ||
+		last["state"] != string(indexingapp.CurrentIndexMetaCancelled) ||
+		last["task_id"] != nil ||
+		last["index_meta_id"] != record.MetaID ||
+		last["execution_id"] != record.ExecutionID {
+		return indexingapp.ErrCurrentIndexMetaConflict
+	}
+	lastIndexGeneration, lastIndexGenerationOK :=
+		currentIndexMetaLogicalGeneration(last)
+	lastExecutionGeneration, lastExecutionGenerationOK :=
+		currentIndexMetaInt64(last["execution_generation"])
+	if !lastIndexGenerationOK ||
+		lastIndexGeneration != int64(record.IndexGeneration) ||
+		!lastExecutionGenerationOK ||
+		lastExecutionGeneration != int64(record.Generation) {
+		return indexingapp.ErrCurrentIndexMetaConflict
+	}
+	return nil
+}
+
 func currentTerminalIndexMetaCompatible(
 	metadata map[string]any,
 	history []any,
@@ -702,3 +877,4 @@ func currentIndexMetaWriteError(ctx context.Context, cause error) error {
 
 var _ indexingapp.CurrentIndexMetaWriter = (*CurrentIndexMetaWriter)(nil)
 var _ indexingapp.CurrentIndexMetaTerminalWriter = (*CurrentIndexMetaWriter)(nil)
+var _ indexingapp.CurrentManualStopCleanupWriter = (*CurrentIndexMetaWriter)(nil)
