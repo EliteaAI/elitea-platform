@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	osexec "os/exec"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -361,6 +362,94 @@ WHERE id = 'meta-1'`).Scan(&terminalState); err != nil {
 			"completed",
 			61,
 		)
+	})
+
+	t.Run("adopts current-baseline top level from typed Go history", func(t *testing.T) {
+		sixteenth := currentIndexMetaRecordWithGeneration(
+			t,
+			currentIndexMetaIntegrationRecord(
+				t,
+				schemaID,
+				"meta-16",
+				"execution-16",
+				"message-16",
+			),
+			16,
+		)
+		sixteenth = currentIndexMetaRecordWithIndexName(
+			t,
+			sixteenth,
+			"new13",
+		)
+		stored, baselineHistory := currentHybridLiveStoredForTest(
+			t,
+			sixteenth,
+		)
+		stored.id = "hybrid-physical-row"
+		encoded, err := json.Marshal(stored.metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(baselineHistory) != 37 ||
+			len(encoded) != currentHybridLiveMetadataBytes {
+			t.Fatalf(
+				"history entries=%d metadata bytes=%d",
+				len(baselineHistory),
+				len(encoded),
+			)
+		}
+		if _, err := connection.Exec(
+			ctx,
+			`UPDATE `+schema+`.langchain_pg_embedding
+SET id = $1, document = $2, cmetadata = $3::jsonb
+WHERE cmetadata @> '{"type":"index_meta","collection":"Docs"}'::jsonb`,
+			stored.id,
+			*stored.document,
+			encoded,
+		); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := writer.MaterializeInitial(
+			ctx,
+			target,
+			sixteenth,
+		); err != nil {
+			t.Fatalf("adopt hybrid metadata: %v", err)
+		}
+		if err := NewCurrentIndexMetaWriter().MaterializeInitial(
+			ctx,
+			target,
+			sixteenth,
+		); err != nil {
+			t.Fatalf("recover committed hybrid adoption: %v", err)
+		}
+
+		var storedID, document string
+		var raw []byte
+		if err := connection.QueryRow(ctx, `
+	SELECT id, document, cmetadata
+	FROM `+schema+`.langchain_pg_embedding
+	WHERE cmetadata @> '{"type":"index_meta","collection":"new13"}'::jsonb`,
+		).Scan(&storedID, &document, &raw); err != nil {
+			t.Fatal(err)
+		}
+		metadata := mustDecodeCurrentIndexMeta(t, raw)
+		history := currentIndexMetaHistory(metadata["history"])
+		if storedID != stored.id || document != sixteenth.Document ||
+			metadata["index_meta_id"] != sixteenth.MetaID ||
+			metadata["execution_id"] != sixteenth.ExecutionID ||
+			metadata["index_generation"] != json.Number("16") ||
+			metadata["state"] != "in_progress" ||
+			!reflect.DeepEqual(history, baselineHistory) {
+			t.Fatalf(
+				"id=%q document=%q metadata=%#v history=%#v",
+				storedID,
+				document,
+				metadata,
+				history,
+			)
+		}
 	})
 }
 

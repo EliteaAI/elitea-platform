@@ -18,6 +18,7 @@ import (
 const (
 	defaultCurrentIndexMetaWriteTimeout = 30 * time.Second
 	defaultCurrentIndexMetaWrites       = 16
+	maxCurrentIndexMetaAdoptionHistory  = 4_096
 )
 
 var ErrCurrentIndexMetaWrite = errors.New("pgvector: current index metadata write failed")
@@ -638,7 +639,12 @@ func planCurrentInitialIndexMeta(
 	stored := existing[0]
 	storedIndexGeneration, generationOK := currentIndexMetaLogicalGeneration(stored.metadata)
 	if !generationOK {
-		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+		storedIndexGeneration, generationOK =
+			currentIndexMetaAdoptionGeneration(stored, record)
+		if !generationOK {
+			return currentIndexMetaWritePlan{},
+				indexingapp.ErrCurrentIndexMetaConflict
+		}
 	}
 	storedMetaID, _ := stored.metadata["index_meta_id"].(string)
 	if storedMetaID == record.MetaID {
@@ -940,6 +946,547 @@ func currentIndexMetaCanStartNextGeneration(state string) bool {
 	switch state {
 	case "completed", "failed", "partly_indexed", "cancelled", "scheduled_reindex":
 		return true
+	default:
+		return false
+	}
+}
+
+type currentIndexMetaAdoptionFence struct {
+	position            int
+	indexGeneration     int64
+	executionGeneration int64
+	executionID         string
+	metaID              string
+	correlationID       string
+	state               string
+}
+
+type currentIndexMetaAdoptionPhase uint8
+
+const (
+	currentIndexMetaAdoptionLegacy currentIndexMetaAdoptionPhase = iota
+	currentIndexMetaAdoptionTyped
+	currentIndexMetaAdoptionBaseline
+)
+
+type currentIndexMetaAdoptionIdentities struct {
+	executionIDs   map[string]struct{}
+	metaIDs        map[string]struct{}
+	correlationIDs map[string]struct{}
+}
+
+type currentIndexMetaAdoptionBaselineEntry struct {
+	configuration  map[string]any
+	createdOn      float64
+	updatedOn      float64
+	taskID         string
+	conversationID string
+}
+
+// currentIndexMetaAdoptionGeneration recovers the last complete Go fence only
+// when an unchanged current-baseline writer replaced the top-level metadata.
+// It deliberately does not repair partially present top-level fences.
+func currentIndexMetaAdoptionGeneration(
+	stored currentStoredIndexMeta,
+	record indexingapp.CurrentInitialIndexMeta,
+) (int64, bool) {
+	if stored.id == "" || stored.document == nil ||
+		*stored.document != record.Document ||
+		!currentIndexMetaGoFenceFieldsAbsent(stored.metadata) ||
+		!currentIndexMetaBaselineIdentityMatches(stored.metadata, record) {
+		return 0, false
+	}
+	state, stateOK := stored.metadata["state"].(string)
+	indexed, indexedOK := currentIndexMetaInt64(stored.metadata["indexed"])
+	updated, updatedOK := currentIndexMetaInt64(stored.metadata["updated"])
+	_, createdOnOK := currentIndexMetaFloat64(stored.metadata["created_on"])
+	_, updatedOnOK := currentIndexMetaFloat64(stored.metadata["updated_on"])
+	if !stateOK || !currentIndexMetaCanStartNextGeneration(state) ||
+		!indexedOK || indexed < 0 || !updatedOK || updated < 0 ||
+		!createdOnOK || !updatedOnOK {
+		return 0, false
+	}
+
+	history, historyOK := decodeCurrentIndexMetaHistory(
+		stored.metadata["history"],
+	)
+	if !historyOK || len(history) == 0 ||
+		len(history) > maxCurrentIndexMetaAdoptionHistory {
+		return 0, false
+	}
+	last, lastOK := history[len(history)-1].(map[string]any)
+	top := cloneCurrentIndexMetaObject(stored.metadata)
+	delete(top, "history")
+	if !lastOK || !reflect.DeepEqual(last, top) {
+		return 0, false
+	}
+
+	position := 0
+	var createdMarker map[string]any
+	first, firstOK := history[0].(map[string]any)
+	if firstOK && first["state"] == "created" &&
+		currentIndexMetaGoFenceFieldsAbsent(first) {
+		if !currentIndexMetaAdoptionCreatedMarkerValid(first, record) {
+			return 0, false
+		}
+		createdMarker = first
+		position = 1
+	}
+
+	phase := currentIndexMetaAdoptionLegacy
+	hadFencedHistory := false
+	lastTypedGeneration := int64(0)
+	var firstLifecycleEntry map[string]any
+	currentFences := make([]currentIndexMetaAdoptionFence, 0, 2)
+	baselineSuffix := make([]map[string]any, 0, 2)
+	identities := currentIndexMetaAdoptionIdentities{
+		executionIDs:   make(map[string]struct{}),
+		metaIDs:        make(map[string]struct{}),
+		correlationIDs: make(map[string]struct{}),
+	}
+	finishFences := func() bool {
+		if len(currentFences) == 0 {
+			return true
+		}
+		if !currentIndexMetaAdoptionFenceGroupIsTerminal(currentFences) ||
+			!identities.claim(currentFences[0]) {
+			return false
+		}
+		currentFences = currentFences[:0]
+		return true
+	}
+
+	for ; position < len(history); position++ {
+		raw := history[position]
+		entry, ok := raw.(map[string]any)
+		if !ok || !currentIndexMetaBaselineIdentityMatches(entry, record) {
+			return 0, false
+		}
+		if firstLifecycleEntry == nil {
+			firstLifecycleEntry = entry
+		}
+		if currentIndexMetaGoFenceFieldsAbsent(entry) {
+			if !finishFences() {
+				return 0, false
+			}
+			phase = currentIndexMetaAdoptionBaseline
+			baselineSuffix = append(baselineSuffix, entry)
+			continue
+		}
+		if phase == currentIndexMetaAdoptionBaseline {
+			return 0, false
+		}
+
+		_, typed := entry["index_generation"]
+		if !typed {
+			if phase != currentIndexMetaAdoptionLegacy {
+				return 0, false
+			}
+			fence, ok := currentIndexMetaLegacyAdoptionFence(
+				entry,
+				position,
+			)
+			if !ok {
+				return 0, false
+			}
+			if len(currentFences) != 0 &&
+				!currentIndexMetaAdoptionFenceIdentityEqual(
+					currentFences[0],
+					fence,
+				) {
+				if !finishFences() {
+					return 0, false
+				}
+			}
+			currentFences = append(currentFences, fence)
+			hadFencedHistory = true
+			continue
+		}
+
+		phase = currentIndexMetaAdoptionTyped
+		fence, ok := currentIndexMetaAdoptionHistoryFence(
+			entry,
+			position,
+		)
+		if !ok {
+			return 0, false
+		}
+		if fence.indexGeneration < lastTypedGeneration {
+			return 0, false
+		}
+		if fence.indexGeneration > lastTypedGeneration {
+			if !finishFences() {
+				return 0, false
+			}
+			lastTypedGeneration = fence.indexGeneration
+		} else if len(currentFences) != 0 &&
+			!currentIndexMetaAdoptionFenceIdentityEqual(
+				currentFences[0],
+				fence,
+			) {
+			return 0, false
+		}
+		currentFences = append(currentFences, fence)
+		hadFencedHistory = true
+	}
+
+	if !finishFences() ||
+		!currentIndexMetaAdoptionBaselineSuffixValid(
+			baselineSuffix,
+			hadFencedHistory,
+			createdMarker,
+		) ||
+		(createdMarker != nil &&
+			!currentIndexMetaAdoptionMarkerMatchesFirstLifecycle(
+				createdMarker,
+				firstLifecycleEntry,
+			)) {
+		return 0, false
+	}
+	if lastTypedGeneration == 0 {
+		// A source-shaped, pure current-baseline lifecycle can only establish
+		// the first Go fence.
+		return 0, !hadFencedHistory && record.IndexGeneration == 1
+	}
+	if !hadFencedHistory {
+		return 0, false
+	}
+	return lastTypedGeneration, true
+}
+
+func currentIndexMetaGoFenceFieldsAbsent(metadata map[string]any) bool {
+	for _, key := range []string{
+		"execution_id",
+		"execution_generation",
+		"index_generation",
+		"index_meta_id",
+		"correlation_id",
+	} {
+		if _, present := metadata[key]; present {
+			return false
+		}
+	}
+	return true
+}
+
+func currentIndexMetaLegacyAdoptionFence(
+	entry map[string]any,
+	position int,
+) (currentIndexMetaAdoptionFence, bool) {
+	executionGeneration, executionGenerationOK :=
+		currentIndexMetaInt64(entry["execution_generation"])
+	executionID, executionIDOK := entry["execution_id"].(string)
+	metaID, metaIDOK := entry["index_meta_id"].(string)
+	correlationID, correlationIDOK := entry["correlation_id"].(string)
+	state, stateOK := entry["state"].(string)
+	if _, hasHistory := entry["history"]; hasHistory ||
+		!executionGenerationOK || executionGeneration <= 0 ||
+		!executionIDOK || executionID == "" ||
+		!metaIDOK || metaID == "" ||
+		!correlationIDOK || correlationID == "" ||
+		!stateOK || (state != "in_progress" &&
+		!currentIndexMetaCanStartNextGeneration(state)) {
+		return currentIndexMetaAdoptionFence{}, false
+	}
+	return currentIndexMetaAdoptionFence{
+		position:            position,
+		executionGeneration: executionGeneration,
+		executionID:         executionID,
+		metaID:              metaID,
+		correlationID:       correlationID,
+		state:               state,
+	}, true
+}
+
+func currentIndexMetaAdoptionCreatedMarkerValid(
+	entry map[string]any,
+	record indexingapp.CurrentInitialIndexMeta,
+) bool {
+	initial, err := decodeCurrentIndexMetaJSON(record.InitialMetadata)
+	if err != nil {
+		return false
+	}
+	canonical := currentCreatedIndexMetaMarker(initial)
+	for _, historicalKey := range []string{
+		"created_on",
+		"updated_on",
+		"index_configuration",
+	} {
+		value, present := entry[historicalKey]
+		if !present {
+			return false
+		}
+		canonical[historicalKey] = cloneCurrentIndexMetaValue(value)
+	}
+	// The current Python SDK marker has one additive field that the Go marker
+	// does not author. Accept only its exact source value, not arbitrary marker
+	// extensions.
+	if errorValue, hasError := entry["error"]; hasError {
+		if errorValue != nil {
+			return false
+		}
+		canonical["error"] = nil
+	}
+	indexed, indexedOK := currentIndexMetaInt64(entry["indexed"])
+	updated, updatedOK := currentIndexMetaInt64(entry["updated"])
+	createdOn, createdOnOK := currentIndexMetaFloat64(entry["created_on"])
+	updatedOn, updatedOnOK := currentIndexMetaFloat64(entry["updated_on"])
+	_, configurationOK := currentIndexMetaAdoptionConfiguration(
+		entry["index_configuration"],
+	)
+	_, configurationIsObject := entry["index_configuration"].(map[string]any)
+	return currentIndexMetaBaselineIdentityMatches(entry, record) &&
+		currentIndexMetaGoFenceFieldsAbsent(entry) &&
+		reflect.DeepEqual(entry, canonical) &&
+		entry["state"] == "created" &&
+		indexedOK && indexed == 0 &&
+		updatedOK && updated == 0 &&
+		createdOnOK && createdOn > 0 &&
+		updatedOnOK && createdOn == updatedOn &&
+		configurationOK && configurationIsObject
+}
+
+func currentIndexMetaAdoptionBaselineEntryFields(
+	entry map[string]any,
+) (currentIndexMetaAdoptionBaselineEntry, bool) {
+	indexed, indexedOK := currentIndexMetaInt64(entry["indexed"])
+	updated, updatedOK := currentIndexMetaInt64(entry["updated"])
+	createdOn, createdOnOK := currentIndexMetaFloat64(entry["created_on"])
+	updatedOn, updatedOnOK := currentIndexMetaFloat64(entry["updated_on"])
+	configuration, configurationOK := currentIndexMetaAdoptionConfiguration(
+		entry["index_configuration"],
+	)
+	taskID, taskIDOK := currentIndexMetaAdoptionNullableString(
+		entry,
+		"task_id",
+	)
+	conversationID, conversationIDOK :=
+		currentIndexMetaAdoptionNullableString(entry, "conversation_id")
+	_, hasHistory := entry["history"]
+	if !currentIndexMetaGoFenceFieldsAbsent(entry) ||
+		!indexedOK || indexed < 0 ||
+		!updatedOK || updated < 0 ||
+		!createdOnOK || createdOn <= 0 ||
+		!updatedOnOK || updatedOn < createdOn ||
+		!configurationOK ||
+		!taskIDOK || !conversationIDOK ||
+		hasHistory {
+		return currentIndexMetaAdoptionBaselineEntry{}, false
+	}
+	return currentIndexMetaAdoptionBaselineEntry{
+		configuration:  configuration,
+		createdOn:      createdOn,
+		updatedOn:      updatedOn,
+		taskID:         taskID,
+		conversationID: conversationID,
+	}, true
+}
+
+func currentIndexMetaAdoptionBaselineSuffixValid(
+	suffix []map[string]any,
+	hadFencedHistory bool,
+	createdMarker map[string]any,
+) bool {
+	if hadFencedHistory {
+		if len(suffix) != 2 || suffix[0]["state"] != "in_progress" ||
+			!currentIndexMetaCanStartNextGeneration(
+				currentIndexMetaString(suffix[1]["state"]),
+			) {
+			return false
+		}
+		active, activeOK :=
+			currentIndexMetaAdoptionBaselineEntryFields(suffix[0])
+		terminal, terminalOK :=
+			currentIndexMetaAdoptionBaselineEntryFields(suffix[1])
+		return activeOK && terminalOK &&
+			active.createdOn == active.updatedOn &&
+			terminal.createdOn >= active.createdOn &&
+			terminal.updatedOn >= active.updatedOn &&
+			reflect.DeepEqual(
+				active.configuration,
+				terminal.configuration,
+			) &&
+			(terminal.taskID == "" || terminal.taskID == active.taskID) &&
+			(terminal.conversationID == "" ||
+				terminal.conversationID == active.conversationID)
+	}
+	return len(suffix) == 1 &&
+		currentIndexMetaAdoptionPureTerminalMatchesMarker(
+			createdMarker,
+			suffix[0],
+		)
+}
+
+func currentIndexMetaAdoptionPureTerminalMatchesMarker(
+	marker map[string]any,
+	terminal map[string]any,
+) bool {
+	terminalFields, terminalOK :=
+		currentIndexMetaAdoptionBaselineEntryFields(terminal)
+	if marker == nil || !terminalOK ||
+		!currentIndexMetaCanStartNextGeneration(
+			currentIndexMetaString(terminal["state"]),
+		) {
+		return false
+	}
+	markerFields, markerOK :=
+		currentIndexMetaAdoptionBaselineEntryFields(marker)
+	return markerOK &&
+		markerFields.createdOn == terminalFields.createdOn &&
+		reflect.DeepEqual(
+			markerFields.configuration,
+			terminalFields.configuration,
+		) &&
+		terminalFields.taskID == "" &&
+		terminalFields.conversationID == ""
+}
+
+func currentIndexMetaAdoptionMarkerMatchesFirstLifecycle(
+	marker map[string]any,
+	first map[string]any,
+) bool {
+	if marker == nil || first == nil {
+		return false
+	}
+	markerCreatedOn, markerCreatedOnOK :=
+		currentIndexMetaFloat64(marker["created_on"])
+	firstCreatedOn, firstCreatedOnOK :=
+		currentIndexMetaFloat64(first["created_on"])
+	markerConfiguration, markerConfigurationOK :=
+		currentIndexMetaAdoptionConfiguration(marker["index_configuration"])
+	firstConfiguration, firstConfigurationOK :=
+		currentIndexMetaAdoptionConfiguration(first["index_configuration"])
+	return markerCreatedOnOK && firstCreatedOnOK &&
+		markerCreatedOn == firstCreatedOn &&
+		markerConfigurationOK && firstConfigurationOK &&
+		reflect.DeepEqual(markerConfiguration, firstConfiguration)
+}
+
+func currentIndexMetaAdoptionConfiguration(
+	value any,
+) (map[string]any, bool) {
+	switch value := value.(type) {
+	case map[string]any:
+		return cloneCurrentIndexMetaObject(value), true
+	case string:
+		if len(value) == 0 ||
+			len(value) > indexingapp.MaxCurrentInitialIndexMetaBytes {
+			return nil, false
+		}
+		configuration, err := decodeCurrentIndexMetaJSON([]byte(value))
+		return configuration, err == nil
+	default:
+		return nil, false
+	}
+}
+
+func currentIndexMetaAdoptionNullableString(
+	entry map[string]any,
+	key string,
+) (string, bool) {
+	value, present := entry[key]
+	if !present {
+		return "", false
+	}
+	if value == nil {
+		return "", true
+	}
+	text, ok := value.(string)
+	return text, ok && text != ""
+}
+
+func currentIndexMetaString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func currentIndexMetaAdoptionFenceIdentityEqual(
+	first currentIndexMetaAdoptionFence,
+	second currentIndexMetaAdoptionFence,
+) bool {
+	return first.executionGeneration == second.executionGeneration &&
+		first.executionID == second.executionID &&
+		first.metaID == second.metaID &&
+		first.correlationID == second.correlationID
+}
+
+func (i currentIndexMetaAdoptionIdentities) claim(
+	fence currentIndexMetaAdoptionFence,
+) bool {
+	if _, exists := i.executionIDs[fence.executionID]; exists {
+		return false
+	}
+	if _, exists := i.metaIDs[fence.metaID]; exists {
+		return false
+	}
+	if _, exists := i.correlationIDs[fence.correlationID]; exists {
+		return false
+	}
+	i.executionIDs[fence.executionID] = struct{}{}
+	i.metaIDs[fence.metaID] = struct{}{}
+	i.correlationIDs[fence.correlationID] = struct{}{}
+	return true
+}
+
+func currentIndexMetaBaselineIdentityMatches(
+	metadata map[string]any,
+	record indexingapp.CurrentInitialIndexMeta,
+) bool {
+	toolkitID, toolkitOK := currentIndexMetaInt64(metadata["toolkit_id"])
+	return metadata["collection"] == record.IndexName &&
+		metadata["type"] == "index_meta" &&
+		toolkitOK && toolkitID == int64(record.ToolkitID)
+}
+
+func currentIndexMetaAdoptionHistoryFence(
+	entry map[string]any,
+	position int,
+) (currentIndexMetaAdoptionFence, bool) {
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaInt64(entry["index_generation"])
+	executionGeneration, executionGenerationOK :=
+		currentIndexMetaInt64(entry["execution_generation"])
+	executionID, executionIDOK := entry["execution_id"].(string)
+	metaID, metaIDOK := entry["index_meta_id"].(string)
+	correlationID, correlationIDOK := entry["correlation_id"].(string)
+	state, stateOK := entry["state"].(string)
+	stateValid := state == "in_progress" ||
+		currentIndexMetaCanStartNextGeneration(state)
+	if _, hasHistory := entry["history"]; hasHistory ||
+		!indexGenerationOK || indexGeneration <= 0 ||
+		!executionGenerationOK || executionGeneration <= 0 ||
+		!executionIDOK || executionID == "" ||
+		!metaIDOK || metaID == "" ||
+		!correlationIDOK || correlationID == "" ||
+		!stateOK || !stateValid {
+		return currentIndexMetaAdoptionFence{}, false
+	}
+	return currentIndexMetaAdoptionFence{
+		position:            position,
+		indexGeneration:     indexGeneration,
+		executionGeneration: executionGeneration,
+		executionID:         executionID,
+		metaID:              metaID,
+		correlationID:       correlationID,
+		state:               state,
+	}, true
+}
+
+func currentIndexMetaAdoptionFenceGroupIsTerminal(
+	fences []currentIndexMetaAdoptionFence,
+) bool {
+	switch len(fences) {
+	case 1:
+		return currentIndexMetaCanStartNextGeneration(fences[0].state)
+	case 2:
+		first, last := fences[0], fences[1]
+		return first.position+1 == last.position &&
+			first.state == "in_progress" &&
+			currentIndexMetaCanStartNextGeneration(last.state) &&
+			first.executionGeneration == last.executionGeneration &&
+			first.executionID == last.executionID &&
+			first.metaID == last.metaID &&
+			first.correlationID == last.correlationID
 	default:
 		return false
 	}
