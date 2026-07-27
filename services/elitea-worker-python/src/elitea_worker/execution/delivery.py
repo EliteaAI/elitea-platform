@@ -1417,7 +1417,10 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                     sdk_failure_category=_sdk_failure_category(result.sdk_result),
                 )
                 raise
-            tool_event = callback.finish_tool(success=True)
+            tool_event = callback.finish_tool(
+                success=projected.result_summary.status
+                != indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+            )
             if tool_event is not None:
                 await progress.publish_from_delivery(tool_event)
             callback.raise_if_failed()
