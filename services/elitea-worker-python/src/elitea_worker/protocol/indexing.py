@@ -18,6 +18,7 @@ from elitea_worker.handlers.indexing import (
 RESULT_MEDIA_TYPE = "application/vnd.elitea.index-ingest-result.v1+json"
 RESULT_CLASSIFICATION = "tenant-confidential"
 MAX_RESULT_SUMMARY_MESSAGE_BYTES = 48 * 1024
+INDEX_INGEST_FAILURE_SAFE_MESSAGE = "Indexing failed before completion."
 
 _SUMMARY_STATUS = {
     "ok": indexing_pb2.INDEX_INGEST_STATUS_V1_OK,
@@ -124,29 +125,38 @@ def bind_result_summary(result: IndexIngestResult) -> indexing_pb2.IndexIngestRe
         raise InternalFailure()
     success = sdk_result.get("success")
     if success is False:
-        # Inspect the current outer failure shape, but never disclose its text;
-        # it can contain endpoint, toolkit, model or credential-adjacent data.
-        if not isinstance(sdk_result.get("error"), str):
+        # The current SDK error can contain endpoint, toolkit, model or
+        # credential-adjacent data. Preserve the business-failure outcome while
+        # deliberately improving the legacy disclosure behavior: only this
+        # fixed safe message crosses the worker boundary.
+        error = sdk_result.get("error")
+        if not isinstance(error, str) or not error:
             raise InternalFailure()
-        raise InternalFailure()
-    if success is not True:
-        raise InternalFailure()
-
-    nested = sdk_result.get("result")
-    if not isinstance(nested, dict):
-        raise InternalFailure()
-    status = _SUMMARY_STATUS.get(nested.get("status"))
-    message = nested.get("message")
-    if status is None or not isinstance(message, str) or not message or "\x00" in message:
-        raise InternalFailure()
-    try:
-        message_bytes = message.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise InternalFailure() from exc
-    if len(message_bytes) > MAX_RESULT_SUMMARY_MESSAGE_BYTES:
-        raise ResourceExhausted(
-            "The index-ingest result exceeds the approved output limit."
-        )
+        status = indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+        message = INDEX_INGEST_FAILURE_SAFE_MESSAGE
+    else:
+        if success is not True:
+            raise InternalFailure()
+        nested = sdk_result.get("result")
+        if not isinstance(nested, dict):
+            raise InternalFailure()
+        status = _SUMMARY_STATUS.get(nested.get("status"))
+        message = nested.get("message")
+        if (
+            status is None
+            or not isinstance(message, str)
+            or not message
+            or "\x00" in message
+        ):
+            raise InternalFailure()
+        try:
+            message_bytes = message.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise InternalFailure() from exc
+        if len(message_bytes) > MAX_RESULT_SUMMARY_MESSAGE_BYTES:
+            raise ResourceExhausted(
+                "The index-ingest result exceeds the approved output limit."
+            )
 
     bound = indexing_pb2.IndexIngestResultV1(
         input_bundle_id=result.input_bundle_id,

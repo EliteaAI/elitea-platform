@@ -34,6 +34,7 @@ from elitea_worker.protocol.codec import (
     build_node_event_output_frame,
 )
 from elitea_worker.protocol.indexing import (
+    INDEX_INGEST_FAILURE_SAFE_MESSAGE,
     bind_result_artifact,
     bind_result_summary,
     request_from,
@@ -714,17 +715,27 @@ def test_inline_summary_projects_only_the_nested_allowlist() -> None:
     assert canary.encode() not in encoded
 
 
-def test_outer_sdk_failure_becomes_safe_runtime_failure_input() -> None:
-    with pytest.raises(InternalFailure):
-        bind_result_summary(
-            _index_result(
-                {
-                    "success": False,
-                    "error": "raw endpoint and credential-adjacent detail",
-                    "toolkit_config": {"token": "secret"},
-                }
-            )
+def test_outer_sdk_failure_becomes_fixed_safe_error_summary() -> None:
+    canary = "raw endpoint and credential-adjacent detail"
+    bound = bind_result_summary(
+        _index_result(
+            {
+                "success": False,
+                "error": canary,
+                "toolkit_config": {"token": "secret"},
+            }
         )
+    )
+
+    assert bound.result_summary.status == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+    assert bound.result_summary.message == INDEX_INGEST_FAILURE_SAFE_MESSAGE
+    assert canary.encode() not in bound.SerializeToString(deterministic=True)
+
+
+@pytest.mark.parametrize("error", [None, "", 7, {"message": "failure"}])
+def test_outer_sdk_failure_rejects_malformed_error_shape(error: object) -> None:
+    with pytest.raises(InternalFailure):
+        bind_result_summary(_index_result({"success": False, "error": error}))
 
 
 def test_inline_summary_rejects_unbounded_sdk_message() -> None:

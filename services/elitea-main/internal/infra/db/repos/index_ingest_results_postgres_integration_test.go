@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
@@ -222,6 +224,120 @@ WHERE execution_id = $1 AND generation = 1 AND event_type = 'index.ingest.comple
 	}
 }
 
+// TestPostgresServiceBackedIndexBusinessFailure crosses real PostgreSQL
+// admission, failed typed projection, exact retry, UI replay, safe terminal
+// error loading and failed settlement. The raw SDK error is intentionally not
+// represented: the worker replaces it with the fixed safe summary first.
+func TestPostgresServiceBackedIndexBusinessFailure(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    1,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := newPostgresIndexAdmissionService(t, jobs, "business-failure").Submit(
+		context.Background(),
+		postgresIndexSubmitRequest("request-business-failure", "failure"),
+	)
+	if err != nil || !admitted.Created {
+		t.Fatalf("admit failed index execution: outcome=%+v err=%v", admitted, err)
+	}
+	if _, err := jobs.MarkIndexMetaInitialized(context.Background(), indexingapp.IndexMetaInitialization{
+		ExecutionID:   admitted.ExecutionID,
+		Generation:    admitted.Generation,
+		MetaID:        admitted.IndexMetaID,
+		CorrelationID: admitted.IndexMetaCorrelationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := NewIndexIngestResultsRepository(pool, IndexIngestOutputPolicy{
+		LimitsRevision:    policy.LimitsRevision,
+		ArtifactMediaType: "application/json",
+		MaxArtifactBytes:  1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := results.ExpectedIndexIngest(context.Background(), admitted.ExecutionID, admitted.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := claimPostgresIndexExecution(t, pool, expected)
+	summary := outputapp.IndexIngestSummary{
+		Status:  outputapp.IndexIngestStatusError,
+		Message: "Indexing failed before completion.",
+	}
+	frame := postgresInlineIndexOutputFrame(t, expected, fence, summary)
+	service := newPostgresIndexOutputService(t, pool, results)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	inserted, err := service.IngestIndex(ctx, frame)
+	if err != nil || !inserted.Inserted || inserted.Cursor == 0 {
+		t.Fatalf("project failed index summary: outcome=%+v err=%v", inserted, err)
+	}
+	replayed, err := service.IngestIndex(ctx, frame)
+	if err != nil || replayed.Inserted || replayed.Cursor != inserted.Cursor {
+		t.Fatalf("retry failed index summary: first=%+v retry=%+v err=%v", inserted, replayed, err)
+	}
+	wantReplay := []byte(`{"status":"error","message":"Indexing failed before completion."}`)
+	var replayType string
+	var replayBytes, payloadBytes []byte
+	if err := pool.QueryRow(ctx, `
+SELECT r.event_type, r.event_bytes, o.payload_bytes
+FROM elitea_runtime.execution_replay_events AS r
+JOIN elitea_runtime.output_inbox AS o ON o.event_id = r.event_id
+WHERE r.execution_id = $1 AND r.generation = 1`, expected.ExecutionID).Scan(
+		&replayType,
+		&replayBytes,
+		&payloadBytes,
+	); err != nil {
+		t.Fatal(err)
+	}
+	canary := []byte("RAW_SDK_CREDENTIAL_CANARY")
+	if replayType != replayEventIndexIngest || !bytes.Equal(replayBytes, wantReplay) ||
+		bytes.Contains(replayBytes, canary) || bytes.Contains(payloadBytes, canary) {
+		t.Fatalf("failed index replay or payload was unsafe: type=%q replay=%s", replayType, replayBytes)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*) FROM elitea_runtime.index_ingest_jobs
+WHERE execution_id = $1
+  AND index_meta_terminal_state = 'failed'
+  AND index_meta_terminal_status = 'PENDING'`, expected.ExecutionID)
+
+	terminals, err := NewCurrentIndexMetaTerminalBindingsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := terminals.ClaimPendingTerminalEffects(ctx, "business-failure-claim", 1, time.Minute)
+	if err != nil || len(claims) != 1 ||
+		claims[0].SafeError != summary.Message ||
+		claims[0].State != indexingapp.CurrentIndexMetaFailed {
+		t.Fatalf("load safe failed terminal intent: claims=%+v err=%v", claims, err)
+	}
+	settlements, err := NewSettlementsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := settlements.PrepareSettlement(ctx, frame.Settlement)
+	if err != nil || receipt.Outcome != executionapp.SettlementFailed {
+		t.Fatalf("settle failed index execution: receipt=%+v err=%v", receipt, err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*) FROM elitea_runtime.execution_jobs
+WHERE execution_id = $1 AND state = 'FAILED'`, expected.ExecutionID)
+}
+
 func claimPostgresIndexExecution(t *testing.T, pool *pgxpool.Pool, expected outputapp.ExpectedIndexIngest) runtimedomain.Fence {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -414,9 +530,14 @@ func postgresInlineIndexOutputFrame(t *testing.T, expected outputapp.ExpectedInd
 	frame.EncodedResult = encodedResult
 	frame.PayloadDigest = runtimedomain.SHA256(encodedResult)
 	frame.Settlement.TerminalPayloadDigest = frame.PayloadDigest
+	wireOutcome := runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED
+	if summary.Status == outputapp.IndexIngestStatusError {
+		frame.Settlement.Outcome = executionapp.SettlementFailed
+		wireOutcome = runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_FAILED
+	}
 	wireSettlement := &runtimev1.SettlementProposalV1{
 		ProposalId:              frame.Settlement.ProposalID,
-		RequestedOutcome:        runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_SUCCEEDED,
+		RequestedOutcome:        wireOutcome,
 		TerminalLogicalOutputId: frame.LogicalOutputID,
 		TerminalEventId:         frame.EventID,
 		TerminalSequence:        frame.Sequence,

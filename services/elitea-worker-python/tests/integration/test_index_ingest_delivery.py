@@ -41,7 +41,10 @@ from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
     build_output_frame,
 )
-from elitea_worker.protocol.indexing import bind_result_summary
+from elitea_worker.protocol.indexing import (
+    INDEX_INGEST_FAILURE_SAFE_MESSAGE,
+    bind_result_summary,
+)
 from elitea_worker.protocol.node_event import encode_current_node_event_json
 from elitea_worker.handlers.indexing import IndexIngestInputBinding, IndexIngestResult
 from elitea_worker.transport.input_content import ClaimBoundInputRequestBuilder
@@ -436,6 +439,11 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
             else ["agent_tool_start", "agent_tool_error"]
         )
         assert output.frames[-1] == result.output_frame
+        assert result.output_frame.settlement_proposal.requested_outcome == (
+            common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
+            if sdk_success
+            else common_pb2.EXECUTION_OUTCOME_V1_FAILED
+        )
         if sdk_success:
             assert result.output_frame.event_type == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT
             assert result.output_frame.index_ingest.result_summary.status == indexing_pb2.INDEX_INGEST_STATUS_V1_OK
@@ -449,24 +457,22 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
                 "display_name": "github",
             }
         else:
-            assert result.output_frame.runtime_error.code == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
-            assert result.output_frame.runtime_error.safe_message == "The runtime operation failed."
+            assert (
+                result.output_frame.event_type
+                == output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT
+            )
+            assert (
+                result.output_frame.index_ingest.result_summary.status
+                == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+            )
+            assert (
+                result.output_frame.index_ingest.result_summary.message
+                == INDEX_INGEST_FAILURE_SAFE_MESSAGE
+            )
 
     asyncio.run(run())
     captured = capsys.readouterr()
-    if not sdk_success:
-        diagnostic = _single_index_internal_failure(captured.err)
-        assert diagnostic["stage"] == "result_projection"
-        assert diagnostic["execution_id"] == case.command.execution_id
-        assert diagnostic["exception_module"] == InternalFailure.__module__
-        assert diagnostic["exception_name"] == InternalFailure.__name__
-        assert diagnostic["sdk_failure_category"] == "unclassified_failure"
-        _assert_safe_diagnostic_frames(diagnostic["frames"])
-        assert any(
-            frame["function"] == "bind_result_summary"
-            for frame in diagnostic["frames"]
-        )
-        assert canary not in captured.err
+    assert captured.err == ""
 
 
 def test_lost_begin_response_replay_never_resolves_inputs_or_invokes_sdk(

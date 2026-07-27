@@ -240,10 +240,17 @@ func (f IndexIngestFrame) Validate() error {
 	if f.PayloadDigest.IsZero() || len(f.EncodedResult) == 0 || len(f.EncodedResult) > MaxIndexIngestResultBytes || runtimedomain.SHA256(f.EncodedResult) != f.PayloadDigest {
 		return ErrInvalidIndexIngestOutput
 	}
-	if err := f.Settlement.Validate(); err != nil || f.Settlement.Fence != f.Fence || f.Settlement.Outcome != executionapp.SettlementSucceeded || f.Settlement.TerminalLogicalOutputID != f.LogicalOutputID || f.Settlement.TerminalEventID != f.EventID || f.Settlement.TerminalSequence != f.Sequence || f.Settlement.TerminalPayloadDigest != f.PayloadDigest || len(f.EncodedSettlement) == 0 || len(f.EncodedSettlement) > MaxIndexIngestResultBytes || runtimedomain.SHA256(f.EncodedSettlement) != f.Settlement.ProposalDigest {
+	if err := f.Result.Validate(); err != nil {
+		return err
+	}
+	expectedOutcome := executionapp.SettlementSucceeded
+	if f.Result.ResultSummary.Status == IndexIngestStatusError {
+		expectedOutcome = executionapp.SettlementFailed
+	}
+	if err := f.Settlement.Validate(); err != nil || f.Settlement.Fence != f.Fence || f.Settlement.Outcome != expectedOutcome || f.Settlement.TerminalLogicalOutputID != f.LogicalOutputID || f.Settlement.TerminalEventID != f.EventID || f.Settlement.TerminalSequence != f.Sequence || f.Settlement.TerminalPayloadDigest != f.PayloadDigest || len(f.EncodedSettlement) == 0 || len(f.EncodedSettlement) > MaxIndexIngestResultBytes || runtimedomain.SHA256(f.EncodedSettlement) != f.Settlement.ProposalDigest {
 		return ErrInvalidIndexIngestOutput
 	}
-	return f.Result.Validate()
+	return nil
 }
 
 type ExpectedIndexIngest struct {

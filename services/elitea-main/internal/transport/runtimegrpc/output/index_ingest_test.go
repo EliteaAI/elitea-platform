@@ -79,6 +79,33 @@ func TestOutputServerMapsOnlyBoundedCurrentIndexSummary(t *testing.T) {
 	}
 }
 
+func TestOutputServerMapsIndexErrorSummaryToFailedSettlement(t *testing.T) {
+	frame := validIndexWireFrame(t)
+	payload := frame.GetIndexIngest()
+	payload.ResultArtifact = nil
+	payload.ResultSummary = &runtimev1.IndexIngestSummaryV1{
+		Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR,
+		Message: "Indexing failed before completion.",
+	}
+	frame.GetSettlementProposal().RequestedOutcome =
+		runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_FAILED
+	rebindFramePayload(t, frame, payload)
+	indexes := &indexIngestorStub{}
+	server := newIndexOutputTestServer(t, 64*1024, &validationIngestorStub{}, &failureIngestorStub{}, indexes)
+	stream := &outputStreamStub{context: context.Background(), frames: []*runtimev1.ExecutionOutputFrameV1{frame}}
+
+	if err := server.Publish(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.acks) != 2 || stream.acks[1].GetRejection() != nil || len(indexes.frames) != 1 {
+		t.Fatalf("typed index failure was not accepted: acks=%v frames=%d", stream.acks, len(indexes.frames))
+	}
+	if indexes.frames[0].Settlement.Outcome != "FAILED" ||
+		indexes.frames[0].Result.ResultSummary.Status != outputapp.IndexIngestStatusError {
+		t.Fatalf("typed index failure lost its terminal outcome: %+v", indexes.frames[0])
+	}
+}
+
 func TestOutputServerRejectsWrongIndexEventOrPayloadPairing(t *testing.T) {
 	tests := []struct {
 		name   string

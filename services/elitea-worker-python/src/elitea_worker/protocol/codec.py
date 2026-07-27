@@ -316,7 +316,13 @@ def build_output_frame(
         payload = outcome
         frame.event_type = output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT
         frame.index_ingest.CopyFrom(payload)
-        requested_outcome = common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
+        requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_FAILED
+            if payload.HasField("result_summary")
+            and payload.result_summary.status
+            == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+            else common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
+        )
     elif isinstance(outcome, WorkerError):
         payload = _runtime_error_message(outcome)
         frame.event_type = output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR

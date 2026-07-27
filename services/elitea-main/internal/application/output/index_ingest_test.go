@@ -183,6 +183,37 @@ func TestIndexIngestSummaryAcceptsOnlyCurrentBoundedTerminalShape(t *testing.T) 
 	}
 }
 
+func TestIndexIngestFrameCouplesSummaryStatusToSettlementOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  IndexIngestStatus
+		outcome executionapp.SettlementOutcome
+	}{
+		{name: "ok", status: IndexIngestStatusOK, outcome: executionapp.SettlementSucceeded},
+		{name: "partly indexed", status: IndexIngestStatusPartlyIndexed, outcome: executionapp.SettlementSucceeded},
+		{name: "error", status: IndexIngestStatusError, outcome: executionapp.SettlementFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			frame, _, _ := validIndexIngestOutput()
+			frame.Result.ResultArtifact = IndexArtifactReference{}
+			frame.Result.ResultSummary = IndexIngestSummary{Status: test.status, Message: "bounded terminal message"}
+			frame.Settlement.Outcome = test.outcome
+			rebindIndexApplicationFrame(&frame, test.name)
+			if err := frame.Validate(); err != nil {
+				t.Fatalf("matching terminal outcome was rejected: %v", err)
+			}
+			if test.outcome == executionapp.SettlementSucceeded {
+				frame.Settlement.Outcome = executionapp.SettlementFailed
+			} else {
+				frame.Settlement.Outcome = executionapp.SettlementSucceeded
+			}
+			if err := frame.Validate(); !errors.Is(err, ErrInvalidIndexIngestOutput) {
+				t.Fatalf("mismatched terminal outcome was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestIndexIngestRejectsWrongExtraAndMissingInputBindings(t *testing.T) {
 	tests := []struct {
 		name       string

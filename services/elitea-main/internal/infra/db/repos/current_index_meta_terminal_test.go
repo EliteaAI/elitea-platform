@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestCurrentIndexMetaTerminalBindingUsesFrozenAdmissionEvidence(t *testing.T) {
@@ -71,7 +73,7 @@ func TestCurrentIndexMetaTerminalEffectClaimsOnlyBoundedPendingRows(t *testing.T
 			"failed",
 			deadlineAt,
 		}},
-	}}, rowResults: []scriptedRow{{values: []any{nil, "DEADLINE_EXCEEDED"}}}}
+	}}, rowResults: []scriptedRow{{values: []any{"", nil, "DEADLINE_EXCEEDED"}}}}
 	repository, err := newCurrentIndexMetaTerminalBindingsRepository(store)
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +141,26 @@ func TestCurrentIndexMetaTerminalEffectClaimsOnlyBoundedPendingRows(t *testing.T
 		safeSource.args[1] != int64(2) ||
 		safeSource.args[2] != deadlineAt {
 		t.Fatalf("safe-error lookup args=%#v", safeSource.args)
+	}
+}
+
+func TestCurrentIndexMetaTerminalSafeErrorLoadsOnlyTypedIndexSummary(t *testing.T) {
+	result := &runtimev1.IndexIngestResultV1{
+		ResultSummary: &runtimev1.IndexIngestSummaryV1{
+			Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR,
+			Message: "Indexing failed before completion.",
+		},
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := terminalSafeError(payloadTypeIndexIngestResult, payload, ""); got != result.GetResultSummary().GetMessage() {
+		t.Fatalf("typed safe error=%q", got)
+	}
+	canary := "RAW_SDK_CREDENTIAL_CANARY"
+	if got := terminalSafeError(payloadTypeIndexIngestResult, []byte(canary), ""); got == canary {
+		t.Fatal("malformed index payload leaked raw SDK text")
 	}
 }
 

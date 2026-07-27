@@ -557,7 +557,9 @@ func persistCurrentIndexMetaTerminalIntent(
 	tx sqlExecutor,
 	record outputRecord,
 ) error {
-	if record.PayloadType != payloadTypeRuntimeFailure {
+	if record.PayloadType != payloadTypeRuntimeFailure &&
+		!(record.PayloadType == payloadTypeIndexIngestResult &&
+			record.SettlementOutcome == executionapp.SettlementFailed) {
 		return outputapp.ErrInvalidValidationOutput
 	}
 	var state string

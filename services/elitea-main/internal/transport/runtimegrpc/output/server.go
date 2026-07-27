@@ -286,11 +286,15 @@ func (s *Server) indexIngestFrame(message *runtimev1.ExecutionOutputFrameV1, wor
 	if err != nil || !matchesDigest(message.GetPayloadDigest(), encodedResult) {
 		return outputapp.IndexIngestFrame{}, outputapp.ErrInvalidIndexIngestOutput
 	}
-	settlement, encodedSettlement, err := s.settlementProposalDomain(message, fence, encodedResult, executionapp.SettlementSucceeded)
+	result, err := indexIngestResultDomain(payload)
 	if err != nil {
 		return outputapp.IndexIngestFrame{}, err
 	}
-	result, err := indexIngestResultDomain(payload)
+	expectedOutcome := executionapp.SettlementSucceeded
+	if result.ResultSummary.Status == outputapp.IndexIngestStatusError {
+		expectedOutcome = executionapp.SettlementFailed
+	}
+	settlement, encodedSettlement, err := s.settlementProposalDomain(message, fence, encodedResult, expectedOutcome)
 	if err != nil {
 		return outputapp.IndexIngestFrame{}, err
 	}

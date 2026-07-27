@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -273,6 +274,11 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 		if err == nil {
 			switch {
 			case sameDurableOutput(existing, record):
+				if record.SettlementOutcome == executionapp.SettlementFailed {
+					if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+						return indexProjectionError(err)
+					}
+				}
 				cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
 				if cursorErr != nil {
 					return fmt.Errorf("load replayed index cursor: %w", cursorErr)
@@ -305,6 +311,11 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 			if loadErr == nil {
 				switch {
 				case sameDurableOutput(existing, record):
+					if record.SettlementOutcome == executionapp.SettlementFailed {
+						if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
+							return indexProjectionError(err)
+						}
+					}
 					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
 					if cursorErr != nil {
 						return cursorErr
@@ -342,6 +353,11 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 
 		if err := insertIndexIngestProjection(ctx, tx, projection, record); err != nil {
 			return err
+		}
+		if record.SettlementOutcome == executionapp.SettlementFailed {
+			if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, record); err != nil {
+				return indexProjectionError(err)
+			}
 		}
 		cursor, err := appendReplayEvent(ctx, tx, record, replayEventIndexIngest, browserData)
 		if err != nil {

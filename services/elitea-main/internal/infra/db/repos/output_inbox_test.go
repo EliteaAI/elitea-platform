@@ -91,6 +91,8 @@ func TestOutputRecordCouplesPayloadTypeToTerminalOutcome(t *testing.T) {
 	runtimeFailure := validation
 	runtimeFailure.PayloadType = payloadTypeRuntimeFailure
 	runtimeFailure.SettlementOutcome = executionapp.SettlementFailed
+	indexResult := validation
+	indexResult.PayloadType = payloadTypeIndexIngestResult
 
 	tests := []struct {
 		name    string
@@ -98,6 +100,9 @@ func TestOutputRecordCouplesPayloadTypeToTerminalOutcome(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "validation success", record: validation},
+		{name: "index success", record: indexResult},
+		{name: "index failure", record: withSettlementOutcome(indexResult, executionapp.SettlementFailed)},
+		{name: "cancelled index", record: withSettlementOutcome(indexResult, executionapp.SettlementCancelled), wantErr: true},
 		{name: "runtime failure", record: runtimeFailure},
 		{name: "cancelled runtime failure", record: withSettlementOutcome(runtimeFailure, executionapp.SettlementCancelled)},
 		{name: "cancelled validation", record: withSettlementOutcome(validation, executionapp.SettlementCancelled), wantErr: true},

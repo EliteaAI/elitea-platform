@@ -224,13 +224,16 @@ func (r *CurrentIndexMetaTerminalBindingsRepository) loadCurrentIndexMetaTermina
 	ctx context.Context,
 	claim indexingapp.CurrentIndexMetaTerminalClaim,
 ) (string, error) {
+	var payloadType string
 	var payloadBytes []byte
 	var retirementCode string
 	err := r.store.QueryRow(ctx, `
-SELECT source.payload_bytes,
+SELECT source.payload_type,
+       source.payload_bytes,
        source.retirement_code
 FROM (
-    SELECT o.payload_bytes,
+    SELECT o.payload_type,
+           o.payload_bytes,
            ''::text AS retirement_code,
            1 AS source_priority
     FROM elitea_runtime.output_inbox AS o
@@ -238,10 +241,11 @@ FROM (
       AND o.generation = $2
       AND o.occurred_at = $3
       AND o.projected_at IS NOT NULL
-      AND o.payload_type = 'RUNTIME_FAILURE'
+      AND o.payload_type IN ('RUNTIME_FAILURE', 'INDEX_INGEST_RESULT')
       AND o.settlement_outcome = 'FAILED'
     UNION ALL
-    SELECT NULL::bytea,
+    SELECT ''::text,
+           NULL::bytea,
            o.retirement_code,
            2
     FROM elitea_runtime.command_outbox AS o
@@ -256,14 +260,14 @@ LIMIT 1`,
 		claim.ExecutionID,
 		int64(claim.Generation),
 		claim.OccurredAt.UTC(),
-	).Scan(&payloadBytes, &retirementCode)
+	).Scan(&payloadType, &payloadBytes, &retirementCode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", indexingapp.ErrCurrentIndexMetaConflict
 	}
 	if err != nil {
 		return "", fmt.Errorf("load current index metadata terminal safe error: %w", err)
 	}
-	return terminalSafeError(payloadBytes, retirementCode), nil
+	return terminalSafeError(payloadType, payloadBytes, retirementCode), nil
 }
 
 // SupersedeTerminalEffectIfNewerInitialized atomically resolves a claimed
@@ -449,14 +453,25 @@ WHERE execution_id = $1
 	return nil
 }
 
-func terminalSafeError(payloadBytes []byte, retirementCode string) string {
+func terminalSafeError(payloadType string, payloadBytes []byte, retirementCode string) string {
 	if retirementCode == "DEADLINE_EXCEEDED" {
 		return "The execution deadline was exceeded before worker authority was granted."
 	}
-	var failure runtimev1.RuntimeErrorV1
-	if len(payloadBytes) != 0 && proto.Unmarshal(payloadBytes, &failure) == nil &&
-		failure.GetSafeMessage() != "" {
-		return failure.GetSafeMessage()
+	switch payloadType {
+	case payloadTypeRuntimeFailure:
+		var failure runtimev1.RuntimeErrorV1
+		if len(payloadBytes) != 0 && proto.Unmarshal(payloadBytes, &failure) == nil &&
+			failure.GetSafeMessage() != "" {
+			return failure.GetSafeMessage()
+		}
+	case payloadTypeIndexIngestResult:
+		var result runtimev1.IndexIngestResultV1
+		if len(payloadBytes) != 0 && proto.Unmarshal(payloadBytes, &result) == nil &&
+			result.GetResultSummary().GetStatus() ==
+				runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR &&
+			result.GetResultSummary().GetMessage() != "" {
+			return result.GetResultSummary().GetMessage()
+		}
 	}
 	return "Indexing failed before completion."
 }

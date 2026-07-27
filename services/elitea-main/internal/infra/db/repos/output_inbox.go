@@ -237,7 +237,8 @@ func (r outputRecord) validate() error {
 			return outputapp.ErrInvalidValidationOutput
 		}
 	case payloadTypeIndexIngestResult:
-		if r.SettlementOutcome != executionapp.SettlementSucceeded {
+		if r.SettlementOutcome != executionapp.SettlementSucceeded &&
+			r.SettlementOutcome != executionapp.SettlementFailed {
 			return outputapp.ErrInvalidValidationOutput
 		}
 	case payloadTypeRuntimeFailure:
