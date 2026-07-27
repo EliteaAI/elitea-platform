@@ -25,38 +25,70 @@ no-result/error branch. The admitted SDK does that work exactly once.
 | Current worker runs a generic `EliteAClient.test_toolkit_tool`, forwards current `runtime_config`, deep-copies persisted toolkit/tool/LLM inputs, and derives UI event/full-message output around the SDK response. | `centry/pylon_indexer/plugins/indexer_worker/methods/indexer_test_toolkit.py:408-707`; `elitea_sdk/runtime/clients/client.py:1312-1515` | `EliteaSdkIndexSearchAdapter` mirrors the one SDK invocation/copy boundary; handler intentionally leaves exceptions to a later current-event parity wrapper. | Source parity only |
 | Model, vector-store, embedding and dimension compatibility comes from the persisted toolkit configuration, while the generic test API separately accepts LLM model/configuration. | `base_indexer_toolkit.py:1007-1055`; `client.py:1312-1446` | `IndexSearchInputBindingV1` binds toolkit, tool, LLM and MCP entries by immutable digest. It does not invent an independent dimension field. | Source parity only |
 
+## Current HTTP/RBAC boundary
+
+The exact current API route is `POST
+/api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}`. The current
+decorator requires `models.applications.tool.patch` in default mode. Its
+`admin`/`editor`/`viewer` list is a recommendation/seed, not the runtime
+authorization algorithm: the current permission resolver decides from the
+project's effective grants, including project-specific overrides. A port must
+therefore check the permission through the current resolver, scoped to the URL
+project, and must not replace it with a Go list of role names.
+
+`api/v2/indexsearch.CurrentIndexSearchRoute` is an **unmounted** component
+contract that proves that order: trusted authentication, dynamic project RBAC,
+then body parsing and admission. It preserves the current request defaults,
+the forced URL project identity, `await_response`/`timeout` choice, optional
+correlations and the opaque complete response envelope. It accepts only the
+three index read operations so that it cannot accidentally take over indexing
+or other generic toolkit tools at the shared current path.
+
+Sources: `elitea_core/api/v2/test_toolkit_tool.py:28-85`,
+`elitea_core/models/pd/test_toolkit_tool.py`, and
+`elitea_core/rpc/application.py:1142-1391`.
+
 ## Authorization and tenancy boundary
 
 `AuthorizedScope` requires tenant, resource-project, projection-project, and
-principal identities before a request can be constructed. Those values must be
-returned by the existing current-RBAC resolver after checking the actual
+principal identities before a worker command can be constructed. Those values
+must be returned by the existing current-RBAC resolver after checking the actual
 toolkit/test permission; they are not fields in an HTTP request or worker
-command. The command carries only content entry IDs. This package deliberately
-does not claim RBAC parity until a mounted admission path uses the current
-permission resolver and has service-backed tests for allow, deny, cross-project
-and role-change cases.
+command. The command carries only content entry IDs. The route component locks
+the current permission/project boundary in unit tests, but it does not yet make
+the required admission transaction or claim production RBAC parity.
 
 ## Verification evidence
 
 | Check | Boundary actually exercised |
 | --- | --- |
 | `go test ./internal/application/indexsearch` | Go unit: identity/input binding, operation allowlist, no control-plane content leak, exact immutable model/configuration bindings. |
+| `go test ./internal/api/v2/indexsearch` | Go HTTP component: exact current path/permission/event, trusted-auth and dynamic project-RBAC-before-body ordering, opaque async/await response envelopes, timeout cancellation intent, and unsupported-operation rejection. |
 | `go test ./tests/contract` | Go protobuf contract: decodes the deterministic command bytes created by the checked Python binding. |
 | `pytest tests/unit/test_index_search.py` | Python unit: three operation branches, error/no-result pass-through, no SDK call for another operation, current invocation copy boundary, result artifact binding. |
 | `pytest tests/integration/test_index_search_protocol_contract.py` | Python-to-Go wire fixture producer; this is language binding interoperability, not a deployed worker integration. |
 
 ## Explicit remaining work before mounting
 
-1. Bind the current RBAC permission and project/tenant resolver to an
-   admission transaction; test each current platform role and a cross-project
-   denial against real PostgreSQL.
-2. Build the immutable input bundle and artifact writer, including a bounded,
+1. Bind the route's current-RBAC identity and project scope to an admission
+   transaction, then test effective project grants, cross-project denial and
+   role/grant changes against real PostgreSQL. Do not hard-code the four role
+   names: the current resolver is authoritative.
+2. Replace the route's caller-supplied transient toolkit payload with the
+   current server-side configuration expansion/unsecreting authority. The
+   source-only component carries opaque fields solely to map the current
+   boundary; it is not safe to mount until that replacement exists.
+3. Build the immutable input bundle and artifact writer, including a bounded,
    current-compatible safe projection of successful, no-result, SDK-error and
    MCP-authorization responses.
-3. Add the command/result to `WorkerCommandV1`/output framing, implement
+4. Add the command/result to `WorkerCommandV1`/output framing, implement
    claim/settlement, cancellation and durable replay, and register it only
    after those pieces are complete.
-4. Port current NodeEvent/Socket.IO response projection or intentionally map it
+5. Port current NodeEvent/Socket.IO response projection or intentionally map it
    through the agreed SSE path with browser parity tests.
-5. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
+6. Resolve the documented HTTP differences before mounting: the source-only
+   route bounds body size and returns reviewed typed errors, while the current
+   Flask endpoint has Pydantic coercion/raw validation and lets an invalid
+   timeout conversion escape its generic exception branch.
+7. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
    and reliability tests. None are claimed by this source-only slice.
