@@ -1,0 +1,22 @@
+// 21 exports — breaches the 20-symbol slice API budget
+export const api1 = 1;
+export const api2 = 2;
+export const api3 = 3;
+export const api4 = 4;
+export const api5 = 5;
+export const api6 = 6;
+export const api7 = 7;
+export const api8 = 8;
+export const api9 = 9;
+export const api10 = 10;
+export const api11 = 11;
+export const api12 = 12;
+export const api13 = 13;
+export const api14 = 14;
+export const api15 = 15;
+export const api16 = 16;
+export const api17 = 17;
+export const api18 = 18;
+export const api19 = 19;
+export const api20 = 20;
+export const api21 = 21;

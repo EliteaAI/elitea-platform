@@ -1,0 +1,39 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/entries/admin/main.tsx",
+    "src/entries/maintenance/main.tsx",
+    "scripts/*.mjs"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
+  "ignoreDependencies": [
+    "@swc/core",
+    "dependency-cruiser",
+    "@lhci/cli",
+    "@axe-core/playwright",
+    "storybook",
+    "@storybook/react-vite",
+    "orval",
+    "prettier",
+    "@emotion/react",
+    "@emotion/styled",
+    "@hookform/resolvers",
+    "@mui/icons-material",
+    "@mui/material",
+    "@mui/system",
+    "@mui/x-data-grid",
+    "@mui/x-date-pickers",
+    "@tanstack/react-query",
+    "@tanstack/react-router",
+    "@tanstack/router-plugin",
+    "@uiw/react-codemirror",
+    "@xyflow/react",
+    "date-fns",
+    "i18next",
+    "react-hook-form",
+    "react-i18next",
+    "recharts",
+    "socket.io-client",
+    "zustand"
+  ]
+}

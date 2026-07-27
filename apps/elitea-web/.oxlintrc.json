@@ -1,0 +1,385 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // Lint layer of record after decision D2: oxlint@1.75.0 host,
+  // oxlint-tsgolint@7.0.2001 for type-aware rules (TS 7.0.2), local `elitea`
+  // JS plugin for the §3.4 fences oxlint has no native rule for, and
+  // eslint-plugin-i18next bridged through jsPlugins for R-T3.
+  // Warning policy: every rule here is "error" or "off" — never "warn".
+  // oxlint's config has no fail-on-warnings switch, so ci-web.yml passes
+  // --deny-warnings on the lint invocation as a tripwire; revisit that flag
+  // if any rule is ever set to warn.
+  // Layer rules R-L1/L2/L3 are enforced by dependency-cruiser (D2), not here.
+  // Every fence below is proven by scripts/check-gates-selftest.mjs fixtures.
+  "plugins": ["react", "jsx-a11y", "import", "typescript", "unicorn", "oxc"],
+  "jsPlugins": ["./tools/lint-rules/index.mjs", "eslint-plugin-i18next"],
+  "options": {
+    // Runs tsgolint for the typescript/* type-aware rules pinned below.
+    // tsc --noEmit stays a separate gate (npm run typecheck); typeCheck is
+    // deliberately off here so diagnostics are not double-reported.
+    "typeAware": true
+  },
+  "env": {
+    "browser": true
+  },
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": [
+    "dist/**",
+    "coverage/**",
+    "parity/**",
+    // Rule fixtures are deliberately-violating code, exercised only by
+    // scripts/check-gates-selftest.mjs (which lints them per-case with this
+    // same config, fixture-cwd-relative so the path-scoped overrides apply).
+    "tools/lint-rules/fixtures/**"
+  ],
+  "rules": {
+    // ── hooks + a11y (D2: oxlint native react / jsx-a11y sets, R-C1) ──────
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "error",
+    "jsx-a11y/alt-text": "error",
+    "jsx-a11y/anchor-has-content": "error",
+    "jsx-a11y/anchor-is-valid": "error",
+    "jsx-a11y/aria-activedescendant-has-tabindex": "error",
+    "jsx-a11y/aria-props": "error",
+    "jsx-a11y/aria-role": "error",
+    "jsx-a11y/aria-unsupported-elements": "error",
+    "jsx-a11y/autocomplete-valid": "error",
+    "jsx-a11y/click-events-have-key-events": "error",
+    "jsx-a11y/heading-has-content": "error",
+    "jsx-a11y/html-has-lang": "error",
+    "jsx-a11y/iframe-has-title": "error",
+    "jsx-a11y/img-redundant-alt": "error",
+    "jsx-a11y/interactive-supports-focus": "error",
+    "jsx-a11y/label-has-associated-control": "error",
+    "jsx-a11y/lang": "error",
+    "jsx-a11y/media-has-caption": "error",
+    "jsx-a11y/mouse-events-have-key-events": "error",
+    "jsx-a11y/no-access-key": "error",
+    "jsx-a11y/no-aria-hidden-on-focusable": "error",
+    "jsx-a11y/no-autofocus": "error",
+    "jsx-a11y/no-distracting-elements": "error",
+    "jsx-a11y/no-noninteractive-tabindex": "error",
+    "jsx-a11y/no-redundant-roles": "error",
+    "jsx-a11y/no-static-element-interactions": "error",
+    "jsx-a11y/prefer-tag-over-role": "error",
+    "jsx-a11y/role-has-required-aria-props": "error",
+    "jsx-a11y/role-supports-aria-props": "error",
+    "jsx-a11y/scope": "error",
+    "jsx-a11y/tabindex-no-positive": "error",
+
+    // ── module hygiene ────────────────────────────────────────────────────
+    "import/no-cycle": "error",
+    "import/no-self-import": "error",
+    "import/no-duplicates": "error",
+
+    // ── complexity/size budgets with a native oxlint rule (D2) ────────────
+    // File length + cyclomatic complexity are ALSO enforced by
+    // scripts/check-budgets.mjs (§3.5); native rules give in-editor feedback.
+    "complexity": ["error", 12],
+    "max-lines": ["error", { "max": 400, "skipBlankLines": false, "skipComments": false }],
+
+    // §3.6: empty catch is a lint error.
+    "no-empty": ["error", { "allowEmptyCatch": false }],
+
+    // ── transport + storage fences (R-A1/R-A4 + §5.4), native ─────────────
+    "no-restricted-globals": [
+      "error",
+      { "name": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts — use the typed client" },
+      { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts (upload progress)" },
+      { "name": "localStorage", "message": "§5.4: storage goes through shared/lib/storage.ts under the el.* namespace" },
+      { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts under the el.* namespace" }
+    ],
+
+    // ── import fences (R-A2/R-A3/R-T4/R-I1), native ───────────────────────
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          { "name": "axios", "message": "R-A2: axios is banned — shared/api/http.ts covers every call" },
+          { "name": "socket.io-client", "message": "R-A3: io() is created only inside shared/api/socket/client.ts" },
+          { "name": "@emotion/react", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only (the @emotion/react one silently returns {} without a provider)" },
+          { "name": "@mui/material", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only" },
+          { "name": "@mui/system", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only" },
+          { "name": "@mui/styles", "message": "R-T4: legacy @mui/styles is banned" },
+          { "name": "@mui/icons-material", "message": "R-I1: no barrel import — import per icon: @mui/icons-material/Close" }
+        ]
+      }
+    ],
+
+    // ── local elitea/* fences (D2 remap of the no-restricted-syntax rows) ─
+    "elitea/no-raw-color": "error",
+    "elitea/no-mode-branch": "error",
+    "elitea/no-important-sx": "error",
+    "elitea/no-mui-internal-selector": "error",
+    "elitea/no-theme-palette": "error",
+    "elitea/raw-px-spacing": "error",
+    "elitea/ad-hoc-radius": "error",
+    "elitea/ad-hoc-font-size": "error",
+    "elitea/no-export-all": "error",
+    "elitea/no-module-scope-store": "error",
+    "elitea/no-vi-mock": "error",
+
+    // ── R-T3 via the eslint-plugin-i18next jsPlugins bridge (D2) ──────────
+    "i18next/no-literal-string": [
+      "error",
+      {
+        "mode": "jsx-only",
+        "jsx-attributes": { "include": ["label", "title", "placeholder", "aria-label", "alt"] },
+        "callees": { "exclude": ["t", "i18n", "console", "require"] }
+      }
+    ],
+
+    // ── type-aware set, executed by tsgolint (D2 residual risk 2) ─────────
+    // The ENTIRE 59-rule tsgolint surface is pinned explicitly: "error" rows
+    // are the gate; every "off" row is deliberate and falls into one of
+    // three classes:
+    //   (a) stylistic preference, no defect class behind it (dot-notation,
+    //       prefer-find/includes/optional-chain/nullish-coalescing,
+    //       prefer-regexp-exec/string-starts-ends-with/return-this-type,
+    //       non-nullable-type-assertion-style, no-unnecessary-qualifier/
+    //       template-expression/type-arguments/type-conversion/
+    //       type-parameters, no-useless-default-assignment,
+    //       no-confusing-void-expression, promise-function-async,
+    //       related-getter-setter-pairs, prefer-reduce-type-parameter);
+    //   (b) already enforced by tsc flags in tsconfig.json (consistent-return
+    //       ← noImplicitReturns; consistent-type-exports ←
+    //       verbatimModuleSyntax);
+    //   (c) rules whose fix pressure is DELETING defensive guards — the exact
+    //       coverage-gaming §6.3 warns about (no-unnecessary-condition,
+    //       strict-boolean-expressions, strict-void-return,
+    //       no-unsafe-type-assertion, prefer-readonly,
+    //       prefer-readonly-parameter-types).
+    // tsgolint does NOT implement typescript-eslint's naming-convention or
+    // prefer-destructuring; those two cannot be pinned here at all.
+    "typescript/await-thenable": "error",
+    "typescript/no-array-delete": "error",
+    "typescript/no-base-to-string": "error",
+    "typescript/no-duplicate-type-constituents": "error",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-for-in-array": "error",
+    "typescript/no-implied-eval": "error",
+    "typescript/no-meaningless-void-operator": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-misused-spread": "error",
+    "typescript/no-mixed-enums": "error",
+    "typescript/no-redundant-type-constituents": "error",
+    "typescript/no-unnecessary-boolean-literal-compare": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-enum-comparison": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error",
+    "typescript/no-unsafe-unary-minus": "error",
+    "typescript/only-throw-error": "error",
+    "typescript/prefer-promise-reject-errors": "error",
+    "typescript/require-array-sort-compare": "error",
+    "typescript/require-await": "error",
+    "typescript/restrict-plus-operands": "error",
+    "typescript/restrict-template-expressions": "error",
+    "typescript/return-await": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/unbound-method": "error",
+    "typescript/use-unknown-in-catch-callback-variable": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/consistent-return": "off",
+    "typescript/consistent-type-exports": "off",
+    "typescript/dot-notation": "off",
+    "typescript/no-confusing-void-expression": "off",
+    "typescript/no-unnecessary-condition": "off",
+    "typescript/no-unnecessary-qualifier": "off",
+    "typescript/no-unnecessary-template-expression": "off",
+    "typescript/no-unnecessary-type-arguments": "off",
+    "typescript/no-unnecessary-type-conversion": "off",
+    "typescript/no-unnecessary-type-parameters": "off",
+    "typescript/no-unsafe-type-assertion": "off",
+    "typescript/no-useless-default-assignment": "off",
+    "typescript/non-nullable-type-assertion-style": "off",
+    "typescript/prefer-find": "off",
+    "typescript/prefer-includes": "off",
+    "typescript/prefer-nullish-coalescing": "off",
+    "typescript/prefer-optional-chain": "off",
+    "typescript/prefer-readonly": "off",
+    "typescript/prefer-readonly-parameter-types": "off",
+    "typescript/prefer-reduce-type-parameter": "off",
+    "typescript/prefer-regexp-exec": "off",
+    "typescript/prefer-return-this-type": "off",
+    "typescript/prefer-string-starts-ends-with": "off",
+    "typescript/promise-function-async": "off",
+    "typescript/related-getter-setter-pairs": "off",
+    "typescript/strict-boolean-expressions": "off",
+    "typescript/strict-void-return": "off"
+  },
+  "overrides": [
+    {
+      // R-A1 sanctioned path: the ONE place fetch is called.
+      "files": ["src/shared/api/http.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts" },
+          { "name": "localStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" },
+          { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" }
+        ]
+      }
+    },
+    {
+      // R-A4 sanctioned path: the ONE sanctioned XMLHttpRequest (upload progress).
+      "files": ["src/shared/api/upload.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          { "name": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts" },
+          { "name": "localStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" },
+          { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts" }
+        ]
+      }
+    },
+    {
+      // §5.4 sanctioned path: the storage wrapper itself.
+      "files": ["src/shared/lib/storage.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          { "name": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts" },
+          { "name": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts" }
+        ]
+      }
+    },
+    {
+      // R-A3 sanctioned path: the typed socket client wrapper.
+      "files": ["src/shared/api/socket/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              { "name": "axios", "message": "R-A2: axios is banned" },
+              { "name": "@emotion/react", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only" },
+              { "name": "@mui/material", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only" },
+              { "name": "@mui/system", "importNames": ["useTheme"], "message": "R-T4: useTheme comes from @mui/material/styles only" },
+              { "name": "@mui/styles", "message": "R-T4: legacy @mui/styles is banned" },
+              { "name": "@mui/icons-material", "message": "R-I1: no barrel import" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // R-T1 scope: raw colour literals are legal ONLY in the token package.
+      "files": ["src/shared/brand/tokens/**"],
+      "rules": { "elitea/no-raw-color": "off" }
+    },
+    {
+      // R-T7 scope: theme.palette.* is legal only inside shared/brand/.
+      "files": ["src/shared/brand/**"],
+      "rules": { "elitea/no-theme-palette": "off" }
+    },
+    {
+      // R-T6 scope: internal MUI selectors are legal only in the override package.
+      "files": ["src/shared/brand/mui-overrides/**"],
+      "rules": { "elitea/no-mui-internal-selector": "off" }
+    },
+    {
+      // R-M1 scope: vi.mock is legal only under __mocks__/.
+      "files": ["src/**/__mocks__/**"],
+      "rules": { "elitea/no-vi-mock": "off" }
+    },
+    {
+      // Test files: user-visible-copy and file-length rules do not apply
+      // (§3.5 exempts tests from the length budget); tests drive fetch/storage
+      // directly against MSW, so the transport fences relax. R-M1 (no-vi-mock)
+      // deliberately stays ON — tests are exactly where it must fire.
+      "files": [
+        "src/**/*.test.*",
+        "src/**/*.spec.*",
+        "src/**/*.stories.*",
+        "src/test/**"
+      ],
+      "rules": {
+        "i18next/no-literal-string": "off",
+        "max-lines": "off",
+        "no-restricted-globals": "off"
+      }
+    },
+    {
+      // TEMPORARY (remove when R1/R2/S8 land the real shell + t() shim):
+      // F1's Wave-0 scaffold placeholders predate the i18n layer, and F2 may
+      // not edit F1's files. Scoped to the exact scaffold entrypoints so the
+      // first real page written without t() still fails the gate.
+      "files": ["src/app/App.tsx", "src/entries/admin/main.tsx", "src/entries/maintenance/main.tsx"],
+      "rules": { "i18next/no-literal-string": "off" }
+    },
+    {
+      // Node-side tooling (gate scripts, lint plugin, e2e, config files):
+      // app-layer fences are meaningless there. The §3.5 budgets for src/
+      // stay enforced by scripts/check-budgets.mjs.
+      "files": [
+        "scripts/**",
+        "tools/**",
+        "e2e/**",
+        "*.config.ts",
+        "*.config.mts",
+        "*.config.js",
+        ".dependency-cruiser.cjs"
+      ],
+      "env": { "node": true },
+      "rules": {
+        "no-restricted-globals": "off",
+        "no-restricted-imports": "off",
+        "i18next/no-literal-string": "off",
+        "max-lines": "off",
+        "elitea/no-export-all": "off",
+        // The plugin's own rule sources necessarily contain the banned
+        // patterns ('!important', hex regexes, …) as data; the styling fences
+        // are app-code fences.
+        "elitea/no-raw-color": "off",
+        "elitea/no-mode-branch": "off",
+        "elitea/no-important-sx": "off",
+        "elitea/no-mui-internal-selector": "off",
+        "elitea/no-theme-palette": "off",
+        "elitea/raw-px-spacing": "off",
+        "elitea/ad-hoc-radius": "off",
+        "elitea/ad-hoc-font-size": "off",
+        // tsgolint synthesizes a default project for files outside
+        // tsconfig.json's include (src/, vite.config.ts), so untyped .mjs
+        // tooling would drown in no-unsafe-* noise. The type-aware gate is
+        // for app code; tooling is covered by its vitest suites.
+        "typescript/await-thenable": "off",
+        "typescript/no-array-delete": "off",
+        "typescript/no-base-to-string": "off",
+        "typescript/no-duplicate-type-constituents": "off",
+        "typescript/no-floating-promises": "off",
+        "typescript/no-for-in-array": "off",
+        "typescript/no-implied-eval": "off",
+        "typescript/no-meaningless-void-operator": "off",
+        "typescript/no-misused-promises": "off",
+        "typescript/no-misused-spread": "off",
+        "typescript/no-mixed-enums": "off",
+        "typescript/no-redundant-type-constituents": "off",
+        "typescript/no-unnecessary-boolean-literal-compare": "off",
+        "typescript/no-unnecessary-type-assertion": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-enum-comparison": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/no-unsafe-unary-minus": "off",
+        "typescript/only-throw-error": "off",
+        "typescript/prefer-promise-reject-errors": "off",
+        "typescript/require-array-sort-compare": "off",
+        "typescript/require-await": "off",
+        "typescript/restrict-plus-operands": "off",
+        "typescript/restrict-template-expressions": "off",
+        "typescript/return-await": "off",
+        "typescript/switch-exhaustiveness-check": "off",
+        "typescript/unbound-method": "off",
+        "typescript/use-unknown-in-catch-callback-variable": "off",
+        "typescript/no-deprecated": "off"
+      }
+    }
+  ]
+}

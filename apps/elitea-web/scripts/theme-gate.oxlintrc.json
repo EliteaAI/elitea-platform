@@ -1,0 +1,24 @@
+{
+  // §4.6 check 1 ONLY: elitea/no-raw-color over src/, tokens package exempt.
+  // Used by scripts/theme-gate.mjs with cwd = the gated root, so the override
+  // glob is anchored with ** to hold for both the real src/ and fixture trees.
+  // Native plugins and type-aware analysis are off — this config isolates one
+  // check; the full lint config is .oxlintrc.json.
+  "plugins": [],
+  "jsPlugins": ["../tools/lint-rules/index.mjs"],
+  "categories": {
+    "correctness": "off"
+  },
+  "options": {
+    "typeAware": false
+  },
+  "rules": {
+    "elitea/no-raw-color": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/shared/brand/tokens/**"],
+      "rules": { "elitea/no-raw-color": "off" }
+    }
+  ]
+}
