@@ -14,8 +14,9 @@ import (
 )
 
 type authorizationRow struct {
-	active bool
-	err    error
+	active       bool
+	capabilityID string
+	err          error
 }
 
 func (r authorizationRow) Scan(dest ...any) error {
@@ -25,11 +26,14 @@ func (r authorizationRow) Scan(dest ...any) error {
 	if len(dest) != 1 {
 		return fmt.Errorf("scan destinations = %d", len(dest))
 	}
-	value, ok := dest[0].(*bool)
-	if !ok {
-		return errors.New("authorization destination is not boolean")
+	switch value := dest[0].(type) {
+	case *bool:
+		*value = r.active
+	case *string:
+		*value = r.capabilityID
+	default:
+		return errors.New("unsupported authorization destination")
 	}
-	*value = r.active
 	return nil
 }
 
@@ -47,9 +51,44 @@ func (s *authorizationStore) QueryRow(_ context.Context, sql string, args ...any
 	return s.row
 }
 
+type authorizationPermissionResolver struct {
+	resolution auth.PermissionResolution
+	err        error
+	calls      int
+	principal  auth.User
+	mode       string
+	projectID  string
+}
+
+func (r *authorizationPermissionResolver) ResolvePermissions(
+	_ context.Context,
+	principal auth.User,
+	mode string,
+	projectID string,
+) (auth.PermissionResolution, error) {
+	r.calls++
+	r.principal = principal
+	r.mode = mode
+	r.projectID = projectID
+	return r.resolution, r.err
+}
+
+func indexEventPermissions() *authorizationPermissionResolver {
+	return &authorizationPermissionResolver{
+		resolution: auth.PermissionResolution{
+			UserID:      17,
+			Permissions: []string{"models.applications.tool.patch"},
+		},
+	}
+}
+
 func TestPublicAuthorizerDerivesPhaseOneIdentityFromVerifiedMembership(t *testing.T) {
 	store := &authorizationStore{row: authorizationRow{active: true}}
-	authorizer, err := newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
+	authorizer, err := newPostgresPublicAuthorizer(
+		store,
+		&authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}},
+		indexEventPermissions(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +107,11 @@ func TestPublicAuthorizerDerivesPhaseOneIdentityFromVerifiedMembership(t *testin
 
 func TestPublicAuthorizerAcceptsVerifiedForwardedMembership(t *testing.T) {
 	store := &authorizationStore{row: authorizationRow{active: true}}
-	authorizer, err := newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
+	authorizer, err := newPostgresPublicAuthorizer(
+		store,
+		&authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}},
+		indexEventPermissions(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +127,11 @@ func TestPublicAuthorizerAcceptsVerifiedForwardedMembership(t *testing.T) {
 
 func TestPublicAuthorizerRejectsDevelopmentAndMissingMembership(t *testing.T) {
 	developmentStore := &authorizationStore{row: authorizationRow{active: true}}
-	authorizer, err := newPostgresPublicAuthorizer(developmentStore, &authorizationStore{row: authorizationRow{active: true}})
+	authorizer, err := newPostgresPublicAuthorizer(
+		developmentStore,
+		&authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}},
+		indexEventPermissions(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +144,11 @@ func TestPublicAuthorizerRejectsDevelopmentAndMissingMembership(t *testing.T) {
 	}
 
 	store := &authorizationStore{row: authorizationRow{active: false}}
-	authorizer, err = newPostgresPublicAuthorizer(store, &authorizationStore{row: authorizationRow{active: true}})
+	authorizer, err = newPostgresPublicAuthorizer(
+		store,
+		&authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}},
+		indexEventPermissions(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +159,13 @@ func TestPublicAuthorizerRejectsDevelopmentAndMissingMembership(t *testing.T) {
 }
 
 func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *testing.T) {
-	store := &authorizationStore{row: authorizationRow{active: true}}
-	authorizer, err := newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
+	store := &authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}}
+	permissions := indexEventPermissions()
+	authorizer, err := newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true}},
+		store,
+		permissions,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,8 +173,16 @@ func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *t
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
 		t.Fatal(err)
 	}
-	if store.calls != 1 || !strings.Contains(store.sql, "j.projection_project_id = $2") || !strings.Contains(store.sql, "j.execution_id = $1") {
-		t.Fatalf("execution authorization query is not projection-bound: %s", store.sql)
+	for _, binding := range []string{
+		"j.tenant_id = $2::text",
+		"j.resource_project_id = $2",
+		"j.projection_project_id = $2",
+		"j.execution_id = $1",
+		"COUNT(*) = 1",
+	} {
+		if store.calls != 1 || !strings.Contains(store.sql, binding) {
+			t.Fatalf("execution authorization query is missing %q: %s", binding, store.sql)
+		}
 	}
 	for _, capability := range []string{"'configuration.validate.v1'", "'index.ingest.v1'"} {
 		if !strings.Contains(store.sql, capability) {
@@ -128,20 +192,87 @@ func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *t
 	if !strings.Contains(store.sql, "j.capability_id IN") {
 		t.Fatalf("execution authorization capability predicate is not closed: %s", store.sql)
 	}
-	if len(store.args) != 3 || store.args[0] != "execution-1" || store.args[1] != int64(42) || store.args[2] != int64(17) {
+	if len(store.args) != 2 || store.args[0] != "execution-1" || store.args[1] != int64(42) {
 		t.Fatalf("execution authorization args = %v", store.args)
 	}
+	if permissions.calls != 1 ||
+		permissions.principal.ID != "17" ||
+		permissions.mode != auth.PermissionModeDefault ||
+		permissions.projectID != "42" {
+		t.Fatalf("permission resolution mismatch: %+v", permissions)
+	}
 
-	store = &authorizationStore{row: authorizationRow{active: false}}
-	authorizer, _ = newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
+	store = &authorizationStore{row: authorizationRow{}}
+	authorizer, _ = newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true}},
+		store,
+		indexEventPermissions(),
+	)
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
 		t.Fatalf("unauthorized event error = %v", err)
 	}
 }
 
+func TestPublicAuthorizerRequiresIndexObservationPermission(t *testing.T) {
+	store := &authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}}
+	permissions := &authorizationPermissionResolver{
+		resolution: auth.PermissionResolution{
+			UserID:      17,
+			Permissions: []string{"models.applications.tool.get"},
+		},
+	}
+	authorizer, err := newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true}},
+		store,
+		permissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceSession)
+	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+		t.Fatalf("missing patch permission error = %v", err)
+	}
+
+	permissions.err = errors.New("inactive principal")
+	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+		t.Fatalf("resolver failure error = %v", err)
+	}
+}
+
+func TestPublicAuthorizerKeepsValidationReplayTransitionalAndFailClosed(t *testing.T) {
+	store := &authorizationStore{row: authorizationRow{capabilityID: "configuration.validate.v1"}}
+	permissions := &authorizationPermissionResolver{
+		resolution: auth.PermissionResolution{
+			UserID:      17,
+			Permissions: []string{"configurations.configuration.details"},
+		},
+	}
+	authorizer, err := newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true}},
+		store,
+		permissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := auth.ContextWithAuthenticatedUser(context.Background(), auth.User{ID: "17"}, auth.AuthenticationSourceSession)
+	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
+		t.Fatalf("validation compatibility replay error = %v", err)
+	}
+	permissions.resolution.Permissions = nil
+	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+		t.Fatalf("empty validation permissions error = %v", err)
+	}
+}
+
 func TestPublicAuthorizerRejectsUnverifiedExecutionEventPrincipalBeforeDatabase(t *testing.T) {
-	store := &authorizationStore{row: authorizationRow{active: true}}
-	authorizer, err := newPostgresPublicAuthorizer(&authorizationStore{row: authorizationRow{active: true}}, store)
+	store := &authorizationStore{row: authorizationRow{capabilityID: "index.ingest.v1"}}
+	authorizer, err := newPostgresPublicAuthorizer(
+		&authorizationStore{row: authorizationRow{active: true}},
+		store,
+		indexEventPermissions(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

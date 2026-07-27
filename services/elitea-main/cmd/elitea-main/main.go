@@ -267,6 +267,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,
+			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
 			Logger:                           logger,
 		})
 		if err != nil {

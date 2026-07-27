@@ -20,12 +20,13 @@ func TestPhaseOneDatabasePoolLimitsArePositiveAndBounded(t *testing.T) {
 func TestRuntimeDependenciesRejectSharedDatabaseCapacity(t *testing.T) {
 	shared := new(pgxpool.Pool)
 	dependencies := Dependencies{
-		AdmissionPool: shared,
-		ControlPool:   shared,
-		OutputPool:    new(pgxpool.Pool),
-		ReplayPool:    new(pgxpool.Pool),
-		ContentPool:   new(pgxpool.Pool),
-		Logger:        slog.Default(),
+		AdmissionPool:      shared,
+		ControlPool:        shared,
+		OutputPool:         new(pgxpool.Pool),
+		ReplayPool:         new(pgxpool.Pool),
+		ContentPool:        new(pgxpool.Pool),
+		PermissionResolver: &authorizationPermissionResolver{},
+		Logger:             slog.Default(),
 	}
 	if err := validateDependencies(dependencies); err == nil {
 		t.Fatal("shared admission/control database pool was accepted")

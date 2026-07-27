@@ -12,6 +12,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
@@ -64,6 +65,7 @@ type Dependencies struct {
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 	ActorTokenIssuer                 storage.ActorTokenIssuer
 	ProjectTokenValidator            storage.ProjectTokenValidator
+	PermissionResolver               auth.PermissionResolver
 	Logger                           *slog.Logger
 }
 
@@ -562,7 +564,11 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, fmt.Errorf("construct runtime replay repository: %w", err)
 	}
-	publicAuthorizer, err := newPostgresPublicAuthorizer(dependencies.AdmissionPool, dependencies.ReplayPool)
+	publicAuthorizer, err := newPostgresPublicAuthorizer(
+		dependencies.AdmissionPool,
+		dependencies.ReplayPool,
+		dependencies.PermissionResolver,
+	)
 	if err != nil {
 		return nil, err
 	}

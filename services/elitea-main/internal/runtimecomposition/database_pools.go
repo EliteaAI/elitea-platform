@@ -41,6 +41,9 @@ func validateDependencies(dependencies Dependencies) error {
 	if dependencies.Logger == nil {
 		return errors.New("runtime logger is required")
 	}
+	if dependencies.PermissionResolver == nil {
+		return errors.New("runtime permission resolver is required")
+	}
 	pools := []*pgxpool.Pool{
 		dependencies.AdmissionPool,
 		dependencies.ControlPool,
