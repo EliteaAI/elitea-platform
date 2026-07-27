@@ -56,7 +56,27 @@ export default defineConfig({
         plugins: [storybookTest({ configDir: '.storybook' })],
         test: {
           name: 'storybook',
-          browser: { enabled: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
+          browser: {
+            enabled: true,
+            provider: playwright(),
+            // Real CI gap, found the first time this project ran end-to-end
+            // in CI (draft-PR CI hadn't executed before unit S1 landed):
+            // headless Chromium denies clipboard-write permission by
+            // default, unlike a normal user's browser. CopyToClipboardButton
+            // and CommonStringField's clipboard variant both, deliberately
+            // and correctly (see src/shared/lib/clipboard.ts's own N4 doc
+            // comment — a byte-for-byte preserved old-app quirk, not
+            // something to fix here), fire an unhandled, unawaited
+            // navigator.clipboard.writeText() retry when EVERY copy path
+            // fails. Without this permission grant, that retry always fails
+            // too, in an environment these stories were never meant to
+            // simulate. Granting the permission (matching what a real
+            // browser has) keeps the primary clipboard write succeeding, so
+            // the preserved-quirk fallback path never triggers in normal
+            // Storybook test runs — the same class of fix already applied
+            // to ci-web.yml for the Playwright browser install itself.
+            instances: [{ browser: 'chromium', contextOptions: { permissions: ['clipboard-read', 'clipboard-write'] } }],
+          },
           setupFiles: ['./.storybook/vitest.setup.ts'],
         },
       },
