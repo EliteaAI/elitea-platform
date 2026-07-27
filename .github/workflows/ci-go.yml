@@ -184,7 +184,7 @@ jobs:
         run: >-
           python -m pip install
           'elitea-sdk[runtime] @
-          git+https://github.com/EliteaAI/elitea-sdk.git@a78d3654f99d8ff89ca7233f20a66d676e564f79'
+          git+https://github.com/EliteaAI/elitea-sdk.git@48c51a16634a9924f6c5d5313c3bacedb0b5b56b'
 
       - name: Exercise Main-to-SDK single-owner index history
         env:

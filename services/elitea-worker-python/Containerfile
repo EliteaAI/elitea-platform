@@ -1,26 +1,47 @@
 FROM python:3.12.10-slim AS build
 
-ARG ELITEA_SDK_REVISION=a78d3654f99d8ff89ca7233f20a66d676e564f79
+ARG ELITEA_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b
+ARG ELITEA_SDK_ARCHIVE_SHA256=85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git \
+    && apt-get install --yes --no-install-recommends \
+      build-essential \
+      git \
+      libcairo2-dev \
+      libpango1.0-dev \
+      pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY libs/proto ./libs/proto
 COPY services/elitea-worker-python ./services/elitea-worker-python
+RUN git clone \
+      --filter=blob:none \
+      --no-checkout \
+      https://github.com/EliteaAI/elitea-sdk.git \
+      ./elitea-sdk \
+    && git -C ./elitea-sdk checkout --detach "${ELITEA_SDK_REVISION}" \
+    && test "$(git -C ./elitea-sdk archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${ELITEA_SDK_ARCHIVE_SHA256}"
 RUN python -m pip wheel \
     --wheel-dir /wheels \
-    "elitea-sdk @ git+https://github.com/EliteaAI/elitea-sdk.git@${ELITEA_SDK_REVISION}" \
+    "elitea-sdk @ file:///build/elitea-sdk" \
     ./libs/proto \
-    ./services/elitea-worker-python
+    "./services/elitea-worker-python[indexing-current]"
 
 FROM python:3.12.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN groupadd --system --gid 10001 elitea \
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      libcairo2 \
+      libpango-1.0-0 \
+      libpangocairo-1.0-0 \
+      poppler-utils \
+      tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 elitea \
     && useradd --system --uid 10001 --gid elitea --home-dir /nonexistent --shell /usr/sbin/nologin elitea
 
 COPY --from=build /wheels /wheels
@@ -30,8 +51,9 @@ RUN python -m pip install \
     --disable-pip-version-check \
     --no-index \
     --find-links /wheels \
-    elitea-worker-python==0.1.0 \
+    "elitea-worker-python[indexing-current]==0.1.0" \
     && python -m pip check \
+    && python -c "from elitea_worker.indexing_runtime_capabilities import require_indexing_runtime_capabilities; print('indexing-runtime-profile=' + require_indexing_runtime_capabilities())" \
     && rm -rf /wheels
 
 USER 10001:10001

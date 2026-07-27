@@ -1,0 +1,145 @@
+"""Fail-fast checks for the admitted current-baseline indexing runtime."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import importlib.metadata
+import json
+import shutil
+import sys
+from collections.abc import Callable
+from contextlib import redirect_stdout
+from ctypes.util import find_library
+from pathlib import Path
+from typing import Any
+
+from elitea_worker.execution.errors import DependencyUnavailable
+
+
+_PROFILE_SCHEMA = "elitea.indexing-runtime-capability-profile.v1"
+
+
+def require_indexing_runtime_capabilities(
+    *,
+    lock_path: Path | None = None,
+    distribution_version: Callable[[str], str] = importlib.metadata.version,
+    import_module: Callable[[str], Any] = importlib.import_module,
+    find_executable: Callable[[str], str | None] = shutil.which,
+    find_shared_library: Callable[[str], str | None] = find_library,
+    package_tree_digest: Callable[[Path], str] | None = None,
+) -> str:
+    """Verify the complete image-local indexing profile before opening Redis.
+
+    The public failure is deliberately stable and secret-free. The chained
+    in-process cause contains only admitted dependency identifiers and exception
+    class names so an operator can diagnose an image build without exposing
+    runtime configuration, credentials, endpoints or filesystem paths.
+    """
+
+    try:
+        lock = _load_lock(lock_path or _default_lock_path())
+        profile = lock["indexing_capability_profile"]
+        if profile.get("schema_revision") != _PROFILE_SCHEMA:
+            raise ValueError("profile-schema")
+        expected_digest = profile.get("profile_sha256")
+        if not isinstance(expected_digest, str) or (
+            _profile_digest(profile) != expected_digest
+        ):
+            raise ValueError("profile-digest")
+
+        failures: list[str] = []
+        for distribution, expected in profile["verified_distributions"].items():
+            try:
+                actual = distribution_version(distribution)
+            except Exception as exc:  # pragma: no branch - one stable failure path
+                failures.append(
+                    f"distribution:{distribution}:{type(exc).__name__}"
+                )
+                continue
+            if actual != expected:
+                failures.append(
+                    f"distribution:{distribution}:version-mismatch"
+                )
+
+        sdk_module: Any | None = None
+        for module_name in profile["required_imports"]:
+            try:
+                # The SDK's optional-tool discovery prints diagnostics. Keep
+                # stdout reserved for worker protocol/CLI output.
+                with redirect_stdout(sys.stderr):
+                    module = import_module(module_name)
+                if module_name == "elitea_sdk.runtime.clients.client":
+                    sdk_module = import_module("elitea_sdk")
+            except Exception as exc:
+                failures.append(f"import:{module_name}:{type(exc).__name__}")
+
+        if sdk_module is not None:
+            package_file = getattr(sdk_module, "__file__", None)
+            if package_file is None:
+                failures.append("sdk-package-tree:missing")
+            else:
+                digest_package_tree = package_tree_digest or _package_tree_digest
+                actual_tree = digest_package_tree(Path(package_file).resolve().parent)
+                expected_tree = lock["installed_package_tree"]["sha256"]
+                if actual_tree != expected_tree:
+                    failures.append("sdk-package-tree:digest-mismatch")
+
+        for executable in profile["required_executables"]:
+            if find_executable(executable) is None:
+                failures.append(f"executable:{executable}:missing")
+        for library in profile["required_shared_libraries"]:
+            if find_shared_library(library) is None:
+                failures.append(f"shared-library:{library}:missing")
+
+        if failures:
+            raise RuntimeError(",".join(failures))
+        return expected_digest
+    except DependencyUnavailable:
+        raise
+    except Exception as exc:
+        raise DependencyUnavailable(
+            "The indexing runtime capability profile is incomplete."
+        ) from exc
+
+
+def _default_lock_path() -> Path:
+    source_lock = Path(__file__).resolve().parents[2] / "elitea-sdk.lock.json"
+    if source_lock.is_file():
+        return source_lock
+    return Path(__file__).resolve().with_name("elitea-sdk.lock.json")
+
+
+def _load_lock(path: Path) -> dict[str, Any]:
+    document = json.loads(path.read_bytes())
+    if not isinstance(document, dict):
+        raise ValueError("lock-shape")
+    return document
+
+
+def _profile_digest(profile: dict[str, Any]) -> str:
+    admitted = dict(profile)
+    admitted.pop("profile_sha256", None)
+    encoded = json.dumps(
+        admitted,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _package_tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+__all__ = ["require_indexing_runtime_capabilities"]

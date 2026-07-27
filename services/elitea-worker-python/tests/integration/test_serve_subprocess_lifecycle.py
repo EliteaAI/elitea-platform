@@ -31,6 +31,21 @@ _ROOT = Path(__file__).parents[4]
 
 def test_serve_subprocess_retries_safely_then_drains_on_sigterm(tmp_path: Path) -> None:
     fake_packages = tmp_path / "fake-packages"
+    fake_packages.mkdir()
+    # This test owns the Redis retry and signal lifecycle. The immutable image
+    # capability gate has dedicated unit and container tests; shadow it here so
+    # host OS binaries/libraries cannot make this subprocess test non-hermetic.
+    (fake_packages / "sitecustomize.py").write_text(
+        """
+import sys
+import types
+
+module = types.ModuleType("elitea_worker.indexing_runtime_capabilities")
+module.require_indexing_runtime_capabilities = lambda: "test-profile"
+sys.modules[module.__name__] = module
+""".lstrip(),
+        encoding="utf-8",
+    )
     redis_package = fake_packages / "redis"
     redis_asyncio = redis_package / "asyncio"
     redis_asyncio.mkdir(parents=True)
@@ -93,9 +108,21 @@ class SSLConnection(Connection):
         stderr=subprocess.PIPE,
         text=True,
     )
+    startup_stderr: list[str] = []
     try:
-        time.sleep(0.5)
-        assert process.poll() is None, process.stderr.read() if process.stderr else ""
+        assert process.stderr is not None
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            line = process.stderr.readline()
+            if line:
+                startup_stderr.append(line)
+                if '"event":"redis_startup_unavailable"' in line:
+                    break
+            elif process.poll() is not None:
+                break
+        else:
+            raise AssertionError("worker did not complete startup admission")
+        assert process.poll() is None, "".join(startup_stderr)
         process.send_signal(signal.SIGTERM)
         stdout, stderr = process.communicate(timeout=5)
     finally:
@@ -105,6 +132,7 @@ class SSLConnection(Connection):
 
     assert process.returncode == 0
     assert stdout == ""
+    stderr = "".join(startup_stderr) + stderr
     assert '"event":"redis_startup_unavailable"' in stderr
     assert '"safe_message":"A required runtime dependency is unavailable."' in stderr
     assert "simulated unavailable Redis" not in stderr

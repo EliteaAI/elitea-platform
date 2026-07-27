@@ -15,6 +15,8 @@ from elitea_worker.agents.configuration_registry import ConfigurationRegistrySha
 from elitea_worker.agents.sdk_adapter import _package_tree_digest
 from elitea_worker.constants import (
     CONFIGURATION_CATALOG_SHA256,
+    CONFIGURATION_CATALOG_REVISION,
+    INDEX_TYPES_SOURCE_REVISION,
     SDK_DISTRIBUTION_VERSION,
     SDK_PACKAGE_TREE_SHA256,
     SDK_SOURCE_ARCHIVE_SHA256,
@@ -64,10 +66,16 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     assert dependency == f"elitea-sdk=={SDK_DISTRIBUTION_VERSION}"
     containerfile = (_SERVICE_ROOT / "Containerfile").read_text()
     assert f"ARG ELITEA_SDK_REVISION={SDK_SOURCE_REVISION}" in containerfile
+    assert f"ARG ELITEA_SDK_ARCHIVE_SHA256={SDK_SOURCE_ARCHIVE_SHA256}" in containerfile
     assert (
-        '"elitea-sdk @ git+https://github.com/EliteaAI/elitea-sdk.git@'
-        '${ELITEA_SDK_REVISION}"'
+        '"elitea-sdk @ file:///build/elitea-sdk"'
     ) in containerfile
+    assert "git -C ./elitea-sdk archive --format=tar HEAD" in containerfile
+    go_ci = (_PLATFORM_ROOT / ".github/workflows/ci-go.yml").read_text()
+    assert (
+        "git+https://github.com/EliteaAI/elitea-sdk.git@"
+        f"{SDK_SOURCE_REVISION}'"
+    ) in go_ci
     assert lock["distribution_version"] == SDK_DISTRIBUTION_VERSION
     assert lock["source"]["revision"] == SDK_SOURCE_REVISION
     assert lock["source"]["git_archive_sha256"] == SDK_SOURCE_ARCHIVE_SHA256
@@ -111,8 +119,8 @@ def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
     document = json.loads(_GO_CATALOG.read_bytes())
 
     assert document["complete"] is True
-    assert document["sdk_revision"] == SDK_SOURCE_REVISION
-    assert document["catalog_revision"] == SDK_SOURCE_REVISION
+    assert document["sdk_revision"] == CONFIGURATION_CATALOG_REVISION
+    assert document["catalog_revision"] == CONFIGURATION_CATALOG_REVISION
     assert document["catalog_digest"] == f"sha256:{shadow.catalog_digest.hex()}"
     assert shadow.catalog_digest.hex() == CONFIGURATION_CATALOG_SHA256
     assert document["entry_count"] == len(shadow.entries) == len(document["entries"])
@@ -121,7 +129,7 @@ def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
             "configuration_type": entry.type,
             "section": entry.section,
             "schema_id": f"elitea.configuration.{entry.type}",
-            "schema_revision": SDK_SOURCE_REVISION,
+            "schema_revision": CONFIGURATION_CATALOG_REVISION,
             "schema_digest": f"sha256:{entry.schema_digest.hex()}",
             "validation_supported": entry.validation_supported,
             "connection_check_supported": entry.connection_check_supported,
@@ -131,8 +139,10 @@ def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
 
 
 def test_go_index_types_snapshot_matches_current_worker_sdk_projection() -> None:
-    constants_path = importlib.metadata.distribution("elitea-sdk").locate_file(
-        "elitea_sdk/runtime/langchain/document_loaders/constants.py"
+    constants_path = Path(
+        importlib.import_module(
+            "elitea_sdk.runtime.langchain.document_loaders.constants"
+        ).__file__
     )
     constants_source = Path(constants_path).read_bytes()
     assignments = {
@@ -181,7 +191,7 @@ def test_go_index_types_snapshot_matches_current_worker_sdk_projection() -> None
     snapshot = json.loads(_GO_INDEX_TYPES.read_bytes())
 
     assert snapshot["complete"] is True
-    assert snapshot["sdk_revision"] == SDK_SOURCE_REVISION
+    assert snapshot["sdk_revision"] == INDEX_TYPES_SOURCE_REVISION
     assert snapshot["source_digest"] == (
         f"sha256:{hashlib.sha256(constants_source).hexdigest()}"
     )

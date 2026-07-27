@@ -1,5 +1,51 @@
 # ELITEA Python runtime worker
 
+## Current indexing runtime capability profile
+
+The production worker image carries one explicit
+`elitea.indexing-runtime-capability-profile.v1` profile. Its evidence source is
+`elitea-sdk.lock.json`; the profile is also packaged into the wheel so the
+`serve` entry point can verify the deployed artifact before it reads workload
+credentials or opens Redis, gRPC, HTTPS or PostgreSQL connections.
+
+The current Pylon Indexer baseline installs `elitea-sdk[all]==0.8.30` from
+`centry/pylon_indexer/plugins/sdk_plugin/requirements.txt`. The standalone
+worker admits the last source revision carrying that distribution version and
+maps the required indexing behavior as follows:
+
+| Current behavior | Standalone worker dependency evidence |
+| --- | --- |
+| Confluence API, current hosting/auth modes and page loader | `atlassian-python-api`, `elitea_sdk.tools.confluence` and its current SDK loader |
+| Confluence image and PDF attachment analysis through the selected LLM | Pillow, `pdf2image`, Poppler, the SDK Confluence/image loaders, ReportLab/SVGLib and Cairo |
+| Current OCR fallback when attachment LLM analysis is disabled | `unstructured_pytesseract` plus the Tesseract executable |
+| Direct PDF loading, page extraction and image extraction | PyMuPDF, PyPDF, pypdfium2, the SDK PDF loader and Poppler |
+| Project-specific PGVector writes and reads | `langchain-postgres`, `pgvector`, psycopg 3 binary/pool and the unchanged SDK vector adapter |
+| Externalized LiteLLM-compatible chat and embedding calls | the current SDK client with the pinned OpenAI/Anthropic LangChain clients; model credentials remain claim-scoped runtime data, not image content |
+| SDK eager document-loader registry imports | the pinned DOCX, XLS/XLSX, PPTX, HTML, Markdown, NumPy/SciPy/Gensim dependencies required when the current loader map is imported |
+
+This is intentionally smaller than the SDK `all` extra. It excludes unrelated
+cloud/provider SDKs, browser automation, analytics/data-science toolkits,
+Chroma, local embedding models, sentence-transformers, the Unstructured local
+inference stack and development/test packages. Those omissions are capability
+boundaries, not claims that their current behavior has been ported. A future
+toolkit or MCP slice must introduce and test its own profile before the worker
+advertises it.
+
+The image build and every production `serve` startup verify:
+
+- the exact SDK distribution, source archive and installed Python package-tree
+  identity;
+- the canonical hash of the exact indexing dependency profile;
+- exact versions of every admitted direct indexing distribution;
+- importability of the Confluence, image, PDF and PGVector execution paths;
+- availability of `pdfinfo`, `pdftoppm`, `tesseract` and the Cairo shared
+  library.
+
+Failures return only the stable `DEPENDENCY_UNAVAILABLE` public diagnostic.
+The chained local cause contains dependency identifiers and exception class
+names only; it never includes credentials, URLs, configuration values or
+filesystem paths.
+
 ## Redis command stream lifecycle
 
 Runtime v1 permits one worker consumer group per Redis command stream. The

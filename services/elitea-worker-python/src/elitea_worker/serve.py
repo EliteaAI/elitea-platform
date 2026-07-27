@@ -37,6 +37,9 @@ from elitea_worker.execution.delivery import (
 from elitea_worker.execution.errors import DependencyUnavailable, WorkerError
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
+from elitea_worker.indexing_runtime_capabilities import (
+    require_indexing_runtime_capabilities,
+)
 from elitea_worker.protocol.codec import (
     Ed25519CommandAuthenticator,
     parse_and_verify_signed_command,
@@ -526,8 +529,21 @@ class ProductionDeliveryProcessor:
 async def serve_from_config(path: Path) -> None:
     """Load production config and run until SIGINT/SIGTERM requests drain."""
 
-    config = load_deploy_config(path)
-    await serve_deployment(config)
+    stop = asyncio.Event()
+    remove_signal_handlers = _install_signal_handlers(stop)
+    try:
+        config = load_deploy_config(path)
+        # Fail before credentials are read or any control/data connection is
+        # opened when the immutable image cannot execute its advertised
+        # indexing profile. Signal ownership is established first because SDK
+        # imports can be slow on a cold container.
+        require_indexing_runtime_capabilities()
+        # Let a signal queued while synchronous capability imports were running
+        # set ``stop`` before deployment composition reads credentials.
+        await asyncio.sleep(0)
+        await serve_deployment(config, stop=stop)
+    finally:
+        remove_signal_handlers()
 
 
 async def serve_deployment(

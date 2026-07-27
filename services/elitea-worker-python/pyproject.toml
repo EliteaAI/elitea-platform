@@ -9,7 +9,7 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=44,<47",
-  "elitea-sdk==0.8.26",
+  "elitea-sdk==0.8.30",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",
@@ -26,6 +26,52 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+indexing-current = [
+  # Exact current-baseline indexing closure. This intentionally replaces
+  # elitea-sdk[all]: provider, browser, cloud, analytics and developer stacks
+  # that the standalone index worker cannot reach are not installed.
+  "anthropic==0.76.0",
+  "atlassian-python-api==4.0.7",
+  "beautifulsoup4==4.12.2",
+  "cairocffi==1.7.1",
+  "charset-normalizer==3.3.2",
+  "docx2txt==0.8",
+  "gensim==4.3.3",
+  "langchain==1.2.6",
+  "langchain-anthropic==1.3.1",
+  "langchain-classic==1.0.1",
+  "langchain-community==0.4.1",
+  "langchain-openai==1.1.7",
+  "langchain-postgres==0.0.16",
+  "langchain-text-splitters==1.1.0",
+  "langgraph-checkpoint==2.1.2",
+  "langgraph-prebuilt==1.0.7",
+  "lxml==5.2.2",
+  "mammoth==1.9.0",
+  "markdownify==1.1.0",
+  "numpy==1.26.4",
+  "openpyxl==3.1.5",
+  "pandas==2.2.3",
+  "pdf2image==1.16.3",
+  "pgvector==0.2.5",
+  "pillow==11.1.0",
+  "psycopg[binary]==3.3.4",
+  "psycopg-pool==3.3.1",
+  "pymupdf==1.24.9",
+  "pypdf==4.3.1",
+  "pypdfium2==5.8.0",
+  "python-docx==1.1.2",
+  "python-pptx==1.0.2",
+  "reportlab==4.2.5",
+  "rlpycairo==0.3.0",
+  "scipy==1.13.1",
+  "setuptools==80.9.0",
+  "svglib==1.5.1",
+  "tree-sitter==0.20.2",
+  "tree-sitter-languages==1.10.2",
+  "unstructured_pytesseract==0.3.13",
+  "xlrd==1.2.0",
+]
 test = [
   "pytest>=8.3,<10",
 ]
@@ -35,6 +81,9 @@ elitea-worker = "elitea_worker.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/elitea_worker"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"elitea-sdk.lock.json" = "elitea_worker/elitea-sdk.lock.json"
 
 [tool.hatch.metadata]
 allow-direct-references = true
