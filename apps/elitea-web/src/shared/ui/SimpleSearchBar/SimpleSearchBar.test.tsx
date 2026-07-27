@@ -61,13 +61,21 @@ describe('SimpleSearchBar', () => {
   });
 
   it('debounces onChange: does not call it before debounceMs elapses', async () => {
+    // debounceMs=500 (well above the ~50ms userEvent.type overhead this
+    // assertion has to outrun) rather than the original 200: this specific
+    // test's whole purpose is the immediate not-yet-called check, so unlike
+    // the two tests below it, there's no eventual-call assertion to fall
+    // back on that would make the immediate one droppable -- it needs a
+    // real margin instead, given the flakiness already observed at both
+    // 30ms (CodeMirrorEditor) and effectively ~50ms (this file's own
+    // "resets the debounce timer" test) real-timer windows elsewhere.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { getByDisplayValue } = renderWithTheme(
       <SimpleSearchBar
         value=""
         onChange={onChange}
-        debounceMs={200}
+        debounceMs={500}
       />,
     );
     await user.type(getByDisplayValue(''), 'a');
@@ -75,6 +83,16 @@ describe('SimpleSearchBar', () => {
   });
 
   it('debounces onChange: calls it once, with the latest value, after debounceMs elapses', async () => {
+    // Deliberately does NOT also assert `not.toHaveBeenCalled()` immediately
+    // after typing (that raced the 100ms debounce window against
+    // userEvent's own real inter-action delays -- the same class of CI-only
+    // intermittent failure fixed elsewhere in this file and in
+    // CodeMirrorEditor.test.tsx): the eventual toHaveBeenCalledTimes(1) +
+    // toHaveBeenCalledWith('ab') below already fully proves debouncing
+    // happened (a non-debounced or multiply-firing implementation could not
+    // produce exactly one call with the final coalesced value), so the
+    // immediate check added no coverage the final one doesn't already give,
+    // only a race.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { getByDisplayValue } = renderWithTheme(
@@ -86,13 +104,27 @@ describe('SimpleSearchBar', () => {
     );
     const input = getByDisplayValue('');
     await user.type(input, 'ab');
-    expect(onChange).not.toHaveBeenCalled();
     await sleep(200);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith('ab');
   });
 
   it('resets the debounce timer on every keystroke (trailing-edge only)', async () => {
+    // Deliberately does NOT assert `not.toHaveBeenCalled()` at a calculated
+    // mid-flight instant (100ms after the second keystroke, before the
+    // second keystroke's own 150ms window elapses): that raced real
+    // wall-clock time against userEvent's own real inter-action delays, and
+    // was observed to fail intermittently on a slower CI runner where the
+    // cumulative delay alone could close the ~50ms margin. The behaviour
+    // this test exists to prove -- that each keystroke's setTimeout clears
+    // the PREVIOUS one (SimpleSearchBar.tsx's `clearTimeout(timeoutRef.
+    // current)` before scheduling a new one) -- is instead proven
+    // deterministically: if that clearTimeout were ever removed, the first
+    // keystroke's stale timer would still fire on its own, producing a
+    // SECOND, extra onChange('a') call in addition to the real onChange
+    // ('ab') call. Checking the final call count once everything has long
+    // since settled catches that regression exactly as precisely, with no
+    // timing race at all.
     const user = userEvent.setup();
     const onChange = vi.fn();
     const { getByDisplayValue } = renderWithTheme(
@@ -106,12 +138,7 @@ describe('SimpleSearchBar', () => {
     await user.type(input, 'a');
     await sleep(100);
     await user.type(input, 'b');
-    await sleep(100);
-    // 200ms of wall-clock time has passed since the first keystroke, more
-    // than debounceMs, but the second keystroke reset the timer, so the
-    // trailing 150ms from THAT keystroke has not elapsed yet.
-    expect(onChange).not.toHaveBeenCalled();
-    await sleep(100);
+    await sleep(300);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith('ab');
   });
