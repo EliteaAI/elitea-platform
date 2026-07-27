@@ -33,21 +33,19 @@ import type { Theme } from '@mui/material/styles';
  */
 export function cardGradientSx(theme: Theme, options: { enableHover?: boolean } = {}) {
   const { enableHover = true } = options;
-  const palette = theme.vars.palette;
-  const shape = theme.vars.shape;
 
   return {
     position: 'relative',
-    borderRadius: shape.radiusLg,
+    borderRadius: theme.vars.shape.radiusLg,
     border: 'none',
-    background: palette.background.card.gradientDark,
+    background: theme.vars.palette.background.card.gradientDark,
     '&::before': {
       content: '""',
       position: 'absolute',
       inset: 0,
-      borderRadius: shape.radiusLg,
+      borderRadius: theme.vars.shape.radiusLg,
       padding: '0.0625rem',
-      background: palette.border.cardsOutlinesGradient,
+      background: theme.vars.palette.border.cardsOutlinesGradient,
       WebkitMask: 'linear-gradient(currentColor 0 0) content-box, linear-gradient(currentColor 0 0)',
       maskComposite: 'exclude',
       WebkitMaskComposite: 'xor',
@@ -56,11 +54,11 @@ export function cardGradientSx(theme: Theme, options: { enableHover?: boolean } 
     ...(enableHover
       ? {
           '&:hover': {
-            background: palette.background.card.hover,
+            background: theme.vars.palette.background.card.hover,
             '&::before': {
-              background: palette.background.card.hoverBorderGradient,
+              background: theme.vars.palette.background.card.hoverBorderGradient,
             },
-            boxShadow: palette.background.card.hoverShadow,
+            boxShadow: theme.vars.palette.background.card.hoverShadow,
           },
         }
       : {}),

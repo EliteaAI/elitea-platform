@@ -50,37 +50,40 @@ export interface NotificationIconProps {
 
 const ICON_SIZE = 16;
 
-type Palette = Theme['vars']['palette'];
-type IconRenderer = (palette: Palette, meta: FullNotificationMeta | undefined) => ReactElement | null;
+// theme.vars.palette must be read through a static `theme.vars.palette.X.Y`
+// dotted path with no aliasing (R-T7, §4.6 check 7's reference scan) --
+// these renderers take the full `theme`, not a `palette` value handed off
+// from the caller, so every colour token stays visible to that scan.
+type IconRenderer = (theme: Theme, meta: FullNotificationMeta | undefined) => ReactElement | null;
 
-function successPublished(palette: Palette): ReactElement | null {
-  return <SuccessIcon style={{ color: palette.status.published }} />;
+function successPublished(theme: Theme): ReactElement | null {
+  return <SuccessIcon style={{ color: theme.vars.palette.status.published }} />;
 }
 
-function successTips(palette: Palette): ReactElement | null {
-  return <SuccessIcon style={{ color: palette.icon.fill.tips }} />;
+function successTips(theme: Theme): ReactElement | null {
+  return <SuccessIcon style={{ color: theme.vars.palette.icon.fill.tips }} />;
 }
 
-function removeRejected(palette: Palette): ReactElement | null {
-  return <RemoveIcon style={{ color: palette.status.rejected }} />;
+function removeRejected(theme: Theme): ReactElement | null {
+  return <RemoveIcon style={{ color: theme.vars.palette.status.rejected }} />;
 }
 
-function errorRejected(palette: Palette): ReactElement | null {
+function errorRejected(theme: Theme): ReactElement | null {
   return (
     <ErrorIcon
       width={ICON_SIZE}
       height={ICON_SIZE}
-      style={{ color: palette.status.rejected }}
+      style={{ color: theme.vars.palette.status.rejected }}
     />
   );
 }
 
-function attentionOnModeration(palette: Palette): ReactElement | null {
+function attentionOnModeration(theme: Theme): ReactElement | null {
   return (
     <AttentionIcon
       width={ICON_SIZE}
       height={ICON_SIZE}
-      style={{ color: palette.status.onModeration }}
+      style={{ color: theme.vars.palette.status.onModeration }}
     />
   );
 }
@@ -89,10 +92,10 @@ function attentionOnModeration(palette: Palette): ReactElement | null {
  * `index_data_changed` alone branches on `meta` (`getIcon.helpers.jsx:24-32`:
  * a failed reindex reports the same as a hard error).
  */
-function indexDataChangedIcon(palette: Palette, meta: FullNotificationMeta | undefined): ReactElement | null {
+function indexDataChangedIcon(theme: Theme, meta: FullNotificationMeta | undefined): ReactElement | null {
   const error = meta?.error;
   const hasError = typeof error === 'string' && error.trim() !== '';
-  return hasError ? errorRejected(palette) : successPublished(palette);
+  return hasError ? errorRejected(theme) : successPublished(theme);
 }
 
 /**
@@ -153,5 +156,5 @@ const ICON_RENDERERS: Record<NotificationEventType, IconRenderer> = {
 export function NotificationIcon(props: NotificationIconProps): ReactElement | null {
   const { eventType, meta, theme } = props;
   const render = ICON_RENDERERS[eventType] ?? noIcon;
-  return render(theme.vars.palette, meta);
+  return render(theme, meta);
 }
