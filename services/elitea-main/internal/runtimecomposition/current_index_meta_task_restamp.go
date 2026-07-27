@@ -62,6 +62,12 @@ func newCurrentIndexMetaTaskRestampProcessor(
 			"current index metadata task restamp dependencies are required",
 		)
 	}
+	concurrency, err := currentIndexMetaTaskRestampConcurrency(
+		effectPool.Config().MaxConns,
+	)
+	if err != nil {
+		return nil, err
+	}
 	store, err := repos.NewCurrentIndexMetaTaskRestampRepository(effectPool)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -92,9 +98,23 @@ func newCurrentIndexMetaTaskRestampProcessor(
 		store:             store,
 		newClaimID:        currentRuntimeID,
 		claimLease:        2 * time.Minute,
-		concurrency:       4,
+		concurrency:       concurrency,
 		reportItemFailure: reportItemFailure,
 	}, nil
+}
+
+func currentIndexMetaTaskRestampConcurrency(
+	maxConnections int32,
+) (int, error) {
+	if maxConnections <= 0 {
+		return 0, errors.New(
+			"current index metadata task restamp pool capacity is invalid",
+		)
+	}
+	return min(
+		int(maxConnections),
+		maxCurrentIndexMetaTerminalConcurrency,
+	), nil
 }
 
 func (p *currentIndexMetaTaskRestampProcessor) ReconcilePendingTaskRestamps(

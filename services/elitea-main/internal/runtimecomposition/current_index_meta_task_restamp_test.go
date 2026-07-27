@@ -32,6 +32,7 @@ type taskRestampStoreStub struct {
 	superseded  map[string]bool
 	resolutions map[string]indexingapp.CurrentIndexMetaTaskRestampResolution
 	releases    map[string]string
+	claimLimit  int
 }
 
 func (s *taskRestampStoreStub) ClaimPendingTaskRestamps(
@@ -42,6 +43,7 @@ func (s *taskRestampStoreStub) ClaimPendingTaskRestamps(
 ) ([]indexingapp.CurrentIndexMetaTaskRestampClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.claimLimit = limit
 	count := min(limit, len(s.pending))
 	claims := append(
 		[]indexingapp.CurrentIndexMetaTaskRestampClaim(nil),
@@ -132,10 +134,85 @@ func TestCurrentIndexMetaTaskRestampProcessorRetriesFaultAndContinuesBatch(t *te
 			store.resolutions,
 		)
 	}
+	if store.claimLimit != 4 {
+		t.Fatalf("claim limit=%d, want 4", store.claimLimit)
+	}
 	reportedMu.Lock()
 	defer reportedMu.Unlock()
 	if len(reported) != 1 {
 		t.Fatalf("reported faults=%d", len(reported))
+	}
+}
+
+func TestCurrentIndexMetaTaskRestampConcurrencyFollowsEffectPoolCapacity(
+	t *testing.T,
+) {
+	for _, test := range []struct {
+		maxConnections int32
+		want           int
+		wantError      bool
+	}{
+		{maxConnections: 0, wantError: true},
+		{maxConnections: 1, want: 1},
+		{maxConnections: 2, want: 2},
+		{maxConnections: 8, want: 2},
+	} {
+		got, err := currentIndexMetaTaskRestampConcurrency(
+			test.maxConnections,
+		)
+		if (err != nil) != test.wantError {
+			t.Fatalf(
+				"max connections %d: error=%v, want error=%v",
+				test.maxConnections,
+				err,
+				test.wantError,
+			)
+		}
+		if got != test.want {
+			t.Fatalf(
+				"max connections %d: concurrency=%d, want=%d",
+				test.maxConnections,
+				got,
+				test.want,
+			)
+		}
+	}
+}
+
+func TestCurrentIndexMetaTaskRestampClaimBatchTracksConcurrency(t *testing.T) {
+	for _, concurrency := range []int{1, 2} {
+		store := &taskRestampStoreStub{
+			superseded:  make(map[string]bool),
+			resolutions: make(map[string]indexingapp.CurrentIndexMetaTaskRestampResolution),
+			releases:    make(map[string]string),
+		}
+		processor := &currentIndexMetaTaskRestampProcessor{
+			restamper:         &taskRestamperStub{},
+			store:             store,
+			newClaimID:        func() (string, error) { return "claim-1", nil },
+			claimLease:        time.Minute,
+			concurrency:       concurrency,
+			reportItemFailure: func(error) {},
+		}
+		count, err := processor.ReconcilePendingTaskRestamps(
+			context.Background(),
+			8,
+		)
+		if err != nil || count != 0 {
+			t.Fatalf(
+				"concurrency=%d count=%d err=%v",
+				concurrency,
+				count,
+				err,
+			)
+		}
+		if store.claimLimit != 2*concurrency {
+			t.Fatalf(
+				"concurrency=%d claim limit=%d",
+				concurrency,
+				store.claimLimit,
+			)
+		}
 	}
 }
 
