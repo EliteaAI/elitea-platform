@@ -11,18 +11,19 @@ import requests
 from psycopg import sql
 
 from .fake_services import (
+    CHAT_COMPLETIONS_PATH,
+    EMBEDDINGS_PATH,
     ConfluenceFixture,
     ConfluenceHandler,
     FixtureHTTPServer,
     HTTPConfluenceClient,
-    HTTPRecordingEmbeddings,
-    HTTPRecordingLLM,
     LiteLLMFixture,
     LiteLLMHandler,
     decode_data_url,
     decoded_requests,
     image_urls,
 )
+from .sdk_current import current_model_clients
 
 
 pytestmark = pytest.mark.pgvector
@@ -50,10 +51,11 @@ def _wrapper(
     database_url: str,
     schema: str,
 ):
+    llm, embeddings = current_model_clients(current_sdk, model_url)
     return current_sdk.confluence_wrapper.model_construct(
         toolkit_id=41,
-        llm=HTTPRecordingLLM(model_url),
-        embeddings=HTTPRecordingEmbeddings(model_url),
+        llm=llm,
+        embeddings=embeddings,
         embedding_model="fixture-embedding",
         vectorstore_type="PGVector",
         vectorstore_params={
@@ -136,6 +138,40 @@ def _capture_events(
     monkeypatch.setattr(base_module, "dispatch_custom_event", capture_event)
     monkeypatch.setattr(callback_module, "dispatch_custom_event", capture_event)
     return events
+
+
+def _normalized_events(
+    events: list[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    normalized: list[tuple[str, dict[str, Any]]] = []
+    status_id: str | None = None
+    for name, data in events:
+        item = dict(data)
+        if name == "index_data_status":
+            assert set(item) == {
+                "id",
+                "index_name",
+                "state",
+                "error",
+                "reindex",
+                "indexed",
+                "updated",
+                "toolkit_id",
+                "created_at",
+                "updated_on",
+            }
+            uuid.UUID(item["id"])
+            assert isinstance(item["created_at"], float)
+            assert isinstance(item["updated_on"], float)
+            status_id = status_id or item["id"]
+            assert item["id"] == status_id
+            item["id"] = "<index-meta-id>"
+            item["created_at"] = "<timestamp>"
+            item["updated_on"] = "<timestamp>"
+        else:
+            assert set(item) == {"message", "tool_name", "toolkit"}
+        normalized.append((name, item))
+    return normalized
 
 
 def test_current_sdk_full_confluence_pgvector_golden(
@@ -229,7 +265,7 @@ def test_current_sdk_full_confluence_pgvector_golden(
         assert history[-1]["updated"] == 3
         assert history[-1]["indexed_chunks"] == 3
 
-        vision = decoded_requests(litellm.records, "/v1/chat/completions")
+        vision = decoded_requests(litellm.records, CHAT_COMPLETIONS_PATH)
         assert len(vision) == 2
         prompts = [
             request["messages"][0]["content"][0]["text"] for request in vision
@@ -244,7 +280,7 @@ def test_current_sdk_full_confluence_pgvector_golden(
             for request in vision
         )
 
-        embedding = decoded_requests(litellm.records, "/v1/embeddings")
+        embedding = decoded_requests(litellm.records, EMBEDDINGS_PATH)
         embedded_inputs = [
             item
             for request in embedding
@@ -255,29 +291,186 @@ def test_current_sdk_full_confluence_pgvector_golden(
             )
         ]
         assert len(embedding) == 4
-        assert embedded_inputs.count("index_meta_golden") == 3
         assert len(embedded_inputs) == 6
-        assert confluence.text_bytes.decode() in embedded_inputs
-        assert "DEPENDENT_IMAGE_DESCRIPTION" in embedded_inputs
-        assert any(
-            "diagram.pngPARENT_IMAGE_DESCRIPTION" in value
+        # The production SDK client tokenizes embedding inputs before sending
+        # them to the OpenAI-compatible endpoint. The index-meta token sequence
+        # is sent for created, in-progress, and completed state.
+        assert all(
+            isinstance(value, list) and all(isinstance(token, int) for token in value)
             for value in embedded_inputs
         )
+        assert embedded_inputs.count(embedded_inputs[0]) == 3
+        assert len({tuple(value) for value in embedded_inputs}) == 4
 
-        status_events = [data for name, data in events if name == "index_data_status"]
-        thinking_events = [data for name, data in events if name == "thinking_step"]
-        assert [event["state"] for event in status_events] == [
-            "in_progress",
-            "completed",
+        assert _normalized_events(events) == [
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "There is no existing index_meta for collection 'golden'. "
+                        "Initializing it."
+                    ),
+                    "tool_name": "index_data",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "index_data_status",
+                {
+                    "id": "<index-meta-id>",
+                    "index_name": "golden",
+                    "state": "in_progress",
+                    "error": None,
+                    "reindex": False,
+                    "indexed": 0,
+                    "updated": 0,
+                    "toolkit_id": 41,
+                    "created_at": "<timestamp>",
+                    "updated_on": "<timestamp>",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Indexing data into collection with suffix 'golden'. "
+                        "It can take some time..."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Loading the documents to index...{'index_name': 'golden', "
+                        "'clean_index': False, 'content_format': 'view', "
+                        "'include_attachments': True, 'include_comments': False, "
+                        "'include_restricted_content': True, "
+                        "'keep_markdown_format': True, 'bins_with_llm': True, "
+                        "'max_pages': 1, 'limit': 1, 'meta_update_interval': 0}"
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Base documents were pre-loaded. Search for possible "
+                        "document duplicates and remove them from the indexing list..."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Duplicates were removed. Processing documents to collect "
+                        "dependencies and prepare them for indexing..."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Base documents are ready for indexing. 1 base documents "
+                        "in total to index."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": "Verification of documents to index started",
+                    "tool_name": "index_documents",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Retrieving already indexed data from PGVector vectorstore"
+                    ),
+                    "tool_name": "get_indexed_data",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": "Processing document #1: 'unknown'.",
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Dependent documents for 'unknown' were processed. Applying "
+                        "chunking tool 'default' if specified and preparing documents "
+                        "for indexing..."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Collecting the dependencies for document 'unknown' "
+                        "(ID: 'page-1') to collect dependencies if any..."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": (
+                        "Indexed document #1 'unknown' out of 1 (with 3 chunks)."
+                    ),
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "thinking_step",
+                {
+                    "message": "3 documents have been indexed. Continuing...",
+                    "tool_name": "tool_progress",
+                    "toolkit": "ConfluenceAPIWrapper",
+                },
+            ),
+            (
+                "index_data_status",
+                {
+                    "id": "<index-meta-id>",
+                    "index_name": "golden",
+                    "state": "completed",
+                    "error": None,
+                    "reindex": False,
+                    "indexed": 1,
+                    "updated": 3,
+                    "toolkit_id": 41,
+                    "created_at": "<timestamp>",
+                    "updated_on": "<timestamp>",
+                },
+            ),
         ]
-        assert status_events[-1]["indexed"] == 1
-        assert status_events[-1]["updated"] == 3
-        assert len(thinking_events) >= 10
-        assert thinking_events[0]["tool_name"] == "index_data"
-        assert any(
-            event["message"] == "3 documents have been indexed. Continuing..."
-            for event in thinking_events
-        )
     finally:
         _drop_schema(database_url, schema)
 
@@ -346,7 +539,7 @@ def test_current_sdk_source_failure_persists_terminal_failure(
         assert status_events[-1]["indexed"] == 0
         assert status_events[-1]["updated"] == 0
         assert "503 Server Error" in status_events[-1]["error"]
-        assert not decoded_requests(litellm.records, "/v1/chat/completions")
-        assert len(decoded_requests(litellm.records, "/v1/embeddings")) == 2
+        assert not decoded_requests(litellm.records, CHAT_COMPLETIONS_PATH)
+        assert len(decoded_requests(litellm.records, EMBEDDINGS_PATH)) == 2
     finally:
         _drop_schema(database_url, schema)

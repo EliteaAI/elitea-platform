@@ -10,7 +10,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+
+
+CHAT_COMPLETIONS_PATH = "/llm/v1/chat/completions"
+EMBEDDINGS_PATH = "/llm/v1/embeddings"
 
 
 def deterministic_png() -> bytes:
@@ -21,11 +25,43 @@ def deterministic_png() -> bytes:
     return output.getvalue()
 
 
+def deterministic_text_png(text: str = "OCR 123") -> bytes:
+    image = Image.new("RGB", (900, 260), color="white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=96)
+    draw.text((80, 70), text, fill="black", font=font)
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=False)
+    return output.getvalue()
+
+
+def deterministic_blank_png() -> bytes:
+    image = Image.new("RGB", (900, 260), color="white")
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=False)
+    return output.getvalue()
+
+
+def deterministic_pdf() -> bytes:
+    from reportlab.pdfgen.canvas import Canvas
+
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=(612, 792), invariant=1)
+    canvas.setTitle("Confluence parity fixture")
+    canvas.drawString(72, 720, "PDF PAGE ONE")
+    canvas.showPage()
+    canvas.drawString(72, 720, "PDF PAGE TWO")
+    canvas.showPage()
+    canvas.save()
+    return output.getvalue()
+
+
 @dataclass(frozen=True, slots=True)
 class RequestRecord:
     method: str
     path: str
     query: dict[str, tuple[str, ...]]
+    headers: dict[str, str]
     body: bytes
 
 
@@ -35,9 +71,14 @@ class ConfluenceFixture:
     page_status_sequence: list[int] = field(default_factory=list)
     attachment_list_status: int = 200
     attachment_status: dict[str, int] = field(default_factory=dict)
+    include_text_attachment: bool = True
+    include_image_attachment: bool = True
+    include_pdf_attachment: bool = False
+    storage_value: str | None = None
     records: list[RequestRecord] = field(default_factory=list)
 
     image_bytes: bytes = field(default_factory=deterministic_png)
+    pdf_bytes: bytes = field(default_factory=deterministic_pdf)
     text_bytes: bytes = b"release notes from the text attachment\n"
 
     @property
@@ -53,28 +94,47 @@ class ConfluenceFixture:
                         "<h1>Architecture</h1>"
                         "<p>Parent content before the diagram and after it.</p>"
                     )
-                }
+                },
+                "storage": {
+                    "value": self.storage_value
+                    or "<p>Parent content without embedded images.</p>"
+                },
             },
         }
 
     @property
     def attachments(self) -> list[dict[str, Any]]:
-        return [
-            {
+        result: list[dict[str, Any]] = []
+        if self.include_text_attachment:
+            result.append({
                 "id": "att-text",
                 "title": "notes.txt",
                 "_links": {"download": "/download/attachments/page-1/notes.txt"},
                 "metadata": {"mediaType": "text/plain", "labels": {"results": []}},
                 "extensions": {"fileSize": len(self.text_bytes)},
-            },
-            {
+            })
+        if self.include_image_attachment:
+            result.append({
                 "id": "att-image",
                 "title": "diagram.png",
                 "_links": {"download": "/download/attachments/page-1/diagram.png"},
                 "metadata": {"mediaType": "image/png", "labels": {"results": []}},
                 "extensions": {"fileSize": len(self.image_bytes)},
-            },
-        ]
+            })
+        if self.include_pdf_attachment:
+            result.append({
+                "id": "att-pdf",
+                "title": "architecture.pdf",
+                "_links": {
+                    "download": "/download/attachments/page-1/architecture.pdf"
+                },
+                "metadata": {
+                    "mediaType": "application/pdf",
+                    "labels": {"results": []},
+                },
+                "extensions": {"fileSize": len(self.pdf_bytes)},
+            })
+        return result
 
 
 @dataclass(slots=True)
@@ -87,6 +147,11 @@ class LiteLLMFixture:
         ]
     )
     embedding_dimension: int = 8
+    required_authorization: str = "Bearer fixture-pat"
+    required_organization: str = "41"
+    enforce_auth: bool = True
+    chat_status_sequence: list[int] = field(default_factory=list)
+    embedding_status_sequence: list[int] = field(default_factory=list)
 
 
 class FixtureHTTPServer:
@@ -127,15 +192,31 @@ class _QuietHandler(BaseHTTPRequestHandler):
             key: tuple(values)
             for key, values in sorted(parse_qs(parsed.query).items())
         }
-        record = RequestRecord(self.command, parsed.path, query, body)
+        headers = {
+            key: value
+            for key, value in {
+                "authorization": self.headers.get("Authorization"),
+                "openai-organization": self.headers.get("OpenAI-Organization"),
+                "content-type": self.headers.get("Content-Type"),
+            }.items()
+            if value is not None
+        }
+        record = RequestRecord(self.command, parsed.path, query, headers, body)
         self.server.fixture.records.append(record)  # type: ignore[attr-defined]
         return record
 
-    def _json(self, status: int, value: Any) -> None:
+    def _json(
+        self,
+        status: int,
+        value: Any,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, header_value in (headers or {}).items():
+            self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -162,6 +243,9 @@ class ConfluenceHandler(_QuietHandler):
                 return
             start = int(record.query.get("start", ("0",))[0])
             self._json(200, {"results": [fixture.page] if start == 0 else []})
+            return
+        if record.path == "/rest/api/content/page-1":
+            self._json(200, fixture.page)
             return
         if record.path == "/rest/api/content/page-1/child/attachment":
             if fixture.attachment_list_status != 200:
@@ -200,6 +284,14 @@ class ConfluenceHandler(_QuietHandler):
                 "image/png",
             )
             return
+        if record.path.endswith("/architecture.pdf"):
+            self._attachment(
+                fixture,
+                "architecture.pdf",
+                fixture.pdf_bytes,
+                "application/pdf",
+            )
+            return
         self._json(404, {"message": "unknown Confluence fixture path"})
 
     def _attachment(
@@ -223,9 +315,24 @@ class LiteLLMHandler(_QuietHandler):
         record = self._record(body)
         fixture: LiteLLMFixture = self.server.fixture  # type: ignore[attr-defined]
         value = json.loads(body)
-        if record.path == "/v1/chat/completions":
+        if fixture.enforce_auth and (
+            record.headers.get("authorization") != fixture.required_authorization
+            or record.headers.get("openai-organization")
+            != fixture.required_organization
+        ):
+            self._openai_error(401)
+            return
+        if record.path == CHAT_COMPLETIONS_PATH:
+            status = (
+                fixture.chat_status_sequence.pop(0)
+                if fixture.chat_status_sequence
+                else 200
+            )
+            if status != 200:
+                self._openai_error(status)
+                return
             index = sum(
-                item.path == "/v1/chat/completions" for item in fixture.records
+                item.path == CHAT_COMPLETIONS_PATH for item in fixture.records
             ) - 1
             response = fixture.vision_responses[
                 min(index, len(fixture.vision_responses) - 1)
@@ -234,6 +341,9 @@ class LiteLLMHandler(_QuietHandler):
                 200,
                 {
                     "id": f"vision-{index + 1}",
+                    "object": "chat.completion",
+                    "created": 1_900_000_000,
+                    "model": value.get("model", "fixture-vision"),
                     "choices": [
                         {
                             "index": 0,
@@ -241,10 +351,23 @@ class LiteLLMHandler(_QuietHandler):
                             "finish_reason": "stop",
                         }
                     ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
                 },
             )
             return
-        if record.path == "/v1/embeddings":
+        if record.path == EMBEDDINGS_PATH:
+            status = (
+                fixture.embedding_status_sequence.pop(0)
+                if fixture.embedding_status_sequence
+                else 200
+            )
+            if status != 200:
+                self._openai_error(status)
+                return
             inputs = value.get("input", [])
             if isinstance(inputs, str):
                 inputs = [inputs]
@@ -268,6 +391,19 @@ class LiteLLMHandler(_QuietHandler):
             )
             return
         self._json(404, {"message": "unknown LiteLLM fixture path"})
+
+    def _openai_error(self, status: int) -> None:
+        self._json(
+            status,
+            {
+                "error": {
+                    "message": f"fixture LiteLLM status {status}",
+                    "type": "fixture_error",
+                    "code": str(status),
+                }
+            },
+            headers={"Retry-After": "0"},
+        )
 
 
 class HTTPConfluenceClient:
@@ -294,6 +430,15 @@ class HTTPConfluenceClient:
         response.raise_for_status()
         return response.json()
 
+    def get_page_by_id(self, page_id: str, expand: str = "") -> dict[str, Any]:
+        response = self.session.get(
+            f"{self.url}/rest/api/content/{page_id}",
+            params={"expand": expand} if expand else None,
+            timeout=5,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def history(self, attachment_id: str) -> dict[str, Any]:
         response = self.session.get(
             f"{self.url}/rest/api/content/{attachment_id}/history",
@@ -314,43 +459,6 @@ class HTTPConfluenceClient:
         del advanced_mode
         url = path if absolute and path.startswith("http") else f"{self.url}/{path.lstrip('/')}"
         return self.session.request(method, url, headers=headers, timeout=5)
-
-
-class HTTPRecordingLLM:
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url
-
-    def invoke(self, messages: Any) -> Any:
-        from langchain_core.messages import AIMessage
-
-        serialized = []
-        for message in messages:
-            role = "user" if message.__class__.__name__ == "HumanMessage" else "assistant"
-            serialized.append({"role": role, "content": message.content})
-        response = requests.post(
-            f"{self.base_url}/v1/chat/completions",
-            json={"model": "fixture-vision", "messages": serialized},
-            timeout=5,
-        )
-        response.raise_for_status()
-        return AIMessage(content=response.json()["choices"][0]["message"]["content"])
-
-
-class HTTPRecordingEmbeddings:
-    def __init__(self, base_url: str) -> None:
-        self.base_url = base_url
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        response = requests.post(
-            f"{self.base_url}/v1/embeddings",
-            json={"model": "fixture-embedding", "input": texts},
-            timeout=5,
-        )
-        response.raise_for_status()
-        return [item["embedding"] for item in response.json()["data"]]
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed_documents([text])[0]
 
 
 def decoded_requests(records: list[RequestRecord], path: str) -> list[dict[str, Any]]:

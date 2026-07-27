@@ -5,16 +5,17 @@ import requests
 from langchain_community.document_loaders.confluence import ContentFormat
 
 from .fake_services import (
+    CHAT_COMPLETIONS_PATH,
     ConfluenceFixture,
     ConfluenceHandler,
     FixtureHTTPServer,
     HTTPConfluenceClient,
-    HTTPRecordingLLM,
     LiteLLMFixture,
     LiteLLMHandler,
     decoded_requests,
     image_urls,
 )
+from .sdk_current import current_model_clients
 
 
 def _loader(current_sdk, client, llm, *, number_of_retries: int = 1):
@@ -46,7 +47,8 @@ def test_current_sdk_augments_parent_once_with_exact_confluence_prompt(
         FixtureHTTPServer(litellm, LiteLLMHandler) as models,
     ):
         client = HTTPConfluenceClient(source.base_url)
-        loader = _loader(current_sdk, client, HTTPRecordingLLM(models.base_url))
+        llm, _ = current_model_clients(current_sdk, models.base_url)
+        loader = _loader(current_sdk, client, llm)
 
         documents = list(loader._lazy_load(kwargs={}))
 
@@ -60,7 +62,7 @@ def test_current_sdk_augments_parent_once_with_exact_confluence_prompt(
     }
     assert "Parent content before the diagram and after it." in parent.page_content
     assert "diagram.pngPARENT_IMAGE_DESCRIPTION" in parent.page_content
-    calls = decoded_requests(litellm.records, "/v1/chat/completions")
+    calls = decoded_requests(litellm.records, CHAT_COMPLETIONS_PATH)
     assert len(calls) == 1
     prompt = calls[0]["messages"][0]["content"][0]["text"]
     assert "## Image Type: Diagrams" in prompt

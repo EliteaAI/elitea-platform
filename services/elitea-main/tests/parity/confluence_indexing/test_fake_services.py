@@ -3,6 +3,8 @@ from __future__ import annotations
 import requests
 
 from .fake_services import (
+    CHAT_COMPLETIONS_PATH,
+    EMBEDDINGS_PATH,
     ConfluenceFixture,
     ConfluenceHandler,
     FixtureHTTPServer,
@@ -48,8 +50,12 @@ def test_litellm_fixture_records_vision_and_embedding_requests() -> None:
     fixture = LiteLLMFixture()
     with FixtureHTTPServer(fixture, LiteLLMHandler) as service:
         vision = requests.post(
-            f"{service.base_url}/v1/chat/completions",
+            f"{service.base_url}{CHAT_COMPLETIONS_PATH}",
             json={"model": "vision", "messages": [{"role": "user", "content": []}]},
+            headers={
+                "Authorization": fixture.required_authorization,
+                "OpenAI-Organization": fixture.required_organization,
+            },
             timeout=5,
         )
         vision.raise_for_status()
@@ -59,14 +65,18 @@ def test_litellm_fixture_records_vision_and_embedding_requests() -> None:
         )
 
         embeddings = requests.post(
-            f"{service.base_url}/v1/embeddings",
+            f"{service.base_url}{EMBEDDINGS_PATH}",
             json={"model": "embedding", "input": ["one", "two"]},
+            headers={
+                "Authorization": fixture.required_authorization,
+                "OpenAI-Organization": fixture.required_organization,
+            },
             timeout=5,
         )
         embeddings.raise_for_status()
         assert len(embeddings.json()["data"]) == 2
         assert len(embeddings.json()["data"][0]["embedding"]) == 8
         assert [record.path for record in fixture.records] == [
-            "/v1/chat/completions",
-            "/v1/embeddings",
+            CHAT_COMPLETIONS_PATH,
+            EMBEDDINGS_PATH,
         ]

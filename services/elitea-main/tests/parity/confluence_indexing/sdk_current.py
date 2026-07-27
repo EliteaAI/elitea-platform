@@ -20,8 +20,37 @@ class CurrentSDK:
     root: Path
     revision: str
     version: str
+    client: type[Any]
     confluence_wrapper: type[Any]
     confluence_loader: type[Any]
+
+
+def current_model_clients(
+    current_sdk: CurrentSDK,
+    base_url: str,
+    *,
+    auth_token: str = "fixture-pat",
+    project_id: int = 41,
+) -> tuple[Any, Any]:
+    """Build models through the same SDK client used by the worker adapter."""
+
+    client = current_sdk.client(
+        base_url=base_url,
+        project_id=project_id,
+        auth_token=auth_token,
+        model_timeout=5,
+    )
+    llm = client.get_llm(
+        "fixture-vision",
+        {
+            "max_tokens": 512,
+            "max_retries": 0,
+            "streaming": False,
+            "stream_usage": False,
+            "temperature": 0,
+        },
+    )
+    return llm, client.get_embeddings("fixture-embedding")
 
 
 def load_current_sdk(platform_root: Path) -> CurrentSDK:
@@ -63,10 +92,12 @@ def load_current_sdk(platform_root: Path) -> CurrentSDK:
         "elitea_sdk.tools.confluence.api_wrapper"
     )
     loader_module = importlib.import_module("elitea_sdk.tools.confluence.loader")
+    client_module = importlib.import_module("elitea_sdk.runtime.clients.client")
     return CurrentSDK(
         root=sdk_root,
         revision=revision,
         version=expected_version,
+        client=client_module.EliteAClient,
         confluence_wrapper=wrapper_module.ConfluenceAPIWrapper,
         confluence_loader=loader_module.EliteAConfluenceLoader,
     )

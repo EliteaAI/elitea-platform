@@ -2,14 +2,19 @@
 
 This directory is test-only. It freezes the current `elitea-sdk==0.8.30`
 Confluence indexing behavior before the standalone worker becomes the production
-owner of the full indexing pipeline.
+owner of the full indexing pipeline. It is current-baseline characterization,
+not standalone-worker parity closure.
 
 The harness crosses the following real boundaries:
 
 - fake Confluence and LiteLLM services run as independent HTTP servers;
+- all model calls use the pinned SDK's real `EliteAClient`, including its
+  `/llm/v1` paths, bearer/project headers, tokenization, and retry policy;
 - the current SDK source is imported from the exact worker lock revision;
 - the database profile writes through `langchain-postgres` to a real
   PostgreSQL/PgVector server and inspects the resulting rows directly;
+- real Poppler and Tesseract executables process deterministic PDF, populated
+  OCR, and empty-OCR fixtures in the mandatory CI profile;
 - the Go control-plane test serializes the production Redis command envelope
   and asserts that image, base64, prompt, and attachment bytes are absent.
 
@@ -50,7 +55,9 @@ python -m pytest tests/parity/confluence_indexing \
   -m "not pgvector"
 ```
 
-The HTTP fault matrix covers `401`, `403`, `429`, and `5xx`. Current attachment
+The source HTTP fault matrix covers `401`, `403`, `429`, and `5xx`. LiteLLM
+authentication and `403`, `429`, `500`, and `503` failures are exercised
+through the real SDK clients for both chat and embeddings. Current attachment
 download behavior is deliberately asserted as observed: a non-200 download is
 turned into an indexable dependent error document rather than a skipped item.
 That is parity evidence, not an endorsement of the behavior.
@@ -63,7 +70,7 @@ the emitted status events are `in_progress -> failed`.
 
 ## Disposable PostgreSQL/PgVector profile
 
-`run_pgvector.sh` starts an isolated `pgvector/pgvector:pg17` container when
+`run_pgvector.sh` starts an isolated `pgvector/pgvector:0.8.1-pg18` container when
 `ELITEA_CONFLUENCE_PARITY_PGVECTOR_URL` is not already supplied. It removes only
 the uniquely named container it creates.
 
@@ -84,16 +91,47 @@ The golden successful outcome is:
   documents rather than dependent documents;
 - two vision calls for the single image, with the two distinct current prompts;
 - embedding requests for both metadata and content rows;
-- terminal `completed` index metadata with exact counts, history, and events;
+- terminal `completed` index metadata with exact counts and history;
+- the exact ordered 15-event contract: 13 `thinking_step` events plus
+  `in_progress` and `completed` status events, including every current
+  `message`, `tool_name`, `toolkit`, count, and status field (only generated
+  UUID/timestamps are normalized);
 - the observed Confluence stats shape (`items_processed=1`,
   `total_fetched=0`, `total_skipped=0`);
 - no source, image, base64, prompt, credential, or result bytes in the Redis
   control envelope.
 
-The production Redis-envelope test hashes a deterministic 62 MiB data fixture:
+The production Redis-envelope serializer test hashes a deterministic 62 MiB
+data fixture:
 ten 3 MiB image payloads plus one 32 MiB payload. Only the immutable bundle
 reference, byte length, and digest may enter the command; every payload canary
 and representative base64/prompt/result fragment must be absent.
+
+This proves only that the production command serializer is reference-only. It
+does **not** yet prove the complete admission -> durable bundle persistence ->
+Redis `XADD` -> standalone-worker consumption -> output-streaming path under
+the 62 MiB workload, and it does not close issue #5681 by itself.
+
+## Mandatory CI profile
+
+The `Pinned current Confluence indexing characterization` job in
+`.github/workflows/ci-go.yml` does not permit the SDK or binary/PgVector tests
+to silently skip. It:
+
+- checks out revision
+  `48c51a16634a9924f6c5d5313c3bacedb0b5b56b` and validates its Git archive
+  digest against the worker lock;
+- runs against `pgvector/pgvector:0.8.1-pg18`;
+- installs and verifies Poppler and Tesseract;
+- runs the complete HTTP, model-client, binary-media, ordered-event, and real
+  PgVector characterization suite.
+
+`pytesseract==0.3.13` is installed explicitly in this current-baseline job.
+That is intentional evidence of a remaining standalone-worker packaging gap:
+the worker lock/image currently contains `unstructured_pytesseract==0.3.13`,
+while the SDK's inherited Confluence loader imports `pytesseract`. Poppler/PDF
+works in the worker capability image; OCR does not until that production
+dependency mismatch is fixed.
 
 ## Baseline transition evidence
 
@@ -115,6 +153,10 @@ Two tests are intentionally skipped rather than presenting mocked success:
 - Stop parity needs the real orchestration boundary because current
   `index_data` is synchronous and exposes no cancellation input. Today Stop is
   Pylon task cancellation plus index-meta reconciliation, not an SDK operation.
+
+The production 62 MiB cross-process path is also an explicit residual. The
+current test cannot honestly replace durable admission, real Redis delivery,
+worker claim/consumption, and streamed output with an in-process fake.
 
 ## Evidence boundary
 
