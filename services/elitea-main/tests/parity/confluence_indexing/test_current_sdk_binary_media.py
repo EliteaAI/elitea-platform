@@ -57,8 +57,8 @@ def _require_python_module(name: str) -> None:
     if importlib.util.find_spec(name) is not None:
         return
     reason = (
-        f"current-baseline OCR needs {name}; the standalone worker profile "
-        "currently installs only unstructured_pytesseract"
+        f"current-baseline OCR needs {name}; the admitted standalone worker "
+        "profile must provide the same import"
     )
     if os.getenv("ELITEA_REQUIRE_INDEX_BINARIES") == "1":
         pytest.fail(reason)
