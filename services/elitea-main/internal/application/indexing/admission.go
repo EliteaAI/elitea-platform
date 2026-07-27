@@ -26,7 +26,10 @@ const (
 	maxIndexAdmissionStringBytes     = 256
 )
 
-var ErrInvalidAuthoritativeIndexInput = errors.New("invalid authoritative index input")
+var (
+	ErrInvalidAuthoritativeIndexInput = errors.New("invalid authoritative index input")
+	ErrIndexGenerationExhausted       = errors.New("index generation is exhausted")
+)
 
 // AuthoritativeInputs are selected by a project-scoped resolver after toolkit
 // visibility and authorization. The resolver contract supplies immutable
@@ -247,6 +250,7 @@ type Admission struct {
 type AdmissionOutcome struct {
 	executionapp.AdmissionOutcome
 	Generation             uint64
+	IndexGeneration        uint64
 	IndexMetaID            string
 	IndexMetaCorrelationID string
 	IndexMetaInitializedAt *time.Time
@@ -262,14 +266,15 @@ var ErrIndexMetaInitializationMismatch = errors.New("index metadata initializati
 // that must already exist before its durable command becomes dispatchable.
 // Replaying the same transition preserves the first database-owned timestamp.
 type IndexMetaInitialization struct {
-	ExecutionID   string
-	Generation    uint64
-	MetaID        string
-	CorrelationID string
+	ExecutionID     string
+	Generation      uint64
+	IndexGeneration uint64
+	MetaID          string
+	CorrelationID   string
 }
 
 func (i IndexMetaInitialization) Validate() error {
-	if i.ExecutionID == "" || i.Generation == 0 ||
+	if i.ExecutionID == "" || i.Generation == 0 || i.IndexGeneration == 0 ||
 		!validOptionalText(i.MetaID, executiondomain.MaxIndexMetaIDBytes) ||
 		!validOptionalText(i.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) ||
 		i.MetaID == "" || i.CorrelationID == "" {
@@ -366,7 +371,7 @@ func (s *AdmissionService) Submit(ctx context.Context, request SubmitRequest) (A
 		return AdmissionOutcome{}, fmt.Errorf("admit index ingest: %w", err)
 	}
 	if outcome.ExecutionID == "" || outcome.CommandID == "" ||
-		outcome.Generation == 0 ||
+		outcome.Generation == 0 || outcome.IndexGeneration == 0 ||
 		outcome.IndexMetaID == "" || outcome.IndexMetaCorrelationID == "" ||
 		outcome.IndexMetaCorrelationID != request.CorrelationID ||
 		(outcome.Created && outcome.IndexMetaID != binding.IndexMetaID) ||

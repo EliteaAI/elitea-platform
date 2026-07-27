@@ -108,6 +108,7 @@ CREATE TABLE elitea_runtime.command_outbox (
 CREATE TABLE elitea_runtime.index_ingest_jobs (
     execution_id text NOT NULL,
     generation bigint NOT NULL,
+    index_generation bigint NOT NULL,
     capability_id text NOT NULL,
     input_bundle_id text NOT NULL,
     toolkit_configuration_entry_id text NOT NULL,
@@ -134,6 +135,15 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     FOREIGN KEY (execution_id, generation, capability_id, input_bundle_id)
         REFERENCES elitea_runtime.execution_jobs
                    (execution_id, generation, capability_id, input_bundle_id)
+);
+
+CREATE TABLE elitea_runtime.index_generation_counters (
+    resource_project_id integer NOT NULL REFERENCES centry.project(id),
+    toolkit_id integer NOT NULL,
+    index_name text NOT NULL,
+    last_generation bigint NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (resource_project_id, toolkit_id, index_name)
 );
 
 CREATE TABLE elitea_runtime.index_result_artifacts (

@@ -13,6 +13,7 @@ import (
 type Querier interface {
 	AcquireAuthProviderAdvisoryLock(ctx context.Context, providerRef string) error
 	AddNewAuthUserToRootGroup(ctx context.Context, userID int32) (int64, error)
+	AllocateIndexGeneration(ctx context.Context, arg AllocateIndexGenerationParams) (int64, error)
 	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
 	// Claim only the oldest unfinished revision for each configuration. A lower

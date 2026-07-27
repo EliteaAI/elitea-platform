@@ -198,10 +198,11 @@ func admitPostgresIndexDispatch(t *testing.T, ctx context.Context, jobs *IndexIn
 		t.Fatalf("admit %s index dispatch: outcome=%+v err=%v", prefix, outcome, err)
 	}
 	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   outcome.ExecutionID,
-		Generation:    outcome.Generation,
-		MetaID:        outcome.IndexMetaID,
-		CorrelationID: outcome.IndexMetaCorrelationID,
+		ExecutionID:     outcome.ExecutionID,
+		Generation:      outcome.Generation,
+		IndexGeneration: outcome.IndexGeneration,
+		MetaID:          outcome.IndexMetaID,
+		CorrelationID:   outcome.IndexMetaCorrelationID,
 	}); err != nil {
 		t.Fatalf("initialize %s index metadata: %v", prefix, err)
 	}

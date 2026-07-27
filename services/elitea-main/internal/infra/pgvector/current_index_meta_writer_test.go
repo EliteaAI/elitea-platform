@@ -95,15 +95,20 @@ func TestPlanCurrentInitialIndexMetaRejectsUnknownExistingState(t *testing.T) {
 }
 
 func TestPlanCurrentInitialIndexMetaReindexPreservesAndAppendsObservableHistory(t *testing.T) {
-	record := currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2")
+	record := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
+		2,
+	)
 	document := "index_meta_Docs"
 	existing := currentStoredIndexMeta{
 		id:       "current-physical-row",
 		document: &document,
 		metadata: map[string]any{
-			"collection": "Docs",
-			"type":       "index_meta",
-			"state":      "completed",
+			"collection":           "Docs",
+			"type":                 "index_meta",
+			"state":                "completed",
+			"execution_generation": json.Number("1"),
 			"history": []any{
 				map[string]any{"state": "created", "task_id": nil},
 				map[string]any{"state": "completed", "task_id": "old"},
@@ -157,13 +162,14 @@ func TestPlanCurrentTerminalIndexMetaFencesRetriesAndAllowsNextGeneration(t *tes
 			}
 			occurredAt := time.Date(2026, time.July, 26, 12, 13, 14, 567_000_000, time.UTC)
 			terminal := indexingapp.CurrentTerminalIndexMeta{
-				MetaID:      first.MetaID,
-				ExecutionID: first.ExecutionID,
-				Generation:  first.Generation,
-				IndexName:   first.IndexName,
-				ToolkitID:   first.ToolkitID,
-				State:       state,
-				OccurredAt:  occurredAt,
+				MetaID:          first.MetaID,
+				ExecutionID:     first.ExecutionID,
+				Generation:      first.Generation,
+				IndexGeneration: first.IndexGeneration,
+				IndexName:       first.IndexName,
+				ToolkitID:       first.ToolkitID,
+				State:           state,
+				OccurredAt:      occurredAt,
 			}
 			if state == indexingapp.CurrentIndexMetaFailed {
 				terminal.SafeError = "A dependency is unavailable."
@@ -256,14 +262,15 @@ func TestPlanCurrentTerminalIndexMetaRejectsDifferentGeneration(t *testing.T) {
 	}
 	document := created.document
 	errRecord := indexingapp.CurrentTerminalIndexMeta{
-		MetaID:      "meta-1",
-		ExecutionID: "execution-1",
-		Generation:  2,
-		IndexName:   "Docs",
-		ToolkitID:   19,
-		State:       indexingapp.CurrentIndexMetaFailed,
-		OccurredAt:  time.Now(),
-		SafeError:   "A dependency is unavailable.",
+		MetaID:          "meta-1",
+		ExecutionID:     "execution-1",
+		Generation:      2,
+		IndexGeneration: first.IndexGeneration,
+		IndexName:       "Docs",
+		ToolkitID:       19,
+		State:           indexingapp.CurrentIndexMetaFailed,
+		OccurredAt:      time.Now(),
+		SafeError:       "A dependency is unavailable.",
 	}
 	if _, err := planCurrentTerminalIndexMeta(errRecord, []currentStoredIndexMeta{{
 		id:       created.id,
@@ -302,13 +309,14 @@ func TestPlanCurrentCancellationConvergesLateSDKCompletionForSameExecution(t *te
 	completed = mustDecodeCurrentIndexMeta(t, completedBytes)
 
 	cancelled := indexingapp.CurrentTerminalIndexMeta{
-		MetaID:      initial.MetaID,
-		ExecutionID: initial.ExecutionID,
-		Generation:  initial.Generation,
-		IndexName:   initial.IndexName,
-		ToolkitID:   initial.ToolkitID,
-		State:       indexingapp.CurrentIndexMetaCancelled,
-		OccurredAt:  time.Date(2026, time.July, 26, 13, 45, 0, 0, time.UTC),
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaCancelled,
+		OccurredAt:      time.Date(2026, time.July, 26, 13, 45, 0, 0, time.UTC),
 	}
 	plan, err := planCurrentTerminalIndexMeta(cancelled, []currentStoredIndexMeta{{
 		id:       created.id,
@@ -379,14 +387,15 @@ func TestPlanCurrentFailureConvergesCompatibleSDKTerminalStates(t *testing.T) {
 			sdk = mustDecodeCurrentIndexMeta(t, encoded)
 
 			failed := indexingapp.CurrentTerminalIndexMeta{
-				MetaID:      initial.MetaID,
-				ExecutionID: initial.ExecutionID,
-				Generation:  initial.Generation,
-				IndexName:   initial.IndexName,
-				ToolkitID:   initial.ToolkitID,
-				State:       indexingapp.CurrentIndexMetaFailed,
-				OccurredAt:  time.Date(2026, time.July, 26, 13, 45, 0, 0, time.UTC),
-				SafeError:   "Indexing failed before completion.",
+				MetaID:          initial.MetaID,
+				ExecutionID:     initial.ExecutionID,
+				Generation:      initial.Generation,
+				IndexGeneration: initial.IndexGeneration,
+				IndexName:       initial.IndexName,
+				ToolkitID:       initial.ToolkitID,
+				State:           indexingapp.CurrentIndexMetaFailed,
+				OccurredAt:      time.Date(2026, time.July, 26, 13, 45, 0, 0, time.UTC),
+				SafeError:       "Indexing failed before completion.",
 			}
 			plan, err := planCurrentTerminalIndexMeta(
 				failed,
@@ -427,13 +436,14 @@ func TestPlanCurrentTerminalMarksOlderGenerationSuperseded(t *testing.T) {
 	}
 	document := created.document
 	old := indexingapp.CurrentTerminalIndexMeta{
-		MetaID:      "meta-1",
-		ExecutionID: "execution-1",
-		Generation:  1,
-		IndexName:   current.IndexName,
-		ToolkitID:   current.ToolkitID,
-		State:       indexingapp.CurrentIndexMetaCancelled,
-		OccurredAt:  time.Now(),
+		MetaID:          "meta-1",
+		ExecutionID:     "execution-1",
+		Generation:      1,
+		IndexGeneration: 1,
+		IndexName:       current.IndexName,
+		ToolkitID:       current.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaCancelled,
+		OccurredAt:      time.Now(),
 	}
 	if _, err := planCurrentTerminalIndexMeta(
 		old,
@@ -447,6 +457,142 @@ func TestPlanCurrentTerminalMarksOlderGenerationSuperseded(t *testing.T) {
 	}
 }
 
+func TestPlanCurrentInitialIndexMetaUsesLegacyGenerationFallback(t *testing.T) {
+	next := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
+		2,
+	)
+	document := "index_meta_Docs"
+	legacy := currentStoredIndexMeta{
+		id:       "legacy-physical-row",
+		document: &document,
+		metadata: map[string]any{
+			"collection":           "Docs",
+			"type":                 "index_meta",
+			"state":                "completed",
+			"execution_generation": json.Number("1"),
+			"history": []any{
+				map[string]any{
+					"state":                "completed",
+					"execution_generation": json.Number("1"),
+				},
+			},
+		},
+	}
+	plan, err := planCurrentInitialIndexMeta(next, []currentStoredIndexMeta{legacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.noop || plan.insert || plan.id != legacy.id {
+		t.Fatalf("plan=%+v", plan)
+	}
+	metadata := mustDecodeCurrentIndexMeta(t, plan.metadata)
+	if metadata["index_generation"] != json.Number("2") {
+		t.Fatalf("metadata=%#v", metadata)
+	}
+}
+
+func TestPlanCurrentInitialIndexMetaRejectsMalformedPresentLogicalGeneration(t *testing.T) {
+	next := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
+		2,
+	)
+	document := "index_meta_Docs"
+	legacy := currentStoredIndexMeta{
+		id:       "legacy-physical-row",
+		document: &document,
+		metadata: map[string]any{
+			"state":                "completed",
+			"execution_generation": json.Number("1"),
+			"index_generation":     "malformed",
+			"history":              []any{},
+		},
+	}
+	if _, err := planCurrentInitialIndexMeta(
+		next,
+		[]currentStoredIndexMeta{legacy},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPlanCurrentInitialIndexMetaRejectsDelayedOlderLogicalGeneration(t *testing.T) {
+	current := currentIndexMetaRecordWithGeneration(
+		t,
+		currentIndexMetaRecordForTest("meta-2", "execution-2", "message-2"),
+		2,
+	)
+	created, err := planCurrentInitialIndexMeta(current, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := created.document
+	delayed := currentIndexMetaRecordForTest("meta-1", "execution-1", "message-1")
+	if _, err := planCurrentInitialIndexMeta(
+		delayed,
+		[]currentStoredIndexMeta{{
+			id:       created.id,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, created.metadata),
+		}},
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPlanCurrentTerminalIndexMetaUpgradesLegacyGenerationMetadata(t *testing.T) {
+	initial := currentIndexMetaRecordForTest("meta-1", "execution-1", "message-1")
+	created, err := planCurrentInitialIndexMeta(initial, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := created.document
+	legacy := mustDecodeCurrentIndexMeta(t, created.metadata)
+	delete(legacy, "index_generation")
+	history := currentIndexMetaHistory(legacy["history"])
+	delete(history[len(history)-1].(map[string]any), "index_generation")
+	legacyBytes, err := encodeCurrentIndexMetaWithHistory(
+		func() map[string]any {
+			value := cloneCurrentIndexMetaObject(legacy)
+			delete(value, "history")
+			return value
+		}(),
+		history,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := indexingapp.CurrentTerminalIndexMeta{
+		MetaID:          initial.MetaID,
+		ExecutionID:     initial.ExecutionID,
+		Generation:      initial.Generation,
+		IndexGeneration: initial.IndexGeneration,
+		IndexName:       initial.IndexName,
+		ToolkitID:       initial.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaCancelled,
+		OccurredAt:      time.Date(2026, time.July, 26, 14, 0, 0, 0, time.UTC),
+	}
+	plan, err := planCurrentTerminalIndexMeta(
+		terminal,
+		[]currentStoredIndexMeta{{
+			id:       created.id,
+			document: &document,
+			metadata: mustDecodeCurrentIndexMeta(t, legacyBytes),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := mustDecodeCurrentIndexMeta(t, plan.metadata)
+	history = currentIndexMetaHistory(metadata["history"])
+	if metadata["index_generation"] != json.Number("1") ||
+		history[len(history)-1].(map[string]any)["index_generation"] != json.Number("1") {
+		t.Fatalf("metadata=%#v history=%#v", metadata, history)
+	}
+}
+
 func currentIndexMetaRecordWithGeneration(
 	t *testing.T,
 	record indexingapp.CurrentInitialIndexMeta,
@@ -454,12 +600,12 @@ func currentIndexMetaRecordWithGeneration(
 ) indexingapp.CurrentInitialIndexMeta {
 	t.Helper()
 	metadata := mustDecodeCurrentIndexMeta(t, record.InitialMetadata)
-	metadata["execution_generation"] = generation
+	metadata["index_generation"] = generation
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
-	record.Generation = generation
+	record.IndexGeneration = generation
 	record.InitialMetadata = encoded
 	return record
 }
@@ -479,6 +625,7 @@ func currentIndexMetaRecordForTest(metaID, executionID, correlationID string) in
 		"toolkit_id":           19,
 		"execution_id":         executionID,
 		"execution_generation": 1,
+		"index_generation":     1,
 		"index_meta_id":        metaID,
 		"correlation_id":       correlationID,
 	})
@@ -490,6 +637,7 @@ func currentIndexMetaRecordForTest(metaID, executionID, correlationID string) in
 		ExecutionID:     executionID,
 		CorrelationID:   correlationID,
 		Generation:      1,
+		IndexGeneration: 1,
 		IndexName:       "Docs",
 		ToolkitID:       19,
 		Document:        "index_meta_Docs",

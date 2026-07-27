@@ -150,6 +150,21 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		}
 	}
 
+	indexGeneration, err := txQueries.AllocateIndexGeneration(ctx, sqlcgen.AllocateIndexGenerationParams{
+		ResourceProjectID: int32(resourceProject),
+		ToolkitID:         admission.Binding.ToolkitID,
+		IndexName:         admission.Binding.IndexName,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return indexingapp.AdmissionOutcome{}, indexingapp.ErrIndexGenerationExhausted
+	}
+	if err != nil {
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("allocate index generation: %w", err)
+	}
+	if indexGeneration <= 0 {
+		return indexingapp.AdmissionOutcome{}, errors.New("database returned invalid index generation")
+	}
+
 	timingRow, err := txQueries.LoadRuntimeAdmissionTiming(ctx, r.policy.DeadlineTTL.Milliseconds())
 	if err != nil {
 		return indexingapp.AdmissionOutcome{}, fmt.Errorf("load index admission timing: %w", err)
@@ -201,6 +216,7 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 	if err := txQueries.InsertIndexIngestJob(ctx, sqlcgen.InsertIndexIngestJobParams{
 		ExecutionID:                 admission.Record.Job.ID,
 		Generation:                  int64(admission.Record.Job.Generation),
+		IndexGeneration:             indexGeneration,
 		InputBundleID:               admission.Record.InputBundle.ID,
 		ToolkitConfigurationEntryID: admission.Binding.ToolkitConfigurationEntryID,
 		ToolParametersEntryID:       admission.Binding.ToolParametersEntryID,
@@ -242,6 +258,7 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 			Deadline:    timing.Deadline,
 		},
 		Generation:             admission.Record.Job.Generation,
+		IndexGeneration:        uint64(indexGeneration),
 		IndexMetaID:            admission.Binding.IndexMetaID,
 		IndexMetaCorrelationID: admission.Binding.IndexMetaCorrelationID,
 	}, nil
@@ -257,12 +274,13 @@ func (r *IndexIngestJobsRepository) MarkIndexMetaInitialized(
 	if err := initialization.Validate(); err != nil {
 		return time.Time{}, err
 	}
-	if initialization.Generation > math.MaxInt64 {
+	if initialization.Generation > math.MaxInt64 || initialization.IndexGeneration > math.MaxInt64 {
 		return time.Time{}, indexingapp.ErrIndexMetaInitializationMismatch
 	}
 	initializedAt, err := sqlcgen.New(r.pool).MarkIndexMetaInitialized(ctx, sqlcgen.MarkIndexMetaInitializedParams{
 		ExecutionID:            initialization.ExecutionID,
 		Generation:             int64(initialization.Generation),
+		IndexGeneration:        int64(initialization.IndexGeneration),
 		IndexMetaID:            initialization.MetaID,
 		IndexMetaCorrelationID: initialization.CorrelationID,
 	})
@@ -293,7 +311,7 @@ func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, ke
 	if !row.AdmittedAt.Valid || !row.Deadline.Valid || row.AdmittedAt.Time.IsZero() || !row.Deadline.Time.After(row.AdmittedAt.Time) {
 		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index admission timing is invalid")
 	}
-	if row.Generation <= 0 ||
+	if row.Generation <= 0 || row.IndexGeneration <= 0 ||
 		row.IndexMetaID == nil || *row.IndexMetaID == "" ||
 		row.IndexMetaCorrelationID == nil || *row.IndexMetaCorrelationID == "" {
 		return indexingapp.AdmissionOutcome{}, runtimedomain.Digest{}, errors.New("stored index metadata identity is invalid")
@@ -315,6 +333,7 @@ func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, ke
 			Deadline:    row.Deadline.Time.UTC(),
 		},
 		Generation:             uint64(row.Generation),
+		IndexGeneration:        uint64(row.IndexGeneration),
 		IndexMetaID:            *row.IndexMetaID,
 		IndexMetaCorrelationID: *row.IndexMetaCorrelationID,
 		IndexMetaInitializedAt: initializedAt,

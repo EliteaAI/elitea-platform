@@ -2,6 +2,7 @@
 SELECT j.execution_id,
        j.command_id,
        j.generation,
+       i.index_generation,
        j.request_digest,
        j.admitted_at,
        o.deadline,
@@ -64,6 +65,24 @@ WITH authority AS MATERIALIZED (
 SELECT admitted_at::timestamptz AS admitted_at,
        (admitted_at + (sqlc.arg(deadline_ttl_millis)::bigint * interval '1 millisecond'))::timestamptz AS deadline
 FROM authority;
+
+-- name: AllocateIndexGeneration :one
+INSERT INTO elitea_runtime.index_generation_counters (
+    resource_project_id, toolkit_id, index_name, last_generation, updated_at
+) VALUES (
+    sqlc.arg(resource_project_id)::integer,
+    sqlc.arg(toolkit_id)::integer,
+    sqlc.arg(index_name)::text,
+    1,
+    clock_timestamp()
+)
+ON CONFLICT (resource_project_id, toolkit_id, index_name) DO UPDATE
+SET last_generation =
+        elitea_runtime.index_generation_counters.last_generation + 1,
+    updated_at = clock_timestamp()
+WHERE elitea_runtime.index_generation_counters.last_generation
+      < 9223372036854775807
+RETURNING last_generation;
 
 -- name: InsertRuntimeInputBundle :exec
 INSERT INTO elitea_runtime.input_bundles (
@@ -130,7 +149,7 @@ RETURNING execution_id;
 
 -- name: InsertIndexIngestJob :exec
 INSERT INTO elitea_runtime.index_ingest_jobs (
-    execution_id, generation, capability_id, input_bundle_id,
+    execution_id, generation, index_generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
     index_meta_id, index_meta_correlation_id,
@@ -138,6 +157,7 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
 ) VALUES (
     sqlc.arg(execution_id)::text,
     sqlc.arg(generation)::bigint,
+    sqlc.arg(index_generation)::bigint,
     'index.ingest.v1',
     sqlc.arg(input_bundle_id)::text,
     sqlc.arg(toolkit_configuration_entry_id)::text,
@@ -161,6 +181,7 @@ SET index_meta_initialized_at = COALESCE(
 FROM elitea_runtime.execution_jobs AS j
 WHERE i.execution_id = sqlc.arg(execution_id)::text
   AND i.generation = sqlc.arg(generation)::bigint
+  AND i.index_generation = sqlc.arg(index_generation)::bigint
   AND i.capability_id = 'index.ingest.v1'
   AND i.index_meta_id = sqlc.arg(index_meta_id)::text
   AND i.index_meta_correlation_id = sqlc.arg(index_meta_correlation_id)::text

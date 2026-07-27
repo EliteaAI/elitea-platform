@@ -53,9 +53,10 @@ func TestPostgresServiceBackedIndexIngestAdmission(t *testing.T) {
 	var indexName, initiator, streamName, indexMetaID, indexMetaCorrelationID string
 	var indexMetaInitialized bool
 	var validationColumns int
-	var preparedBytes, inputBytes int64
+	var runtimeGeneration, indexGeneration, preparedBytes, inputBytes int64
 	if err := pool.QueryRow(ctx, `
-SELECT i.toolkit_id, i.index_name, i.initiator, o.stream_name,
+SELECT j.generation, i.index_generation,
+       i.toolkit_id, i.index_name, i.initiator, o.stream_name,
        i.index_meta_id, i.index_meta_correlation_id,
        i.index_meta_initialized_at IS NOT NULL,
        num_nonnulls(
@@ -73,24 +74,29 @@ JOIN elitea_runtime.command_outbox AS o
 JOIN elitea_runtime.input_bundle_entries AS e
   ON e.input_bundle_id = j.input_bundle_id
 WHERE j.execution_id = $1
-GROUP BY i.toolkit_id, i.index_name, i.initiator, o.stream_name,
+GROUP BY j.generation, i.index_generation,
+         i.toolkit_id, i.index_name, i.initiator, o.stream_name,
          i.index_meta_id, i.index_meta_correlation_id,
          i.index_meta_initialized_at,
          j.configuration_revision_id, j.configuration_type,
          j.catalog_revision, j.catalog_digest, j.schema_id,
          j.schema_revision, j.schema_digest, j.settings_entry_id,
          o.prepared_signed_envelope_bytes`, created.ExecutionID).Scan(
+		&runtimeGeneration, &indexGeneration,
 		&toolkitID, &indexName, &initiator, &streamName,
 		&indexMetaID, &indexMetaCorrelationID, &indexMetaInitialized,
 		&validationColumns, &preparedBytes, &inputBytes,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName ||
+	if runtimeGeneration != 1 || indexGeneration != 1 ||
+		toolkitID != 19 || indexName != "docs" || initiator != "user" || streamName != policy.StreamName ||
 		indexMetaID != created.IndexMetaID || indexMetaCorrelationID != created.IndexMetaCorrelationID ||
 		indexMetaInitialized || validationColumns != 0 || preparedBytes != 0 || inputBytes == 0 {
 		t.Fatalf(
-			"unexpected durable index binding: toolkit=%d index=%s initiator=%s stream=%s meta=%s correlation=%s initialized=%v validation=%d outbox_bytes=%d input_bytes=%d",
+			"unexpected durable index binding: runtime_generation=%d index_generation=%d toolkit=%d index=%s initiator=%s stream=%s meta=%s correlation=%s initialized=%v validation=%d outbox_bytes=%d input_bytes=%d",
+			runtimeGeneration,
+			indexGeneration,
 			toolkitID,
 			indexName,
 			initiator,
@@ -137,27 +143,39 @@ WHERE outbox_id = 'first-outbox'
       OR published_at IS NOT NULL
   )`)
 	if _, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   created.ExecutionID,
-		Generation:    created.Generation,
-		MetaID:        created.IndexMetaID,
-		CorrelationID: "wrong-correlation",
+		ExecutionID:     created.ExecutionID,
+		Generation:      created.Generation,
+		IndexGeneration: created.IndexGeneration,
+		MetaID:          created.IndexMetaID,
+		CorrelationID:   "wrong-correlation",
 	}); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
 		t.Fatalf("mismatched metadata transition error=%v", err)
 	}
+	if _, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
+		ExecutionID:     created.ExecutionID,
+		Generation:      created.Generation,
+		IndexGeneration: created.IndexGeneration + 1,
+		MetaID:          created.IndexMetaID,
+		CorrelationID:   created.IndexMetaCorrelationID,
+	}); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
+		t.Fatalf("mismatched logical generation transition error=%v", err)
+	}
 	initializedAt, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   created.ExecutionID,
-		Generation:    created.Generation,
-		MetaID:        created.IndexMetaID,
-		CorrelationID: created.IndexMetaCorrelationID,
+		ExecutionID:     created.ExecutionID,
+		Generation:      created.Generation,
+		IndexGeneration: created.IndexGeneration,
+		MetaID:          created.IndexMetaID,
+		CorrelationID:   created.IndexMetaCorrelationID,
 	})
 	if err != nil || initializedAt.IsZero() {
 		t.Fatalf("initialize index metadata: at=%v err=%v", initializedAt, err)
 	}
 	replayedInitialization, err := repository.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   created.ExecutionID,
-		Generation:    created.Generation,
-		MetaID:        created.IndexMetaID,
-		CorrelationID: created.IndexMetaCorrelationID,
+		ExecutionID:     created.ExecutionID,
+		Generation:      created.Generation,
+		IndexGeneration: created.IndexGeneration,
+		MetaID:          created.IndexMetaID,
+		CorrelationID:   created.IndexMetaCorrelationID,
 	})
 	if err != nil || !replayedInitialization.Equal(initializedAt) {
 		t.Fatalf("replayed metadata initialization changed timestamp: first=%v replay=%v err=%v", initializedAt, replayedInitialization, err)
@@ -174,6 +192,7 @@ WHERE outbox_id = 'first-outbox'
 	if err != nil || replayed.Created ||
 		replayed.ExecutionID != created.ExecutionID || replayed.CommandID != created.CommandID ||
 		replayed.Generation != created.Generation ||
+		replayed.IndexGeneration != created.IndexGeneration ||
 		replayed.IndexMetaID != created.IndexMetaID || replayed.IndexMetaCorrelationID != created.IndexMetaCorrelationID ||
 		replayed.IndexMetaInitializedAt == nil || !replayed.IndexMetaInitializedAt.Equal(initializedAt) ||
 		!replayed.AdmittedAt.Equal(created.AdmittedAt) || !replayed.Deadline.Equal(created.Deadline) {
@@ -322,10 +341,11 @@ WHERE execution_id = $1
 		t.Fatal(err)
 	}
 	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   admitted.ExecutionID,
-		Generation:    admitted.Generation,
-		MetaID:        admitted.IndexMetaID,
-		CorrelationID: admitted.IndexMetaCorrelationID,
+		ExecutionID:     admitted.ExecutionID,
+		Generation:      admitted.Generation,
+		IndexGeneration: admitted.IndexGeneration,
+		MetaID:          admitted.IndexMetaID,
+		CorrelationID:   admitted.IndexMetaCorrelationID,
 	}); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
 		t.Fatalf("cancelled metadata transition error=%v", err)
 	}

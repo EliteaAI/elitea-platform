@@ -21,6 +21,7 @@ func TestCurrentIndexMetaTerminalBindingUsesFrozenAdmissionEvidence(t *testing.T
 		"meta-1",
 		"execution-1",
 		int64(3),
+		int64(8),
 		frozen,
 	}}}}
 	repository, err := newCurrentIndexMetaTerminalBindingsRepository(store)
@@ -34,7 +35,8 @@ func TestCurrentIndexMetaTerminalBindingUsesFrozenAdmissionEvidence(t *testing.T
 	if binding.ResourceProjectID != 7 || binding.ActorUserID != 13 ||
 		binding.ToolkitID != 19 || binding.IndexName != "Docs" ||
 		binding.MetaID != "meta-1" || binding.ExecutionID != "execution-1" ||
-		binding.Generation != 3 || string(binding.ToolkitConfiguration) != string(frozen) {
+		binding.Generation != 3 || binding.IndexGeneration != 8 ||
+		string(binding.ToolkitConfiguration) != string(frozen) {
 		t.Fatalf("binding=%+v", binding)
 	}
 	if len(store.rowCalls) != 1 ||
@@ -45,6 +47,7 @@ func TestCurrentIndexMetaTerminalBindingUsesFrozenAdmissionEvidence(t *testing.T
 	}
 	for _, predicate := range []string{
 		"i.index_meta_id",
+		"i.index_generation",
 		"e.entry_id = i.toolkit_configuration_entry_id",
 		"j.capability_id = 'index.ingest.v1'",
 		"i.index_meta_initialized_at IS NOT NULL",
@@ -212,6 +215,8 @@ func TestCurrentIndexMetaTerminalEffectSupersedesOnlyDurablyNewerInitializedIden
 		"newer_index.toolkit_id = stale.toolkit_id",
 		"newer_index.index_name = stale.index_name",
 		"newer_index.index_meta_initialized_at IS NOT NULL",
+		"newer_index.index_generation > stale.index_generation",
+		"newer_index.index_generation = stale.index_generation",
 		"(newer_job.admitted_at, newer_job.execution_id)",
 		"> (stale.admitted_at, stale.execution_id)",
 		"EXISTS (SELECT 1 FROM stale)",
@@ -339,11 +344,34 @@ func TestIndexMetaTerminalSupersessionMigrationProvidesOrderedLookup(t *testing.
 	}
 }
 
-// TestPostgresCurrentIndexMetaEqualGenerationSupersession crosses the real
-// PostgreSQL migration, claim ownership and total-order transition. It proves
-// that generation=1 executions are ordered by (admitted_at, execution_id);
+func TestIndexGenerationMigrationDefinesTargetScopedAuthority(t *testing.T) {
+	migration, err := os.ReadFile("../../../../migrations/shared/0046_index_generation.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(migration)
+	for _, fragment := range []string{
+		"ADD COLUMN index_generation BIGINT",
+		"SET index_generation = 1",
+		"ALTER COLUMN index_generation SET NOT NULL",
+		"CREATE TABLE elitea_runtime.index_generation_counters",
+		"PRIMARY KEY (resource_project_id, toolkit_id, index_name)",
+		"max(i.index_generation)",
+		"ON CONFLICT (resource_project_id, toolkit_id, index_name) DO UPDATE",
+		"index_ingest_jobs_initialized_generation_idx",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("index generation migration is missing %q", fragment)
+		}
+	}
+}
+
+// TestPostgresCurrentIndexMetaLogicalGenerationSupersession crosses the real
+// PostgreSQL migration, allocation, claim ownership and supersession
+// transition. It proves runtime generation remains one while the target-scoped
+// logical generation is the primary order even when admitted_at is equal;
 // it does not cross PgVector or the runtime reconciler process.
-func TestPostgresCurrentIndexMetaEqualGenerationSupersession(t *testing.T) {
+func TestPostgresCurrentIndexMetaLogicalGenerationSupersession(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	policy := IndexIngestDispatchPolicy{
@@ -371,14 +399,15 @@ func TestPostgresCurrentIndexMetaEqualGenerationSupersession(t *testing.T) {
 		ctx,
 		postgresIndexSubmitRequest("supersession-a", "equal-generation"),
 	)
-	if err != nil || !first.Created || first.Generation != 1 {
+	if err != nil || !first.Created || first.Generation != 1 || first.IndexGeneration != 1 {
 		t.Fatalf("first admission=%+v err=%v", first, err)
 	}
 	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   first.ExecutionID,
-		Generation:    first.Generation,
-		MetaID:        first.IndexMetaID,
-		CorrelationID: first.IndexMetaCorrelationID,
+		ExecutionID:     first.ExecutionID,
+		Generation:      first.Generation,
+		IndexGeneration: first.IndexGeneration,
+		MetaID:          first.IndexMetaID,
+		CorrelationID:   first.IndexMetaCorrelationID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -397,14 +426,15 @@ WHERE execution_id = $1
 		ctx,
 		postgresIndexSubmitRequest("supersession-z", "equal-generation"),
 	)
-	if err != nil || !second.Created || second.Generation != 1 {
+	if err != nil || !second.Created || second.Generation != 1 || second.IndexGeneration != 2 {
 		t.Fatalf("second admission=%+v err=%v", second, err)
 	}
 	if _, err := jobs.MarkIndexMetaInitialized(ctx, indexingapp.IndexMetaInitialization{
-		ExecutionID:   second.ExecutionID,
-		Generation:    second.Generation,
-		MetaID:        second.IndexMetaID,
-		CorrelationID: second.IndexMetaCorrelationID,
+		ExecutionID:     second.ExecutionID,
+		Generation:      second.Generation,
+		IndexGeneration: second.IndexGeneration,
+		MetaID:          second.IndexMetaID,
+		CorrelationID:   second.IndexMetaCorrelationID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +483,7 @@ WHERE execution_id = $1
 	}
 	superseded, err := terminals.SupersedeTerminalEffectIfNewerInitialized(ctx, firstClaim)
 	if err != nil || !superseded {
-		t.Fatalf("supersede first equal-generation execution=%v err=%v", superseded, err)
+		t.Fatalf("supersede first logical generation=%v err=%v", superseded, err)
 	}
 	assertPostgresCount(t, ctx, pool, 1, `
 SELECT count(*)

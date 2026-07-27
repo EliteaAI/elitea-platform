@@ -387,13 +387,24 @@ func planCurrentInitialIndexMeta(
 	}
 
 	stored := existing[0]
+	storedIndexGeneration, generationOK := currentIndexMetaLogicalGeneration(stored.metadata)
+	if !generationOK {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+	}
 	storedMetaID, _ := stored.metadata["index_meta_id"].(string)
 	if storedMetaID == record.MetaID {
-		if stored.document == nil || *stored.document != record.Document ||
+		if storedIndexGeneration != int64(record.IndexGeneration) ||
+			stored.document == nil || *stored.document != record.Document ||
 			!currentIndexMetaRetryMatches(stored.metadata, initial) {
 			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 		}
 		return currentIndexMetaWritePlan{noop: true}, nil
+	}
+	if storedIndexGeneration > int64(record.IndexGeneration) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	if storedIndexGeneration == int64(record.IndexGeneration) {
+		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 	state, _ := stored.metadata["state"].(string)
 	if !currentIndexMetaCanStartNextGeneration(state) {
@@ -421,13 +432,15 @@ func planCurrentTerminalIndexMeta(
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 	stored := existing[0]
-	generation, generationOK := currentIndexMetaInt64(stored.metadata["execution_generation"])
-	if generationOK && generation > int64(record.Generation) {
+	indexGeneration, indexGenerationOK := currentIndexMetaLogicalGeneration(stored.metadata)
+	if indexGenerationOK && indexGeneration > int64(record.IndexGeneration) {
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaSuperseded
 	}
+	executionGeneration, executionGenerationOK := currentIndexMetaInt64(stored.metadata["execution_generation"])
 	if stored.metadata["index_meta_id"] != record.MetaID ||
 		stored.metadata["execution_id"] != record.ExecutionID ||
-		!generationOK || generation != int64(record.Generation) {
+		!indexGenerationOK || indexGeneration != int64(record.IndexGeneration) ||
+		!executionGenerationOK || executionGeneration != int64(record.Generation) {
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 	}
 	state, stateOK := stored.metadata["state"].(string)
@@ -437,6 +450,7 @@ func planCurrentTerminalIndexMeta(
 	terminal := cloneCurrentIndexMetaObject(stored.metadata)
 	delete(terminal, "history")
 	terminal["state"] = string(record.State)
+	terminal["index_generation"] = record.IndexGeneration
 	terminal["updated_on"] = currentIndexMetaUnixSeconds(record.OccurredAt)
 	switch record.State {
 	case indexingapp.CurrentIndexMetaFailed:
@@ -450,7 +464,19 @@ func planCurrentTerminalIndexMeta(
 		if !currentTerminalIndexMetaCompatible(stored.metadata, history, record) {
 			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
 		}
-		return currentIndexMetaWritePlan{noop: true}, nil
+		if _, present := stored.metadata["index_generation"]; present {
+			return currentIndexMetaWritePlan{noop: true}, nil
+		}
+		last, ok := history[len(history)-1].(map[string]any)
+		if !ok {
+			return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		last["index_generation"] = record.IndexGeneration
+		metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
+		if err != nil {
+			return currentIndexMetaWritePlan{}, err
+		}
+		return currentIndexMetaWritePlan{id: stored.id, metadata: metadata}, nil
 	}
 	if state != "in_progress" && !currentIndexMetaCanStartNextGeneration(state) {
 		return currentIndexMetaWritePlan{}, indexingapp.ErrCurrentIndexMetaConflict
@@ -516,6 +542,7 @@ func currentInitialIndexMetaMatchesRecord(
 	record indexingapp.CurrentInitialIndexMeta,
 ) bool {
 	generation, generationOK := currentIndexMetaInt64(metadata["execution_generation"])
+	indexGeneration, indexGenerationOK := currentIndexMetaInt64(metadata["index_generation"])
 	toolkitID, toolkitOK := currentIndexMetaInt64(metadata["toolkit_id"])
 	indexed, indexedOK := currentIndexMetaInt64(metadata["indexed"])
 	updated, updatedOK := currentIndexMetaInt64(metadata["updated"])
@@ -529,6 +556,7 @@ func currentInitialIndexMetaMatchesRecord(
 		metadata["index_meta_id"] == record.MetaID &&
 		metadata["correlation_id"] == record.CorrelationID &&
 		generationOK && generation == int64(record.Generation) &&
+		indexGenerationOK && indexGeneration == int64(record.IndexGeneration) &&
 		toolkitOK && toolkitID == int64(record.ToolkitID) &&
 		indexedOK && indexed == 0 &&
 		updatedOK && updated == 0 &&
@@ -639,6 +667,19 @@ func currentIndexMetaInt64(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// currentIndexMetaLogicalGeneration uses the positive legacy execution
+// generation only when the additive index_generation field is absent. A
+// present but malformed field fails closed instead of weakening the fence.
+func currentIndexMetaLogicalGeneration(metadata map[string]any) (int64, bool) {
+	value, present := metadata["index_generation"]
+	if present {
+		generation, ok := currentIndexMetaInt64(value)
+		return generation, ok && generation > 0
+	}
+	generation, ok := currentIndexMetaInt64(metadata["execution_generation"])
+	return generation, ok && generation > 0
 }
 
 func currentIndexMetaWriteError(ctx context.Context, cause error) error {

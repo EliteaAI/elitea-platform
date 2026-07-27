@@ -31,6 +31,7 @@ func (s *indexAdmissionStoreStub) AdmitIndexIngest(_ context.Context, admission 
 			Deadline:    admittedAt.Add(time.Hour),
 		},
 		Generation:             admission.Record.Job.Generation,
+		IndexGeneration:        1,
 		IndexMetaID:            admission.Binding.IndexMetaID,
 		IndexMetaCorrelationID: admission.Binding.IndexMetaCorrelationID,
 	}, nil
@@ -141,10 +142,11 @@ func TestIndexAdmissionRejectsContentBeyondDurableEntryLimit(t *testing.T) {
 
 func TestIndexMetaInitializationRequiresExactBoundedIdentity(t *testing.T) {
 	valid := IndexMetaInitialization{
-		ExecutionID:   "execution-1",
-		Generation:    1,
-		MetaID:        "index-meta-1",
-		CorrelationID: "message-1",
+		ExecutionID:     "execution-1",
+		Generation:      1,
+		IndexGeneration: 1,
+		MetaID:          "index-meta-1",
+		CorrelationID:   "message-1",
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
@@ -152,6 +154,7 @@ func TestIndexMetaInitializationRequiresExactBoundedIdentity(t *testing.T) {
 	tests := []IndexMetaInitialization{
 		func() IndexMetaInitialization { value := valid; value.ExecutionID = ""; return value }(),
 		func() IndexMetaInitialization { value := valid; value.Generation = 0; return value }(),
+		func() IndexMetaInitialization { value := valid; value.IndexGeneration = 0; return value }(),
 		func() IndexMetaInitialization { value := valid; value.MetaID = ""; return value }(),
 		func() IndexMetaInitialization { value := valid; value.CorrelationID = ""; return value }(),
 		func() IndexMetaInitialization { value := valid; value.CorrelationID = "message\n2"; return value }(),

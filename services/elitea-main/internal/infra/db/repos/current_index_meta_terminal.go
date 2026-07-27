@@ -54,6 +54,7 @@ func (r *CurrentIndexMetaTerminalBindingsRepository) LoadCurrentIndexMetaTermina
 	var binding indexingapp.CurrentIndexMetaTerminalBinding
 	var actorID string
 	var storedGeneration int64
+	var storedIndexGeneration int64
 	err := r.store.QueryRow(ctx, `
 SELECT j.resource_project_id,
        j.actor_id,
@@ -62,6 +63,7 @@ SELECT j.resource_project_id,
        i.index_meta_id,
        j.execution_id,
        j.generation,
+       i.index_generation,
        e.content_bytes
 FROM elitea_runtime.execution_jobs AS j
 JOIN elitea_runtime.index_ingest_jobs AS i
@@ -85,6 +87,7 @@ WHERE j.execution_id = $1
 		&binding.MetaID,
 		&binding.ExecutionID,
 		&storedGeneration,
+		&storedIndexGeneration,
 		&binding.ToolkitConfiguration,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -94,11 +97,12 @@ WHERE j.execution_id = $1
 		return indexingapp.CurrentIndexMetaTerminalBinding{}, fmt.Errorf("load current index metadata terminal binding: %w", err)
 	}
 	parsedActorID, err := strconv.ParseInt(actorID, 10, 32)
-	if err != nil || parsedActorID <= 0 || storedGeneration <= 0 {
+	if err != nil || parsedActorID <= 0 || storedGeneration <= 0 || storedIndexGeneration <= 0 {
 		return indexingapp.CurrentIndexMetaTerminalBinding{}, indexingapp.ErrCurrentIndexMetaInitializationInvalid
 	}
 	binding.ActorUserID = int32(parsedActorID)
 	binding.Generation = uint64(storedGeneration)
+	binding.IndexGeneration = uint64(storedIndexGeneration)
 	if err := binding.Validate(); err != nil ||
 		binding.ExecutionID != executionID ||
 		binding.Generation != generation {
@@ -265,8 +269,8 @@ LIMIT 1`,
 // SupersedeTerminalEffectIfNewerInitialized atomically resolves a claimed
 // terminal intent only when PostgreSQL already contains a later initialized
 // execution for the same project/toolkit/index identity. The database admission
-// timestamp and execution ID form the total order because generation is still
-// scoped to one execution in the current baseline.
+// logical index generation is the primary order. The admission timestamp and
+// execution ID break equal-generation ties left by the legacy migration.
 func (r *CurrentIndexMetaTerminalBindingsRepository) SupersedeTerminalEffectIfNewerInitialized(
 	ctx context.Context,
 	claim indexingapp.CurrentIndexMetaTerminalClaim,
@@ -284,6 +288,7 @@ WITH stale AS MATERIALIZED (
            i.generation,
            i.toolkit_id,
            i.index_name,
+           i.index_generation,
            j.resource_project_id,
            j.admitted_at
     FROM elitea_runtime.index_ingest_jobs AS i
@@ -323,8 +328,14 @@ WHERE i.execution_id = stale.execution_id
         AND newer_index.toolkit_id = stale.toolkit_id
         AND newer_index.index_name = stale.index_name
         AND newer_index.index_meta_initialized_at IS NOT NULL
-        AND (newer_job.admitted_at, newer_job.execution_id)
-            > (stale.admitted_at, stale.execution_id)
+        AND (
+            newer_index.index_generation > stale.index_generation
+            OR (
+                newer_index.index_generation = stale.index_generation
+                AND (newer_job.admitted_at, newer_job.execution_id)
+                    > (stale.admitted_at, stale.execution_id)
+            )
+        )
   )
 RETURNING 1
 )

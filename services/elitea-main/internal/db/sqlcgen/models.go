@@ -257,22 +257,40 @@ type EliteaRuntimeExecutionJob struct {
 	TerminalErrorCode       *string            `db:"terminal_error_code" json:"terminal_error_code"`
 }
 
+type EliteaRuntimeIndexGenerationCounter struct {
+	ResourceProjectID int32              `db:"resource_project_id" json:"resource_project_id"`
+	ToolkitID         int32              `db:"toolkit_id" json:"toolkit_id"`
+	IndexName         string             `db:"index_name" json:"index_name"`
+	LastGeneration    int64              `db:"last_generation" json:"last_generation"`
+	UpdatedAt         pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type EliteaRuntimeIndexIngestJob struct {
-	ExecutionID                 string             `db:"execution_id" json:"execution_id"`
-	Generation                  int64              `db:"generation" json:"generation"`
-	CapabilityID                string             `db:"capability_id" json:"capability_id"`
-	InputBundleID               string             `db:"input_bundle_id" json:"input_bundle_id"`
-	ToolkitConfigurationEntryID string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
-	ToolParametersEntryID       string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
-	LlmModelEntryID             *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
-	LlmConfigurationEntryID     *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
-	McpTokensEntryID            *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
-	IndexMetaID                 *string            `db:"index_meta_id" json:"index_meta_id"`
-	IndexMetaCorrelationID      *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
-	IndexMetaInitializedAt      pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`
-	ToolkitID                   int32              `db:"toolkit_id" json:"toolkit_id"`
-	IndexName                   string             `db:"index_name" json:"index_name"`
-	Initiator                   string             `db:"initiator" json:"initiator"`
+	ExecutionID                     string             `db:"execution_id" json:"execution_id"`
+	Generation                      int64              `db:"generation" json:"generation"`
+	IndexGeneration                 int64              `db:"index_generation" json:"index_generation"`
+	CapabilityID                    string             `db:"capability_id" json:"capability_id"`
+	InputBundleID                   string             `db:"input_bundle_id" json:"input_bundle_id"`
+	ToolkitConfigurationEntryID     string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID           string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID                 *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID         *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID                *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	IndexMetaID                     *string            `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID          *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+	IndexMetaInitializedAt          pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`
+	IndexMetaTerminalState          *string            `db:"index_meta_terminal_state" json:"index_meta_terminal_state"`
+	IndexMetaTerminalOccurredAt     pgtype.Timestamptz `db:"index_meta_terminal_occurred_at" json:"index_meta_terminal_occurred_at"`
+	IndexMetaTerminalStatus         *string            `db:"index_meta_terminal_status" json:"index_meta_terminal_status"`
+	IndexMetaTerminalClaimToken     *string            `db:"index_meta_terminal_claim_token" json:"index_meta_terminal_claim_token"`
+	IndexMetaTerminalClaimExpiresAt pgtype.Timestamptz `db:"index_meta_terminal_claim_expires_at" json:"index_meta_terminal_claim_expires_at"`
+	IndexMetaTerminalAttemptCount   *int32             `db:"index_meta_terminal_attempt_count" json:"index_meta_terminal_attempt_count"`
+	IndexMetaTerminalNextAttemptAt  pgtype.Timestamptz `db:"index_meta_terminal_next_attempt_at" json:"index_meta_terminal_next_attempt_at"`
+	IndexMetaTerminalLastErrorCode  *string            `db:"index_meta_terminal_last_error_code" json:"index_meta_terminal_last_error_code"`
+	IndexMetaTerminalizedAt         pgtype.Timestamptz `db:"index_meta_terminalized_at" json:"index_meta_terminalized_at"`
+	ToolkitID                       int32              `db:"toolkit_id" json:"toolkit_id"`
+	IndexName                       string             `db:"index_name" json:"index_name"`
+	Initiator                       string             `db:"initiator" json:"initiator"`
 }
 
 type EliteaRuntimeIndexIngestResult struct {

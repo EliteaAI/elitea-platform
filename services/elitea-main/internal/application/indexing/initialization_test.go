@@ -64,10 +64,11 @@ func TestInitializingAdmissionSubmitterMaterializesBeforeOpeningGate(t *testing.
 	if materializer.calls != 1 || transitions.calls != 1 ||
 		materializer.request.IndexMetaID != outcome.IndexMetaID ||
 		transitions.initialization != (IndexMetaInitialization{
-			ExecutionID:   outcome.ExecutionID,
-			Generation:    outcome.Generation,
-			MetaID:        outcome.IndexMetaID,
-			CorrelationID: outcome.IndexMetaCorrelationID,
+			ExecutionID:     outcome.ExecutionID,
+			Generation:      outcome.Generation,
+			IndexGeneration: outcome.IndexGeneration,
+			MetaID:          outcome.IndexMetaID,
+			CorrelationID:   outcome.IndexMetaCorrelationID,
 		}) ||
 		got.IndexMetaInitializedAt == nil || !got.IndexMetaInitializedAt.Equal(initializedAt) {
 		t.Fatalf(

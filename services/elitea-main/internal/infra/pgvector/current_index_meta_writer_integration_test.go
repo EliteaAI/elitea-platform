@@ -68,31 +68,32 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 	if err := writer.MaterializeInitial(ctx, target, first); err != nil {
 		t.Fatalf("create metadata: %v", err)
 	}
-	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1)
+	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1, 1)
 
 	// Simulate a process crash after the external commit but before the runtime
 	// database gate transition. The exact retry must not append history.
 	if err := writer.MaterializeInitial(ctx, target, first); err != nil {
 		t.Fatalf("recover committed metadata: %v", err)
 	}
-	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1)
+	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1, 1)
 
 	conflicting := currentIndexMetaIntegrationRecord(t, schemaID, "meta-2", "execution-2", "message-2")
 	conflicting = currentIndexMetaRecordWithGeneration(t, conflicting, 2)
 	if err := writer.MaterializeInitial(ctx, target, conflicting); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
 		t.Fatalf("active same-index conflict=%v", err)
 	}
-	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1)
+	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1, 1)
 
 	terminal := indexingapp.CurrentTerminalIndexMeta{
-		MetaID:      first.MetaID,
-		ExecutionID: first.ExecutionID,
-		Generation:  first.Generation,
-		IndexName:   first.IndexName,
-		ToolkitID:   first.ToolkitID,
-		State:       indexingapp.CurrentIndexMetaFailed,
-		OccurredAt:  time.Date(2026, time.July, 26, 12, 13, 14, 567_000_000, time.UTC),
-		SafeError:   "A dependency is unavailable.",
+		MetaID:          first.MetaID,
+		ExecutionID:     first.ExecutionID,
+		Generation:      first.Generation,
+		IndexGeneration: first.IndexGeneration,
+		IndexName:       first.IndexName,
+		ToolkitID:       first.ToolkitID,
+		State:           indexingapp.CurrentIndexMetaFailed,
+		OccurredAt:      time.Date(2026, time.July, 26, 12, 13, 14, 567_000_000, time.UTC),
+		SafeError:       "A dependency is unavailable.",
 	}
 	if err := writer.MaterializeTerminal(ctx, target, terminal); err != nil {
 		t.Fatalf("terminalize failed metadata: %v", err)
@@ -113,7 +114,7 @@ WHERE id = 'meta-1'`).Scan(&terminalState); err != nil {
 	if err := writer.MaterializeInitial(ctx, target, conflicting); err != nil {
 		t.Fatalf("start reindex generation: %v", err)
 	}
-	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-2", "execution-2", 2)
+	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-2", "execution-2", 2, 2)
 	if err := writer.MaterializeTerminal(
 		ctx,
 		target,
@@ -145,6 +146,7 @@ func currentIndexMetaIntegrationRecord(
 		"toolkit_id":           toolkitID,
 		"execution_id":         executionID,
 		"execution_generation": 1,
+		"index_generation":     1,
 		"index_meta_id":        metaID,
 		"correlation_id":       correlationID,
 	})
@@ -156,6 +158,7 @@ func currentIndexMetaIntegrationRecord(
 		ExecutionID:     executionID,
 		CorrelationID:   correlationID,
 		Generation:      1,
+		IndexGeneration: 1,
 		IndexName:       "Docs",
 		ToolkitID:       toolkitID,
 		Document:        "index_meta_Docs",
@@ -172,6 +175,7 @@ func assertCurrentIndexMetaIntegrationRow(
 	metaID string,
 	executionID string,
 	historyLength int,
+	indexGeneration int64,
 ) {
 	t.Helper()
 	var storedID, document string
@@ -191,6 +195,8 @@ WHERE cmetadata @> '{"type":"index_meta","collection":"Docs"}'::jsonb`,
 	if storedID != physicalID || document != "index_meta_Docs" ||
 		metadata["index_meta_id"] != metaID ||
 		metadata["execution_id"] != executionID ||
+		metadata["execution_generation"] != json.Number("1") ||
+		metadata["index_generation"] != json.Number(strconv.FormatInt(indexGeneration, 10)) ||
 		metadata["state"] != "in_progress" ||
 		len(currentIndexMetaHistory(history)) != historyLength {
 		t.Fatalf("id=%q document=%q metadata=%#v", storedID, document, metadata)

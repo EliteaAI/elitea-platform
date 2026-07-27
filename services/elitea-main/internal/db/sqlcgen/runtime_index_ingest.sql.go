@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const allocateIndexGeneration = `-- name: AllocateIndexGeneration :one
+INSERT INTO elitea_runtime.index_generation_counters (
+    resource_project_id, toolkit_id, index_name, last_generation, updated_at
+) VALUES (
+    $1::integer,
+    $2::integer,
+    $3::text,
+    1,
+    clock_timestamp()
+)
+ON CONFLICT (resource_project_id, toolkit_id, index_name) DO UPDATE
+SET last_generation =
+        elitea_runtime.index_generation_counters.last_generation + 1,
+    updated_at = clock_timestamp()
+WHERE elitea_runtime.index_generation_counters.last_generation
+      < 9223372036854775807
+RETURNING last_generation
+`
+
+type AllocateIndexGenerationParams struct {
+	ResourceProjectID int32  `db:"resource_project_id" json:"resource_project_id"`
+	ToolkitID         int32  `db:"toolkit_id" json:"toolkit_id"`
+	IndexName         string `db:"index_name" json:"index_name"`
+}
+
+func (q *Queries) AllocateIndexGeneration(ctx context.Context, arg AllocateIndexGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, allocateIndexGeneration, arg.ResourceProjectID, arg.ToolkitID, arg.IndexName)
+	var last_generation int64
+	err := row.Scan(&last_generation)
+	return last_generation, err
+}
+
 const countActiveRuntimeExecutionsUpTo = `-- name: CountActiveRuntimeExecutionsUpTo :one
 SELECT count(*)
 FROM (
@@ -206,6 +238,7 @@ const getRuntimeAdmissionByIdempotency = `-- name: GetRuntimeAdmissionByIdempote
 SELECT j.execution_id,
        j.command_id,
        j.generation,
+       i.index_generation,
        j.request_digest,
        j.admitted_at,
        o.deadline,
@@ -231,6 +264,7 @@ type GetRuntimeAdmissionByIdempotencyRow struct {
 	ExecutionID            string             `db:"execution_id" json:"execution_id"`
 	CommandID              string             `db:"command_id" json:"command_id"`
 	Generation             int64              `db:"generation" json:"generation"`
+	IndexGeneration        int64              `db:"index_generation" json:"index_generation"`
 	RequestDigest          []byte             `db:"request_digest" json:"request_digest"`
 	AdmittedAt             pgtype.Timestamptz `db:"admitted_at" json:"admitted_at"`
 	Deadline               pgtype.Timestamptz `db:"deadline" json:"deadline"`
@@ -246,6 +280,7 @@ func (q *Queries) GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetR
 		&i.ExecutionID,
 		&i.CommandID,
 		&i.Generation,
+		&i.IndexGeneration,
 		&i.RequestDigest,
 		&i.AdmittedAt,
 		&i.Deadline,
@@ -357,7 +392,7 @@ func (q *Queries) InsertIndexIngestExecutionJob(ctx context.Context, arg InsertI
 
 const insertIndexIngestJob = `-- name: InsertIndexIngestJob :exec
 INSERT INTO elitea_runtime.index_ingest_jobs (
-    execution_id, generation, capability_id, input_bundle_id,
+    execution_id, generation, index_generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
     index_meta_id, index_meta_correlation_id,
@@ -365,8 +400,8 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
 ) VALUES (
     $1::text,
     $2::bigint,
+    $3::bigint,
     'index.ingest.v1',
-    $3::text,
     $4::text,
     $5::text,
     $6::text,
@@ -374,15 +409,17 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     $8::text,
     $9::text,
     $10::text,
-    $11::integer,
-    $12::text,
-    $13::text
+    $11::text,
+    $12::integer,
+    $13::text,
+    $14::text
 )
 `
 
 type InsertIndexIngestJobParams struct {
 	ExecutionID                 string  `db:"execution_id" json:"execution_id"`
 	Generation                  int64   `db:"generation" json:"generation"`
+	IndexGeneration             int64   `db:"index_generation" json:"index_generation"`
 	InputBundleID               string  `db:"input_bundle_id" json:"input_bundle_id"`
 	ToolkitConfigurationEntryID string  `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
 	ToolParametersEntryID       string  `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
@@ -400,6 +437,7 @@ func (q *Queries) InsertIndexIngestJob(ctx context.Context, arg InsertIndexInges
 	_, err := q.db.Exec(ctx, insertIndexIngestJob,
 		arg.ExecutionID,
 		arg.Generation,
+		arg.IndexGeneration,
 		arg.InputBundleID,
 		arg.ToolkitConfigurationEntryID,
 		arg.ToolParametersEntryID,
@@ -663,9 +701,10 @@ SET index_meta_initialized_at = COALESCE(
 FROM elitea_runtime.execution_jobs AS j
 WHERE i.execution_id = $1::text
   AND i.generation = $2::bigint
+  AND i.index_generation = $3::bigint
   AND i.capability_id = 'index.ingest.v1'
-  AND i.index_meta_id = $3::text
-  AND i.index_meta_correlation_id = $4::text
+  AND i.index_meta_id = $4::text
+  AND i.index_meta_correlation_id = $5::text
   AND j.execution_id = i.execution_id
   AND j.generation = i.generation
   AND j.capability_id = i.capability_id
@@ -677,6 +716,7 @@ RETURNING i.index_meta_initialized_at
 type MarkIndexMetaInitializedParams struct {
 	ExecutionID            string `db:"execution_id" json:"execution_id"`
 	Generation             int64  `db:"generation" json:"generation"`
+	IndexGeneration        int64  `db:"index_generation" json:"index_generation"`
 	IndexMetaID            string `db:"index_meta_id" json:"index_meta_id"`
 	IndexMetaCorrelationID string `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
 }
@@ -685,6 +725,7 @@ func (q *Queries) MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMet
 	row := q.db.QueryRow(ctx, markIndexMetaInitialized,
 		arg.ExecutionID,
 		arg.Generation,
+		arg.IndexGeneration,
 		arg.IndexMetaID,
 		arg.IndexMetaCorrelationID,
 	)

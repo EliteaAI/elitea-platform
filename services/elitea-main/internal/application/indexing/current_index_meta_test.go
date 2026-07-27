@@ -129,6 +129,7 @@ func TestCurrentIndexMetaInitializerUsesOnlyClaimedProjectPgvector(t *testing.T)
 			Deadline:    admittedAt.Add(time.Hour),
 		},
 		Generation:             1,
+		IndexGeneration:        7,
 		IndexMetaID:            "meta-1",
 		IndexMetaCorrelationID: "message-1",
 	}
@@ -149,6 +150,7 @@ func TestCurrentIndexMetaInitializerUsesOnlyClaimedProjectPgvector(t *testing.T)
 		writer.record.ExecutionID != "execution-1" ||
 		writer.record.CorrelationID != "message-1" ||
 		writer.record.Generation != 1 ||
+		writer.record.IndexGeneration != 7 ||
 		writer.record.IndexName != "Docs" ||
 		writer.record.ToolkitID != 19 ||
 		writer.record.Document != "index_meta_Docs" {
@@ -172,6 +174,7 @@ func TestCurrentIndexMetaInitializerUsesOnlyClaimedProjectPgvector(t *testing.T)
 		"toolkit_id":           json.Number("19"),
 		"execution_id":         "execution-1",
 		"execution_generation": json.Number("1"),
+		"index_generation":     json.Number("7"),
 		"index_meta_id":        "meta-1",
 		"correlation_id":       "message-1",
 	}
@@ -272,6 +275,7 @@ func TestCurrentIndexMetaTerminalizerFencesExactDurableGeneration(t *testing.T) 
 		MetaID:               "meta-1",
 		ExecutionID:          "execution-1",
 		Generation:           3,
+		IndexGeneration:      8,
 		ToolkitConfiguration: frozen,
 	}}
 	claimer := &frozenToolkitClaimerStub{value: claimed}
@@ -300,14 +304,15 @@ func TestCurrentIndexMetaTerminalizerFencesExactDurableGeneration(t *testing.T) 
 	}
 	if writer.target != (CurrentIndexMetaTarget{ConnectionString: "postgresql://project", SchemaID: 19}) ||
 		writer.record != (CurrentTerminalIndexMeta{
-			MetaID:      "meta-1",
-			ExecutionID: "execution-1",
-			Generation:  3,
-			IndexName:   "Docs",
-			ToolkitID:   19,
-			State:       CurrentIndexMetaFailed,
-			OccurredAt:  occurredAt,
-			SafeError:   "A dependency is unavailable.",
+			MetaID:          "meta-1",
+			ExecutionID:     "execution-1",
+			Generation:      3,
+			IndexGeneration: 8,
+			IndexName:       "Docs",
+			ToolkitID:       19,
+			State:           CurrentIndexMetaFailed,
+			OccurredAt:      occurredAt,
+			SafeError:       "A dependency is unavailable.",
 		}) {
 		t.Fatalf("target=%+v record=%+v", writer.target, writer.record)
 	}
@@ -322,6 +327,7 @@ func TestCurrentIndexMetaTerminalizerRejectsDifferentGenerationBeforeSecretClaim
 		MetaID:               "meta-1",
 		ExecutionID:          "execution-1",
 		Generation:           3,
+		IndexGeneration:      8,
 		ToolkitConfiguration: json.RawMessage(`{"id":19}`),
 	}}
 	claimer := &frozenToolkitClaimerStub{}
@@ -371,6 +377,7 @@ func validCurrentIndexMetaOutcome() AdmissionOutcome {
 			Deadline:    admittedAt.Add(time.Hour),
 		},
 		Generation:             1,
+		IndexGeneration:        1,
 		IndexMetaID:            "meta-1",
 		IndexMetaCorrelationID: "message-1",
 	}

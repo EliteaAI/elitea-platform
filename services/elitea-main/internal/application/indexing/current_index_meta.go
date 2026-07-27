@@ -57,6 +57,7 @@ type CurrentInitialIndexMeta struct {
 	ExecutionID     string
 	CorrelationID   string
 	Generation      uint64
+	IndexGeneration uint64
 	IndexName       string
 	ToolkitID       int32
 	Document        string
@@ -67,7 +68,9 @@ func (m CurrentInitialIndexMeta) Validate() error {
 	if !validOptionalText(m.MetaID, executiondomain.MaxIndexMetaIDBytes) || m.MetaID == "" ||
 		!validOptionalText(m.ExecutionID, maxIndexAdmissionStringBytes) || m.ExecutionID == "" ||
 		!validOptionalText(m.CorrelationID, executiondomain.MaxIndexMetaCorrelationBytes) || m.CorrelationID == "" ||
-		m.Generation == 0 || m.ToolkitID <= 0 ||
+		m.Generation == 0 || m.Generation > math.MaxInt64 ||
+		m.IndexGeneration == 0 || m.IndexGeneration > math.MaxInt64 ||
+		m.ToolkitID <= 0 ||
 		m.IndexName == "" || len(m.IndexName) > maxIndexAdmissionStringBytes ||
 		m.Document != "index_meta_"+m.IndexName ||
 		len(m.InitialMetadata) == 0 || len(m.InitialMetadata) > MaxCurrentInitialIndexMetaBytes ||
@@ -101,6 +104,7 @@ type CurrentIndexMetaTerminalBinding struct {
 	MetaID               string
 	ExecutionID          string
 	Generation           uint64
+	IndexGeneration      uint64
 	ToolkitConfiguration json.RawMessage
 }
 
@@ -110,6 +114,7 @@ func (b CurrentIndexMetaTerminalBinding) Validate() error {
 		!validOptionalText(b.MetaID, executiondomain.MaxIndexMetaIDBytes) || b.MetaID == "" ||
 		!validOptionalText(b.ExecutionID, maxIndexAdmissionStringBytes) || b.ExecutionID == "" ||
 		b.Generation == 0 || b.Generation > math.MaxInt64 ||
+		b.IndexGeneration == 0 || b.IndexGeneration > math.MaxInt64 ||
 		len(b.ToolkitConfiguration) == 0 ||
 		len(b.ToolkitConfiguration) > executiondomain.MaxInputEntryContentBytes ||
 		!validBoundedJSONObject(b.ToolkitConfiguration) {
@@ -169,18 +174,20 @@ func (r CurrentIndexMetaTerminalRequest) Validate() error {
 }
 
 type CurrentTerminalIndexMeta struct {
-	MetaID      string
-	ExecutionID string
-	Generation  uint64
-	IndexName   string
-	ToolkitID   int32
-	State       CurrentIndexMetaTerminalState
-	OccurredAt  time.Time
-	SafeError   string
+	MetaID          string
+	ExecutionID     string
+	Generation      uint64
+	IndexGeneration uint64
+	IndexName       string
+	ToolkitID       int32
+	State           CurrentIndexMetaTerminalState
+	OccurredAt      time.Time
+	SafeError       string
 }
 
 func (m CurrentTerminalIndexMeta) Validate() error {
 	if !validOptionalText(m.MetaID, executiondomain.MaxIndexMetaIDBytes) || m.MetaID == "" ||
+		m.IndexGeneration == 0 || m.IndexGeneration > math.MaxInt64 ||
 		m.ToolkitID <= 0 || m.IndexName == "" || len(m.IndexName) > maxIndexAdmissionStringBytes {
 		return ErrCurrentIndexMetaInitializationInvalid
 	}
@@ -257,14 +264,15 @@ func (t *CurrentIndexMetaTerminalizer) Terminalize(
 		return err
 	}
 	record := CurrentTerminalIndexMeta{
-		MetaID:      binding.MetaID,
-		ExecutionID: binding.ExecutionID,
-		Generation:  binding.Generation,
-		IndexName:   binding.IndexName,
-		ToolkitID:   binding.ToolkitID,
-		State:       request.State,
-		OccurredAt:  request.OccurredAt.UTC(),
-		SafeError:   request.SafeError,
+		MetaID:          binding.MetaID,
+		ExecutionID:     binding.ExecutionID,
+		Generation:      binding.Generation,
+		IndexGeneration: binding.IndexGeneration,
+		IndexName:       binding.IndexName,
+		ToolkitID:       binding.ToolkitID,
+		State:           request.State,
+		OccurredAt:      request.OccurredAt.UTC(),
+		SafeError:       request.SafeError,
 	}
 	if err := record.Validate(); err != nil {
 		return err
@@ -309,6 +317,7 @@ func (i *CurrentIndexMetaInitializer) MaterializeInitialIndexMeta(
 		request.Identity.TenantID != request.Identity.ResourceProjectID ||
 		request.Identity.ProjectionProjectID != request.Identity.ResourceProjectID ||
 		outcome.ExecutionID == "" || outcome.Generation == 0 ||
+		outcome.IndexGeneration == 0 || outcome.IndexGeneration > math.MaxInt64 ||
 		outcome.IndexMetaID == "" || outcome.IndexMetaCorrelationID == "" ||
 		outcome.IndexMetaCorrelationID != request.CorrelationID ||
 		outcome.AdmittedAt.IsZero() {
@@ -358,6 +367,7 @@ func (i *CurrentIndexMetaInitializer) MaterializeInitialIndexMeta(
 		"toolkit_id":           request.ToolkitID,
 		"execution_id":         outcome.ExecutionID,
 		"execution_generation": outcome.Generation,
+		"index_generation":     outcome.IndexGeneration,
 		"index_meta_id":        outcome.IndexMetaID,
 		"correlation_id":       outcome.IndexMetaCorrelationID,
 	}
@@ -370,6 +380,7 @@ func (i *CurrentIndexMetaInitializer) MaterializeInitialIndexMeta(
 		ExecutionID:     outcome.ExecutionID,
 		CorrelationID:   outcome.IndexMetaCorrelationID,
 		Generation:      outcome.Generation,
+		IndexGeneration: outcome.IndexGeneration,
 		IndexName:       indexName,
 		ToolkitID:       request.ToolkitID,
 		Document:        "index_meta_" + indexName,

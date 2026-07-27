@@ -57,10 +57,11 @@ func (s *InitializingAdmissionSubmitter) Submit(ctx context.Context, request Sub
 		return AdmissionOutcome{}, fmt.Errorf("materialize initial index metadata: %w", err)
 	}
 	initializedAt, err := s.transitions.MarkIndexMetaInitialized(ctx, IndexMetaInitialization{
-		ExecutionID:   outcome.ExecutionID,
-		Generation:    outcome.Generation,
-		MetaID:        outcome.IndexMetaID,
-		CorrelationID: outcome.IndexMetaCorrelationID,
+		ExecutionID:     outcome.ExecutionID,
+		Generation:      outcome.Generation,
+		IndexGeneration: outcome.IndexGeneration,
+		MetaID:          outcome.IndexMetaID,
+		CorrelationID:   outcome.IndexMetaCorrelationID,
 	})
 	if err != nil {
 		return AdmissionOutcome{}, fmt.Errorf("open index metadata dispatch gate: %w", err)
