@@ -23,6 +23,8 @@ type currentIndexMetaTerminalProcessor struct {
 	reportItemFailure func(error)
 }
 
+const maxCurrentIndexMetaTerminalConcurrency = 2
+
 type currentIndexMetaTerminalizer interface {
 	Terminalize(context.Context, indexingapp.CurrentIndexMetaTerminalRequest) error
 }
@@ -80,14 +82,25 @@ func newCurrentIndexMetaTerminalProcessor(
 	if err != nil {
 		return nil, err
 	}
+	concurrency, err := currentIndexMetaTerminalConcurrency(pool.Config().MaxConns)
+	if err != nil {
+		return nil, err
+	}
 	return &currentIndexMetaTerminalProcessor{
 		terminalizer:      terminalizer,
 		store:             bindings,
 		newClaimID:        currentRuntimeID,
 		claimLease:        2 * time.Minute,
-		concurrency:       4,
+		concurrency:       concurrency,
 		reportItemFailure: reportItemFailure,
 	}, nil
+}
+
+func currentIndexMetaTerminalConcurrency(maxConnections int32) (int, error) {
+	if maxConnections <= 0 {
+		return 0, errors.New("current index metadata terminal pool capacity is invalid")
+	}
+	return min(int(maxConnections), maxCurrentIndexMetaTerminalConcurrency), nil
 }
 
 func (e *currentIndexMetaTerminalProcessor) ReconcilePendingIndexMetaTerminals(

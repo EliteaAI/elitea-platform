@@ -317,6 +317,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ControlPool:                      runtimePools.Control,
 			OutputPool:                       runtimePools.Output,
 			ReplayPool:                       runtimePools.Replay,
+			TerminalEffectsPool:              runtimePools.TerminalEffects,
 			ContentPool:                      runtimePools.Content,
 			CurrentConfigurations:            currentConfigurationsRoot,
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,

@@ -22,6 +22,7 @@ import (
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
@@ -898,7 +899,12 @@ func assertDurableSSEReplay(t *testing.T, state *memoryRuntime, projectID, execu
 	routeContext := chi.NewRouteContext()
 	routeContext.URLParams.Add("projectID", projectID)
 	routeContext.URLParams.Add("executionID", executionID)
-	request = request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
+	requestContext := context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)
+	request = request.WithContext(auth.ContextWithAuthenticatedUser(
+		requestContext,
+		auth.User{ID: "7", UserID: "7", AuthType: "user"},
+		auth.AuthenticationSourceSession,
+	))
 	request.Header.Set("Last-Event-ID", "0")
 	response := newDeadlineAwareRecorder()
 	handler.Stream(response, request)
@@ -912,7 +918,12 @@ func assertDurableSSEReplay(t *testing.T, state *memoryRuntime, projectID, execu
 	}
 
 	resume := httptest.NewRequest(http.MethodGet, "/", nil)
-	resume = resume.WithContext(context.WithValue(resume.Context(), chi.RouteCtxKey, routeContext))
+	resumeContext := context.WithValue(resume.Context(), chi.RouteCtxKey, routeContext)
+	resume = resume.WithContext(auth.ContextWithAuthenticatedUser(
+		resumeContext,
+		auth.User{ID: "7", UserID: "7", AuthType: "user"},
+		auth.AuthenticationSourceSession,
+	))
 	resume.Header.Set("Last-Event-ID", "1")
 	resumed := newDeadlineAwareRecorder()
 	handler.Stream(resumed, resume)

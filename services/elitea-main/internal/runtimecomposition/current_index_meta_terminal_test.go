@@ -108,6 +108,37 @@ func newTestCurrentIndexMetaEffect(
 	}
 }
 
+func TestCurrentIndexMetaTerminalConcurrencyFollowsDedicatedPoolCapacity(t *testing.T) {
+	for _, test := range []struct {
+		maxConnections int32
+		want           int
+		wantError      bool
+	}{
+		{maxConnections: 0, wantError: true},
+		{maxConnections: 1, want: 1},
+		{maxConnections: 2, want: 2},
+		{maxConnections: 8, want: 2},
+	} {
+		got, err := currentIndexMetaTerminalConcurrency(test.maxConnections)
+		if (err != nil) != test.wantError {
+			t.Fatalf(
+				"max connections %d: error=%v, want error=%v",
+				test.maxConnections,
+				err,
+				test.wantError,
+			)
+		}
+		if got != test.want {
+			t.Fatalf(
+				"max connections %d: concurrency=%d, want=%d",
+				test.maxConnections,
+				got,
+				test.want,
+			)
+		}
+	}
+}
+
 func terminalClaim(
 	executionID string,
 	state indexingapp.CurrentIndexMetaTerminalState,

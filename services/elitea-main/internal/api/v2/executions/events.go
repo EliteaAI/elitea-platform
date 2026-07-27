@@ -17,12 +17,20 @@ import (
 const (
 	defaultReplayBatchSize = 100
 	maxSSEEventBytes       = 64 * 1024
-	defaultSSEWriteTimeout = 10 * time.Second
+	// An authorization decision covers at most one already-fetched replay
+	// batch. That batch is written under this deadline. A full batch is
+	// reauthorized immediately before the next fetch; a partial batch enters
+	// the two-second waiter before reauthorization. The revocation exposure is
+	// therefore bounded by the already-authorized batch and its write deadline,
+	// not by the idle polling interval alone.
+	defaultSSEWriteTimeout         = 10 * time.Second
+	defaultSSEAuthorizationTimeout = 2 * time.Second
 )
 
 var (
 	ErrExecutionEventsForbidden = errors.New("execution events are forbidden")
 	ErrInvalidEventStream       = errors.New("invalid durable execution event stream")
+	errSSEAuthorizationBusy     = errors.New("execution event authorization capacity is busy")
 )
 
 type DurableEvent struct {
@@ -47,15 +55,34 @@ type EventAuthorizer interface {
 }
 
 type EventHandler struct {
-	authorizer   EventAuthorizer
-	repository   EventRepository
-	waiter       ReplayWaiter
-	batchSize    int
-	writeTimeout time.Duration
-	admission    *sseAdmissionGate
+	authorizer             EventAuthorizer
+	repository             EventRepository
+	waiter                 ReplayWaiter
+	batchSize              int
+	writeTimeout           time.Duration
+	authorizationTimeout   time.Duration
+	authorizationAdmission *sseAuthorizationGate
+	admission              *sseAdmissionGate
 }
 
 func NewEventHandler(authorizer EventAuthorizer, repository EventRepository, waiter ReplayWaiter) (*EventHandler, error) {
+	return NewEventHandlerWithReplayCapacity(
+		authorizer,
+		repository,
+		waiter,
+		defaultMaxSSEAuthorizations,
+	)
+}
+
+// NewEventHandlerWithReplayCapacity binds authorization concurrency to the
+// database capacity that serves both execution-policy lookup and durable
+// replay. Stream lifetime limits remain independently conservative.
+func NewEventHandlerWithReplayCapacity(
+	authorizer EventAuthorizer,
+	repository EventRepository,
+	waiter ReplayWaiter,
+	replayCapacity int,
+) (*EventHandler, error) {
 	if authorizer == nil || repository == nil || waiter == nil {
 		return nil, errors.New("event authorizer, repository and waiter are required")
 	}
@@ -67,13 +94,22 @@ func NewEventHandler(authorizer EventAuthorizer, repository EventRepository, wai
 	if admission == nil {
 		return nil, errors.New("event stream admission profile is invalid")
 	}
+	authorizationAdmission := newSSEAuthorizationGate(
+		replayCapacity,
+		defaultMaxSSEAuthorizationsPerPrincipal,
+	)
+	if authorizationAdmission == nil {
+		return nil, errors.New("event stream authorization profile is invalid")
+	}
 	return &EventHandler{
-		authorizer:   authorizer,
-		repository:   repository,
-		waiter:       waiter,
-		batchSize:    defaultReplayBatchSize,
-		writeTimeout: defaultSSEWriteTimeout,
-		admission:    admission,
+		authorizer:             authorizer,
+		repository:             repository,
+		waiter:                 waiter,
+		batchSize:              defaultReplayBatchSize,
+		writeTimeout:           defaultSSEWriteTimeout,
+		authorizationTimeout:   defaultSSEAuthorizationTimeout,
+		authorizationAdmission: authorizationAdmission,
+		admission:              admission,
 	}, nil
 }
 
@@ -84,15 +120,31 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project and execution are required", http.StatusBadRequest)
 		return
 	}
-	if err := h.authorizer.AuthorizeExecutionEvents(r.Context(), projectID, executionID); err != nil {
+	principalID, ok := sseOwningPrincipalID(r.Context())
+	if !ok {
+		http.Error(w, "runtime authentication required", http.StatusUnauthorized)
+		return
+	}
+	if err := h.authorizeInitial(r.Context(), principalID, projectID, executionID); err != nil {
 		if errors.Is(err, ErrExecutionEventsForbidden) {
 			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, errSSEAuthorizationBusy) {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "event authorization capacity is busy", http.StatusTooManyRequests)
 			return
 		}
 		http.Error(w, "authorization failed", http.StatusInternalServerError)
 		return
 	}
-	release, admitted := h.admission.acquire(ssePrincipalID(r.Context()), projectID)
+
+	cursor, err := requestedCursor(r)
+	if err != nil {
+		http.Error(w, "invalid event cursor", http.StatusBadRequest)
+		return
+	}
+	release, admitted := h.admission.acquire(principalID, projectID)
 	if !admitted {
 		w.Header().Set("Retry-After", "2")
 		http.Error(w, "too many active event streams", http.StatusTooManyRequests)
@@ -100,11 +152,6 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	cursor, err := requestedCursor(r)
-	if err != nil {
-		http.Error(w, "invalid event cursor", http.StatusBadRequest)
-		return
-	}
 	initial, err := h.repository.Replay(r.Context(), projectID, executionID, cursor, h.batchSize)
 	if err != nil {
 		http.Error(w, "event replay failed", http.StatusInternalServerError)
@@ -150,6 +197,9 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(events) == h.batchSize {
+			if err := h.reauthorize(r.Context(), principalID, projectID, executionID); err != nil {
+				return
+			}
 			events, err = h.repository.Replay(r.Context(), projectID, executionID, cursor, h.batchSize)
 			if err != nil {
 				return
@@ -161,9 +211,10 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		// Project suspension or role revocation must close an already-open stream.
-		// The production waiter bounds this reauthorization window to two seconds.
-		if err := h.authorizer.AuthorizeExecutionEvents(r.Context(), projectID, executionID); err != nil {
+		// Project suspension or role revocation closes the stream before another
+		// repository fetch. The waiter bounds idle detection to two seconds; the
+		// already-authorized write exposure is documented with the write timeout.
+		if err := h.reauthorize(r.Context(), principalID, projectID, executionID); err != nil {
 			return
 		}
 		if heartbeat {
@@ -179,6 +230,50 @@ func (h *EventHandler) Stream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (h *EventHandler) authorizeInitial(
+	ctx context.Context,
+	principalID,
+	projectID,
+	executionID string,
+) error {
+	if h == nil || h.authorizer == nil || h.authorizationAdmission == nil ||
+		h.authorizationTimeout <= 0 || ctx == nil || principalID == "" {
+		return errors.New("event stream authorization is unavailable")
+	}
+	release, admitted := h.authorizationAdmission.acquire(principalID)
+	if !admitted {
+		return errSSEAuthorizationBusy
+	}
+	defer release()
+
+	authorizationContext, cancel := context.WithTimeout(ctx, h.authorizationTimeout)
+	defer cancel()
+	return h.authorizer.AuthorizeExecutionEvents(authorizationContext, projectID, executionID)
+}
+
+func (h *EventHandler) reauthorize(
+	ctx context.Context,
+	principalID,
+	projectID,
+	executionID string,
+) error {
+	if h == nil || h.authorizer == nil || h.authorizationAdmission == nil ||
+		h.authorizationTimeout <= 0 || ctx == nil || principalID == "" {
+		return errors.New("event stream authorization is unavailable")
+	}
+	authorizationContext, cancel := context.WithTimeout(ctx, h.authorizationTimeout)
+	defer cancel()
+	release, err := h.authorizationAdmission.acquireContext(
+		authorizationContext,
+		principalID,
+	)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return h.authorizer.AuthorizeExecutionEvents(authorizationContext, projectID, executionID)
 }
 
 type boundedSSEWriter struct {

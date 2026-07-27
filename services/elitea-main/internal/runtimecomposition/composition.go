@@ -60,6 +60,7 @@ type Dependencies struct {
 	ControlPool                      *pgxpool.Pool
 	OutputPool                       *pgxpool.Pool
 	ReplayPool                       *pgxpool.Pool
+	TerminalEffectsPool              *pgxpool.Pool
 	ContentPool                      *pgxpool.Pool
 	CurrentConfigurations            *CurrentConfigurationsRuntime
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
@@ -232,7 +233,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if config.IndexIngestDispatchEnabled {
 		currentIndexMetaWriter = pgvector.NewCurrentIndexMetaWriter()
 		indexMetaTerminalEffect, err = newCurrentIndexMetaTerminalProcessor(
-			dependencies.ReplayPool,
+			dependencies.TerminalEffectsPool,
 			dependencies.CurrentConfigurations,
 			currentIndexMetaWriter,
 			func(err error) {
@@ -344,7 +345,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
 			indexMetaTerminalEffect,
 			500*time.Millisecond,
-			8,
+			2*indexMetaTerminalEffect.concurrency,
 			func(err error) {
 				dependencies.Logger.Error(
 					"current index metadata terminal reconciliation failed",
@@ -592,7 +593,13 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
-	publicRoutes, err := newPublicRoutes(publicAuthorizer, validationSubmitter, replay, indexStart)
+	publicRoutes, err := newPublicRoutes(
+		publicAuthorizer,
+		validationSubmitter,
+		replay,
+		indexStart,
+		int(dependencies.ReplayPool.Config().MaxConns),
+	)
 	if err != nil {
 		return nil, err
 	}

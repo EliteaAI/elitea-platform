@@ -30,20 +30,32 @@ type PublicRoutes struct {
 
 // Phase one uses durable PostgreSQL replay without a notification sidecar.
 // Polling every two seconds makes completion visibility explicitly bounded by
-// roughly two seconds plus query time; each poll is also the SSE heartbeat and
-// the maximum project-membership/suspension reauthorization interval.
+// roughly two seconds plus query time. Each idle poll is also the SSE heartbeat
+// and reauthorization cadence. An already-authorized replay batch has the
+// separate bounded write exposure documented by the execution event handler.
 const phaseOneReplayPollInterval = 2 * time.Second
 
 type validationSubmitter interface {
 	Submit(context.Context, configurationapp.SubmitValidationRequest) (executionapp.AdmissionOutcome, error)
 }
 
-func newPublicRoutes(authorizer *postgresPublicAuthorizer, submitter validationSubmitter, replay executionapi.EventRepository, indexStart indexingapi.StartUseCase) (PublicRoutes, error) {
+func newPublicRoutes(
+	authorizer *postgresPublicAuthorizer,
+	submitter validationSubmitter,
+	replay executionapi.EventRepository,
+	indexStart indexingapi.StartUseCase,
+	replayCapacity int,
+) (PublicRoutes, error) {
 	validation, err := configurationapi.NewValidationHandler(authorizer, submitter)
 	if err != nil {
 		return PublicRoutes{}, err
 	}
-	events, err := executionapi.NewEventHandler(authorizer, replay, pollingReplayWaiter{interval: phaseOneReplayPollInterval})
+	events, err := executionapi.NewEventHandlerWithReplayCapacity(
+		authorizer,
+		replay,
+		pollingReplayWaiter{interval: phaseOneReplayPollInterval},
+		replayCapacity,
+	)
 	if err != nil {
 		return PublicRoutes{}, err
 	}

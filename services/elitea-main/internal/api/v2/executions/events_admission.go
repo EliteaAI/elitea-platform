@@ -2,16 +2,115 @@ package executions
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"sync"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 const (
-	defaultMaxActiveSSEStreams             = 128
-	defaultMaxActiveSSEStreamsPerPrincipal = 4
-	defaultMaxActiveSSEStreamsPerProject   = 32
+	defaultMaxSSEAuthorizations             = 4
+	defaultMaxSSEAuthorizationsPerPrincipal = 1
+	defaultMaxActiveSSEStreams              = 16
+	defaultMaxActiveSSEStreamsPerPrincipal  = 4
+	defaultMaxActiveSSEStreamsPerProject    = 8
 )
+
+// sseAuthorizationGate bounds only authorization queries against the dedicated
+// replay pool. It never waits: a saturated caller must retry instead of
+// accumulating request goroutines or consuming a long-lived stream slot.
+type sseAuthorizationGate struct {
+	mu             sync.Mutex
+	active         int
+	globalLimit    int
+	principalLimit int
+	byPrincipal    map[string]int
+	waiting        int
+	changed        chan struct{}
+}
+
+func newSSEAuthorizationGate(globalLimit, principalLimit int) *sseAuthorizationGate {
+	if globalLimit <= 0 || principalLimit <= 0 || principalLimit > globalLimit {
+		return nil
+	}
+	return &sseAuthorizationGate{
+		globalLimit:    globalLimit,
+		principalLimit: principalLimit,
+		byPrincipal:    make(map[string]int),
+		changed:        make(chan struct{}),
+	}
+}
+
+func (g *sseAuthorizationGate) acquire(principalID string) (func(), bool) {
+	if g == nil || principalID == "" {
+		return nil, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Established streams waiting to reauthorize take precedence over new
+	// initial requests. This prevents initial request churn from starving a
+	// stream until its fail-closed continuation deadline.
+	if g.waiting > 0 || !g.capacityAvailableLocked(principalID) {
+		return nil, false
+	}
+	return g.acquireLocked(principalID), true
+}
+
+func (g *sseAuthorizationGate) acquireContext(
+	ctx context.Context,
+	principalID string,
+) (func(), error) {
+	if ctx == nil {
+		return nil, errors.New("SSE authorization wait context is required")
+	}
+	if g == nil || principalID == "" {
+		return nil, errSSEAuthorizationBusy
+	}
+	g.mu.Lock()
+	g.waiting++
+	for {
+		if g.capacityAvailableLocked(principalID) {
+			g.waiting--
+			release := g.acquireLocked(principalID)
+			g.mu.Unlock()
+			return release, nil
+		}
+		changed := g.changed
+		g.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			g.mu.Lock()
+			g.waiting--
+			g.mu.Unlock()
+			return nil, ctx.Err()
+		case <-changed:
+			g.mu.Lock()
+		}
+	}
+}
+
+func (g *sseAuthorizationGate) capacityAvailableLocked(principalID string) bool {
+	return g.active < g.globalLimit &&
+		g.byPrincipal[principalID] < g.principalLimit
+}
+
+func (g *sseAuthorizationGate) acquireLocked(principalID string) func() {
+	g.active++
+	g.byPrincipal[principalID]++
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			g.active--
+			decrementSSEAdmissionCount(g.byPrincipal, principalID)
+			close(g.changed)
+			g.changed = make(chan struct{})
+			g.mu.Unlock()
+		})
+	}
+}
 
 // sseAdmissionGate bounds long-lived replay loops independently of ordinary
 // request rate limiting. It is intentionally process-local: every replica has
@@ -74,12 +173,14 @@ func decrementSSEAdmissionCount(counts map[string]int, key string) {
 	counts[key]--
 }
 
-func ssePrincipalID(ctx context.Context) string {
-	if principal, ok := auth.RuntimePrincipalFromContext(ctx); ok {
-		return principal.ID
+func sseOwningPrincipalID(ctx context.Context) (string, bool) {
+	principal, ok := auth.RuntimePrincipalFromContext(ctx)
+	if !ok {
+		return "", false
 	}
-	// Production authorization fails before admission without provenance. This
-	// stable fallback keeps the transport handler independently testable while
-	// still sharing one conservative bucket for any custom authorizer.
-	return "unprovenanced"
+	ownerID, ok := principal.OwningUserID()
+	if !ok {
+		return "", false
+	}
+	return strconv.FormatInt(ownerID, 10), true
 }

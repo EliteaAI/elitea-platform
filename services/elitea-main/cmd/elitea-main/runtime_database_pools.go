@@ -12,11 +12,12 @@ import (
 )
 
 type runtimeDatabasePools struct {
-	Admission *pgxpool.Pool
-	Control   *pgxpool.Pool
-	Output    *pgxpool.Pool
-	Replay    *pgxpool.Pool
-	Content   *pgxpool.Pool
+	Admission       *pgxpool.Pool
+	Control         *pgxpool.Pool
+	Output          *pgxpool.Pool
+	Replay          *pgxpool.Pool
+	TerminalEffects *pgxpool.Pool
+	Content         *pgxpool.Pool
 
 	resources []runtimePoolResource
 	closeOnce sync.Once
@@ -50,6 +51,7 @@ func openRuntimeDatabasePoolsWithFactory(ctx context.Context, dsn string, limits
 		{role: "control", maxConns: limits.Control},
 		{role: "output", maxConns: limits.Output},
 		{role: "sse-replay", maxConns: limits.Replay},
+		{role: "terminal-effects", maxConns: limits.TerminalEffects},
 		{role: "content", maxConns: limits.Content},
 	}
 	resources := make([]runtimePoolResource, 0, len(specs))
@@ -69,12 +71,13 @@ func openRuntimeDatabasePoolsWithFactory(ctx context.Context, dsn string, limits
 		resources = append(resources, resource)
 	}
 	return &runtimeDatabasePools{
-		Admission: resources[0].pool,
-		Control:   resources[1].pool,
-		Output:    resources[2].pool,
-		Replay:    resources[3].pool,
-		Content:   resources[4].pool,
-		resources: resources,
+		Admission:       resources[0].pool,
+		Control:         resources[1].pool,
+		Output:          resources[2].pool,
+		Replay:          resources[3].pool,
+		TerminalEffects: resources[4].pool,
+		Content:         resources[5].pool,
+		resources:       resources,
 	}, nil
 }
 
