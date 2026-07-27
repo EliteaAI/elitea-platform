@@ -561,5 +561,6 @@ declare module '@mui/material/styles' {
     radiusSm: number;
     radiusMd: number;
     radiusLg: number;
+    radiusPill: number;
   }
 }

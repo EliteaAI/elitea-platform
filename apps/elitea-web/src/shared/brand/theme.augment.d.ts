@@ -62,6 +62,8 @@ declare module '@mui/material/styles' {
     radiusSm?: number;
     radiusMd?: number;
     radiusLg?: number;
+    /** [S1 Part B] Additive — the pill/circle escape hatch (see buildTheme.ts). */
+    radiusPill?: number;
   }
 
   /** MainTheme.js:92-111 — ten prompt-list rungs plus `tablet`. */
@@ -100,6 +102,21 @@ declare module '@mui/material/Button' {
     neutral: true;
     positive: true;
   }
+
+  /**
+   * [S1 Part B] Additive-only (no existing member touched). The baseline's
+   * `BUTTON_COLORS` vocabulary (`BaseBtn.jsx:5-10`) beyond MUI's built-in
+   * `primary`/`secondary`/`success`/`error`/`info`/`warning` — needed for
+   * `variant="elitea" color="tertiary"|"alarm"` (`MuiButton.ts`'s per-colour
+   * `elitea` entries) and for `shared/ui` callers (e.g.
+   * `CopyToClipboardButton`) that pass those colours straight through to
+   * `BaseBtn`/`Button`. Mirrors the `IconButtonPropsColorOverrides`
+   * augmentation below it for the sibling `IconButton` component.
+   */
+  interface ButtonPropsColorOverrides {
+    tertiary: true;
+    alarm: true;
+  }
 }
 
 declare module '@mui/material/Typography' {
@@ -115,5 +132,34 @@ declare module '@mui/material/Typography' {
     bodySmall: true;
     bodySmall2: true;
     subtitle: true;
+  }
+}
+
+declare module '@mui/material/IconButton' {
+  /**
+   * [S1] Additive-only augmentation (no existing member touched): the
+   * baseline's `IconButton` `color` vocabulary
+   * (`apps/elitea-ui/src/components/IconButton.jsx:17-186`) beyond MUI's
+   * built-in `primary`/`secondary`. `tertiary` is the baseline's default
+   * (icon-only, no filled background); `alarm` is the destructive-action
+   * skin. `tertiaryCount`/`magicAssistant`/`delete` (absolute-positioned
+   * badge/single-purpose skins) are deliberately not ported — no `shared/ui`
+   * call site needs them, and each is a one-off layout, not a colour.
+   */
+  interface IconButtonPropsColorOverrides {
+    tertiary: true;
+    alarm: true;
+  }
+}
+
+declare module '@mui/material/Checkbox' {
+  /**
+   * [S1] Additive-only. The baseline's `BaseCheckbox.jsx` size ladder
+   * (`xs`/`small`/`medium`/`large`/`xl`) is two names wider than MUI's
+   * built-in `'small' | 'medium' | 'large'`.
+   */
+  interface CheckboxPropsSizeOverrides {
+    xs: true;
+    xl: true;
   }
 }

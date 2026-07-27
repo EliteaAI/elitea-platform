@@ -77,6 +77,12 @@ export function buildEliteaTheme(pack: BrandPack) {
       radiusSm: pack.shape.radiusSm,
       radiusMd: pack.shape.radiusMd,
       radiusLg: pack.shape.radiusLg,
+      // [S1 Part B] radiusPill: theme-gate's R-T10 (elitea/ad-hoc-radius)
+      // rejects literal `borderRadius: '50%'`/`'9999px'` — no member-
+      // expression form of that literal exists. MuiButton's `icon` and
+      // `maxi` variants need a true pill/circle, which none of
+      // radiusSm|Md|Lg (corner-rounding rungs, not a shape) represents.
+      radiusPill: pack.shape.radiusPill,
     },
     // Density is a token, not a fork: 6 vs 8 covers the whole compact mode.
     spacing: pack.shape.density === 'compact' ? 6 : 8,

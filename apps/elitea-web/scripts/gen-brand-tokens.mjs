@@ -14,9 +14,9 @@
  *
  * The conversion is mechanical: darkPalette.js / lightPalette.js are
  * evaluated as data modules and flattened to `a.b.c` token ids. Everything
- * that is NOT mechanical is one of the three explicit tables below, each row
- * carrying its justification, so a reviewer can see exactly what was added to
- * or withheld from a verbatim copy.
+ * that is NOT mechanical is one of the four explicit tables below, each row
+ * carrying its justification, so a reviewer can see exactly what was added to,
+ * withheld from, or corrected on top of a verbatim copy.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -138,6 +138,120 @@ const ADDITIONS = [
 ];
 
 /**
+ * (4) A11Y OVERRIDES — scheme-specific post-generation contrast fixes.
+ *
+ * The canonical baseline hard-codes `const dangerRed = '#D71616'` identically
+ * in BOTH `darkPalette.js:45` and `lightPalette.js:13` for every error/danger
+ * leaf below — a deliberate "the alarm colour doesn't change with scheme"
+ * choice, not a porting gap (a mechanical port of either file alone
+ * reproduces the same literal). Measured with the WCAG 2.1 relative-luminance
+ * formula against the REAL dark-scheme surfaces these tokens render on
+ * (`parity/` contrast audit, 2026-07-27): `#D71616` is 3.56:1 against
+ * `background.default` (#0E131D) and 3.17:1 against `background.card.default`
+ * (#181F2A) — both below the 4.5:1 AA bar for normal text. That bar applies
+ * because these specific ids are actually consumed as TEXT, not only as
+ * icon/border accents: `icon.fill.error` colours `MuiTextField.ts`'s
+ * `.MuiFormHelperText-root.Mui-error` validation message; `status.rejected`
+ * is used as literal text colour at >10 call sites in the canonical baseline
+ * (`AnalyticsTools.jsx`, `AgentException.jsx`, `CanvasEditor.jsx`, …);
+ * `text.error` is the dedicated text-role sibling of the same defect, fixed
+ * pre-emptively (it has no consumer yet, but shipping it broken would
+ * reintroduce the failure the moment one is added). Independently,
+ * `background.button.alarm.default` fails 4.5:1 against `text.button.primary`
+ * (#0E131D) — the label colour `MuiButton.ts`'s `alarm` variant paints on
+ * top of this fill.
+ *
+ * Each override keeps hue (0deg) and saturation (~0.814) identical to
+ * `dangerRed` and raises lightness only (0.465 -> 0.62) until the WORSE of
+ * the two realistic dark surfaces (page `background.default`, card
+ * `background.card.default`) clears 4.5:1 — the same kind of same-hue
+ * lightness move `color.ts`'s `deriveColor` makes for its NEUTRAL band,
+ * applied by hand here because this is a fixed same-purpose contrast fix,
+ * not a brand-hue re-theme derivation. Light scheme is untouched: `#D71616`
+ * already clears AA there (5.07:1 against `background.default` #F8FCFF).
+ *
+ * NOT overridden (measured, but already passing — see the same audit):
+ *   - `error.main` — its only real consumer is `MuiAlert.ts`'s filled
+ *     surface with `error.contrastText` (#FFFFFF) on top, 5.23:1. Lightening
+ *     `error.main` to also satisfy the text bar is mathematically impossible
+ *     here without dropping `error.contrastText`'s own 4.5:1 (verified by
+ *     exhaustive search over the same hue/saturation ramp: no lightness value
+ *     clears both simultaneously) — `error.main`/`error.light`/`error.dark`
+ *     are a `PaletteColor` fill role (paired with `contrastText`), not a
+ *     text role; `text.error` is the token for text contexts, and it is
+ *     fixed below.
+ *   - `background.button.danger` — icon-fill-only in both the baseline
+ *     (`fill:`/`iconColor:`, never a literal button background despite the
+ *     name) and this port (`BannerMessage.tsx`'s `iconColor`); 3.45:1
+ *     against its real composited background (`background.errorBkg` over
+ *     `background.default`) clears the 3:1 SC 1.4.11 non-text bar.
+ *
+ * Fast-follow (different literal, not `#D71616`, so a separate row):
+ * `background.button.alarm.pressed` (`#C51111`) measured 3.07:1 against
+ * `text.button.primary` — below 4.5:1. Fixed the same way: same hue (0deg),
+ * closely matching saturation (~0.816 vs the family's ~0.814), lightness
+ * raised only as far as needed (0.4196 -> 0.575) to clear 4.5:1 (lands at
+ * 4.60:1) while staying strictly darker than both the already-fixed
+ * `background.button.alarm.default` (l=0.6196) and `.hover` (l=0.5863,
+ * itself unchanged and already passing at 4.70:1) — preserves a monotonic
+ * default > hover > pressed lightness ramp instead of inverting it.
+ */
+const A11Y_OVERRIDES = [
+  {
+    id: 'icon.fill.error',
+    scheme: 'dark',
+    from: '#D71616',
+    to: '#ED4F4F',
+    reason:
+      "3.56:1 vs background.default / 3.17:1 vs background.card.default, below 4.5:1. Consumed as literal FormHelperText colour by MuiTextField.ts's `.MuiFormHelperText-root.Mui-error` rule (the SecretField ErrorState story regression S1-H flagged).",
+  },
+  {
+    id: 'text.error',
+    scheme: 'dark',
+    from: '#D71616',
+    to: '#ED4F4F',
+    reason:
+      'Same source literal, same failure as icon.fill.error. No live consumer yet; fixed so a future `theme.vars.palette.text.error` text read does not reintroduce it.',
+  },
+  {
+    id: 'status.rejected',
+    scheme: 'dark',
+    from: '#D71616',
+    to: '#ED4F4F',
+    reason:
+      'Baseline (apps/elitea-ui) reads this token directly as literal text colour at >10 call sites (AnalyticsTools.jsx, AgentException.jsx, CanvasEditor.jsx, mcp/index.jsx, CredentialNotFoundValue.jsx), not only as an icon/border accent, so the 4.5:1 text bar applies.',
+  },
+  {
+    id: 'background.button.alarm.default',
+    scheme: 'dark',
+    from: '#D71616',
+    to: '#ED4F4F',
+    reason:
+      "MuiButton.ts's `alarm`/`elitea+alarm` variants paint `text.button.primary` (#0E131D) on top of this fill for the button label: 3.56:1 before, 5.16:1 after. MuiIconButton.ts's alarm variant paints a white icon instead (icon bar, 3:1): 5.23:1 before, 3.60:1 after — still clears.",
+  },
+  {
+    id: 'background.button.alarm.pressed',
+    scheme: 'dark',
+    from: '#C51111',
+    to: '#EB3A3A',
+    reason:
+      "MuiButton.ts's `alarm`/`elitea+alarm` variants paint `text.button.primary` (#0E131D) on top of this fill for the button's `:active` label: 3.07:1 before, 4.60:1 after. Same hue (0deg) as the rest of the family, lightness raised only as far as needed (0.4196 -> 0.575) to stay strictly darker than the already-fixed `.default` (l=0.6196) and unchanged `.hover` (l=0.5863, 4.70:1) — preserves a default > hover > pressed lightness ramp.",
+  },
+];
+
+/** Applies (4): mutates the matching scheme record in place, id by id. */
+function applyA11yOverrides(schemes) {
+  for (const { id, scheme, from, to } of A11Y_OVERRIDES) {
+    if (schemes[scheme][id] !== from) {
+      throw new Error(
+        `A11Y_OVERRIDES stale: expected ${scheme}.${id} to be ${JSON.stringify(from)} (the baseline literal this override was measured against) but found ${JSON.stringify(schemes[scheme][id])} — the baseline moved, re-derive this override's contrast math before applying it`,
+      );
+    }
+    schemes[scheme][id] = to;
+  }
+}
+
+/**
  * The default pack's non-colour fields. `brand.hue` is the single
  * scheme-independent hue (spec §4.2); at the default pack every token is
  * stated verbatim, so the hue's derivation is fully shadowed and the value
@@ -164,7 +278,14 @@ const PACK_META = {
   },
   // radiusMd 8 == the 0.5rem used by MuiMenu/MuiAutocomplete; radiusLg 16 ==
   // MuiDialog's 1rem; radiusSm 4 == the 0.25rem of the small controls.
-  shape: { radiusSm: 4, radiusMd: 8, radiusLg: 16, density: 'comfortable' },
+  // radiusPill 9999 == unit S1 (Part B, MuiButton OWNERSHIP.md note 2): the
+  // baseline's icon-only button / `maxi` FAB use `borderRadius: '50%'`,
+  // which `elitea/ad-hoc-radius` rejects (no token member-expression form
+  // for a literal shape) and which none of radiusSm|Md|Lg represent (a
+  // pill/circle, not a corner rounding rung). A large fixed px value clamps
+  // to the shorter box dimension in CSS, so it renders as a true pill on a
+  // rectangular box and a true circle on a square one, regardless of size.
+  shape: { radiusSm: 4, radiusMd: 8, radiusLg: 16, radiusPill: 9999, density: 'comfortable' },
   locale: { default: 'en-GB', dateLocale: 'en-GB' },
   brand: { hue: '#6ae8fa' },
 };
@@ -235,6 +356,7 @@ function applyTables(schemes) {
   assertBugTokensAbsent(schemes);
   applySymmetryFills(schemes);
   applyAdditions(schemes);
+  applyA11yOverrides(schemes);
   const post = asymmetry(schemes.light, schemes.dark);
   if (post.lightOnly.length || post.darkOnly.length) {
     throw new Error(`schemes still asymmetric: ${JSON.stringify(post)}`);
@@ -310,6 +432,7 @@ ${groups}
     radiusSm: number;
     radiusMd: number;
     radiusLg: number;
+    radiusPill: number;
   }
 }
 `;
@@ -333,7 +456,9 @@ function main() {
 
   const n = Object.keys(pack.schemes.dark).length;
   console.log(`gen-brand-tokens: ${n} token ids per scheme (baseline + fills + additions)`);
-  console.log(`  exclusions: ${EXCLUSIONS.length}, symmetry fills: ${SYMMETRY_FILLS.length}, additions: ${ADDITIONS.length}`);
+  console.log(
+    `  exclusions: ${EXCLUSIONS.length}, symmetry fills: ${SYMMETRY_FILLS.length}, additions: ${ADDITIONS.length}, a11y overrides: ${A11Y_OVERRIDES.length}`,
+  );
   console.log(`  wrote ${join(OUT_DIR, 'default.pack.json')}`);
   console.log(`  wrote ${join(OUT_DIR, 'palette.augment.d.ts')}`);
 }

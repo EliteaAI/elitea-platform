@@ -57,6 +57,10 @@ export const BrandPack = z
       radiusSm: z.number(),
       radiusMd: z.number(),
       radiusLg: z.number(),
+      // [S1 Part B] Additive: the pill/circle shape MuiButton's icon-only and
+      // `maxi` variants need — see buildTheme.ts and gen-brand-tokens.mjs for
+      // the full rationale. radiusSm/Md/Lg are untouched.
+      radiusPill: z.number(),
       density: z.enum(['comfortable', 'compact']),
     }),
     locale: z.object({

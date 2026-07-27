@@ -419,3 +419,74 @@ in this document's §1–§7 depends on the outcome.
 | `src/shared/brand/mui-overrides/` | T1 structure, **S1 content** | 2 of 30 keys wired; see `OWNERSHIP.md` for the remaining 28 and the two blockers S1 will hit |
 | `InitColorSchemeScript` wiring | **R2** | exact snippet and the matching-props caveat are in `src/shared/brand/constants.ts` (`INIT_COLOR_SCHEME_PROPS`); F1 owns `index.html` and T1 did not touch it |
 | `brand.hue` value | **operator** | §8 |
+
+---
+
+## 10. A11Y follow-up — the `#D71616` family, dark scheme (2026-07-27)
+
+Unit S1-H's `SecretField` `ErrorState` story surfaced a real WCAG AA failure
+this document's own §4 table had already, unknowingly, recorded the cause of:
+`error.main` (and everything else sourced from the baseline's `dangerRed`
+const) is `#D71616` in **both** schemes, byte-for-byte — confirmed by grep to
+be exactly 6 ids: `error.main`, `icon.fill.error`, `text.error`,
+`status.rejected`, `background.button.alarm.default`,
+`background.button.danger`. This is not a porting gap — `apps/elitea-ui`'s
+own `darkPalette.js:45` and `lightPalette.js:13` both hard-code the identical
+literal, so a verbatim mechanical port (§5) reproduces a defect the baseline
+always shipped with. Unit T2's triage (`parity/theme-fork-triage.md`) never
+flagged it because that document's axis is elitea-ui-vs-admin-ui-vs-Maintenance
+fork divergence, not elitea-ui's own dark/light contrast.
+
+Measured against the tokens' REAL dark-scheme rendering surfaces (WCAG 2.1
+relative-luminance formula, not axe's approximation):
+
+| id | real dark consumer | bar | ratio before | ratio after | changed? |
+|---|---|---|---|---|---|
+| `icon.fill.error` | `MuiTextField.ts`'s `.Mui-error` `FormHelperText` text; `MuiSelect.ts` border | 4.5:1 (text) | 3.56:1 (`background.default`) / 3.17:1 (`background.card.default`) | 5.05:1 / 4.50:1 | **yes -> `#ED4F4F`** |
+| `text.error` | none yet (pre-emptive) | 4.5:1 (text) | 3.56:1 / 3.17:1 | 5.05:1 / 4.50:1 | **yes -> `#ED4F4F`** |
+| `status.rejected` | text/icon colour at >10 baseline call sites (`AnalyticsTools.jsx` et al.) | 4.5:1 (text) | 3.56:1 / 3.17:1 | 5.05:1 / 4.50:1 | **yes -> `#ED4F4F`** |
+| `background.button.alarm.default` | fill under `text.button.primary` label (`MuiButton.ts` `alarm`/`elitea+alarm`) | 4.5:1 (text-on-fill) | 3.56:1 | 5.16:1 | **yes -> `#ED4F4F`** |
+| `error.main` | fill under `error.contrastText` (`MuiAlert.ts` filled) | 4.5:1 (text-on-fill) | 5.23:1 | 5.23:1 (unchanged) | no — already passing |
+| `background.button.danger` | icon fill only (`BannerMessage.tsx`), on `background.errorBkg` over `background.default` | 3:1 (icon, SC 1.4.11) | 3.45:1 | 3.45:1 (unchanged) | no — already passing |
+
+`error.main` cannot be lightened to also clear the text bar without dropping
+`error.contrastText`'s own 4.5:1 below AA (verified by exhaustive search over
+the same hue/saturation ramp — no lightness value clears both). It is a
+`PaletteColor` fill role paired with `contrastText`, not a text role;
+`text.error` is the id for text contexts and is the one that moved.
+
+All four moved ids keep the baseline's exact hue (0deg) and saturation
+(~0.814), lightness raised from 0.465 to 0.62 — the same kind of same-hue
+lightness move `color.ts`'s `deriveColor` makes for its NEUTRAL band (§3.2),
+applied by hand because this is a fixed-purpose contrast correction, not a
+`brand.hue` re-theme. Light scheme is untouched: `#D71616` already clears AA
+there (5.07:1 against `background.default` `rgba(248, 252, 255, 1)`).
+
+Mechanism: `scripts/gen-brand-tokens.mjs` gained a fourth table,
+`A11Y_OVERRIDES` (after EXCLUSIONS/SYMMETRY_FILLS/ADDITIONS), applied inside
+`applyTables` after `applyAdditions`. It asserts the baseline literal it was
+measured against is still present before overwriting, so a future
+`--baseline` re-point that changes `dangerRed` fails loudly instead of
+silently reintroducing or masking the defect. `default.pack.json` was
+regenerated through this table, not hand-edited — diff is exactly the four
+values above (plus one unrelated pre-existing `shape.radiusPill` drift
+between `PACK_META` and the last-committed pack, incidentally caught by the
+same regeneration).
+
+**Fast-follow, landed (2026-07-27):** `background.button.alarm.pressed`
+(`#C51111`, a different literal from the `#D71616` family above, so a
+separate `A11Y_OVERRIDES` row) measured 3.07:1 against `text.button.primary`
+for the same `MuiButton.ts` `alarm`/`elitea+alarm` `:active` label. `.hover`
+(`#E74444`) was re-checked and already passes at 4.70:1 (l=0.5863),
+unchanged. Fixing `.default` above (l=0.465 -> 0.6196) had made it lighter
+than `.hover` — an inverted default/hover ordering versus the baseline's
+original ramp, accepted as-is since re-deriving `.hover` was out of scope for
+that pass. For `.pressed`, an exhaustive lightness scan (same hue 0deg,
+matching saturation ~0.8145) over the codebase's own `color.ts`
+`hslaToRgba`/`rgbaToHsla` — not hand math — found the valid band for
+"passes 4.5:1 AND stays darker than `.hover`" is narrow: HSL lightness
+(0.566, 0.586). Chose `l=0.575` (`#EB3A3A`, 4.60:1) — comfortable margin
+above the 4.5:1 floor without crowding `.hover`'s own lightness. Final ramp:
+`.default` (l=0.6196, 5.16:1) > `.hover` (l=0.5863, 4.70:1) > `.pressed`
+(l=0.575, 4.60:1) — monotonically darker through the interaction sequence,
+not inverted despite `.default`'s earlier fix.
