@@ -9,6 +9,7 @@ for its thread to exit under ``ExecutionSupervisor.run_sync`` semantics.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,6 +61,30 @@ _CURRENT_INDEX_CUSTOM_EVENTS = {
     ),
 }
 
+# SDK callbacks are durable, replayable UI output.  Treat progress text as an
+# untrusted observation, not as a diagnostic channel: some current SDK tools
+# interpolate their invocation ``kwargs`` into these messages.
+_MAX_SAFE_PROGRESS_MESSAGE_BYTES = 1024
+_SAFE_PROGRESS_FALLBACK = "Indexing progress updated."
+_SAFE_INDEX_ERROR_FALLBACK = "Indexing reported an error."
+_LOADING_DOCUMENTS_STAGE = "Loading the documents to index."
+_SENSITIVE_PROGRESS_PATTERNS = (
+    re.compile(
+        r"\b(?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|private[_ -]?token|"
+        r"client[_ -]?secret|password|credential|authorization|bearer)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:chunking_config|toolkit_config|tool_params|llm_config(?:uration)?|"
+        r"mcp_tokens|runtime_config|settings)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:https?|ftp|postgres(?:ql)?|redis)://", re.IGNORECASE),
+    re.compile(r"<[^>\r\n]{0,256}\bobject at 0x[0-9a-f]+>", re.IGNORECASE),
+    re.compile(r"(?:^|[\s\"'])(?:/[^\s]+|[A-Za-z]:[\\/][^\s]+)"),
+)
+_OMIT_CURRENT_EVENT_FIELD = object()
+
 
 @dataclass(frozen=True, slots=True)
 class CurrentIndexNodeEventContext:
@@ -84,7 +109,7 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
     contain redeemed credentials and are not required to identify an index
     status. The language-neutral runtime instead carries the authoritative
     execution, project, user and toolkit identities while the SDK-owned status
-    fields remain byte-for-byte JSON values.
+    fields are projected to the small, safe values required by the current UI.
     """
 
     def __init__(
@@ -229,9 +254,15 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                 "metadata": self._safe_tool_metadata(),
                 "datetime": now,
                 **{
-                    field: _current_json_value(data[field])
+                    field: value
                     for field in sorted(fields)
                     if field in data
+                    if (
+                        value := _project_current_event_field(
+                            name, field, data[field]
+                        )
+                    )
+                    is not _OMIT_CURRENT_EVENT_FIELD
                 },
             }
             if name == "index_data_status":
@@ -326,21 +357,62 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
             raise failure
 
 
-def _current_json_value(value: Any) -> Any:
-    """Apply the current callback's JSON conversion without allowing NaN."""
+def _project_current_event_field(name: str, field: str, value: Any) -> Any:
+    """Keep the current event shape while rejecting unbounded callback data."""
 
+    if field == "message":
+        return _project_progress_message(value, _SAFE_PROGRESS_FALLBACK)
+    if field == "error":
+        if value is None:
+            return None
+        return _project_progress_message(value, _SAFE_INDEX_ERROR_FALLBACK)
+    if field in {"tool_name", "toolkit"}:
+        return _project_progress_label(value, field)
+    if field == "markdown":
+        return value if isinstance(value, bool) else _OMIT_CURRENT_EVENT_FIELD
+    return _project_scalar(value)
+
+
+def _project_progress_message(value: Any, fallback: str) -> str:
+    """Project progress text to a bounded, credential-free UI message."""
+
+    if not isinstance(value, str):
+        return fallback
+    # This is the current SDK's known unsafe message shape.  Preserve the UI
+    # stage without copying the interpolated invocation kwargs that follow it.
+    if value.startswith("Loading the documents to index..."):
+        return _LOADING_DOCUMENTS_STAGE
+    if not _safe_progress_text(value, _MAX_SAFE_PROGRESS_MESSAGE_BYTES):
+        return fallback
+    return value
+
+
+def _project_progress_label(value: Any, fallback: str) -> str:
+    if not isinstance(value, str) or not _safe_progress_text(value, 256):
+        return fallback
+    return value
+
+
+def _project_scalar(value: Any) -> Any:
+    """Only callback scalar fields required by the current UI are retained."""
+
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str) and _safe_progress_text(value, 256):
+        return value
+    return _OMIT_CURRENT_EVENT_FIELD
+
+
+def _safe_progress_text(value: str, maximum_bytes: int) -> bool:
     try:
-        return json.loads(
-            json.dumps(
-                value,
-                ensure_ascii=False,
-                allow_nan=False,
-                default=lambda item: str(item),
-                separators=(",", ":"),
-            )
-        )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
-        raise InvalidInput("The index progress callback is malformed.") from exc
+        encoded = value.encode("utf-8")
+    except UnicodeError:
+        return False
+    if not encoded or len(encoded) > maximum_bytes:
+        return False
+    if any(character in value for character in ("\x00", "\r", "\n", "{", "[")):
+        return False
+    return not any(pattern.search(value) for pattern in _SENSITIVE_PROGRESS_PATTERNS)
 
 
 def _current_tool_run_id(value: Any) -> str:

@@ -459,7 +459,8 @@ def test_current_index_tool_error_omits_exception_detail() -> None:
     assert canary not in json.dumps(current)
 
 
-def test_current_index_callback_rejects_an_oversized_status() -> None:
+def test_current_index_callback_projects_an_oversized_status_error() -> None:
+    events = []
     callback = CurrentIndexNodeEventCallback(
         CurrentIndexNodeEventContext(
             stream_id="execution-1",
@@ -469,21 +470,99 @@ def test_current_index_callback_rejects_an_oversized_status() -> None:
             user_id=7,
             toolkit_id=9,
         ),
-        lambda event: None,
+        events.append,
     )
 
-    with pytest.raises(ResourceExhausted):
-        callback.on_custom_event(
-            "index_data_status",
-            {
-                "index_name": "knowledge",
-                "state": "failed",
-                "error": "x" * (48 * 1024),
-            },
-            run_id=UUID("00000000-0000-0000-0000-000000000001"),
-        )
-    with pytest.raises(ResourceExhausted):
-        callback.raise_if_failed()
+    callback.on_custom_event(
+        "index_data_status",
+        {
+            "index_name": "knowledge",
+            "state": "failed",
+            "error": "x" * (48 * 1024),
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+    callback.raise_if_failed()
+
+    current = json.loads(encode_current_node_event_json(events[0]))
+    assert current["response_metadata"]["error"] == "Indexing reported an error."
+    assert len(encode_current_node_event_json(events[0])) < 48 * 1024
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Loading the documents to index...{'chunking_config': {'prompt': 'LEAK_CANARY'}}",
+        "access_token=LEAK_CANARY",
+        "https://user:LEAK_CANARY@example.test/private",
+        "<ProviderClient object at 0xDEADBEEF> LEAK_CANARY",
+        "{'nested': {'settings': {'api_key': 'LEAK_CANARY'}}}",
+        "/private/LEAK_CANARY/indexing.log",
+        "LEAK_CANARY" * (48 * 1024),
+    ],
+)
+def test_current_index_callback_projects_unsafe_progress_message(message: str) -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        events.append,
+    )
+
+    callback.on_custom_event(
+        "thinking_step",
+        {
+            "message": message,
+            "tool_name": "loader",
+            "toolkit": "EliteaGitHubAPIWrapper",
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+    callback.raise_if_failed()
+
+    current = json.loads(encode_current_node_event_json(events[0]))
+    metadata = current["response_metadata"]
+    assert "LEAK_CANARY" not in json.dumps(current)
+    assert metadata["message"] in {
+        "Loading the documents to index.",
+        "Indexing progress updated.",
+    }
+    assert len(encode_current_node_event_json(events[0])) < 48 * 1024
+
+
+def test_current_index_callback_preserves_safe_progress_message() -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="execution-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+        ),
+        events.append,
+    )
+    message = "10 files processed"
+
+    callback.on_custom_event(
+        "thinking_step",
+        {
+            "message": message,
+            "tool_name": "loader",
+            "toolkit": "EliteaGitHubAPIWrapper",
+        },
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+
+    current = json.loads(encode_current_node_event_json(events[0]))
+    assert current["response_metadata"]["message"] == message
 
 
 def test_current_index_callback_maps_index_removed_shape() -> None:
