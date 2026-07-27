@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  MAX_CONVERSATION_LENGTH,
+  MAX_CONVERSATION_STARTER_LENGTH,
+  MAX_CONVERSATION_STARTERS,
+  MAX_DESCRIPTION_LENGTH,
+  MAX_INSTRUCTIONS_LENGTH,
+  MAX_NAME_LENGTH,
+  MAX_STEP_LIMIT,
+  MAX_VARIABLES_LENGTH,
+  MAX_VERSION_LENGTH,
+  MAX_WELCOME_MESSAGE_LENGTH,
+  MIN_SEARCH_KEYWORD_LENGTH,
+  MIN_STEP_LIMIT,
+  PAGE_SIZE,
+  PAGE_SIZE_TOOLKITS_DROPDOWN_LIST,
+  POSITION_GAP,
+  SUGGESTION_PAGE_SIZE,
+  TAG_NAME_MAX_LENGTH,
+  TOAST_DURATION,
+} from './limits';
+
+describe('numeric limit constants', () => {
+  it('preserves the exact old-app values', () => {
+    expect(POSITION_GAP).toBe(1_000_000);
+    expect(MIN_SEARCH_KEYWORD_LENGTH).toBe(3);
+    expect(PAGE_SIZE).toBe(20);
+    expect(PAGE_SIZE_TOOLKITS_DROPDOWN_LIST).toBe(50);
+    expect(SUGGESTION_PAGE_SIZE).toBe(5);
+    expect(TOAST_DURATION).toBe(3000);
+    expect(TAG_NAME_MAX_LENGTH).toBe(48);
+    expect(MAX_NAME_LENGTH).toBe(32);
+    expect(MAX_DESCRIPTION_LENGTH).toBe(2304);
+    expect(MAX_INSTRUCTIONS_LENGTH).toBe(2500);
+    expect(MAX_VARIABLES_LENGTH).toBe(768);
+    expect(MAX_STEP_LIMIT).toBe(999);
+    expect(MIN_STEP_LIMIT).toBe(0);
+    expect(MAX_VERSION_LENGTH).toBe(20);
+    expect(MAX_CONVERSATION_LENGTH).toBe(50);
+    expect(MAX_CONVERSATION_STARTERS).toBe(4);
+    expect(MAX_CONVERSATION_STARTER_LENGTH).toBe(768);
+    expect(MAX_WELCOME_MESSAGE_LENGTH).toBe(768);
+  });
+});
