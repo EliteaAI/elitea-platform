@@ -316,7 +316,31 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
+	var nodeEvents *repos.NodeEventsRepository
 	if config.IndexIngestDispatchEnabled {
+		nodeEvents, err = repos.NewNodeEventsRepository(dependencies.OutputPool)
+		if err != nil {
+			return nil, fmt.Errorf("construct node event replay repository: %w", err)
+		}
+		replayRetention, retentionErr := newExecutionReplayRetentionJanitor(
+			nodeEvents,
+			executionReplayRetentionPollInterval,
+			func(err error) {
+				dependencies.Logger.Error(
+					"execution replay retention cycle failed",
+					"err",
+					err,
+				)
+			},
+		)
+		if retentionErr != nil {
+			return nil, fmt.Errorf("construct execution replay retention janitor: %w", retentionErr)
+		}
+		publisherRoot, err = newPublisherSet(publisherRoot, replayRetention)
+		if err != nil {
+			return nil, fmt.Errorf("compose execution replay retention janitor: %w", err)
+		}
+
 		indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
 			indexMetaTerminalEffect,
 			500*time.Millisecond,
@@ -463,10 +487,6 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		indexOutput, err := outputapp.NewIndexIngestService(indexResults, outputClaims, indexResults, indexResults)
 		if err != nil {
 			return nil, err
-		}
-		nodeEvents, err := repos.NewNodeEventsRepository(dependencies.OutputPool)
-		if err != nil {
-			return nil, fmt.Errorf("construct node event replay repository: %w", err)
 		}
 		nodeEventOutput, err := outputapp.NewNodeEventService(outputClaims, nodeEvents)
 		if err != nil {

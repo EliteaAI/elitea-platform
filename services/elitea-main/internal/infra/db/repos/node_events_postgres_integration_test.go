@@ -354,6 +354,71 @@ WHERE execution_id = $1 AND generation = 1`,
 	}
 }
 
+func TestPostgresReplayRetentionJanitorBoundsAgePass(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	progress, _ := preparePostgresNodeEventConcurrencyFixture(t, pool, "retention-age-pass")
+	store, err := newPostgresSharedStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeRepository, err := newNodeEventsRepositoryWithPolicy(store, replayRetentionPolicy{
+		maxProgressEvents: 100,
+		maxProgressBytes:  64 * 1024,
+		maxProgressAge:    time.Hour,
+		janitorBatchSize:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const progressEvents = replayJanitorMaxEventsPerExecution + 2
+	for sequence := uint64(1); sequence <= uint64(progressEvents); sequence++ {
+		frame := progress
+		frame.Sequence = sequence
+		frame.EventID = frame.Fence.CommandID + ":" + fmt.Sprint(sequence)
+		frame.LogicalOutputID = outputapp.NodeEventLogicalOutputID(frame.Fence.ExecutionID, sequence)
+		frame.EncodedEvent = []byte(fmt.Sprintf("age-wire-event-%d", sequence))
+		frame.PayloadDigest = runtimedomain.SHA256(frame.EncodedEvent)
+		frame.BrowserData = []byte(fmt.Sprintf(`{"type":"agent_thinking_step","content":"%d"}`, sequence))
+		if outcome, err := nodeRepository.ProjectNodeEvent(ctx, frame); err != nil || !outcome.Inserted {
+			t.Fatalf("append age-capped progress %d: outcome=%+v err=%v", sequence, outcome, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_replay_events
+SET created_at = clock_timestamp() - interval '2 hours'
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID); err != nil {
+		t.Fatal(err)
+	}
+	firstDeleted, err := nodeRepository.PruneExpiredReplayProgress(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDeleted != replayJanitorMaxEventsPerExecution {
+		t.Fatalf("first age pass deleted=%d", firstDeleted)
+	}
+	assertPostgresCount(t, ctx, pool, 2, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID)
+	secondDeleted, err := nodeRepository.PruneExpiredReplayProgress(ctx)
+	if err != nil || secondDeleted != 2 {
+		t.Fatalf("second age pass deleted=%d err=%v", secondDeleted, err)
+	}
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = 1
+  AND event_type = 'execution.node_event'`, progress.Fence.ExecutionID)
+}
+
 // TestPostgresNodeEventSequenceLinearization proves that a sequence N+1
 // writer waiting behind sequence N evaluates replay state after N commits. A
 // one-statement lock-and-read query uses its pre-wait snapshot and rejects N+1.

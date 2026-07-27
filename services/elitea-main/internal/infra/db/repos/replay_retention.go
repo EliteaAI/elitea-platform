@@ -7,6 +7,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const (
+	replayJanitorMaxEventsPerExecution = int64(64)
+	replayJanitorMaxBytesPerExecution  = int64(1024 * 1024)
+)
+
 type replayPruneCandidate struct {
 	executionID         string
 	generation          int64
@@ -18,14 +23,18 @@ type replayPruneCandidate struct {
 // by reconnect reset events. Terminal outcomes remain in the durable replay log.
 func (r *NodeEventsRepository) PruneExpiredReplayProgress(ctx context.Context) (int64, error) {
 	rows, err := r.store.Query(ctx, `
-SELECT execution_id, generation, projection_project_id
-FROM elitea_runtime.execution_replay_events
-WHERE event_type = $1
-  AND created_at
-      < clock_timestamp() - ($2::bigint * interval '1 millisecond')
-GROUP BY execution_id, generation, projection_project_id
-ORDER BY min(created_at), execution_id, generation
-LIMIT $3`,
+WITH bounded_expired_progress AS MATERIALIZED (
+    SELECT execution_id, generation, projection_project_id
+    FROM elitea_runtime.execution_replay_events
+    WHERE event_type = $1
+      AND created_at
+          < clock_timestamp() - ($2::bigint * interval '1 millisecond')
+    ORDER BY created_at, cursor
+    LIMIT $3
+)
+SELECT DISTINCT execution_id, generation, projection_project_id
+FROM bounded_expired_progress
+ORDER BY execution_id, generation, projection_project_id`,
 		replayEventNodeEvent,
 		r.retention.maxProgressAge.Milliseconds(),
 		r.retention.janitorBatchSize,
@@ -62,15 +71,33 @@ LIMIT $3`,
 			}
 			var deleted int64
 			if err := tx.QueryRow(ctx, `
-WITH deleted_progress AS (
-    DELETE FROM elitea_runtime.execution_replay_events
+WITH bounded_expired_progress AS MATERIALIZED (
+    SELECT cursor, octet_length(event_bytes) AS event_size
+    FROM elitea_runtime.execution_replay_events
     WHERE execution_id = $1
       AND generation = $2
       AND projection_project_id = $3
       AND event_type = $4
       AND created_at
           < clock_timestamp() - ($5::bigint * interval '1 millisecond')
-    RETURNING cursor, octet_length(event_bytes) AS event_size
+    ORDER BY cursor
+    LIMIT $6
+), byte_bounded_expired_progress AS MATERIALIZED (
+    SELECT cursor,
+           sum(event_size) OVER (
+               ORDER BY cursor
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+           ) AS prefix_bytes
+    FROM bounded_expired_progress
+), delete_candidates AS MATERIALIZED (
+    SELECT cursor
+    FROM byte_bounded_expired_progress
+    WHERE prefix_bytes <= $7
+), deleted_progress AS (
+    DELETE FROM elitea_runtime.execution_replay_events AS r
+    USING delete_candidates AS candidate
+    WHERE r.cursor = candidate.cursor
+    RETURNING r.cursor, octet_length(r.event_bytes) AS event_size
 ), deleted_summary AS MATERIALIZED (
     SELECT count(*) AS event_count,
            COALESCE(sum(event_size), 0) AS byte_count,
@@ -103,6 +130,8 @@ SELECT COALESCE((SELECT event_count FROM updated_state), 0)`,
 				candidate.projectionProjectID,
 				replayEventNodeEvent,
 				r.retention.maxProgressAge.Milliseconds(),
+				replayJanitorMaxEventsPerExecution,
+				replayJanitorMaxBytesPerExecution,
 			).Scan(&deleted); err != nil {
 				return fmt.Errorf("prune expired execution replay progress: %w", err)
 			}

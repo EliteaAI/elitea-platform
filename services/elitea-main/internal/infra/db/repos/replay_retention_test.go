@@ -50,6 +50,9 @@ func TestReplayRetentionJanitorBoundsCandidatesAndDeletesOnlyProgress(t *testing
 	deleteQuery := executor.rowCalls[1]
 	for _, evidence := range []string{
 		"event_type = $4",
+		"bounded_expired_progress",
+		"LIMIT $6",
+		"prefix_bytes <= $7",
 		"deleted_progress",
 		"execution_replay_state",
 		"pruned_through_cursor",
@@ -62,6 +65,10 @@ func TestReplayRetentionJanitorBoundsCandidatesAndDeletesOnlyProgress(t *testing
 	}
 	if deleteQuery.args[3] != replayEventNodeEvent {
 		t.Fatalf("janitor could target terminal replay events: %v", deleteQuery.args[3])
+	}
+	if deleteQuery.args[5] != replayJanitorMaxEventsPerExecution ||
+		deleteQuery.args[6] != replayJanitorMaxBytesPerExecution {
+		t.Fatalf("janitor per-execution delete bounds are missing: %+v", deleteQuery.args)
 	}
 }
 
