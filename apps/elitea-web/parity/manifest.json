@@ -55,12 +55,12 @@
     {
       "path": "manifest/artifacts.json",
       "domain": "artifacts",
-      "items": 57
+      "items": 58
     },
     {
       "path": "manifest/indexes.json",
       "domain": "indexes",
-      "items": 25
+      "items": 26
     },
     {
       "path": "manifest/secrets.json",

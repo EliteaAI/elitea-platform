@@ -621,6 +621,41 @@
       "waiver": null
     },
     {
+      "id": "COPY-511",
+      "domain": "indexes",
+      "kind": "visual",
+      "priority": "waived",
+      "title": "Cron preview text is hand-rolled, not cronstrue-backed (N4 deviation, waived)",
+      "source": [
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/lib/helpers/indexSchedule.helpers.js:147",
+        "apps/elitea-ui/src/[fsd]/features/toolkits/indexes/ui/IndexDetails/IndexScheduleModal.jsx:77-82"
+      ],
+      "acceptance": [
+        "GIVEN a cron expression entered through the new CronField's structured editor",
+        "WHEN the human-readable preview text (shared/ui/cron/describe.ts) is compared against the baseline's cronstrue-generated text for the same expression",
+        "THEN wording differs cosmetically from the baseline for most expressions (for example connector phrasing around weekday/month restrictions)",
+        "AND an explicit minute-list crossed with an hour-list (for example \"0 8,18 * * *\") renders as clock times (\"At 08:00 and 18:00\"), matching the baseline's clock-time formatting rather than raw field syntax",
+        "AND this is a deliberate N4 deviation, waived because spec section 2.3 mandates hand-rolling this unit rather than adding cronstrue as a new dependency"
+      ],
+      "verify": {
+        "type": "vitest",
+        "command": "npm run test:unit -- src/shared/ui/cron/__tests__/describe.test.ts",
+        "testId": "indexes > cron-preview-text-waiver"
+      },
+      "unit": "S7",
+      "status": "todo",
+      "coverage": {
+        "file": "src/shared/ui/cron/describe.ts",
+        "min": 95
+      },
+      "waiver": {
+        "reason": "Hand-rolled preview text (describe.ts) was chosen over adding cronstrue as a new dependency, per spec section 2.3's own \"prefer writing it yourself\" mandate for unit S7 (no new cron-shaped dependency). This produces permanent cosmetic wording differences from the baseline's cronstrue output. It also originally produced a non-cosmetic regression for explicit multi-value time-list expressions (for example \"0 8,18 * * *\" rendering raw field syntax, \"At minute 0 of hour 8,18\", instead of clock-time formatting) — that regression was fixed in the same change that adds this waiver (describe.ts now cross-products minute-list x hour-list into clock times), so only the cosmetic wording deviation remains outstanding.",
+        "decidedBy": "unit S7",
+        "date": "2026-07-27",
+        "replacesBehaviour": "cronstrue.toString(expression, { use24HourTimeFormat: true }) from indexSchedule.helpers.js:147, rendered in IndexScheduleModal.jsx's cron-explanation Typography and reused (via the same validator) by PipelineScheduleModal.jsx"
+      }
+    },
+    {
       "id": "COPY-259",
       "domain": "indexes",
       "kind": "visual",
