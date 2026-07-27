@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
+import importlib.metadata
 import json
 import subprocess
 import tomllib
@@ -30,6 +32,25 @@ _GO_CATALOG = (
     / "internal"
     / "runtimecomposition"
     / "current_sdk_configuration_catalog_snapshot.json"
+)
+_GO_INDEX_TYPES = (
+    _PLATFORM_ROOT
+    / "services"
+    / "elitea-main"
+    / "internal"
+    / "runtimecomposition"
+    / "current_index_types_snapshot.json"
+)
+_GO_INDEX_TYPES_UI_FIXTURE = (
+    _PLATFORM_ROOT
+    / "services"
+    / "elitea-main"
+    / "internal"
+    / "api"
+    / "v2"
+    / "indextypes"
+    / "testdata"
+    / "current_index_types_ui_response.json"
 )
 
 
@@ -107,3 +128,79 @@ def test_go_binding_catalog_matches_worker_registry_shadow() -> None:
         }
         for entry in shadow.entries
     ]
+
+
+def test_go_index_types_snapshot_matches_current_worker_sdk_projection() -> None:
+    constants_path = importlib.metadata.distribution("elitea-sdk").locate_file(
+        "elitea_sdk/runtime/langchain/document_loaders/constants.py"
+    )
+    constants_source = Path(constants_path).read_bytes()
+    assignments = {
+        statement.targets[0].id: statement.value
+        for statement in ast.parse(constants_source).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    }
+
+    def loader_mime_types(name: str) -> dict[str, str]:
+        mapping = assignments[name]
+        assert isinstance(mapping, ast.Dict)
+        result: dict[str, str] = {}
+        for key_node, config_node in zip(
+            mapping.keys, mapping.values, strict=True
+        ):
+            assert key_node is not None
+            assert isinstance(config_node, ast.Dict)
+            extension = ast.literal_eval(key_node)
+            fields = {
+                ast.literal_eval(field): value
+                for field, value in zip(
+                    config_node.keys, config_node.values, strict=True
+                )
+                if field is not None
+            }
+            result[extension] = ast.literal_eval(fields["mime_type"])
+        return dict(sorted(result.items()))
+
+    code_extensions = ast.literal_eval(assignments["code_extensions"])
+    response = {
+        "document_types": loader_mime_types("document_loaders_map"),
+        "image_types": loader_mime_types("image_loaders_map"),
+        "code_types": {
+            extension: "text/plain" for extension in sorted(code_extensions)
+        },
+    }
+    canonical = json.dumps(
+        response,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    snapshot = json.loads(_GO_INDEX_TYPES.read_bytes())
+
+    assert snapshot["complete"] is True
+    assert snapshot["sdk_revision"] == SDK_SOURCE_REVISION
+    assert snapshot["source_digest"] == (
+        f"sha256:{hashlib.sha256(constants_source).hexdigest()}"
+    )
+    assert snapshot["category_count"] == 3
+    assert snapshot["entry_count"] == sum(map(len, response.values()))
+    assert snapshot["snapshot_digest"] == (
+        f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+    )
+    assert snapshot["categories"] == response
+
+    # This intentionally matches indexer_worker's current producer, which does
+    # not project image_loaders_map_converted. EliteaUI adds SVG separately.
+    assert ".svg" not in response["image_types"]
+    assert ".bmp" not in response["image_types"]
+
+    ui_fixture = json.loads(_GO_INDEX_TYPES_UI_FIXTURE.read_bytes())
+    assert ui_fixture == response
+    assert set(ui_fixture) == {
+        "document_types",
+        "image_types",
+        "code_types",
+    }
