@@ -265,6 +265,10 @@ func (h *StartHandler) writeStartError(w http.ResponseWriter, err error) {
 			Error:  "Indexing is already in progress for this index",
 			TaskID: active.TaskID,
 		})
+	case errors.Is(err, indexingapp.ErrCurrentEmbeddingBindingUnavailable),
+		errors.Is(err, indexingapp.ErrCurrentEmbeddingBindingAmbiguous),
+		errors.Is(err, indexingapp.ErrInvalidCurrentEmbeddingBinding):
+		writeError(w, http.StatusServiceUnavailable, "Embedding model is unavailable")
 	case errors.As(err, &capacity):
 		retryAfter := boundedRetrySeconds(capacity.RetryAfter())
 		w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))

@@ -573,6 +573,9 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             command.index_ingest.llm_model_entry_id,
             command.index_ingest.llm_configuration_entry_id,
             command.index_ingest.mcp_tokens_entry_id,
+            command.index_ingest.embedding_binding.entry_id
+            if command.index_ingest.HasField("embedding_binding")
+            else "",
         )
         selected_entry_ids = tuple(value for value in index_entry_ids if value)
         if (
@@ -580,6 +583,16 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             or any(len(value.encode("utf-8")) > MAX_SAFE_STRING_BYTES for value in selected_entry_ids)
         ):
             raise InvalidInput("The index-ingest command bindings are malformed.")
+        if command.index_ingest.HasField("embedding_binding"):
+            binding = command.index_ingest.embedding_binding
+            if (
+                not binding.entry_id
+                or not binding.immutable_version
+                or len(binding.immutable_version.encode("utf-8"))
+                > MAX_SAFE_STRING_BYTES
+            ):
+                raise InvalidInput("The embedding binding reference is malformed.")
+            _require_sha256(binding.content_digest, "embedding binding digest")
         client_correlations = (
             command.index_ingest.client_stream_id,
             command.index_ingest.client_message_id,

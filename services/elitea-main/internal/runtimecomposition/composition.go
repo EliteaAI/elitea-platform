@@ -63,6 +63,7 @@ type Dependencies struct {
 	TerminalEffectsPool              *pgxpool.Pool
 	ContentPool                      *pgxpool.Pool
 	CurrentConfigurations            *CurrentConfigurationsRuntime
+	CurrentEmbeddingRuntime          indexingapp.CurrentEmbeddingRuntimeReader
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 	ActorTokenIssuer                 storage.ActorTokenIssuer
 	ProjectTokenValidator            storage.ProjectTokenValidator
@@ -87,8 +88,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		(dependencies.ActorTokenIssuer == nil || dependencies.ProjectTokenValidator == nil) {
 		return nil, errors.New("runtime index ingest actor-token bridge is required")
 	}
-	if config.IndexIngestDispatchEnabled && dependencies.CurrentConfigurations == nil {
-		return nil, errors.New("runtime index ingest current Configurations runtime is required")
+	if config.IndexIngestDispatchEnabled &&
+		(dependencies.CurrentConfigurations == nil || dependencies.CurrentEmbeddingRuntime == nil) {
+		return nil, errors.New("runtime index ingest current Configurations and embedding runtimes are required")
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil && dependencies.CurrentConfigurations == nil {
 		return nil, errors.New("configuration lifecycle requires current Configurations runtime")
@@ -617,6 +619,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
 			dependencies.CurrentConfigurations,
+			dependencies.CurrentEmbeddingRuntime,
 			config,
 			indexDispatchPolicy,
 			currentIndexMetaWriter,

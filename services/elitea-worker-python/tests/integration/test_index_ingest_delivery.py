@@ -23,6 +23,7 @@ from elitea.runtime.v1 import (
 )
 
 from elitea_worker.agents.client_context import EliteaClientContext, IndexExecutionClaim
+from elitea_worker.agents import sdk_adapter as sdk_adapter_module
 from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
 from elitea_worker.constants import (
     CONFORMANCE_HMAC_KEY,
@@ -169,6 +170,14 @@ class InputClient:
         self.sequence.append(f"input:{grant.url.rsplit('/', 3)[-3]}")
         assert source_immutable_version
         return self.values[grant.url.rsplit("/", 3)[-3]]
+
+    async def fetch(self, grant) -> bytes:
+        self.calls += 1
+        self.sequence.append(f"input:{grant.url.rsplit('/', 3)[-3]}")
+        raw = self.values[grant.url.rsplit("/", 3)[-3]]
+        assert len(raw) == grant.expected_length
+        assert hmac.compare_digest(hashlib.sha256(raw).digest(), grant.expected_sha256)
+        return raw
 
 
 class Acker:
@@ -594,6 +603,197 @@ def test_index_delivery_invokes_sdk_once_and_emits_only_safe_terminal_fields(
     asyncio.run(run())
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+def test_bound_embedding_group_reaches_sdk_exactly_and_never_redis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _embedding_case()
+    client_calls: list[dict[str, Any]] = []
+
+    class FakeEliteAClient:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs == {
+                "project_id": 42,
+                "base_url": "https://elitea.internal",
+                "auth_token": "actor-pat",
+            }
+
+        def test_toolkit_tool(self, **kwargs: Any) -> dict[str, Any]:
+            client_calls.append(kwargs)
+            return {
+                "success": True,
+                "result": {"status": "ok", "message": "Indexed with bound model"},
+            }
+
+    monkeypatch.setattr(
+        sdk_adapter_module,
+        "_indexing_client_type",
+        lambda: FakeEliteAClient,
+    )
+
+    async def run() -> None:
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            assert claim.resource_project_id == "42"
+            return EliteaClientContext(
+                42,
+                "https://elitea.internal",
+                "actor-pat",
+            )
+
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.EXECUTED_SETTLED_ACKED
+        assert len(client_calls) == 1
+        assert (
+            client_calls[0]["toolkit_config"]["settings"]["embedding_model"]
+            == "42_embedding-current"
+        )
+        assert (
+            json.loads(case.values["content-1"])["settings"]["embedding_model"]
+            == "embedding-current"
+        )
+        assert result.output_frame is not None
+        terminal = result.output_frame.index_ingest
+        assert terminal.HasField("embedding_binding")
+        assert terminal.embedding_binding.entry_id == "embedding-binding"
+
+        signed_bytes = case.delivery.signed_envelope
+        assert b"42_embedding-current" not in signed_bytes
+        assert b"configuration_digest" not in signed_bytes
+        assert len(signed_bytes) < 64 * 1024
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["missing", "mismatched", "pre_binding"])
+def test_required_embedding_binding_fails_closed_before_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    case = _embedding_case()
+    if failure == "missing":
+        case = _case()
+        values = dict(case.values)
+        toolkit = json.loads(values["content-1"])
+        toolkit["settings"]["embedding_model"] = "embedding-current"
+        values["content-1"] = json.dumps(
+            toolkit, sort_keys=True, separators=(",", ":")
+        ).encode()
+        case = Case(
+            command=case.command,
+            signed=case.signed,
+            manifest=case.manifest,
+            fence=case.fence,
+            values=values,
+        )
+    elif failure == "mismatched":
+        values = dict(case.values)
+        binding = json.loads(values["content-6"])
+        binding["model_name"] = "other-model"
+        raw = json.dumps(
+            binding, sort_keys=True, separators=(",", ":")
+        ).encode()
+        values["content-6"] = raw
+        version = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+        manifest = input_pb2.ExecutionInputBundleV1.FromString(
+            case.manifest.SerializeToString(deterministic=True)
+        )
+        manifest.entries[5].immutable_version = version
+        manifest.entries[5].content.immutable_version = version
+        manifest.entries[5].content.byte_length = len(raw)
+        manifest.entries[5].content.digest.CopyFrom(
+            _digest(hashlib.sha256(raw).digest())
+        )
+        command = command_pb2.WorkerCommandV1.FromString(
+            case.command.SerializeToString(deterministic=True)
+        )
+        command.index_ingest.embedding_binding.immutable_version = version
+        command.index_ingest.embedding_binding.content_digest.CopyFrom(
+            _digest(hashlib.sha256(raw).digest())
+        )
+        case = _with_manifest(
+            Case(
+                command=command,
+                signed=case.signed,
+                manifest=case.manifest,
+                fence=case.fence,
+                values=values,
+            ),
+            manifest,
+        )
+    else:
+        command = command_pb2.WorkerCommandV1.FromString(
+            case.command.SerializeToString(deterministic=True)
+        )
+        command.index_ingest.ClearField("embedding_binding")
+        case = _resign_case(case, command)
+
+    async def run() -> None:
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(
+                lambda cls, context: (_ for _ in ()).throw(
+                    AssertionError("invalid binding must not construct SDK")
+                )
+            ),
+        )
+        operation = _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+        if failure == "pre_binding":
+            with pytest.raises(InvalidInput):
+                await operation
+        else:
+            result = await operation
+            assert isinstance(result.execution_error, InvalidInput)
+
+    asyncio.run(run())
+
+
+def test_embedding_reference_digest_must_match_claim_manifest() -> None:
+    case = _embedding_case()
+    command = command_pb2.WorkerCommandV1.FromString(
+        case.command.SerializeToString(deterministic=True)
+    )
+    command.index_ingest.embedding_binding.content_digest.value = b"x" * 32
+    case = _resign_case(case, command)
+
+    async def run() -> None:
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("mismatched binding must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("mismatched binding must not redeem SDK authority")
+
+        with pytest.raises(InvalidInput):
+            await _processor(
+                case,
+                control=Control(case),
+                input_client=ForbiddenInput(),
+                output=Output(),
+                acker=Acker(),
+                context_factory=forbidden_context,
+            ).process(case.delivery)
+
+    asyncio.run(run())
 
 
 def test_lost_begin_response_replay_never_resolves_inputs_or_invokes_sdk(
@@ -2370,6 +2570,115 @@ def _case() -> Case:
             fence_token=b"f" * 32,
         ),
         values=values,
+    )
+
+
+def _embedding_case() -> Case:
+    original = _case()
+    manifest = input_pb2.ExecutionInputBundleV1.FromString(
+        original.manifest.SerializeToString(deterministic=True)
+    )
+    values = dict(original.values)
+    toolkit_source = {
+        "type": "github",
+        "settings": {
+            "token": "{{secret.GITHUB_TOKEN}}",
+            "embedding_model": "embedding-current",
+        },
+    }
+    toolkit_raw = json.dumps(
+        toolkit_source, sort_keys=True, separators=(",", ":")
+    ).encode()
+    toolkit_version = f"sha256:{hashlib.sha256(toolkit_raw).hexdigest()}"
+    manifest.entries[0].immutable_version = toolkit_version
+    manifest.entries[0].content.immutable_version = toolkit_version
+    manifest.entries[0].content.byte_length = len(toolkit_raw)
+    manifest.entries[0].content.digest.CopyFrom(
+        _digest(hashlib.sha256(toolkit_raw).digest())
+    )
+    values["content-1"] = json.dumps(
+        {
+            "type": "github",
+            "settings": {
+                "token": "github-secret",
+                "embedding_model": "embedding-current",
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    binding = {
+        "schema_version": "elitea.index.embedding-binding.v1",
+        "model_name": "embedding-current",
+        "resolved_model_group": "42_embedding-current",
+        "configuration_project_id": 42,
+        "configuration_uuid": "00000000-0000-4000-8000-000000000107",
+        "configuration_digest": hashlib.sha256(b"configuration").hexdigest(),
+        "provider": "openai",
+    }
+    binding_raw = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+    binding_version = f"sha256:{hashlib.sha256(binding_raw).hexdigest()}"
+    manifest.entries.append(
+        input_pb2.ExecutionInputEntryV1(
+            entry_id="embedding-binding",
+            immutable_version=binding_version,
+            semantic_role="index.embedding_binding",
+            content=input_pb2.ScopedContentReferenceV1(
+                content_id="content-6",
+                immutable_version=binding_version,
+                media_type="application/json",
+                byte_length=len(binding_raw),
+                digest=_digest(hashlib.sha256(binding_raw).digest()),
+                classification="tenant-confidential",
+                required_grant_audience="elitea.runtime.input.read.v1",
+            ),
+        )
+    )
+    values["content-6"] = binding_raw
+
+    command = command_pb2.WorkerCommandV1.FromString(
+        original.command.SerializeToString(deterministic=True)
+    )
+    command.index_ingest.embedding_binding.CopyFrom(
+        indexing_pb2.IndexIngestInputBindingV1(
+            entry_id="embedding-binding",
+            immutable_version=binding_version,
+            content_digest=_digest(hashlib.sha256(binding_raw).digest()),
+        )
+    )
+    return _with_manifest(
+        Case(
+            command=command,
+            signed=original.signed,
+            manifest=original.manifest,
+            fence=original.fence,
+            values=values,
+        ),
+        manifest,
+    )
+
+
+def _resign_case(case: Case, command: command_pb2.WorkerCommandV1) -> Case:
+    command_raw = command.SerializeToString(deterministic=True)
+    signed = envelope_pb2.SignedWorkerCommandEnvelopeV1(
+        envelope_schema_revision=ENVELOPE_SCHEMA_REVISION,
+        signature_profile=envelope_pb2.SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256,
+        key_id=CONFORMANCE_HMAC_KEY_ID,
+        worker_command_bytes=command_raw,
+        worker_command_digest=_digest(hashlib.sha256(command_raw).digest()),
+        signature=hmac.new(
+            CONFORMANCE_HMAC_KEY,
+            command_raw,
+            hashlib.sha256,
+        ).digest(),
+    )
+    return Case(
+        command=command,
+        signed=signed,
+        manifest=case.manifest,
+        fence=case.fence,
+        values=case.values,
     )
 
 

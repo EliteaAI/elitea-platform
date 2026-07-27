@@ -445,6 +445,7 @@ class IndexIngestRequest:
     llm_configuration: ResolvedIndexIngestInput | None
     mcp_tokens: ResolvedIndexIngestInput | None
     runtime_config: dict[str, Any]
+    embedding_binding: ResolvedIndexIngestInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +465,7 @@ class IndexIngestResult:
     llm_configuration: IndexIngestInputBinding | None
     mcp_tokens: IndexIngestInputBinding | None
     sdk_result: dict[str, Any]
+    embedding_binding: IndexIngestInputBinding | None = None
 
 
 class IndexIngestHandler:
@@ -503,6 +505,7 @@ class IndexIngestHandler:
             llm_model=_optional_binding(request.llm_model),
             llm_configuration=_optional_binding(request.llm_configuration),
             mcp_tokens=_optional_binding(request.mcp_tokens),
+            embedding_binding=_optional_binding(request.embedding_binding),
             sdk_result=sdk_result,
         )
 
@@ -515,7 +518,12 @@ def _validate_request(request: IndexIngestRequest) -> None:
     ):
         raise InvalidInput()
     required = (request.toolkit_configuration, request.tool_parameters)
-    optional = (request.llm_model, request.llm_configuration, request.mcp_tokens)
+    optional = (
+        request.llm_model,
+        request.llm_configuration,
+        request.mcp_tokens,
+        request.embedding_binding,
+    )
     if any(not _valid_binding(item.binding) for item in required):
         raise InvalidInput()
     if any(

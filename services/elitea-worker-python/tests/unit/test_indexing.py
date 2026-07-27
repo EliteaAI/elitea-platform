@@ -39,6 +39,7 @@ from elitea_worker.protocol.indexing import (
     bind_result_artifact,
     bind_result_summary,
     request_from,
+    resolve_embedding_binding,
 )
 from elitea_worker.protocol.node_event import encode_current_node_event_json
 
@@ -111,6 +112,70 @@ def test_adapter_invokes_current_sdk_method_once_with_exact_arguments() -> None:
     assert toolkit_config["settings"]["space"] == "ENG"
     assert tool_params["filters"]["state"] == "current"
     assert llm_config["sampling"]["temperature"] == 0
+
+
+def test_adapter_applies_exact_bound_embedding_group_on_invocation_copy() -> None:
+    client = _ClientStub()
+    adapter = object.__new__(EliteaSdkIndexingAdapter)
+    adapter._client = client
+    adapter._embedding_model_group = "42_embedding-current"
+    toolkit_config = {
+        "type": "confluence",
+        "settings": {
+            "space": "ENG",
+            "embedding_model": "embedding-current",
+        },
+    }
+
+    adapter.ingest(
+        toolkit_config=toolkit_config,
+        tool_params={"filters": {"state": "current"}},
+        runtime_config={},
+        llm_model=None,
+        llm_config={"sampling": {"temperature": 0}},
+        mcp_tokens=None,
+    )
+
+    assert (
+        client.calls[0]["toolkit_config"]["settings"]["embedding_model"]
+        == "42_embedding-current"
+    )
+    assert toolkit_config["settings"]["embedding_model"] == "embedding-current"
+
+
+def test_embedding_binding_is_required_only_by_frozen_toolkit_contract() -> None:
+    toolkit = _resolved(
+        "toolkit-config",
+        {"type": "github", "settings": {}},
+        b"t" * 32,
+    )
+    assert resolve_embedding_binding(toolkit, None) is None
+
+    toolkit.value["settings"]["embedding_model"] = "embedding-current"
+    with pytest.raises(InvalidInput, match="required embedding binding"):
+        resolve_embedding_binding(toolkit, None)
+
+    binding = _resolved(
+        "embedding-binding",
+        {
+            "schema_version": "elitea.index.embedding-binding.v1",
+            "model_name": "embedding-current",
+            "resolved_model_group": "42_embedding-current",
+            "configuration_project_id": 42,
+            "configuration_uuid": "00000000-0000-4000-8000-000000000107",
+            "configuration_digest": hashlib.sha256(b"configuration").hexdigest(),
+            "provider": "openai",
+        },
+        b"e" * 32,
+    )
+    resolved = resolve_embedding_binding(toolkit, binding)
+    assert resolved is not None
+    assert resolved.resolved_model_group == "42_embedding-current"
+    assert resolved.input is binding
+
+    binding.value["model_name"] = "other"
+    with pytest.raises(InvalidInput, match="does not match"):
+        resolve_embedding_binding(toolkit, binding)
 
 
 @pytest.mark.parametrize(

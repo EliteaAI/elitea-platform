@@ -18,7 +18,7 @@ import sys
 import threading
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Protocol
 
@@ -89,7 +89,11 @@ from elitea_worker.protocol.codec import (
     parse_execution_input_bundle,
     validation_request_from,
 )
-from elitea_worker.protocol.indexing import bind_result_summary, request_from
+from elitea_worker.protocol.indexing import (
+    bind_result_summary,
+    request_from,
+    resolve_embedding_binding,
+)
 from elitea_worker.protocol.node_event import (
     InvalidCurrentNodeEvent,
     encode_current_node_event_json,
@@ -127,6 +131,7 @@ _INDEX_TOOL_PARAMETERS_ROLE = "index.tool_parameters"
 _INDEX_LLM_MODEL_ROLE = "index.llm_model"
 _INDEX_LLM_CONFIGURATION_ROLE = "index.llm_configuration"
 _INDEX_MCP_TOKENS_ROLE = "index.mcp_tokens"
+_INDEX_EMBEDDING_BINDING_ROLE = "index.embedding_binding"
 _INDEX_INPUT_AUDIENCE = "elitea.runtime.input.read.v1"
 _INDEX_INTERNAL_FAILURE_FRAME_LIMIT = 8
 
@@ -230,6 +235,7 @@ class _ResolvedIndexInputs:
     llm_model: ResolvedIndexIngestInput | None
     llm_configuration: ResolvedIndexIngestInput | None
     mcp_tokens: ResolvedIndexIngestInput | None
+    embedding_binding: ResolvedIndexIngestInput | None
     client_context: EliteaClientContext
 
 
@@ -1755,10 +1761,17 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                     claim_id=accepted.claim_id,
                 )
             )
-            raw = await self._input_client.fetch_materialized(
-                grant,
-                source_immutable_version=entry.immutable_version,
-            )
+            if entry.semantic_role == _INDEX_EMBEDDING_BINDING_ROLE:
+                # The binding is intentionally non-secret and immutable. Fetch
+                # the admitted source bytes directly so the content client
+                # verifies their exact length and SHA-256, rather than accepting
+                # a materialized derivative.
+                raw = await self._input_client.fetch(grant)
+            else:
+                raw = await self._input_client.fetch_materialized(
+                    grant,
+                    source_immutable_version=entry.immutable_version,
+                )
             resolved[entry.semantic_role] = ResolvedIndexIngestInput(
                 binding=IndexIngestInputBinding(
                     entry_id=entry.entry_id,
@@ -1767,6 +1780,10 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 ),
                 value=parse_json_value(raw),
             )
+        embedding = resolve_embedding_binding(
+            resolved[_INDEX_TOOLKIT_CONFIGURATION_ROLE],
+            resolved.get(_INDEX_EMBEDDING_BINDING_ROLE),
+        )
         factory = self._client_context_factory
         if factory is None:
             raise DependencyUnavailable(
@@ -1794,12 +1811,20 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 error=error,
             )
             raise InternalFailure() from None
+        if embedding is not None:
+            context = replace(
+                context,
+                embedding_model_group=embedding.resolved_model_group,
+            )
         return _ResolvedIndexInputs(
             toolkit_configuration=resolved[_INDEX_TOOLKIT_CONFIGURATION_ROLE],
             tool_parameters=resolved[_INDEX_TOOL_PARAMETERS_ROLE],
             llm_model=resolved.get(_INDEX_LLM_MODEL_ROLE),
             llm_configuration=resolved.get(_INDEX_LLM_CONFIGURATION_ROLE),
             mcp_tokens=resolved.get(_INDEX_MCP_TOKENS_ROLE),
+            embedding_binding=(
+                None if embedding is None else embedding.input
+            ),
             client_context=context,
         )
 
@@ -1844,6 +1869,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             llm_model=resolved_input.llm_model,
             llm_configuration=resolved_input.llm_configuration,
             mcp_tokens=resolved_input.mcp_tokens,
+            embedding_binding=resolved_input.embedding_binding,
             runtime_config={
                 "callbacks": [callback],
                 "metadata": {
@@ -2066,6 +2092,25 @@ def _accepted_index_claim(
             or entry.content.byte_length > MAX_SETTINGS_BYTES
         ):
             raise InvalidInput("An index input binding is malformed.")
+        accepted_entries.append(entry)
+    if selected.HasField("embedding_binding"):
+        binding = selected.embedding_binding
+        entry = by_id.get(binding.entry_id)
+        if (
+            entry is None
+            or entry.semantic_role != _INDEX_EMBEDDING_BINDING_ROLE
+            or entry.immutable_version != entry.content.immutable_version
+            or entry.content.required_grant_audience != _INDEX_INPUT_AUDIENCE
+            or entry.content.byte_length > MAX_SETTINGS_BYTES
+            or binding.immutable_version != entry.immutable_version
+            or binding.content_digest.algorithm
+            != common_pb2.DIGEST_ALGORITHM_V1_SHA256
+            or not hmac.compare_digest(
+                bytes(binding.content_digest.value),
+                entry.content.digest,
+            )
+        ):
+            raise InvalidInput("The embedding input binding is malformed.")
         accepted_entries.append(entry)
     if len(accepted_entries) != len(entries):
         raise InvalidInput("The index input manifest contains an unbound entry.")

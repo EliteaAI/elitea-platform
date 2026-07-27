@@ -211,6 +211,16 @@ func TestCurrentConfigurationsMaterializerValidatesConstructionAndModelShape(t *
 	if _, err := materializer.MaterializeContent(context.Background(), authorization, []byte(`null`), 1024); !errors.Is(err, ErrContentRejected) {
 		t.Fatalf("invalid model error=%v", err)
 	}
+	authorization.SemanticRole = executiondomain.IndexEmbeddingBindingRole
+	binding := []byte(`{"schema_version":"elitea.index.embedding-binding.v1"}`)
+	if result, err := materializer.MaterializeContent(
+		context.Background(),
+		authorization,
+		binding,
+		1024,
+	); err != nil || !reflect.DeepEqual(result, binding) {
+		t.Fatalf("embedding binding result=%s error=%v", result, err)
+	}
 }
 
 func newCurrentConfigurationsMaterializerForTest(

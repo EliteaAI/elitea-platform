@@ -1,6 +1,7 @@
 package runtimecomposition
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/llmproxy"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/litellm"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
@@ -31,6 +33,8 @@ type CurrentLLMRuntime struct {
 	masterKey *currentLiteLLMMasterKey
 	admin     *litellm.Client
 }
+
+var _ indexingapp.CurrentEmbeddingRuntimeReader = (*CurrentLLMRuntime)(nil)
 
 func NewCurrentLLMRuntime(
 	pool *pgxpool.Pool,
@@ -127,6 +131,16 @@ func (runtime *CurrentLLMRuntime) Handler() http.Handler {
 		return nil
 	}
 	return runtime.handler
+}
+
+func (runtime *CurrentLLMRuntime) GetCurrentEmbeddingRuntimeGroup(
+	ctx context.Context,
+	modelGroup string,
+) (indexingapp.CurrentEmbeddingRuntimeGroup, bool, error) {
+	if runtime == nil || runtime.admin == nil {
+		return indexingapp.CurrentEmbeddingRuntimeGroup{}, false, errors.New("current LiteLLM administration client is unavailable")
+	}
+	return runtime.admin.GetCurrentEmbeddingRuntimeGroup(ctx, modelGroup)
 }
 
 // NewConfigurationEffects binds the Configurations-owned expansion and vault

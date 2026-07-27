@@ -79,6 +79,11 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 			return nil, ErrContentRejected
 		}
 		return source, nil
+	case executiondomain.IndexEmbeddingBindingRole:
+		// Admission already canonicalized and digested this non-secret
+		// immutable document. It must be returned byte-for-byte so the worker
+		// can verify the exact source digest and must never enter unsecreting.
+		return source, nil
 	default:
 		return nil, ErrContentRejected
 	}

@@ -427,6 +427,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			TerminalEffectsPool:              runtimePools.TerminalEffects,
 			ContentPool:                      runtimePools.Content,
 			CurrentConfigurations:            currentConfigurationsRoot,
+			CurrentEmbeddingRuntime:          currentLLMRoot,
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,

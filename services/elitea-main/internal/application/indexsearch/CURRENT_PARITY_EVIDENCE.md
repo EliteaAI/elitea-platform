@@ -83,20 +83,47 @@ transaction already persists input bundle, generation, execution job and
 outbox. Redis and worker protobufs carry only entry ID/version/digest. No
 embedding registry, schema column or migration was introduced.
 
-This is transport capability, not current runtime composition. Production
-`current_index_runtime.go` still builds `CurrentAuthoritativeInputResolver`
-without `CurrentEmbeddingBindingResolver`, so it does not add the optional
-entry and existing dispatch is unchanged. The current Python worker claim
-resolver recognizes only toolkit, tool, LLM and MCP entries; a command that
-does include `index.embedding_binding` would currently fail as an unbound
-manifest entry. Worker redemption, validation and result echo must land before
-Main enables the binding in production admission.
+Production index admission now composes `CurrentEmbeddingBindingResolver` from
+the existing tenant-routed Configurations repository and the existing
+authenticated LiteLLM administration client. The UI's common omitted
+`embedding_model` shape and the explicit empty shape both consult the current
+Configurations embedding catalog: an authoritative default is frozen into the
+toolkit snapshot and bound; no name is invented when the catalog has no
+default. An explicit model is never replaced. Admission fails closed with a
+safe typed HTTP response when a required binding is unavailable, malformed, or
+ambiguous.
 
-Existing rows without the entry are legacy generations. They remain readable
-as historical execution records, but search/list/stepback validation returns
+The Python worker accepts the optional `index.embedding_binding` entry only
+when the signed command's entry ID, immutable version, and SHA-256 digest match
+the claim manifest. It then validates the non-secret binding against the
+already-frozen toolkit snapshot and copies the exact `resolved_model_group`
+into a claim-scoped client context. The SDK adapter changes only the
+invocation-local deep copy of `settings.embedding_model`; the
+`EliteAClient.test_toolkit_tool` method and keyword shape remain unchanged.
+The worker never re-queries Configurations or LiteLLM and echoes the exact
+binding reference in its terminal result. Redis still contains only the
+reference and digest.
+
+Pre-binding rows without the entry remain valid only when their frozen toolkit
+snapshot does not declare an embedding model. A row that declares an embedding
+model but lacks or mismatches the binding fails with a safe typed worker error.
+Historical search/list/stepback validation returns
 typed `LEGACY_EMBEDDING_BINDING_MISSING`; it must not re-resolve today's
 mutable default. Other typed failures cover stale generation, scope, model,
 configuration and explicit-dimension mismatches.
+
+## Index admission authorization evidence
+
+The production route remains the exact current
+`POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}` boundary
+and checks `models.applications.tool.patch` through the existing dynamic
+PostgreSQL permission resolver before body parsing. The authenticated URL
+project becomes the resource and projection scope used by admission; neither
+the request body nor the worker may select another tenant/project. Embedding
+configuration selection uses that same authorized project first and only then
+the configured public project with `shared=true`. The binding stores project
+and configuration identity, but never grants access and never carries
+credentials.
 
 ## Verification evidence
 
@@ -104,9 +131,12 @@ configuration and explicit-dimension mismatches.
 | --- | --- |
 | `go test ./internal/application/indexsearch` | Go unit: identity/input binding, operation allowlist, no control-plane content leak, exact immutable model/configuration bindings. |
 | `go test ./internal/application/indexing ./internal/infra/db/repos ./internal/infra/litellm ./internal/transport/redisdispatch` | Go unit: project/public model resolution, canonical non-secret digest, ambiguity/fail-closed cases, atomic bundle-entry reference, bounded Redis reference contract, tenant-routed Configurations query, and allowlisted LiteLLM projection. |
+| `go test -race ./internal/infra/db/repos -run TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM` with `ELITEA_TEST_DATABASE_URL` | Real PostgreSQL project-to-shared-public tenant routing, private-public rejection, and fake authenticated LiteLLM group/model endpoints; proves the composed binding without inferring version or dimension. |
+| `go test -race ./internal/application/indexing ./internal/api/v2/indexing ./internal/runtimecomposition` | Race-enabled admission/default/composition and safe HTTP error behavior. |
 | `go test ./internal/api/v2/indexsearch` | Go HTTP component: exact current path/permission/event, trusted-auth and dynamic project-RBAC-before-body ordering, opaque async/await response envelopes, timeout cancellation intent, and unsupported-operation rejection. |
 | `go test ./tests/contract` | Go protobuf contract: decodes the deterministic command bytes created by the checked Python binding. |
 | `pytest tests/unit/test_index_search.py` | Python unit: three operation branches, error/no-result pass-through, no SDK call for another operation, current invocation copy boundary, result artifact binding. |
+| `pytest tests/unit/test_indexing.py tests/integration/test_index_ingest_delivery.py` | Python worker: optional and required binding validation, exact manifest reference/digest, exact resolved model group at the unchanged SDK call, terminal echo, pre-binding/mismatch rejection, and absence of binding content from Redis. |
 | `pytest tests/integration/test_index_search_protocol_contract.py` | Python-to-Go wire fixture producer; this is language binding interoperability, not a deployed worker integration. |
 
 ## Explicit remaining work before mounting
@@ -133,8 +163,6 @@ configuration and explicit-dimension mismatches.
    timeout conversion escape its generic exception branch.
 7. Run cross-process PostgreSQL, Redis, TLS/gRPC and browser tests, then load
    and reliability tests. None are claimed by this source-only slice.
-8. Before requiring the embedding binding in production, make the Python
-   worker redeem and validate its input-bundle entry, return the exact binding
-   reference/digest in the terminal result, and compose the resolver into
-   authorized admission. Until then this contract remains deliberately
-   unmounted.
+8. Run the mounted flow against the production-equivalent LiteLLM deployment
+   and UI before release; this source repository test slice does not claim a
+   browser/deployment checkpoint.

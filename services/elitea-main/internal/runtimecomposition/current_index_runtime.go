@@ -60,6 +60,7 @@ func (c durableIndexMetaFrozenToolkitClaimer) ClaimFrozenToolkitConfiguration(
 func newCurrentIndexRuntime(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
+	embeddingRuntime indexingapp.CurrentEmbeddingRuntimeReader,
 	config Config,
 	policy repos.IndexIngestDispatchPolicy,
 	indexMetaWriter indexingapp.CurrentIndexMetaWriter,
@@ -67,6 +68,7 @@ func newCurrentIndexRuntime(
 ) (*currentIndexRuntime, error) {
 	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
 		configurations.unsecreter == nil || configurations.expander == nil || configurations.models == nil || configurations.vaultLoader == nil ||
+		embeddingRuntime == nil ||
 		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 ||
 		indexMetaWriter == nil || reportInitializationFailure == nil {
 		return nil, errors.New("current index runtime dependencies are required")
@@ -117,10 +119,19 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, err
 	}
+	embeddings, err := indexingapp.NewCurrentEmbeddingBindingResolver(
+		configurations.rows,
+		embeddingRuntime,
+		configurations.publicProjectID,
+	)
+	if err != nil {
+		return nil, err
+	}
 	inputs, err := indexingapp.NewCurrentAuthoritativeInputResolver(
 		toolkits,
 		models,
 		settings,
+		embeddings,
 		configurations.publicProjectID,
 	)
 	if err != nil {

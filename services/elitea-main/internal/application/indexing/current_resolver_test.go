@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
 type currentToolkitReaderStub struct {
@@ -43,6 +44,33 @@ type currentToolkitSettingsValidatorStub struct {
 	result map[string]any
 	err    error
 	calls  []configurationapp.CurrentToolkitSettingsRequest
+}
+
+type currentEmbeddingBindingSelectorStub struct {
+	binding EmbeddingBinding
+	err     error
+	calls   []struct {
+		projectID int32
+		modelName string
+	}
+}
+
+func (s *currentEmbeddingBindingSelectorStub) Resolve(
+	_ context.Context,
+	projectID int32,
+	modelName string,
+) (EmbeddingBinding, error) {
+	s.calls = append(s.calls, struct {
+		projectID int32
+		modelName string
+	}{projectID: projectID, modelName: modelName})
+	if s.err != nil {
+		return EmbeddingBinding{}, s.err
+	}
+	if s.binding.SchemaVersion != "" {
+		return s.binding.Clone(), nil
+	}
+	return currentEmbeddingBindingForTest(projectID, modelName), nil
 }
 
 func (s *currentToolkitSettingsValidatorStub) Resolve(
@@ -116,7 +144,13 @@ func TestCurrentAuthoritativeInputResolverLoadsSavedToolkitAndConfigurationModel
 		},
 		"large_integer": json.Number("9007199254740993"),
 	}}
-	resolver, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settingsValidator, 1)
+	resolver, err := NewCurrentAuthoritativeInputResolver(
+		toolkits,
+		models,
+		settingsValidator,
+		&currentEmbeddingBindingSelectorStub{},
+		1,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +168,7 @@ func TestCurrentAuthoritativeInputResolverLoadsSavedToolkitAndConfigurationModel
 	if err != nil {
 		t.Fatal(err)
 	}
-	if toolkits.calls != 1 || models.calls != 1 || models.query != (configurationapp.CurrentModelCatalogQuery{
+	if toolkits.calls != 1 || models.calls != 2 || models.query != (configurationapp.CurrentModelCatalogQuery{
 		Section: configurationapp.CurrentModelSectionLLM, ProjectID: 7, PublicProjectID: 1, IncludeShared: true,
 	}) {
 		t.Fatalf("toolkit calls=%d model calls=%d query=%+v", toolkits.calls, models.calls, models.query)
@@ -186,12 +220,19 @@ func TestCurrentAuthoritativeInputResolverUsesConfigurationsDefaultWithoutCopyin
 	defaultName := "configured-default"
 	defaultProjectID := int32(7)
 	toolkits := validCurrentToolkitReader()
-	models := &currentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
-		DefaultModelName:      &defaultName,
-		DefaultModelProjectID: &defaultProjectID,
-		Items: []configurationapp.CurrentModelCatalogItem{{
-			Name: defaultName, ProjectID: 7, OpenAICompatible: &compatible,
-		}},
+	models := &currentModelCatalogStub{get: func(
+		query configurationapp.CurrentModelCatalogQuery,
+	) (configurationapp.CurrentModelCatalogResponse, error) {
+		if query.Section == configurationapp.CurrentModelSectionEmbedding {
+			return configurationapp.CurrentModelCatalogResponse{}, nil
+		}
+		return configurationapp.CurrentModelCatalogResponse{
+			DefaultModelName:      &defaultName,
+			DefaultModelProjectID: &defaultProjectID,
+			Items: []configurationapp.CurrentModelCatalogItem{{
+				Name: defaultName, ProjectID: 7, OpenAICompatible: &compatible,
+			}},
+		}, nil
 	}}
 	resolver := newCurrentAuthoritativeResolverForTest(t, toolkits, models)
 
@@ -224,7 +265,14 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 		}
 		return configurationapp.CurrentModelCatalogResponse{}, nil
 	}}
-	resolver := newCurrentAuthoritativeResolverForTest(t, toolkits, models)
+	embeddings := &currentEmbeddingBindingSelectorStub{}
+	resolver := newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+		t,
+		toolkits,
+		models,
+		&currentToolkitSettingsValidatorStub{},
+		embeddings,
+	)
 
 	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
 	if err != nil {
@@ -238,6 +286,14 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 	if settings["embedding_model"] != defaultEmbedding {
 		t.Fatalf("embedding_model=%#v, want Configurations default", settings["embedding_model"])
 	}
+	if inputs.EmbeddingBinding == nil ||
+		inputs.EmbeddingBinding.ModelName != defaultEmbedding ||
+		inputs.EmbeddingBinding.ResolvedModelGroup != "7_"+defaultEmbedding ||
+		len(embeddings.calls) != 1 ||
+		embeddings.calls[0].projectID != 7 ||
+		embeddings.calls[0].modelName != defaultEmbedding {
+		t.Fatalf("embedding binding=%+v calls=%+v", inputs.EmbeddingBinding, embeddings.calls)
+	}
 	if !reflect.DeepEqual(sections, []configurationapp.CurrentModelSection{
 		configurationapp.CurrentModelSectionEmbedding,
 		configurationapp.CurrentModelSectionLLM,
@@ -246,11 +302,138 @@ func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(
 	}
 }
 
+func TestCurrentAuthoritativeInputResolverFreezesConfigurationsEmbeddingDefaultForOmittedUIShape(t *testing.T) {
+	defaultEmbedding := "configured-embedding"
+	toolkits := validCurrentToolkitReader()
+	models := &currentModelCatalogStub{get: func(
+		query configurationapp.CurrentModelCatalogQuery,
+	) (configurationapp.CurrentModelCatalogResponse, error) {
+		if query.Section == configurationapp.CurrentModelSectionEmbedding {
+			return configurationapp.CurrentModelCatalogResponse{
+				DefaultModelName: &defaultEmbedding,
+			}, nil
+		}
+		return configurationapp.CurrentModelCatalogResponse{}, nil
+	}}
+	embeddings := &currentEmbeddingBindingSelectorStub{}
+	resolver := newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+		t,
+		toolkits,
+		models,
+		&currentToolkitSettingsValidatorStub{},
+		embeddings,
+	)
+
+	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolkit, err := decodeCurrentResolverObject(inputs.ToolkitConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := toolkit["settings"].(map[string]any)
+	if settings["embedding_model"] != defaultEmbedding ||
+		inputs.EmbeddingBinding == nil ||
+		inputs.EmbeddingBinding.ResolvedModelGroup != "7_"+defaultEmbedding ||
+		len(embeddings.calls) != 1 {
+		t.Fatalf("settings=%#v binding=%+v calls=%+v", settings, inputs.EmbeddingBinding, embeddings.calls)
+	}
+}
+
+func TestCurrentAuthoritativeInputResolverKeepsOmittedEmbeddingOptionalWhenCatalogHasNoDefault(t *testing.T) {
+	embeddings := &currentEmbeddingBindingSelectorStub{}
+	resolver := newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+		t,
+		validCurrentToolkitReader(),
+		&currentModelCatalogStub{},
+		&currentToolkitSettingsValidatorStub{},
+		embeddings,
+	)
+
+	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputs.EmbeddingBinding != nil || len(embeddings.calls) != 0 {
+		t.Fatalf("binding=%+v calls=%+v", inputs.EmbeddingBinding, embeddings.calls)
+	}
+}
+
+func TestCurrentAuthoritativeInputResolverFailsClosedForRequiredEmbeddingWithoutBinding(t *testing.T) {
+	for name, configure := range map[string]func(
+		*currentToolkitReaderStub,
+		*currentModelCatalogStub,
+		*currentEmbeddingBindingSelectorStub,
+	){
+		"empty without catalog default": func(
+			toolkits *currentToolkitReaderStub,
+			_ *currentModelCatalogStub,
+			_ *currentEmbeddingBindingSelectorStub,
+		) {
+			toolkits.toolkit.Settings["embedding_model"] = ""
+		},
+		"runtime mismatch": func(
+			toolkits *currentToolkitReaderStub,
+			_ *currentModelCatalogStub,
+			embeddings *currentEmbeddingBindingSelectorStub,
+		) {
+			toolkits.toolkit.Settings["embedding_model"] = "saved-embedding"
+			embeddings.binding = currentEmbeddingBindingForTest(7, "other-embedding")
+		},
+		"runtime unavailable": func(
+			toolkits *currentToolkitReaderStub,
+			_ *currentModelCatalogStub,
+			embeddings *currentEmbeddingBindingSelectorStub,
+		) {
+			toolkits.toolkit.Settings["embedding_model"] = "saved-embedding"
+			embeddings.err = errors.New("upstream secret detail")
+		},
+		"embedding catalog unavailable": func(
+			toolkits *currentToolkitReaderStub,
+			models *currentModelCatalogStub,
+			_ *currentEmbeddingBindingSelectorStub,
+		) {
+			toolkits.toolkit.Settings["embedding_model"] = ""
+			models.err = errors.New("catalog secret detail")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			toolkits := validCurrentToolkitReader()
+			models := &currentModelCatalogStub{}
+			embeddings := &currentEmbeddingBindingSelectorStub{}
+			configure(toolkits, models, embeddings)
+			resolver := newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+				t,
+				toolkits,
+				models,
+				&currentToolkitSettingsValidatorStub{},
+				embeddings,
+			)
+			_, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
+			if !errors.Is(err, ErrCurrentEmbeddingBindingUnavailable) &&
+				!errors.Is(err, ErrCurrentEmbeddingBindingAmbiguous) {
+				t.Fatalf("error=%v", err)
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Fatalf("unsafe embedding error=%v", err)
+			}
+		})
+	}
+}
+
 func TestCurrentAuthoritativeInputResolverPreservesExplicitEmbeddingModel(t *testing.T) {
 	toolkits := validCurrentToolkitReader()
 	toolkits.toolkit.Settings["embedding_model"] = "saved-embedding"
 	models := &currentModelCatalogStub{}
-	resolver := newCurrentAuthoritativeResolverForTest(t, toolkits, models)
+	embeddings := &currentEmbeddingBindingSelectorStub{}
+	resolver := newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+		t,
+		toolkits,
+		models,
+		&currentToolkitSettingsValidatorStub{},
+		embeddings,
+	)
 
 	inputs, err := resolver.Resolve(context.Background(), validCurrentStartRequest(nil, `{}`))
 	if err != nil {
@@ -263,6 +446,11 @@ func TestCurrentAuthoritativeInputResolverPreservesExplicitEmbeddingModel(t *tes
 	settings := toolkit["settings"].(map[string]any)
 	if settings["embedding_model"] != "saved-embedding" {
 		t.Fatalf("embedding_model=%#v, want saved value", settings["embedding_model"])
+	}
+	if inputs.EmbeddingBinding == nil ||
+		inputs.EmbeddingBinding.ResolvedModelGroup != "7_saved-embedding" ||
+		len(embeddings.calls) != 1 {
+		t.Fatalf("embedding binding=%+v calls=%+v", inputs.EmbeddingBinding, embeddings.calls)
 	}
 	if models.calls != 1 || models.query.Section != configurationapp.CurrentModelSectionLLM {
 		t.Fatalf("unexpected model catalog calls=%d query=%+v", models.calls, models.query)
@@ -281,7 +469,7 @@ func TestCurrentAuthoritativeInputResolverOverwritesCallerCompatibilityFromConfi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if models.calls != 1 {
+	if models.calls != 2 {
 		t.Fatalf("authoritative compatibility queried catalog %d times", models.calls)
 	}
 	settings, _ := decodeCurrentResolverObject(inputs.LLMConfiguration)
@@ -291,7 +479,14 @@ func TestCurrentAuthoritativeInputResolverOverwritesCallerCompatibilityFromConfi
 }
 
 func TestCurrentAuthoritativeInputResolverFailsClosedWhenConfigurationsModelCatalogIsUnavailable(t *testing.T) {
-	models := &currentModelCatalogStub{err: errors.New("catalog details must not escape")}
+	models := &currentModelCatalogStub{get: func(
+		query configurationapp.CurrentModelCatalogQuery,
+	) (configurationapp.CurrentModelCatalogResponse, error) {
+		if query.Section == configurationapp.CurrentModelSectionEmbedding {
+			return configurationapp.CurrentModelCatalogResponse{}, nil
+		}
+		return configurationapp.CurrentModelCatalogResponse{}, errors.New("catalog details must not escape")
+	}}
 	resolver := newCurrentAuthoritativeResolverForTest(t, validCurrentToolkitReader(), models)
 	model := "explicit-model"
 	_, err := resolver.Resolve(context.Background(), validCurrentStartRequest(&model, `{"openai_compatible":true}`))
@@ -426,16 +621,20 @@ func TestNewCurrentAuthoritativeInputResolverRejectsIncompleteComposition(t *tes
 	models := &currentModelCatalogStub{}
 	toolkits := validCurrentToolkitReader()
 	settings := &currentToolkitSettingsValidatorStub{}
-	if _, err := NewCurrentAuthoritativeInputResolver(nil, models, settings, 1); err == nil {
+	embeddings := &currentEmbeddingBindingSelectorStub{}
+	if _, err := NewCurrentAuthoritativeInputResolver(nil, models, settings, embeddings, 1); err == nil {
 		t.Fatal("expected missing toolkit reader to fail")
 	}
-	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, nil, settings, 1); err == nil {
+	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, nil, settings, embeddings, 1); err == nil {
 		t.Fatal("expected missing model catalog to fail")
 	}
-	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, models, nil, 1); err == nil {
+	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, models, nil, embeddings, 1); err == nil {
 		t.Fatal("expected missing settings validator to fail")
 	}
-	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settings, 0); err == nil {
+	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settings, nil, 1); err == nil {
+		t.Fatal("expected missing embedding binding selector to fail")
+	}
+	if _, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settings, embeddings, 0); err == nil {
 		t.Fatal("expected invalid public project to fail")
 	}
 }
@@ -480,10 +679,38 @@ func newCurrentAuthoritativeResolverWithSettingsForTest(
 	models CurrentModelCatalog,
 	settings CurrentToolkitSettingsValidator,
 ) *CurrentAuthoritativeInputResolver {
+	return newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+		t,
+		toolkits,
+		models,
+		settings,
+		&currentEmbeddingBindingSelectorStub{},
+	)
+}
+
+func newCurrentAuthoritativeResolverWithSettingsAndEmbeddingsForTest(
+	t *testing.T,
+	toolkits CurrentToolkitReader,
+	models CurrentModelCatalog,
+	settings CurrentToolkitSettingsValidator,
+	embeddings CurrentEmbeddingBindingSelector,
+) *CurrentAuthoritativeInputResolver {
 	t.Helper()
-	resolver, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settings, 1)
+	resolver, err := NewCurrentAuthoritativeInputResolver(toolkits, models, settings, embeddings, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return resolver
+}
+
+func currentEmbeddingBindingForTest(projectID int32, modelName string) EmbeddingBinding {
+	return EmbeddingBinding{
+		SchemaVersion:          CurrentEmbeddingBindingSchema,
+		ModelName:              modelName,
+		ResolvedModelGroup:     "7_" + modelName,
+		ConfigurationProjectID: projectID,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000107",
+		ConfigurationDigest:    runtimedomain.SHA256([]byte("configuration:" + modelName)),
+		Provider:               "openai",
+	}
 }

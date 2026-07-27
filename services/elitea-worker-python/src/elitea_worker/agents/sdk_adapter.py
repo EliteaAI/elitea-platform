@@ -204,13 +204,14 @@ class EliteaSdkIndexingAdapter:
     call without copying its Pylon event, logging or response-cleaning wrapper.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, embedding_model_group: str | None = None) -> None:
         client_type = _indexing_client_type()
         if not isinstance(client, client_type):
             raise TypeError(
                 "client must be an EliteAClient from the admitted SDK artifact"
             )
         self._client = client
+        self._embedding_model_group = embedding_model_group
 
     @classmethod
     def from_context(cls, context: EliteaClientContext) -> EliteaSdkIndexingAdapter:
@@ -222,7 +223,10 @@ class EliteaSdkIndexingAdapter:
             base_url=context.base_url,
             auth_token=context.auth_token,
         )
-        return cls(client)
+        return cls(
+            client,
+            embedding_model_group=context.embedding_model_group,
+        )
 
     def ingest(
         self,
@@ -237,6 +241,14 @@ class EliteaSdkIndexingAdapter:
         invocation_toolkit_config = _current_index_tool_name_compatibility(
             toolkit_config
         )
+        embedding_model_group = getattr(self, "_embedding_model_group", None)
+        if embedding_model_group is not None:
+            settings = invocation_toolkit_config.get("settings")
+            if not isinstance(settings, dict):
+                raise DependencyUnavailable(
+                    "The bound embedding model cannot be applied."
+                )
+            settings["embedding_model"] = embedding_model_group
         # Business-compatibility boundary: exactly the public SDK operation used
         # by the current indexer worker, exactly once per kernel invocation.
         return self._client.test_toolkit_tool(
