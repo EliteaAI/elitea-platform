@@ -616,6 +616,13 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			config,
 			indexDispatchPolicy,
 			currentIndexMetaWriter,
+			func(err error) {
+				dependencies.Logger.Error(
+					"current index metadata initialization requeued",
+					"err",
+					err,
+				)
+			},
 		)
 		if err != nil {
 			return nil, fmt.Errorf("construct current index runtime: %w", err)
@@ -632,6 +639,16 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, err
 		}
 		indexStart = currentIndex.start
+		publisherRoot, err = newPublisherSet(
+			publisherRoot,
+			currentIndex.initializer,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"compose index metadata initialization reconciler: %w",
+				err,
+			)
+		}
 	} else {
 		contentServer, err = storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
 		if err != nil {

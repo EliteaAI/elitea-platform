@@ -23,6 +23,8 @@ type Querier interface {
 	// batch and remain dead ordering barriers. The transaction ends with this
 	// statement; reconciliation happens outside the database transaction.
 	ClaimConfigurationLifecycleEvents(ctx context.Context, arg ClaimConfigurationLifecycleEventsParams) ([]ClaimConfigurationLifecycleEventsRow, error)
+	ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error)
+	ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error)
 	CompareAndSwapCurrentConfigurationRenameToolkit(ctx context.Context, arg CompareAndSwapCurrentConfigurationRenameToolkitParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
@@ -63,7 +65,6 @@ type Querier interface {
 	GetLatestConfigurationLifecycleRevision(ctx context.Context, arg GetLatestConfigurationLifecycleRevisionParams) (int64, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetRuntimeAdmissionByIdempotencyParams) (GetRuntimeAdmissionByIdempotencyRow, error)
-	HasActiveIndexIngestTarget(ctx context.Context, arg HasActiveIndexIngestTargetParams) (bool, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
@@ -75,6 +76,7 @@ type Querier interface {
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
+	ListActiveIndexIngestTarget(ctx context.Context, arg ListActiveIndexIngestTargetParams) ([]string, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current
 	// project and, when requested, in the public project with shared_only=true.
@@ -100,6 +102,7 @@ type Querier interface {
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
+	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)
 	LoadRuntimeAdmissionTiming(ctx context.Context, deadlineTtlMillis int64) (LoadRuntimeAdmissionTimingRow, error)
 	// The unqualified configuration relation is intentional. These queries run
 	// only inside a tenant transaction whose local search_path was derived from an
@@ -111,6 +114,8 @@ type Querier interface {
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
+	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
+	ReleaseIndexMetaInitialization(ctx context.Context, arg ReleaseIndexMetaInitializationParams) (int64, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
@@ -119,6 +124,7 @@ type Querier interface {
 	// assignment; the system-user email fallback is considered only when that
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
+	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
 	// intentional: every such statement runs inside an authorized project
 	// transaction whose local search_path is p_<project_id>.

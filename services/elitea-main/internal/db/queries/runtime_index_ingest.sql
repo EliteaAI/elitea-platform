@@ -33,20 +33,22 @@ FROM elitea_runtime.execution_admission_policies
 WHERE capability_id = sqlc.arg(capability_id)::text
 FOR UPDATE;
 
--- name: HasActiveIndexIngestTarget :one
-SELECT EXISTS (
-    SELECT 1
-    FROM elitea_runtime.execution_jobs AS j
-    JOIN elitea_runtime.index_ingest_jobs AS i
-      ON i.execution_id = j.execution_id
-     AND i.generation = j.generation
-    WHERE j.capability_id = 'index.ingest.v1'
-      AND j.resource_project_id = sqlc.arg(resource_project_id)::integer
-      AND i.toolkit_id = sqlc.arg(toolkit_id)::integer
-      AND i.index_name = sqlc.arg(index_name)::text
-      AND j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
-    LIMIT 1
-);
+-- name: ListActiveIndexIngestTarget :many
+SELECT j.execution_id
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+WHERE j.capability_id = 'index.ingest.v1'
+  AND j.tenant_id = sqlc.arg(tenant_id)::text
+  AND j.resource_project_id = sqlc.arg(resource_project_id)::integer
+  AND j.projection_project_id = sqlc.arg(projection_project_id)::integer
+  AND i.capability_id = j.capability_id
+  AND i.toolkit_id = sqlc.arg(toolkit_id)::integer
+  AND i.index_name = sqlc.arg(index_name)::text
+  AND j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
+ORDER BY j.admitted_at, j.execution_id
+LIMIT 2;
 
 -- name: CountActiveRuntimeExecutionsUpTo :one
 SELECT count(*)
@@ -154,6 +156,9 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
     client_stream_id, client_message_id, sio_event,
     index_meta_id, index_meta_correlation_id,
+    index_meta_initialization_status,
+    index_meta_initialization_attempt_count,
+    index_meta_initialization_next_attempt_at,
     toolkit_id, index_name, initiator
 ) VALUES (
     sqlc.arg(execution_id)::text,
@@ -171,6 +176,9 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     sqlc.narg(sio_event)::text,
     sqlc.arg(index_meta_id)::text,
     sqlc.arg(index_meta_correlation_id)::text,
+    'PENDING',
+    0,
+    sqlc.arg(index_meta_initialization_next_attempt_at)::timestamptz,
     sqlc.arg(toolkit_id)::integer,
     sqlc.arg(index_name)::text,
     sqlc.arg(initiator)::text
@@ -180,9 +188,25 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
 UPDATE elitea_runtime.index_ingest_jobs AS i
 SET index_meta_initialized_at = COALESCE(
     i.index_meta_initialized_at,
-    date_trunc('milliseconds', clock_timestamp())
-)
-FROM elitea_runtime.execution_jobs AS j
+    authority.initialized_at
+),
+    index_meta_initialization_status = 'INITIALIZED',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_last_error_code = NULL,
+    index_meta_initialization_resolved_at = COALESCE(
+        i.index_meta_initialization_resolved_at,
+        authority.initialized_at
+    ),
+    index_meta_initialization_failed_at = NULL
+FROM elitea_runtime.execution_jobs AS j,
+     (
+         SELECT date_trunc(
+             'milliseconds',
+             clock_timestamp()
+         )::timestamptz AS initialized_at
+     ) AS authority
 WHERE i.execution_id = sqlc.arg(execution_id)::text
   AND i.generation = sqlc.arg(generation)::bigint
   AND i.index_generation = sqlc.arg(index_generation)::bigint
@@ -195,6 +219,304 @@ WHERE i.execution_id = sqlc.arg(execution_id)::text
   AND j.state = 'PENDING'
   AND j.desired_state = 'RUNNING'
 RETURNING i.index_meta_initialized_at;
+
+-- name: ClaimPendingIndexMetaInitializations :many
+WITH candidates AS (
+    SELECT i.execution_id, i.generation
+    FROM elitea_runtime.index_ingest_jobs AS i
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = i.execution_id
+     AND j.generation = i.generation
+     AND j.capability_id = i.capability_id
+    JOIN elitea_runtime.command_outbox AS o
+      ON o.execution_id = i.execution_id
+     AND o.generation = i.generation
+    WHERE i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status IN ('PENDING', 'RUNNING')
+      AND (
+          i.index_meta_initialization_status = 'PENDING'
+          AND i.index_meta_initialization_next_attempt_at <= clock_timestamp()
+          OR
+          i.index_meta_initialization_status = 'RUNNING'
+          AND i.index_meta_initialization_claim_expires_at <= clock_timestamp()
+      )
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    ORDER BY COALESCE(
+                 i.index_meta_initialization_next_attempt_at,
+                 i.index_meta_initialization_claim_expires_at
+             ),
+             i.execution_id,
+             i.generation
+    LIMIT sqlc.arg(claim_limit)::integer
+    FOR UPDATE OF i SKIP LOCKED
+),
+claimed AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'RUNNING',
+        index_meta_initialization_claim_token = sqlc.arg(claim_token)::text,
+        index_meta_initialization_claim_expires_at =
+            clock_timestamp()
+            + (
+                sqlc.arg(claim_lease_microseconds)::bigint
+                * interval '1 microsecond'
+            ),
+        index_meta_initialization_attempt_count = LEAST(
+            i.index_meta_initialization_attempt_count::bigint + 1,
+            2147483647
+        )::integer,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code = NULL
+    FROM candidates
+    WHERE i.execution_id = candidates.execution_id
+      AND i.generation = candidates.generation
+    RETURNING i.execution_id,
+              i.generation,
+              i.index_meta_initialization_attempt_count
+)
+SELECT execution_id, generation, index_meta_initialization_attempt_count
+FROM claimed
+ORDER BY execution_id, generation;
+
+-- name: ClaimExactIndexMetaInitialization :one
+WITH claimed AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'RUNNING',
+        index_meta_initialization_claim_token = sqlc.arg(claim_token)::text,
+        index_meta_initialization_claim_expires_at =
+            clock_timestamp()
+            + (
+                sqlc.arg(claim_lease_microseconds)::bigint
+                * interval '1 microsecond'
+            ),
+        index_meta_initialization_attempt_count = LEAST(
+            i.index_meta_initialization_attempt_count::bigint + 1,
+            2147483647
+        )::integer,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code = NULL
+    FROM elitea_runtime.execution_jobs AS j,
+         elitea_runtime.command_outbox AS o
+    WHERE i.execution_id = sqlc.arg(execution_id)::text
+      AND i.generation = sqlc.arg(generation)::bigint
+      AND i.index_generation = sqlc.arg(index_generation)::bigint
+      AND i.index_meta_id = sqlc.arg(index_meta_id)::text
+      AND i.index_meta_correlation_id =
+          sqlc.arg(index_meta_correlation_id)::text
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND (
+          i.index_meta_initialization_status = 'PENDING'
+          AND i.index_meta_initialization_next_attempt_at <= clock_timestamp()
+          OR
+          i.index_meta_initialization_status = 'RUNNING'
+          AND i.index_meta_initialization_claim_expires_at <= clock_timestamp()
+      )
+      AND j.execution_id = i.execution_id
+      AND j.generation = i.generation
+      AND j.capability_id = i.capability_id
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.execution_id = i.execution_id
+      AND o.generation = i.generation
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    RETURNING i.execution_id,
+              i.generation,
+              i.index_meta_initialization_attempt_count
+)
+SELECT execution_id, generation, index_meta_initialization_attempt_count
+FROM claimed;
+
+-- name: LoadIndexMetaInitializationWork :one
+SELECT j.command_id,
+       j.tenant_id,
+       j.resource_project_id,
+       j.projection_project_id,
+       j.actor_id,
+       j.admitted_at,
+       o.deadline,
+       i.index_generation,
+       i.index_meta_id,
+       i.index_meta_correlation_id,
+       i.client_stream_id,
+       i.client_message_id,
+       i.sio_event,
+       i.toolkit_id,
+       i.initiator,
+       toolkit.content_bytes AS toolkit_configuration,
+       parameters.content_bytes AS tool_parameters
+FROM elitea_runtime.index_ingest_jobs AS i
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = i.execution_id
+ AND j.generation = i.generation
+ AND j.capability_id = i.capability_id
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = i.execution_id
+ AND o.generation = i.generation
+LEFT JOIN elitea_runtime.input_bundle_entries AS toolkit
+  ON toolkit.input_bundle_id = i.input_bundle_id
+ AND toolkit.entry_id = i.toolkit_configuration_entry_id
+ AND toolkit.semantic_role = 'index.toolkit_configuration'
+LEFT JOIN elitea_runtime.input_bundle_entries AS parameters
+  ON parameters.input_bundle_id = i.input_bundle_id
+ AND parameters.entry_id = i.tool_parameters_entry_id
+ AND parameters.semantic_role = 'index.tool_parameters'
+WHERE i.execution_id = sqlc.arg(execution_id)::text
+  AND i.generation = sqlc.arg(generation)::bigint
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_initialized_at IS NULL
+  AND i.index_meta_initialization_status = 'RUNNING'
+  AND i.index_meta_initialization_claim_token = sqlc.arg(claim_token)::text
+  AND i.index_meta_initialization_claim_expires_at > clock_timestamp()
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL
+  AND o.retired_at IS NULL;
+
+-- name: ResolveIndexMetaInitialization :one
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_initialized_at = authority.initialized_at,
+    index_meta_initialization_status = 'INITIALIZED',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_last_error_code = NULL,
+    index_meta_initialization_resolved_at = authority.initialized_at,
+    index_meta_initialization_failed_at = NULL
+FROM elitea_runtime.execution_jobs AS j,
+     elitea_runtime.command_outbox AS o,
+     (
+         SELECT date_trunc(
+             'milliseconds',
+             clock_timestamp()
+         )::timestamptz AS initialized_at
+     ) AS authority
+WHERE i.execution_id = sqlc.arg(execution_id)::text
+  AND i.generation = sqlc.arg(generation)::bigint
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_initialized_at IS NULL
+  AND i.index_meta_initialization_status = 'RUNNING'
+  AND i.index_meta_initialization_claim_token = sqlc.arg(claim_token)::text
+  AND i.index_meta_initialization_claim_expires_at > clock_timestamp()
+  AND j.execution_id = i.execution_id
+  AND j.generation = i.generation
+  AND j.capability_id = i.capability_id
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+  AND o.execution_id = i.execution_id
+  AND o.generation = i.generation
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL
+  AND o.retired_at IS NULL
+RETURNING i.index_meta_initialized_at;
+
+-- name: ReleaseIndexMetaInitialization :execrows
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_initialization_status = 'PENDING',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at =
+        clock_timestamp()
+        + (
+            LEAST(
+                30,
+                (1::bigint << LEAST(
+                    index_meta_initialization_attempt_count,
+                    5
+                ))
+            ) * interval '1 second'
+        ),
+    index_meta_initialization_last_error_code =
+        sqlc.arg(last_error_code)::text
+WHERE execution_id = sqlc.arg(execution_id)::text
+  AND generation = sqlc.arg(generation)::bigint
+  AND capability_id = 'index.ingest.v1'
+  AND index_meta_initialized_at IS NULL
+  AND index_meta_initialization_status = 'RUNNING'
+  AND index_meta_initialization_claim_token = sqlc.arg(claim_token)::text;
+
+-- name: QuarantineIndexMetaInitialization :one
+WITH quarantined_index AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'QUARANTINED',
+        index_meta_initialization_claim_token = NULL,
+        index_meta_initialization_claim_expires_at = NULL,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code =
+            sqlc.arg(last_error_code)::text,
+        index_meta_initialization_failed_at =
+            date_trunc('milliseconds', clock_timestamp())
+    FROM elitea_runtime.execution_jobs AS j,
+         elitea_runtime.command_outbox AS o
+    WHERE i.execution_id = sqlc.arg(execution_id)::text
+      AND i.generation = sqlc.arg(generation)::bigint
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status = 'RUNNING'
+      AND i.index_meta_initialization_claim_token =
+          sqlc.arg(claim_token)::text
+      AND j.execution_id = i.execution_id
+      AND j.generation = i.generation
+      AND j.capability_id = i.capability_id
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.execution_id = i.execution_id
+      AND o.generation = i.generation
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    RETURNING i.execution_id, i.generation
+),
+quarantined_job AS (
+    UPDATE elitea_runtime.execution_jobs AS j
+    SET state = 'QUARANTINED',
+        desired_state = 'CANCELLED',
+        settled_at = date_trunc('milliseconds', clock_timestamp())
+    FROM quarantined_index AS i
+    WHERE j.execution_id = i.execution_id
+      AND j.generation = i.generation
+    RETURNING j.execution_id, j.generation, j.projection_project_id
+),
+retired_outbox AS (
+    UPDATE elitea_runtime.command_outbox AS o
+    SET retired_at = date_trunc('milliseconds', clock_timestamp()),
+        retirement_code = 'CANCELLED'
+    FROM quarantined_job AS j
+    WHERE o.execution_id = j.execution_id
+      AND o.generation = j.generation
+    RETURNING o.outbox_id, o.execution_id, o.generation
+),
+replayed_failure AS (
+    INSERT INTO elitea_runtime.execution_replay_events (
+        event_id, execution_id, generation, projection_project_id,
+        event_type, event_bytes, event_digest
+    )
+    SELECT 'index-meta-initialization-quarantine:' || o.outbox_id,
+           j.execution_id,
+           j.generation,
+           j.projection_project_id,
+           'execution.failed',
+           sqlc.arg(failure_event_bytes)::bytea,
+           sqlc.arg(failure_event_digest)::bytea
+    FROM quarantined_job AS j
+    JOIN retired_outbox AS o
+      ON o.execution_id = j.execution_id
+     AND o.generation = j.generation
+    RETURNING execution_id
+)
+SELECT execution_id FROM replayed_failure;
 
 -- name: InsertRuntimeCommandOutbox :exec
 INSERT INTO elitea_runtime.command_outbox (

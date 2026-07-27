@@ -43,6 +43,186 @@ func (q *Queries) AllocateIndexGeneration(ctx context.Context, arg AllocateIndex
 	return last_generation, err
 }
 
+const claimExactIndexMetaInitialization = `-- name: ClaimExactIndexMetaInitialization :one
+WITH claimed AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'RUNNING',
+        index_meta_initialization_claim_token = $1::text,
+        index_meta_initialization_claim_expires_at =
+            clock_timestamp()
+            + (
+                $2::bigint
+                * interval '1 microsecond'
+            ),
+        index_meta_initialization_attempt_count = LEAST(
+            i.index_meta_initialization_attempt_count::bigint + 1,
+            2147483647
+        )::integer,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code = NULL
+    FROM elitea_runtime.execution_jobs AS j,
+         elitea_runtime.command_outbox AS o
+    WHERE i.execution_id = $3::text
+      AND i.generation = $4::bigint
+      AND i.index_generation = $5::bigint
+      AND i.index_meta_id = $6::text
+      AND i.index_meta_correlation_id =
+          $7::text
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND (
+          i.index_meta_initialization_status = 'PENDING'
+          AND i.index_meta_initialization_next_attempt_at <= clock_timestamp()
+          OR
+          i.index_meta_initialization_status = 'RUNNING'
+          AND i.index_meta_initialization_claim_expires_at <= clock_timestamp()
+      )
+      AND j.execution_id = i.execution_id
+      AND j.generation = i.generation
+      AND j.capability_id = i.capability_id
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.execution_id = i.execution_id
+      AND o.generation = i.generation
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    RETURNING i.execution_id,
+              i.generation,
+              i.index_meta_initialization_attempt_count
+)
+SELECT execution_id, generation, index_meta_initialization_attempt_count
+FROM claimed
+`
+
+type ClaimExactIndexMetaInitializationParams struct {
+	ClaimToken             string `db:"claim_token" json:"claim_token"`
+	ClaimLeaseMicroseconds int64  `db:"claim_lease_microseconds" json:"claim_lease_microseconds"`
+	ExecutionID            string `db:"execution_id" json:"execution_id"`
+	Generation             int64  `db:"generation" json:"generation"`
+	IndexGeneration        int64  `db:"index_generation" json:"index_generation"`
+	IndexMetaID            string `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID string `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+}
+
+type ClaimExactIndexMetaInitializationRow struct {
+	ExecutionID                         string `db:"execution_id" json:"execution_id"`
+	Generation                          int64  `db:"generation" json:"generation"`
+	IndexMetaInitializationAttemptCount int32  `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+}
+
+func (q *Queries) ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error) {
+	row := q.db.QueryRow(ctx, claimExactIndexMetaInitialization,
+		arg.ClaimToken,
+		arg.ClaimLeaseMicroseconds,
+		arg.ExecutionID,
+		arg.Generation,
+		arg.IndexGeneration,
+		arg.IndexMetaID,
+		arg.IndexMetaCorrelationID,
+	)
+	var i ClaimExactIndexMetaInitializationRow
+	err := row.Scan(&i.ExecutionID, &i.Generation, &i.IndexMetaInitializationAttemptCount)
+	return i, err
+}
+
+const claimPendingIndexMetaInitializations = `-- name: ClaimPendingIndexMetaInitializations :many
+WITH candidates AS (
+    SELECT i.execution_id, i.generation
+    FROM elitea_runtime.index_ingest_jobs AS i
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = i.execution_id
+     AND j.generation = i.generation
+     AND j.capability_id = i.capability_id
+    JOIN elitea_runtime.command_outbox AS o
+      ON o.execution_id = i.execution_id
+     AND o.generation = i.generation
+    WHERE i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status IN ('PENDING', 'RUNNING')
+      AND (
+          i.index_meta_initialization_status = 'PENDING'
+          AND i.index_meta_initialization_next_attempt_at <= clock_timestamp()
+          OR
+          i.index_meta_initialization_status = 'RUNNING'
+          AND i.index_meta_initialization_claim_expires_at <= clock_timestamp()
+      )
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    ORDER BY COALESCE(
+                 i.index_meta_initialization_next_attempt_at,
+                 i.index_meta_initialization_claim_expires_at
+             ),
+             i.execution_id,
+             i.generation
+    LIMIT $1::integer
+    FOR UPDATE OF i SKIP LOCKED
+),
+claimed AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'RUNNING',
+        index_meta_initialization_claim_token = $2::text,
+        index_meta_initialization_claim_expires_at =
+            clock_timestamp()
+            + (
+                $3::bigint
+                * interval '1 microsecond'
+            ),
+        index_meta_initialization_attempt_count = LEAST(
+            i.index_meta_initialization_attempt_count::bigint + 1,
+            2147483647
+        )::integer,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code = NULL
+    FROM candidates
+    WHERE i.execution_id = candidates.execution_id
+      AND i.generation = candidates.generation
+    RETURNING i.execution_id,
+              i.generation,
+              i.index_meta_initialization_attempt_count
+)
+SELECT execution_id, generation, index_meta_initialization_attempt_count
+FROM claimed
+ORDER BY execution_id, generation
+`
+
+type ClaimPendingIndexMetaInitializationsParams struct {
+	ClaimLimit             int32  `db:"claim_limit" json:"claim_limit"`
+	ClaimToken             string `db:"claim_token" json:"claim_token"`
+	ClaimLeaseMicroseconds int64  `db:"claim_lease_microseconds" json:"claim_lease_microseconds"`
+}
+
+type ClaimPendingIndexMetaInitializationsRow struct {
+	ExecutionID                         string `db:"execution_id" json:"execution_id"`
+	Generation                          int64  `db:"generation" json:"generation"`
+	IndexMetaInitializationAttemptCount int32  `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+}
+
+func (q *Queries) ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error) {
+	rows, err := q.db.Query(ctx, claimPendingIndexMetaInitializations, arg.ClaimLimit, arg.ClaimToken, arg.ClaimLeaseMicroseconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimPendingIndexMetaInitializationsRow{}
+	for rows.Next() {
+		var i ClaimPendingIndexMetaInitializationsRow
+		if err := rows.Scan(&i.ExecutionID, &i.Generation, &i.IndexMetaInitializationAttemptCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countActiveRuntimeExecutionsUpTo = `-- name: CountActiveRuntimeExecutionsUpTo :one
 SELECT count(*)
 FROM (
@@ -291,35 +471,6 @@ func (q *Queries) GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetR
 	return i, err
 }
 
-const hasActiveIndexIngestTarget = `-- name: HasActiveIndexIngestTarget :one
-SELECT EXISTS (
-    SELECT 1
-    FROM elitea_runtime.execution_jobs AS j
-    JOIN elitea_runtime.index_ingest_jobs AS i
-      ON i.execution_id = j.execution_id
-     AND i.generation = j.generation
-    WHERE j.capability_id = 'index.ingest.v1'
-      AND j.resource_project_id = $1::integer
-      AND i.toolkit_id = $2::integer
-      AND i.index_name = $3::text
-      AND j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
-    LIMIT 1
-)
-`
-
-type HasActiveIndexIngestTargetParams struct {
-	ResourceProjectID int32  `db:"resource_project_id" json:"resource_project_id"`
-	ToolkitID         int32  `db:"toolkit_id" json:"toolkit_id"`
-	IndexName         string `db:"index_name" json:"index_name"`
-}
-
-func (q *Queries) HasActiveIndexIngestTarget(ctx context.Context, arg HasActiveIndexIngestTargetParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasActiveIndexIngestTarget, arg.ResourceProjectID, arg.ToolkitID, arg.IndexName)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const insertIndexIngestExecutionJob = `-- name: InsertIndexIngestExecutionJob :one
 INSERT INTO elitea_runtime.execution_jobs (
     execution_id, generation, command_id, tenant_id, resource_project_id,
@@ -397,6 +548,9 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
     client_stream_id, client_message_id, sio_event,
     index_meta_id, index_meta_correlation_id,
+    index_meta_initialization_status,
+    index_meta_initialization_attempt_count,
+    index_meta_initialization_next_attempt_at,
     toolkit_id, index_name, initiator
 ) VALUES (
     $1::text,
@@ -414,30 +568,34 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     $12::text,
     $13::text,
     $14::text,
-    $15::integer,
-    $16::text,
-    $17::text
+    'PENDING',
+    0,
+    $15::timestamptz,
+    $16::integer,
+    $17::text,
+    $18::text
 )
 `
 
 type InsertIndexIngestJobParams struct {
-	ExecutionID                 string  `db:"execution_id" json:"execution_id"`
-	Generation                  int64   `db:"generation" json:"generation"`
-	IndexGeneration             int64   `db:"index_generation" json:"index_generation"`
-	InputBundleID               string  `db:"input_bundle_id" json:"input_bundle_id"`
-	ToolkitConfigurationEntryID string  `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
-	ToolParametersEntryID       string  `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
-	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
-	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
-	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
-	ClientStreamID              *string `db:"client_stream_id" json:"client_stream_id"`
-	ClientMessageID             *string `db:"client_message_id" json:"client_message_id"`
-	SioEvent                    *string `db:"sio_event" json:"sio_event"`
-	IndexMetaID                 string  `db:"index_meta_id" json:"index_meta_id"`
-	IndexMetaCorrelationID      string  `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
-	ToolkitID                   int32   `db:"toolkit_id" json:"toolkit_id"`
-	IndexName                   string  `db:"index_name" json:"index_name"`
-	Initiator                   string  `db:"initiator" json:"initiator"`
+	ExecutionID                          string             `db:"execution_id" json:"execution_id"`
+	Generation                           int64              `db:"generation" json:"generation"`
+	IndexGeneration                      int64              `db:"index_generation" json:"index_generation"`
+	InputBundleID                        string             `db:"input_bundle_id" json:"input_bundle_id"`
+	ToolkitConfigurationEntryID          string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID                string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID                      *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID              *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID                     *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	ClientStreamID                       *string            `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID                      *string            `db:"client_message_id" json:"client_message_id"`
+	SioEvent                             *string            `db:"sio_event" json:"sio_event"`
+	IndexMetaID                          string             `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID               string             `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+	IndexMetaInitializationNextAttemptAt pgtype.Timestamptz `db:"index_meta_initialization_next_attempt_at" json:"index_meta_initialization_next_attempt_at"`
+	ToolkitID                            int32              `db:"toolkit_id" json:"toolkit_id"`
+	IndexName                            string             `db:"index_name" json:"index_name"`
+	Initiator                            string             `db:"initiator" json:"initiator"`
 }
 
 func (q *Queries) InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error {
@@ -456,6 +614,7 @@ func (q *Queries) InsertIndexIngestJob(ctx context.Context, arg InsertIndexInges
 		arg.SioEvent,
 		arg.IndexMetaID,
 		arg.IndexMetaCorrelationID,
+		arg.IndexMetaInitializationNextAttemptAt,
 		arg.ToolkitID,
 		arg.IndexName,
 		arg.Initiator,
@@ -610,6 +769,58 @@ func (q *Queries) InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertR
 	return err
 }
 
+const listActiveIndexIngestTarget = `-- name: ListActiveIndexIngestTarget :many
+SELECT j.execution_id
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+WHERE j.capability_id = 'index.ingest.v1'
+  AND j.tenant_id = $1::text
+  AND j.resource_project_id = $2::integer
+  AND j.projection_project_id = $3::integer
+  AND i.capability_id = j.capability_id
+  AND i.toolkit_id = $4::integer
+  AND i.index_name = $5::text
+  AND j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')
+ORDER BY j.admitted_at, j.execution_id
+LIMIT 2
+`
+
+type ListActiveIndexIngestTargetParams struct {
+	TenantID            string `db:"tenant_id" json:"tenant_id"`
+	ResourceProjectID   int32  `db:"resource_project_id" json:"resource_project_id"`
+	ProjectionProjectID int32  `db:"projection_project_id" json:"projection_project_id"`
+	ToolkitID           int32  `db:"toolkit_id" json:"toolkit_id"`
+	IndexName           string `db:"index_name" json:"index_name"`
+}
+
+func (q *Queries) ListActiveIndexIngestTarget(ctx context.Context, arg ListActiveIndexIngestTargetParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listActiveIndexIngestTarget,
+		arg.TenantID,
+		arg.ResourceProjectID,
+		arg.ProjectionProjectID,
+		arg.ToolkitID,
+		arg.IndexName,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var execution_id string
+		if err := rows.Scan(&execution_id); err != nil {
+			return nil, err
+		}
+		items = append(items, execution_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpectedIndexIngestEntries = `-- name: ListExpectedIndexIngestEntries :many
 SELECT e.entry_id,
        e.entry_version,
@@ -667,6 +878,106 @@ func (q *Queries) ListExpectedIndexIngestEntries(ctx context.Context, arg ListEx
 	return items, nil
 }
 
+const loadIndexMetaInitializationWork = `-- name: LoadIndexMetaInitializationWork :one
+SELECT j.command_id,
+       j.tenant_id,
+       j.resource_project_id,
+       j.projection_project_id,
+       j.actor_id,
+       j.admitted_at,
+       o.deadline,
+       i.index_generation,
+       i.index_meta_id,
+       i.index_meta_correlation_id,
+       i.client_stream_id,
+       i.client_message_id,
+       i.sio_event,
+       i.toolkit_id,
+       i.initiator,
+       toolkit.content_bytes AS toolkit_configuration,
+       parameters.content_bytes AS tool_parameters
+FROM elitea_runtime.index_ingest_jobs AS i
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = i.execution_id
+ AND j.generation = i.generation
+ AND j.capability_id = i.capability_id
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = i.execution_id
+ AND o.generation = i.generation
+LEFT JOIN elitea_runtime.input_bundle_entries AS toolkit
+  ON toolkit.input_bundle_id = i.input_bundle_id
+ AND toolkit.entry_id = i.toolkit_configuration_entry_id
+ AND toolkit.semantic_role = 'index.toolkit_configuration'
+LEFT JOIN elitea_runtime.input_bundle_entries AS parameters
+  ON parameters.input_bundle_id = i.input_bundle_id
+ AND parameters.entry_id = i.tool_parameters_entry_id
+ AND parameters.semantic_role = 'index.tool_parameters'
+WHERE i.execution_id = $1::text
+  AND i.generation = $2::bigint
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_initialized_at IS NULL
+  AND i.index_meta_initialization_status = 'RUNNING'
+  AND i.index_meta_initialization_claim_token = $3::text
+  AND i.index_meta_initialization_claim_expires_at > clock_timestamp()
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL
+  AND o.retired_at IS NULL
+`
+
+type LoadIndexMetaInitializationWorkParams struct {
+	ExecutionID string `db:"execution_id" json:"execution_id"`
+	Generation  int64  `db:"generation" json:"generation"`
+	ClaimToken  string `db:"claim_token" json:"claim_token"`
+}
+
+type LoadIndexMetaInitializationWorkRow struct {
+	CommandID              string             `db:"command_id" json:"command_id"`
+	TenantID               string             `db:"tenant_id" json:"tenant_id"`
+	ResourceProjectID      int32              `db:"resource_project_id" json:"resource_project_id"`
+	ProjectionProjectID    int32              `db:"projection_project_id" json:"projection_project_id"`
+	ActorID                string             `db:"actor_id" json:"actor_id"`
+	AdmittedAt             pgtype.Timestamptz `db:"admitted_at" json:"admitted_at"`
+	Deadline               pgtype.Timestamptz `db:"deadline" json:"deadline"`
+	IndexGeneration        int64              `db:"index_generation" json:"index_generation"`
+	IndexMetaID            *string            `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+	ClientStreamID         *string            `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID        *string            `db:"client_message_id" json:"client_message_id"`
+	SioEvent               *string            `db:"sio_event" json:"sio_event"`
+	ToolkitID              int32              `db:"toolkit_id" json:"toolkit_id"`
+	Initiator              string             `db:"initiator" json:"initiator"`
+	ToolkitConfiguration   []byte             `db:"toolkit_configuration" json:"toolkit_configuration"`
+	ToolParameters         []byte             `db:"tool_parameters" json:"tool_parameters"`
+}
+
+func (q *Queries) LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error) {
+	row := q.db.QueryRow(ctx, loadIndexMetaInitializationWork, arg.ExecutionID, arg.Generation, arg.ClaimToken)
+	var i LoadIndexMetaInitializationWorkRow
+	err := row.Scan(
+		&i.CommandID,
+		&i.TenantID,
+		&i.ResourceProjectID,
+		&i.ProjectionProjectID,
+		&i.ActorID,
+		&i.AdmittedAt,
+		&i.Deadline,
+		&i.IndexGeneration,
+		&i.IndexMetaID,
+		&i.IndexMetaCorrelationID,
+		&i.ClientStreamID,
+		&i.ClientMessageID,
+		&i.SioEvent,
+		&i.ToolkitID,
+		&i.Initiator,
+		&i.ToolkitConfiguration,
+		&i.ToolParameters,
+	)
+	return i, err
+}
+
 const loadRuntimeAdmissionTiming = `-- name: LoadRuntimeAdmissionTiming :one
 WITH authority AS MATERIALIZED (
     SELECT date_trunc('milliseconds', clock_timestamp()) AS admitted_at
@@ -706,9 +1017,25 @@ const markIndexMetaInitialized = `-- name: MarkIndexMetaInitialized :one
 UPDATE elitea_runtime.index_ingest_jobs AS i
 SET index_meta_initialized_at = COALESCE(
     i.index_meta_initialized_at,
-    date_trunc('milliseconds', clock_timestamp())
-)
-FROM elitea_runtime.execution_jobs AS j
+    authority.initialized_at
+),
+    index_meta_initialization_status = 'INITIALIZED',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_last_error_code = NULL,
+    index_meta_initialization_resolved_at = COALESCE(
+        i.index_meta_initialization_resolved_at,
+        authority.initialized_at
+    ),
+    index_meta_initialization_failed_at = NULL
+FROM elitea_runtime.execution_jobs AS j,
+     (
+         SELECT date_trunc(
+             'milliseconds',
+             clock_timestamp()
+         )::timestamptz AS initialized_at
+     ) AS authority
 WHERE i.execution_id = $1::text
   AND i.generation = $2::bigint
   AND i.index_generation = $3::bigint
@@ -739,6 +1066,200 @@ func (q *Queries) MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMet
 		arg.IndexMetaID,
 		arg.IndexMetaCorrelationID,
 	)
+	var index_meta_initialized_at pgtype.Timestamptz
+	err := row.Scan(&index_meta_initialized_at)
+	return index_meta_initialized_at, err
+}
+
+const quarantineIndexMetaInitialization = `-- name: QuarantineIndexMetaInitialization :one
+WITH quarantined_index AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'QUARANTINED',
+        index_meta_initialization_claim_token = NULL,
+        index_meta_initialization_claim_expires_at = NULL,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code =
+            $1::text,
+        index_meta_initialization_failed_at =
+            date_trunc('milliseconds', clock_timestamp())
+    FROM elitea_runtime.execution_jobs AS j,
+         elitea_runtime.command_outbox AS o
+    WHERE i.execution_id = $2::text
+      AND i.generation = $3::bigint
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status = 'RUNNING'
+      AND i.index_meta_initialization_claim_token =
+          $4::text
+      AND j.execution_id = i.execution_id
+      AND j.generation = i.generation
+      AND j.capability_id = i.capability_id
+      AND j.state = 'PENDING'
+      AND j.desired_state = 'RUNNING'
+      AND o.execution_id = i.execution_id
+      AND o.generation = i.generation
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NULL
+    RETURNING i.execution_id, i.generation
+),
+quarantined_job AS (
+    UPDATE elitea_runtime.execution_jobs AS j
+    SET state = 'QUARANTINED',
+        desired_state = 'CANCELLED',
+        settled_at = date_trunc('milliseconds', clock_timestamp())
+    FROM quarantined_index AS i
+    WHERE j.execution_id = i.execution_id
+      AND j.generation = i.generation
+    RETURNING j.execution_id, j.generation, j.projection_project_id
+),
+retired_outbox AS (
+    UPDATE elitea_runtime.command_outbox AS o
+    SET retired_at = date_trunc('milliseconds', clock_timestamp()),
+        retirement_code = 'CANCELLED'
+    FROM quarantined_job AS j
+    WHERE o.execution_id = j.execution_id
+      AND o.generation = j.generation
+    RETURNING o.outbox_id, o.execution_id, o.generation
+),
+replayed_failure AS (
+    INSERT INTO elitea_runtime.execution_replay_events (
+        event_id, execution_id, generation, projection_project_id,
+        event_type, event_bytes, event_digest
+    )
+    SELECT 'index-meta-initialization-quarantine:' || o.outbox_id,
+           j.execution_id,
+           j.generation,
+           j.projection_project_id,
+           'execution.failed',
+           $5::bytea,
+           $6::bytea
+    FROM quarantined_job AS j
+    JOIN retired_outbox AS o
+      ON o.execution_id = j.execution_id
+     AND o.generation = j.generation
+    RETURNING execution_id
+)
+SELECT execution_id FROM replayed_failure
+`
+
+type QuarantineIndexMetaInitializationParams struct {
+	LastErrorCode      string `db:"last_error_code" json:"last_error_code"`
+	ExecutionID        string `db:"execution_id" json:"execution_id"`
+	Generation         int64  `db:"generation" json:"generation"`
+	ClaimToken         string `db:"claim_token" json:"claim_token"`
+	FailureEventBytes  []byte `db:"failure_event_bytes" json:"failure_event_bytes"`
+	FailureEventDigest []byte `db:"failure_event_digest" json:"failure_event_digest"`
+}
+
+func (q *Queries) QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error) {
+	row := q.db.QueryRow(ctx, quarantineIndexMetaInitialization,
+		arg.LastErrorCode,
+		arg.ExecutionID,
+		arg.Generation,
+		arg.ClaimToken,
+		arg.FailureEventBytes,
+		arg.FailureEventDigest,
+	)
+	var execution_id string
+	err := row.Scan(&execution_id)
+	return execution_id, err
+}
+
+const releaseIndexMetaInitialization = `-- name: ReleaseIndexMetaInitialization :execrows
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_initialization_status = 'PENDING',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at =
+        clock_timestamp()
+        + (
+            LEAST(
+                30,
+                (1::bigint << LEAST(
+                    index_meta_initialization_attempt_count,
+                    5
+                ))
+            ) * interval '1 second'
+        ),
+    index_meta_initialization_last_error_code =
+        $1::text
+WHERE execution_id = $2::text
+  AND generation = $3::bigint
+  AND capability_id = 'index.ingest.v1'
+  AND index_meta_initialized_at IS NULL
+  AND index_meta_initialization_status = 'RUNNING'
+  AND index_meta_initialization_claim_token = $4::text
+`
+
+type ReleaseIndexMetaInitializationParams struct {
+	LastErrorCode string `db:"last_error_code" json:"last_error_code"`
+	ExecutionID   string `db:"execution_id" json:"execution_id"`
+	Generation    int64  `db:"generation" json:"generation"`
+	ClaimToken    string `db:"claim_token" json:"claim_token"`
+}
+
+func (q *Queries) ReleaseIndexMetaInitialization(ctx context.Context, arg ReleaseIndexMetaInitializationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseIndexMetaInitialization,
+		arg.LastErrorCode,
+		arg.ExecutionID,
+		arg.Generation,
+		arg.ClaimToken,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resolveIndexMetaInitialization = `-- name: ResolveIndexMetaInitialization :one
+UPDATE elitea_runtime.index_ingest_jobs AS i
+SET index_meta_initialized_at = authority.initialized_at,
+    index_meta_initialization_status = 'INITIALIZED',
+    index_meta_initialization_claim_token = NULL,
+    index_meta_initialization_claim_expires_at = NULL,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_last_error_code = NULL,
+    index_meta_initialization_resolved_at = authority.initialized_at,
+    index_meta_initialization_failed_at = NULL
+FROM elitea_runtime.execution_jobs AS j,
+     elitea_runtime.command_outbox AS o,
+     (
+         SELECT date_trunc(
+             'milliseconds',
+             clock_timestamp()
+         )::timestamptz AS initialized_at
+     ) AS authority
+WHERE i.execution_id = $1::text
+  AND i.generation = $2::bigint
+  AND i.capability_id = 'index.ingest.v1'
+  AND i.index_meta_initialized_at IS NULL
+  AND i.index_meta_initialization_status = 'RUNNING'
+  AND i.index_meta_initialization_claim_token = $3::text
+  AND i.index_meta_initialization_claim_expires_at > clock_timestamp()
+  AND j.execution_id = i.execution_id
+  AND j.generation = i.generation
+  AND j.capability_id = i.capability_id
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+  AND o.execution_id = i.execution_id
+  AND o.generation = i.generation
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL
+  AND o.retired_at IS NULL
+RETURNING i.index_meta_initialized_at
+`
+
+type ResolveIndexMetaInitializationParams struct {
+	ExecutionID string `db:"execution_id" json:"execution_id"`
+	Generation  int64  `db:"generation" json:"generation"`
+	ClaimToken  string `db:"claim_token" json:"claim_token"`
+}
+
+func (q *Queries) ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, resolveIndexMetaInitialization, arg.ExecutionID, arg.Generation, arg.ClaimToken)
 	var index_meta_initialized_at pgtype.Timestamptz
 	err := row.Scan(&index_meta_initialized_at)
 	return index_meta_initialized_at, err

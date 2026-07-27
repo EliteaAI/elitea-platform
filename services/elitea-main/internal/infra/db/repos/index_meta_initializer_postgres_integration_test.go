@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -112,7 +113,15 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 	assertPostgresPgvectorMeta(t, ctx, pool, toolkitID, "Docs", admitted.IndexMetaID, admitted.ExecutionID, 1)
 
 	replayAdmissions := newPostgresIndexAdmissionService(t, jobs, "meta-convergence-replay")
-	recovering, err := indexingapp.NewInitializingAdmissionSubmitter(replayAdmissions, initializer, jobs)
+	recovering, err := indexingapp.NewInitializingAdmissionSubmitter(
+		replayAdmissions,
+		newPostgresDurableIndexMetaInitializer(
+			t,
+			jobs,
+			initializer,
+			"recovery",
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,9 +143,405 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 		t.Fatalf("recovery did not open the exact dispatch gate: %v", pending)
 	}
 
+	backgroundRequest := postgresIndexMetaConvergenceRequest(
+		toolkitID,
+		"background-recovery",
+		"BackgroundDocs",
+	)
+	backgroundAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"meta-convergence-background",
+	).Submit(ctx, backgroundRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backgroundInitializer := newPostgresDurableIndexMetaInitializer(
+		t,
+		jobs,
+		initializer,
+		"background-claim",
+	)
+	processed, err := backgroundInitializer.Reconcile(ctx)
+	if err != nil || processed != 1 {
+		t.Fatalf("background recovery processed=%d error=%v", processed, err)
+	}
+	assertPostgresPgvectorMeta(
+		t,
+		ctx,
+		pool,
+		toolkitID,
+		"BackgroundDocs",
+		backgroundAdmission.IndexMetaID,
+		backgroundAdmission.ExecutionID,
+		1,
+	)
+	pending, err = outbox.ListPendingIndexIngestIDs(ctx, 16, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAdmissionID(
+		pending,
+		"meta-convergence-background-outbox",
+	) {
+		t.Fatalf(
+			"background recovery did not open the exact dispatch gate: %v",
+			pending,
+		)
+	}
+
+	corruptRequest := postgresIndexMetaConvergenceRequest(
+		toolkitID,
+		"corrupt-frozen-intent",
+		"CorruptFrozenDocs",
+	)
+	corruptAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"meta-convergence-corrupt",
+	).Submit(ctx, corruptRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.input_bundle_entries AS e
+SET semantic_role = 'corrupt.required.entry'
+FROM elitea_runtime.index_ingest_jobs AS i
+WHERE i.execution_id = $1
+  AND i.generation = $2
+  AND e.input_bundle_id = i.input_bundle_id
+  AND e.entry_id = i.tool_parameters_entry_id`,
+		corruptAdmission.ExecutionID,
+		int64(corruptAdmission.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err = newPostgresDurableIndexMetaInitializer(
+		t,
+		jobs,
+		initializer,
+		"corrupt-intent-claim",
+	).Initialize(ctx, corruptAdmission)
+	if !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
+		t.Fatalf("corrupt frozen intent initialization=%v", err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id
+ AND o.generation = j.generation
+WHERE j.execution_id = $1
+  AND j.state = 'QUARANTINED'
+  AND j.desired_state = 'CANCELLED'
+  AND i.index_meta_initialization_status = 'QUARANTINED'
+  AND i.index_meta_initialization_last_error_code =
+      'INITIALIZATION_INTENT_INVALID'
+  AND o.retired_at IS NOT NULL
+  AND o.retirement_code = 'CANCELLED'
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL`,
+		corruptAdmission.ExecutionID,
+	)
+	var failureEventID, failureEventType string
+	var failureEventBytes, failureEventDigest []byte
+	if err := pool.QueryRow(ctx, `
+SELECT event_id, event_type, event_bytes, event_digest
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1 AND generation = $2`,
+		corruptAdmission.ExecutionID,
+		int64(corruptAdmission.Generation),
+	).Scan(
+		&failureEventID,
+		&failureEventType,
+		&failureEventBytes,
+		&failureEventDigest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if failureEventID !=
+		"index-meta-initialization-quarantine:meta-convergence-corrupt-outbox" ||
+		failureEventType != replayEventRuntimeFailure ||
+		!bytes.Equal(
+			failureEventBytes,
+			indexMetaInitializationFailureEventBytes,
+		) ||
+		!bytes.Equal(
+			failureEventDigest,
+			indexMetaInitializationFailureEventDigest[:],
+		) {
+		t.Fatalf(
+			"unsafe failure replay id=%q type=%q bytes=%s digest=%x",
+			failureEventID,
+			failureEventType,
+			failureEventBytes,
+			failureEventDigest,
+		)
+	}
+	replay, err := NewReplayEventsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := replay.Replay(
+		ctx,
+		corruptRequest.Identity.ProjectionProjectID,
+		corruptAdmission.ExecutionID,
+		0,
+		10,
+	)
+	if err != nil || len(events) != 1 ||
+		events[0].Type != replayEventRuntimeFailure ||
+		!bytes.Equal(
+			events[0].Data,
+			indexMetaInitializationFailureEventBytes,
+		) {
+		t.Fatalf("quarantine replay events=%+v error=%v", events, err)
+	}
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.output_inbox
+WHERE execution_id = $1`, corruptAdmission.ExecutionID)
+	assertPostgresCount(t, ctx, pool, 0, `
+SELECT count(*)
+FROM elitea_runtime.execution_settlements
+WHERE execution_id = $1`, corruptAdmission.ExecutionID)
+	if err := jobs.QuarantineIndexMetaInitialization(
+		ctx,
+		indexingapp.IndexMetaInitializationClaim{
+			ExecutionID: corruptAdmission.ExecutionID,
+			Generation:  corruptAdmission.Generation,
+			ClaimToken:  "corrupt-intent-claim",
+			Attempt:     1,
+		},
+		"INITIALIZATION_INTENT_INVALID",
+	); !errors.Is(err, indexingapp.ErrIndexMetaInitializationMismatch) {
+		t.Fatalf("replayed quarantine error=%v", err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1`, corruptAdmission.ExecutionID)
+
+	collisionRequest := postgresIndexMetaConvergenceRequest(
+		toolkitID,
+		"quarantine-event-collision",
+		"CollisionDocs",
+	)
+	collisionAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"meta-convergence-collision",
+	).Submit(ctx, collisionRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collisionClaim, err := jobs.ClaimExactIndexMetaInitialization(
+		ctx,
+		indexingapp.IndexMetaInitialization{
+			ExecutionID:     collisionAdmission.ExecutionID,
+			Generation:      collisionAdmission.Generation,
+			IndexGeneration: collisionAdmission.IndexGeneration,
+			MetaID:          collisionAdmission.IndexMetaID,
+			CorrelationID:   collisionAdmission.IndexMetaCorrelationID,
+		},
+		"collision-claim",
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO elitea_runtime.execution_replay_events (
+    event_id, execution_id, generation, projection_project_id,
+    event_type, event_bytes, event_digest
+) VALUES ($1, $2, $3, $4, 'execution.node_event', $5, $6)`,
+		"index-meta-initialization-quarantine:"+
+			"meta-convergence-collision-outbox",
+		collisionAdmission.ExecutionID,
+		int64(collisionAdmission.Generation),
+		int32(1),
+		indexMetaInitializationFailureEventBytes,
+		indexMetaInitializationFailureEventDigest[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.QuarantineIndexMetaInitialization(
+		ctx,
+		collisionClaim,
+		"INITIALIZATION_INTENT_INVALID",
+	); err == nil {
+		t.Fatal("quarantine replay collision did not roll back")
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id
+ AND o.generation = j.generation
+WHERE j.execution_id = $1
+  AND j.state = 'PENDING'
+  AND j.desired_state = 'RUNNING'
+  AND i.index_meta_initialization_status = 'RUNNING'
+  AND i.index_meta_initialization_claim_token = 'collision-claim'
+  AND o.retired_at IS NULL
+  AND o.retirement_code IS NULL`,
+		collisionAdmission.ExecutionID,
+	)
+
+	leaseRequest := postgresIndexMetaConvergenceRequest(
+		toolkitID,
+		"lease-race",
+		"LeaseDocs",
+	)
+	leaseAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"meta-convergence-lease",
+	).Submit(ctx, leaseRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type claimResult struct {
+		claims []indexingapp.IndexMetaInitializationClaim
+		err    error
+	}
+	startClaims := make(chan struct{})
+	claimResults := make(chan claimResult, 2)
+	for _, token := range []string{"replica-a", "replica-b"} {
+		token := token
+		go func() {
+			<-startClaims
+			claims, claimErr := jobs.ClaimPendingIndexMetaInitializations(
+				ctx,
+				token,
+				16,
+				time.Minute,
+			)
+			claimResults <- claimResult{claims: claims, err: claimErr}
+		}()
+	}
+	close(startClaims)
+	var winningClaim indexingapp.IndexMetaInitializationClaim
+	totalClaims := 0
+	for range 2 {
+		result := <-claimResults
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		totalClaims += len(result.claims)
+		if len(result.claims) == 1 {
+			winningClaim = result.claims[0]
+		}
+	}
+	if totalClaims != 1 ||
+		winningClaim.ExecutionID != leaseAdmission.ExecutionID {
+		t.Fatalf(
+			"multi-replica claims=%d winning=%+v admission=%+v",
+			totalClaims,
+			winningClaim,
+			leaseAdmission,
+		)
+	}
+	work, err := jobs.LoadIndexMetaInitializationWork(ctx, winningClaim)
+	if err != nil || work.Request.ToolkitID != toolkitID ||
+		string(work.Request.Inputs.ToolParameters) !=
+			string(leaseRequest.Inputs.ToolParameters) {
+		t.Fatalf("frozen work=%+v error=%v", work, err)
+	}
+
+	// Simulate the winning process dying with its lease. A later replica takes
+	// ownership, permanently quarantines the exact pre-authority row, and the
+	// target becomes admissible again without publishing to Redis.
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_initialization_claim_expires_at =
+        clock_timestamp() - interval '1 second'
+WHERE execution_id = $1
+  AND generation = $2`,
+		winningClaim.ExecutionID,
+		int64(winningClaim.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := jobs.ClaimExactIndexMetaInitialization(
+		ctx,
+		indexingapp.IndexMetaInitialization{
+			ExecutionID:     leaseAdmission.ExecutionID,
+			Generation:      leaseAdmission.Generation,
+			IndexGeneration: leaseAdmission.IndexGeneration,
+			MetaID:          leaseAdmission.IndexMetaID,
+			CorrelationID:   leaseAdmission.IndexMetaCorrelationID,
+		},
+		"replica-c",
+		time.Minute,
+	)
+	if err != nil || reclaimed.Attempt != 2 {
+		t.Fatalf("reclaimed=%+v error=%v", reclaimed, err)
+	}
+	if err := jobs.QuarantineIndexMetaInitialization(
+		ctx,
+		reclaimed,
+		"INITIALIZATION_EXTERNAL_CONFLICT",
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = j.execution_id
+ AND o.generation = j.generation
+WHERE j.execution_id = $1
+  AND j.state = 'QUARANTINED'
+  AND j.desired_state = 'CANCELLED'
+  AND i.index_meta_initialization_status = 'QUARANTINED'
+  AND i.index_meta_initialized_at IS NULL
+  AND o.retired_at IS NOT NULL
+  AND o.retirement_code = 'CANCELLED'
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL`,
+		leaseAdmission.ExecutionID,
+	)
+	replacement := postgresIndexMetaConvergenceRequest(
+		toolkitID,
+		"lease-replacement",
+		"LeaseDocs",
+	)
+	replacementAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"meta-convergence-lease-replacement",
+	).Submit(ctx, replacement)
+	if err != nil || !replacementAdmission.Created {
+		t.Fatalf(
+			"quarantined target replacement=%+v error=%v",
+			replacementAdmission,
+			err,
+		)
+	}
+
 	conflictRequest := postgresIndexMetaConvergenceRequest(toolkitID, "conflict", "Docs")
 	conflictingAdmissions := newPostgresIndexAdmissionService(t, jobs, "meta-convergence-conflict")
-	conflicting, err := indexingapp.NewInitializingAdmissionSubmitter(conflictingAdmissions, initializer, jobs)
+	conflicting, err := indexingapp.NewInitializingAdmissionSubmitter(
+		conflictingAdmissions,
+		newPostgresDurableIndexMetaInitializer(
+			t,
+			jobs,
+			initializer,
+			"conflict",
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +580,15 @@ WHERE execution_id = $1 AND generation = $2`,
 		t.Fatal(err)
 	}
 	cancelReplay := newPostgresIndexAdmissionService(t, jobs, "meta-convergence-cancel-replay")
-	cancelSubmitter, err := indexingapp.NewInitializingAdmissionSubmitter(cancelReplay, initializer, jobs)
+	cancelSubmitter, err := indexingapp.NewInitializingAdmissionSubmitter(
+		cancelReplay,
+		newPostgresDurableIndexMetaInitializer(
+			t,
+			jobs,
+			initializer,
+			"cancel",
+		),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +607,31 @@ WHERE execution_id = $1
 	if containsAdmissionID(pending, "meta-convergence-cancel-outbox") {
 		t.Fatalf("cancelled metadata start became dispatchable: %v", pending)
 	}
+}
+
+func newPostgresDurableIndexMetaInitializer(
+	t *testing.T,
+	jobs *IndexIngestJobsRepository,
+	materializer indexingapp.IndexMetaMaterializer,
+	claimID string,
+) *indexingapp.DurableIndexMetaInitializer {
+	t.Helper()
+	initializer, err := indexingapp.NewDurableIndexMetaInitializer(
+		jobs,
+		materializer,
+		func() (string, error) { return claimID, nil },
+		indexingapp.IndexMetaInitializationReconcilerConfig{
+			PollInterval:  time.Millisecond,
+			ClaimLease:    time.Minute,
+			BatchSize:     4,
+			MaxConcurrent: 2,
+			ReportFailure: func(error) {},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return initializer
 }
 
 func postgresIntegrationPoolURL(t *testing.T, original, database string) string {

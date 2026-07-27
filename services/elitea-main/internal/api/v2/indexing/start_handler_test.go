@@ -166,10 +166,12 @@ func TestStartBoundsBodyAndMapsUseCaseErrorsWithoutLeakingCauses(t *testing.T) {
 		status     int
 		body       string
 		retryAfter string
+		noStore    bool
 	}{
 		{name: "toolkit invisible", err: indexingapp.ErrToolkitNotVisible, status: http.StatusNotFound, body: `{"error":"Toolkit not found"}`},
 		{name: "invalid admission", err: indexingapp.ErrInvalidIndexStart, status: http.StatusBadRequest, body: `{"error":"Invalid index_data request"}`},
-		{name: "same index active", err: indexingapp.ErrCurrentIndexMetaConflict, status: http.StatusConflict, body: `{"error":"Indexing is already in progress for this index"}`},
+		{name: "same index active", err: indexingapp.NewActiveIndexConflictError("task-active"), status: http.StatusConflict, body: `{"error":"Indexing is already in progress for this index","task_id":"task-active"}`, noStore: true},
+		{name: "PgVector conflict is not an active-task disclosure", err: indexingapp.ErrCurrentIndexMetaConflict, status: http.StatusInternalServerError, body: `{"error":"Failed to start index_data"}`},
 		{name: "capacity", err: &executionapp.AdmissionCapacityError{CapabilityID: "index.ingest.v1", MaxOutstanding: 3}, status: http.StatusServiceUnavailable, body: `{"error":"temporarily_unavailable","message":"The service is busy processing other requests. Please try again in a few seconds.","retry_after":1}`, retryAfter: "1"},
 		{name: "internal", err: errors.New("database password is secret-value"), status: http.StatusInternalServerError, body: `{"error":"Failed to start index_data"}`},
 		{name: "empty outcome", outcome: indexingapp.StartOutcome{}, status: http.StatusInternalServerError, body: `{"error":"No response from toolkit tool test"}`},
@@ -188,6 +190,9 @@ func TestStartBoundsBodyAndMapsUseCaseErrorsWithoutLeakingCauses(t *testing.T) {
 			}
 			if response.Header().Get("Retry-After") != test.retryAfter {
 				t.Fatalf("Retry-After=%q want=%q", response.Header().Get("Retry-After"), test.retryAfter)
+			}
+			if got := response.Header().Get("Cache-Control"); (got == "no-store") != test.noStore {
+				t.Fatalf("Cache-Control=%q no_store=%v", got, test.noStore)
 			}
 			if strings.Contains(response.Body.String(), "secret-value") {
 				t.Fatal("internal cause leaked to caller")

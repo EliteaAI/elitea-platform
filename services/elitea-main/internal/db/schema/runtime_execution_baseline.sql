@@ -123,6 +123,14 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     index_meta_id text,
     index_meta_correlation_id text,
     index_meta_initialized_at timestamptz,
+    index_meta_initialization_status text NOT NULL,
+    index_meta_initialization_claim_token text,
+    index_meta_initialization_claim_expires_at timestamptz,
+    index_meta_initialization_attempt_count integer NOT NULL,
+    index_meta_initialization_next_attempt_at timestamptz,
+    index_meta_initialization_last_error_code text,
+    index_meta_initialization_resolved_at timestamptz,
+    index_meta_initialization_failed_at timestamptz,
     index_meta_terminal_state text,
     index_meta_terminal_occurred_at timestamptz,
     index_meta_terminal_status text,
@@ -157,6 +165,20 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     FOREIGN KEY (execution_id, generation, capability_id, input_bundle_id)
         REFERENCES elitea_runtime.execution_jobs
                    (execution_id, generation, capability_id, input_bundle_id)
+);
+
+CREATE TABLE elitea_runtime.execution_replay_events (
+    cursor bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    event_id text NOT NULL UNIQUE,
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    projection_project_id integer NOT NULL REFERENCES centry.project(id),
+    event_type text NOT NULL,
+    event_bytes bytea NOT NULL,
+    event_digest bytea NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
 );
 
 CREATE TABLE elitea_runtime.index_generation_counters (

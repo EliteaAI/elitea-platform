@@ -249,13 +249,22 @@ func validTaskID(value string) bool {
 
 func (h *StartHandler) writeStartError(w http.ResponseWriter, err error) {
 	var capacity *executionapp.AdmissionCapacityError
+	var active *indexingapp.ActiveIndexConflictError
 	switch {
 	case errors.Is(err, indexingapp.ErrToolkitNotVisible):
 		writeError(w, http.StatusNotFound, "Toolkit not found")
 	case errors.Is(err, indexingapp.ErrInvalidIndexStart):
 		writeError(w, http.StatusBadRequest, "Invalid index_data request")
-	case errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict):
-		writeError(w, http.StatusConflict, "Indexing is already in progress for this index")
+	case errors.As(err, &active):
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		writeJSON(w, http.StatusConflict, struct {
+			Error  string `json:"error"`
+			TaskID string `json:"task_id"`
+		}{
+			Error:  "Indexing is already in progress for this index",
+			TaskID: active.TaskID,
+		})
 	case errors.As(err, &capacity):
 		retryAfter := boundedRetrySeconds(capacity.RetryAfter())
 		w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))

@@ -64,21 +64,24 @@ func TestActiveIndexTargetGuardUsesDurableNonterminalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(queries)
-	start := strings.Index(sql, "-- name: HasActiveIndexIngestTarget :one")
+	start := strings.Index(sql, "-- name: ListActiveIndexIngestTarget :many")
 	if start < 0 {
-		t.Fatal("HasActiveIndexIngestTarget query is missing")
+		t.Fatal("ListActiveIndexIngestTarget query is missing")
 	}
 	end := strings.Index(sql[start:], "-- name: CountActiveRuntimeExecutionsUpTo")
 	if end < 0 {
-		t.Fatal("HasActiveIndexIngestTarget query boundary is missing")
+		t.Fatal("ListActiveIndexIngestTarget query boundary is missing")
 	}
 	guard := sql[start : start+end]
 	for _, fragment := range []string{
+		"j.tenant_id = sqlc.arg(tenant_id)::text",
 		"j.resource_project_id = sqlc.arg(resource_project_id)::integer",
+		"j.projection_project_id = sqlc.arg(projection_project_id)::integer",
+		"i.capability_id = j.capability_id",
 		"i.toolkit_id = sqlc.arg(toolkit_id)::integer",
 		"i.index_name = sqlc.arg(index_name)::text",
 		"j.state IN ('PENDING', 'DISPATCHED', 'CLAIMED', 'RUNNING', 'SETTLING')",
-		"LIMIT 1",
+		"LIMIT 2",
 	} {
 		if !strings.Contains(guard, fragment) {
 			t.Fatalf("active index target guard is missing %q", fragment)

@@ -276,6 +276,11 @@ func TestPostgresIndexIngestSameTargetAdmissionExclusion(t *testing.T) {
 	conflict := postgresIndexSubmitRequest("same-target-conflict", "shared-index")
 	if _, err := newPostgresIndexAdmissionService(t, jobs, "same-target-conflict").Submit(ctx, conflict); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
 		t.Fatalf("different key admitted the active target: %v", err)
+	} else {
+		var active *indexingapp.ActiveIndexConflictError
+		if !errors.As(err, &active) || active.TaskID != first.ExecutionID {
+			t.Fatalf("active conflict=%v task=%+v want=%q", err, active, first.ExecutionID)
+		}
 	}
 	assertPostgresCount(t, ctx, pool, 1, `
 SELECT count(*)
@@ -304,6 +309,93 @@ SELECT count(*)
 FROM elitea_runtime.index_ingest_jobs
 WHERE toolkit_id = 19
   AND index_name = 'shared-index'`)
+}
+
+func TestPostgresConcurrentSameTargetReturnsExactWinner(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    16,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	type result struct {
+		outcome indexingapp.AdmissionOutcome
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	firstService := newPostgresIndexAdmissionService(t, jobs, "concurrent-a")
+	secondService := newPostgresIndexAdmissionService(t, jobs, "concurrent-b")
+	for _, attempt := range []struct {
+		service *indexingapp.AdmissionService
+		request indexingapp.SubmitRequest
+	}{
+		{
+			service: firstService,
+			request: postgresIndexSubmitRequest(
+				"concurrent-a",
+				"concurrent-index",
+			),
+		},
+		{
+			service: secondService,
+			request: postgresIndexSubmitRequest(
+				"concurrent-b",
+				"concurrent-index",
+			),
+		},
+	} {
+		attempt := attempt
+		go func() {
+			<-start
+			outcome, submitErr := attempt.service.Submit(ctx, attempt.request)
+			results <- result{outcome: outcome, err: submitErr}
+		}()
+	}
+	close(start)
+
+	var admitted indexingapp.AdmissionOutcome
+	var conflict *indexingapp.ActiveIndexConflictError
+	for range 2 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			if !result.outcome.Created || admitted.ExecutionID != "" {
+				t.Fatalf("unexpected admitted result=%+v prior=%+v", result, admitted)
+			}
+			admitted = result.outcome
+		case errors.As(result.err, &conflict):
+		default:
+			t.Fatalf("unexpected concurrent result=%+v", result)
+		}
+	}
+	if admitted.ExecutionID == "" || conflict == nil ||
+		conflict.TaskID != admitted.ExecutionID {
+		t.Fatalf("admitted=%+v conflict=%+v", admitted, conflict)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.index_ingest_jobs AS i
+  ON i.execution_id = j.execution_id
+ AND i.generation = j.generation
+WHERE j.resource_project_id = 1
+  AND i.toolkit_id = 19
+  AND i.index_name = 'concurrent-index'
+  AND j.state = 'PENDING'`)
 }
 
 func TestPostgresIndexMetaInitializationRejectsCancelledAdmission(t *testing.T) {

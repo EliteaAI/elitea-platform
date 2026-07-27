@@ -2,9 +2,11 @@ package repos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +26,15 @@ type IndexIngestJobsRepository struct {
 	pool   *pgxpool.Pool
 	policy IndexIngestDispatchPolicy
 }
+
+var (
+	indexMetaInitializationFailureEventBytes = []byte(
+		`{"code":"INTERNAL","safe_message":"The runtime operation failed.","retryable":false}`,
+	)
+	indexMetaInitializationFailureEventDigest = runtimedomain.SHA256(
+		indexMetaInitializationFailureEventBytes,
+	)
+)
 
 func NewIndexIngestJobsRepository(pool *pgxpool.Pool, policy IndexIngestDispatchPolicy) (*IndexIngestJobsRepository, error) {
 	if pool == nil {
@@ -120,16 +131,45 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		return indexingapp.AdmissionOutcome{}, fmt.Errorf("reload index idempotency binding: %w", err)
 	}
 
-	targetActive, err := txQueries.HasActiveIndexIngestTarget(ctx, sqlcgen.HasActiveIndexIngestTargetParams{
+	// Allocation locks the target-scoped counter until commit. Competing starts
+	// therefore cannot both observe an empty active set under READ COMMITTED.
+	// A same-target rejection rolls back the allocation with the transaction.
+	indexGeneration, err := txQueries.AllocateIndexGeneration(ctx, sqlcgen.AllocateIndexGenerationParams{
 		ResourceProjectID: int32(resourceProject),
 		ToolkitID:         admission.Binding.ToolkitID,
 		IndexName:         admission.Binding.IndexName,
 	})
-	if err != nil {
-		return indexingapp.AdmissionOutcome{}, fmt.Errorf("check active index target: %w", err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return indexingapp.AdmissionOutcome{}, indexingapp.ErrIndexGenerationExhausted
 	}
-	if targetActive {
-		return indexingapp.AdmissionOutcome{}, indexingapp.ErrCurrentIndexMetaConflict
+	if err != nil {
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("allocate index generation: %w", err)
+	}
+	if indexGeneration <= 0 {
+		return indexingapp.AdmissionOutcome{}, errors.New("database returned invalid index generation")
+	}
+
+	activeTargets, err := txQueries.ListActiveIndexIngestTarget(
+		ctx,
+		sqlcgen.ListActiveIndexIngestTargetParams{
+			TenantID:            admission.Record.Job.TenantID,
+			ResourceProjectID:   int32(resourceProject),
+			ProjectionProjectID: int32(projectionProject),
+			ToolkitID:           admission.Binding.ToolkitID,
+			IndexName:           admission.Binding.IndexName,
+		},
+	)
+	if err != nil {
+		return indexingapp.AdmissionOutcome{}, fmt.Errorf("load active index target: %w", err)
+	}
+	switch len(activeTargets) {
+	case 0:
+	case 1:
+		return indexingapp.AdmissionOutcome{},
+			indexingapp.NewActiveIndexConflictError(activeTargets[0])
+	default:
+		return indexingapp.AdmissionOutcome{},
+			indexingapp.ErrIndexMetaInitializationAmbiguous
 	}
 
 	active, err := txQueries.CountActiveRuntimeExecutionsUpTo(ctx, sqlcgen.CountActiveRuntimeExecutionsUpToParams{
@@ -148,21 +188,6 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 			CapabilityID:   executiondomain.IndexIngestCapability,
 			MaxOutstanding: r.policy.MaxOutstanding,
 		}
-	}
-
-	indexGeneration, err := txQueries.AllocateIndexGeneration(ctx, sqlcgen.AllocateIndexGenerationParams{
-		ResourceProjectID: int32(resourceProject),
-		ToolkitID:         admission.Binding.ToolkitID,
-		IndexName:         admission.Binding.IndexName,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return indexingapp.AdmissionOutcome{}, indexingapp.ErrIndexGenerationExhausted
-	}
-	if err != nil {
-		return indexingapp.AdmissionOutcome{}, fmt.Errorf("allocate index generation: %w", err)
-	}
-	if indexGeneration <= 0 {
-		return indexingapp.AdmissionOutcome{}, errors.New("database returned invalid index generation")
 	}
 
 	timingRow, err := txQueries.LoadRuntimeAdmissionTiming(ctx, r.policy.DeadlineTTL.Milliseconds())
@@ -214,23 +239,24 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		return indexingapp.AdmissionOutcome{}, errors.New("index execution job insert changed identity")
 	}
 	if err := txQueries.InsertIndexIngestJob(ctx, sqlcgen.InsertIndexIngestJobParams{
-		ExecutionID:                 admission.Record.Job.ID,
-		Generation:                  int64(admission.Record.Job.Generation),
-		IndexGeneration:             indexGeneration,
-		InputBundleID:               admission.Record.InputBundle.ID,
-		ToolkitConfigurationEntryID: admission.Binding.ToolkitConfigurationEntryID,
-		ToolParametersEntryID:       admission.Binding.ToolParametersEntryID,
-		LlmModelEntryID:             optionalString(admission.Binding.LLMModelEntryID),
-		LlmConfigurationEntryID:     optionalString(admission.Binding.LLMConfigurationEntryID),
-		McpTokensEntryID:            optionalString(admission.Binding.MCPTokensEntryID),
-		ClientStreamID:              optionalString(admission.Binding.ClientStreamID),
-		ClientMessageID:             optionalString(admission.Binding.ClientMessageID),
-		SioEvent:                    optionalString(admission.Binding.SIOEvent),
-		IndexMetaID:                 admission.Binding.IndexMetaID,
-		IndexMetaCorrelationID:      admission.Binding.IndexMetaCorrelationID,
-		ToolkitID:                   admission.Binding.ToolkitID,
-		IndexName:                   admission.Binding.IndexName,
-		Initiator:                   string(admission.Binding.Initiator),
+		ExecutionID:                          admission.Record.Job.ID,
+		Generation:                           int64(admission.Record.Job.Generation),
+		IndexGeneration:                      indexGeneration,
+		InputBundleID:                        admission.Record.InputBundle.ID,
+		ToolkitConfigurationEntryID:          admission.Binding.ToolkitConfigurationEntryID,
+		ToolParametersEntryID:                admission.Binding.ToolParametersEntryID,
+		LlmModelEntryID:                      optionalString(admission.Binding.LLMModelEntryID),
+		LlmConfigurationEntryID:              optionalString(admission.Binding.LLMConfigurationEntryID),
+		McpTokensEntryID:                     optionalString(admission.Binding.MCPTokensEntryID),
+		ClientStreamID:                       optionalString(admission.Binding.ClientStreamID),
+		ClientMessageID:                      optionalString(admission.Binding.ClientMessageID),
+		SioEvent:                             optionalString(admission.Binding.SIOEvent),
+		IndexMetaID:                          admission.Binding.IndexMetaID,
+		IndexMetaCorrelationID:               admission.Binding.IndexMetaCorrelationID,
+		IndexMetaInitializationNextAttemptAt: timestamp(timing.AdmittedAt),
+		ToolkitID:                            admission.Binding.ToolkitID,
+		IndexName:                            admission.Binding.IndexName,
+		Initiator:                            string(admission.Binding.Initiator),
 	}); err != nil {
 		return indexingapp.AdmissionOutcome{}, fmt.Errorf("insert index capability job: %w", err)
 	}
@@ -297,6 +323,315 @@ func (r *IndexIngestJobsRepository) MarkIndexMetaInitialized(
 		return time.Time{}, errors.New("database returned invalid index metadata initialization time")
 	}
 	return initializedAt.Time.UTC(), nil
+}
+
+func (r *IndexIngestJobsRepository) ClaimExactIndexMetaInitialization(
+	ctx context.Context,
+	initialization indexingapp.IndexMetaInitialization,
+	claimToken string,
+	lease time.Duration,
+) (indexingapp.IndexMetaInitializationClaim, error) {
+	if ctx == nil || initialization.Validate() != nil ||
+		initialization.Generation > math.MaxInt64 ||
+		initialization.IndexGeneration > math.MaxInt64 ||
+		!validIndexMetaInitializationClaimToken(claimToken) ||
+		lease <= 0 || lease > 10*time.Minute {
+		return indexingapp.IndexMetaInitializationClaim{},
+			indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	row, err := sqlcgen.New(r.pool).ClaimExactIndexMetaInitialization(
+		ctx,
+		sqlcgen.ClaimExactIndexMetaInitializationParams{
+			ClaimToken:             claimToken,
+			ClaimLeaseMicroseconds: lease.Microseconds(),
+			ExecutionID:            initialization.ExecutionID,
+			Generation:             int64(initialization.Generation),
+			IndexGeneration:        int64(initialization.IndexGeneration),
+			IndexMetaID:            initialization.MetaID,
+			IndexMetaCorrelationID: initialization.CorrelationID,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return indexingapp.IndexMetaInitializationClaim{},
+			indexingapp.ErrIndexMetaInitializationClaimUnavailable
+	}
+	if err != nil {
+		return indexingapp.IndexMetaInitializationClaim{},
+			fmt.Errorf("claim exact index metadata initialization: %w", err)
+	}
+	return indexMetaInitializationClaim(
+		row.ExecutionID,
+		row.Generation,
+		row.IndexMetaInitializationAttemptCount,
+		claimToken,
+	)
+}
+
+func (r *IndexIngestJobsRepository) ClaimPendingIndexMetaInitializations(
+	ctx context.Context,
+	claimToken string,
+	limit int,
+	lease time.Duration,
+) ([]indexingapp.IndexMetaInitializationClaim, error) {
+	if ctx == nil || !validIndexMetaInitializationClaimToken(claimToken) ||
+		limit <= 0 || limit > executionapp.MaxOutboxPublisherBatchSize ||
+		lease <= 0 || lease > 10*time.Minute {
+		return nil, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	rows, err := sqlcgen.New(r.pool).ClaimPendingIndexMetaInitializations(
+		ctx,
+		sqlcgen.ClaimPendingIndexMetaInitializationsParams{
+			ClaimLimit:             int32(limit),
+			ClaimToken:             claimToken,
+			ClaimLeaseMicroseconds: lease.Microseconds(),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"claim pending index metadata initializations: %w",
+			err,
+		)
+	}
+	claims := make([]indexingapp.IndexMetaInitializationClaim, 0, len(rows))
+	for _, row := range rows {
+		claim, err := indexMetaInitializationClaim(
+			row.ExecutionID,
+			row.Generation,
+			row.IndexMetaInitializationAttemptCount,
+			claimToken,
+		)
+		if err != nil {
+			return nil, err
+		}
+		claims = append(claims, claim)
+	}
+	return claims, nil
+}
+
+func (r *IndexIngestJobsRepository) LoadIndexMetaInitializationWork(
+	ctx context.Context,
+	claim indexingapp.IndexMetaInitializationClaim,
+) (indexingapp.IndexMetaInitializationWork, error) {
+	if ctx == nil || claim.Validate() != nil || claim.Generation > math.MaxInt64 {
+		return indexingapp.IndexMetaInitializationWork{},
+			indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	row, err := sqlcgen.New(r.pool).LoadIndexMetaInitializationWork(
+		ctx,
+		sqlcgen.LoadIndexMetaInitializationWorkParams{
+			ExecutionID: claim.ExecutionID,
+			Generation:  int64(claim.Generation),
+			ClaimToken:  claim.ClaimToken,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return indexingapp.IndexMetaInitializationWork{},
+			indexingapp.ErrIndexMetaInitializationClaimUnavailable
+	}
+	if err != nil {
+		return indexingapp.IndexMetaInitializationWork{},
+			fmt.Errorf("load index metadata initialization work: %w", err)
+	}
+	if row.IndexGeneration <= 0 || row.IndexMetaID == nil ||
+		row.IndexMetaCorrelationID == nil || !row.AdmittedAt.Valid ||
+		!row.Deadline.Valid || row.AdmittedAt.Time.IsZero() ||
+		!row.Deadline.Time.After(row.AdmittedAt.Time) {
+		return indexingapp.IndexMetaInitializationWork{},
+			indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	resourceProject := strconv.FormatInt(int64(row.ResourceProjectID), 10)
+	projectionProject := strconv.FormatInt(int64(row.ProjectionProjectID), 10)
+	work := indexingapp.IndexMetaInitializationWork{
+		Claim: claim,
+		Request: indexingapp.SubmitRequest{
+			Identity: executionapp.AdmissionIdentity{
+				TenantID:            row.TenantID,
+				ResourceProjectID:   resourceProject,
+				ProjectionProjectID: projectionProject,
+				ActorID:             row.ActorID,
+			},
+			CorrelationID:   *row.IndexMetaCorrelationID,
+			ClientStreamID:  valueOrEmpty(row.ClientStreamID),
+			ClientMessageID: valueOrEmpty(row.ClientMessageID),
+			SIOEvent:        valueOrEmpty(row.SioEvent),
+			ToolkitID:       row.ToolkitID,
+			Initiator:       executiondomain.IndexIngestInitiator(row.Initiator),
+			Inputs: indexingapp.AuthoritativeInputs{
+				ToolkitConfiguration: append(
+					json.RawMessage(nil),
+					row.ToolkitConfiguration...,
+				),
+				ToolParameters: append(
+					json.RawMessage(nil),
+					row.ToolParameters...,
+				),
+			},
+		},
+		Outcome: indexingapp.AdmissionOutcome{
+			AdmissionOutcome: executionapp.AdmissionOutcome{
+				ExecutionID: claim.ExecutionID,
+				CommandID:   row.CommandID,
+				Created:     false,
+				AdmittedAt:  row.AdmittedAt.Time.UTC(),
+				Deadline:    row.Deadline.Time.UTC(),
+			},
+			Generation:             claim.Generation,
+			IndexGeneration:        uint64(row.IndexGeneration),
+			IndexMetaID:            *row.IndexMetaID,
+			IndexMetaCorrelationID: *row.IndexMetaCorrelationID,
+		},
+	}
+	if err := work.Validate(); err != nil {
+		return indexingapp.IndexMetaInitializationWork{}, err
+	}
+	return work, nil
+}
+
+func (r *IndexIngestJobsRepository) ResolveIndexMetaInitialization(
+	ctx context.Context,
+	claim indexingapp.IndexMetaInitializationClaim,
+) (time.Time, error) {
+	if ctx == nil || claim.Validate() != nil || claim.Generation > math.MaxInt64 {
+		return time.Time{}, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	initializedAt, err := sqlcgen.New(r.pool).ResolveIndexMetaInitialization(
+		ctx,
+		sqlcgen.ResolveIndexMetaInitializationParams{
+			ExecutionID: claim.ExecutionID,
+			Generation:  int64(claim.Generation),
+			ClaimToken:  claim.ClaimToken,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf(
+			"resolve index metadata initialization: %w",
+			err,
+		)
+	}
+	if !initializedAt.Valid || initializedAt.Time.IsZero() {
+		return time.Time{}, errors.New(
+			"database returned invalid index metadata initialization time",
+		)
+	}
+	return initializedAt.Time.UTC(), nil
+}
+
+func (r *IndexIngestJobsRepository) ReleaseIndexMetaInitialization(
+	ctx context.Context,
+	claim indexingapp.IndexMetaInitializationClaim,
+	errorCode string,
+) error {
+	if ctx == nil || claim.Validate() != nil ||
+		claim.Generation > math.MaxInt64 ||
+		!validIndexMetaInitializationErrorCode(errorCode) {
+		return indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	affected, err := sqlcgen.New(r.pool).ReleaseIndexMetaInitialization(
+		ctx,
+		sqlcgen.ReleaseIndexMetaInitializationParams{
+			LastErrorCode: errorCode,
+			ExecutionID:   claim.ExecutionID,
+			Generation:    int64(claim.Generation),
+			ClaimToken:    claim.ClaimToken,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("release index metadata initialization: %w", err)
+	}
+	if affected != 1 {
+		return indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	return nil
+}
+
+func (r *IndexIngestJobsRepository) QuarantineIndexMetaInitialization(
+	ctx context.Context,
+	claim indexingapp.IndexMetaInitializationClaim,
+	errorCode string,
+) error {
+	if ctx == nil || claim.Validate() != nil ||
+		claim.Generation > math.MaxInt64 ||
+		!validIndexMetaInitializationErrorCode(errorCode) {
+		return indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	executionID, err := sqlcgen.New(r.pool).QuarantineIndexMetaInitialization(
+		ctx,
+		sqlcgen.QuarantineIndexMetaInitializationParams{
+			LastErrorCode: errorCode,
+			ExecutionID:   claim.ExecutionID,
+			Generation:    int64(claim.Generation),
+			ClaimToken:    claim.ClaimToken,
+			FailureEventBytes: append(
+				[]byte(nil),
+				indexMetaInitializationFailureEventBytes...,
+			),
+			FailureEventDigest: append(
+				[]byte(nil),
+				indexMetaInitializationFailureEventDigest[:]...,
+			),
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	if err != nil {
+		return fmt.Errorf("quarantine index metadata initialization: %w", err)
+	}
+	if executionID != claim.ExecutionID {
+		return indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	return nil
+}
+
+func indexMetaInitializationClaim(
+	executionID string,
+	generation int64,
+	attempt int32,
+	token string,
+) (indexingapp.IndexMetaInitializationClaim, error) {
+	if generation <= 0 || attempt <= 0 {
+		return indexingapp.IndexMetaInitializationClaim{},
+			indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	claim := indexingapp.IndexMetaInitializationClaim{
+		ExecutionID: executionID,
+		Generation:  uint64(generation),
+		ClaimToken:  token,
+		Attempt:     uint32(attempt),
+	}
+	if err := claim.Validate(); err != nil {
+		return indexingapp.IndexMetaInitializationClaim{}, err
+	}
+	return claim, nil
+}
+
+func validIndexMetaInitializationClaimToken(value string) bool {
+	return value != "" && len(value) <= 256 &&
+		!strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validIndexMetaInitializationErrorCode(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, key string) (indexingapp.AdmissionOutcome, runtimedomain.Digest, error) {

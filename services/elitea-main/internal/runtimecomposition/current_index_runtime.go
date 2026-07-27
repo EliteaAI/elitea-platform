@@ -1,8 +1,10 @@
 package runtimecomposition
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -26,8 +28,28 @@ const (
 type currentIndexRuntime struct {
 	start        *indexingapp.StartService
 	cancel       *indexingapp.CurrentIndexCancellationService
+	initializer  *indexingapp.DurableIndexMetaInitializer
 	materializer *storage.CurrentConfigurationsMaterializer
 	indexMeta    *indexmetaapp.Service
+}
+
+// durableIndexMetaFrozenToolkitClaimer preserves temporary materialization
+// failures for retry while making rejected immutable content a permanent
+// initialization failure. Without this boundary, an invalid frozen intent
+// would retain the active target through an endless retry loop.
+type durableIndexMetaFrozenToolkitClaimer struct {
+	delegate indexingapp.FrozenToolkitConfigurationClaimer
+}
+
+func (c durableIndexMetaFrozenToolkitClaimer) ClaimFrozenToolkitConfiguration(
+	ctx context.Context,
+	claim indexingapp.FrozenToolkitConfigurationClaim,
+) (json.RawMessage, error) {
+	content, err := c.delegate.ClaimFrozenToolkitConfiguration(ctx, claim)
+	if errors.Is(err, storage.ErrContentRejected) {
+		return nil, indexingapp.ErrCurrentIndexMetaInitializationInvalid
+	}
+	return content, err
 }
 
 // newCurrentIndexRuntime composes the current index_data preparation path from
@@ -41,11 +63,12 @@ func newCurrentIndexRuntime(
 	config Config,
 	policy repos.IndexIngestDispatchPolicy,
 	indexMetaWriter indexingapp.CurrentIndexMetaWriter,
+	reportInitializationFailure func(error),
 ) (*currentIndexRuntime, error) {
 	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
 		configurations.unsecreter == nil || configurations.expander == nil || configurations.models == nil || configurations.vaultLoader == nil ||
 		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 ||
-		indexMetaWriter == nil {
+		indexMetaWriter == nil || reportInitializationFailure == nil {
 		return nil, errors.New("current index runtime dependencies are required")
 	}
 	vaults := configurations.vaultLoader
@@ -136,16 +159,36 @@ func newCurrentIndexRuntime(
 		return nil, err
 	}
 	indexMetaInitializer, err := indexingapp.NewCurrentIndexMetaInitializer(
-		toolkitClaimer,
+		durableIndexMetaFrozenToolkitClaimer{delegate: toolkitClaimer},
 		indexMetaWriter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	initializationConcurrency := min(int(pool.Config().MaxConns), 4)
+	if initializationConcurrency <= 0 {
+		return nil, errors.New(
+			"current index metadata initialization pool capacity is invalid",
+		)
+	}
+	durableInitializer, err := indexingapp.NewDurableIndexMetaInitializer(
+		jobs,
+		indexMetaInitializer,
+		currentRuntimeID,
+		indexingapp.IndexMetaInitializationReconcilerConfig{
+			PollInterval:  500 * time.Millisecond,
+			ClaimLease:    2 * time.Minute,
+			BatchSize:     2 * initializationConcurrency,
+			MaxConcurrent: initializationConcurrency,
+			ReportFailure: reportInitializationFailure,
+		},
 	)
 	if err != nil {
 		return nil, err
 	}
 	initializedAdmissions, err := indexingapp.NewInitializingAdmissionSubmitter(
 		admissions,
-		indexMetaInitializer,
-		jobs,
+		durableInitializer,
 	)
 	if err != nil {
 		return nil, err
@@ -174,6 +217,7 @@ func newCurrentIndexRuntime(
 	return &currentIndexRuntime{
 		start:        start,
 		cancel:       cancel,
+		initializer:  durableInitializer,
 		materializer: materializer,
 		indexMeta:    indexMeta,
 	}, nil

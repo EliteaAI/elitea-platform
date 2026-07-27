@@ -269,6 +269,18 @@ type EliteaRuntimeExecutionJob struct {
 	TerminalErrorCode       *string            `db:"terminal_error_code" json:"terminal_error_code"`
 }
 
+type EliteaRuntimeExecutionReplayEvent struct {
+	Cursor              int64              `db:"cursor" json:"cursor"`
+	EventID             string             `db:"event_id" json:"event_id"`
+	ExecutionID         string             `db:"execution_id" json:"execution_id"`
+	Generation          int64              `db:"generation" json:"generation"`
+	ProjectionProjectID int32              `db:"projection_project_id" json:"projection_project_id"`
+	EventType           string             `db:"event_type" json:"event_type"`
+	EventBytes          []byte             `db:"event_bytes" json:"event_bytes"`
+	EventDigest         []byte             `db:"event_digest" json:"event_digest"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
 type EliteaRuntimeIndexGenerationCounter struct {
 	ResourceProjectID int32              `db:"resource_project_id" json:"resource_project_id"`
 	ToolkitID         int32              `db:"toolkit_id" json:"toolkit_id"`
@@ -278,52 +290,60 @@ type EliteaRuntimeIndexGenerationCounter struct {
 }
 
 type EliteaRuntimeIndexIngestJob struct {
-	ExecutionID                        string             `db:"execution_id" json:"execution_id"`
-	Generation                         int64              `db:"generation" json:"generation"`
-	IndexGeneration                    int64              `db:"index_generation" json:"index_generation"`
-	CapabilityID                       string             `db:"capability_id" json:"capability_id"`
-	InputBundleID                      string             `db:"input_bundle_id" json:"input_bundle_id"`
-	ToolkitConfigurationEntryID        string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
-	ToolParametersEntryID              string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
-	LlmModelEntryID                    *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
-	LlmConfigurationEntryID            *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
-	McpTokensEntryID                   *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
-	ClientStreamID                     *string            `db:"client_stream_id" json:"client_stream_id"`
-	ClientMessageID                    *string            `db:"client_message_id" json:"client_message_id"`
-	SioEvent                           *string            `db:"sio_event" json:"sio_event"`
-	IndexMetaID                        *string            `db:"index_meta_id" json:"index_meta_id"`
-	IndexMetaCorrelationID             *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
-	IndexMetaInitializedAt             pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`
-	IndexMetaTerminalState             *string            `db:"index_meta_terminal_state" json:"index_meta_terminal_state"`
-	IndexMetaTerminalOccurredAt        pgtype.Timestamptz `db:"index_meta_terminal_occurred_at" json:"index_meta_terminal_occurred_at"`
-	IndexMetaTerminalStatus            *string            `db:"index_meta_terminal_status" json:"index_meta_terminal_status"`
-	IndexMetaTerminalClaimToken        *string            `db:"index_meta_terminal_claim_token" json:"index_meta_terminal_claim_token"`
-	IndexMetaTerminalClaimExpiresAt    pgtype.Timestamptz `db:"index_meta_terminal_claim_expires_at" json:"index_meta_terminal_claim_expires_at"`
-	IndexMetaTerminalAttemptCount      *int32             `db:"index_meta_terminal_attempt_count" json:"index_meta_terminal_attempt_count"`
-	IndexMetaTerminalNextAttemptAt     pgtype.Timestamptz `db:"index_meta_terminal_next_attempt_at" json:"index_meta_terminal_next_attempt_at"`
-	IndexMetaTerminalLastErrorCode     *string            `db:"index_meta_terminal_last_error_code" json:"index_meta_terminal_last_error_code"`
-	IndexMetaTerminalizedAt            pgtype.Timestamptz `db:"index_meta_terminalized_at" json:"index_meta_terminalized_at"`
-	IndexManualStopRequestedAt         pgtype.Timestamptz `db:"index_manual_stop_requested_at" json:"index_manual_stop_requested_at"`
-	IndexManualCleanupStatus           *string            `db:"index_manual_cleanup_status" json:"index_manual_cleanup_status"`
-	IndexManualCleanupClaimToken       *string            `db:"index_manual_cleanup_claim_token" json:"index_manual_cleanup_claim_token"`
-	IndexManualCleanupClaimExpiresAt   pgtype.Timestamptz `db:"index_manual_cleanup_claim_expires_at" json:"index_manual_cleanup_claim_expires_at"`
-	IndexManualCleanupAttemptCount     *int32             `db:"index_manual_cleanup_attempt_count" json:"index_manual_cleanup_attempt_count"`
-	IndexManualCleanupNextAttemptAt    pgtype.Timestamptz `db:"index_manual_cleanup_next_attempt_at" json:"index_manual_cleanup_next_attempt_at"`
-	IndexManualCleanupLastErrorCode    *string            `db:"index_manual_cleanup_last_error_code" json:"index_manual_cleanup_last_error_code"`
-	IndexManualCleanupResolvedAt       pgtype.Timestamptz `db:"index_manual_cleanup_resolved_at" json:"index_manual_cleanup_resolved_at"`
-	IndexMetaTaskRestampSourceEventID  *string            `db:"index_meta_task_restamp_source_event_id" json:"index_meta_task_restamp_source_event_id"`
-	IndexMetaTaskRestampOccurredAt     pgtype.Timestamptz `db:"index_meta_task_restamp_occurred_at" json:"index_meta_task_restamp_occurred_at"`
-	IndexMetaTaskRestampCreatedOn      *float64           `db:"index_meta_task_restamp_created_on" json:"index_meta_task_restamp_created_on"`
-	IndexMetaTaskRestampStatus         *string            `db:"index_meta_task_restamp_status" json:"index_meta_task_restamp_status"`
-	IndexMetaTaskRestampClaimToken     *string            `db:"index_meta_task_restamp_claim_token" json:"index_meta_task_restamp_claim_token"`
-	IndexMetaTaskRestampClaimExpiresAt pgtype.Timestamptz `db:"index_meta_task_restamp_claim_expires_at" json:"index_meta_task_restamp_claim_expires_at"`
-	IndexMetaTaskRestampAttemptCount   *int32             `db:"index_meta_task_restamp_attempt_count" json:"index_meta_task_restamp_attempt_count"`
-	IndexMetaTaskRestampNextAttemptAt  pgtype.Timestamptz `db:"index_meta_task_restamp_next_attempt_at" json:"index_meta_task_restamp_next_attempt_at"`
-	IndexMetaTaskRestampLastErrorCode  *string            `db:"index_meta_task_restamp_last_error_code" json:"index_meta_task_restamp_last_error_code"`
-	IndexMetaTaskRestampedAt           pgtype.Timestamptz `db:"index_meta_task_restamped_at" json:"index_meta_task_restamped_at"`
-	ToolkitID                          int32              `db:"toolkit_id" json:"toolkit_id"`
-	IndexName                          string             `db:"index_name" json:"index_name"`
-	Initiator                          string             `db:"initiator" json:"initiator"`
+	ExecutionID                           string             `db:"execution_id" json:"execution_id"`
+	Generation                            int64              `db:"generation" json:"generation"`
+	IndexGeneration                       int64              `db:"index_generation" json:"index_generation"`
+	CapabilityID                          string             `db:"capability_id" json:"capability_id"`
+	InputBundleID                         string             `db:"input_bundle_id" json:"input_bundle_id"`
+	ToolkitConfigurationEntryID           string             `db:"toolkit_configuration_entry_id" json:"toolkit_configuration_entry_id"`
+	ToolParametersEntryID                 string             `db:"tool_parameters_entry_id" json:"tool_parameters_entry_id"`
+	LlmModelEntryID                       *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
+	LlmConfigurationEntryID               *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
+	McpTokensEntryID                      *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	ClientStreamID                        *string            `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID                       *string            `db:"client_message_id" json:"client_message_id"`
+	SioEvent                              *string            `db:"sio_event" json:"sio_event"`
+	IndexMetaID                           *string            `db:"index_meta_id" json:"index_meta_id"`
+	IndexMetaCorrelationID                *string            `db:"index_meta_correlation_id" json:"index_meta_correlation_id"`
+	IndexMetaInitializedAt                pgtype.Timestamptz `db:"index_meta_initialized_at" json:"index_meta_initialized_at"`
+	IndexMetaInitializationStatus         string             `db:"index_meta_initialization_status" json:"index_meta_initialization_status"`
+	IndexMetaInitializationClaimToken     *string            `db:"index_meta_initialization_claim_token" json:"index_meta_initialization_claim_token"`
+	IndexMetaInitializationClaimExpiresAt pgtype.Timestamptz `db:"index_meta_initialization_claim_expires_at" json:"index_meta_initialization_claim_expires_at"`
+	IndexMetaInitializationAttemptCount   int32              `db:"index_meta_initialization_attempt_count" json:"index_meta_initialization_attempt_count"`
+	IndexMetaInitializationNextAttemptAt  pgtype.Timestamptz `db:"index_meta_initialization_next_attempt_at" json:"index_meta_initialization_next_attempt_at"`
+	IndexMetaInitializationLastErrorCode  *string            `db:"index_meta_initialization_last_error_code" json:"index_meta_initialization_last_error_code"`
+	IndexMetaInitializationResolvedAt     pgtype.Timestamptz `db:"index_meta_initialization_resolved_at" json:"index_meta_initialization_resolved_at"`
+	IndexMetaInitializationFailedAt       pgtype.Timestamptz `db:"index_meta_initialization_failed_at" json:"index_meta_initialization_failed_at"`
+	IndexMetaTerminalState                *string            `db:"index_meta_terminal_state" json:"index_meta_terminal_state"`
+	IndexMetaTerminalOccurredAt           pgtype.Timestamptz `db:"index_meta_terminal_occurred_at" json:"index_meta_terminal_occurred_at"`
+	IndexMetaTerminalStatus               *string            `db:"index_meta_terminal_status" json:"index_meta_terminal_status"`
+	IndexMetaTerminalClaimToken           *string            `db:"index_meta_terminal_claim_token" json:"index_meta_terminal_claim_token"`
+	IndexMetaTerminalClaimExpiresAt       pgtype.Timestamptz `db:"index_meta_terminal_claim_expires_at" json:"index_meta_terminal_claim_expires_at"`
+	IndexMetaTerminalAttemptCount         *int32             `db:"index_meta_terminal_attempt_count" json:"index_meta_terminal_attempt_count"`
+	IndexMetaTerminalNextAttemptAt        pgtype.Timestamptz `db:"index_meta_terminal_next_attempt_at" json:"index_meta_terminal_next_attempt_at"`
+	IndexMetaTerminalLastErrorCode        *string            `db:"index_meta_terminal_last_error_code" json:"index_meta_terminal_last_error_code"`
+	IndexMetaTerminalizedAt               pgtype.Timestamptz `db:"index_meta_terminalized_at" json:"index_meta_terminalized_at"`
+	IndexManualStopRequestedAt            pgtype.Timestamptz `db:"index_manual_stop_requested_at" json:"index_manual_stop_requested_at"`
+	IndexManualCleanupStatus              *string            `db:"index_manual_cleanup_status" json:"index_manual_cleanup_status"`
+	IndexManualCleanupClaimToken          *string            `db:"index_manual_cleanup_claim_token" json:"index_manual_cleanup_claim_token"`
+	IndexManualCleanupClaimExpiresAt      pgtype.Timestamptz `db:"index_manual_cleanup_claim_expires_at" json:"index_manual_cleanup_claim_expires_at"`
+	IndexManualCleanupAttemptCount        *int32             `db:"index_manual_cleanup_attempt_count" json:"index_manual_cleanup_attempt_count"`
+	IndexManualCleanupNextAttemptAt       pgtype.Timestamptz `db:"index_manual_cleanup_next_attempt_at" json:"index_manual_cleanup_next_attempt_at"`
+	IndexManualCleanupLastErrorCode       *string            `db:"index_manual_cleanup_last_error_code" json:"index_manual_cleanup_last_error_code"`
+	IndexManualCleanupResolvedAt          pgtype.Timestamptz `db:"index_manual_cleanup_resolved_at" json:"index_manual_cleanup_resolved_at"`
+	IndexMetaTaskRestampSourceEventID     *string            `db:"index_meta_task_restamp_source_event_id" json:"index_meta_task_restamp_source_event_id"`
+	IndexMetaTaskRestampOccurredAt        pgtype.Timestamptz `db:"index_meta_task_restamp_occurred_at" json:"index_meta_task_restamp_occurred_at"`
+	IndexMetaTaskRestampCreatedOn         *float64           `db:"index_meta_task_restamp_created_on" json:"index_meta_task_restamp_created_on"`
+	IndexMetaTaskRestampStatus            *string            `db:"index_meta_task_restamp_status" json:"index_meta_task_restamp_status"`
+	IndexMetaTaskRestampClaimToken        *string            `db:"index_meta_task_restamp_claim_token" json:"index_meta_task_restamp_claim_token"`
+	IndexMetaTaskRestampClaimExpiresAt    pgtype.Timestamptz `db:"index_meta_task_restamp_claim_expires_at" json:"index_meta_task_restamp_claim_expires_at"`
+	IndexMetaTaskRestampAttemptCount      *int32             `db:"index_meta_task_restamp_attempt_count" json:"index_meta_task_restamp_attempt_count"`
+	IndexMetaTaskRestampNextAttemptAt     pgtype.Timestamptz `db:"index_meta_task_restamp_next_attempt_at" json:"index_meta_task_restamp_next_attempt_at"`
+	IndexMetaTaskRestampLastErrorCode     *string            `db:"index_meta_task_restamp_last_error_code" json:"index_meta_task_restamp_last_error_code"`
+	IndexMetaTaskRestampedAt              pgtype.Timestamptz `db:"index_meta_task_restamped_at" json:"index_meta_task_restamped_at"`
+	ToolkitID                             int32              `db:"toolkit_id" json:"toolkit_id"`
+	IndexName                             string             `db:"index_name" json:"index_name"`
+	Initiator                             string             `db:"initiator" json:"initiator"`
 }
 
 type EliteaRuntimeIndexIngestResult struct {
