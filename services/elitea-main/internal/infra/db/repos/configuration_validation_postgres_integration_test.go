@@ -175,15 +175,16 @@ func TestPostgresServiceBackedCancellationControlPlane(t *testing.T) {
 		// publishing cancellation. The output goroutine can perform its
 		// read-only binding checks, then must wait at the real PostgreSQL lock.
 		var lockedClaim string
+		var cancellationBackendPID int32
 		if err := cancelTx.QueryRow(ctx, `
-SELECT c.claim_id
+SELECT c.claim_id, pg_backend_pid()
 FROM elitea_runtime.execution_claims AS c
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = c.execution_id AND j.generation = c.generation
 JOIN elitea_runtime.command_outbox AS o
   ON o.execution_id = j.execution_id AND o.generation = j.generation
 WHERE c.execution_id = $1 AND c.generation = $2
-FOR UPDATE OF j, o, c`, frame.Fence.ExecutionID, int64(frame.Fence.Generation)).Scan(&lockedClaim); err != nil {
+FOR UPDATE OF j, o, c`, frame.Fence.ExecutionID, int64(frame.Fence.Generation)).Scan(&lockedClaim, &cancellationBackendPID); err != nil {
 			t.Fatalf("lock cancellation authority: %v", err)
 		}
 		if lockedClaim != seed.claimID {
@@ -202,7 +203,7 @@ WHERE execution_id = $1 AND generation = $2`, frame.Fence.ExecutionID, int64(fra
 			result <- ingestErr
 		}()
 
-		blocked := waitForPostgresAuthorityLock(t, ctx, pool)
+		blocked := waitForPostgresAuthorityLock(t, ctx, pool, cancellationBackendPID)
 		if err := cancelTx.Commit(ctx); err != nil {
 			t.Fatalf("commit cancellation: %v", err)
 		}
@@ -1622,7 +1623,7 @@ func assertPostgresCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	}
 }
 
-func waitForPostgresAuthorityLock(t *testing.T, ctx context.Context, pool *pgxpool.Pool) bool {
+func waitForPostgresAuthorityLock(t *testing.T, ctx context.Context, pool *pgxpool.Pool, blockerPID int32) bool {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -1631,13 +1632,16 @@ func waitForPostgresAuthorityLock(t *testing.T, ctx context.Context, pool *pgxpo
 		err := pool.QueryRow(ctx, `
 SELECT EXISTS (
     SELECT 1
-    FROM pg_catalog.pg_stat_activity
-    WHERE datname = current_database()
-      AND pid <> pg_backend_pid()
-      AND state = 'active'
-      AND wait_event_type = 'Lock'
-      AND query LIKE '%WITH authority AS MATERIALIZED%'
-)`).Scan(&blocked)
+    FROM pg_catalog.pg_stat_activity AS a
+    WHERE a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND a.state = 'active'
+      AND a.wait_event_type = 'Lock'
+      AND a.query LIKE '%SELECT c.claim_id%'
+      AND a.query ~ 'FROM[[:space:]]+elitea_runtime[.]execution_claims[[:space:]]+(AS[[:space:]]+)?c'
+      AND a.query ~ 'FOR[[:space:]]+UPDATE[[:space:]]+OF[[:space:]]+j[[:space:]]*,[[:space:]]*o[[:space:]]*,[[:space:]]*c'
+      AND $1::integer = ANY(pg_catalog.pg_blocking_pids(a.pid))
+)`, blockerPID).Scan(&blocked)
 		if err != nil {
 			t.Fatalf("observe PostgreSQL authority lock: %v", err)
 		}
