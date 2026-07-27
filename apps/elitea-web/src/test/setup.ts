@@ -1,6 +1,16 @@
 import { afterAll, afterEach, beforeAll } from 'vitest';
 import { setupServer } from 'msw/node';
 
+// [S1] `toBeInTheDocument`/`toHaveTextContent`/etc. — every `shared/ui`
+// component test in this unit asserts against the rendered DOM via these
+// matchers. `@testing-library/jest-dom/vitest` self-registers with vitest's
+// `expect` on import (no `expect.extend` call needed — verified against the
+// installed package's `./vitest` export, `@testing-library/jest-dom@6.9.1`).
+// Global, additive, and required by ANY future DOM-assertion test in the
+// tree, not just this unit's — so it belongs in the shared bootstrap F4
+// authored rather than being re-imported per test file.
+import '@testing-library/jest-dom/vitest';
+
 import { handlers } from './msw/handlers/index';
 
 /**

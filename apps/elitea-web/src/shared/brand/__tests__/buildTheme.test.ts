@@ -44,6 +44,11 @@ describe('CSS-variable wiring', () => {
     expect(theme.vars.shape.radiusLg).toBe(
       `var(--el-shape-radiusLg, ${DEFAULT_BRAND_PACK.shape.radiusLg}px)`,
     );
+    // [S1 Part B] radiusPill — the pill/circle escape hatch MuiButton's
+    // icon-only and maxi variants use; see buildTheme.ts.
+    expect(theme.vars.shape.radiusPill).toBe(
+      `var(--el-shape-radiusPill, ${DEFAULT_BRAND_PACK.shape.radiusPill}px)`,
+    );
   });
 });
 
@@ -52,6 +57,7 @@ describe('shape, spacing and breakpoints', () => {
     expect(theme.shape.borderRadius).toBe(DEFAULT_BRAND_PACK.shape.radiusMd);
     expect(theme.shape.radiusSm).toBe(DEFAULT_BRAND_PACK.shape.radiusSm);
     expect(theme.shape.radiusLg).toBe(DEFAULT_BRAND_PACK.shape.radiusLg);
+    expect(theme.shape.radiusPill).toBe(DEFAULT_BRAND_PACK.shape.radiusPill);
   });
 
   it('treats density as a token: 8 comfortable, 6 compact', () => {

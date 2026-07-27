@@ -14,11 +14,11 @@ story per file (R-T12).
 The baseline's canonical `components` map is `apps/elitea-ui/src/MainTheme.js:118-364`
 — **30 keys** (unit T2 §3 confirmed the count and corrected the spec's line range).
 
-## Wired (unit T1)
+## Wired (unit T1, then S1)
 
 | Key | File | Scope |
 |---|---|---|
-| `MuiButton` | `MuiButton.ts` | Token wiring for the six variants that carried the §4.1 Blocker-1 hard-coded accents (`special`, `contained`, `secondary`, `iconCounter`, `auxiliary`, `maxi`). Colour only — geometry is S1's. |
+| `MuiButton` | `MuiButton.ts` | All 14 variants now wired. T1 wired token colour for the six that carried the §4.1 Blocker-1 hard-coded accents (`special`, `contained`, `secondary`, `iconCounter`, `auxiliary`, `maxi`). Unit S1 (Part B) added the remaining eight (`iconLabel`, `tertiary`, `alarm`, `elitea`, `text`, `icon`, `neutral`, `positive`) plus the geometry `maxi`/`icon` need. Their `50%`-radius pill/circle shape now has a token — `theme.vars.shape.radiusPill` — added across `schema.ts`/`gen-brand-tokens.mjs`/`buildTheme.ts`/`theme.augment.d.ts` (the generated `default.pack.json`/`palette.augment.d.ts` were re-run from the generator, not hand-edited). `elitea`'s four `color` skins are separate `props: { variant, color }` entries, not a `color`-branching callback — see the file's own header comment for why. |
 | `MuiChip` | `MuiChip.ts` | Canonical `root` + `outlined` slots, complete. Admin-ui's scheme-branching variant is deliberately NOT ported (T2 §3, class (b)). |
 
 ## Owned by unit S1 — 28 keys
@@ -45,18 +45,6 @@ hostile-pack sweep fails §4.6 check 7.
    (added by T1 per §4.2) and `palette.warning.*` (already in the baseline).
    `filledInfo` already uses `darkBlue` → `palette.info.main`.
 
-2. **R-T10 has no escape hatch for non-token radii, and buttons need one.**
-   `elitea/ad-hoc-radius` rejects every literal `borderRadius` value that is not
-   `var(--el-radius-…)`; member expressions (`theme.vars.shape.radiusMd`) pass. The
-   baseline's icon-only button and `maxi` FAB use `borderRadius: '50%'`, which is a
-   *shape*, not a radius token, and has no member-expression form. T1 left the
-   geometry out rather than weaken the rule or fake a token. S1 must either
-   (a) get F2 to allow the `'50%'` / `'9999px'` pill idiom explicitly, or
-   (b) add a `shape.radiusPill` token and use `theme.vars.shape.radiusPill`.
-   Note that the rule's allow-pattern (`var(--el-radius-*)`) does not match the
-   variables MUI actually emits (`--el-shape-radiusSm`), so the literal escape is
-   unusable as written — another reason to prefer (b).
-
-3. **Sizes come from typography variants.** `theme.typography.labelSmall` (and the
+2. **Sizes come from typography variants.** `theme.typography.labelSmall` (and the
    nine siblings) are declared in `src/shared/brand/theme.augment.d.ts` and built by
    `typography.ts`. `labelLarge` does not exist — it was dead in the baseline (T2 §3).

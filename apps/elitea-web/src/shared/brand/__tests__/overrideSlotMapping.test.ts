@@ -58,12 +58,25 @@ function paletteValueAt(path: string): unknown {
     .reduce<unknown>((node, key) => (node as StyleObject | undefined)?.[key], paletteRoot);
 }
 
-/** Resolve one `MuiButton` variant's style object for the current theme. */
-function resolveVariantStyle(variant: string): StyleObject {
-  const entry = (muiButton.variants ?? []).find(
-    (candidate) => (candidate.props as { variant?: string }).variant === variant,
-  );
-  if (!entry) throw new Error(`MuiButton has no variant '${variant}' wired`);
+/**
+ * Resolve one `MuiButton` variant's style object for the current theme.
+ *
+ * [S1 Part B] `color` is an optional second match key, needed because
+ * `elitea` (unlike every other variant) is FOUR separate `variants[]`
+ * entries that all share `props.variant === 'elitea'`, distinguished only by
+ * `props.color` (see `MuiButton.ts`'s header comment for why this couldn't
+ * be one entry branching on `color`). Matching `props.color === color`
+ * (both `undefined` when the caller omits `color`) still finds the single
+ * entry for every pre-existing single-key variant unchanged.
+ */
+function resolveVariantStyle(variant: string, color?: string): StyleObject {
+  const entry = (muiButton.variants ?? []).find((candidate) => {
+    const props = candidate.props as { variant?: string; color?: string };
+    return props.variant === variant && props.color === color;
+  });
+  if (!entry) {
+    throw new Error(`MuiButton has no variant '${variant}'${color ? ` / color '${color}'` : ''} wired`);
+  }
   if (typeof entry.style !== 'function') {
     throw new Error(`MuiButton variant '${variant}' has a static style object, expected a function`);
   }
@@ -86,6 +99,8 @@ const DISABLED = '&:disabled';
 
 interface ButtonCase {
   variant: string;
+  /** [S1 Part B] Only set for `elitea`'s four colour-branched entries. */
+  color?: string;
   state: string;
   selector: string | null;
   property: 'backgroundColor' | 'color';
@@ -146,15 +161,114 @@ const BUTTON_CASES: ButtonCase[] = [
   { variant: 'maxi', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.maxi.hover' },
   { variant: 'maxi', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.maxi.pressed' },
   { variant: 'maxi', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.default' },
+
+  // ---------------------------------------------------------------------
+  // [S1 Part B] The eight variants added alongside T1's original six.
+  // Same rule as above: a resting/disabled `'transparent'` background is a
+  // keyword, not a token, and is deliberately absent (e.g. `tertiary`,
+  // `elitea`/tertiary, `text`). CSS custom-property wiring (`tertiary`'s
+  // `--btn-icon-fill`) is outside this table's `property` union and is
+  // documented in `MuiButton.ts` instead.
+  // ---------------------------------------------------------------------
+
+  // iconLabel — BaseBtn.jsx:369-399
+  { variant: 'iconLabel', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.iconLabelButton.default' },
+  { variant: 'iconLabel', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.secondary' },
+  { variant: 'iconLabel', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.hover' },
+  { variant: 'iconLabel', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.pressed' },
+  { variant: 'iconLabel', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'iconLabel', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.default' },
+  { variant: 'iconLabel', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+
+  // tertiary — BaseBtn.jsx:401-450
+  { variant: 'tertiary', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.default' },
+  { variant: 'tertiary', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.hover' },
+  { variant: 'tertiary', state: 'hover', selector: HOVER, property: 'color', expectedTokenPath: 'text.secondary' },
+  { variant: 'tertiary', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.pressed' },
+  { variant: 'tertiary', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'tertiary', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+
+  // alarm — BaseBtn.jsx:491-519 (text was the literal 'white')
+  { variant: 'alarm', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.default' },
+  { variant: 'alarm', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'alarm', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.hover' },
+  { variant: 'alarm', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.pressed' },
+  { variant: 'alarm', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.disabled' },
+  { variant: 'alarm', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.primary' },
+
+  // elitea / primary — BaseBtn.jsx:527-545
+  { variant: 'elitea', color: 'primary', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'elitea', color: 'primary', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.primary.default' },
+  { variant: 'elitea', color: 'primary', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.primary.hover' },
+  { variant: 'elitea', color: 'primary', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.primary.pressed' },
+  { variant: 'elitea', color: 'primary', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'elitea', color: 'primary', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.primary.disabled' },
+
+  // elitea / secondary — BaseBtn.jsx:547-565
+  { variant: 'elitea', color: 'secondary', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.secondary' },
+  { variant: 'elitea', color: 'secondary', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.default' },
+  { variant: 'elitea', color: 'secondary', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.hover' },
+  { variant: 'elitea', color: 'secondary', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'elitea', color: 'secondary', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.pressed' },
+  { variant: 'elitea', color: 'secondary', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+  { variant: 'elitea', color: 'secondary', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.default' },
+
+  // elitea / tertiary — BaseBtn.jsx:567-593
+  { variant: 'elitea', color: 'tertiary', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.default' },
+  { variant: 'elitea', color: 'tertiary', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.hover' },
+  { variant: 'elitea', color: 'tertiary', state: 'hover', selector: HOVER, property: 'color', expectedTokenPath: 'text.secondary' },
+  { variant: 'elitea', color: 'tertiary', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'elitea', color: 'tertiary', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.tertiary.pressed' },
+  { variant: 'elitea', color: 'tertiary', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+
+  // elitea / alarm — BaseBtn.jsx:595-616 (text was the literal 'white')
+  { variant: 'elitea', color: 'alarm', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'elitea', color: 'alarm', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.default' },
+  { variant: 'elitea', color: 'alarm', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.hover' },
+  { variant: 'elitea', color: 'alarm', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'elitea', color: 'alarm', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.pressed' },
+  { variant: 'elitea', color: 'alarm', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'elitea', color: 'alarm', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.alarm.disabled' },
+
+  // text — BaseBtn.jsx:620-645
+  { variant: 'text', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.default' },
+  { variant: 'text', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.default' },
+  { variant: 'text', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.pressed' },
+  { variant: 'text', state: 'active', selector: ACTIVE, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'text', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+
+  // icon — BaseBtn.jsx:647-687
+  { variant: 'icon', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.default' },
+  { variant: 'icon', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.primary' },
+  { variant: 'icon', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.hover' },
+  { variant: 'icon', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.secondary.pressed' },
+  { variant: 'icon', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.default' },
+  { variant: 'icon', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.disabled' },
+
+  // neutral — BaseBtn.jsx:735-763 (text was the literal 'white')
+  { variant: 'neutral', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.neutral.default' },
+  { variant: 'neutral', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'neutral', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.neutral.hover' },
+  { variant: 'neutral', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.neutral.pressed' },
+  { variant: 'neutral', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.neutral.disabled' },
+  { variant: 'neutral', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.primary' },
+
+  // positive — BaseBtn.jsx:765-793 (text was the literal 'white')
+  { variant: 'positive', state: 'default', selector: null, property: 'backgroundColor', expectedTokenPath: 'background.button.positive.default' },
+  { variant: 'positive', state: 'default', selector: null, property: 'color', expectedTokenPath: 'text.button.primary' },
+  { variant: 'positive', state: 'hover', selector: HOVER, property: 'backgroundColor', expectedTokenPath: 'background.button.positive.hover' },
+  { variant: 'positive', state: 'active', selector: ACTIVE, property: 'backgroundColor', expectedTokenPath: 'background.button.positive.pressed' },
+  { variant: 'positive', state: 'disabled', selector: DISABLED, property: 'backgroundColor', expectedTokenPath: 'background.button.positive.disabled' },
+  { variant: 'positive', state: 'disabled', selector: DISABLED, property: 'color', expectedTokenPath: 'text.button.primary' },
 ];
 
 describe('MuiButton — slot-to-token wiring', () => {
   it.each(BUTTON_CASES)(
     '$variant / $state / $property -> $expectedTokenPath',
-    ({ variant, selector, property, expectedTokenPath }) => {
+    ({ variant, color, selector, property, expectedTokenPath }) => {
       const expected = paletteValueAt(expectedTokenPath);
       expect(expected, `theme.vars.palette.${expectedTokenPath} must resolve to something`).toBeDefined();
-      const style = at(resolveVariantStyle(variant), selector);
+      const style = at(resolveVariantStyle(variant, color), selector);
       expect(style[property]).toBe(expected);
     },
   );
@@ -162,18 +276,47 @@ describe('MuiButton — slot-to-token wiring', () => {
   it('carries no duplicate rows — a repeated key would mean the TABLE has a wiring bug', () => {
     const seen = new Set<string>();
     for (const c of BUTTON_CASES) {
-      const key = `${c.variant}:${c.state}:${c.property}`;
+      const key = `${c.variant}:${c.color ?? ''}:${c.state}:${c.property}`;
       expect(seen.has(key), `duplicate table row ${key}`).toBe(false);
       seen.add(key);
     }
   });
 
   it('covers every variant MuiButton actually wires — the table cannot silently fall behind', () => {
-    const wired = (muiButton.variants ?? [])
-      .map((v) => (v.props as { variant?: string }).variant)
-      .filter((variant): variant is string => variant !== undefined);
+    // [S1 Part B] `wired` is de-duplicated by NAME (not by entry): `elitea`
+    // is 4 real `variants[]` entries sharing one name (distinguished by
+    // `color`, see `resolveVariantStyle`'s doc comment), so a raw,
+    // non-deduplicated comparison against BUTTON_CASES' name-level `covered`
+    // set could never pass. The completeness this test guards — every
+    // variant NAME MuiButton wires has at least one row — is unchanged.
+    const wired = [
+      ...new Set(
+        (muiButton.variants ?? [])
+          .map((v) => (v.props as { variant?: string }).variant)
+          .filter((variant): variant is string => variant !== undefined),
+      ),
+    ];
     const covered = [...new Set(BUTTON_CASES.map((c) => c.variant))];
     expect(covered.sort()).toEqual(wired.sort());
+  });
+
+  it('covers every elitea colour MuiButton actually wires', () => {
+    const wiredColors = [
+      ...new Set(
+        (muiButton.variants ?? [])
+          .filter((v) => (v.props as { variant?: string }).variant === 'elitea')
+          .map((v) => (v.props as { color?: string }).color)
+          .filter((color): color is string => color !== undefined),
+      ),
+    ];
+    const coveredColors = [
+      ...new Set(
+        BUTTON_CASES.filter((c) => c.variant === 'elitea')
+          .map((c) => c.color)
+          .filter((color): color is string => color !== undefined),
+      ),
+    ];
+    expect(coveredColors.sort()).toEqual(wiredColors.sort());
   });
 });
 

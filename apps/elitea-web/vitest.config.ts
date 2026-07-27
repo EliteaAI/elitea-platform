@@ -4,13 +4,25 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tsconfigPaths from 'vite-tsconfig-paths';
+// [S2] vite.config.ts registers `svgr({ svgrOptions: { ref: true } })` for the app build, but
+// vitest has its own separate plugin list — without this, `*.svg?react` imports (every icon in
+// shared/ui/icons/**) fall through to Vite's default asset handling under jsdom and resolve to a
+// `data:image/svg+xml,...` URL string instead of a component, breaking every icon-consuming test
+// tree-wide (proven: shared/ui/icons' own smoke test failed with `InvalidCharacterError` before
+// this was added). `svgrOptions` must match vite.config.ts's so dev/build/test agree on the
+// generated component shape (ref-forwarding).
+import svgr from 'vite-plugin-svgr';
 // [F2] vitest@4.1.10 rejects the string form the spec shows
 // (`provider: 'playwright'`): "The `browser.provider` configuration was
 // changed to accept a factory instead of a string." — verified 2026-07-26.
 import { playwright } from '@vitest/browser-playwright';
+// [S1] activates the storybook project (§6.4): addon-vitest's plugin turns
+// every *.stories.tsx CSF file into a Vitest test per story, running the
+// `play` function and the a11y check registered in .storybook/preview.tsx.
+import { storybookTest } from '@storybook/addon-vitest/vitest-plugin';
 
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  plugins: [react(), tsconfigPaths(), svgr({ svgrOptions: { ref: true } })],
   test: {
     projects: [
       {
@@ -32,15 +44,22 @@ export default defineConfig({
           browser: { enabled: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
         },
       },
-      // [F2] The storybook project is stub-commented exactly as §6.3 shows it;
-      // it activates when S1 lands `.storybook/` (addon-vitest + setup file).
-      // Until then an uncommented block would fail the run on the missing
-      // ./.storybook/vitest.setup.ts.
-      // {
-      //   extends: true,
-      //   plugins: [/* storybookTest({ configDir: '.storybook' }) */],
-      //   test: { name: 'storybook', setupFiles: ['./.storybook/vitest.setup.ts'] },
-      // },
+      // [S1] Storybook project (§6.3/§6.4): activated now that `.storybook/`
+      // (main.ts + preview.tsx + vitest.setup.ts) has landed. Runs every
+      // `shared/ui/**/*.stories.tsx` as a Vitest test, executing each story's
+      // `play` function and the a11y addon's check (parameters.a11y.test is
+      // 'error' in preview.tsx). Browser mode uses the same
+      // `@vitest/browser-playwright` factory as the `browser` project above
+      // (D2 addendum: the string form `provider: 'playwright'` is rejected).
+      {
+        extends: true,
+        plugins: [storybookTest({ configDir: '.storybook' })],
+        test: {
+          name: 'storybook',
+          browser: { enabled: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
+          setupFiles: ['./.storybook/vitest.setup.ts'],
+        },
+      },
       // [F2] Extra project, not in §6.3: the gate scripts' own test suites
       // (§9.3 unit F2 requires 100% coverage of scripts' decision logic; the
       // spec's include only matches src/**). Coverage thresholds below are

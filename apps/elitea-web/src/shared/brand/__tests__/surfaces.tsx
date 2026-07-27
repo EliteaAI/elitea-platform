@@ -1,8 +1,34 @@
 import Alert from '@mui/material/Alert';
+import AppBar from '@mui/material/AppBar';
+import Autocomplete from '@mui/material/Autocomplete';
+import Avatar from '@mui/material/Avatar';
+import Badge from '@mui/material/Badge';
 import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
+import CssBaseline from '@mui/material/CssBaseline';
+import Dialog from '@mui/material/Dialog';
+import Drawer from '@mui/material/Drawer';
+import FormControl from '@mui/material/FormControl';
+import FormHelperText from '@mui/material/FormHelperText';
+import IconButton from '@mui/material/IconButton';
+import Input from '@mui/material/Input';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
+import MenuList from '@mui/material/MenuList';
 import Paper from '@mui/material/Paper';
+import Radio from '@mui/material/Radio';
+import Select from '@mui/material/Select';
+import Switch from '@mui/material/Switch';
+import Tab from '@mui/material/Tab';
+import TablePagination from '@mui/material/TablePagination';
+import Tabs from '@mui/material/Tabs';
+import TextField from '@mui/material/TextField';
+import ToggleButton from '@mui/material/ToggleButton';
+import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import { DataGrid } from '@mui/x-data-grid';
 
 import { App } from '@/app/App';
 
@@ -26,6 +52,14 @@ import { muiOverrides } from '../mui-overrides';
  *
  * REMOVER: unit R1 — when the route tree lands, add it here (or replace
  * APP_SURFACES with a router render) so the sweep covers real routes.
+ *
+ * [S1] Widened from 2 to 30 entries — one per key `muiOverrides()` now
+ * wires (T1's original `MuiButton`/`MuiChip` plus the 27 S1-owned keys and
+ * `MuiTypography`; `MuiTreeItem` is deliberately unwired, see
+ * `mui-overrides/MuiTreeItem.ts`). A handful of components need real,
+ * interactive state (`Menu`/`Select` need `open`; `Tooltip` needs a forced
+ * open) to actually mount their styled slot rather than rendering nothing —
+ * `ControlledSurfaces` below owns that state.
  */
 
 const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
@@ -40,12 +74,230 @@ const OVERRIDE_SURFACES: Record<string, () => React.ReactElement> = {
       <Button variant="contained" disabled>
         disabled
       </Button>
+      {/* [S1 Part B] the eight variants added alongside T1's original six. */}
+      <Button variant="iconLabel">iconLabel</Button>
+      <Button variant="tertiary">tertiary</Button>
+      <Button variant="alarm">alarm</Button>
+      <Button
+        variant="elitea"
+        color="primary"
+      >
+        elitea primary
+      </Button>
+      <Button
+        variant="elitea"
+        color="secondary"
+      >
+        elitea secondary
+      </Button>
+      <Button
+        variant="elitea"
+        color="tertiary"
+      >
+        elitea tertiary
+      </Button>
+      <Button
+        variant="elitea"
+        color="alarm"
+      >
+        elitea alarm
+      </Button>
+      <Button variant="text">text</Button>
+      <Button variant="icon">icon</Button>
+      <Button variant="neutral">neutral</Button>
+      <Button variant="positive">positive</Button>
     </>
   ),
   MuiChip: () => (
     <>
       <Chip label="filled" />
       <Chip label="outlined" variant="outlined" />
+    </>
+  ),
+  MuiAlert: () => (
+    <>
+      <Alert severity="error" variant="filled">
+        error
+      </Alert>
+      <Alert severity="success" variant="filled">
+        success
+      </Alert>
+      <Alert severity="warning" variant="filled">
+        warning
+      </Alert>
+      <Alert severity="info" variant="filled">
+        info
+      </Alert>
+    </>
+  ),
+  MuiAppBar: () => <AppBar position="static">app bar</AppBar>,
+  MuiAutocomplete: () => (
+    <Autocomplete
+      open
+      options={['one', 'two']}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label="autocomplete"
+        />
+      )}
+      sx={{ width: 200 }}
+    />
+  ),
+  MuiAvatar: () => <Avatar>EL</Avatar>,
+  MuiBadge: () => (
+    <Badge badgeContent={4}>
+      <Chip label="badged" />
+    </Badge>
+  ),
+  MuiCheckbox: () => (
+    <>
+      <Checkbox checked />
+      <Checkbox indeterminate />
+      <Checkbox />
+    </>
+  ),
+  MuiCssBaseline: () => <CssBaseline />,
+  MuiDataGrid: () => (
+    <div style={{ height: 160, width: 240 }}>
+      <DataGrid
+        columns={[{ field: 'id', headerName: 'ID' }]}
+        rows={[{ id: 1 }, { id: 2 }]}
+        hideFooter
+      />
+    </div>
+  ),
+  MuiDialog: () => (
+    <Dialog open>
+      <div style={{ padding: 8 }}>dialog</div>
+    </Dialog>
+  ),
+  MuiDrawer: () => (
+    <Drawer
+      open
+      variant="permanent"
+      anchor="left"
+    >
+      <div style={{ padding: 8 }}>drawer</div>
+    </Drawer>
+  ),
+  MuiFormControl: () => (
+    <FormControl error>
+      <FormHelperText>form control</FormHelperText>
+    </FormControl>
+  ),
+  MuiFormHelperText: () => <FormHelperText error>helper text</FormHelperText>,
+  MuiIconButton: () => (
+    <>
+      <IconButton color="primary">
+        <span>p</span>
+      </IconButton>
+      <IconButton color="secondary">
+        <span>s</span>
+      </IconButton>
+      <IconButton color="tertiary">
+        <span>t</span>
+      </IconButton>
+      <IconButton color="alarm">
+        <span>a</span>
+      </IconButton>
+    </>
+  ),
+  MuiInput: () => <Input defaultValue="input" />,
+  MuiMenu: () => (
+    <Menu
+      open
+      anchorEl={document.body}
+    >
+      <MenuItem>menu item</MenuItem>
+    </Menu>
+  ),
+  MuiMenuItem: () => (
+    <MenuList>
+      <MenuItem>item</MenuItem>
+      <MenuItem selected>selected</MenuItem>
+    </MenuList>
+  ),
+  MuiMenuList: () => (
+    <MenuList>
+      <MenuItem>item</MenuItem>
+    </MenuList>
+  ),
+  MuiPaper: () => <Paper elevation={0}>elitea paper</Paper>,
+  MuiRadio: () => (
+    <>
+      <Radio checked />
+      <Radio />
+    </>
+  ),
+  MuiSelect: () => (
+    <Select
+      variant="standard"
+      open
+      value="a"
+      onChange={() => {}}
+    >
+      <MenuItem value="a">a</MenuItem>
+    </Select>
+  ),
+  MuiSwitch: () => (
+    <>
+      <Switch checked />
+      <Switch />
+    </>
+  ),
+  MuiTab: () => (
+    <Tabs value={0}>
+      <Tab label="one" />
+      <Tab label="two" />
+    </Tabs>
+  ),
+  MuiTablePagination: () => (
+    <table>
+      <tbody>
+        <tr>
+          <TablePagination
+            component="td"
+            count={10}
+            page={0}
+            rowsPerPage={5}
+            onPageChange={() => {}}
+          />
+        </tr>
+      </tbody>
+    </table>
+  ),
+  MuiTabs: () => (
+    <Tabs value={0}>
+      <Tab label="one" />
+    </Tabs>
+  ),
+  MuiTextField: () => (
+    <TextField
+      variant="standard"
+      label="text field"
+      defaultValue="value"
+    />
+  ),
+  MuiToggleButton: () => (
+    <ToggleButtonGroup value="a">
+      <ToggleButton value="a">a</ToggleButton>
+      <ToggleButton value="b">b</ToggleButton>
+    </ToggleButtonGroup>
+  ),
+  MuiTooltip: () => (
+    <Tooltip
+      title="tooltip"
+      open
+    >
+      <span>anchor</span>
+    </Tooltip>
+  ),
+  MuiTypography: () => (
+    <>
+      <Typography variant="headingLarge">headingLarge</Typography>
+      <Typography variant="headingMedium">headingMedium</Typography>
+      <Typography variant="headingSmall">headingSmall</Typography>
     </>
   ),
 };
@@ -91,7 +343,10 @@ export function AllSurfaces() {
   return (
     <div>
       {entries.map(([name, Surface]) => (
-        <section key={name} data-surface={name}>
+        <section
+          key={name}
+          data-surface={name}
+        >
           <Surface />
         </section>
       ))}

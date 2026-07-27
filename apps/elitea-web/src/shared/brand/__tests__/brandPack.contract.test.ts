@@ -53,7 +53,7 @@ const hostilePack = BrandPack.parse({
     baseSize: 18,
     scale: 1.5,
   },
-  shape: { radiusSm: 0, radiusMd: 0, radiusLg: 0, density: 'compact' },
+  shape: { radiusSm: 0, radiusMd: 0, radiusLg: 0, radiusPill: 0, density: 'compact' },
   brand: { hue: formatHex(hslaToRgba({ h: HOSTILE_HUE_DEGREES, s: 0.72, l: 0.5, a: 1 })) },
   schemes: { light: {}, dark: {} },
 });
