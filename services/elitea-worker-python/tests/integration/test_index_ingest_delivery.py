@@ -34,6 +34,7 @@ from elitea_worker.execution.delivery import (
     IndexIngestDeliveryProcessor,
 )
 from elitea_worker.execution.errors import (
+    AmbiguousExecutionRecovery,
     AuthorizationFailure,
     InternalFailure,
     InvalidInput,
@@ -234,13 +235,32 @@ class Output:
 
 
 class AckLossOutput(Output):
-    def __init__(self, pending: output_pb2.ExecutionOutputFrameV1) -> None:
+    def __init__(
+        self, pending: output_pb2.ExecutionOutputFrameV1 | None
+    ) -> None:
         super().__init__(pending)
         self.lose_ack = True
 
     async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
         if self.lose_ack:
             raise RuntimeError("output stream is unavailable")
+        await super().wait_for_ack(sequence, timeout_seconds)
+
+
+class TerminalCancellationWinnerOutput(Output):
+    """Model Main accepting cancellation before an ambiguous failure."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel_once = True
+
+    async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None:
+        if self.cancel_once:
+            self.cancel_once = False
+            try:
+                raise OutputCancellationWon()
+            except OutputCancellationWon as exc:
+                raise RuntimeError("cancellation won terminal linearization") from exc
         await super().wait_for_ack(sequence, timeout_seconds)
 
 
@@ -360,6 +380,7 @@ class Control:
         active: bool = False,
         claim_handoff_watermark: int = 0,
         begin_dispositions: list[int] | None = None,
+        invocation_dispositions: list[int] | None = None,
         claim_disposition: int | None = None,
         receipt_fence: common_pb2.ExecutionFenceV1 | None = None,
         desired_state: int = common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
@@ -375,6 +396,10 @@ class Control:
         self.begins = 0
         self.begin_dispositions = begin_dispositions or [
             control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW
+        ]
+        self.invocations = 0
+        self.invocation_dispositions = invocation_dispositions or [
+            control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_AUTHORIZED_NOW
         ]
         self.desired_state = desired_state
         self.cancellation_observed = asyncio.Event()
@@ -418,6 +443,17 @@ class Control:
             else control_pb2.BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED
         )
         return control_pb2.BeginExecutionResponseV1(
+            disposition=disposition,
+        )
+
+    async def authorize_invocation(self, request):
+        self.invocations += 1
+        disposition = (
+            self.invocation_dispositions.pop(0)
+            if self.invocation_dispositions
+            else control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED
+        )
+        return control_pb2.AuthorizeInvocationResponseV1(
             disposition=disposition,
         )
 
@@ -654,6 +690,339 @@ def test_begin_replay_cannot_double_submit_index_sdk(
         assert control.begins == 2
         assert len(sdk.calls) == 1
         assert supervisor.reserved is False
+
+    asyncio.run(run())
+
+def test_pre_submission_crash_is_recoverable_without_duplicate_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case()
+    sdk = RecordingSdk(
+        {"success": True, "result": {"status": "ok", "message": "Indexed once"}}
+    )
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: sdk),
+    )
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    async def run() -> None:
+        async def crash_before_authorization(claim):
+            raise SimulatedProcessCrash()
+
+        first_control = Control(case)
+        first_supervisor = InlineSupervisor()
+        with pytest.raises(SimulatedProcessCrash):
+            await _processor(
+                case,
+                control=first_control,
+                input_client=InputClient(case.values, []),
+                output=Output(),
+                acker=Acker(),
+                context_factory=crash_before_authorization,
+                supervisor=first_supervisor,
+            ).process(case.delivery)
+        assert first_control.begins == 1
+        assert first_control.invocations == 0
+        assert not first_supervisor.submitted
+        assert not sdk.calls
+
+        async def context_factory(claim):
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        replacement_control = Control(case)
+        result = await _processor(
+            case,
+            control=replacement_control,
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+            supervisor=InlineSupervisor(),
+        ).process(case.delivery)
+        assert result.disposition is DeliveryDisposition.EXECUTED_SETTLED_ACKED
+        assert replacement_control.begins == 1
+        assert replacement_control.invocations == 1
+        assert len(sdk.calls) == 1
+
+    asyncio.run(run())
+
+def test_invocation_authorization_replay_fails_terminal_without_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case()
+    sdk = RecordingSdk(
+        {"success": True, "result": {"status": "ok", "message": "must not run"}}
+    )
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: sdk),
+    )
+
+    async def run() -> None:
+        async def context_factory(claim):
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        control = Control(
+            case,
+            invocation_dispositions=[
+                control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED
+            ],
+        )
+        supervisor = InlineSupervisor()
+        acker = Acker()
+        result = await _processor(
+            case,
+            control=control,
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=acker,
+            context_factory=context_factory,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.EXECUTED_SETTLED_ACKED
+        assert isinstance(result.execution_error, AmbiguousExecutionRecovery)
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.safe_message
+            == "The runtime operation failed."
+        )
+        assert control.invocations == 1
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+        assert not sdk.calls
+
+    asyncio.run(run())
+
+def test_post_submission_crash_recovers_once_without_reinvoking_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case()
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    class CrashSdk:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ingest(self, **kwargs):
+            self.calls += 1
+            raise SimulatedProcessCrash()
+
+    sdk = CrashSdk()
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: sdk),
+    )
+
+    async def run() -> None:
+        async def context_factory(claim):
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        first_control = Control(case)
+        first_supervisor = InlineSupervisor()
+        with pytest.raises(SimulatedProcessCrash):
+            await _processor(
+                case,
+                control=first_control,
+                input_client=InputClient(case.values, []),
+                output=Output(),
+                acker=Acker(),
+                context_factory=context_factory,
+                supervisor=first_supervisor,
+            ).process(case.delivery)
+        assert first_control.invocations == 1
+        assert first_supervisor.submitted
+        assert sdk.calls == 1
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("ambiguous recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("ambiguous recovery must not create SDK context")
+
+        replacement_control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+            ),
+        )
+        acker = Acker()
+        result = await _processor(
+            case,
+            control=replacement_control,
+            input_client=ForbiddenInput(),
+            output=Output(),
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=InlineSupervisor(),
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert isinstance(result.execution_error, AmbiguousExecutionRecovery)
+        assert result.output_frame is not None
+        assert result.output_frame.runtime_error.code == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        assert replacement_control.begins == 0
+        assert replacement_control.invocations == 0
+        assert replacement_control.settlements == 1
+        assert acker.calls == 1
+        assert sdk.calls == 1
+
+    asyncio.run(run())
+
+
+def test_ambiguous_running_recovery_cancellation_wins_without_sdk() -> None:
+    async def run() -> None:
+        case = _case()
+        output = TerminalCancellationWinnerOutput()
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+            ),
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("ambiguous recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("ambiguous recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert len(output.frames) == 2
+        assert (
+            output.frames[0].runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        )
+        assert output.frames[1] == result.output_frame
+        assert control.begins == 0
+        assert control.invocations == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_ambiguous_running_recovery_reuses_lost_terminal_on_redelivery() -> None:
+    async def run() -> None:
+        case = _case()
+        output = AckLossOutput(None)
+        acker = Acker()
+        supervisor = InlineSupervisor()
+        controls: list[Control] = []
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("ambiguous recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("ambiguous recovery must not create SDK context")
+
+        def processor() -> IndexIngestDeliveryProcessor:
+            control = Control(
+                case,
+                claim_disposition=(
+                    control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+                ),
+            )
+            controls.append(control)
+            return _processor(
+                case,
+                control=control,
+                input_client=ForbiddenInput(),
+                output=output,
+                acker=acker,
+                context_factory=forbidden_context,
+                supervisor=supervisor,
+            )
+
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await processor().process(case.delivery)
+        pending = output.pending_replay_frame
+        assert pending is not None and pending.terminal
+        assert controls[0].settlements == 0
+        assert acker.calls == 0
+
+        output.lose_ack = False
+        result = await processor().process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame == pending
+        assert output.frame is None
+        assert len(output.frames) == 1
+        assert sum(control.settlements for control in controls) == 1
+        assert all(control.begins == 0 for control in controls)
+        assert all(control.invocations == 0 for control in controls)
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_live_running_recovery_without_spool_waits_for_current_owner() -> None:
+    async def run() -> None:
+        case = _case()
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK
+            ),
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("live recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("live recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=Output(),
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
+        assert result.output_frame is None
+        assert control.begins == 0
+        assert control.invocations == 0
+        assert control.settlements == 0
+        assert acker.calls == 0
+        assert not supervisor.submitted
 
     asyncio.run(run())
 

@@ -51,20 +51,21 @@ func (d ClaimAbortDisposition) valid() bool {
 type ClaimDisposition string
 
 const (
-	ClaimAccepted            ClaimDisposition = "ACCEPTED"
-	ClaimRecoverTerminalACK  ClaimDisposition = "RECOVER_TERMINAL_ACK"
-	ClaimRecoverSettlement   ClaimDisposition = "RECOVER_SETTLEMENT"
-	ClaimSettledACK          ClaimDisposition = "SETTLED_ACK"
-	ClaimObsoleteACK         ClaimDisposition = "OBSOLETE_ACK"
-	ClaimActiveLeaseNoACK    ClaimDisposition = "ACTIVE_LEASE_NOACK"
-	ClaimRetryLaterNoACK     ClaimDisposition = "RETRY_LATER_NOACK"
-	ClaimRetiredACK          ClaimDisposition = "RETIRED_ACK"
-	ClaimRecoverRunningNoACK ClaimDisposition = "RECOVER_RUNNING_NOACK"
+	ClaimAccepted                        ClaimDisposition = "ACCEPTED"
+	ClaimRecoverTerminalACK              ClaimDisposition = "RECOVER_TERMINAL_ACK"
+	ClaimRecoverSettlement               ClaimDisposition = "RECOVER_SETTLEMENT"
+	ClaimSettledACK                      ClaimDisposition = "SETTLED_ACK"
+	ClaimObsoleteACK                     ClaimDisposition = "OBSOLETE_ACK"
+	ClaimActiveLeaseNoACK                ClaimDisposition = "ACTIVE_LEASE_NOACK"
+	ClaimRetryLaterNoACK                 ClaimDisposition = "RETRY_LATER_NOACK"
+	ClaimRetiredACK                      ClaimDisposition = "RETIRED_ACK"
+	ClaimRecoverRunningNoACK             ClaimDisposition = "RECOVER_RUNNING_NOACK"
+	ClaimRecoverAmbiguousInvocationNoACK ClaimDisposition = "RECOVER_AMBIGUOUS_INVOCATION_NOACK"
 )
 
 func (d ClaimDisposition) valid() bool {
 	switch d {
-	case ClaimAccepted, ClaimRecoverTerminalACK, ClaimRecoverSettlement, ClaimSettledACK, ClaimObsoleteACK, ClaimActiveLeaseNoACK, ClaimRetryLaterNoACK, ClaimRetiredACK, ClaimRecoverRunningNoACK:
+	case ClaimAccepted, ClaimRecoverTerminalACK, ClaimRecoverSettlement, ClaimSettledACK, ClaimObsoleteACK, ClaimActiveLeaseNoACK, ClaimRetryLaterNoACK, ClaimRetiredACK, ClaimRecoverRunningNoACK, ClaimRecoverAmbiguousInvocationNoACK:
 		return true
 	default:
 		return false
@@ -192,6 +193,24 @@ type BeginExecutionRepository interface {
 	BeginExecution(ctx context.Context, fence runtimedomain.Fence) (BeginExecutionDisposition, error)
 }
 
+type AuthorizeInvocationDisposition string
+
+const (
+	AuthorizeInvocationNow     AuthorizeInvocationDisposition = "AUTHORIZED_NOW"
+	AuthorizeInvocationAlready AuthorizeInvocationDisposition = "ALREADY_AUTHORIZED"
+)
+
+func (d AuthorizeInvocationDisposition) valid() bool {
+	return d == AuthorizeInvocationNow || d == AuthorizeInvocationAlready
+}
+
+// InvocationAuthorizationRepository owns the final durable transition before
+// an effecting synchronous SDK callable may be submitted. Only AUTHORIZED_NOW
+// grants submission authority; ALREADY_AUTHORIZED is an unknown-outcome fence.
+type InvocationAuthorizationRepository interface {
+	AuthorizeInvocation(ctx context.Context, fence runtimedomain.Fence) (AuthorizeInvocationDisposition, error)
+}
+
 // ClaimLeaseTTLMillis is the bounded, whole-millisecond lease policy passed to
 // the state owner. It deliberately cannot represent an application-authored
 // absolute expiry.
@@ -254,6 +273,24 @@ func (s *ClaimService) BeginExecution(ctx context.Context, fence runtimedomain.F
 	disposition, err := repository.BeginExecution(ctx, fence)
 	if err != nil {
 		return "", fmt.Errorf("begin execution: %w", err)
+	}
+	if !disposition.valid() {
+		return "", ErrInvalidClaim
+	}
+	return disposition, nil
+}
+
+func (s *ClaimService) AuthorizeInvocation(ctx context.Context, fence runtimedomain.Fence) (AuthorizeInvocationDisposition, error) {
+	if err := fence.Validate(); err != nil {
+		return "", err
+	}
+	repository, ok := s.repository.(InvocationAuthorizationRepository)
+	if !ok {
+		return "", ErrClaimDependencyUnavailable
+	}
+	disposition, err := repository.AuthorizeInvocation(ctx, fence)
+	if err != nil {
+		return "", fmt.Errorf("authorize execution invocation: %w", err)
 	}
 	if !disposition.valid() {
 		return "", ErrInvalidClaim

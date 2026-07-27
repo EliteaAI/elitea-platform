@@ -42,20 +42,42 @@ func (s verifierSpy) Verify(ctx context.Context, envelope *runtimev1.SignedWorke
 }
 
 type claimControllerStub struct {
-	calls            *[]string
-	lease            runtimedomain.ActiveLease
-	disposition      executionapp.ClaimDisposition
-	retirementReason executionapp.RetirementReason
-	recovery         *executionapp.SettlementRecovery
-	watermark        uint64
-	desiredState     runtimedomain.DesiredState
-	claimRequest     *executionapp.ClaimRequest
-	claimErr         error
-	beginDisposition executionapp.BeginExecutionDisposition
-	beginSequence    *[]executionapp.BeginExecutionDisposition
-	beginErr         error
-	abortDisposition *executionapp.ClaimAbortDisposition
-	abortErr         error
+	calls             *[]string
+	lease             runtimedomain.ActiveLease
+	disposition       executionapp.ClaimDisposition
+	retirementReason  executionapp.RetirementReason
+	recovery          *executionapp.SettlementRecovery
+	watermark         uint64
+	desiredState      runtimedomain.DesiredState
+	claimRequest      *executionapp.ClaimRequest
+	claimErr          error
+	beginDisposition  executionapp.BeginExecutionDisposition
+	beginSequence     *[]executionapp.BeginExecutionDisposition
+	beginErr          error
+	invokeDisposition executionapp.AuthorizeInvocationDisposition
+	invokeSequence    *[]executionapp.AuthorizeInvocationDisposition
+	invokeErr         error
+	abortDisposition  *executionapp.ClaimAbortDisposition
+	abortErr          error
+}
+
+func (s claimControllerStub) AuthorizeInvocation(_ context.Context, fence runtimedomain.Fence) (executionapp.AuthorizeInvocationDisposition, error) {
+	*s.calls = append(*s.calls, "authorize-invocation")
+	if fence != s.lease.Fence {
+		return "", runtimedomain.ErrStaleFence
+	}
+	if s.invokeErr != nil {
+		return "", s.invokeErr
+	}
+	if s.invokeSequence != nil && len(*s.invokeSequence) > 0 {
+		disposition := (*s.invokeSequence)[0]
+		*s.invokeSequence = (*s.invokeSequence)[1:]
+		return disposition, nil
+	}
+	if s.invokeDisposition != "" {
+		return s.invokeDisposition, nil
+	}
+	return executionapp.AuthorizeInvocationNow, nil
 }
 
 func (s claimControllerStub) BeginExecution(_ context.Context, fence runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error) {
@@ -243,6 +265,46 @@ func TestBeginExecutionReturnsStartedThenLostResponseReplayWithoutBusinessMateri
 	}
 }
 
+func TestAuthorizeInvocationReturnsOneSubmissionAuthorityWithoutBusinessMaterial(t *testing.T) {
+	calls := []string{}
+	lease := validLease()
+	sequence := []executionapp.AuthorizeInvocationDisposition{
+		executionapp.AuthorizeInvocationNow,
+		executionapp.AuthorizeInvocationAlready,
+	}
+	server, err := NewServer(
+		testControlServerConfig(),
+		workloadAuthorizerStub{calls: &calls},
+		newTestVerifier(t),
+		claimControllerStub{calls: &calls, lease: lease, invokeSequence: &sequence},
+		inputResolverStub{calls: &calls, manifest: validManifest()},
+		&settlementControllerStub{calls: &calls},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &runtimev1.AuthorizeInvocationRequestV1{
+		Identity: &runtimev1.ExecutionIdentityV1{
+			CommandId:   lease.Fence.CommandID,
+			ExecutionId: lease.Fence.ExecutionID,
+			Generation:  lease.Fence.Generation,
+		},
+		Fence: fenceProto(lease.Fence),
+	}
+
+	first, err := server.AuthorizeInvocation(context.Background(), request)
+	if err != nil || first.GetRejection() != nil || first.GetDisposition() != runtimev1.AuthorizeInvocationDispositionV1_AUTHORIZE_INVOCATION_DISPOSITION_V1_AUTHORIZED_NOW {
+		t.Fatalf("first invocation authorization=%v err=%v", first, err)
+	}
+	replay, err := server.AuthorizeInvocation(context.Background(), request)
+	if err != nil || replay.GetRejection() != nil || replay.GetDisposition() != runtimev1.AuthorizeInvocationDispositionV1_AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED {
+		t.Fatalf("lost-response invocation authorization=%v err=%v", replay, err)
+	}
+	if !reflect.DeepEqual(calls, []string{"authorize-peer", "authorize-invocation", "authorize-peer", "authorize-invocation"}) {
+		t.Fatalf("invocation authorization crossed a business-input boundary: %v", calls)
+	}
+}
+
 func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
 	calls := []string{}
 	lease := validLease()
@@ -276,6 +338,41 @@ func TestRecoverRunningClaimNeverResolvesBusinessInputs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"authorize-peer", "verify-command", "claim"}) {
 		t.Fatalf("running recovery reached business input: %v", calls)
+	}
+}
+
+func TestRecoverAmbiguousInvocationClaimNeverResolvesBusinessInputs(t *testing.T) {
+	calls := []string{}
+	lease := validLease()
+	server, err := NewServer(
+		testControlServerConfig(),
+		workloadAuthorizerStub{calls: &calls},
+		verifierSpy{calls: &calls, verifier: newTestVerifier(t)},
+		claimControllerStub{
+			calls:       &calls,
+			lease:       lease,
+			disposition: executionapp.ClaimRecoverAmbiguousInvocationNoACK,
+			watermark:   7,
+		},
+		inputResolverStub{calls: &calls, manifest: validIndexManifest()},
+		&settlementControllerStub{calls: &calls},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.ClaimCommand(context.Background(), claimRequestForIndexManifest(t, validIndexManifest()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := response.GetReceipt()
+	if response.GetRejection() != nil || receipt.GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK || receipt.GetDesiredState() != runtimev1.DesiredExecutionStateV1_DESIRED_EXECUTION_STATE_V1_RUNNING {
+		t.Fatalf("unexpected ambiguous invocation receipt: %v", response)
+	}
+	if receipt.GetInputBundleRef() != nil || receipt.GetInputBundle() != nil || receipt.GetSettlementRecovery() != nil {
+		t.Fatalf("ambiguous invocation recovery leaked business material: %v", receipt)
+	}
+	if !reflect.DeepEqual(calls, []string{"authorize-peer", "verify-command", "claim"}) {
+		t.Fatalf("ambiguous invocation recovery reached business input: %v", calls)
 	}
 }
 

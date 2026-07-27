@@ -21,12 +21,21 @@ enum ClaimDispositionV1 {
   CLAIM_DISPOSITION_V1_RETRY_LATER_NOACK = 7;
   CLAIM_DISPOSITION_V1_RETIRED_ACK = 8;
   CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK = 9;
+  // The prior lease durably crossed the invocation fence but left no terminal
+  // output. The worker may reconcile output only; it must never invoke the SDK.
+  CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK = 10;
 }
 
 enum BeginExecutionDispositionV1 {
   BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED = 0;
   BEGIN_EXECUTION_DISPOSITION_V1_STARTED_NOW = 1;
   BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED = 2;
+}
+
+enum AuthorizeInvocationDispositionV1 {
+  AUTHORIZE_INVOCATION_DISPOSITION_V1_UNSPECIFIED = 0;
+  AUTHORIZE_INVOCATION_DISPOSITION_V1_AUTHORIZED_NOW = 1;
+  AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED = 2;
 }
 
 message ClaimCommandRequestV1 {
@@ -84,6 +93,22 @@ message BeginExecutionResponseV1 {
   reserved 3 to 15;
 }
 
+// AuthorizeInvocation is the last durable fence before the synchronous SDK
+// callable may be submitted. AUTHORIZED_NOW is the only disposition that
+// permits submission; ALREADY_AUTHORIZED means the prior callable may have
+// started and therefore must never be invoked again.
+message AuthorizeInvocationRequestV1 {
+  ExecutionIdentityV1 identity = 1;
+  ExecutionFenceV1 fence = 2;
+  reserved 3 to 15;
+}
+
+message AuthorizeInvocationResponseV1 {
+  AuthorizeInvocationDispositionV1 disposition = 1;
+  RuntimeErrorV1 rejection = 2;
+  reserved 3 to 15;
+}
+
 message RenewLeaseRequestV1 {
   ExecutionIdentityV1 identity = 1;
   ExecutionFenceV1 fence = 2;
@@ -129,6 +154,7 @@ message PrepareSettlementResponseV1 {
 service RuntimeControlService {
   rpc ClaimCommand(ClaimCommandRequestV1) returns (ClaimCommandResponseV1);
   rpc BeginExecution(BeginExecutionRequestV1) returns (BeginExecutionResponseV1);
+  rpc AuthorizeInvocation(AuthorizeInvocationRequestV1) returns (AuthorizeInvocationResponseV1);
   rpc RenewLease(RenewLeaseRequestV1) returns (RenewLeaseResponseV1);
   rpc ObserveDesiredState(ObserveDesiredStateRequestV1) returns (ObserveDesiredStateResponseV1);
   rpc PrepareSettlement(PrepareSettlementRequestV1) returns (PrepareSettlementResponseV1);

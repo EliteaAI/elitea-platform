@@ -51,6 +51,36 @@ WHERE execution_id = $1 AND generation = 1`,
 	}
 }
 
+func TestSharedMigration0050BackfillsConservativeInvocationState(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	seedSharedMigrationMinimums(t, pool)
+	applySharedMigrationsUpTo(t, pool, 46)
+	seedHistoricalReplayGapFixture(t, pool)
+	applySharedMigrationsUpTo(t, pool, 50)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var state string
+	if err := pool.QueryRow(ctx, `
+SELECT invocation_state
+FROM elitea_runtime.execution_jobs
+WHERE execution_id = 'execution-gap-sequence' AND generation = 1`,
+	).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "MAY_HAVE_STARTED" {
+		t.Fatalf("0050 did not conservatively fence historical RUNNING work: %q", state)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET invocation_state = 'UNSAFE'
+WHERE execution_id = 'execution-gap-sequence' AND generation = 1`,
+	); err == nil {
+		t.Fatal("0050 accepted an unknown invocation state")
+	}
+}
+
 func seedSharedMigrationMinimums(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

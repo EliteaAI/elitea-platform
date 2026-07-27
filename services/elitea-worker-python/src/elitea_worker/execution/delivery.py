@@ -46,6 +46,7 @@ from elitea_worker.constants import (
     OUTPUT_SCHEMA_REVISION,
 )
 from elitea_worker.execution.errors import (
+    AmbiguousExecutionRecovery,
     AuthorizationFailure,
     DeadlineExceeded,
     DependencyUnavailable,
@@ -142,6 +143,10 @@ class ControlPlane(Protocol):
     async def begin_execution(
         self, request: control_pb2.BeginExecutionRequestV1
     ) -> control_pb2.BeginExecutionResponseV1: ...
+
+    async def authorize_invocation(
+        self, request: control_pb2.AuthorizeInvocationRequestV1
+    ) -> control_pb2.AuthorizeInvocationResponseV1: ...
 
     async def renew_lease(
         self, request: control_pb2.RenewLeaseRequestV1
@@ -820,6 +825,35 @@ class ConfigurationValidationDeliveryProcessor:
                     allow_nonterminal=True,
                 )
             return DeliveryResult(DeliveryDisposition.RECOVERY_REQUIRED_NOACK)
+        if disposition == (
+            control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+        ):
+            _validate_recover_running_receipt(
+                receipt,
+                workload_session_id=self._workload_session_id,
+                producer_id=self._producer_id,
+                now_unix_millis=_runtime_now(self._clock),
+            )
+            output = self._output_session_factory()
+            pending = output.pending_replay_frame
+            if output.has_pending_replay != (pending is not None):
+                raise InvalidInput("The durable output spool state is inconsistent.")
+            verified = _verified_claim_command(signed, command, receipt)
+            if pending is not None:
+                return await self._recover_pending_output(
+                    delivery=delivery,
+                    frame=pending,
+                    output=output,
+                    receipt=receipt,
+                    verified=verified,
+                    allow_nonterminal=True,
+                )
+            return await self._recover_ambiguous_running(
+                delivery=delivery,
+                output=output,
+                receipt=receipt,
+                verified=verified,
+            )
         if disposition == control_pb2.CLAIM_DISPOSITION_V1_RECOVER_TERMINAL_ACK:
             now = _runtime_now(self._clock)
             _validate_active_fence(
@@ -1245,6 +1279,59 @@ class ConfigurationValidationDeliveryProcessor:
                 output=output,
                 receipt=receipt,
                 verified=verified,
+            )
+        finally:
+            await lease.stop()
+
+    async def _recover_ambiguous_running(
+        self,
+        *,
+        delivery: RedisCommandDelivery,
+        output: OutputSession,
+        receipt: control_pb2.ClaimReceiptV1,
+        verified: VerifiedWorkerCommand,
+    ) -> DeliveryResult:
+        """Settle a no-spool invocation recovery without invoking the SDK.
+
+        Main issues this recovery-only fence only after an invocation was
+        durably authorized and its predecessor lease expired. Absence of a
+        local frame is not evidence that the synchronous SDK did not run.
+        """
+
+        failure = AmbiguousExecutionRecovery()
+        frame = build_output_frame(
+            verified,
+            failure,
+            occurred_at_unix_millis=_runtime_now(self._clock),
+            claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+            sequence=int(receipt.claim_handoff_watermark) + 1,
+        )
+        lease = _ClaimLeaseMonitor(
+            control=self._control,
+            receipt=receipt,
+            clock_unix_millis=self._clock,
+            interval_seconds=self._lease_poll_interval,
+        )
+        lease.start()
+        try:
+            frame = await self._publish_with_terminal_linearization(
+                frame,
+                verified=verified,
+                claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+                initial_output=output,
+            )
+            receipt_id = await self._prepare_frame_settlement(frame)
+            await self._command_acker.ack_after_settlement(
+                delivery, verified.command.idempotency_key
+            )
+            execution_error: WorkerError = failure
+            if _is_cancellation_frame(frame):
+                execution_error = ExecutionCancelled()
+            return DeliveryResult(
+                DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED,
+                output_frame=frame,
+                settlement_receipt_id=receipt_id,
+                execution_error=execution_error,
             )
         finally:
             await lease.stop()
@@ -1773,6 +1860,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 EliteaSdkIndexingAdapter.from_context(resolved_input.client_context),
                 self._supervisor,
             )
+            await self._authorize_invocation(receipt)
             result = await handler.execute(request)
             callback.raise_if_failed()
             try:
@@ -1816,6 +1904,35 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 error=error,
             )
             raise InternalFailure() from None
+
+    async def _authorize_invocation(
+        self,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> None:
+        response = await self._control.authorize_invocation(
+            control_pb2.AuthorizeInvocationRequestV1(
+                identity=receipt.identity,
+                fence=receipt.fence,
+            )
+        )
+        if response.HasField("rejection"):
+            if int(response.disposition) != (
+                control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_UNSPECIFIED
+            ):
+                raise InvalidInput(
+                    "The invocation authorization response is ambiguous."
+                )
+            raise _worker_error_from_runtime(response.rejection)
+        disposition = int(response.disposition)
+        if disposition == (
+            control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_AUTHORIZED_NOW
+        ):
+            return
+        if disposition == (
+            control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED
+        ):
+            raise AmbiguousExecutionRecovery()
+        raise InvalidInput("The invocation authorization disposition is malformed.")
 
 
 def _current_numeric_identity(value: str) -> int | str:

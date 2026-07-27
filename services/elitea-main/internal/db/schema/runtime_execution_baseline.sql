@@ -59,6 +59,7 @@ CREATE TABLE elitea_runtime.execution_jobs (
     settings_entry_id text,
     state text NOT NULL,
     desired_state text NOT NULL,
+    invocation_state text NOT NULL DEFAULT 'NOT_STARTED',
     admitted_at timestamptz NOT NULL,
     settled_at timestamptz,
     terminal_error_code text,

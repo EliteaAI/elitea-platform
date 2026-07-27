@@ -24,6 +24,7 @@ type WorkloadAuthorizer interface {
 type ClaimController interface {
 	Claim(ctx context.Context, request executionapp.ClaimRequest) (executionapp.ClaimDecision, error)
 	BeginExecution(ctx context.Context, fence runtimedomain.Fence) (executionapp.BeginExecutionDisposition, error)
+	AuthorizeInvocation(ctx context.Context, fence runtimedomain.Fence) (executionapp.AuthorizeInvocationDisposition, error)
 	Abort(ctx context.Context, fence runtimedomain.Fence, disposition executionapp.ClaimAbortDisposition) error
 	Renew(ctx context.Context, fence runtimedomain.Fence) (runtimedomain.ActiveLease, error)
 	VerifyActive(ctx context.Context, fence runtimedomain.Fence) error
@@ -224,6 +225,30 @@ func (s *Server) BeginExecution(ctx context.Context, request *runtimev1.BeginExe
 		return beginExecutionRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The begin execution disposition is unavailable.", false), nil
 	}
 	return &runtimev1.BeginExecutionResponseV1{Disposition: wireDisposition}, nil
+}
+
+func (s *Server) AuthorizeInvocation(ctx context.Context, request *runtimev1.AuthorizeInvocationRequestV1) (*runtimev1.AuthorizeInvocationResponseV1, error) {
+	if request == nil || request.GetIdentity() == nil || request.GetFence() == nil || hasUnknownFields(request.ProtoReflect()) {
+		return authorizeInvocationRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The invocation authorization request is malformed.", false), nil
+	}
+	workloadIdentity, err := s.authorizer.AuthorizeWorkload(ctx, request.GetFence().GetWorkloadSessionId(), request.GetFence().GetProducerId())
+	if err != nil || workloadIdentity == "" {
+		return authorizeInvocationRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED, "The workload session is not accepted.", false), nil
+	}
+	fence, err := fenceDomain(request.GetIdentity(), request.GetFence(), workloadIdentity)
+	if err != nil {
+		return authorizeInvocationRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The execution fence is malformed.", false), nil
+	}
+	disposition, err := s.claims.AuthorizeInvocation(ctx, fence)
+	if err != nil {
+		code, message, retryable := safeRuntimeError(err)
+		return authorizeInvocationRejection(code, message, retryable), nil
+	}
+	wireDisposition, err := authorizeInvocationDispositionProto(disposition)
+	if err != nil {
+		return authorizeInvocationRejection(runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INTERNAL, "The invocation authorization disposition is unavailable.", false), nil
+	}
+	return &runtimev1.AuthorizeInvocationResponseV1{Disposition: wireDisposition}, nil
 }
 
 func (s *Server) RenewLease(ctx context.Context, request *runtimev1.RenewLeaseRequestV1) (*runtimev1.RenewLeaseResponseV1, error) {
@@ -520,6 +545,10 @@ func beginExecutionRejection(code runtimev1.RuntimeErrorCodeV1, message string, 
 	return &runtimev1.BeginExecutionResponseV1{Rejection: runtimeError(code, message, retryable)}
 }
 
+func authorizeInvocationRejection(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.AuthorizeInvocationResponseV1 {
+	return &runtimev1.AuthorizeInvocationResponseV1{Rejection: runtimeError(code, message, retryable)}
+}
+
 func runtimeError(code runtimev1.RuntimeErrorCodeV1, message string, retryable bool) *runtimev1.RuntimeErrorV1 {
 	return &runtimev1.RuntimeErrorV1{Code: code, SafeMessage: message, Retryable: retryable}
 }
@@ -557,6 +586,8 @@ func claimDispositionProto(disposition executionapp.ClaimDisposition) (runtimev1
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RETIRED_ACK, nil
 	case executionapp.ClaimRecoverRunningNoACK:
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_RUNNING_NOACK, nil
+	case executionapp.ClaimRecoverAmbiguousInvocationNoACK:
+		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK, nil
 	default:
 		return runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
 	}
@@ -570,6 +601,17 @@ func beginExecutionDispositionProto(disposition executionapp.BeginExecutionDispo
 		return runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_ALREADY_STARTED, nil
 	default:
 		return runtimev1.BeginExecutionDispositionV1_BEGIN_EXECUTION_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
+	}
+}
+
+func authorizeInvocationDispositionProto(disposition executionapp.AuthorizeInvocationDisposition) (runtimev1.AuthorizeInvocationDispositionV1, error) {
+	switch disposition {
+	case executionapp.AuthorizeInvocationNow:
+		return runtimev1.AuthorizeInvocationDispositionV1_AUTHORIZE_INVOCATION_DISPOSITION_V1_AUTHORIZED_NOW, nil
+	case executionapp.AuthorizeInvocationAlready:
+		return runtimev1.AuthorizeInvocationDispositionV1_AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED, nil
+	default:
+		return runtimev1.AuthorizeInvocationDispositionV1_AUTHORIZE_INVOCATION_DISPOSITION_V1_UNSPECIFIED, executionapp.ErrInvalidClaim
 	}
 }
 

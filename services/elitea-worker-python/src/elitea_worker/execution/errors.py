@@ -77,3 +77,14 @@ class OutputDeadlineWon(DeadlineExceeded):
 class InternalFailure(WorkerError):
     def __init__(self) -> None:
         super().__init__("INTERNAL", "The runtime operation failed.")
+
+
+class AmbiguousExecutionRecovery(WorkerError):
+    """The prior SDK invocation may have started and cannot be repeated."""
+
+    def __init__(self) -> None:
+        # Runtime error messages are canonicalized by code before crossing the
+        # worker boundary. Keep the in-process error aligned with that contract;
+        # operators diagnose the ambiguous invocation from Main's durable
+        # invocation_state, never from a worker-supplied free-form message.
+        super().__init__("INTERNAL", "The runtime operation failed.")

@@ -32,6 +32,9 @@ class Stub:
     def __init__(self) -> None:
         self.ClaimCommand = Unary(control_pb2.ClaimCommandResponseV1())
         self.BeginExecution = Unary(control_pb2.BeginExecutionResponseV1())
+        self.AuthorizeInvocation = Unary(
+            control_pb2.AuthorizeInvocationResponseV1()
+        )
         self.RenewLease = Unary(control_pb2.RenewLeaseResponseV1())
         self.ObserveDesiredState = Unary(control_pb2.ObserveDesiredStateResponseV1())
         self.PrepareSettlement = Unary(control_pb2.PrepareSettlementResponseV1())
@@ -80,6 +83,33 @@ def test_begin_execution_is_one_bounded_rpc_attempt() -> None:
 
         assert await client.begin_execution(request) == response
         assert stub.BeginExecution.calls == [
+            (
+                request,
+                {
+                    "timeout": 1.25,
+                    "metadata": (("x-elitea-workload-session", "session-1"),),
+                },
+            )
+        ]
+
+    asyncio.run(run())
+
+def test_authorize_invocation_is_one_bounded_rpc_attempt() -> None:
+    async def run() -> None:
+        stub = Stub()
+        response = control_pb2.AuthorizeInvocationResponseV1(
+            disposition=control_pb2.AUTHORIZE_INVOCATION_DISPOSITION_V1_ALREADY_AUTHORIZED
+        )
+        stub.AuthorizeInvocation.response = response
+        client = ExecutionControlClient(
+            stub,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            deadline_seconds=1.25,
+        )
+        request = control_pb2.AuthorizeInvocationRequestV1()
+
+        assert await client.authorize_invocation(request) == response
+        assert stub.AuthorizeInvocation.calls == [
             (
                 request,
                 {

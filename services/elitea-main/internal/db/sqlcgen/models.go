@@ -263,6 +263,7 @@ type EliteaRuntimeExecutionJob struct {
 	SettingsEntryID         *string            `db:"settings_entry_id" json:"settings_entry_id"`
 	State                   string             `db:"state" json:"state"`
 	DesiredState            string             `db:"desired_state" json:"desired_state"`
+	InvocationState         string             `db:"invocation_state" json:"invocation_state"`
 	AdmittedAt              pgtype.Timestamptz `db:"admitted_at" json:"admitted_at"`
 	SettledAt               pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
 	TerminalErrorCode       *string            `db:"terminal_error_code" json:"terminal_error_code"`

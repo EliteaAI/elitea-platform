@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	RuntimeControlService_ClaimCommand_FullMethodName        = "/elitea.runtime.v1.RuntimeControlService/ClaimCommand"
 	RuntimeControlService_BeginExecution_FullMethodName      = "/elitea.runtime.v1.RuntimeControlService/BeginExecution"
+	RuntimeControlService_AuthorizeInvocation_FullMethodName = "/elitea.runtime.v1.RuntimeControlService/AuthorizeInvocation"
 	RuntimeControlService_RenewLease_FullMethodName          = "/elitea.runtime.v1.RuntimeControlService/RenewLease"
 	RuntimeControlService_ObserveDesiredState_FullMethodName = "/elitea.runtime.v1.RuntimeControlService/ObserveDesiredState"
 	RuntimeControlService_PrepareSettlement_FullMethodName   = "/elitea.runtime.v1.RuntimeControlService/PrepareSettlement"
@@ -32,6 +33,7 @@ const (
 type RuntimeControlServiceClient interface {
 	ClaimCommand(ctx context.Context, in *ClaimCommandRequestV1, opts ...grpc.CallOption) (*ClaimCommandResponseV1, error)
 	BeginExecution(ctx context.Context, in *BeginExecutionRequestV1, opts ...grpc.CallOption) (*BeginExecutionResponseV1, error)
+	AuthorizeInvocation(ctx context.Context, in *AuthorizeInvocationRequestV1, opts ...grpc.CallOption) (*AuthorizeInvocationResponseV1, error)
 	RenewLease(ctx context.Context, in *RenewLeaseRequestV1, opts ...grpc.CallOption) (*RenewLeaseResponseV1, error)
 	ObserveDesiredState(ctx context.Context, in *ObserveDesiredStateRequestV1, opts ...grpc.CallOption) (*ObserveDesiredStateResponseV1, error)
 	PrepareSettlement(ctx context.Context, in *PrepareSettlementRequestV1, opts ...grpc.CallOption) (*PrepareSettlementResponseV1, error)
@@ -59,6 +61,16 @@ func (c *runtimeControlServiceClient) BeginExecution(ctx context.Context, in *Be
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BeginExecutionResponseV1)
 	err := c.cc.Invoke(ctx, RuntimeControlService_BeginExecution_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeControlServiceClient) AuthorizeInvocation(ctx context.Context, in *AuthorizeInvocationRequestV1, opts ...grpc.CallOption) (*AuthorizeInvocationResponseV1, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuthorizeInvocationResponseV1)
+	err := c.cc.Invoke(ctx, RuntimeControlService_AuthorizeInvocation_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +113,7 @@ func (c *runtimeControlServiceClient) PrepareSettlement(ctx context.Context, in 
 type RuntimeControlServiceServer interface {
 	ClaimCommand(context.Context, *ClaimCommandRequestV1) (*ClaimCommandResponseV1, error)
 	BeginExecution(context.Context, *BeginExecutionRequestV1) (*BeginExecutionResponseV1, error)
+	AuthorizeInvocation(context.Context, *AuthorizeInvocationRequestV1) (*AuthorizeInvocationResponseV1, error)
 	RenewLease(context.Context, *RenewLeaseRequestV1) (*RenewLeaseResponseV1, error)
 	ObserveDesiredState(context.Context, *ObserveDesiredStateRequestV1) (*ObserveDesiredStateResponseV1, error)
 	PrepareSettlement(context.Context, *PrepareSettlementRequestV1) (*PrepareSettlementResponseV1, error)
@@ -119,6 +132,9 @@ func (UnimplementedRuntimeControlServiceServer) ClaimCommand(context.Context, *C
 }
 func (UnimplementedRuntimeControlServiceServer) BeginExecution(context.Context, *BeginExecutionRequestV1) (*BeginExecutionResponseV1, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BeginExecution not implemented")
+}
+func (UnimplementedRuntimeControlServiceServer) AuthorizeInvocation(context.Context, *AuthorizeInvocationRequestV1) (*AuthorizeInvocationResponseV1, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AuthorizeInvocation not implemented")
 }
 func (UnimplementedRuntimeControlServiceServer) RenewLease(context.Context, *RenewLeaseRequestV1) (*RenewLeaseResponseV1, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RenewLease not implemented")
@@ -182,6 +198,24 @@ func _RuntimeControlService_BeginExecution_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RuntimeControlServiceServer).BeginExecution(ctx, req.(*BeginExecutionRequestV1))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeControlService_AuthorizeInvocation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuthorizeInvocationRequestV1)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).AuthorizeInvocation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_AuthorizeInvocation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).AuthorizeInvocation(ctx, req.(*AuthorizeInvocationRequestV1))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -254,6 +288,10 @@ var RuntimeControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BeginExecution",
 			Handler:    _RuntimeControlService_BeginExecution_Handler,
+		},
+		{
+			MethodName: "AuthorizeInvocation",
+			Handler:    _RuntimeControlService_AuthorizeInvocation_Handler,
 		},
 		{
 			MethodName: "RenewLease",

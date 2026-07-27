@@ -45,12 +45,12 @@ func (r *ClaimsRepository) ClaimValidation(ctx context.Context, request executio
 	}
 	var decision executionapp.ClaimDecision
 	err := r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
-		var commandID, desiredState, jobState, terminalErrorCode, outboxID, retirementCode string
+		var commandID, desiredState, jobState, invocationState, terminalErrorCode, outboxID, retirementCode string
 		var published, retired, deadlineExpired, authorityGranted bool
 		var projectionProjectID int64
 		var preparedEnvelopeDigest, publishedEnvelopeDigest []byte
 		err := tx.QueryRow(ctx, `
-SELECT j.command_id, j.desired_state, j.state,
+SELECT j.command_id, j.desired_state, j.state, j.invocation_state,
        COALESCE(j.terminal_error_code, ''),
        o.outbox_id, o.published_at IS NOT NULL,
        o.prepared_signed_envelope_digest, o.published_envelope_digest,
@@ -68,6 +68,7 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation), request.Cap
 			&commandID,
 			&desiredState,
 			&jobState,
+			&invocationState,
 			&terminalErrorCode,
 			&outboxID,
 			&published,
@@ -431,10 +432,12 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 				// A terminal result exists but its predecessor claim is not eligible
 				// for this authenticated handoff. Never re-execute business logic.
 				decision.Disposition = executionapp.ClaimRetryLaterNoACK
-			} else if request.CapabilityID == executiondomain.IndexIngestCapability && state == executiondomain.JobRunning {
+			} else if request.CapabilityID == executiondomain.IndexIngestCapability &&
+				state == executiondomain.JobRunning &&
+				invocationState != "PREPARING" {
 				// A replacement fence over RUNNING may reconcile durable output,
 				// but it must never receive business inputs or invoke the SDK.
-				decision.Disposition = executionapp.ClaimRecoverRunningNoACK
+				decision.Disposition = executionapp.ClaimRecoverAmbiguousInvocationNoACK
 			}
 		}
 		return nil
@@ -454,13 +457,13 @@ func (r *ClaimsRepository) BeginExecution(ctx context.Context, fence runtimedoma
 	}
 	var disposition executionapp.BeginExecutionDisposition
 	err := r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
-		var state, desired string
+		var state, desired, invocationState string
 		var live bool
 		err := tx.QueryRow(ctx, `
 WITH authority_clock AS MATERIALIZED (
     SELECT clock_timestamp() AS observed_at
 )
-SELECT j.state, j.desired_state,
+SELECT j.state, j.desired_state, j.invocation_state,
        c.lease_expires_at > authority_clock.observed_at
 FROM elitea_runtime.execution_jobs AS j
 JOIN elitea_runtime.execution_claims AS c
@@ -486,7 +489,7 @@ FOR UPDATE OF j, c`,
 			int64(fence.ClaimAttempt),
 			int64(fence.LeaseEpoch),
 			fence.Token[:],
-		).Scan(&state, &desired, &live)
+		).Scan(&state, &desired, &invocationState, &live)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return runtimedomain.ErrStaleFence
 		}
@@ -501,16 +504,31 @@ FOR UPDATE OF j, c`,
 		}
 		switch executiondomain.JobState(state) {
 		case executiondomain.JobRunning:
-			disposition = executionapp.BeginExecutionAlreadyStarted
-			return nil
+			switch invocationState {
+			case "PREPARING":
+				// No SDK submission was durably authorized. A replacement claim
+				// may safely repeat input preparation and reach the final
+				// invocation fence.
+				disposition = executionapp.BeginExecutionStartedNow
+				return nil
+			case "MAY_HAVE_STARTED":
+				disposition = executionapp.BeginExecutionAlreadyStarted
+				return nil
+			default:
+				return runtimedomain.ErrStaleFence
+			}
 		case executiondomain.JobClaimed:
+			if invocationState != "NOT_STARTED" {
+				return runtimedomain.ErrStaleFence
+			}
 		default:
 			return runtimedomain.ErrStaleFence
 		}
 
 		tag, err := tx.Exec(ctx, `
 UPDATE elitea_runtime.execution_jobs
-SET state = 'RUNNING'
+SET state = 'RUNNING',
+    invocation_state = 'PREPARING'
 WHERE execution_id = $1
   AND generation = $2
   AND command_id = $3
@@ -527,6 +545,98 @@ WHERE execution_id = $1
 			return runtimedomain.ErrStaleFence
 		}
 		disposition = executionapp.BeginExecutionStartedNow
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, runtimedomain.ErrStaleFence) || errors.Is(err, runtimedomain.ErrLeaseExpired) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: %w", executionapp.ErrClaimDependencyUnavailable, err)
+	}
+	return disposition, nil
+}
+
+func (r *ClaimsRepository) AuthorizeInvocation(ctx context.Context, fence runtimedomain.Fence) (executionapp.AuthorizeInvocationDisposition, error) {
+	if err := fence.Validate(); err != nil {
+		return "", err
+	}
+	var disposition executionapp.AuthorizeInvocationDisposition
+	err := r.store.WithinTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
+		var state, desired, invocationState string
+		var live bool
+		err := tx.QueryRow(ctx, `
+WITH authority_clock AS MATERIALIZED (
+    SELECT clock_timestamp() AS observed_at
+)
+SELECT j.state, j.desired_state, j.invocation_state,
+       c.lease_expires_at > authority_clock.observed_at
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.execution_claims AS c
+  ON c.execution_id = j.execution_id AND c.generation = j.generation
+JOIN authority_clock ON TRUE
+WHERE j.execution_id = $1
+  AND j.generation = $2
+  AND j.command_id = $3
+  AND c.workload_identity = $4
+  AND c.workload_session_id = $5
+  AND c.producer_id = $6
+  AND c.claim_attempt = $7
+  AND c.lease_epoch = $8
+  AND c.fence_token = $9
+  AND c.released_at IS NULL
+FOR UPDATE OF j, c`,
+			fence.ExecutionID,
+			int64(fence.Generation),
+			fence.CommandID,
+			fence.WorkloadIdentity,
+			fence.WorkloadSessionID,
+			fence.ProducerID,
+			int64(fence.ClaimAttempt),
+			int64(fence.LeaseEpoch),
+			fence.Token[:],
+		).Scan(&state, &desired, &invocationState, &live)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return runtimedomain.ErrStaleFence
+		}
+		if err != nil {
+			return fmt.Errorf("lock invocation authority: %w", err)
+		}
+		if !live {
+			return runtimedomain.ErrLeaseExpired
+		}
+		if executiondomain.JobState(state) != executiondomain.JobRunning ||
+			runtimedomain.DesiredState(desired) != runtimedomain.DesiredRunning {
+			return runtimedomain.ErrStaleFence
+		}
+		switch invocationState {
+		case "MAY_HAVE_STARTED":
+			disposition = executionapp.AuthorizeInvocationAlready
+			return nil
+		case "PREPARING":
+		default:
+			return runtimedomain.ErrStaleFence
+		}
+
+		tag, err := tx.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET invocation_state = 'MAY_HAVE_STARTED'
+WHERE execution_id = $1
+  AND generation = $2
+  AND command_id = $3
+  AND state = 'RUNNING'
+  AND desired_state = 'RUNNING'
+  AND invocation_state = 'PREPARING'`,
+			fence.ExecutionID,
+			int64(fence.Generation),
+			fence.CommandID,
+		)
+		if err != nil {
+			return fmt.Errorf("mark invocation authorized: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return runtimedomain.ErrStaleFence
+		}
+		disposition = executionapp.AuthorizeInvocationNow
 		return nil
 	})
 	if err != nil {

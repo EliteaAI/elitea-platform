@@ -218,6 +218,99 @@ WHERE execution_id = $1 AND generation = $2`, frame.Fence.ExecutionID, int64(fra
 	})
 }
 
+// TestPostgresServiceBackedInvocationFence proves the two restart classes on a
+// real PostgreSQL state owner: PREPARING is recoverable, while a durably
+// authorized invocation is recovery-only and cannot receive SDK inputs again.
+func TestPostgresServiceBackedInvocationFence(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	frame := postgresValidationFrame(t, "invocation-fence")
+	seed := seedPostgresValidationExecution(t, pool, frame, runtimedomain.DesiredRunning)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_jobs
+SET capability_id = 'index.ingest.v1',
+    capability_version = '1',
+    configuration_revision_id = NULL,
+    configuration_type = NULL,
+    catalog_revision = NULL,
+    catalog_digest = NULL,
+    schema_id = NULL,
+    schema_revision = NULL,
+    schema_digest = NULL,
+    settings_entry_id = NULL
+WHERE execution_id = $1 AND generation = $2`,
+		frame.Fence.ExecutionID,
+		int64(frame.Fence.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := NewClaimsRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := executionapp.NewClaimService(repository, time.Now, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disposition, err := service.BeginExecution(ctx, frame.Fence); err != nil || disposition != executionapp.BeginExecutionStartedNow {
+		t.Fatalf("begin initial execution disposition=%q err=%v", disposition, err)
+	}
+	expirePostgresClaim(t, pool, seed.claimID)
+	request := executionapp.ClaimRequest{
+		CommandID:            frame.Fence.CommandID,
+		OutboxID:             seed.outboxID,
+		ExecutionID:          frame.Fence.ExecutionID,
+		Generation:           frame.Fence.Generation,
+		CapabilityID:         executiondomain.IndexIngestCapability,
+		SignedEnvelopeDigest: seed.envelopeDigest,
+		WorkloadIdentity:     "spiffe://elitea.test/workload/replacement-preparing",
+		WorkloadSessionID:    "replacement-preparing-session",
+		ProducerID:           "replacement-preparing-producer",
+	}
+	preparing, err := service.Claim(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparing.Disposition != executionapp.ClaimAccepted {
+		t.Fatalf("PREPARING execution did not receive executable recovery: %+v", preparing)
+	}
+	if disposition, err := service.BeginExecution(ctx, preparing.Lease.Fence); err != nil || disposition != executionapp.BeginExecutionStartedNow {
+		t.Fatalf("resume pre-submission disposition=%q err=%v", disposition, err)
+	}
+	if disposition, err := service.AuthorizeInvocation(ctx, preparing.Lease.Fence); err != nil || disposition != executionapp.AuthorizeInvocationNow {
+		t.Fatalf("authorize invocation disposition=%q err=%v", disposition, err)
+	}
+	if disposition, err := service.AuthorizeInvocation(ctx, preparing.Lease.Fence); err != nil || disposition != executionapp.AuthorizeInvocationAlready {
+		t.Fatalf("invocation authorization replay=%q err=%v", disposition, err)
+	}
+	ageAndExpirePostgresClaim(t, pool, preparing.Lease.ClaimID)
+	request.WorkloadIdentity = "spiffe://elitea.test/workload/replacement-ambiguous"
+	request.WorkloadSessionID = "replacement-ambiguous-session"
+	request.ProducerID = "replacement-ambiguous-producer"
+	ambiguous, err := service.Claim(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ambiguous.Disposition != executionapp.ClaimRecoverAmbiguousInvocationNoACK {
+		t.Fatalf("MAY_HAVE_STARTED execution received executable authority: %+v", ambiguous)
+	}
+	var invocationState string
+	if err := pool.QueryRow(ctx, `
+SELECT invocation_state
+FROM elitea_runtime.execution_jobs
+WHERE execution_id = $1 AND generation = $2`,
+		frame.Fence.ExecutionID,
+		int64(frame.Fence.Generation),
+	).Scan(&invocationState); err != nil {
+		t.Fatal(err)
+	}
+	if invocationState != "MAY_HAVE_STARTED" {
+		t.Fatalf("durable invocation state=%q", invocationState)
+	}
+}
+
 func TestPostgresServiceBackedDatabaseDeadlineOutputLinearization(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
@@ -1460,6 +1553,24 @@ WHERE claim_id = $1
 	}
 	if tag.RowsAffected() != 1 {
 		t.Fatalf("expire source claim affected %d rows", tag.RowsAffected())
+	}
+}
+
+func ageAndExpirePostgresClaim(t *testing.T, pool *pgxpool.Pool, claimID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.execution_claims
+SET claimed_at = clock_timestamp() - interval '2 hours',
+    lease_expires_at = clock_timestamp() - interval '30 minutes'
+WHERE claim_id = $1
+  AND released_at IS NULL`, claimID)
+	if err != nil {
+		t.Fatalf("age and expire source claim: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("age and expire source claim affected %d rows", tag.RowsAffected())
 	}
 }
 
