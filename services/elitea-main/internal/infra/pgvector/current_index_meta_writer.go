@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -376,7 +377,130 @@ WHERE cmetadata->>'collection' = $1
 			return currentIndexMetaWriteError(queryContext, err)
 		}
 	}
+	if err := transaction.Commit(queryContext); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed = true
+	closeContext, closeCancel := context.WithTimeout(
+		context.Background(),
+		currentIndexMetaCloseTimeout,
+	)
+	defer closeCancel()
+	if err := connection.Close(closeContext); err != nil {
+		return currentIndexMetaWriteError(closeContext, err)
+	}
+	closed = true
+	return nil
+}
 
+func (w *CurrentIndexMetaWriter) MaterializeTaskID(
+	ctx context.Context,
+	target indexingapp.CurrentIndexMetaTarget,
+	record indexingapp.CurrentTaskRestampIndexMeta,
+) error {
+	if w == nil || ctx == nil || w.queryTimeout <= 0 || w.gate == nil ||
+		cap(w.gate) <= 0 ||
+		target.SchemaID <= 0 || target.SchemaID != record.ToolkitID ||
+		len(target.ConnectionString) == 0 ||
+		len(target.ConnectionString) >
+			indexingapp.MaxCurrentIndexMetaConnectionStringBytes ||
+		record.Validate() != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case w.gate <- struct{}{}:
+		defer func() { <-w.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
+	if !ok {
+		return ErrCurrentIndexMetaWrite
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	queryContext, cancel := context.WithTimeout(ctx, w.queryTimeout)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(queryContext, config)
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeContext, closeCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer closeCancel()
+			_ = connection.Close(closeContext)
+		}
+	}()
+
+	transaction, err := connection.BeginTx(queryContext, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	})
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackContext, rollbackCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer rollbackCancel()
+			_ = transaction.Rollback(rollbackContext)
+		}
+	}()
+
+	schema := pgx.Identifier{
+		strconv.FormatInt(int64(target.SchemaID), 10),
+	}.Sanitize()
+	if _, err := transaction.Exec(
+		queryContext,
+		`SELECT pg_advisory_xact_lock($1::integer, 0)`,
+		target.SchemaID,
+	); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	existing, err := loadCurrentIndexMetaForUpdate(
+		queryContext,
+		transaction,
+		schema,
+		record.IndexName,
+	)
+	if err != nil {
+		return err
+	}
+	plan, err := planCurrentTaskRestampIndexMeta(record, existing)
+	if err != nil {
+		return err
+	}
+	if !plan.noop {
+		tag, err := transaction.Exec(
+			queryContext,
+			`UPDATE `+schema+`.langchain_pg_embedding
+SET cmetadata = $2::jsonb
+WHERE id = $1`,
+			plan.id,
+			plan.metadata,
+		)
+		if err != nil {
+			return currentIndexMetaWriteError(queryContext, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return indexingapp.ErrCurrentIndexMetaConflict
+		}
+	}
 	if err := transaction.Commit(queryContext); err != nil {
 		return currentIndexMetaWriteError(queryContext, err)
 	}
@@ -674,6 +798,71 @@ func planCurrentManualStopCleanup(
 	return nil
 }
 
+func planCurrentTaskRestampIndexMeta(
+	record indexingapp.CurrentTaskRestampIndexMeta,
+	existing []currentStoredIndexMeta,
+) (currentIndexMetaWritePlan, error) {
+	if err := record.Validate(); err != nil || len(existing) != 1 {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	stored := existing[0]
+	indexGeneration, indexGenerationOK :=
+		currentIndexMetaLogicalGeneration(stored.metadata)
+	if indexGenerationOK && indexGeneration > int64(record.IndexGeneration) {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	executionGeneration, executionGenerationOK :=
+		currentIndexMetaInt64(stored.metadata["execution_generation"])
+	createdOn, createdOnOK :=
+		currentIndexMetaFloat64(stored.metadata["created_on"])
+	if stored.metadata["index_meta_id"] != record.MetaID ||
+		stored.metadata["execution_id"] != record.ExecutionID ||
+		!indexGenerationOK ||
+		indexGeneration != int64(record.IndexGeneration) ||
+		!executionGenerationOK ||
+		executionGeneration != int64(record.Generation) ||
+		!createdOnOK {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	if createdOn != record.CreatedOn {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	state, stateOK := stored.metadata["state"].(string)
+	if !stateOK {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	if state == string(indexingapp.CurrentIndexMetaCancelled) {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaSuperseded
+	}
+	switch taskID := stored.metadata["task_id"].(type) {
+	case nil:
+		metadata := cloneCurrentIndexMetaObject(stored.metadata)
+		metadata["task_id"] = record.ExecutionID
+		encoded, err := json.Marshal(metadata)
+		if err != nil || len(encoded) == 0 ||
+			len(encoded) > indexingapp.MaxCurrentInitialIndexMetaBytes {
+			return currentIndexMetaWritePlan{},
+				indexingapp.ErrCurrentIndexMetaConflict
+		}
+		return currentIndexMetaWritePlan{
+			id:       stored.id,
+			metadata: encoded,
+		}, nil
+	case string:
+		if taskID == record.ExecutionID {
+			return currentIndexMetaWritePlan{noop: true}, nil
+		}
+	}
+	return currentIndexMetaWritePlan{},
+		indexingapp.ErrCurrentIndexMetaConflict
+}
+
 func currentTerminalIndexMetaCompatible(
 	metadata map[string]any,
 	history []any,
@@ -844,6 +1033,21 @@ func currentIndexMetaInt64(value any) (int64, bool) {
 	}
 }
 
+func currentIndexMetaFloat64(value any) (float64, bool) {
+	var parsed float64
+	var err error
+	switch value := value.(type) {
+	case json.Number:
+		parsed, err = strconv.ParseFloat(string(value), 64)
+	case float64:
+		parsed = value
+	default:
+		return 0, false
+	}
+	return parsed, err == nil && !math.IsNaN(parsed) &&
+		!math.IsInf(parsed, 0)
+}
+
 // currentIndexMetaLogicalGeneration uses the positive legacy execution
 // generation only when the additive index_generation field is absent. A
 // present but malformed field fails closed instead of weakening the fence.
@@ -878,3 +1082,4 @@ func currentIndexMetaWriteError(ctx context.Context, cause error) error {
 var _ indexingapp.CurrentIndexMetaWriter = (*CurrentIndexMetaWriter)(nil)
 var _ indexingapp.CurrentIndexMetaTerminalWriter = (*CurrentIndexMetaWriter)(nil)
 var _ indexingapp.CurrentManualStopCleanupWriter = (*CurrentIndexMetaWriter)(nil)
+var _ indexingapp.CurrentIndexMetaTaskRestampWriter = (*CurrentIndexMetaWriter)(nil)

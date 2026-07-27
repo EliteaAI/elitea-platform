@@ -77,6 +77,56 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 	}
 	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1, 1)
 
+	// Reproduce the current synchronous SDK reset: the metadata generation is
+	// unchanged, but task_id is cleared before the in-progress callback.
+	if _, err := connection.Exec(ctx, `
+UPDATE `+schema+`.langchain_pg_embedding
+SET cmetadata = jsonb_set(cmetadata, '{task_id}', 'null'::jsonb)
+WHERE id = 'meta-1'`); err != nil {
+		t.Fatal(err)
+	}
+	restamp := indexingapp.CurrentTaskRestampIndexMeta{
+		MetaID:          first.MetaID,
+		ExecutionID:     first.ExecutionID,
+		Generation:      first.Generation,
+		IndexGeneration: first.IndexGeneration,
+		IndexName:       first.IndexName,
+		ToolkitID:       first.ToolkitID,
+		CreatedOn:       1_700_000_000.25,
+	}
+	if err := writer.MaterializeTaskID(ctx, target, restamp); err != nil {
+		t.Fatalf("restamp task id: %v", err)
+	}
+	// Simulate a process restart after the PgVector commit and before intent
+	// resolution. The exact retry is a no-op.
+	if err := NewCurrentIndexMetaWriter().MaterializeTaskID(
+		ctx,
+		target,
+		restamp,
+	); err != nil {
+		t.Fatalf("recover committed task restamp: %v", err)
+	}
+	var taskID string
+	if err := connection.QueryRow(ctx, `
+SELECT cmetadata->>'task_id'
+FROM `+schema+`.langchain_pg_embedding
+WHERE id = 'meta-1'`).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if taskID != first.ExecutionID {
+		t.Fatalf("restamped task_id=%q", taskID)
+	}
+	assertCurrentIndexMetaIntegrationRow(t, ctx, connection, schema, "meta-1", "meta-1", "execution-1", 1, 1)
+	staleCreatedOn := restamp
+	staleCreatedOn.CreatedOn++
+	if err := writer.MaterializeTaskID(
+		ctx,
+		target,
+		staleCreatedOn,
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
+		t.Fatalf("stale created_on restamp error=%v", err)
+	}
+
 	conflicting := currentIndexMetaIntegrationRecord(t, schemaID, "meta-2", "execution-2", "message-2")
 	conflicting = currentIndexMetaRecordWithGeneration(t, conflicting, 2)
 	if err := writer.MaterializeInitial(ctx, target, conflicting); !errors.Is(err, indexingapp.ErrCurrentIndexMetaConflict) {
@@ -121,6 +171,13 @@ WHERE id = 'meta-1'`).Scan(&terminalState); err != nil {
 		terminal,
 	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
 		t.Fatalf("older terminal generation error=%v", err)
+	}
+	if err := writer.MaterializeTaskID(
+		ctx,
+		target,
+		restamp,
+	); !errors.Is(err, indexingapp.ErrCurrentIndexMetaSuperseded) {
+		t.Fatalf("older task restamp generation error=%v", err)
 	}
 }
 

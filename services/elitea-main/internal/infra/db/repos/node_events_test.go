@@ -122,6 +122,87 @@ func TestNodeEventsRepositoryRejectsMissingAuthorityBeforeStateQuery(t *testing.
 	}
 }
 
+func TestNodeEventsRepositoryPersistsTaskRestampWithAuthenticatedAdmissionIdentity(t *testing.T) {
+	frame := testNodeEventFrame()
+	frame.BrowserData = []byte(`{
+		"type":"agent_index_data_status",
+		"response_metadata":{
+			"state":"in_progress",
+			"created_at":1700000000.25,
+			"task_id":"forged-task",
+			"project_id":999,
+			"toolkit_id":999,
+			"index_name":"forged"
+		}
+	}`)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{err: pgx.ErrNoRows},
+		{values: []any{"claim-node-1"}},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
+		{values: []any{true, true}},
+	}}
+	store := &scriptedStore{scriptedExecutor: executor}
+	repository, err := newNodeEventsRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := repository.ProjectNodeEvent(context.Background(), frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Inserted || len(executor.rowCalls) != 5 || store.txCalls != 1 {
+		t.Fatalf("outcome=%+v calls=%d tx=%d", outcome, len(executor.rowCalls), store.txCalls)
+	}
+	intent := executor.rowCalls[4]
+	for _, evidence := range []string{
+		"index_meta_initialized_at IS NOT NULL",
+		"j.tenant_id = $3",
+		"j.resource_project_id = $4",
+		"j.projection_project_id = $5",
+		"index_meta_task_restamp_status IS NULL",
+	} {
+		if !strings.Contains(intent.sql, evidence) {
+			t.Fatalf("task restamp intent SQL is missing %q", evidence)
+		}
+	}
+	if intent.args[0] != frame.Fence.ExecutionID ||
+		intent.args[1] != int64(frame.Fence.Generation) ||
+		intent.args[2] != frame.TenantID ||
+		intent.args[3] != int64(42) ||
+		intent.args[4] != int64(42) ||
+		intent.args[5] != frame.EventID ||
+		intent.args[7] != 1700000000.25 {
+		t.Fatalf("task restamp intent used worker identity: %#v", intent.args)
+	}
+}
+
+func TestNodeEventsRepositoryRollsBackProgressWhenTaskRestampLosesAdmissionAuthority(t *testing.T) {
+	frame := testNodeEventFrame()
+	frame.BrowserData = []byte(`{
+		"type":"agent_index_data_status",
+		"response_metadata":{"state":"in_progress","created_at":1700000000.25}
+	}`)
+	executor := &scriptedExecutor{rowResults: []scriptedRow{
+		{err: pgx.ErrNoRows},
+		{values: []any{"claim-node-1"}},
+		{values: []any{int64(0), "", []byte{}, []byte{}, int64(0), int64(0), int64(0), int64(0)}},
+		{values: []any{int64(17), "claim-node-1", "RUNNING", false, false}},
+		{values: []any{false, false}},
+	}}
+	store := &scriptedStore{scriptedExecutor: executor}
+	repository, err := newNodeEventsRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ProjectNodeEvent(context.Background(), frame); !errors.Is(err, runtimedomain.ErrStaleFence) {
+		t.Fatalf("lost task restamp admission authority error=%v", err)
+	}
+	if store.txCalls != 1 {
+		t.Fatalf("transaction count=%d", store.txCalls)
+	}
+}
+
 func testNodeEventFrame() outputapp.NodeEventFrame {
 	fence := runtimedomain.Fence{
 		CommandID:         "command-node-1",
