@@ -28,6 +28,7 @@ required=(
   ELITEA_INDEX_5681_MAIN_IMAGE_ID
   ELITEA_INDEX_5681_WORKER_IMAGE_ID
   ELITEA_INDEX_5681_LITELLM_IMAGE_ID
+  ELITEA_INDEX_5681_GATEWAY_IMAGE_ID
   ELITEA_INDEX_5681_LITELLM_SERVICE
   ELITEA_INDEX_5681_LITELLM_REVISION
   ELITEA_INDEX_5681_SDK_REVISION
@@ -54,7 +55,8 @@ for required_path in \
   "${ELITEA_CENTRY_DIR}/hybrid_auth/docker-compose.pov.yml" \
   "${ELITEA_CENTRY_DIR}/envs/default.env" \
   "${ELITEA_CENTRY_DIR}/envs/override.env" \
-  "${ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/runtime-ca.crt"; do
+  "${ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/runtime-ca.crt" \
+  "${ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/gateway-server.crt"; do
   [[ -f "${required_path}" && ! -L "${required_path}" ]] \
     || prerequisite_failure "required regular non-symlink file is absent"
 done
@@ -107,11 +109,17 @@ done
 for name in \
   ELITEA_INDEX_5681_MAIN_IMAGE_ID \
   ELITEA_INDEX_5681_WORKER_IMAGE_ID \
-  ELITEA_INDEX_5681_LITELLM_IMAGE_ID; do
+  ELITEA_INDEX_5681_LITELLM_IMAGE_ID \
+  ELITEA_INDEX_5681_GATEWAY_IMAGE_ID; do
   value="${!name}"
   [[ "${value}" =~ ^sha256:[0-9a-f]{64}$ ]] \
     || prerequisite_failure "${name} must be one immutable Docker image ID"
 done
+
+if [[ -n "${ELITEA_INDEX_TEST_BASE_URL:-}" ]] \
+  && [[ "${ELITEA_INDEX_TEST_BASE_URL%/}" != "https://localhost:18443" ]]; then
+  prerequisite_failure "the production-scale gate is bound to https://localhost:18443"
+fi
 for name in \
   ELITEA_INDEX_5681_PLATFORM_SHA \
   ELITEA_INDEX_5681_LITELLM_REVISION \

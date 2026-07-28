@@ -5,11 +5,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -43,6 +47,7 @@ const (
 	index5681MainImageIDEnv            = "ELITEA_INDEX_5681_MAIN_IMAGE_ID"
 	index5681WorkerImageIDEnv          = "ELITEA_INDEX_5681_WORKER_IMAGE_ID"
 	index5681LiteLLMImageIDEnv         = "ELITEA_INDEX_5681_LITELLM_IMAGE_ID"
+	index5681GatewayImageIDEnv         = "ELITEA_INDEX_5681_GATEWAY_IMAGE_ID"
 	index5681LiteLLMServiceEnv         = "ELITEA_INDEX_5681_LITELLM_SERVICE"
 	index5681LiteLLMRevisionEnv        = "ELITEA_INDEX_5681_LITELLM_REVISION"
 	index5681SDKRevisionEnv            = "ELITEA_INDEX_5681_SDK_REVISION"
@@ -83,6 +88,7 @@ type index5681Environment struct {
 	mainImageID              string
 	workerImageID            string
 	liteLLMImageID           string
+	gatewayImageID           string
 	liteLLMService           string
 	liteLLMRevision          string
 	sdkRevision              string
@@ -130,9 +136,21 @@ type index5681DurableSnapshot struct {
 
 type index5681SSEObservation struct {
 	EventCount         int
+	EventIDs           []int64
+	EventDigests       []string
 	EventTypes         []string
 	NodeTypes          []string
+	ThinkingMessages   []string
+	ThinkingToolNames  []string
+	ThinkingToolkits   []string
 	StatusStates       []string
+	StatusIndexNames   []string
+	StatusIndexed      []int64
+	StatusUpdated      []int64
+	StatusMetaID       string
+	ToolRunID          string
+	ToolStartedAt      string
+	ToolkitDisplayName string
 	MaxDataBytes       int
 	TotalDataBytes     int
 	ThinkingEvents     int
@@ -145,6 +163,22 @@ type index5681SSEObservation struct {
 	CompletedIndex     int
 	InvalidContract    bool
 	UnsafeDataObserved bool
+}
+
+type index5681CommandEntryReference struct {
+	EntryID          string
+	SemanticRole     string
+	ImmutableVersion string
+	DigestHex        string
+}
+
+type index5681DecodedCommandEvidence struct {
+	BundleID        string
+	BundleVersion   string
+	BundleDigestHex string
+	BundleBytes     int64
+	BundleMediaType string
+	Entries         []index5681CommandEntryReference
 }
 
 type index5681RedisEvidence struct {
@@ -200,6 +234,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	initialReceipt := readIssue5681Receipt(t, ctx, fixtureBaseURL)
 
 	requireIssue5681CleanDedicatedBaseline(t, ctx, harness)
+	requireIssue5681RedisNoEviction(t, ctx, harness)
 	requireIssue5681ConfluenceToolkit(t, ctx, harness)
 	requireIssue5681SecondProjectAccess(
 		t,
@@ -289,14 +324,21 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	}, "published production-scale execution")
 	reference := harness.waitForRedisReference(t, ctx, controlCanary, 1)
 	assertReferenceOnlyIndexRedis(t, reference)
-	expectedInputEntries := assertIssue5681DecodedRedisReference(
+	commandEvidence := assertIssue5681DecodedRedisReference(
 		t,
 		ctx,
 		harness,
 		executionID,
 		expectedClientIdentity,
 	)
-	assertIssue5681BoundedAdmission(t, ctx, harness, executionID, expectedInputEntries)
+	assertIssue5681StoredBundle(t, ctx, harness, executionID, commandEvidence)
+	assertIssue5681BoundedAdmission(
+		t,
+		ctx,
+		harness,
+		executionID,
+		int64(len(commandEvidence.Entries)),
+	)
 
 	entryID := harness.syntheticRead(t, ctx)
 	harness.ageSyntheticPending(t, ctx, entryID)
@@ -329,7 +371,21 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	removeIssue5681SyntheticConsumer(t, ctx, harness)
 
 	sse := finishIssue5681SSE(t, sseCancel, sseDone)
-	assertIssue5681SSE(t, sse, terminal)
+	assertIssue5681SSE(t, sse, terminal, indexName)
+	assertIssue5681SSEReconnect(
+		t,
+		ctx,
+		harness,
+		executionID,
+		expectedClientIdentity,
+		expectedClientIdentity,
+		[]string{
+			controlCanary,
+			initialReceipt.SmallImageSHA256,
+			initialReceipt.LargeImageSHA256,
+		},
+		sse,
+	)
 
 	receipt := waitForIssue5681Receipt(t, ctx, fixtureBaseURL)
 	assertIssue5681Receipt(t, receipt)
@@ -446,6 +502,7 @@ func loadIssue5681Environment(
 		mainImageID:              requiredIssue5681SHA256(t, index5681MainImageIDEnv, true),
 		workerImageID:            requiredIssue5681SHA256(t, index5681WorkerImageIDEnv, true),
 		liteLLMImageID:           requiredIssue5681SHA256(t, index5681LiteLLMImageIDEnv, true),
+		gatewayImageID:           requiredIssue5681SHA256(t, index5681GatewayImageIDEnv, true),
 		liteLLMService:           requiredIssue5681Text(t, index5681LiteLLMServiceEnv, "", 128),
 		liteLLMRevision:          requiredIssue5681Hex(t, index5681LiteLLMRevisionEnv, 40),
 		sdkRevision:              requiredIssue5681Hex(t, index5681SDKRevisionEnv, 40),
@@ -541,6 +598,9 @@ func requireIssue5681SUTProvenance(
 ) {
 	t.Helper()
 	repositoryRoot := findRepositoryRoot(t)
+	if harness.config.baseURL != "https://localhost:18443" {
+		t.Fatal("issue #5681 gate is bound to the dedicated local HTTPS gateway origin")
+	}
 	head := issue5681CommandOutput(t, ctx, repositoryRoot, "git", "rev-parse", "HEAD")
 	if strings.TrimSpace(head) != environment.platformSHA {
 		t.Fatalf("checked-out platform revision does not match %s", index5681PlatformSHAEnv)
@@ -549,9 +609,9 @@ func requireIssue5681SUTProvenance(
 		t,
 		ctx,
 		repositoryRoot,
-		"git", "status", "--porcelain", "--untracked-files=no",
+		"git", "status", "--porcelain", "--untracked-files=all",
 	); strings.TrimSpace(status) != "" {
-		t.Fatal("production-scale gate requires a clean tracked platform checkout")
+		t.Fatal("production-scale gate requires a completely clean platform checkout")
 	}
 
 	for service, expected := range map[string]struct {
@@ -570,24 +630,40 @@ func requireIssue5681SUTProvenance(
 			imageID:  environment.liteLLMImageID,
 			revision: environment.liteLLMRevision,
 		},
+		"auth_gateway": {
+			imageID: environment.gatewayImageID,
+		},
 	} {
 		containerID, err := harness.compose(ctx, "ps", "-q", service)
 		if err != nil || strings.TrimSpace(containerID) == "" ||
 			strings.ContainsAny(strings.TrimSpace(containerID), "\r\n") {
 			t.Fatalf("attest running %s container identity", service)
 		}
-		attestation := issue5681CommandOutput(
-			t,
-			ctx,
-			repositoryRoot,
-			"docker", "inspect",
-			`--format={{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}`,
-			strings.TrimSpace(containerID),
-		)
-		if strings.TrimSpace(attestation) != expected.imageID+"|"+expected.revision {
-			t.Fatalf("running %s image ID/source revision attestation mismatch", service)
+		if expected.revision == "" {
+			imageID := issue5681CommandOutput(
+				t,
+				ctx,
+				repositoryRoot,
+				"docker", "inspect", "--format={{.Image}}", strings.TrimSpace(containerID),
+			)
+			if strings.TrimSpace(imageID) != expected.imageID {
+				t.Fatalf("running %s image ID attestation mismatch", service)
+			}
+		} else {
+			attestation := issue5681CommandOutput(
+				t,
+				ctx,
+				repositoryRoot,
+				"docker", "inspect",
+				`--format={{.Image}}|{{index .Config.Labels "org.opencontainers.image.revision"}}`,
+				strings.TrimSpace(containerID),
+			)
+			if strings.TrimSpace(attestation) != expected.imageID+"|"+expected.revision {
+				t.Fatalf("running %s image ID/source revision attestation mismatch", service)
+			}
 		}
 	}
+	requireIssue5681GatewayTLSBinding(t, ctx, harness)
 
 	var lock struct {
 		DistributionVersion string `json:"distribution_version"`
@@ -661,6 +737,96 @@ func issue5681CommandOutput(
 	return stdout.String()
 }
 
+func requireIssue5681GatewayTLSBinding(
+	t *testing.T,
+	ctx context.Context,
+	harness *indexComposeHarness,
+) {
+	t.Helper()
+	containerID, err := harness.compose(ctx, "ps", "-q", "auth_gateway")
+	if err != nil || strings.TrimSpace(containerID) == "" {
+		t.Fatal("resolve dedicated auth gateway container")
+	}
+	mountOutput := issue5681CommandOutput(
+		t,
+		ctx,
+		findRepositoryRoot(t),
+		"docker", "inspect", "--format={{json .Mounts}}", strings.TrimSpace(containerID),
+	)
+	var mounts []struct {
+		Type        string `json:"Type"`
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		RW          bool   `json:"RW"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(mountOutput)), &mounts) != nil {
+		t.Fatal("decode auth gateway mount attestation")
+	}
+	expectedMounts := map[string]string{
+		"/etc/traefik/dynamic/index.yml": filepath.Join(
+			harness.config.centryDir,
+			"hybrid_auth",
+			"traefik-index-routes.yml",
+		),
+		"/run/elitea-auth/gateway.crt": filepath.Join(
+			harness.config.runtimeDir,
+			"runtime",
+			"gateway-server.crt",
+		),
+	}
+	for destination, expectedSource := range expectedMounts {
+		found := false
+		for _, mount := range mounts {
+			if mount.Destination == destination &&
+				mount.Type == "bind" &&
+				!mount.RW &&
+				filepath.Clean(mount.Source) == filepath.Clean(expectedSource) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("auth gateway lacks exact read-only %s mount", destination)
+		}
+	}
+
+	certificateBytes, err := os.ReadFile(expectedMounts["/run/elitea-auth/gateway.crt"])
+	if err != nil {
+		t.Fatal("read dedicated gateway certificate")
+	}
+	block, rest := pem.Decode(certificateBytes)
+	if block == nil || block.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 {
+		t.Fatal("dedicated gateway certificate must contain exactly one PEM certificate")
+	}
+	rootsBytes, err := os.ReadFile(filepath.Join(
+		harness.config.runtimeDir,
+		"runtime",
+		"runtime-ca.crt",
+	))
+	if err != nil {
+		t.Fatal("read dedicated runtime CA")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(rootsBytes) {
+		t.Fatal("dedicated runtime CA contains no certificate")
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	connection, err := tls.DialWithDialer(dialer, "tcp", "localhost:18443", &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: "localhost",
+	})
+	if err != nil {
+		t.Fatal("establish dedicated gateway TLS connection")
+	}
+	defer connection.Close()
+	state := connection.ConnectionState()
+	if len(state.PeerCertificates) == 0 ||
+		!bytes.Equal(state.PeerCertificates[0].Raw, block.Bytes) {
+		t.Fatal("public HTTPS origin is not serving the attested gateway certificate")
+	}
+}
+
 func requireIssue5681CleanDedicatedBaseline(
 	t *testing.T,
 	ctx context.Context,
@@ -681,8 +847,43 @@ func requireIssue5681CleanDedicatedBaseline(
 	if stream.Length != 0 || stream.Mappings != 0 || stream.EntryCount != 0 {
 		t.Fatalf("dedicated issue #5681 Redis baseline is not empty: %+v", stream)
 	}
-	if pending, err := harness.pendingEntriesResult(ctx); err == nil && len(pending) != 0 {
+	pending, err := harness.pendingEntriesResult(ctx)
+	if err != nil {
+		t.Fatalf("inspect dedicated issue #5681 Redis pending baseline: %v", err)
+	}
+	if len(pending) != 0 {
 		t.Fatalf("dedicated issue #5681 Redis consumer group is not empty: %+v", pending)
+	}
+}
+
+func requireIssue5681RedisNoEviction(
+	t *testing.T,
+	ctx context.Context,
+	harness *indexComposeHarness,
+) {
+	t.Helper()
+	output, err := harness.compose(
+		ctx,
+		"exec", "-T", "runtime_redis",
+		"sh", "-ec", `tr '\000' '\n' </proc/1/cmdline`,
+	)
+	if err != nil {
+		t.Fatal("attest dedicated runtime Redis process configuration")
+	}
+	arguments := strings.Fields(output)
+	hasPair := func(flag, value string) bool {
+		for index := 0; index+1 < len(arguments); index++ {
+			if arguments[index] == flag && arguments[index+1] == value {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasPair("--maxmemory", "64mb") ||
+		!hasPair("--maxmemory-policy", "noeviction") ||
+		!hasPair("--appendonly", "yes") ||
+		!hasPair("--appendfsync", "everysec") {
+		t.Fatal("runtime Redis lacks the exact bounded noeviction/durable process profile")
 	}
 }
 
@@ -844,23 +1045,31 @@ func requireIssue5681SecondProjectAccess(
 ) {
 	t.Helper()
 	endpoint := fmt.Sprintf(
-		"%s/api/v2/elitea_core/index_meta/prompt_lib/%d/%d",
+		"%s/api/v2/elitea_core/test_toolkit_tool/prompt_lib/%d?await_response=false&execution_contract=index.ingest.v1",
 		harness.config.baseURL,
 		projectID,
-		toolkitID,
 	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body := []byte(fmt.Sprintf(`{"toolkit_config":{"toolkit_id":%d}}`, toolkitID))
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		endpoint,
+		bytes.NewReader(body),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Cookie", harness.config.cookie)
 	response, err := harness.config.httpClient.Do(request)
 	if err != nil {
-		t.Fatalf("verify allowed actor access to the second existing project: %v", err)
+		t.Fatalf("verify allowed actor replay permission in the second project: %v", err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("allowed actor cannot access the supplied second project/toolkit: status=%d", response.StatusCode)
+	// The deliberately incomplete body reaches the start handler only after
+	// the exact models.applications.tool.patch project permission succeeds.
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("allowed actor lacks replay-equivalent permission in the second project: status=%d", response.StatusCode)
 	}
 }
 
@@ -1058,7 +1267,7 @@ func assertIssue5681DecodedRedisReference(
 	harness *indexComposeHarness,
 	executionID string,
 	expectedClientIdentity string,
-) int64 {
+) index5681DecodedCommandEvidence {
 	t.Helper()
 	const script = `
 local rows = redis.call('XRANGE', KEYS[1], '-', '+', 'COUNT', 2)
@@ -1173,14 +1382,29 @@ return cjson.encode({
 		t.Fatal("Redis worker command is not the exact bounded index.ingest.v1 reference contract")
 	}
 
-	entryIDs := []string{
-		indexCommand.GetToolkitConfigurationEntryId(),
-		indexCommand.GetToolParametersEntryId(),
-		indexCommand.GetLlmModelEntryId(),
-		indexCommand.GetLlmConfigurationEntryId(),
-		indexCommand.GetMcpTokensEntryId(),
+	references := []index5681CommandEntryReference{
+		{
+			EntryID:      indexCommand.GetToolkitConfigurationEntryId(),
+			SemanticRole: "index.toolkit_configuration",
+		},
+		{
+			EntryID:      indexCommand.GetToolParametersEntryId(),
+			SemanticRole: "index.tool_parameters",
+		},
+		{
+			EntryID:      indexCommand.GetLlmModelEntryId(),
+			SemanticRole: "index.llm_model",
+		},
+		{
+			EntryID:      indexCommand.GetLlmConfigurationEntryId(),
+			SemanticRole: "index.llm_configuration",
+		},
+		{
+			EntryID:      indexCommand.GetMcpTokensEntryId(),
+			SemanticRole: "index.mcp_tokens",
+		},
 	}
-	if entryIDs[0] == "" || entryIDs[1] == "" {
+	if references[0].EntryID == "" || references[1].EntryID == "" {
 		t.Fatal("Redis index command lacks required toolkit/tool-parameter references")
 	}
 	if binding := indexCommand.GetEmbeddingBinding(); binding != nil {
@@ -1189,27 +1413,215 @@ return cjson.encode({
 			!validIssue5681DigestValue(binding.GetContentDigest()) {
 			t.Fatal("Redis index command embedding binding is malformed")
 		}
-		entryIDs = append(entryIDs, binding.GetEntryId())
+		references = append(references, index5681CommandEntryReference{
+			EntryID:          binding.GetEntryId(),
+			SemanticRole:     "index.embedding_binding",
+			ImmutableVersion: binding.GetImmutableVersion(),
+			DigestHex:        hex.EncodeToString(binding.GetContentDigest().GetValue()),
+		})
 	}
-	seen := make(map[string]struct{}, len(entryIDs))
-	var entryCount int64
-	for _, entryID := range entryIDs {
-		if entryID == "" {
+	seen := make(map[string]struct{}, len(references))
+	nonEmpty := references[:0]
+	for _, reference := range references {
+		if reference.EntryID == "" {
 			continue
 		}
-		if len(entryID) > 256 {
+		if len(reference.EntryID) > 256 {
 			t.Fatal("Redis index command contains an oversized input-entry identity")
 		}
-		if _, duplicate := seen[entryID]; duplicate {
+		if _, duplicate := seen[reference.EntryID]; duplicate {
 			t.Fatal("Redis index command aliases two immutable input entries")
 		}
-		seen[entryID] = struct{}{}
-		entryCount++
+		seen[reference.EntryID] = struct{}{}
+		nonEmpty = append(nonEmpty, reference)
 	}
-	if entryCount < 2 || entryCount > 6 {
-		t.Fatalf("Redis index command references %d input entries, want 2..6", entryCount)
+	if len(nonEmpty) < 2 || len(nonEmpty) > 6 {
+		t.Fatalf("Redis index command references %d input entries, want 2..6", len(nonEmpty))
 	}
-	return entryCount
+	return index5681DecodedCommandEvidence{
+		BundleID:        bundle.GetInputBundleId(),
+		BundleVersion:   bundle.GetImmutableVersion(),
+		BundleDigestHex: hex.EncodeToString(bundle.GetDigest().GetValue()),
+		BundleBytes:     int64(bundle.GetByteLength()),
+		BundleMediaType: bundle.GetMediaType(),
+		Entries:         nonEmpty,
+	}
+}
+
+func assertIssue5681StoredBundle(
+	t *testing.T,
+	ctx context.Context,
+	harness *indexComposeHarness,
+	executionID string,
+	command index5681DecodedCommandEvidence,
+) {
+	t.Helper()
+	if !executionIDPattern.MatchString(executionID) {
+		t.Fatal("invalid execution identity for bundle evidence")
+	}
+	query := fmt.Sprintf(`
+SELECT json_build_object(
+  'bundle_id', b.input_bundle_id,
+  'bundle_version', b.immutable_version,
+  'media_type', b.media_type,
+  'digest_hex', encode(b.manifest_digest, 'hex'),
+  'manifest_size', b.manifest_size,
+  'manifest_hex', encode(b.manifest_bytes, 'hex'),
+  'entries', COALESCE((
+    SELECT json_agg(json_build_object(
+      'entry_id', e.entry_id,
+      'entry_version', e.entry_version,
+      'semantic_role', e.semantic_role,
+      'media_type', e.media_type,
+      'digest_hex', encode(e.content_digest, 'hex'),
+      'content_size', e.content_size,
+      'content_reference', e.content_reference,
+      'classification', e.classification,
+      'required_grant_audience', e.required_grant_audience
+    ) ORDER BY e.semantic_role)
+    FROM elitea_runtime.input_bundle_entries AS e
+    WHERE e.input_bundle_id = b.input_bundle_id
+  ), '[]'::json)
+)
+FROM elitea_runtime.execution_jobs AS j
+JOIN elitea_runtime.input_bundles AS b ON b.input_bundle_id = j.input_bundle_id
+WHERE j.execution_id = '%s'
+  AND j.capability_id = 'index.ingest.v1'`, executionID)
+	output, err := harness.postgres(ctx, query)
+	if err != nil || len(output) > 256*1024 {
+		t.Fatal("read bounded immutable input-bundle evidence")
+	}
+	var stored struct {
+		BundleID      string `json:"bundle_id"`
+		BundleVersion string `json:"bundle_version"`
+		MediaType     string `json:"media_type"`
+		DigestHex     string `json:"digest_hex"`
+		ManifestSize  int64  `json:"manifest_size"`
+		ManifestHex   string `json:"manifest_hex"`
+		Entries       []struct {
+			EntryID               string `json:"entry_id"`
+			EntryVersion          string `json:"entry_version"`
+			SemanticRole          string `json:"semantic_role"`
+			MediaType             string `json:"media_type"`
+			DigestHex             string `json:"digest_hex"`
+			ContentSize           int64  `json:"content_size"`
+			ContentReference      string `json:"content_reference"`
+			Classification        string `json:"classification"`
+			RequiredGrantAudience string `json:"required_grant_audience"`
+		} `json:"entries"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &stored) != nil ||
+		stored.BundleID != command.BundleID ||
+		stored.BundleVersion != command.BundleVersion ||
+		stored.MediaType != command.BundleMediaType ||
+		stored.DigestHex != command.BundleDigestHex ||
+		stored.ManifestSize != command.BundleBytes ||
+		len(stored.Entries) != len(command.Entries) ||
+		stored.ManifestSize <= 0 ||
+		stored.ManifestSize > 64*1024 {
+		t.Fatal("stored input bundle does not match the decoded Redis reference")
+	}
+	manifestBytes, err := hex.DecodeString(stored.ManifestHex)
+	if err != nil || int64(len(manifestBytes)) != stored.ManifestSize {
+		t.Fatal("stored input-bundle manifest bytes are malformed")
+	}
+	manifestDigest := sha256.Sum256(manifestBytes)
+	if hex.EncodeToString(manifestDigest[:]) != stored.DigestHex {
+		t.Fatal("stored input-bundle manifest digest does not match exact bytes")
+	}
+	var manifest runtimev1.ExecutionInputBundleV1
+	if err := runtimegrpc.ScanStrictMessage(
+		manifestBytes,
+		manifest.ProtoReflect().Descriptor(),
+	); err != nil {
+		t.Fatalf("strictly scan stored input-bundle manifest: %v", err)
+	}
+	if err := proto.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("decode stored input-bundle manifest: %v", err)
+	}
+	canonical, err := proto.MarshalOptions{Deterministic: true}.Marshal(&manifest)
+	if err != nil || !bytes.Equal(canonical, manifestBytes) ||
+		manifest.GetInputBundleId() != stored.BundleID ||
+		manifest.GetImmutableVersion() != stored.BundleVersion ||
+		len(manifest.GetEntries()) != len(stored.Entries) {
+		t.Fatal("stored input-bundle manifest is not the exact canonical contract")
+	}
+
+	type entryEvidence struct {
+		version        string
+		role           string
+		mediaType      string
+		digestHex      string
+		contentSize    int64
+		contentRef     string
+		classification string
+		audience       string
+	}
+	storedByID := make(map[string]entryEvidence, len(stored.Entries))
+	for _, entry := range stored.Entries {
+		if entry.EntryID == "" || entry.EntryVersion == "" ||
+			entry.SemanticRole == "" || entry.MediaType != "application/json" ||
+			len(entry.DigestHex) != sha256.Size*2 ||
+			entry.ContentSize <= 0 || entry.ContentSize > 256*1024 ||
+			entry.ContentReference == "" || entry.Classification == "" ||
+			entry.RequiredGrantAudience == "" {
+			t.Fatal("stored input-bundle entry is incomplete or unbounded")
+		}
+		if _, duplicate := storedByID[entry.EntryID]; duplicate {
+			t.Fatal("stored input-bundle entries contain a duplicate identity")
+		}
+		storedByID[entry.EntryID] = entryEvidence{
+			version:        entry.EntryVersion,
+			role:           entry.SemanticRole,
+			mediaType:      entry.MediaType,
+			digestHex:      entry.DigestHex,
+			contentSize:    entry.ContentSize,
+			contentRef:     entry.ContentReference,
+			classification: entry.Classification,
+			audience:       entry.RequiredGrantAudience,
+		}
+	}
+	manifestByID := make(map[string]*runtimev1.ExecutionInputEntryV1, len(manifest.GetEntries()))
+	for _, entry := range manifest.GetEntries() {
+		content := entry.GetContent()
+		storedEntry, exists := storedByID[entry.GetEntryId()]
+		if !exists || content == nil ||
+			entry.GetImmutableVersion() != storedEntry.version ||
+			entry.GetSemanticRole() != storedEntry.role ||
+			content.GetImmutableVersion() != storedEntry.version ||
+			content.GetMediaType() != storedEntry.mediaType ||
+			int64(content.GetByteLength()) != storedEntry.contentSize ||
+			hex.EncodeToString(content.GetDigest().GetValue()) != storedEntry.digestHex ||
+			content.GetContentId() != storedEntry.contentRef ||
+			content.GetClassification() != storedEntry.classification ||
+			content.GetRequiredGrantAudience() != storedEntry.audience ||
+			!validIssue5681DigestValue(content.GetDigest()) {
+			t.Fatal("canonical input-bundle manifest entry does not match stored evidence")
+		}
+		if _, duplicate := manifestByID[entry.GetEntryId()]; duplicate {
+			t.Fatal("canonical input-bundle manifest aliases an entry identity")
+		}
+		manifestByID[entry.GetEntryId()] = entry
+	}
+	referencedRoles := make(map[string]struct{}, len(command.Entries))
+	for _, reference := range command.Entries {
+		entry, exists := manifestByID[reference.EntryID]
+		if !exists || entry.GetSemanticRole() != reference.SemanticRole {
+			t.Fatal("decoded Redis command reference does not match its exact manifest role")
+		}
+		if _, duplicate := referencedRoles[reference.SemanticRole]; duplicate {
+			t.Fatal("decoded Redis command references a semantic role twice")
+		}
+		referencedRoles[reference.SemanticRole] = struct{}{}
+		if reference.ImmutableVersion != "" &&
+			(reference.ImmutableVersion != entry.GetImmutableVersion() ||
+				reference.DigestHex != hex.EncodeToString(entry.GetContent().GetDigest().GetValue())) {
+			t.Fatal("decoded Redis binding version/digest does not match its manifest entry")
+		}
+	}
+	if len(referencedRoles) != len(storedByID) {
+		t.Fatal("stored input bundle contains an entry not referenced by the Redis command")
+	}
 }
 
 func validIssue5681Digest(digest *runtimev1.DigestV1, value []byte) bool {
@@ -1542,6 +1954,7 @@ func observeIssue5681SSE(
 			expectedStreamID,
 			expectedMessageID,
 			forbiddenValues,
+			0,
 			ready,
 		)
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -1572,6 +1985,7 @@ func collectIssue5681SSE(
 	expectedStreamID string,
 	expectedMessageID string,
 	forbiddenValues []string,
+	lastEventID int64,
 	ready chan<- error,
 ) (index5681SSEObservation, error) {
 	endpoint := fmt.Sprintf(
@@ -1586,6 +2000,9 @@ func collectIssue5681SSE(
 	}
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("Cookie", harness.config.cookie)
+	if lastEventID > 0 {
+		request.Header.Set("Last-Event-ID", strconv.FormatInt(lastEventID, 10))
+	}
 	client := *harness.config.httpClient
 	client.Timeout = 0
 	response, err := client.Do(request)
@@ -1609,17 +2026,29 @@ func collectIssue5681SSE(
 		CompletedIndex:  -1,
 	}
 	var eventType string
+	var eventID string
 	var data strings.Builder
 	var toolRunID string
+	previousEventID := lastEventID
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 4096), 128*1024)
 	flush := func() bool {
 		if eventType == "" {
+			eventID = ""
 			data.Reset()
 			return false
 		}
 		raw := []byte(data.String())
+		cursor, cursorErr := strconv.ParseInt(eventID, 10, 64)
+		if cursorErr != nil || cursor <= previousEventID {
+			observation.InvalidContract = true
+		} else {
+			previousEventID = cursor
+		}
 		observation.EventCount++
+		observation.EventIDs = append(observation.EventIDs, cursor)
+		sum := sha256.Sum256(raw)
+		observation.EventDigests = append(observation.EventDigests, hex.EncodeToString(sum[:]))
 		observation.EventTypes = append(observation.EventTypes, eventType)
 		observation.MaxDataBytes = max(observation.MaxDataBytes, len(raw))
 		observation.TotalDataBytes += len(raw)
@@ -1654,23 +2083,79 @@ func collectIssue5681SSE(
 				observation.InvalidContract = true
 			} else if toolRunID == "" {
 				toolRunID = currentToolRunID
+				observation.ToolRunID = currentToolRunID
 			} else if toolRunID != currentToolRunID {
 				observation.InvalidContract = true
 			}
 			switch event.GetType() {
 			case "agent_tool_start":
+				startedAt, startedAtOK := metadata["timestamp_start"].(string)
+				if !issue5681ExactJSONKeys(metadata,
+					"tool_name", "tool_run_id", "timestamp_start", "metadata") ||
+					metadata["tool_name"] != "index_data" ||
+					metadata["tool_run_id"] != observation.ToolRunID ||
+					!startedAtOK ||
+					!issue5681RFC3339(startedAt) ||
+					!issue5681ValidToolMetadata(metadata["metadata"], &observation) {
+					observation.InvalidContract = true
+				}
+				observation.ToolStartedAt = startedAt
 			case "agent_thinking_step", "agent_thinking_step_update":
 				observation.ThinkingEvents++
 				if observation.ThinkingIndex == -1 {
 					observation.ThinkingIndex = eventIndex
 				}
+				if !issue5681ExactJSONKeys(metadata,
+					"name", "run_id", "tool_run_id", "metadata", "datetime",
+					"message", "tool_name", "toolkit") ||
+					metadata["name"] != "thinking_step" ||
+					!issue5681ValidCommonNodeMetadata(metadata, &observation) {
+					observation.InvalidContract = true
+				}
+				message, messageOK := metadata["message"].(string)
+				toolName, toolNameOK := metadata["tool_name"].(string)
+				toolkit, toolkitOK := metadata["toolkit"].(string)
+				if !messageOK || !toolNameOK || !toolkitOK {
+					observation.InvalidContract = true
+				}
+				observation.ThinkingMessages = append(observation.ThinkingMessages, message)
+				observation.ThinkingToolNames = append(observation.ThinkingToolNames, toolName)
+				observation.ThinkingToolkits = append(observation.ThinkingToolkits, toolkit)
 			case "agent_index_data_status":
 				state, _ := metadata["state"].(string)
 				observation.StatusStates = append(observation.StatusStates, state)
-				if metadata["name"] != "index_data_status" ||
+				if !issue5681ExactJSONKeys(metadata,
+					"name", "run_id", "tool_run_id", "metadata", "datetime",
+					"id", "index_name", "state", "error", "reindex", "indexed",
+					"updated", "created_at", "updated_on", "toolkit_id",
+					"task_id", "initiator", "project_id", "user_id") ||
+					metadata["name"] != "index_data_status" ||
 					metadata["task_id"] != executionID ||
 					!issue5681JSONIntegerEquals(metadata["project_id"], harness.config.projectID) ||
-					!issue5681JSONIntegerEquals(metadata["toolkit_id"], harness.config.toolkitID) {
+					!issue5681JSONIntegerEquals(metadata["toolkit_id"], harness.config.toolkitID) ||
+					!issue5681ValidCommonNodeMetadata(metadata, &observation) {
+					observation.InvalidContract = true
+				}
+				statusIndexName, indexNameOK := metadata["index_name"].(string)
+				indexed, indexedOK := issue5681JSONInteger(metadata["indexed"])
+				updated, updatedOK := issue5681JSONInteger(metadata["updated"])
+				createdAt, createdAtOK := metadata["created_at"].(string)
+				updatedOn, updatedOnOK := metadata["updated_on"].(string)
+				if !indexNameOK || !indexedOK || !updatedOK ||
+					!createdAtOK || !updatedOnOK ||
+					!issue5681RFC3339(createdAt) || !issue5681RFC3339(updatedOn) ||
+					metadata["error"] != nil || metadata["reindex"] != false {
+					observation.InvalidContract = true
+				}
+				observation.StatusIndexNames = append(observation.StatusIndexNames, statusIndexName)
+				observation.StatusIndexed = append(observation.StatusIndexed, indexed)
+				observation.StatusUpdated = append(observation.StatusUpdated, updated)
+				metaID, metaIDOK := metadata["id"].(string)
+				if !metaIDOK || metaID == "" {
+					observation.InvalidContract = true
+				} else if observation.StatusMetaID == "" {
+					observation.StatusMetaID = metaID
+				} else if observation.StatusMetaID != metaID {
 					observation.InvalidContract = true
 				}
 				switch state {
@@ -1688,6 +2173,17 @@ func collectIssue5681SSE(
 					observation.InvalidContract = true
 				}
 			case "agent_tool_end":
+				finishedAt, finishedAtOK := metadata["timestamp_finish"].(string)
+				if !issue5681ExactJSONKeys(metadata,
+					"tool_name", "tool_run_id", "finish_reason",
+					"timestamp_start", "timestamp_finish") ||
+					metadata["tool_name"] != "index_data" ||
+					metadata["tool_run_id"] != observation.ToolRunID ||
+					metadata["finish_reason"] != "stop" ||
+					metadata["timestamp_start"] != observation.ToolStartedAt ||
+					!finishedAtOK || !issue5681RFC3339(finishedAt) {
+					observation.InvalidContract = true
+				}
 			default:
 				observation.InvalidContract = true
 			}
@@ -1714,12 +2210,15 @@ func collectIssue5681SSE(
 			observation.InvalidContract = true
 		}
 		eventType = ""
+		eventID = ""
 		data.Reset()
 		return observation.TerminalSeen
 	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
+		case strings.HasPrefix(line, "id:"):
+			eventID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
 		case strings.HasPrefix(line, "event:"):
 			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
@@ -1741,12 +2240,72 @@ func collectIssue5681SSE(
 }
 
 func issue5681JSONIntegerEquals(value any, expected int64) bool {
+	actual, ok := issue5681JSONInteger(value)
+	return ok && actual == expected
+}
+
+func issue5681JSONInteger(value any) (int64, bool) {
 	number, ok := value.(json.Number)
 	if !ok {
-		return false
+		return 0, false
 	}
 	actual, err := strconv.ParseInt(number.String(), 10, 64)
-	return err == nil && actual == expected
+	return actual, err == nil
+}
+
+func issue5681ExactJSONKeys(value map[string]any, expected ...string) bool {
+	if len(value) != len(expected) {
+		return false
+	}
+	for _, key := range expected {
+		if _, exists := value[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func issue5681ValidToolMetadata(
+	value any,
+	observation *index5681SSEObservation,
+) bool {
+	metadata, ok := value.(map[string]any)
+	if !ok || !issue5681ExactJSONKeys(
+		metadata,
+		"initiator", "tool_name", "display_name",
+	) || metadata["initiator"] != "user" || metadata["tool_name"] != "index_data" {
+		return false
+	}
+	displayName, ok := metadata["display_name"].(string)
+	if !ok || displayName == "" || len(displayName) > 256 {
+		return false
+	}
+	if observation.ToolkitDisplayName == "" {
+		observation.ToolkitDisplayName = displayName
+	}
+	return observation.ToolkitDisplayName == displayName
+}
+
+func issue5681ValidCommonNodeMetadata(
+	metadata map[string]any,
+	observation *index5681SSEObservation,
+) bool {
+	runID, runOK := metadata["run_id"].(string)
+	toolRunID, toolRunOK := metadata["tool_run_id"].(string)
+	datetime, datetimeOK := metadata["datetime"].(string)
+	if !runOK || !toolRunOK || runID == "" || runID != toolRunID ||
+		toolRunID != observation.ToolRunID || !datetimeOK {
+		return false
+	}
+	if !issue5681RFC3339(datetime) {
+		return false
+	}
+	return issue5681ValidToolMetadata(metadata["metadata"], observation)
+}
+
+func issue5681RFC3339(value string) bool {
+	_, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil
 }
 
 func issue5681UnsafePayload(raw []byte, forbiddenValues []string) bool {
@@ -1756,13 +2315,29 @@ func issue5681UnsafePayload(raw []byte, forbiddenValues []string) bool {
 		"bearer ",
 		"api_key",
 		"api-key",
+		"access_token",
 		"auth_token",
 		"private_token",
 		"password",
 		"client_secret",
+		"credential",
+		"secret",
 		"toolkit_config",
+		"tool_params",
+		"chunking_config",
+		"runtime_config",
+		"settings",
 		"llm_configuration",
 		"mcp_tokens",
+		"http://",
+		"https://",
+		"postgres://",
+		"postgresql://",
+		"redis://",
+		`"url"`,
+		`"path"`,
+		"/run/",
+		"/data/",
 		"data:image/",
 		"base64,",
 	} {
@@ -1813,9 +2388,64 @@ func assertIssue5681SSE(
 	t *testing.T,
 	observation index5681SSEObservation,
 	durable index5681DurableSnapshot,
+	indexName string,
 ) {
 	t.Helper()
 	expectedCompletion := "Successfully indexed 1 documents (12 chunks)."
+	title := "Issue 5681 production-scale image corpus"
+	expectedNodeTypes := []string{
+		"agent_tool_start",
+		"agent_thinking_step",
+		"agent_index_data_status",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_thinking_step",
+		"agent_index_data_status",
+		"agent_tool_end",
+	}
+	expectedMessages := []string{
+		fmt.Sprintf("There is no existing index_meta for collection '%s'. Initializing it.", indexName),
+		fmt.Sprintf("Indexing data into collection with suffix '%s'. It can take some time...", indexName),
+		"Loading the documents to index.",
+		"Base documents were pre-loaded. Search for possible document duplicates and remove them from the indexing list...",
+		"Duplicates were removed. Processing documents to collect dependencies and prepare them for indexing...",
+		"Base documents are ready for indexing. 1 base documents in total to index.",
+		"Verification of documents to index started",
+		"Retrieving already indexed data from PGVector vectorstore",
+		fmt.Sprintf("Processing document #1: '%s'.", title),
+		fmt.Sprintf("Dependent documents for '%s' were processed. Applying chunking tool 'default' if specified and preparing documents for indexing...", title),
+		fmt.Sprintf("Collecting the dependencies for document '%s' (ID: 'page-5681') to collect dependencies if any...", title),
+		fmt.Sprintf("Indexed document #1 '%s' out of 1 (with 12 chunks).", title),
+		"12 documents have been indexed. Continuing...",
+	}
+	expectedToolNames := []string{
+		"index_data",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+		"index_documents",
+		"get_indexed_data",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+		"tool_progress",
+	}
+	expectedToolkits := make([]string, len(expectedMessages))
+	for index := range expectedToolkits {
+		expectedToolkits[index] = "ConfluenceAPIWrapper"
+	}
 	if observation.InvalidContract ||
 		observation.UnsafeDataObserved ||
 		!observation.TerminalSeen ||
@@ -1828,18 +2458,26 @@ func assertIssue5681SSE(
 		observation.MaxDataBytes <= 0 ||
 		observation.MaxDataBytes > nodeevent.MaxCurrentJSONBytes ||
 		observation.TotalDataBytes > 1024*1024 ||
-		len(observation.NodeTypes) < 5 ||
-		len(observation.NodeTypes) > 64 ||
-		observation.NodeTypes[0] != "agent_tool_start" ||
-		observation.NodeTypes[len(observation.NodeTypes)-1] != "agent_tool_end" ||
-		observation.ThinkingEvents < 1 ||
-		observation.ThinkingIndex <= 0 ||
-		observation.InProgressIndex <= observation.ThinkingIndex ||
-		observation.CompletedIndex <= observation.InProgressIndex ||
-		observation.CompletedIndex >= len(observation.NodeTypes)-1 ||
+		!issue5681StringSlicesEqual(observation.NodeTypes, expectedNodeTypes) ||
+		!issue5681StringSlicesEqual(observation.ThinkingMessages, expectedMessages) ||
+		!issue5681StringSlicesEqual(observation.ThinkingToolNames, expectedToolNames) ||
+		!issue5681StringSlicesEqual(observation.ThinkingToolkits, expectedToolkits) ||
+		observation.ThinkingEvents != len(expectedMessages) ||
+		observation.ThinkingIndex != 1 ||
+		observation.InProgressIndex != 2 ||
+		observation.CompletedIndex != len(expectedNodeTypes)-2 ||
+		observation.ToolRunID == "" ||
+		observation.StatusMetaID == "" ||
+		observation.ToolkitDisplayName == "" ||
 		len(observation.StatusStates) != 2 ||
 		observation.StatusStates[0] != "in_progress" ||
 		observation.StatusStates[1] != "completed" ||
+		!issue5681StringSlicesEqual(
+			observation.StatusIndexNames,
+			[]string{indexName, indexName},
+		) ||
+		!issue5681Int64SlicesEqual(observation.StatusIndexed, []int64{0, 1}) ||
+		!issue5681Int64SlicesEqual(observation.StatusUpdated, []int64{0, 12}) ||
 		observation.EventTypes[len(observation.EventTypes)-1] != "index.ingest.completed" {
 		t.Fatalf("SSE did not preserve the exact bounded current indexing contract: %+v", observation)
 	}
@@ -1851,6 +2489,84 @@ func assertIssue5681SSE(
 			t.Fatalf("unexpected non-terminal SSE event %q at position %d", eventType, index)
 		}
 	}
+}
+
+func assertIssue5681SSEReconnect(
+	t *testing.T,
+	parent context.Context,
+	harness *indexComposeHarness,
+	executionID string,
+	expectedStreamID string,
+	expectedMessageID string,
+	forbiddenValues []string,
+	original index5681SSEObservation,
+) {
+	t.Helper()
+	if len(original.EventIDs) < 4 ||
+		len(original.EventIDs) != len(original.EventDigests) ||
+		len(original.EventIDs) != len(original.EventTypes) {
+		t.Fatal("initial SSE replay lacks a durable reconnect cursor")
+	}
+	cursorIndex := len(original.EventIDs)/2 - 1
+	cursor := original.EventIDs[cursorIndex]
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	ready := make(chan error, 1)
+	replayed, err := collectIssue5681SSE(
+		ctx,
+		harness,
+		executionID,
+		expectedStreamID,
+		expectedMessageID,
+		forbiddenValues,
+		cursor,
+		ready,
+	)
+	if err != nil {
+		t.Fatalf("reconnect issue #5681 SSE from durable cursor: %v", err)
+	}
+	select {
+	case readyErr := <-ready:
+		if readyErr != nil {
+			t.Fatalf("open issue #5681 SSE reconnect: %v", readyErr)
+		}
+	default:
+		t.Fatal("SSE reconnect did not confirm response headers")
+	}
+	expectedIDs := original.EventIDs[cursorIndex+1:]
+	expectedDigests := original.EventDigests[cursorIndex+1:]
+	expectedTypes := original.EventTypes[cursorIndex+1:]
+	if replayed.InvalidContract || replayed.UnsafeDataObserved ||
+		!replayed.TerminalSeen ||
+		!issue5681Int64SlicesEqual(replayed.EventIDs, expectedIDs) ||
+		!issue5681StringSlicesEqual(replayed.EventDigests, expectedDigests) ||
+		!issue5681StringSlicesEqual(replayed.EventTypes, expectedTypes) {
+		t.Fatal("Last-Event-ID reconnect did not return the exact durable replay suffix")
+	}
+}
+
+func issue5681StringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func issue5681Int64SlicesEqual(left, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func waitForIssue5681Receipt(
@@ -2207,6 +2923,13 @@ func TestIssue5681PayloadSafetyRejectsBulkAndPrivateMarkers(t *testing.T) {
 		[]byte(`{"response_metadata":{"payload":"data:image/png;base64,AAAA"}}`),
 		[]byte(`{"response_metadata":{"message":"private-digest"}}`),
 		[]byte(`{"response_metadata":{"toolkit_config":{}}}`),
+		[]byte(`{"response_metadata":{"url":"https://source.invalid"}}`),
+		[]byte(`{"response_metadata":{"access_token":"redacted"}}`),
+		[]byte(`{"response_metadata":{"credential":"redacted"}}`),
+		[]byte(`{"response_metadata":{"tool_params":{}}}`),
+		[]byte(`{"response_metadata":{"chunking_config":{}}}`),
+		[]byte(`{"response_metadata":{"settings":{}}}`),
+		[]byte(`{"response_metadata":{"path":"/data/private"}}`),
 	} {
 		if !issue5681UnsafePayload(raw, []string{"private-digest"}) {
 			t.Fatalf("unsafe issue #5681 payload was accepted: %s", raw)

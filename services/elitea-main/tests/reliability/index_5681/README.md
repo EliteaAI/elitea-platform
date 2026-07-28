@@ -30,29 +30,38 @@ The gate asserts:
 
 - spoofed forwarded identity and a real authenticated actor lacking the current
   permissions cannot start indexing or read SSE;
-- the allowed actor can access a second existing project/toolkit but cannot
+- the allowed actor demonstrably has the same
+  `models.applications.tool.patch` permission in a second project but cannot
   replay the first project's execution through it;
-- Main, worker, external LiteLLM, platform checkout, and SDK are attested by
-  immutable revisions, Docker image IDs, image revision labels, and SDK tree;
+- Main, worker, external LiteLLM, gateway, platform checkout, and SDK are
+  attested by immutable revisions, Docker image IDs, image revision labels,
+  a completely clean checkout, and the SDK tree;
+- the public origin is exactly `https://localhost:18443`; the gateway's route
+  and certificate are exact read-only mounts and the served TLS leaf matches
+  that certificate under the runtime CA;
 - the selected toolkit is the requested project's current Confluence toolkit;
 - the signed envelope and command pass the strict protobuf scanner, reject
   unknown/duplicate fields, and carry only `index.ingest.v1` references;
-- the bundle manifest is below 64 KiB, the exact two-to-six command references
-  match the bundle entry count, and every entry is at most 256 KiB;
+- the Redis bundle ID/version/digest/size and every command entry
+  ID/version/digest/semantic role join to the strict canonical PostgreSQL
+  manifest; the manifest is below 64 KiB and every entry is at most 256 KiB;
 - Redis contains one `signed_envelope` below 48 KiB; its delivery-index field
   equals the command idempotency key and maps to that one stream entry;
+- runtime Redis is the exact 64 MiB `noeviction`, AOF/every-second process
+  profile, and baseline stream/PEL inspection fails closed on command errors;
 - a real Redis PEL crash/reclaim occurs, then the synthetic consumer, pending
   entry, stream entry, and delivery mapping are all removed;
 - the exact workload identity/session, producer, claim, fence, output,
   settlement, and contiguous replay sequences join durably;
-- public SSE emits canonical current 13-field NodeEvent JSON in the exact
-  start/thinking/in-progress/completed/end/terminal order with the browser
-  stream/message/SIO correlation unchanged;
+- public SSE emits canonical current 13-field NodeEvent JSON with exact
+  whitelisted metadata, 13 current progress messages, status counts, lifecycle
+  FSM, and terminal order; positive monotonic durable IDs and a
+  `Last-Event-ID` reconnect return the byte-identical replay suffix;
 - SSE/replay excludes canaries, source digests, credentials, URLs,
   configuration markers, base64 and source/model payloads;
 - source receipts prove every image twice, 124 MiB, 22 authenticated vision
-  calls, embedding calls, the external LiteLLM attestation, and no rejected
-  source/model/proxy request;
+  calls, embedding calls, the configured proxy-attestation header, and no
+  rejected source/model/proxy request;
 - the public index-meta API proves one non-stale completed PgVector collection
   with the exact indexed/updated counts, and cleanup deletes it through the
   public API;
@@ -78,7 +87,8 @@ Provision through current product APIs/UI:
    fixture's OpenAI-compatible `/v1` endpoints. It must preserve the exact
    project and bearer headers and inject a fixture-only
    `X-Elitea-5681-Proxy-Attestation` value. The fixture stores only SHA-256
-   fingerprints, so direct worker bypass is rejected.
+   fingerprints and rejects requests missing any configured header. The
+   stronger per-request proxy-origin proof is listed below as uncovered.
 4. An active PAT for the allowed browser actor.
 5. Two owner-only Cookie files: one actor allowed to index/read/delete and one
    authenticated actor denied those permissions. Also provide a second existing
@@ -134,6 +144,7 @@ ELITEA_INDEX_5681_PLATFORM_SHA=<40-hex> \
 ELITEA_INDEX_5681_MAIN_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_WORKER_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_LITELLM_IMAGE_ID=sha256:<64-hex> \
+ELITEA_INDEX_5681_GATEWAY_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_LITELLM_SERVICE=elitea-litellm \
 ELITEA_INDEX_5681_LITELLM_REVISION=<40-hex> \
 ELITEA_INDEX_5681_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b \
@@ -146,8 +157,10 @@ tracked files.
 
 The wrapper returns 2 for missing prerequisites, 1 for a failed contract, and
 0 only for a pass. It gives the test context 12 minutes, `go test` 14 minutes,
-and enforces an outer 15-minute process-group deadline. It restores the worker
-only when it was initially running. API bodies, Compose stderr, signed
+and enforces an outer 15-minute process-group deadline. Deadline, interrupt,
+hangup, and termination signals are forwarded to the full child process group
+before restoration. It restores the worker only when it was initially running.
+API bodies, Compose stderr, signed
 envelopes, Cookies/PATs, and source/model payloads are not printed.
 
 ## Operator-only trust boundary
@@ -159,6 +172,22 @@ in the disposable environment above. A pass is evidence only for the reported
 checkout SHA, exact image IDs/revision labels, SDK lock, actors, tenant,
 toolkit, and external LiteLLM/PgVector resources used by that run.
 
-This is not a soak, multi-worker load, certificate-rotation,
+## Explicit uncovered boundaries
+
+This executable gate deliberately does not overclaim two proofs that the
+current product interfaces cannot safely expose:
+
+- The attested LiteLLM container and the fixture's exact proxy-header
+  fingerprint do not cryptographically prove that LiteLLM, rather than another
+  process with the same header value, originated each fixture request. Closing
+  that boundary requires a per-request signed proxy receipt or a mutually
+  authenticated upstream identity.
+- The public index-meta API proves one completed logical collection and its
+  current counts, then proves that it disappears after public deletion. It does
+  not expose the exact physical content/vector row count or prove zero physical
+  rows after deletion. Closing that boundary requires a tenant-safe
+  aggregate/cleanup receipt from the vector-store owner.
+
+This is also not a soak, multi-worker load, certificate-rotation,
 external-Confluence, or external-model-provider test. Those remain separate
 release gates.

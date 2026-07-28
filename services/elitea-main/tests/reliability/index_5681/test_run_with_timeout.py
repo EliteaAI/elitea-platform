@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,6 +25,27 @@ class RunWithTimeoutTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 124)
+
+    def test_forwards_sigterm_and_does_not_orphan_child_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "orphaned"
+            grandchild = (
+                "import pathlib,time;"
+                f"time.sleep(1);pathlib.Path({str(marker)!r}).write_text('orphaned')"
+            )
+            child = (
+                "import subprocess,sys,time;"
+                f"subprocess.Popen([sys.executable,'-c',{grandchild!r}]);"
+                "time.sleep(30)"
+            )
+            wrapper = subprocess.Popen(
+                [sys.executable, str(SCRIPT), "30", sys.executable, "-c", child]
+            )
+            time.sleep(0.3)
+            wrapper.terminate()
+            self.assertEqual(wrapper.wait(timeout=5), 128 + 15)
+            time.sleep(1.2)
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":
