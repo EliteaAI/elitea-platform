@@ -108,6 +108,13 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	if cfg.CurrentIndexMeta != nil {
 		r.Method(http.MethodGet, indexingapi.CurrentIndexMetaListPath, cfg.CurrentIndexMeta)
 	}
+	if cfg.CurrentIndexMetaDelete != nil {
+		r.Method(
+			indexingapi.SourceOnlyIndexDeleteMethod,
+			indexingapi.CurrentIndexMetaDeletePath,
+			cfg.CurrentIndexMetaDelete,
+		)
+	}
 	if cfg.CurrentModelCatalog != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentModelCatalogPath, cfg.CurrentModelCatalog)
 	}

@@ -908,7 +908,7 @@ func TestProductionRouterMountsCurrentModelAndExternalIndexMetaPaths(t *testing.
 	}
 }
 
-func TestProductionRouterKeepsIncompleteIndexDeleteScheduleAndSearchSourceOnly(t *testing.T) {
+func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t *testing.T) {
 	calls := 0
 	current := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		calls++
@@ -961,6 +961,48 @@ func TestProductionRouterKeepsIncompleteIndexDeleteScheduleAndSearchSourceOnly(t
 	}
 	if calls != 0 {
 		t.Fatalf("source-only index routes reached mounted handlers %d times", calls)
+	}
+}
+
+func TestProductionRouterMountsCurrentIndexMetaDeleteOnlyWhenComposed(t *testing.T) {
+	const target = "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1"
+	calls := 0
+	router := NewRouter(RouterConfig{
+		CurrentIndexMetaDelete: http.HandlerFunc(
+			func(writer http.ResponseWriter, request *http.Request) {
+				calls++
+				if request.Method != http.MethodDelete ||
+					chi.URLParam(request, "projectID") != "7" ||
+					chi.URLParam(request, "toolkitID") != "9" ||
+					chi.URLParam(request, "indexMetaID") != "meta-1" {
+					t.Fatalf(
+						"method=%s project=%q toolkit=%q index_meta=%q",
+						request.Method,
+						chi.URLParam(request, "projectID"),
+						chi.URLParam(request, "toolkitID"),
+						chi.URLParam(request, "indexMetaID"),
+					)
+				}
+				writer.WriteHeader(http.StatusNoContent)
+			},
+		),
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodDelete, target, nil),
+	)
+	if response.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+
+	unmounted := httptest.NewRecorder()
+	NewRouter(RouterConfig{}).ServeHTTP(
+		unmounted,
+		httptest.NewRequest(http.MethodDelete, target, nil),
+	)
+	if unmounted.Code != http.StatusNotFound {
+		t.Fatalf("unmounted status=%d body=%s", unmounted.Code, unmounted.Body.String())
 	}
 }
 

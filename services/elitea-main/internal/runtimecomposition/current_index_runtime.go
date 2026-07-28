@@ -31,6 +31,7 @@ type currentIndexRuntime struct {
 	initializer  *indexingapp.DurableIndexMetaInitializer
 	materializer *storage.CurrentConfigurationsMaterializer
 	indexMeta    *indexmetaapp.Service
+	indexDelete  *indexmetaapp.DeleteService
 }
 
 // durableIndexMetaFrozenToolkitClaimer preserves temporary materialization
@@ -224,6 +225,15 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, err
 	}
+	indexDelete, err := newConfiguredCurrentIndexMetaDeleteService(
+		config.IndexIngestDispatchEnabled,
+		pool,
+		toolkits,
+		settings,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	return &currentIndexRuntime{
 		start:        start,
@@ -231,7 +241,41 @@ func newCurrentIndexRuntime(
 		initializer:  durableInitializer,
 		materializer: materializer,
 		indexMeta:    indexMeta,
+		indexDelete:  indexDelete,
 	}, nil
+}
+
+func newConfiguredCurrentIndexMetaDeleteService(
+	indexDispatchEnabled bool,
+	pool *pgxpool.Pool,
+	toolkits indexingapp.CurrentToolkitReader,
+	settings indexingapp.CurrentToolkitSettingsValidator,
+) (*indexmetaapp.DeleteService, error) {
+	if !indexDispatchEnabled {
+		return nil, nil
+	}
+	if pool == nil || toolkits == nil || settings == nil {
+		return nil, errors.New(
+			"current index metadata delete composition dependencies are required",
+		)
+	}
+	schedules, err := repos.NewCurrentIndexMetaScheduleRepository(pool)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"construct current index metadata schedule repository: %w",
+			err,
+		)
+	}
+	service, err := indexmetaapp.NewDeleteService(
+		toolkits,
+		settings,
+		pgvector.NewCurrentIndexMetaRemover(),
+		schedules,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct current index metadata delete service: %w", err)
+	}
+	return service, nil
 }
 
 func currentRuntimeID() (string, error) {

@@ -401,6 +401,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexStart http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
+	var currentIndexMetaDelete http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -514,6 +515,24 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				return fmt.Errorf("compose current index-meta route: %w", err)
 			}
 		}
+		if publicRoutes.IndexMetaDelete != nil {
+			currentIndexMetaDelete, err =
+				indexingapi.NewCurrentIndexMetaDeleteRoute(
+					publicRoutes.IndexMetaDelete,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index metadata delete route: %w",
+					err,
+				)
+			}
+		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
@@ -537,6 +556,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentIndexStart:             currentIndexStart,
 		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
+		CurrentIndexMetaDelete:        currentIndexMetaDelete,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,

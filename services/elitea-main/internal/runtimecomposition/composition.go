@@ -721,6 +721,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if currentIndex != nil {
 		publicRoutes.IndexCancel = currentIndex.cancel
 		publicRoutes.IndexMeta = currentIndex.indexMeta
+		publicRoutes.IndexMetaDelete = currentIndex.indexDelete
 	}
 
 	closeRedis = false

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	publicapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
@@ -79,8 +80,11 @@ func TestCurrentIndexMetaDeleteRoutePostgresPermissionMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			router := publicapi.NewRouter(publicapi.RouterConfig{
+				CurrentIndexMetaDelete: route,
+			})
 			response := newIndexRBACStreamingRecorder()
-			route.ServeHTTP(
+			router.ServeHTTP(
 				response,
 				newIndexRBACRequest(
 					http.MethodDelete,

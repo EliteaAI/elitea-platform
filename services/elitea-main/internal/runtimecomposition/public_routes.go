@@ -26,6 +26,10 @@ type PublicRoutes struct {
 	// IndexMeta reads the current raw-array UI contract from the project-owned
 	// PgVector target resolved through the saved toolkit and Configurations.
 	IndexMeta indexingapi.CurrentIndexMetaReader
+	// IndexMetaDelete preserves the current synchronous two-commit contract. It
+	// is exposed only with the coordinated Go index owner and receives
+	// production authentication and project RBAC at the Main composition edge.
+	IndexMetaDelete indexingapi.CurrentIndexMetaDeleter
 }
 
 // Phase one uses durable PostgreSQL replay without a notification sidecar.
