@@ -15,6 +15,10 @@ describe('toolkitDisplayName', () => {
     expect(toolkitDisplayName(toolkit({ name: 'My GitHub' }))).toBe('My GitHub');
   });
 
+  it('falls back to toolkit_name when name is blank', () => {
+    expect(toolkitDisplayName(toolkit({ name: '', ...({ toolkit_name: 'My Jira' } as Partial<Toolkit>) }))).toBe('My Jira');
+  });
+
   it('falls back to settings.elitea_title', () => {
     expect(toolkitDisplayName(toolkit({ settings: { elitea_title: 'Custom Title' } }))).toBe('Custom Title');
   });
@@ -25,6 +29,18 @@ describe('toolkitDisplayName', () => {
 
   it('falls back to a capitalized type when nothing else is present', () => {
     expect(toolkitDisplayName(toolkit({ type: 'jira' }))).toBe('Jira');
+  });
+
+  it('skips a present-but-empty-string toolkit_name and falls through to the next fallback (falsy-coalescing, not nullish-only)', () => {
+    expect(
+      toolkitDisplayName(
+        toolkit({
+          name: '',
+          settings: { elitea_title: 'Real Title' },
+          ...({ toolkit_name: '' } as Partial<Toolkit>),
+        }),
+      ),
+    ).toBe('Real Title');
   });
 });
 

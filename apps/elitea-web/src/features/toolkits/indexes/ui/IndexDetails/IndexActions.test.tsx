@@ -1,0 +1,172 @@
+import { ThemeProvider } from '@mui/material/styles';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router';
+import { render, screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
+import { server } from '@/test/setup';
+
+/** `DiscardButton`'s confirm modal (`BaseModal`) reads `theme.vars.palette.*` — this file drives its own `RouterProvider` (needed for `IndexActions.tsx`'s own `useSelectedProjectId`), so the theme has to be wired in here too, matching `features/agents/ui/DeleteApplicationButton.test.tsx`'s identical, already-established pattern. */
+const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
+
+import { useIndexesStore } from '../../model/indexesStore';
+
+import { IndexActions } from './IndexActions';
+import type { IndexActionsProps, UseToolkitSchemasResult } from './IndexActions';
+
+const BASE = '/api/v2';
+
+const noSchemas: UseToolkitSchemasResult = { toolkitSchemas: {}, isFetching: false };
+
+const baseProps: Omit<IndexActionsProps, 'useToolkitSchemas'> = {
+  activeView: 'run',
+  index: { id: '1', metadata: { collection: 'my-index', state: 'completed' } },
+  view: 'create',
+  toolkitId: 'tk-1',
+  onDiscard: vi.fn(),
+  indexData: vi.fn(),
+  handleDeleteIndex: vi.fn(),
+  selectedIndexTools: ['index_data', 'remove_index'],
+  onCancelIndexing: vi.fn(),
+};
+
+function renderActions(overrides: Partial<IndexActionsProps> = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const rootRoute = createRootRoute({
+    component: () => (
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider
+          theme={theme}
+          defaultMode={DEFAULT_COLOR_SCHEME}
+        >
+          <IndexActions
+            {...baseProps}
+            useToolkitSchemas={() => noSchemas}
+            {...overrides}
+          />
+        </ThemeProvider>
+      </QueryClientProvider>
+    ),
+  });
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+    context: { auth: { getSelectedProjectId: () => 'proj-1' } },
+  });
+  return render(<RouterProvider router={router} />);
+}
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: BASE });
+  useIndexesStore.setState({ tempIndexes: [], indexPatches: {}, toolkitScheduler: {}, selectedHistoryItem: null });
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+});
+
+describe('IndexActions — create view', () => {
+  it('renders Cancel + Index, Index disabled when the form is invalid', async () => {
+    renderActions({ view: 'create', isValidForm: false });
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Index' })).toBeDisabled();
+  });
+
+  it('Index is enabled and calls indexData when the form is valid', async () => {
+    const user = userEvent.setup();
+    const indexData = vi.fn();
+    renderActions({ view: 'create', isValidForm: true, indexData });
+    const button = await screen.findByRole('button', { name: 'Index' });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(indexData).toHaveBeenCalled();
+  });
+
+  it('Cancel opens a confirm dialog, and confirming calls onDiscard', async () => {
+    const user = userEvent.setup();
+    const onDiscard = vi.fn();
+    renderActions({ view: 'create', onDiscard });
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await user.click(await screen.findByRole('button', { name: 'Discard' }));
+    expect(onDiscard).toHaveBeenCalled();
+  });
+});
+
+describe('IndexActions — edit view', () => {
+  it('renders Reindex + Delete + Schedule switch', async () => {
+    renderActions({ view: 'edit', activeView: 'configuration' });
+    expect(await screen.findByRole('button', { name: 'Reindex' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByText('Schedule')).toBeInTheDocument();
+  });
+
+  it('Reindex is disabled while on the "run" tab (must switch to Configuration first)', async () => {
+    renderActions({ view: 'edit', activeView: 'run' });
+    expect(await screen.findByRole('button', { name: 'Reindex' })).toBeDisabled();
+  });
+
+  it('Reindex calls indexData when enabled', async () => {
+    const user = userEvent.setup();
+    const indexData = vi.fn();
+    renderActions({ view: 'edit', activeView: 'configuration', indexData });
+    const button = await screen.findByRole('button', { name: 'Reindex' });
+    await user.click(button);
+    expect(indexData).toHaveBeenCalled();
+  });
+
+  it('Delete is disabled when the "remove_index" tool is not selected', async () => {
+    renderActions({ view: 'edit', activeView: 'configuration', selectedIndexTools: ['index_data'] });
+    expect(await screen.findByRole('button', { name: 'Delete' })).toBeDisabled();
+  });
+
+  it('Delete calls handleDeleteIndex when enabled', async () => {
+    const user = userEvent.setup();
+    const handleDeleteIndex = vi.fn();
+    renderActions({ view: 'edit', activeView: 'configuration', selectedIndexTools: ['remove_index'], handleDeleteIndex });
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(handleDeleteIndex).toHaveBeenCalled();
+  });
+
+  it('schedule switch is disabled with an insufficient-permissions tooltip when the user lacks the permission', async () => {
+    renderActions({ view: 'edit', activeView: 'configuration', userPermissions: [], currentProjectName: 'Acme' });
+    await screen.findByText('Schedule');
+    const switchInput = screen.getByRole('switch');
+    expect(switchInput).toBeDisabled();
+  });
+
+  it('toggling the schedule switch PATCHes updateIndexSchedule with the flipped enabled flag', async () => {
+    const user = userEvent.setup();
+    let capturedBody: unknown;
+    server.use(
+      http.patch(`${BASE}/elitea_core/index_meta/prompt_lib/proj-1/tk-1/my-index`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({});
+      }),
+    );
+    renderActions({ view: 'edit', activeView: 'configuration', userPermissions: ['models.applications.index_meta.edit'] });
+    const switchInput = await screen.findByRole('switch');
+    await user.click(switchInput);
+    await waitFor(() => expect(capturedBody).toMatchObject({ enabled: true }));
+  });
+});
+
+describe('IndexActions — indexing in progress', () => {
+  it('shows a Delete-only removeButton when indexing cannot be stopped and there is no task_id', async () => {
+    renderActions({ isIndexingData: true, index: { id: '1', metadata: { collection: 'my-index' } } });
+    expect(await screen.findByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('shows a Stop discard button when a task_id is present', async () => {
+    const onCancelIndexing = vi.fn();
+    renderActions({
+      isIndexingData: true,
+      index: { id: '1', metadata: { collection: 'my-index', task_id: 'task-9' } },
+      onCancelIndexing,
+    });
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeInTheDocument();
+  });
+});

@@ -61,7 +61,58 @@
     "src/widgets/create-button/lib/routes.ts",
     "src/entities/message/lib/wire.ts",
     "src/features/credentials/model/useCredentialValidation.ts",
-    "src/features/credentials/ui/CredentialsSelect.tsx"
+    "src/features/credentials/ui/CredentialsSelect.tsx",
+    // Same "exported for a Wave-2 consumer that hasn't landed yet" gap, sub-unit
+    // A1d's ("Generate-agent-modal + AgentEditor composition") own contribution.
+    // `AgentEditor.tsx`'s `AgentEditorShellProps`/`AgentConfigurationFormSlotProps`/
+    // `EditorBodyAgentState` are the injected-slot/derived-state contracts a future
+    // page-level composition (and Wave-2 unit C6, which needs `AgentEditor` itself —
+    // already reachable via `features/agents/index.ts`) will construct object
+    // literals against; `useAgentCreation.ts`/`useAgentEditorUrlSync.ts`/
+    // `useEditAgent.ts`'s result/param types are these hooks' own public contracts
+    // for the same not-yet-landed chat-domain caller (see each file's own doc
+    // comment for the real, disclosed reason those callers don't exist in this
+    // worktree yet). `GenerateAgentReviewForm.tsx`'s `SuggestionSelection`/
+    // `GenerateAgentDraftSelection` and `useAgentDraftApproval.ts`'s
+    // `DraftSelection` are real types used structurally by their own file's
+    // exported function signature; no external caller constructs one directly yet.
+    "src/features/agents/ui/AgentEditor.tsx",
+    "src/features/agents/model/useAgentCreation.ts",
+    "src/features/agents/model/useAgentEditorUrlSync.ts",
+    "src/features/agents/model/useEditAgent.ts",
+    "src/features/agents/ui/generate-agent-modal/GenerateAgentReviewForm.tsx",
+    "src/features/agents/ui/generate-agent-modal/useAgentDraftApproval.ts",
+    // Same "exported for a Wave-2 consumer that hasn't landed yet" gap,
+    // sub-unit A1b's ("Agent core hooks, helpers & API") own contribution.
+    // `useApplicationChat` (split across `applicationChat.types.ts`/
+    // `applicationChat.helpers.ts`/`useApplicationChatConversation.hooks.ts`/
+    // `useApplicationChatMessaging.hooks.ts`/
+    // `useApplicationChatStreaming.hooks.ts`/
+    // `useApplicationChatSockets.hooks.ts` purely to stay under this
+    // codebase's `complexity`/`max-lines` gates — see that hook's own
+    // module doc comment) has no consumer in this worktree yet: the real
+    // backend-gap adapter it requires (`ChatConversationAdapter` — no
+    // generated conversation-domain REST endpoint exists at all, see that
+    // same doc comment) and the chat-page/widget layer that would mount it
+    // are both out of this sub-unit's scope. `generateAgentDraft.ts`'s
+    // `UseGenerateAgentDraftMutationArgs` and `useDisassociateToolkit.
+    // hooks.ts`'s/`useInstructionsMention.hooks.ts`'s/
+    // `useInstructionsSkillMention.hooks.ts`'s own exported parameter/result
+    // contract types are real types used structurally by their own file's
+    // exported function signature (those FILES already have a real
+    // consumer — a sibling A1 sub-unit's already-landed UI — just not one
+    // that names these specific types directly yet).
+    "src/features/agents/lib/hooks/useApplicationChat.hooks.ts",
+    "src/features/agents/lib/hooks/applicationChat.types.ts",
+    "src/features/agents/lib/hooks/applicationChat.helpers.ts",
+    "src/features/agents/lib/hooks/useApplicationChatConversation.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatMessaging.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatStreaming.hooks.ts",
+    "src/features/agents/lib/hooks/useApplicationChatSockets.hooks.ts",
+    "src/features/agents/api/generateAgentDraft.ts",
+    "src/features/agents/lib/hooks/useDisassociateToolkit.hooks.ts",
+    "src/features/agents/lib/hooks/useInstructionsMention.hooks.ts",
+    "src/features/agents/lib/hooks/useInstructionsSkillMention.hooks.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [

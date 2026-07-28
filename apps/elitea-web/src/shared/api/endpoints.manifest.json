@@ -856,7 +856,8 @@
             "responseSchema": "ConfigurationTypeDescriptor[]",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/pipelines"
             ]
         },
         {
@@ -868,7 +869,8 @@
             "responseSchema": "ConfigurationPageWire",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/pipelines"
             ]
         },
         {
@@ -904,7 +906,8 @@
             "responseSchema": "ConfigurationWire",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/agents"
             ]
         },
         {
@@ -964,7 +967,8 @@
             "responseSchema": "unknown",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/agents"
             ]
         },
         {
@@ -1178,6 +1182,102 @@
             "responseSchema": "AuthorDetail",
             "fixture": null,
             "usedBy": []
+        },
+        {
+            "id": "pipelines.generateContentStreaming",
+            "method": "POST",
+            "path": "/elitea_core/predict_llm/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "GenerateContentStreamingResult",
+            "fixture": null,
+            "usedBy": [
+                "features/pipelines"
+            ]
+        },
+        {
+            "id": "pipelines.stopLlmTask",
+            "method": "DELETE",
+            "path": "/elitea_core/task/prompt_lib/{projectId}/{taskId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/pipelines"
+            ]
+        },
+        {
+            "id": "toolkits.getIndexesList",
+            "method": "GET",
+            "path": "/elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "IndexRow[]",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
+        },
+        {
+            "id": "toolkits.deleteIndexItem",
+            "method": "DELETE",
+            "path": "/elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
+        },
+        {
+            "id": "toolkits.stopIndexingItem",
+            "method": "DELETE",
+            "path": "/elitea_core/index_cancel/prompt_lib/{projectId}/{toolkitId}/{indexName}/{taskId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
+        },
+        {
+            "id": "toolkits.updateIndexSchedule",
+            "method": "PATCH",
+            "path": "/elitea_core/index_meta/prompt_lib/{projectId}/{toolkitId}/{indexName}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
+        },
+        {
+            "id": "toolkits.getIndexSchedule",
+            "method": "GET",
+            "path": "/elitea_core/tool/prompt_lib/{projectId}/{toolkitId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ToolDetailWire",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
+        },
+        {
+            "id": "toolkits.getIndexHistoryConversationDetails",
+            "method": "GET",
+            "path": "/elitea_core/conversation/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ConversationDetailsWire",
+            "fixture": null,
+            "usedBy": [
+                "features/toolkits"
+            ]
         }
     ]
 }

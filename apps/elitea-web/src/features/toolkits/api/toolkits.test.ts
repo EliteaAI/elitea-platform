@@ -1,0 +1,127 @@
+import { waitFor } from '@testing-library/react';
+import { HttpResponse, http } from 'msw';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
+
+import { createTestQueryClient, renderHookWithProviders } from '../__tests__/testUtils';
+import { useToolkitDelete, useToolkitDetail, useToolkitTypes, useToolkitsList } from './toolkits';
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: '/api/v2' });
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+});
+
+describe('useToolkitTypes', () => {
+  it('resolves the real toolkit-type schema catalogue', async () => {
+    server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })));
+
+    const { result } = renderHookWithProviders(() => useToolkitTypes({ projectId: 'proj-1' }));
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.toolkitTypes).toEqual({ github: { metadata: { label: 'GitHub' } } });
+    expect(result.current.isError).toBe(false);
+  });
+
+  it('does not fetch while no project is selected', async () => {
+    const { result } = renderHookWithProviders(() => useToolkitTypes({ projectId: undefined }));
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.toolkitTypes).toBeUndefined();
+  });
+});
+
+describe('useToolkitsList', () => {
+  it('resolves a page of raw toolkit-instance rows and the real total', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
+        HttpResponse.json({ rows: [{ id: 'tk-1', type: 'github', name: 'my-github', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 }),
+      ),
+    );
+
+    const { result } = renderHookWithProviders(() => useToolkitsList({ projectId: 'proj-1', page: 0, pageSize: 20 }));
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.rows).toHaveLength(1);
+    expect(result.current.rows[0]?.id).toBe('tk-1');
+    expect(result.current.total).toBe(1);
+  });
+
+  it('refetch triggers a second network request', async () => {
+    let requestCount = 0;
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () => {
+        requestCount += 1;
+        return HttpResponse.json({ rows: [], total: 0 });
+      }),
+    );
+
+    const { result } = renderHookWithProviders(() => useToolkitsList({ projectId: 'proj-1', page: 0, pageSize: 20 }));
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(requestCount).toBe(1);
+
+    result.current.refetch();
+
+    await waitFor(() => expect(requestCount).toBe(2));
+  });
+});
+
+describe('useToolkitDetail', () => {
+  it('finds the matching row inside the real list response by id', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
+        HttpResponse.json({
+          rows: [
+            { id: 'tk-1', type: 'github', name: 'a', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 },
+            { id: 'tk-2', type: 'jira', name: 'b', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 },
+          ],
+          total: 2,
+        }),
+      ),
+    );
+
+    const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: 'tk-2' }));
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.detail?.id).toBe('tk-2');
+    expect(result.current.detail?.type).toBe('jira');
+  });
+
+  it('resolves undefined when no row matches the requested id', async () => {
+    server.use(
+      http.get('/api/v2/elitea_core/tools/prompt_lib/:projectId', () =>
+        HttpResponse.json({ rows: [{ id: 'tk-1', type: 'github', name: 'a', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 }),
+      ),
+    );
+
+    const { result } = renderHookWithProviders(() => useToolkitDetail({ projectId: 'proj-1', toolkitId: 'missing' }));
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(result.current.detail).toBeUndefined();
+  });
+});
+
+describe('useToolkitDelete', () => {
+  it('issues a real DELETE against the tool endpoint and resolves', async () => {
+    let deletedProjectId: string | undefined;
+    let deletedToolId: string | undefined;
+    server.use(
+      http.delete('/api/v2/elitea_core/tool/prompt_lib/:projectId/:toolId', ({ params }) => {
+        deletedProjectId = params['projectId'] as string;
+        deletedToolId = params['toolId'] as string;
+        return HttpResponse.json({});
+      }),
+    );
+
+    const queryClient = createTestQueryClient();
+    const { result } = renderHookWithProviders(() => useToolkitDelete(), queryClient);
+
+    await result.current.deleteToolkit({ projectId: 'proj-1', toolkitId: '42' });
+
+    expect(deletedProjectId).toBe('proj-1');
+    expect(deletedToolId).toBe('42');
+  });
+});

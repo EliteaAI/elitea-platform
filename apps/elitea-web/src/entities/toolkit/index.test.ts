@@ -12,10 +12,20 @@ import * as entity from './index';
  * this slice ahead of its Wave-2 consumers.
  */
 const PUBLIC_SURFACE = [
+  'CONFIGURATION_VIEW_OPTIONS',
+  'ConfigurationMode',
+  'ToolConfigurationForm',
+  'ToolEvents',
+  'ToolInitialValues',
+  'ToolTypes',
+  'configurationDoesNotMatchAnything',
   'isMcpToolkit',
   'isOnlineToolkit',
   'sortToolkitsByName',
+  'toolIconStaticUrl',
   'toolkitDisplayName',
+  'toolkitTypeMenuEntries',
+  'toolkitValidationErrors',
 ] as const;
 
 describe('entities/toolkit public surface', () => {

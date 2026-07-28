@@ -1,0 +1,211 @@
+import { type ReactNode, useCallback, useState } from 'react';
+
+import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
+import Grid from '@mui/material/Grid';
+import type { SxProps, Theme } from '@mui/material/styles';
+
+import { ViewRunHistoryButton } from '@/shared/ui/ViewRunHistoryButton';
+
+import type { UseToolkitEditMutation } from '../api/toolkits';
+import { ToolkitForm, type ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
+import type { SaveToolkitPayload } from './form/ToolkitForm/ToolkitsOperationButtons';
+
+export interface ToolkitTestPaneRenderProps {
+  readonly applicationId: string | undefined;
+  readonly toolkitId: string | undefined;
+  readonly isFullScreenChat: boolean;
+  readonly onFullScreenChatChange: (value: boolean) => void;
+  readonly onShowHistory?: () => void;
+}
+
+export interface ToolkitRunHistoryRenderProps {
+  readonly toolkitId: string | undefined;
+  readonly onClose: () => void;
+}
+
+/**
+ * The left panel's editable-toolkit state — grouped into one prop, same
+ * "group into one option object" §3.5 12-prop-budget move
+ * `features/agents/ui/ConfigurationTab.tsx`'s own `testPaneSettings`
+ * grouping and `InputBase.tsx`/`BasicAccordion.tsx` already document for
+ * this codebase (this file's own prop list was 16 top-level props before
+ * this grouping — over budget).
+ */
+export interface ToolkitDetailState {
+  readonly editToolDetail: ToolkitFormEditDetail | null;
+  readonly onChangeToolDetail: (updater: (prev: ToolkitFormEditDetail | null) => ToolkitFormEditDetail | null) => void;
+  readonly isToolDirty?: boolean;
+}
+
+/** The save-mutation trio, grouped for the same §3.5 reason as {@link ToolkitDetailState}. */
+export interface ToolkitSaveHandlers {
+  /** No generated `PUT /elitea_core/tool/prompt_lib/{projectId}/{toolId}` endpoint exists yet — see `../api/toolkits.ts`'s module doc comment. */
+  readonly saveToolkit: UseToolkitEditMutation;
+  readonly onSaveSuccess?: (savedValues: Readonly<Record<string, unknown>>) => void;
+  readonly onSaveError?: (message: string) => void;
+}
+
+/** @public */
+export interface ConfigurationTabProps {
+  readonly isFetching: boolean;
+  readonly applicationId: string | undefined;
+  readonly toolkitId: string | undefined;
+  readonly toolDetailState: ToolkitDetailState;
+  readonly hasNotSavedCredentials?: boolean;
+  readonly updateKey?: string | number;
+  readonly isMCP?: boolean;
+  readonly projectId: string | undefined;
+  readonly onValidationStateChange?: (state: { readonly hasErrors: boolean; readonly triggerValidation: () => void }) => void;
+  readonly saveHandlers: ToolkitSaveHandlers;
+  /** The RIGHT panel's live test-chat content — see the module doc comment for why this is a slot, not a direct import. */
+  readonly renderTestPane: (props: ToolkitTestPaneRenderProps) => ReactNode;
+  readonly renderRunHistory?: (props: ToolkitRunHistoryRenderProps) => ReactNode;
+}
+
+/**
+ * Ported from `apps/elitea-ui/src/pages/Toolkits/ConfigurationTab.jsx`.
+ *
+ * DISCLOSED REDESIGN — slot-based right panel, matching the precedent
+ * `features/agents/ui/ConfigurationTab.tsx` already established for the
+ * IDENTICAL architectural problem on the agents side (that file's own doc
+ * comment, point 1): the baseline's right pane renders `TestTools`
+ * (`features/toolkits/ui`, a sibling A4 sub-unit's own file — see the
+ * mission preamble's "ToolkitsList" gap for the same "not owned by A4g, not
+ * yet landed" class of dependency) and `RunHistoryContainer`
+ * (`entities/run-history`, which does not exist anywhere in this worktree).
+ * `renderTestPane`/`renderRunHistory` defer both to whichever future
+ * page-level composition has the real sibling components in scope, exactly
+ * as `renderTestPane`/`renderRunHistory` already do on the agents side.
+ *
+ * The LEFT panel's real content (`ToolkitForm`, `../ui/form/ToolkitForm/
+ * ToolkitForm.tsx`) IS a real, landed, intra-slice import (unlike agents'
+ * still-missing `ApplicationConfigurationForm`) — wired directly, not
+ * slotted. `saveToolkit` is injected into it (no generated PUT endpoint —
+ * see `../api/toolkits.ts`'s module doc comment); this component adapts the
+ * `ToolkitFormEditDetail`/`id`/`projectId` triad into `ToolkitForm`'s own
+ * `SaveToolkitPayload` shape.
+ *
+ * Dropped, disclosed:
+ *  - `DirtyDetector`/`setDirty` (Formik-based) — this app has no Formik;
+ *    dirty tracking is `ToolkitForm`'s own `isToolDirty` prop, caller-owned,
+ *    same "not this component's concern" precedent `features/agents/ui/
+ *    ConfigurationTab.tsx`'s own doc comment gives.
+ *  - `useShowRunHistoryFromUrl` (URL-search-param auto-open) — router/page
+ *    orchestration; `showHistory` is local state here, toggled via
+ *    `onShowHistory`/`renderRunHistory`'s own `onClose`.
+ */
+export function ConfigurationTab({
+  isFetching,
+  applicationId,
+  toolkitId,
+  toolDetailState,
+  hasNotSavedCredentials = false,
+  updateKey,
+  isMCP,
+  projectId,
+  onValidationStateChange,
+  saveHandlers,
+  renderTestPane,
+  renderRunHistory,
+}: ConfigurationTabProps): ReactNode {
+  const { editToolDetail, onChangeToolDetail, isToolDirty } = toolDetailState;
+  const { saveToolkit, onSaveSuccess, onSaveError } = saveHandlers;
+  const [showHistory, setShowHistory] = useState(false);
+  const [isFullScreenChat, setIsFullScreenChat] = useState(false);
+
+  const handleShowHistory = useCallback(() => setShowHistory(true), []);
+  const handleCloseHistory = useCallback(() => setShowHistory(false), []);
+
+  const handleSave = useCallback(
+    async (payload: SaveToolkitPayload): Promise<Readonly<Record<string, unknown>>> => {
+      if (payload.projectId === undefined || payload.toolId === undefined) return {};
+      const result = await saveToolkit({
+        projectId: payload.projectId,
+        toolId: String(payload.toolId),
+        type: (payload.values['type'] as string | undefined) ?? '',
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        description: payload.values['description'] as string | undefined,
+        settings: payload.values['settings'] as Readonly<Record<string, unknown>> | undefined,
+        meta: payload.values['meta'] as Readonly<Record<string, unknown>> | undefined,
+      });
+      return { ...result };
+    },
+    [saveToolkit],
+  );
+
+  if (isFetching) {
+    return (
+      <Box sx={spinnerContainerSx}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (showHistory && renderRunHistory) {
+    return <>{renderRunHistory({ toolkitId, onClose: handleCloseHistory })}</>;
+  }
+
+  return (
+    <Grid
+      sx={gridContainerSx}
+      columnSpacing="2rem"
+      container
+    >
+      {editToolDetail && !isFullScreenChat && (
+        <Grid
+          size={{ xs: 12, lg: 4 }}
+          sx={leftGridItemSx}
+        >
+          <ToolkitForm
+            editToolDetail={editToolDetail}
+            onChangeToolDetail={onChangeToolDetail}
+            isEditing
+            isToolDirty={isToolDirty}
+            showNameFieldForcedly
+            showToolkitIcon
+            hideConfigurationNameInput
+            hasNotSavedCredentials={hasNotSavedCredentials}
+            updateKey={updateKey}
+            isMCP={isMCP}
+            onValidationStateChange={onValidationStateChange}
+            projectId={projectId}
+            formValues={editToolDetail}
+            formInitialValues={editToolDetail}
+            onSave={handleSave}
+            onSaveSuccess={onSaveSuccess}
+            onSaveError={onSaveError}
+          />
+        </Grid>
+      )}
+      <Grid
+        size={{ xs: 12, lg: !editToolDetail || isFullScreenChat ? 12 : 8 }}
+        sx={rightGridItemSx}
+        container
+      >
+        {toolkitId !== undefined && (
+          <Box sx={historyButtonRowSx}>
+            <ViewRunHistoryButton onShowHistory={handleShowHistory} />
+          </Box>
+        )}
+        {renderTestPane({
+          applicationId,
+          toolkitId,
+          isFullScreenChat,
+          onFullScreenChatChange: setIsFullScreenChat,
+          ...(toolkitId !== undefined ? { onShowHistory: handleShowHistory } : {}),
+        })}
+      </Grid>
+    </Grid>
+  );
+}
+
+const spinnerContainerSx: SxProps<Theme> = { height: '100%', width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' };
+
+const gridContainerSx: SxProps<Theme> = { height: '100%', maxHeight: '100%', paddingTop: '1rem', paddingBottom: '1.5rem', paddingLeft: '1.5rem', paddingRight: '1.5rem' };
+
+const leftGridItemSx: SxProps<Theme> = { overflow: 'auto', maxHeight: '100%', height: '100%' };
+
+const rightGridItemSx: SxProps<Theme> = { height: '100%', maxHeight: '100%' };
+
+const historyButtonRowSx: SxProps<Theme> = { display: 'flex', justifyContent: 'flex-end', width: '100%' };

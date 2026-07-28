@@ -2,13 +2,19 @@ import type { Toolkit } from './types';
 
 /**
  * Display-name fallback chain — apps/elitea-ui/src/[fsd]/features/toolkits/
- * ui/list/ToolkitsList.jsx:134-144 `getToolkitItemName` and
- * apps/elitea-ui/src/[fsd]/features/toolkits/lib/helpers/toolkits.helpers.js
- * :251-267 `genToolkitName`: `name` -> `settings.elitea_title` ->
- * `settings.configuration_title` -> capitalized `type`.
+ * ui/list/ToolkitsList.jsx:134-144 `getToolkitItemName`: `name` ->
+ * `toolkit_name` -> `settings.elitea_title` -> `settings.configuration_title`
+ * -> capitalized `type`. `toolkit_name` isn't part of `Toolkit`'s modeled
+ * shape (backend instance evidence has no such field — see `./types.ts`'s
+ * doc comment), so it's read defensively the same way
+ * `ToolkitsOperationButtons.tsx:93` reads an unmodeled property off an
+ * `unknown`-typed value, matching the baseline's real fallback chain
+ * instead of silently dropping a branch.
  */
 export function toolkitDisplayName(toolkit: Toolkit): string {
   if (toolkit.name.trim() !== '') return toolkit.name;
+  const rawToolkitName = (toolkit as unknown as { readonly toolkit_name?: unknown }).toolkit_name;
+  if (typeof rawToolkitName === 'string' && rawToolkitName.trim() !== '') return rawToolkitName;
   const eliteaTitle = toolkit.settings?.['elitea_title'];
   if (typeof eliteaTitle === 'string' && eliteaTitle.trim() !== '') return eliteaTitle;
   const configurationTitle = toolkit.settings?.['configuration_title'];
