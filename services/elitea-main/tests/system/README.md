@@ -177,3 +177,31 @@ This gate does not contact PostgreSQL, LiteLLM, Redis, PgVector or a provider.
 Those service-backed boundaries retain their dedicated integration tests; this
 test specifically proves the signed Main-to-worker authorization, version and
 reference-only language boundary.
+
+## Same-target synchronous SDK serialization gate
+
+`TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess` proves
+that Stop does not release same-target availability after SDK invocation
+authority. It holds the real pinned `EliteAClient.test_toolkit_tool` call in a
+separate worker-container process, then checks Main admission exclusion in
+`CLAIMED`, `RUNNING/PREPARING`, `RUNNING/MAY_HAVE_STARTED` after Stop, and the
+durable post-output `SETTLING` recovery window. After canonical cancellation
+settlement, it admits and initializes the next logical generation against real
+PostgreSQL/PgVector, then proves old terminal and task-ID writes are fenced.
+
+Run the opt-in gate against a PostgreSQL 16-18 server with `vector` and the
+existing index-worker container:
+
+```bash
+ELITEA_INDEX_SDK_SERIALIZATION_GATE=1 \
+ELITEA_TEST_DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DATABASE' \
+go test -count=1 -v ./services/elitea-main/internal/infra/db/repos \
+  -run '^TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess$'
+```
+
+Override the default `centry-elitea-indexer-worker-1` with
+`ELITEA_INDEX_SDK_CONTAINER` when needed. The tool/provider boundary is a
+deterministic blocker underneath the real installed SDK callable. Redis
+reference delivery, the production worker serve loop, gRPC, public
+authentication and an external source provider remain outside this gate; the
+existing compose and cross-process harnesses own those boundaries.
