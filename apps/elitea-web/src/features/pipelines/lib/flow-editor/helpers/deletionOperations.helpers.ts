@@ -183,11 +183,24 @@ export function handleNormalNodeDeletion(node: FlowNode, yamlJsonObject: YamlPip
   return YamlUpdateHelpers.removeInterruptReferences(result, node.id);
 }
 
-export function handleEdgeToGhostNode(edge: FlowEdge, newFlowNodes: readonly FlowNode[]): FlowNode[] {
+/**
+ * The 9 `handleEdgeTo*`/`handleEdgeFrom*` functions below are all called —
+ * every one of them is dispatched from `processEdgeDeletion`'s own
+ * if-chain further down in THIS file (verified directly: each name appears
+ * exactly once as a call target there). None is imported anywhere outside
+ * this module (confirmed via repo-wide grep), including
+ * `deletionOperations.helpers.test.ts`, which only exercises them
+ * indirectly through `processEdgeDeletion`/`handleNormalNodeDeletion` — so
+ * knip is right that the `export` keyword itself is unnecessary, not that
+ * the dispatch is broken. `useDeleteItems.ts` (the real caller) already
+ * calls `processEdgeDeletion` once per deleted edge, which reaches every
+ * one of these branches; there is no missing wiring here.
+ */
+function handleEdgeToGhostNode(edge: FlowEdge, newFlowNodes: readonly FlowNode[]): FlowNode[] {
   return newFlowNodes.filter(node => node.id !== edge.target);
 }
 
-export function handleEdgeToConditionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
+function handleEdgeToConditionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
   return updateYamlAndFlowNodes(
     yamlJsonObject,
     newFlowNodes,
@@ -198,7 +211,7 @@ export function handleEdgeToConditionNode(edge: FlowEdge, yamlJsonObject: YamlPi
   );
 }
 
-export function handleEdgeToLegacyDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
+function handleEdgeToLegacyDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
   return updateYamlAndFlowNodes(
     yamlJsonObject,
     newFlowNodes,
@@ -209,7 +222,7 @@ export function handleEdgeToLegacyDecisionNode(edge: FlowEdge, yamlJsonObject: Y
   );
 }
 
-export function handleEdgeFromConditionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
+function handleEdgeFromConditionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
   const ownerId = NodeOperationsHelpers.getOwnerNodeId(edge.source, CONDITION_NODE_ID_SUFFIX);
   const isDefault = NodeTypeHelpers.isDefaultOutputHandle(edge.sourceHandle);
 
@@ -229,7 +242,7 @@ export function handleEdgeFromConditionNode(edge: FlowEdge, yamlJsonObject: Yaml
   );
 }
 
-export function handleEdgeFromLegacyDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
+function handleEdgeFromLegacyDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
   const ownerId = NodeOperationsHelpers.getOwnerNodeId(edge.source, DECISION_NODE_ID_SUFFIX);
   const isDefault = NodeTypeHelpers.isDefaultOutputHandle(edge.sourceHandle);
 
@@ -247,7 +260,7 @@ export function handleEdgeFromLegacyDecisionNode(edge: FlowEdge, yamlJsonObject:
   );
 }
 
-export function handleEdgeFromNewDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
+function handleEdgeFromNewDecisionNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument, newFlowNodes: readonly FlowNode[]): YamlAndFlowNodes {
   const isDefault = NodeTypeHelpers.isDefaultOutputHandle(edge.sourceHandle);
 
   return updateYamlAndFlowNodes(
@@ -263,7 +276,7 @@ export function handleEdgeFromNewDecisionNode(edge: FlowEdge, yamlJsonObject: Ya
   );
 }
 
-export function handleEdgeFromRouterNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
+function handleEdgeFromRouterNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
   const isDefault = NodeTypeHelpers.isDefaultOutputHandle(edge.sourceHandle);
 
   return updateYamlNodeById(yamlJsonObject, edge.source, yamlNode => ({
@@ -274,7 +287,7 @@ export function handleEdgeFromRouterNode(edge: FlowEdge, yamlJsonObject: YamlPip
   } as YamlPipelineNode));
 }
 
-export function handleEdgeFromHitlNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
+function handleEdgeFromHitlNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
   const action = edge.sourceHandle?.replace(`${HITL_HANDLE_ID_SUFFIX}_`, '');
 
   if (!action) {
@@ -288,7 +301,7 @@ export function handleEdgeFromHitlNode(edge: FlowEdge, yamlJsonObject: YamlPipel
   } as unknown as YamlPipelineNode));
 }
 
-export function handleEdgeFromNormalNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
+function handleEdgeFromNormalNode(edge: FlowEdge, yamlJsonObject: YamlPipelineDocument): YamlPipelineDocument {
   return updateYamlNodeById(yamlJsonObject, edge.source, yamlNode => YamlUpdateHelpers.updateYamlNodeTransition(yamlNode, PipelineNodeTypes.End));
 }
 

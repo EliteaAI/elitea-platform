@@ -18,7 +18,7 @@ import { EnumMultiSelectField } from './EnumMultiSelectField';
 import { LabelWithTooltip } from './LabelWithTooltip';
 
 /** One `input_mapping[key]`/`mappingInfo[key]` write, as handed to the caller-owned `onChangeMapping` — matches `YamlInputMappingEntry`'s writable subset. */
-export interface InputMappingChangePayload {
+interface InputMappingChangePayload {
   readonly type: string;
   readonly value: unknown;
   readonly enum?: readonly unknown[];

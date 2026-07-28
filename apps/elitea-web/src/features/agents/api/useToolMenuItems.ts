@@ -88,7 +88,7 @@ function mergeMcpFlavouredToolkitTypeSchemas(toolkitSchemas: ToolkitTypeSchemaMa
   return { ...mcpSchemas, mcp: { ...mcpEntry, metadata: { ...metadataOf(mcpEntry), label: 'Remote MCP' } } };
 }
 
-export interface ToolMenuItem {
+interface ToolMenuItem {
   readonly key: string;
   readonly label: string;
 }

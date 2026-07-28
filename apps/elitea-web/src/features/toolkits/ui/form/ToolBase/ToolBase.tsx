@@ -9,15 +9,18 @@ import { resolveFieldEntryGroups, ToolBaseConfigurationBody, ToolBaseStatusSlots
 import type { ToolBaseProps } from './ToolBase.types';
 import { useIsMcpVisible } from '../../../api/useIsMcpVisible';
 
-export type {
-  ToolBaseContext,
-  ToolBaseFieldOrder,
-  ToolBaseFieldVisibility,
-  ToolBaseProps,
-  ToolBaseSections,
-  ToolBaseSlots,
-  ToolBaseToolDetail,
-} from './ToolBase.types';
+// Only `ToolBaseProps` is re-exported: it's the one type external callers
+// actually import via `./ToolBase` (see `ToolConfluence.tsx`/`ToolJira.tsx`/
+// their tests). `ToolBaseFieldOrder`/`ToolBaseFieldVisibility`/
+// `ToolBaseSections`/`ToolBaseSlots` DO have real consumers, but every one
+// of them (`ToolBase.options.ts`, `ToolBase.render.tsx`) imports straight
+// from `./ToolBase.types` rather than through this barrel, so re-exporting
+// them here was dead weight. `ToolBaseContext`/`ToolBaseToolDetail` have no
+// consumer anywhere outside `ToolBase.types.ts`'s own `ToolBaseProps`
+// field declarations (nested one level inside the already-reachable
+// `ToolBaseProps`) — see that file's own `export` removal for the same
+// reason.
+export type { ToolBaseProps } from './ToolBase.types';
 
 /**
  * Ported from `apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/

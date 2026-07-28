@@ -26,13 +26,25 @@ import { subApplicationTools, type SubApplicationToolRef } from '../model/valida
  * rules) — a caller supplies `useValidate` once a real toolkit-validation
  * endpoint exists to wrap.
  */
-export interface ValidateVersionArgs {
+/**
+ * Not re-exported from `entities/application-form`'s curated `index.ts`
+ * (that barrel is already at its §3.5 20-export budget cap — see this
+ * slice's own `index.ts` doc comment). Every injected `useValidate`
+ * implementation that needs these shapes (`features/agents/lib/
+ * useValidateAgentVersion.ts`, `features/pipelines/lib/
+ * useValidatePipelineVersion.ts`) derives them via `Parameters<
+ * UseValidateVersion>[0]`/`ReturnType<UseValidateVersion>` instead of
+ * importing them by name — both of those files' own doc comments disclose
+ * this exact workaround. `export` stays unnecessary here: kept only for
+ * `UseValidateVersion`'s own signature within this file.
+ */
+interface ValidateVersionArgs {
   readonly projectId: string | undefined;
   readonly applicationId: number | undefined;
   readonly versionId: number | undefined;
 }
 
-export interface ValidateVersionResult {
+interface ValidateVersionResult {
   readonly isError: boolean;
   readonly error: unknown;
 }

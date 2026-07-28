@@ -26,8 +26,8 @@ import { buildErrorMessage } from '@/shared/lib/http-error';
  * monolithic version had inline.
  */
 
-export type AssociationAction = 'add' | 'switch' | 'status';
-export type AssociationEntityLabel = 'agent' | 'pipeline';
+type AssociationAction = 'add' | 'switch' | 'status';
+type AssociationEntityLabel = 'agent' | 'pipeline';
 
 export interface MapAssociationErrorOptions {
   /**

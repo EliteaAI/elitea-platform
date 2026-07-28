@@ -272,19 +272,19 @@ export function MultilineField({ required, label, value, onChange, error, helper
 }
 
 /** Grouped per §3.5's 12-prop budget — see `DefaultTextFieldProps`. */
-export interface DefaultTextFieldMeta {
+interface DefaultTextFieldMeta {
   readonly required: boolean;
   readonly label: string;
   readonly description: string | undefined;
   readonly isInteger: boolean;
 }
 
-export interface DefaultTextFieldValidation {
+interface DefaultTextFieldValidation {
   readonly error: boolean;
   readonly helperText: string | undefined;
 }
 
-export interface DefaultTextFieldFocus {
+interface DefaultTextFieldFocus {
   readonly onFocus: () => void;
   readonly onBlur: () => void;
 }

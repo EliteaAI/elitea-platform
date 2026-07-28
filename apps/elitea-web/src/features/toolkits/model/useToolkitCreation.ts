@@ -26,14 +26,14 @@ export interface ToolkitCreationResult {
   };
 }
 
-export interface ToolkitAsParticipant {
+interface ToolkitAsParticipant {
   readonly entity_meta: { readonly id: string | number; readonly name: string; readonly project_id: string | number | undefined };
   readonly entity_settings: { readonly version_id: string | number | undefined; readonly variables: readonly unknown[]; readonly icon_meta: unknown };
   readonly meta: { readonly name: string; readonly mcp: boolean };
   readonly name: string;
 }
 
-export interface CreatedToolkitParticipant extends ToolkitCreationResult {
+interface CreatedToolkitParticipant extends ToolkitCreationResult {
   readonly participantType: string;
 }
 

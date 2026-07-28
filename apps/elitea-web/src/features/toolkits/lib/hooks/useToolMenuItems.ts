@@ -34,7 +34,7 @@ import { useGetCurrentToolkitSchemas } from './useGetCurrentToolkitSchemas.hooks
  * to build from scratch.
  */
 
-export interface ToolMenuItem {
+interface ToolMenuItem {
   readonly key: string;
   readonly label: string;
   readonly onClick: () => void;

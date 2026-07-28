@@ -52,7 +52,7 @@ function formatLastRun(lastRun: string, timezone: string | undefined): string {
   return new Intl.DateTimeFormat(undefined, { ...LAST_RUN_FORMAT_OPTIONS, timeZone: timezone }).format(new Date(lastRun));
 }
 
-export interface ScheduleTriggerDetails {
+interface ScheduleTriggerDetails {
   readonly cron: string | undefined;
   readonly timezone: string | undefined;
   readonly lastRun: string | undefined;
@@ -76,7 +76,7 @@ interface ForkedApplicationParams {
   readonly forkedProjectId: string | undefined;
   readonly forkedApplicationId: string | undefined;
 }
-export interface ForkedApplicationName {
+interface ForkedApplicationName {
   readonly name: string | undefined;
   /** The query's raw `EliteaApiError`, so `ForkedFromRow` can tell a 403 apart from "still-loading". */
   readonly error: unknown;

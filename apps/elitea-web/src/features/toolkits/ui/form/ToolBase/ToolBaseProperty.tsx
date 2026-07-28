@@ -50,13 +50,22 @@ import type { ToolBasePropertyProps } from './ToolBaseProperty.types';
  * inside `credentialContext` for the one caller (the not-yet-landed
  * `ToolkitEditor.jsx`) that might supply it.
  */
+// Same "re-export only what's actually reachable" pruning as `ToolBase.tsx`'s
+// own re-export (see that file's comment for the full pattern), but NARROWER
+// here: `ToolBasePropertyCredentialContext`/`ToolBasePropertyFormState`/
+// `ToolBasePropertyProps`/`ToolBasePropertySlots` are all genuinely imported
+// from THIS barrel (`./ToolBaseProperty`) by real siblings (`ToolBase.types.ts`,
+// `ToolBase.render.tsx`, `ToolBase.effects.ts`, `ToolBase.handlers.ts`,
+// `ToolSection.tsx`, `ToolBaseProperty.test.tsx`) — unlike `ToolBase.tsx`'s
+// case, pruning those would break real imports, so all four stay. Only
+// `ToolBasePropertyField`/`ToolBasePropertyVisibility` have zero consumers
+// anywhere outside `ToolBaseProperty.types.ts`'s own `ToolBasePropertyProps`
+// field declarations — those two are the ones actually removed.
 export type {
   ToolBasePropertyCredentialContext,
-  ToolBasePropertyField,
   ToolBasePropertyFormState,
   ToolBasePropertyProps,
   ToolBasePropertySlots,
-  ToolBasePropertyVisibility,
 } from './ToolBaseProperty.types';
 
 /** Tiny local port of `apps/elitea-ui/src/[fsd]/shared/lib/hooks/useFieldFocus.hooks.js` (13 lines) — not promoted, not owned by any sibling; too small to justify a separate file. */

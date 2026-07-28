@@ -49,12 +49,12 @@ export type EditToolField = (
 ) => void;
 
 /** A field's validation state: `false` (no error), `true` (required-but-empty, no message), or a message string (e.g. an integer-constraint violation). Mirrors `toolErrors[k]` across the baseline. */
-export type ToolErrorValue = boolean | string;
+type ToolErrorValue = boolean | string;
 export type ToolErrors = Readonly<Record<string, ToolErrorValue>>;
 export type SetToolErrors = (updater: (previous: ToolErrors) => ToolErrors) => void;
 
 /** One `anyOf`/`oneOf` branch, or a top-level property schema when nested one level. */
-export interface ToolPropertySchemaBranch {
+interface ToolPropertySchemaBranch {
   readonly type?: string;
   readonly format?: string;
   readonly secret?: boolean;
@@ -71,7 +71,7 @@ export interface ToolPropertySchemaItems {
   readonly itemRef?: string;
 }
 
-export interface ToolPropertyVisibleWhen {
+interface ToolPropertyVisibleWhen {
   readonly field: string;
   readonly value: unknown;
 }

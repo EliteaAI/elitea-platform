@@ -223,5 +223,13 @@ export type UseToolkitEditMutation = (
   args: { readonly projectId: string; readonly toolId: string } & ToolkitWriteBody,
 ) => Promise<ToolkitWriteResult>;
 
-/** Shape a real `GET /elitea_core/export_toolkit/prompt_lib/{projectId}/{id}` call would need to satisfy — injected into `ExportToolkitButton`. */
-export type UseToolkitExportQuery = (args: { readonly projectId: string; readonly id: string }) => Promise<Blob>;
+// `UseToolkitExportQuery` (the injected-`deps` shape this comment block
+// originally anticipated for the export gap — see the module doc comment's
+// "type only" convention) was REMOVED: `ExportToolkitButton.tsx` (this
+// unit's own real file) did not end up needing dependency injection for
+// this one gap after all — its own `fetchToolkitExport` calls `eliteaFetch`
+// against `GET /elitea_core/export_toolkit/prompt_lib/{projectId}/{id}`
+// directly (see that file's own doc comment), since the endpoint IS
+// reachable via the shared HTTP primitive even without a generated,
+// orval-typed hook. No caller anywhere in this worktree ever referenced
+// this type by name.

@@ -62,10 +62,10 @@ import { buildErrorMessage } from '@/shared/lib/http-error';
  * element type instead — always exactly in sync with the real return type,
  * with no local duplication of the shape's fields to drift.
  */
-export type ToolkitValidationEntry = ReturnType<typeof toolkitValidationErrors>[number];
+type ToolkitValidationEntry = ReturnType<typeof toolkitValidationErrors>[number];
 
 /** Structurally compatible with `entities/toolkit`'s (non-exported) `ToolkitValidationErrorBody` — see `toolkitValidationErrors`'s own parameter type. */
-export interface ToolkitValidationErrorBodyLike {
+interface ToolkitValidationErrorBodyLike {
   readonly settings_errors?: readonly Record<string, unknown>[];
   readonly connection_errors?: readonly {
     readonly message?: string;
@@ -115,13 +115,13 @@ export function buildToolkitValidationKey(projectId: string | undefined, toolkit
 
 /* ── the validation call itself (deviation 1) ─────────────────────────────── */
 
-export interface ValidateToolkitArgs {
+interface ValidateToolkitArgs {
   readonly projectId: string | undefined;
   readonly toolkitId: string | undefined;
   readonly forceSkip?: boolean;
 }
 
-export interface ValidateToolkitQueryResult {
+interface ValidateToolkitQueryResult {
   readonly isError: boolean;
   /** Whatever the injected query rejects with — shape depends on the real endpoint once one exists (mirrors `ApplicationValidator.tsx`'s `ValidateVersionResult.error`). */
   readonly error: unknown;

@@ -13,7 +13,7 @@ import type { SingleSelectOption } from '@/shared/ui/SingleSelect';
  * e.g. "My Agents" / "Shared with me" / "Public"). Mirrors the shape old
  * app's `tabs` prop items are read for (`item.display`, `item.label`).
  */
-export interface StatusFilterTab {
+interface StatusFilterTab {
   readonly label: string;
   /** `'none'` hides the tab from the dropdown (old app: `item.display !== 'none'` filter, `StatusFilterSelect.jsx:14`); any other value (or `undefined`) shows it. */
   readonly display?: string;

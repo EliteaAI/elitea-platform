@@ -42,7 +42,7 @@ export interface AgentVariable {
  * because `AgentMetaSwitch` (`configurations/switch/AgentMetaSwitch.jsx`)
  * reads/writes an arbitrary caller-supplied key here, same as the baseline.
  */
-export interface AgentVersionMeta {
+interface AgentVersionMeta {
   readonly step_limit?: number | undefined;
   readonly internal_tools?: readonly string[] | undefined;
   readonly ignore_project_context?: boolean | undefined;
@@ -59,14 +59,14 @@ export interface AgentVersionMeta {
  * files; `settings` is left opaque (`Record<string, unknown>`) since its
  * shape is toolkit-type-specific.
  */
-export interface AgentToolRef {
+interface AgentToolRef {
   readonly type: string;
   readonly name?: string | undefined;
   readonly settings?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /** `version_details` — the mutable half of an agent version. */
-export interface AgentVersionDetails {
+interface AgentVersionDetails {
   readonly id?: number | undefined;
   readonly name?: string | undefined;
   readonly instructions?: string | undefined;

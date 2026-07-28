@@ -15,7 +15,6 @@ import { normalizeLegacyOpenApiToolkit } from '../lib/helpers/legacyOpenApiMigra
 import { useGetCurrentToolkitSchemas } from '../lib/hooks/useGetCurrentToolkitSchemas.hooks';
 import { useSelectedProjectId } from '../lib/hooks/useSelectedProjectId';
 import { CreateToolkitButton } from './CreateToolkitButton';
-import type { CreateToolkitFormValues } from './CreateToolkitButton';
 import { SaveToolkitButton } from './SaveToolkitButton';
 import type { ToolkitFormValues, ToolSchemaLike } from './SaveToolkitButton';
 import { ToolkitTypeSelector } from './ToolkitTypeSelector';
@@ -202,7 +201,7 @@ export function ToolkitEditorBody({
   );
 }
 
-export type ValidationState = { readonly hasErrors: boolean; readonly triggerValidation: () => void };
+type ValidationState = { readonly hasErrors: boolean; readonly triggerValidation: () => void };
 
 export interface ToolkitEditorSaveButtonProps {
   readonly isCreating: boolean;
@@ -353,8 +352,3 @@ export const EMPTY_PARTICIPANT: ToolkitEditorParticipant = {};
 
 const centeredSx: SxProps<Theme> = { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '12.5rem' };
 export const emptyContentSx: SxProps<Theme> = { padding: 0 };
-
-// Re-exported purely so `ToolkitEditor.tsx` (this file's own intra-slice
-// caller) can build `CreateToolkitFormValues`-typed values without a second
-// import of `./CreateToolkitButton`.
-export type { CreateToolkitFormValues };

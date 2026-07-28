@@ -80,8 +80,6 @@ export const ToolTypes = {
   zephyr_squad: { label: 'Zephyr Squad', value: 'zephyr_squad' },
 } as const;
 
-export type ToolTypeKey = keyof typeof ToolTypes;
-
 /** `hostingOptions` in the baseline — cloud-vs-server toggle used by a handful of toolkit-settings forms. */
 export const hostingOptions = [
   { label: 'Cloud', value: true },

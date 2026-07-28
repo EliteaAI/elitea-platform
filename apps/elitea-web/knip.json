@@ -112,7 +112,81 @@
     "src/features/agents/api/generateAgentDraft.ts",
     "src/features/agents/lib/hooks/useDisassociateToolkit.hooks.ts",
     "src/features/agents/lib/hooks/useInstructionsMention.hooks.ts",
-    "src/features/agents/lib/hooks/useInstructionsSkillMention.hooks.ts"
+    "src/features/agents/lib/hooks/useInstructionsSkillMention.hooks.ts",
+    // Wave-2 batch 2 (agents/pipelines/toolkits) fix-round additions below.
+    //
+    // `entities/toolkit/model/toolForm.ts`'s `ValidateToolEventReason` is a
+    // real, deliberately-kept export, not dead code: `features/toolkits/ui/
+    // toolkits-tab-bar/ToolkitsTabBar.tsx`'s own module doc comment (point 5,
+    // "DISCLOSED REDESIGNS") explicitly names
+    // `ValidateToolEventReason.saveNewVersion` as the baseline's
+    // concurrent-save-new-version guard, and says in so many words that this
+    // flow "belongs to a separate 'Save As Version' button/feature not in
+    // this sub-unit's owned scope... and has no toolkit-domain equivalent
+    // landed to coordinate with here" — the same class of not-yet-landed
+    // sibling `features/agents/ui/SaveNewVersionButton.tsx` already fills on
+    // the agent side. `entities/toolkit/index.ts`'s own curated barrel is
+    // already at 19/20 of its §3.5 budget (one slot of headroom), so this
+    // isn't re-exported there yet either — same "public surface awaiting a
+    // Wave-2 consumer" situation as everything else in this list.
+    "src/entities/toolkit/model/toolForm.ts",
+    // `features/agents/ui/ConfigurationTab.tsx`'s `AgentTestPaneSettings`/
+    // `AgentTestPaneRenderProps`/`AgentRunHistoryRenderProps` are the
+    // `renderTestPane`/`renderRunHistory` slot-prop parameter types this
+    // component's own module doc comment (constraint 1) explains in detail:
+    // the real right-pane content (`ChatBox`/`RunHistoryContainer`/
+    // `ContextBudgetUI`) lives in `features/chat`/`entities/run-history`/
+    // `widgets/context-budget`, none of which exist in this worktree yet
+    // ("Wave-2 unit C6 (a much later chat unit)", the doc comment's own
+    // words) — `no-sideways-features`/`no-upward-from-features` forbid this
+    // slice from reaching them even once they land. A future page-level
+    // composition supplies `renderTestPane`/`renderRunHistory` as inline
+    // arrow functions checked structurally against these parameter types,
+    // with no need to import them by name — same reason `AgentEditorDeps`/
+    // `AgentEditorShellProps` (this file's own sibling `AgentEditor.tsx`,
+    // already listed above) needed this treatment.
+    "src/features/agents/ui/ConfigurationTab.tsx",
+    // `features/pipelines/model/useEditPipeline.ts`'s `EditPipelineParticipant`
+    // and `features/pipelines/model/usePipelineCreation.ts`'s
+    // `CreatedPipelineResult`/`CreatedPipelineParticipant` are these two
+    // hooks' own params/result types — `features/pipelines/index.ts`'s own
+    // doc comment (sub-unit A2l's contribution) explicitly says both hooks'
+    // "own params/result types stay off this curated list, same call
+    // `features/agents/index.ts` already made for `AgentEditor`'s
+    // identically-shaped `AgentEditorDeps`/`AgentEditorShellProps`... every
+    // one of them is a plain object literal a caller builds inline, checked
+    // structurally... with no explicit import required." `useEditPipeline`/
+    // `usePipelineCreation` themselves ARE exported from `pipelines/
+    // index.ts` ("Wave-2 unit C6 needs all three importable cross-feature —
+    // their only real consumer today is `pages/NewChat/NewChat.jsx`"); only
+    // their nested parameter/result shapes are left off the curated list.
+    "src/features/pipelines/model/useEditPipeline.ts",
+    "src/features/pipelines/model/usePipelineCreation.ts",
+    // `features/pipelines/ui/ConfigurationTab.tsx`'s
+    // `ConfigurationTabRunHistoryRenderProps`/`ConfigurationTabSlots` are the
+    // pipelines-domain twin of the `features/agents/ui/ConfigurationTab.tsx`
+    // entry above — that file's own doc comment on `renderRunHistory`
+    // literally says it "mirrors `features/agents/ui/ConfigurationTab.tsx`'s
+    // own `renderRunHistory` (same real dependency gap: no `entities/
+    // run-history` exists in this worktree)". Same slot-parameter-type
+    // situation, same not-yet-landed consumer.
+    "src/features/pipelines/ui/ConfigurationTab.tsx",
+    // `features/toolkits/ui/ConfigurationTab.tsx`'s
+    // `ToolkitTestPaneRenderProps`/`ToolkitRunHistoryRenderProps`/
+    // `ToolkitDetailState`/`ToolkitSaveHandlers` are the toolkits-domain
+    // third of this same family — that file's own doc comment says its
+    // slot-based redesign matches "the precedent `features/agents/ui/
+    // ConfigurationTab.tsx` already established for the IDENTICAL
+    // architectural problem", naming both `TestTools` (a sibling A4
+    // sub-unit's own not-yet-owned-here file) and `RunHistoryContainer`
+    // (`entities/run-history`, which "does not exist anywhere in this
+    // worktree") as the real, disclosed gaps `renderTestPane`/
+    // `renderRunHistory` defer to. `ToolkitDetailState`/`ToolkitSaveHandlers`
+    // are the same §3.5 12-prop-budget "group into one option object" move
+    // as `ConfigurationTabProps`'s other groupings, not slot types, but have
+    // the identical "no current caller needs the type by name, only the
+    // grouped prop" shape.
+    "src/features/toolkits/ui/ConfigurationTab.tsx"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
@@ -137,15 +211,32 @@
     // knip to get the ground-truth "still genuinely unused" list, rather
     // than guessing from the truncated config-hints output) after removing
     // the 16 entries below that already have real consumers.
-    "@hookform/resolvers",
-    "@mui/x-date-pickers",
-    "@xyflow/react",
-    "react-hook-form",
-    "recharts",
     "@axe-core/playwright",
     "@lhci/cli",
     "@swc/core",
     "dependency-cruiser"
+    // [Wave-2 batch 2] `react-hook-form`/`@hookform/resolvers`/
+    // `@xyflow/react`/`@mui/x-date-pickers`/`recharts` REMOVED from this
+    // list: this batch (agents/pipelines/toolkits + analytics) built all 5
+    // pinned-ahead consumers this array's own comment anticipated
+    // ("forms/date-pickers/charts/flow-diagram libraries").
+    // `react-hook-form`'s/`@hookform/resolvers`'s first real consumers are
+    // the page-level agent/pipeline forms — `src/pages/agents/lib/
+    // useEditApplicationForm.ts`/`src/pages/agents/CreateApplication.tsx`
+    // (react-hook-form's `useForm`/`Controller`, `@hookform/resolvers`'s
+    // `zodResolver`) and their `src/pages/pipelines/lib/
+    // useEditPipelineForm.ts`/`CreatePipeline.tsx` pipeline-domain twins.
+    // `@xyflow/react`'s first real consumer is the pipelines flow editor
+    // itself — `src/features/pipelines/ui/FlowEditorCanvasControls.tsx`
+    // (plus the rest of `features/pipelines/lib/flow-editor/**`).
+    // `@mui/x-date-pickers`'s first real consumer is
+    // `src/features/analytics/ui/components/DateRangeField.tsx`.
+    // `recharts`'s first real consumer is
+    // `src/features/analytics/ui/AnalyticsAgents.tsx` (plus its
+    // `AnalyticsHealth.tsx`/`AnalyticsOverview.tsx` siblings). All 5 now
+    // have real consumers and knip finds them itself — same pattern S1-E/
+    // S1-G below already established for this exact "pinned ahead, batch
+    // lands, remove from this list" lifecycle.
     // [S1-E] `@codemirror/commands`/`@codemirror/lang-json`/`@codemirror/lint`/
     // `@codemirror/search`/`@codemirror/state`/`@codemirror/view` REMOVED from
     // this list: S1 pinned them ahead of their first consumer

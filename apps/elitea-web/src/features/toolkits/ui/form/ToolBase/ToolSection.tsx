@@ -24,7 +24,12 @@ import { ToolBaseProperty } from './ToolBaseProperty';
 import type { ToolBasePropertyCredentialContext, ToolBasePropertyFormState, ToolBasePropertyProps, ToolBasePropertySlots } from './ToolBaseProperty';
 import type { EditToolField, SetEditToolDetail, ToolPropertySchema } from './types';
 
-export type { ToolSectionSubsection, ToolSectionVisibility } from './ToolSection.types';
+// `ToolSectionVisibility` REMOVED from this re-export: `ToolBase.types.ts`/
+// `ToolBase.options.ts` (the real cross-file consumers of `ToolSectionSubsection`)
+// import that one through this barrel, but nothing imports `ToolSectionVisibility`
+// through it — `ToolSection.helpers.ts` (its only real consumer) already
+// imports it straight from `./ToolSection.types`.
+export type { ToolSectionSubsection } from './ToolSection.types';
 
 /**
  * Ported from `apps/elitea-ui/src/[fsd]/features/toolkits/ui/form/
@@ -41,12 +46,12 @@ export type { ToolSectionSubsection, ToolSectionVisibility } from './ToolSection
  * `formState`/`credentialContext`/`slots` are grouped exactly as
  * `ToolBaseProperty.tsx` declares them, passed straight through.
  */
-export interface ToolSectionSchema {
+interface ToolSectionSchema {
   readonly properties?: Readonly<Record<string, ToolPropertySchema | undefined>>;
 }
 
 /** §3.5 12-prop-budget grouping: this section's own identity (which subsections, whether the section as a whole is required). */
-export interface ToolSectionIdentity {
+interface ToolSectionIdentity {
   readonly sectionKey: string;
   readonly subsections: readonly ToolSectionSubsection[];
   readonly required: boolean;

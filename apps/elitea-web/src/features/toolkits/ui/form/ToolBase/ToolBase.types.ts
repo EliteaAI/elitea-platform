@@ -12,7 +12,7 @@ import type { NameDescriptionInputSlotProps } from './ToolBase.slots';
  * See `ToolBase.tsx`'s own module doc comment for the full disclosed-
  * redesign rationale behind each group.
  */
-export interface ToolBaseToolDetail {
+interface ToolBaseToolDetail {
   readonly value: EditToolDetail;
   readonly onChange: SetEditToolDetail;
 }
@@ -60,7 +60,7 @@ export interface ToolBaseSlots extends ToolBasePropertySlots {
     | undefined;
 }
 
-export interface ToolBaseContext {
+interface ToolBaseContext {
   readonly shouldUseAccordionView?: boolean | undefined;
 }
 

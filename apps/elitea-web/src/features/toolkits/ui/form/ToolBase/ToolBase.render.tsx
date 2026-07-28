@@ -21,7 +21,7 @@ import type { ToolBaseSlots } from './ToolBase.types';
  * blocks (`ToolBase.jsx:220-333,524-564`) out of the render body is what
  * gets `ToolBase` itself under the §3.5 budget. No behaviour change.
  */
-export interface PropertyPassParams {
+interface PropertyPassParams {
   readonly formState: ToolBasePropertyFormState;
   readonly settings: Readonly<Record<string, unknown>>;
   readonly editField: EditToolField;

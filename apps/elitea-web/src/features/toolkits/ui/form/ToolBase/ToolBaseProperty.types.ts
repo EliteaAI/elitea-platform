@@ -18,7 +18,7 @@ import type {
  * baseline equivalent. See `ToolBaseProperty.tsx`'s own module doc comment
  * for the full disclosed-redesign rationale.
  */
-export interface ToolBasePropertyField {
+interface ToolBasePropertyField {
   readonly key: string;
   readonly schema: ToolPropertySchema | undefined;
   readonly required: boolean;
@@ -32,7 +32,7 @@ export interface ToolBasePropertyFormState {
   readonly validationErrorMessages?: ValidationErrorMessages | undefined;
 }
 
-export interface ToolBasePropertyVisibility {
+interface ToolBasePropertyVisibility {
   readonly showOnlyRequiredFields?: boolean | undefined;
   readonly showOnlyConfigurationFields?: boolean | undefined;
   readonly disableConfigFields?: boolean | undefined;

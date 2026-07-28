@@ -81,13 +81,13 @@ export interface AssociationCandidate {
   readonly name: string;
 }
 
-export interface AssociateAgentOutcome {
+interface AssociateAgentOutcome {
   readonly ok: boolean;
   /** Always a caller-displayable message, on both success and failure — see module doc comment, gap 3. */
   readonly message: string;
 }
 
-export interface AssociateAgentOptions {
+interface AssociateAgentOptions {
   readonly isPipeline?: boolean;
   /** The parent version's CURRENT tools, for the client-side duplicate guard (defense in depth — the caller's own dropdown filtering, e.g. `useFilterAddedItems`, is the primary guard). */
   readonly currentTools?: readonly FilterableToolRef[];

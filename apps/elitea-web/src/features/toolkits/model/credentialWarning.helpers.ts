@@ -12,7 +12,7 @@
  * bigger architectural call than this sub-unit's single-consumer file list
  * warrants.
  */
-export interface CredentialLikeSettingsValue {
+interface CredentialLikeSettingsValue {
   readonly elitea_title?: string;
   readonly private?: boolean;
 }

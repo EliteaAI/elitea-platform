@@ -18,20 +18,20 @@
  */
 
 /** One `version_details.variables[]` entry — same shape as `apps/elitea-ui/src/components/VariableList.jsx:7-24` used for both agents and pipelines. */
-export interface PipelineVariable {
+interface PipelineVariable {
   readonly id?: string | number | undefined;
   readonly name: string;
   readonly value: string;
 }
 
 /** `version_details.meta` — settings bag, same shape as `AgentVersionMeta`. */
-export interface PipelineVersionMeta {
+interface PipelineVersionMeta {
   readonly step_limit?: number | undefined;
   readonly [metaKey: string]: unknown;
 }
 
 /** `version_details` — the mutable half of a pipeline version's create-mode draft. */
-export interface PipelineVersionDetails {
+interface PipelineVersionDetails {
   readonly instructions?: string | undefined;
   readonly welcome_message?: string | undefined;
   readonly tags?: readonly string[] | undefined;

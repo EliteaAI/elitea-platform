@@ -52,7 +52,7 @@ interface YamlAndFlowUpdateArgs {
   readonly dataValue: unknown;
 }
 
-export function updateYamlAndFlowNode({
+function updateYamlAndFlowNode({
   yamlNode,
   nodeId,
   updateData,
@@ -99,7 +99,7 @@ export function updateConditionNodeData({
   });
 }
 
-export function updateLegacyDecisionNodeData({
+function updateLegacyDecisionNodeData({
   nodeId,
   yamlNode,
   connection,

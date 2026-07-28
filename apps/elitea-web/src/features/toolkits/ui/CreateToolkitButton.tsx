@@ -8,7 +8,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import type { ToolkitWriteBody, ToolkitWriteResult, UseToolkitCreateMutation } from '../api/toolkits';
 import { toolkitNameSettingsKey, type ToolSchemaLike } from './SaveToolkitButton';
 
-export interface CreateToolkitFormValues {
+interface CreateToolkitFormValues {
   readonly type?: string | undefined;
   readonly name?: string | undefined;
   readonly description?: string | undefined;

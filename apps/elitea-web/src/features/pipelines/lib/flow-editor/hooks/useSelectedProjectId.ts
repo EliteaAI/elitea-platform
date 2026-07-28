@@ -22,7 +22,7 @@ function isSelectedProjectIdContext(value: unknown): value is SelectedProjectIdC
   return typeof value === 'object' && value !== null;
 }
 
-export function selectProjectId(context: unknown): string | undefined {
+function selectProjectId(context: unknown): string | undefined {
   if (!isSelectedProjectIdContext(context)) return undefined;
   return context.auth?.getSelectedProjectId?.();
 }

@@ -133,7 +133,7 @@ export interface GetAvailableConfigurationsTypeParams {
 }
 
 /** API-145 (`credentials.getAvailableConfigurationsType`). */
-export function buildAvailableConfigurationsTypeUrl(params: GetAvailableConfigurationsTypeParams = {}): string {
+function buildAvailableConfigurationsTypeUrl(params: GetAvailableConfigurationsTypeParams = {}): string {
   const query = new URLSearchParams();
   for (const section of params.section ?? []) query.append('section', section);
   return `/configurations/available/?${query.toString()}`;

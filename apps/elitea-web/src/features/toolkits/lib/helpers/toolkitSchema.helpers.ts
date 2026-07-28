@@ -15,7 +15,7 @@
  * rather than a redesign.
  */
 
-export interface JsonSchemaExtraShape {
+interface JsonSchemaExtraShape {
   readonly json_schema_extra?: Readonly<Record<string, unknown>>;
   readonly [key: string]: unknown;
 }

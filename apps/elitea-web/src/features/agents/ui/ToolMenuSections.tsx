@@ -148,7 +148,7 @@ function AddMenuButton({ label, disabled, tooltip, onClick, testId }: AddMenuBut
 /* ── one self-contained section per add-button ─────────────────────────────── */
 
 /** User-visible copy for one `InstanceAddSection`, grouped into its own object to keep the component's own prop count under the §3.5 12-prop budget. */
-export interface InstanceSectionCopy {
+interface InstanceSectionCopy {
   readonly label: string;
   readonly searchPlaceholder: string;
   readonly emptyMessage: string;
@@ -216,7 +216,7 @@ export function InstanceAddSection({ copy, testId, isEntityUnsaved, tooltip, isM
 }
 
 /** Same grouping rationale as `InstanceSectionCopy`. */
-export interface EntitySectionCopy {
+interface EntitySectionCopy {
   readonly label: string;
   readonly searchPlaceholder: string;
   readonly emptyMessage: string;

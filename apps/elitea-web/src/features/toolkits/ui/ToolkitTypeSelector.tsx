@@ -25,7 +25,7 @@ function isNameRequiredFor(toolSchemas: ToolkitTypeSchemaMap, toolType: string):
   return (toolSchemas[toolType] as ToolkitTypeSchemaShape | undefined)?.name_required !== false;
 }
 
-export interface ToolkitTypeSelectorToolDetail {
+interface ToolkitTypeSelectorToolDetail {
   readonly type: string;
   readonly schema: Readonly<Record<string, unknown>>;
   readonly meta: Readonly<Record<string, unknown>>;

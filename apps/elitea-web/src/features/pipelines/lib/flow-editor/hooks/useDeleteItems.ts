@@ -33,7 +33,7 @@ export interface UseDeleteItemsArgs {
   readonly disabled?: boolean;
 }
 
-export interface OnBeforeDeleteArgs {
+interface OnBeforeDeleteArgs {
   readonly nodes: readonly FlowNode[];
   readonly edges: readonly FlowEdge[];
 }

@@ -26,7 +26,7 @@ interface ToolkitEditingNavBlocker {
   readonly setToolkitCreateMode: (creating: boolean) => void;
 }
 
-export interface EditToolkitParticipant {
+interface EditToolkitParticipant {
   readonly isCreating?: boolean;
   readonly isMCP?: boolean;
   readonly id?: string | number;

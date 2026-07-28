@@ -16,7 +16,7 @@ import { BaseCheckbox } from '@/shared/ui/BaseCheckbox';
 import { RemoveIcon } from '@/shared/ui/icons/remove-icon';
 
 /** One selectable option, matching `SingleSelectOption`'s `{label, value}` shape (`@/shared/ui/SingleSelectMenuItem`) without importing it, since this is a `Select multiple` checklist, not a `SingleSelect`. */
-export interface EnumMultiSelectOption {
+interface EnumMultiSelectOption {
   readonly label: string;
   readonly value: string;
 }

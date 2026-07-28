@@ -22,7 +22,7 @@ export interface VariablesMappingEntry {
   readonly value: unknown;
 }
 
-export type OnChangeVariablesMapping = (field: string, value: VariablesMappingEntry) => void;
+type OnChangeVariablesMapping = (field: string, value: VariablesMappingEntry) => void;
 
 const variableSourceOptions = [
   { label: 'State', value: 'state' },
