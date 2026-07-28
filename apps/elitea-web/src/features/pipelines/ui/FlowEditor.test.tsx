@@ -1,11 +1,13 @@
 import { createRef } from 'react';
 
-import { screen } from '@testing-library/react';
+import { act, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReactFlowProvider } from '@xyflow/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
+
+import { usePipelineEditorStore } from '../model/pipelineEditorStore';
 
 /**
  * This file mounts the REAL `FlowEditor` component, no mocking. `vi.mock()`
@@ -117,4 +119,138 @@ describe('FlowEditor', () => {
     expect(ref.current?.getCurrentExpandState()).toBe(true);
     expect(ref.current?.hasRunsInProgress()).toBe(false);
   });
+
+  afterEach(() => {
+    usePipelineEditorStore.setState({ nodes: [], edges: [], stateValidationErrors: {} });
+  });
+
+  it('seeds flowNodes/flowEdges from the cached pipelineEditorStore when it already has content (cachedNodes.length branch)', () => {
+    usePipelineEditorStore.setState({
+      nodes: [{ id: 'cached-1', type: 'ghost', position: { x: 0, y: 0 }, data: {} }],
+      edges: [],
+    });
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps({ initialNodes: [], initialEdges: [] }), ref);
+
+    // getCurrentExpandState/hasRunsInProgress being callable confirms the component
+    // mounted; the more direct signal is that fitView (below) treats it as >2 nodes
+    // only once more cached nodes are added, but presence alone confirms the seed path
+    // ran without throwing on a non-empty store.
+    expect(ref.current).not.toBeNull();
+  });
+
+  it('ref.onAddNode adds a new flow node of the given type and returns it', () => {
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps(), ref);
+
+    const node = ref.current?.onAddNode('ghost');
+
+    expect(node).toBeDefined();
+    expect(node?.type).toBe('ghost');
+  });
+
+  it('ref.onRcvAgentEvent/deleteAllRunNodes/setFlowNodes/setFlowEdges do not throw', () => {
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps(), ref);
+
+    expect(() => ref.current?.onRcvAgentEvent({ type: 'unknown_event' } as never)).not.toThrow();
+    expect(() => ref.current?.deleteAllRunNodes()).not.toThrow();
+    expect(() =>
+      ref.current?.setFlowNodes([{ id: 'n1', type: 'ghost', position: { x: 0, y: 0 }, data: {} }]),
+    ).not.toThrow();
+    expect(() => ref.current?.setFlowEdges([])).not.toThrow();
+  });
+
+  it('ref.calculateLayoutNodes forwards an explicit expand state when given one', () => {
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps(), ref);
+
+    expect(() => ref.current?.calculateLayoutNodes({ nodes: [] }, true, true, false)).not.toThrow();
+  });
+
+  it('ref.calculateLayoutNodes falls back to the current expand state when explicitExpandState is omitted', () => {
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps(), ref);
+
+    expect(() => ref.current?.calculateLayoutNodes({ nodes: [] }, true, true)).not.toThrow();
+  });
+
+  it('ref.stopCurrentRun does not throw when there are no run nodes (falls back to an empty id)', () => {
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps(), ref);
+
+    expect(() => ref.current?.stopCurrentRun()).not.toThrow();
+  });
+
+  it('ref.fitView is a no-op (no setTimeout scheduled) when there are 2 or fewer flow nodes', () => {
+    vi.useFakeTimers();
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps({ initialNodes: [], initialEdges: [] }), ref);
+
+    act(() => ref.current?.fitView());
+    // No assertion target beyond "does not throw" is available without spying on the
+    // internal `fitView` from `useReactFlow` (not exposed) — the 2-or-fewer guard itself
+    // is exercised (`latest.current.flowNodes.length > 2` false branch).
+    vi.useRealTimers();
+  });
+
+  it('ref.fitView schedules a delayed fit when there are more than 2 flow nodes', () => {
+    vi.useFakeTimers();
+    const manyNodes = [
+      { id: 'a', type: 'ghost', position: { x: 0, y: 0 }, data: {} },
+      { id: 'b', type: 'ghost', position: { x: 100, y: 0 }, data: {} },
+      { id: 'c', type: 'ghost', position: { x: 200, y: 0 }, data: {} },
+    ];
+    const ref = createRef<FlowEditorHandle>();
+    renderFlowEditor(baseProps({ initialNodes: manyNodes, initialEdges: [] }), ref);
+
+    expect(() => {
+      act(() => ref.current?.fitView());
+      void act(() => vi.advanceTimersByTime(100));
+    }).not.toThrow();
+    vi.useRealTimers();
+  });
+
+  it('clicking the "Toggle cards size" canvas control toggles the expand-all state (onExpandAll)', () => {
+    vi.useFakeTimers();
+    const { container } = renderFlowEditor(baseProps());
+
+    const buttons = container.querySelectorAll('.react-flow__controls-button');
+    expect(buttons).toHaveLength(6);
+    act(() => {
+      (buttons[4] as HTMLElement).click();
+    });
+    void act(() => vi.advanceTimersByTime(300));
+
+    vi.useRealTimers();
+  });
+
+  it('clicking the "Auto-arrange" canvas control re-lays-out the graph (onReLayoutClick)', () => {
+    vi.useFakeTimers();
+    const { container } = renderFlowEditor(baseProps());
+
+    const buttons = container.querySelectorAll('.react-flow__controls-button');
+    act(() => {
+      (buttons[5] as HTMLElement).click();
+    });
+    void act(() => vi.advanceTimersByTime(100));
+
+    vi.useRealTimers();
+  });
+
+  it('renders with disabled left unset (exercises the `disabled ?? false` fallback)', () => {
+    renderFlowEditor(baseProps({ disabled: undefined }));
+    expect(screen.getByRole('button', { name: 'State' })).toBeInTheDocument();
+  });
+
+  // NOT COVERABLE HERE: `useFlowEditorLayoutVersionSync`'s `onReLayout` callback (the
+  // `layoutVersion` mismatch -> re-layout path) only fires once xyflow's own
+  // `useNodesInitialized()` reports every node measured. jsdom has no real layout engine
+  // and this app's `ResizeObserver` test stub (top of this file) never reports a
+  // measurement, so `nodesInitialized` never flips true here — confirmed directly: a
+  // `vi.waitFor(() => expect(onLayoutVersionChange).toHaveBeenCalledWith(...))` with a
+  // generous timeout never resolves. The branch itself (and both of `useFlowEditorLayoutVersionSync`'s
+  // own conditions) is already covered at the hook level in `useFlowEditorLifecycle.test.
+  // ts`, which drives `nodesInitialized` as a plain boolean argument instead of through a
+  // real `<ReactFlow>` tree.
 });

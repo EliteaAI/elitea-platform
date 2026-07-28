@@ -64,4 +64,132 @@ describe('ApplicationAdvanceSettings', () => {
     fireEvent.click(screen.getByRole('checkbox'));
     expect(onIgnoreProjectContextChange).toHaveBeenCalledWith(true);
   });
+
+  it('does nothing when the toggle changes but no onIgnoreProjectContextChange handler is supplied', () => {
+    renderWithProviders(
+      <ApplicationAdvanceSettings
+        stepLimit={10}
+        onStepLimitChange={vi.fn()}
+        showIgnoreProjectContext
+        ignoreProjectContext={false}
+      />,
+    );
+    // Should not throw when the optional handler is absent.
+    expect(() => fireEvent.click(screen.getByRole('checkbox'))).not.toThrow();
+  });
+
+  it('clamps a negative step limit up to MIN_STEP_LIMIT (0)', () => {
+    const onStepLimitChange = vi.fn();
+    renderWithProviders(
+      <ApplicationAdvanceSettings
+        stepLimit={10}
+        onStepLimitChange={onStepLimitChange}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/Step limit/i), { target: { value: '-50' } });
+    expect(onStepLimitChange).toHaveBeenCalledWith(0);
+  });
+
+  it('reports undefined for a non-numeric value', () => {
+    const onStepLimitChange = vi.fn();
+    renderWithProviders(
+      <ApplicationAdvanceSettings
+        stepLimit={10}
+        onStepLimitChange={onStepLimitChange}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/Step limit/i), { target: { value: 'abc' } });
+    expect(onStepLimitChange).toHaveBeenCalledWith(undefined);
+  });
+
+  it('disables the step limit input and checkbox when disabled is set', () => {
+    renderWithProviders(
+      <ApplicationAdvanceSettings
+        stepLimit={10}
+        onStepLimitChange={vi.fn()}
+        showIgnoreProjectContext
+        ignoreProjectContext={false}
+        onIgnoreProjectContextChange={vi.fn()}
+        disabled
+      />,
+    );
+    expect(screen.getByLabelText(/Step limit/i)).toBeDisabled();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+  });
+
+  describe('keydown filtering on the step limit input', () => {
+    it('allows navigation keys such as Backspace', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={25}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      const notCancelled = fireEvent.keyDown(input, { key: 'Backspace' });
+      expect(notCancelled).toBe(true);
+    });
+
+    it('allows a digit that keeps the value within MAX_STEP_LIMIT', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={25}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      // current value is "25"; appending "9" -> "259" <= 999
+      const notCancelled = fireEvent.keyDown(input, { key: '9' });
+      expect(notCancelled).toBe(true);
+    });
+
+    it('blocks a digit that would push the value above MAX_STEP_LIMIT', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={999}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      // current value is "999"; appending "9" -> "9999" > 999
+      const cancelled = fireEvent.keyDown(input, { key: '9' });
+      expect(cancelled).toBe(false);
+    });
+
+    it('blocks a non-digit, non-navigation key', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={25}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      const cancelled = fireEvent.keyDown(input, { key: 'a' });
+      expect(cancelled).toBe(false);
+    });
+
+    it('allows any key when a modifier (ctrl/meta) is held', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={999}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      const notCancelled = fireEvent.keyDown(input, { key: 'a', ctrlKey: true });
+      expect(notCancelled).toBe(true);
+    });
+
+    it('allows any key when the meta modifier is held', () => {
+      renderWithProviders(
+        <ApplicationAdvanceSettings
+          stepLimit={999}
+          onStepLimitChange={vi.fn()}
+        />,
+      );
+      const input = screen.getByLabelText(/Step limit/i);
+      const notCancelled = fireEvent.keyDown(input, { key: 'a', metaKey: true });
+      expect(notCancelled).toBe(true);
+    });
+  });
 });

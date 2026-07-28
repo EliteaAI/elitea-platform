@@ -116,4 +116,19 @@ describe('CustomEdge', () => {
     const { getByText } = renderEdge(makeProps({ data: { label: 'Interrupt' } }));
     expect(getByText('Interrupt')).toBeInTheDocument();
   });
+
+  // NOTE (coverage gap, disclosed): the `useEffect`'s `svgAncestor` truthy
+  // branch (`document.querySelector('[data-id="..."]')?.closest('svg')`,
+  // then setting its `style.zIndex`) is not exercised by any test in this
+  // file. React Flow only stamps `data-id` on the internal edge-wrapper
+  // `<g>` it renders for a REGISTERED edge (`edgeTypes`) -- attempted here
+  // via a real `<ReactFlow nodes=... edges=... edgeTypes={{custom:
+  // CustomEdge}}>` tree, but React Flow's `.react-flow__edges` container
+  // stayed permanently empty even with explicit `measured: {width,height}`
+  // on both nodes (no `ResizeObserver` real implementation in this jsdom
+  // env to flip `nodesInitialized`, and edges do not render before that).
+  // The other tests in this file mount `CustomEdge` directly (see
+  // `renderEdge`'s own doc comment) specifically to sidestep that same
+  // limitation for path/label assertions; this one effect body has no such
+  // workaround available.
 });

@@ -10,7 +10,8 @@ import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
 import { buildFlowEditorContextValue, renderWithRouterAndProject } from '../../__tests__/testUtils';
 import { FlowEditorContext, type FlowEditorContextValue } from '../../lib/flow-editor/flowEditorContext';
 import type { YamlPipelineDocument } from '../../lib/flow-editor/helpers/pipelineFlow.types';
-import { SubgraphNode } from './SubgraphNode';
+import type { PipelineToolEntry } from '../select/pipelineToolEntry.types';
+import { SubgraphNode, type SubgraphNodeProps } from './SubgraphNode';
 
 const BASE = '/api/v2';
 const PROJECT_ID = 'proj-1';
@@ -38,9 +39,13 @@ afterEach(() => {
   cleanup();
 });
 
-function renderSubgraphNode(flowEditorOverrides: Partial<FlowEditorContextValue>): RenderResult {
-  const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1' }] };
-  const flowEditorValue = buildFlowEditorContextValue({ yamlJsonObject, ...flowEditorOverrides });
+function renderSubgraphNode(
+  flowEditorOverrides: Partial<FlowEditorContextValue>,
+  nodeProps: Partial<SubgraphNodeProps> = {},
+): RenderResult {
+  const yamlJsonObject: YamlPipelineDocument = flowEditorOverrides.yamlJsonObject ?? { nodes: [{ id: 'Node1' }] };
+  const flowEditorValue = buildFlowEditorContextValue({ ...flowEditorOverrides, yamlJsonObject });
+  const fullProps: SubgraphNodeProps = { id: 'Node1', ...nodeProps } as SubgraphNodeProps;
 
   return renderWithRouterAndProject(
     <ReactFlowProvider>
@@ -48,7 +53,7 @@ function renderSubgraphNode(flowEditorOverrides: Partial<FlowEditorContextValue>
         <ReactFlow
           nodes={[{ id: 'Node1', type: 'testNode', position: { x: 0, y: 0 }, data: {} }]}
           edges={[]}
-          nodeTypes={{ testNode: SubgraphNode }}
+          nodeTypes={{ testNode: () => <SubgraphNode {...fullProps} /> }}
         />
       </FlowEditorContext.Provider>
     </ReactFlowProvider>,
@@ -89,5 +94,34 @@ describe('SubgraphNode', () => {
     for (const switchControl of getAllByRole('switch', { hidden: true })) {
       expect(switchControl).not.toBeDisabled();
     }
+  });
+
+  it('keeps an Application-typed, Pipeline-agent_type versionTools entry -- its label shows as the selected toolkit', async () => {
+    const versionTools: readonly PipelineToolEntry[] = [
+      { type: 'application', name: 'MySubgraph', agent_type: 'pipeline' },
+    ];
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', tool: 'MySubgraph' }] };
+    const { findByText } = renderSubgraphNode({ yamlJsonObject }, { versionTools });
+    expect(await findByText('MySubgraph')).toBeInTheDocument();
+  });
+
+  it("filters out an Application-typed entry whose agent_type is NOT 'pipeline'", async () => {
+    const versionTools: readonly PipelineToolEntry[] = [
+      { type: 'application', name: 'MyAgent', agent_type: 'agent' },
+    ];
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', tool: 'MyAgent' }] };
+    const { findByRole, queryByText } = renderSubgraphNode({ yamlJsonObject }, { versionTools });
+    await findByRole('combobox', { hidden: true });
+    expect(queryByText('MyAgent')).not.toBeInTheDocument();
+  });
+
+  it('filters out a non-Application-typed versionTools entry even with agent_type set to pipeline', async () => {
+    const versionTools: readonly PipelineToolEntry[] = [
+      { type: 'github', toolkit_name: 'my-github', agent_type: 'pipeline' },
+    ];
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', toolkit_name: 'my-github' }] };
+    const { findByRole, queryByText } = renderSubgraphNode({ yamlJsonObject }, { versionTools });
+    await findByRole('combobox', { hidden: true });
+    expect(queryByText('my-github')).not.toBeInTheDocument();
   });
 });

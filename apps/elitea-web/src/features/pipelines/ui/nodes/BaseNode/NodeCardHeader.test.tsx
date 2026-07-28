@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
 import type { YamlPipelineDocument } from '../../../lib/flow-editor/helpers/pipelineFlow.types';
-import type { FlowNode } from '../../../lib/flow-editor/reactFlowTypes';
+import type { FlowEdge, FlowNode } from '../../../lib/flow-editor/reactFlowTypes';
 import { NodeCardHeader, type NodeCardHeaderProps } from './NodeCardHeader';
 
 function baseProps(overrides: Partial<NodeCardHeaderProps> = {}): NodeCardHeaderProps {
@@ -189,6 +189,31 @@ describe('NodeCardHeader', () => {
       id: 'Router 1',
       data: { nodes: ['Tool 1 Renamed', 'End'], default_output: 'Tool 1 Renamed' },
     });
+  });
+
+  it('rewrites every flow edge referencing the renamed node (source or target) through the rename pass', () => {
+    const setFlowEdges = vi.fn();
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Tool 1' }] };
+    renderWithTheme(<NodeCardHeader {...baseProps({ name: 'Tool 1', type: 'llm', yamlJsonObject, setFlowEdges })} />);
+
+    fireEvent.doubleClick(screen.getByText('Tool 1'));
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Tool 1 Renamed' } });
+    fireEvent.blur(input);
+
+    expect(setFlowEdges).toHaveBeenCalledTimes(1);
+    const updater = setFlowEdges.mock.calls[0]?.[0] as (prev: FlowEdge[]) => FlowEdge[];
+    const prevFlowEdges: FlowEdge[] = [
+      { id: 'e1', source: 'Tool 1', target: 'End' },
+      { id: 'e2', source: 'Start', target: 'Tool 1' },
+      { id: 'e3', source: 'Other', target: 'End' },
+    ];
+
+    const nextFlowEdges = updater(prevFlowEdges);
+
+    expect(nextFlowEdges[0]).toMatchObject({ source: 'Tool 1 Renamed', target: 'End' });
+    expect(nextFlowEdges[1]).toMatchObject({ source: 'Start', target: 'Tool 1 Renamed' });
+    expect(nextFlowEdges[2]).toMatchObject({ source: 'Other', target: 'End' });
   });
 
   it('does not enter rename mode by double-click for a Condition node', () => {

@@ -253,10 +253,30 @@ export function useApplicationChatConversation(
     chatHistoryRef.current = activeConversation?.chat_history ?? [];
   }, [activeConversation?.chat_history]);
 
-  // Resets to a fresh welcome-message-only history whenever the version id itself changes —
+  // Resets to a fresh welcome-message-only history whenever the version id itself CHANGES —
   // baseline's own empty-deps unmount-of-old-version effect (`useApplicationChat.hooks.js`'s
   // final `useEffect`).
+  //
+  // **Bug fix (found writing this file's own tests, not a pre-existing test's regression):**
+  // a plain `useEffect(fn, [applicationVersionDetails?.id])` runs on EVERY commit whose deps
+  // changed, but ALSO unconditionally once on the initial mount — there is no "previous value"
+  // to diff against yet, so React just runs it. That means this effect used to fire on mount
+  // too, and since `prev?.chat_history.length` is checked (not `prev?.id`), a just-restored
+  // conversation (real `id`/`uuid`, non-empty `chat_history` — restoring a conversation with NO
+  // messages would be pointless, so this is the common case) had its `id`/`uuid` wiped back to
+  // `undefined` the instant it was restored, on this same mount's effects flush — turning a
+  // restored conversation back into an unsaved draft (breaking `onSend`'s "existing vs. needs
+  // creation" branch, socket room joins keyed off the id, delete-message/delete-all, ...).
+  // Reproduced directly by `useApplicationChatConversation.hooks.test.tsx`'s own
+  // "adopts restoredConversationData once it resolves" test before this guard existed. A
+  // `previousVersionIdRef` — seeded with the id BEFORE this effect's own first run, only
+  // advanced (and only resets the conversation) once the id has genuinely changed from a prior
+  // commit — restores the effect's intended "on version CHANGE, not on mount" semantics without
+  // touching its own reset behaviour for a real subsequent version switch.
+  const previousVersionIdRef = useRef(applicationVersionDetails?.id);
   useEffect(() => {
+    if (previousVersionIdRef.current === applicationVersionDetails?.id) return;
+    previousVersionIdRef.current = applicationVersionDetails?.id;
     setActiveConversation((prev) =>
       prev?.chat_history.length
         ? {

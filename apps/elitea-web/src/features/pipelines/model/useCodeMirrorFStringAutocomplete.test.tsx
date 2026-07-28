@@ -113,6 +113,121 @@ describe('useCodeMirrorFStringAutocomplete', () => {
     await vi.waitFor(() => expect(document.body.querySelector('[role="menuitem"]')).toBeNull());
   });
 
+  it('ArrowDown cycles highlighted option forward, wrapping from the last back to the first', async () => {
+    const user = userEvent.setup({ delay: 40 });
+    renderWithTheme(<Harness />);
+    const content = document.querySelector('.cm-content') as HTMLElement;
+    await user.click(content);
+    await user.keyboard('{{fo');
+    await vi.waitFor(() => expect(document.body.querySelectorAll('[role="menuitem"]')).toHaveLength(2));
+
+    const getHighlighted = () => document.body.querySelector('[role="menuitem"].Mui-selected')?.textContent;
+    // Initial highlighted option is the first ("foo").
+    expect(getHighlighted()).toBe('foo');
+
+    await user.keyboard('{ArrowDown}');
+    await vi.waitFor(() => expect(getHighlighted()).toBe('foobar'));
+
+    // Wraps back to the first after the last.
+    await user.keyboard('{ArrowDown}');
+    await vi.waitFor(() => expect(getHighlighted()).toBe('foo'));
+  });
+
+  it('ArrowUp cycles highlighted option backward, wrapping from the first to the last', async () => {
+    const user = userEvent.setup({ delay: 40 });
+    renderWithTheme(<Harness />);
+    const content = document.querySelector('.cm-content') as HTMLElement;
+    await user.click(content);
+    await user.keyboard('{{fo');
+    await vi.waitFor(() => expect(document.body.querySelectorAll('[role="menuitem"]')).toHaveLength(2));
+
+    const getHighlighted = () => document.body.querySelector('[role="menuitem"].Mui-selected')?.textContent;
+    expect(getHighlighted()).toBe('foo');
+
+    await user.keyboard('{ArrowUp}');
+    await vi.waitFor(() => expect(getHighlighted()).toBe('foobar'));
+  });
+
+  it('selecting a suggestion by clicking it replaces the in-progress {query the same way Enter does', async () => {
+    const onChange = vi.fn();
+    const user = userEvent.setup({ delay: 40 });
+    renderWithTheme(<Harness onChange={onChange} />);
+    const content = document.querySelector('.cm-content') as HTMLElement;
+    await user.click(content);
+    await user.keyboard('{{bar');
+    await vi.waitFor(() => expect(document.body.querySelector('[role="menuitem"]')).not.toBeNull());
+
+    const barItem = [...document.body.querySelectorAll('[role="menuitem"]')].find((el) => el.textContent === 'bar');
+    expect(barItem).toBeDefined();
+    await user.click(barItem as Element);
+
+    await vi.waitFor(() => {
+      const lastCall = onChange.mock.calls.at(-1);
+      expect(lastCall?.[0]).toBe('{bar}');
+    });
+    await vi.waitFor(() => expect(document.body.querySelector('[role="menuitem"]')).toBeNull());
+  });
+
+  it('ArrowDown/ArrowUp are no-ops (do not throw or move focus oddly) when there are zero filtered options', async () => {
+    const user = userEvent.setup({ delay: 40 });
+    renderWithTheme(<Harness />);
+    const content = document.querySelector('.cm-content') as HTMLElement;
+    await user.click(content);
+    // "{zzz" matches none of foo/foobar/bar -- the popper's autocomplete state opens with
+    // zero filtered options, taking the `filteredStateVariableOptions.length === 0` branch.
+    await user.keyboard('{{zzz');
+
+    expect(document.body.querySelector('[role="menuitem"]')).toBeNull();
+    await expect(user.keyboard('{ArrowDown}{ArrowUp}')).resolves.toBeUndefined();
+  });
+
+  it('does not open the popper (and closes any existing one) once the editor loses focus', async () => {
+    const user = userEvent.setup({ delay: 40 });
+    renderWithTheme(
+      <div>
+        <Harness />
+        <button type="button">elsewhere</button>
+      </div>,
+    );
+    const content = document.querySelector('.cm-content') as HTMLElement;
+    await user.click(content);
+    await user.keyboard('{{fo');
+    await vi.waitFor(() => expect(document.body.querySelector('[role="menuitem"]')).not.toBeNull());
+
+    await user.click(document.querySelector('button') as HTMLElement);
+
+    await vi.waitFor(() => expect(document.body.querySelector('[role="menuitem"]')).toBeNull());
+  });
+
+  it('never opens the popper when stateVariableOptions is empty (isAutocompleteActive false — no tracking/keymap extensions wired at all)', async () => {
+    function EmptyOptionsHarness() {
+      const [value, setValue] = useState('');
+      const { mergedExtensions, popperProps } = useCodeMirrorFStringAutocomplete({
+        notifyChange: setValue,
+        enableFStringAutocomplete: true,
+        stateVariableOptions: [],
+      });
+      return (
+        <div>
+          <CodeMirrorEditor
+            value={value}
+            extensions={mergedExtensions}
+            onChange={setValue}
+          />
+          <FStringAutocompletePopper {...popperProps} />
+        </div>
+      );
+    }
+
+    const user = userEvent.setup({ delay: 40 });
+    const { container } = renderWithTheme(<EmptyOptionsHarness />);
+    const content = getContent(container);
+    await user.click(content);
+    await user.keyboard('{{fo');
+
+    expect(document.body.querySelector('[role="menuitem"]')).toBeNull();
+  });
+
   it('inserting a suggestion via Enter replaces the in-progress {query with the full variable and closes the brace', async () => {
     const onChange = vi.fn();
     const user = userEvent.setup({ delay: 40 });

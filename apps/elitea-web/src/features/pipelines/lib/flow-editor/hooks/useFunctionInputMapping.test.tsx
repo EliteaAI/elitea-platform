@@ -1,4 +1,4 @@
-import { waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,5 +64,576 @@ describe('useFunctionInputMapping', () => {
         expect(persistedNode.input_mapping).toEqual(existingInputMapping);
       }
     }
+  });
+
+  it('resolves an MCP toolkit tool schema via available_mcp_tools and writes its required-field default mapping', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            {
+              value: 'my_mcp_tool',
+              args_schema: { properties: { foo: { type: 'string', description: 'Foo field' } }, required: ['foo'] },
+            },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    await waitFor(() => expect(latest?.inputMappings['foo']).toBeDefined());
+
+    const written = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    expect(written.nodes?.find(node => node.id === 'McpNode')?.input_mapping).toHaveProperty('foo');
+  });
+
+  it('onChangeTool(newValue) recomputes the default mapping for the new tool and writes { tool, input_mapping } together', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'Node1', toolkit_name: 'custom_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [{ type: 'custom', name: 'custom_toolkit', toolkit_name: 'custom_toolkit' }];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    setYamlJsonObject.mockClear();
+
+    act(() => {
+      latest?.onChangeTool('new_tool');
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    const writtenNode = written.nodes?.find(node => node.id === 'Node1');
+    expect(writtenNode?.tool).toBe('new_tool');
+    expect(writtenNode?.input_mapping).toEqual({});
+  });
+
+  it('onChangeTool(undefined) clears both tool and input_mapping on the node', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'Node1', tool: 'existing_tool', toolkit_name: 'custom_toolkit', input_mapping: { a: { type: 'fixed', value: 'x' } } }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [{ type: 'custom', name: 'custom_toolkit', toolkit_name: 'custom_toolkit' }];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    setYamlJsonObject.mockClear();
+
+    act(() => {
+      latest?.onChangeTool(undefined);
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    const writtenNode = written.nodes?.find(node => node.id === 'Node1');
+    expect(writtenNode?.tool).toBeUndefined();
+    expect(writtenNode?.input_mapping).toBeUndefined();
+  });
+
+  it('onChangeMapping writes a required-field value straight through updateYamlNodeInputMappingVariable', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            { value: 'my_mcp_tool', args_schema: { properties: { foo: { type: 'string' } }, required: ['foo'] } },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    setYamlJsonObject.mockClear();
+
+    act(() => {
+      latest?.onChangeMapping('foo', { type: 'fixed', value: 'bar' });
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    expect(written.nodes?.find(node => node.id === 'McpNode')?.input_mapping).toMatchObject({
+      foo: { type: 'fixed', value: 'bar' },
+    });
+  });
+
+  it('onChangeMapping removes an optional field from input_mapping entirely when cleared to an empty value', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [
+        {
+          id: 'McpNode',
+          tool: 'my_mcp_tool',
+          toolkit_name: 'my_mcp_toolkit',
+          input_mapping: { foo: { type: 'fixed', value: 'x' }, optionalField: { type: 'fixed', value: 'kept' } },
+        },
+      ],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            {
+              value: 'my_mcp_tool',
+              args_schema: { properties: { foo: { type: 'string' }, optionalField: { type: 'string' } }, required: ['foo'] },
+            },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    setYamlJsonObject.mockClear();
+
+    // 'optionalField' is not in requiredInputs and the new value is empty -> deletion branch.
+    act(() => {
+      latest?.onChangeMapping('optionalField', { type: 'fixed', value: '' });
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    const writtenMapping = written.nodes?.find(node => node.id === 'McpNode')?.input_mapping;
+    expect(writtenMapping).not.toHaveProperty('optionalField');
+    expect(writtenMapping).toHaveProperty('foo');
+  });
+
+  it('resolveToolkitIdentifier: a toolkit-bearing node type (agent/toolkit/mcp) with no explicit toolkit_name/tool still counts as an explicit reference (resolves to undefined, not the node id)', async () => {
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'AgentNode', type: 'agent' }] };
+    const setYamlJsonObject = vi.fn();
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="AgentNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={[]}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest).toBeDefined());
+    expect(latest?.toolkit).toBeUndefined();
+    expect(latest?.selectedToolkit).toBeUndefined();
+  });
+
+  it('resolveToolkitIdentifier: a plain node with no toolkit_name/tool and a non-toolkit-bearing type resolves the toolkit identifier to its own node id (also covers versionTools === undefined, not just [])', async () => {
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'PlainNode' }] };
+    const setYamlJsonObject = vi.fn();
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="PlainNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={undefined}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest).toBeDefined());
+    expect(latest?.toolkit).toBe('PlainNode');
+  });
+
+  it('resolveToolkitIdentifier: falls back to the node\'s `tool` field as the toolkit identifier when toolkit_name is absent', async () => {
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', tool: 'my_toolkit_via_tool_field' }] };
+    const setYamlJsonObject = vi.fn();
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={[]}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest).toBeDefined());
+    expect(latest?.toolkit).toBe('my_toolkit_via_tool_field');
+  });
+
+  it('selectedToolkit resolution: computes a missing toolkit_name via the schema helper (falls back to the cleaned tool name)', async () => {
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', tool: 'RawName' }] };
+    const setYamlJsonObject = vi.fn();
+    // No `toolkit_name` field -> the map step must compute one via `getToolkitNameFromSchema`.
+    const versionTools = [{ type: 'unknown_type', name: 'RawName' }];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    expect(latest?.selectedToolkit?.name).toBe('RawName');
+  });
+
+  it('selectedToolkit resolution: matches by name when the entry\'s toolkit_name does not match the resolved toolkit identifier', async () => {
+    const yamlJsonObject: YamlPipelineDocument = { nodes: [{ id: 'Node1', tool: 'my_toolkit' }] };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [{ type: 'custom', name: 'my_toolkit', toolkit_name: 'unrelated_id' }];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    expect(latest?.selectedToolkit?.name).toBe('my_toolkit');
+  });
+
+  it('mcpArgsSchemas: skips an available_mcp_tools entry missing args_schema while still resolving the one that has it', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            { value: 'incomplete_tool' }, // no args_schema -- must not throw, must not be indexed
+            { value: 'my_mcp_tool', args_schema: { properties: { foo: { type: 'string' } }, required: ['foo'] } },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    expect(latest?.inputMappings).toHaveProperty('foo');
+  });
+
+  it('onChangeTool on an MCP-like toolkit resolves the new tool\'s schema via mcpArgsSchemas (not the always-empty dynamicArgsSchemas)', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            { value: 'my_mcp_tool', args_schema: { properties: { foo: { type: 'string' } }, required: ['foo'] } },
+            { value: 'other_mcp_tool', args_schema: { properties: { bar: { type: 'string' } }, required: ['bar'] } },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    setYamlJsonObject.mockClear();
+
+    act(() => {
+      latest?.onChangeTool('other_mcp_tool');
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    const writtenNode = written.nodes?.find(node => node.id === 'McpNode');
+    expect(writtenNode?.tool).toBe('other_mcp_tool');
+    expect(writtenNode?.input_mapping).toHaveProperty('bar');
+  });
+
+  it('onChangeMapping: with no explicit type and no prior mappingInfo entry, defaults the recorded type to "fixed"', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            { value: 'my_mcp_tool', args_schema: { properties: { foo: { type: 'string' } }, required: ['foo'] } },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+
+    // 'freshVar' is not one of the schema's own properties, so mappingInfo has never seen it
+    // before this call -- no `type` on the incoming value AND no prior entry -> falls all the
+    // way through the `??` chain to the literal 'fixed' default.
+    act(() => {
+      latest?.onChangeMapping('freshVar', { value: 'first' });
+    });
+    await waitFor(() => expect((latest?.mappingInfo['freshVar'] as { type?: string })?.type).toBe('fixed'));
+
+    // Second call for the SAME variable, still no explicit `type` -> this time a prior
+    // mappingInfo entry exists, so the middle `??` operand (prev's own type) is what wins.
+    act(() => {
+      latest?.onChangeMapping('freshVar', { value: 'second' });
+    });
+    await waitFor(() => expect((latest?.mappingInfo['freshVar'] as { type?: string; value?: unknown })?.value).toBe('second'));
+    expect((latest?.mappingInfo['freshVar'] as { type?: string })?.type).toBe('fixed');
+  });
+
+  it('onChangeMapping: clearing an optional field to empty that was never in the saved input_mapping still writes through updateYamlNodeInputMappingVariable (nothing to delete)', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit', input_mapping: { foo: { type: 'fixed', value: 'kept' } } }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            {
+              value: 'my_mcp_tool',
+              args_schema: { properties: { foo: { type: 'string' }, neverSaved: { type: 'string' } }, required: ['foo'] },
+            },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    setYamlJsonObject.mockClear();
+
+    // 'neverSaved' is optional, cleared to '', and was never a key of the node's saved input_mapping.
+    act(() => {
+      latest?.onChangeMapping('neverSaved', { type: 'fixed', value: '' });
+    });
+
+    expect(setYamlJsonObject).toHaveBeenCalledTimes(1);
+    const written = setYamlJsonObject.mock.calls[0]?.[0] as YamlPipelineDocument;
+    const writtenMapping = written.nodes?.find(node => node.id === 'McpNode')?.input_mapping as Record<string, unknown> | undefined;
+    // The original 'foo' entry survives untouched, and the write path used was the generic
+    // variable-update helper (not the delete branch, since there was nothing to delete).
+    expect(writtenMapping).toHaveProperty('foo');
+  });
+
+  it('initial default-mapping write filters out an optional empty-valued field while keeping one with a non-empty default', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        type: 'mcp',
+        name: 'my_mcp_toolkit',
+        toolkit_name: 'my_mcp_toolkit',
+        settings: {
+          available_mcp_tools: [
+            {
+              value: 'my_mcp_tool',
+              args_schema: {
+                properties: {
+                  foo: { type: 'string' }, // required -- always kept
+                  emptyOptional: { type: 'string' }, // optional, no default -> value '' -> filtered out
+                  presetOptional: { type: 'string', default: 'preset' }, // optional, has a default -> kept
+                },
+                required: ['foo'],
+              },
+            },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="McpNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+
+    await waitFor(() => {
+      const written = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+      const writtenMapping = written.nodes?.find(node => node.id === 'McpNode')?.input_mapping;
+      expect(writtenMapping).toHaveProperty('presetOptional');
+    });
+    const finalWritten = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    const finalMapping = finalWritten.nodes?.find(node => node.id === 'McpNode')?.input_mapping;
+    expect(finalMapping).toHaveProperty('foo');
+    expect(finalMapping).not.toHaveProperty('emptyOptional');
   });
 });

@@ -14,6 +14,30 @@ import { EditorPanel } from './EditorPanel';
 import type { EditorPanelHandle } from './EditorPanel';
 
 /**
+ * A local, narrower stand-in for `shared/ui/lib/field/codeMirrorTestPolyfills`'s
+ * `installCodeMirrorTestPolyfills()`: only the `Range` measurement stubs the
+ * Yaml-mode `YamlCodeEditor` (CodeMirror 6) needs to mount without an
+ * unhandled `getClientRects is not a function` rejection. Deliberately NOT
+ * the full helper — that one ALSO defines `window.ResizeObserver` when
+ * missing, which this file's own "shows the error-boundary fallback"/
+ * "reload button" tests below depend on staying UNDEFINED (verified
+ * directly: installing it made both fail — `FlowWrapper`'s real, currently
+ * broken chain crashes specifically because `useFlowEditorResizeObserver`
+ * calls a global `ResizeObserver` that does not exist in this jsdom
+ * environment; silently providing one changes that real, disclosed gap's
+ * observable behaviour out from under those tests).
+ */
+function installRangeMeasurementPolyfills(): void {
+  if (typeof Range.prototype.getClientRects !== 'function') {
+    Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: () => [][Symbol.iterator]() });
+  }
+  if (typeof Range.prototype.getBoundingClientRect !== 'function') {
+    Range.prototype.getBoundingClientRect = () => ({ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) });
+  }
+}
+installRangeMeasurementPolyfills();
+
+/**
  * No `vi.mock()` here (`no-vi-mock`/R-M1 forbids it outright, verified via
  * `npx oxlint` — this codebase substitutes only the network boundary/MSW
  * and the socket double, never an application module). `EditorPanel`
@@ -129,5 +153,89 @@ describe('EditorPanel', () => {
   it('disabled=true is forwarded to AddNodeMenu (disables its trigger button)', async () => {
     renderEditorPanel({ disabled: true });
     expect(await screen.findByRole('button', { name: 'Add node' })).toBeDisabled();
+  });
+
+  it('typing in the YAML editor commits the raw code to the store (onChangeCode)', async () => {
+    const user = userEvent.setup();
+    renderEditorPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Yaml' }));
+    const editor = await screen.findByRole('textbox');
+    await user.type(editor, 'x');
+
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toContain('x'));
+  });
+
+  it('switching Flow -> Yaml -> Flow round-trips through dumpYaml/onParseCodeToJson without throwing, updating yamlJsonObject from the (possibly edited) yamlCode', async () => {
+    const user = userEvent.setup();
+    usePipelineYamlStore.setState({
+      yamlCode: 'nodes:\n  - id: entry_point\n    type: entry_point\n',
+      yamlJsonObject: { nodes: [{ id: 'entry_point', type: 'entry_point' }] },
+      initYamlCode: '',
+      initYamlJsonObject: {},
+      resetFlag: false,
+      layoutVersion: undefined,
+    });
+    renderEditorPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Yaml' }));
+    await screen.findByRole('textbox');
+    await user.click(await screen.findByRole('button', { name: 'Flow' }));
+
+    expect(usePipelineYamlStore.getState().yamlJsonObject).toEqual({
+      nodes: [{ id: 'entry_point', type: 'entry_point' }],
+    });
+  });
+
+  it('clicking the already-active mode tab is a no-op (mode === newMode early return)', async () => {
+    const user = userEvent.setup();
+    renderEditorPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Flow' }));
+    // Still in Flow mode — the AddNodeMenu trigger is still the one shown.
+    expect(await screen.findByRole('button', { name: 'Add node' })).toBeInTheDocument();
+  });
+
+  it('renders with the chat-path layout (isFromChat branches, including the Yaml-mode container styling) without crashing', async () => {
+    const user = userEvent.setup();
+    renderEditorPanel({}, '/chat/latest/1');
+    expect(await screen.findByRole('button', { name: 'Add node' })).toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: 'Yaml' }));
+    expect(await screen.findByRole('textbox')).toBeInTheDocument();
+  });
+
+  it('renders the isSmallWindow=false branch (no minHeight override on the Yaml editor container) on a wide window', async () => {
+    // jsdom's own default `window.innerWidth` (1024) is already below
+    // `MIN_LARGE_WINDOW_WIDTH` (1200), so every OTHER Yaml-mode test in this file already
+    // exercises the isSmallWindow=true branch without asking for it explicitly — this is
+    // the one test that needs a genuinely wide window to reach the opposite branch.
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 });
+    const user = userEvent.setup();
+    try {
+      renderEditorPanel();
+      await user.click(await screen.findByRole('button', { name: 'Yaml' }));
+      expect(await screen.findByRole('textbox')).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
+    }
+  });
+
+  it('re-parses the YAML when yamlJsonObject already contains a decision node (the reparse-on-decision-node effect)', async () => {
+    usePipelineYamlStore.setState({
+      yamlCode: 'nodes:\n  - id: entry_point\n    type: entry_point\n    decision:\n      x: "1"\n',
+      yamlJsonObject: { nodes: [{ id: 'entry_point', type: 'entry_point', decision: { x: '1' } }] },
+      initYamlCode: '',
+      initYamlJsonObject: {},
+      resetFlag: false,
+      layoutVersion: undefined,
+    });
+    renderEditorPanel();
+
+    // The effect runs on mount without throwing; the document round-trips back to an
+    // equivalent shape (still has the decision node) rather than being wiped out.
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlJsonObject).toMatchObject({
+      nodes: [expect.objectContaining({ id: 'entry_point', decision: { x: '1' } })],
+    }));
   });
 });

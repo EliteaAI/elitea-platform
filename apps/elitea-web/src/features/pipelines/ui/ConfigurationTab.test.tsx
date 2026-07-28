@@ -2,7 +2,7 @@ import type { ComponentProps } from 'react';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -150,10 +150,146 @@ describe('ConfigurationTab', () => {
     expect(screen.queryByTestId('configuration-form')).not.toBeInTheDocument();
   });
 
+  it('run-history\'s onClose closes the history view (handleCloseHistory), returning to the two-panel layout', async () => {
+    const user = userEvent.setup();
+    renderConfigurationTab({
+      slots: {
+        renderConfigurationForm: () => <div data-testid="configuration-form" />,
+        renderChat: () => <div data-testid="chat-slot" />,
+        renderRunHistory: ({ onClose }) => (
+          <button
+            type="button"
+            onClick={onClose}
+          >
+            close-history
+          </button>
+        ),
+      },
+    });
+
+    await screen.findByTestId('chat-slot');
+    await user.click(screen.getByTestId('pipeline-history-tab'));
+    await user.click(await screen.findByRole('button', { name: 'close-history' }));
+
+    expect(await screen.findByTestId('configuration-form')).toBeInTheDocument();
+  });
+
+  it('run-history\'s onRestoreConversation sets the restore target (handleRestoreConversation) without throwing', async () => {
+    const user = userEvent.setup();
+    renderConfigurationTab({
+      slots: {
+        renderConfigurationForm: () => <div data-testid="configuration-form" />,
+        renderChat: () => <div data-testid="chat-slot" />,
+        renderRunHistory: ({ onRestoreConversation }) => (
+          <button
+            type="button"
+            onClick={() => onRestoreConversation(42)}
+          >
+            restore-conversation
+          </button>
+        ),
+      },
+    });
+
+    await screen.findByTestId('chat-slot');
+    await user.click(screen.getByTestId('pipeline-history-tab'));
+    await user.click(await screen.findByRole('button', { name: 'restore-conversation' }));
+    // No crash — the restore id flows into `usePipelineChat`'s own `restoredConversationID`
+    // arg; a full restore-completes round-trip needs a real conversation-fetch + socket
+    // confirmation sequence this composition-root-level test does not attempt.
+  });
+
+  it('re-layouts (isSmallWindow -> true) when the window narrows past the breakpoint, and schedules editorPanelRef.fitView() without throwing', async () => {
+    renderConfigurationTab();
+    await screen.findByTestId('configuration-form');
+
+    act(() => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 800 });
+      window.dispatchEvent(new Event('resize'));
+    });
+    // The config pane's own container re-renders in the narrow (column) layout —
+    // `data-testid="pipeline-config-tab"` stays mounted either way, so this just
+    // confirms the resize->state-update->re-render chain ran without throwing.
+    await waitFor(() => expect(screen.getByTestId('pipeline-config-tab')).toBeInTheDocument());
+
+    act(() => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1280 });
+      window.dispatchEvent(new Event('resize'));
+    });
+  });
+
   it('does not offer onShowHistory when applicationId is undefined (no history for an unsaved pipeline)', async () => {
     renderConfigurationTab({ applicationId: undefined });
     await screen.findByTestId('chat-slot');
     expect(screen.queryByTestId('pipeline-history-tab')).not.toBeInTheDocument();
+  });
+
+  it('collapsing the config pane (GeneralFormPanel\'s own collapse button) exercises handleCollapsedGeneralPane', async () => {
+    const user = userEvent.setup();
+    renderConfigurationTab();
+
+    const configTab = await screen.findByTestId('pipeline-config-tab');
+    const collapseButton = within(configTab).getByRole('button');
+    await user.click(collapseButton);
+
+    // Content is hidden while collapsed — confirms the click was wired through to real state.
+    expect(screen.queryByTestId('configuration-form')).not.toBeInTheDocument();
+  });
+
+  it('collapsing the chat pane (ChatPanel\'s own collapse button) exercises handleCollapsedChatPane', async () => {
+    renderConfigurationTab();
+
+    await screen.findByTestId('chat-slot');
+    // `ChatPanel`'s collapse button starts showing the "expand" (Right) icon since it
+    // starts uncollapsed — the config pane's own collapse button shows "Left" instead
+    // (`GeneralFormPanel`'s `!collapsed` ternary is inverted relative to `ChatPanel`'s),
+    // so this is how the two otherwise-identical, unlabelled icon buttons are told apart.
+    const chatCollapseIcon = document.querySelector('[data-testid="KeyboardDoubleArrowRightIcon"]');
+    expect(chatCollapseIcon).not.toBeNull();
+    fireEvent.click(chatCollapseIcon!.closest('button')!);
+
+    expect(screen.queryByTestId('chat-slot')).not.toBeInTheDocument();
+  });
+
+  it('a real renderClearChatButton slot wires onClear through to handleHasRunsInProgress (editorPanelRef gone, so it safely resolves to false)', async () => {
+    const user = userEvent.setup();
+    renderConfigurationTab({
+      slots: {
+        renderConfigurationForm: () => <div data-testid="configuration-form" />,
+        renderChat: () => <div data-testid="chat-slot" />,
+        renderClearChatButton: ({ onClear }) => (
+          <button
+            type="button"
+            onClick={onClear}
+          >
+            Clear
+          </button>
+        ),
+      },
+    });
+
+    await screen.findByTestId('chat-slot');
+    // Does not throw even though `editorPanelRef.current` is null (the `?? false` fallback).
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+  });
+
+  it('settings.onStopRun/onRcvAgentEvent do not throw when invoked by the test-chat slot (editorPanelRef unresolved)', async () => {
+    let capturedSettings: Record<string, unknown> | null = null;
+    renderConfigurationTab({
+      slots: {
+        renderConfigurationForm: () => <div data-testid="configuration-form" />,
+        renderChat: (slotProps) => {
+          capturedSettings = slotProps.settings;
+          return <div data-testid="chat-slot" />;
+        },
+      },
+    });
+
+    await screen.findByTestId('chat-slot');
+    await waitFor(() => expect(capturedSettings).not.toBeNull());
+    const settings = capturedSettings as unknown as { onStopRun: () => void; onRcvAgentEvent: (e: unknown) => void };
+    expect(() => settings.onStopRun()).not.toThrow();
+    expect(() => settings.onRcvAgentEvent({ type: 'x' })).not.toThrow();
   });
 
   it('wires usePipelineMCPToolsStatusMonitor: an mcp_status socket event for the version\'s MCP tool writes the updated tools array via setFieldValue', async () => {

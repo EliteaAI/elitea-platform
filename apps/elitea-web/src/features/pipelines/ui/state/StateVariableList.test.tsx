@@ -77,4 +77,146 @@ describe('StateVariableList', () => {
       fontSize: theme.typography.bodySmall.fontSize,
     });
   });
+
+  it('cancels (does not add) the create row when blurred with an empty name', () => {
+    const onAddState = vi.fn();
+    renderWithTheme(<StateVariableList {...baseProps({ onAddState })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Context' }));
+    const input = screen.getByPlaceholderText('name');
+    fireEvent.blur(input);
+
+    expect(onAddState).not.toHaveBeenCalled();
+    // handleCancelCreate ran -> the create row is gone, "Context" is clickable again.
+    expect(screen.queryByPlaceholderText('name')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Context' })).toBeInTheDocument();
+  });
+
+  it('renames a custom variable via handleUpdateNameWithCreate\'s edit (non-create) branch', () => {
+    const onUpdateState = vi.fn();
+    renderWithTheme(
+      <StateVariableList
+        {...baseProps({
+          onUpdateState,
+          states: { input: { type: 'str' }, messages: { type: 'list' }, counter: { type: 'number', value: 5 } },
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('counter'));
+    const input = screen.getByDisplayValue('counter');
+    fireEvent.change(input, { target: { value: 'renamed' } });
+    fireEvent.blur(input);
+
+    expect(onUpdateState).toHaveBeenCalledWith('counter', { newName: 'renamed' });
+  });
+
+  it('handleDelete calls onDeleteState(name) for a custom variable', () => {
+    const onDeleteState = vi.fn();
+    renderWithTheme(
+      <StateVariableList
+        {...baseProps({ onDeleteState, states: { input: { type: 'str' }, messages: { type: 'list' }, counter: { type: 'number', value: 5 } } })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(onDeleteState).toHaveBeenCalledWith('counter');
+  });
+
+  describe('handleUpdateType', () => {
+    it('preserves the current value when it is already set (not undefined/empty)', () => {
+      const onUpdateState = vi.fn();
+      renderWithTheme(
+        <StateVariableList
+          {...baseProps({
+            onUpdateState,
+            states: { input: { type: 'str' }, messages: { type: 'list' }, counter: { type: 'number', value: 5 } },
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Select data type' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'String' }));
+
+      expect(onUpdateState).toHaveBeenCalledWith('counter', { type: 'str', value: 5 });
+    });
+
+    it('falls back to getDefaultValueForType(newType) when the current value is undefined', () => {
+      const onUpdateState = vi.fn();
+      renderWithTheme(
+        <StateVariableList
+          {...baseProps({
+            onUpdateState,
+            states: { input: { type: 'str' }, messages: { type: 'list' }, blank: { type: 'str' } },
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Select data type' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Number' }));
+
+      expect(onUpdateState).toHaveBeenCalledWith('blank', { type: 'number', value: 0 });
+    });
+  });
+
+  describe('handleUpdateDefaultValue', () => {
+    // Wide enough to render the default-value column as an inline `TextField`
+    // (`StateVariableDefaultValue`'s `showAsField` gate, drawerWidth > 310),
+    // not the narrow icon-button affordance.
+    const WIDE_DRAWER = 400;
+
+    it('a non-numeric-type (str) edit clears any validation error and passes the raw value straight through', () => {
+      const onUpdateState = vi.fn();
+      renderWithTheme(
+        <StateVariableList
+          {...baseProps({
+            onUpdateState,
+            drawerWidth: WIDE_DRAWER,
+            states: { input: { type: 'str' }, messages: { type: 'list' }, note: { type: 'str', value: 'old' } },
+          })}
+        />,
+      );
+
+      const field = screen.getByDisplayValue('old');
+      fireEvent.change(field, { target: { value: 'new text' } });
+
+      expect(onUpdateState).toHaveBeenCalledWith('note', { value: 'new text' });
+    });
+
+    it('a valid numeric-type edit converts the value via getValueByType', () => {
+      const onUpdateState = vi.fn();
+      renderWithTheme(
+        <StateVariableList
+          {...baseProps({
+            onUpdateState,
+            drawerWidth: WIDE_DRAWER,
+            states: { input: { type: 'str' }, messages: { type: 'list' }, counter: { type: 'number', value: 5 } },
+          })}
+        />,
+      );
+
+      const field = screen.getByDisplayValue('5');
+      fireEvent.change(field, { target: { value: '42' } });
+
+      expect(onUpdateState).toHaveBeenCalledWith('counter', { value: 42 });
+    });
+
+    it('an invalid numeric-type edit stores the raw value unconverted (early-return branch)', () => {
+      const onUpdateState = vi.fn();
+      renderWithTheme(
+        <StateVariableList
+          {...baseProps({
+            onUpdateState,
+            drawerWidth: WIDE_DRAWER,
+            states: { input: { type: 'str' }, messages: { type: 'list' }, counter: { type: 'number', value: 5 } },
+          })}
+        />,
+      );
+
+      const field = screen.getByDisplayValue('5');
+      fireEvent.change(field, { target: { value: 'not-a-number' } });
+
+      expect(onUpdateState).toHaveBeenCalledWith('counter', { value: 'not-a-number' });
+    });
+  });
 });

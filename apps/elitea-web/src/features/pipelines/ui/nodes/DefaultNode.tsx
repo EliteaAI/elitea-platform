@@ -22,6 +22,8 @@
 import type { ReactNode } from 'react';
 import { memo, useCallback, useContext, useMemo } from 'react';
 
+import Box from '@mui/material/Box';
+
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { ToolTypes } from '@/entities/toolkit';
 import { t } from '@/shared/i18n';
@@ -204,13 +206,26 @@ interface DefaultNodeToolFunctionSelectProps {
 function DefaultNodeToolFunctionSelect({ functionOptions, selectedTool, onChangeTool, disabled }: DefaultNodeToolFunctionSelectProps): ReactNode {
   if (functionOptions.length === 0) return null;
   return (
-    <SingleSelect
-      label={t('pipelines.flowEditor.defaultNode.toolLabel', 'Tool')}
-      value={selectedTool}
-      onChange={onChangeTool}
-      options={[...functionOptions]}
-      disabled={disabled}
-    />
+    // BUG FIX (found while writing `DefaultNode.test.tsx`): every other
+    // node-level `SingleSelect`/`RouteSelect`/`InputSelect` call site in this
+    // slice is wrapped in (or itself applies) a `className="nopan nodrag"`
+    // shield -- see `./HITLNode.tsx`'s "Edit state key" `SingleSelect` and
+    // `./RouterNode.tsx`'s "Default output" `SingleSelect` (fixed for the
+    // identical reason) -- so a mousedown on the control does not bubble to
+    // React Flow's node wrapper and start a canvas drag. This call site had
+    // no such wrapper: reproduced empirically the same way, opening this
+    // exact dropdown inside a real `<ReactFlow>` node throws out of
+    // `d3-drag`'s `mousedowned` (`Cannot read properties of null (reading
+    // 'document')`). Wrapped here to match the established pattern.
+    <Box className="nopan nodrag">
+      <SingleSelect
+        label={t('pipelines.flowEditor.defaultNode.toolLabel', 'Tool')}
+        value={selectedTool}
+        onChange={onChangeTool}
+        options={[...functionOptions]}
+        disabled={disabled}
+      />
+    </Box>
   );
 }
 

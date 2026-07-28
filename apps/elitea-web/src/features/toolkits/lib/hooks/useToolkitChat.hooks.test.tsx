@@ -1,17 +1,35 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 
 import { QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router';
 import { render, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { SocketClientContext } from '@/shared/api/socket/client';
 import { createTestSocketClient } from '@/shared/api/socket/testing';
 import type { TestSocketClient } from '@/shared/api/socket/testing';
+import { server } from '@/test/setup';
+import { installWebStorageShim } from '@/test/webstorage';
 
 import { createTestQueryClient } from '../../__tests__/testUtils';
 import { useToolkitChat } from './useToolkitChat.hooks';
 import type { UseToolkitChatParams, UseToolkitChatResult } from './useToolkitChat.types';
+
+const BASE = '/api/v2';
+
+// A "run finished" streaming message reaching `indexChatReducer.local.ts`'s
+// `applyStreamingUpdate` calls `notifyTaskComplete()`
+// (`soundNotification.local.ts`), which reads localStorage — under this
+// vitest project, Node's own experimental `localStorage` global shadows
+// jsdom's (see `src/test/webstorage.ts`'s own doc comment), so
+// `window.localStorage` is `undefined` unless shimmed. `document.hasFocus()`
+// returning `true` (this jsdom default) already makes `notifyTaskComplete`
+// a no-op for MOST of this file's tests, but is not guaranteed across every
+// jsdom/vitest version — installing the shim is the sanctioned, harmless
+// fix regardless.
+installWebStorageShim();
 
 function baseParams(overrides: Partial<UseToolkitChatParams> = {}): UseToolkitChatParams {
   return {
@@ -76,6 +94,64 @@ function renderToolkitChat(
   return { box };
 }
 
+/**
+ * Same stack as `renderToolkitChat`, but the params object lives in React
+ * state so a test can push a NEW params object mid-test (via
+ * `box.setParams`) and observe how the hook reacts to a genuine prop
+ * change — needed for the `defaultModel`-arrives-after-mount effect, which
+ * only fires on a re-render, not on initial mount (the initial
+ * `useState(defaultModel)` already covers the synchronous case).
+ */
+function renderToolkitChatWithRerender(
+  initialParams: UseToolkitChatParams,
+  client: TestSocketClient = createTestSocketClient(),
+  projectId = 'proj-1',
+): { readonly box: { current: UseToolkitChatResult | undefined; setParams: (next: UseToolkitChatParams) => void } } {
+  const box: { current: UseToolkitChatResult | undefined; setParams: (next: UseToolkitChatParams) => void } = {
+    current: undefined,
+    setParams: () => undefined,
+  };
+
+  function ProbeComponent() {
+    const [params, setParams] = useState(initialParams);
+    box.setParams = setParams;
+    box.current = useToolkitChat(params);
+    return null;
+  }
+
+  function RootComponent() {
+    return (
+      <SocketClientContext.Provider value={client}>
+        <ProbeComponent />
+      </SocketClientContext.Provider>
+    );
+  }
+
+  const queryClient = createTestQueryClient();
+  const rootRoute = createRootRoute({ component: RootComponent });
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+    context: { auth: { getSelectedProjectId: () => projectId } },
+  });
+
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+
+  return { box };
+}
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: BASE });
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+});
+
 describe('useToolkitChat', () => {
   it('seeds chatHistory with the mode-appropriate welcome message', async () => {
     const { box } = renderToolkitChat(baseParams({ modes: ['test_tools'] }));
@@ -105,6 +181,31 @@ describe('useToolkitChat', () => {
 
     await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'gpt-4' }));
     expect(box.current?.llmSettings).toEqual({ temperature: 0.6, max_tokens: -1, top_k: 40 });
+  });
+
+  it('handleClearActiveConversation clears the active conversation and unlocks progressing-history recovery', async () => {
+    const { box } = renderToolkitChat(baseParams());
+    await waitFor(() => expect(box.current).toBeDefined());
+
+    act(() => {
+      box.current?.handleClearActiveConversation();
+    });
+
+    await waitFor(() => expect(box.current?.activeConversation).toBeNull());
+  });
+
+  it('stopRunOnIndexChange stops the current run and unlocks progressing-history recovery', async () => {
+    const { box } = renderToolkitChat(baseParams());
+    await waitFor(() => expect(box.current).toBeDefined());
+
+    act(() => box.current?.handleRunTool());
+    await waitFor(() => expect(box.current?.isRunning).toBe(true));
+
+    act(() => {
+      box.current?.stopRunOnIndexChange();
+    });
+
+    await waitFor(() => expect(box.current?.isRunning).toBe(false));
   });
 
   it('handleClearChat resets chatHistory to a single fresh welcome message', async () => {
@@ -222,5 +323,350 @@ describe('useToolkitChat', () => {
     });
 
     await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to stop indexing'));
+  });
+
+  it('onCancelIndexing does nothing (no stopIndexing call) when there is no index', async () => {
+    const stopIndexing = vi.fn();
+    const { box } = renderToolkitChat(baseParams({ index: undefined, stopIndexing }));
+    await waitFor(() => expect(box.current).toBeDefined());
+
+    act(() => {
+      box.current?.onCancelIndexing();
+    });
+
+    expect(stopIndexing).not.toHaveBeenCalled();
+  });
+
+  describe('resolveRunInputVariables / handleIndexData (the indexing tool)', () => {
+    it('uses index.metadata.index_configuration as the tool input, and traces the "in_progress" state, when indexing outside create-index mode with an index present', async () => {
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const createConversation = vi.fn().mockResolvedValue({ data: { id: 'conv-1', uuid: 'uuid-1', participants: [] } });
+      const index = { id: 'idx-1', metadata: { state: 'created', index_configuration: { foo: 'bar' } } };
+
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex, createConversation }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => {
+        box.current?.handleIndexData();
+      });
+
+      await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', expect.objectContaining({ collection: undefined, state: 'in_progress' }));
+      await waitFor(() => expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { conversation_id: 'conv-1' }));
+    });
+
+    /**
+     * `run()`'s own `canProceed` gate (`!isRunning`) blocks a second
+     * `handleIndexData()` call while a prior run is still in flight — both
+     * tests below drive a real socket "finish" (start_task, then a
+     * streaming-update message carrying `response_metadata.finish_reason`)
+     * between the two calls to legitimately flip `isRunning` back to
+     * `false` first, exactly like a real completed run would.
+     */
+    function finishActiveRun(client: TestSocketClient, messageId: string): void {
+      act(() => {
+        client.simulateServerEvent('chat_predict', { message_id: messageId, type: 'start_task', content: { task_id: messageId } });
+      });
+      act(() => {
+        client.simulateServerEvent('chat_predict', {
+          message_id: messageId,
+          type: 'agent_response',
+          content: 'done',
+          response_metadata: { finish_reason: 'stop' },
+        });
+      });
+    }
+
+    it('creates a fresh conversation on every handleIndexData call outside test-tools mode, even with an existing activeConversation', async () => {
+      const client = createTestSocketClient();
+      const createConversation = vi.fn().mockResolvedValue({ data: { id: 'conv-1', uuid: 'uuid-1', participants: [] } });
+      const { box } = renderToolkitChat(baseParams({ modes: [], createConversation }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+      finishActiveRun(client, 'run-1');
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(2));
+    });
+
+    it('reuses the existing activeConversation on a second handleIndexData call while in test-tools mode', async () => {
+      const client = createTestSocketClient();
+      const createConversation = vi.fn().mockResolvedValue({ data: { id: 'conv-1', uuid: 'uuid-1', participants: [] } });
+      const { box } = renderToolkitChat(baseParams({ modes: ['test_tools'], createConversation }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(createConversation).toHaveBeenCalledTimes(1));
+      finishActiveRun(client, 'run-1');
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(2));
+      // The conversation is reused, not recreated.
+      expect(createConversation).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('describeRunError (executeRunTool catch branch)', () => {
+    it('records a chat-history error message built from a plain string error', async () => {
+      const client = createTestSocketClient();
+      const buildMessagePayload = vi.fn().mockImplementation(() => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately exercising the non-Error catch branch
+        throw 'plain string failure';
+      });
+      const { box } = renderToolkitChat(baseParams({ buildMessagePayload }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      expect(String(box.current?.chatHistory.at(-1)?.content)).toContain('plain string failure');
+    });
+
+    it('records a chat-history error message built from a plain (non-Error) object, JSON-stringified', async () => {
+      const client = createTestSocketClient();
+      const buildMessagePayload = vi.fn().mockImplementation(() => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately exercising the non-Error catch branch
+        throw { code: 'E_BAD' };
+      });
+      const { box } = renderToolkitChat(baseParams({ buildMessagePayload }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      expect(String(box.current?.chatHistory.at(-1)?.content)).toContain(JSON.stringify({ code: 'E_BAD' }));
+    });
+
+    it('falls back to "Unknown error" when the thrown value cannot be JSON.stringify-d (circular reference)', async () => {
+      const client = createTestSocketClient();
+      const buildMessagePayload = vi.fn().mockImplementation(() => {
+        const circular: Record<string, unknown> = {};
+        circular['self'] = circular;
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately exercising the JSON.stringify-throws catch branch
+        throw circular;
+      });
+      const { box } = renderToolkitChat(baseParams({ buildMessagePayload }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      expect(String(box.current?.chatHistory.at(-1)?.content)).toContain('Unknown error');
+    });
+
+    it('traces a "failed" index state (in addition to the chat-history error message) when the throwing run was the indexing tool', async () => {
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const buildMessagePayload = vi.fn().mockImplementation(() => {
+        throw new Error('boom');
+      });
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex, buildMessagePayload }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleIndexData());
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', expect.objectContaining({ state: 'failed' }));
+    });
+  });
+
+  describe('socket-driven onRunFinish/onStartTask (chat_predict start_task / streaming-finish messages)', () => {
+    it('traces the started task (outside test-tools mode) when a start_task message arrives', async () => {
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+
+      act(() => {
+        client.simulateServerEvent('chat_predict', { message_id: 'run-1', type: 'start_task', content: { task_id: 'task-99' } });
+      });
+
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { task_id: 'task-99' });
+    });
+
+    it('does NOT trace the started task while in test-tools mode', async () => {
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const { box } = renderToolkitChat(baseParams({ modes: ['test_tools'], traceNewIndex }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      act(() => box.current?.handleRunTool());
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+
+      act(() => {
+        client.simulateServerEvent('chat_predict', { message_id: 'run-1', type: 'start_task', content: { task_id: 'task-99' } });
+      });
+
+      expect(traceNewIndex).not.toHaveBeenCalledWith(expect.anything(), { task_id: 'task-99' });
+    });
+
+    it('outside test-tools mode, once a run finishes for the indexing tool, traces the finish state and refetches the index list after the debounce', async () => {
+      const client = createTestSocketClient();
+      const traceNewIndex = vi.fn();
+      const refetchIndexesList = vi.fn();
+      const index = { id: 'idx-1', metadata: { state: 'created' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index, traceNewIndex, refetchIndexesList }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      // `handleIndexData` (not `handleRunTool`) so `runningToolRef.current`
+      // equals `IndexesToolsEnum.indexData` — the ONLY value that lets
+      // `onRunFinish`'s `setTimeout` callback proceed past its own internal
+      // guard instead of returning early.
+      act(() => box.current?.handleIndexData());
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+
+      act(() => {
+        client.simulateServerEvent('chat_predict', { message_id: 'run-1', type: 'start_task', content: { task_id: 'task-1' } });
+      });
+      act(() => {
+        client.simulateServerEvent('chat_predict', {
+          message_id: 'run-1',
+          type: 'agent_response',
+          content: 'all done',
+          response_metadata: { finish_reason: 'stop' },
+        });
+      });
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      await waitFor(() => expect(refetchIndexesList).toHaveBeenCalledTimes(1), { timeout: 2000 });
+      expect(traceNewIndex).toHaveBeenCalledWith('idx-1', { state: 'completed' });
+    });
+
+    it('does NOT refetch the index list when the finished run was a non-indexing tool (runningToolRef mismatch, setTimeout guard returns early)', async () => {
+      const client = createTestSocketClient();
+      const refetchIndexesList = vi.fn();
+      const { box } = renderToolkitChat(baseParams({ modes: [], refetchIndexesList }), client);
+      await waitFor(() => expect(box.current).toBeDefined());
+
+      // `handleRunTool` runs `runTool` ('search_index'), never `IndexesToolsEnum.indexData`.
+      act(() => box.current?.handleRunTool());
+      await waitFor(() => expect(client.getEmitted('chat_predict')).toHaveLength(1));
+
+      act(() => {
+        client.simulateServerEvent('chat_predict', { message_id: 'run-1', type: 'start_task', content: { task_id: 'task-1' } });
+      });
+      act(() => {
+        client.simulateServerEvent('chat_predict', {
+          message_id: 'run-1',
+          type: 'agent_response',
+          content: 'all done',
+          response_metadata: { finish_reason: 'stop' },
+        });
+      });
+
+      await waitFor(() => expect(box.current?.isRunning).toBe(false));
+      // Give the 500ms debounce time to fire and confirm it never calls through.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(refetchIndexesList).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recovering an in-progress index conversation on mount', () => {
+    it('marks isRunning true and replaces chatHistory once the recovery fetch resolves (needGenerateProgressingIndexHistory effect)', async () => {
+      // `useIndexHistory`'s own `historyMessages` is derived from
+      // `conversationDetails` ONLY when `isHistoryMode` (a SEPARATE,
+      // zustand-store-driven "History" tab concern — `selectedHistoryItem`)
+      // is true; during this progressing-index-RECOVERY flow (this test's
+      // own scenario) `isHistoryMode` is false, so `historyMessages` itself
+      // resolves to `[]` even though the recovery fetch below genuinely
+      // completes and genuinely flips `needGenerateProgressingIndexHistory`
+      // true — a real, observable gap in `useIndexHistory.hooks.ts` (a
+      // sibling A4a file, not owned by this assignment), not a mistake in
+      // this test. This still exercises `useToolkitChat.hooks.ts`'s OWN
+      // effect body (`ToolkitForm.helpers... ` n/a here — see
+      // `useToolkitChat.hooks.ts:179-184`) end-to-end: the fetch fires, the
+      // effect fires exactly once, and its real, current outcome
+      // (`chatHistory` reset to `[]`, `isRunning` flipped to `true`,
+      // `setProgressingIndexHistoryRecovered(true)` called so the effect
+      // does not refire) is what is asserted below.
+      let hit = false;
+      server.use(
+        http.get(`${BASE}/elitea_core/conversation/prompt_lib/proj-1/conv-99`, () => {
+          hit = true;
+          return HttpResponse.json({
+            message_groups: [
+              {
+                id: 1,
+                uuid: 'u1',
+                author_participant_id: 'user-1',
+                content: 'recovered question',
+                created_at: '2024-01-01 00:00:00',
+                sent_to_id: 'toolkit-1',
+              },
+            ],
+            participants: [{ id: 'user-1', entity_name: 'user', meta: { user_name: 'Alice' } }],
+          });
+        }),
+      );
+
+      const index = { id: 'idx-1', metadata: { state: 'in_progress', conversation_id: 'conv-99' } };
+      const { box } = renderToolkitChat(baseParams({ modes: [], index }));
+
+      await waitFor(() => expect(hit).toBe(true), { timeout: 3000 });
+      // The welcome message (chatHistory's initial seed) starts at length 1;
+      // once the recovery effect runs, `setChatHistory([...historyMessages])`
+      // replaces it — with `historyMessages` genuinely `[]` here (see the
+      // doc comment above) — leaving `chatHistory` empty, which is itself
+      // proof the effect ran (as opposed to still holding the original
+      // 1-entry welcome message).
+      await waitFor(() => expect(box.current?.chatHistory).toHaveLength(0), { timeout: 3000 });
+      expect(box.current?.isRunning).toBe(true);
+    });
+
+    it('does not attempt recovery while in create-index mode, even with an in-progress index + conversation_id', async () => {
+      let hit = false;
+      server.use(
+        http.get(`${BASE}/elitea_core/conversation/prompt_lib/proj-1/conv-99`, () => {
+          hit = true;
+          return HttpResponse.json({ message_groups: [], participants: [] });
+        }),
+      );
+      const index = { id: 'idx-1', metadata: { state: 'in_progress', conversation_id: 'conv-99' } };
+      const { box } = renderToolkitChat(baseParams({ modes: ['create_index'], index }));
+      await waitFor(() => expect(box.current).toBeDefined());
+      expect(hit).toBe(false);
+    });
+  });
+
+  describe('defaultModel arriving after mount', () => {
+    it('adopts a defaultModel that arrives on a later render, when selectedModel was still null at mount', async () => {
+      const { box } = renderToolkitChatWithRerender(baseParams({ defaultModel: null }));
+      await waitFor(() => expect(box.current).toBeDefined());
+      expect(box.current?.selectedModel).toBeNull();
+
+      act(() => {
+        box.setParams(baseParams({ defaultModel: { name: 'gpt-4o', default: true } }));
+      });
+
+      await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'gpt-4o', default: true }));
+    });
+
+    it('does not override an already-selected model when defaultModel changes again later', async () => {
+      const { box } = renderToolkitChatWithRerender(baseParams({ defaultModel: { name: 'first', default: true } }));
+      await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'first', default: true }));
+
+      act(() => {
+        box.current?.onSelectModel({ name: 'user-picked' });
+      });
+      await waitFor(() => expect(box.current?.selectedModel).toEqual({ name: 'user-picked' }));
+
+      act(() => {
+        box.setParams(baseParams({ defaultModel: { name: 'second', default: true } }));
+      });
+
+      // selectedModel is no longer null, so the "adopt defaultModel" effect's own gate stays closed.
+      await waitFor(() => expect(box.current).toBeDefined());
+      expect(box.current?.selectedModel).toEqual({ name: 'user-picked' });
+    });
   });
 });

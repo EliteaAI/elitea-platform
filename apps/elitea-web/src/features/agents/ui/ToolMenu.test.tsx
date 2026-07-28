@@ -311,4 +311,196 @@ describe('ToolMenu — saved entity', () => {
     await waitFor(() => expect(router.state.location.search).not.toHaveProperty('newToolkitId'));
     expect(attachedCalls).toBe(0);
   });
+
+  it('auto-attaches via onAttachMcp (not onAttachToolkit) when the round trip carries mcp=true', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    server.use(
+      getListToolkitInstancesMockHandler({
+        rows: [{ id: 'tk-mcp', type: 'mcp', name: 'Remote MCP Server', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }],
+        total: 1,
+      }),
+    );
+
+    let attachedToolkit: unknown;
+    let attachedMcp: unknown;
+    const { router } = renderToolMenu(
+      { applicationId: 42, onAttachToolkit: (toolkit) => (attachedToolkit = toolkit), onAttachMcp: (toolkit) => (attachedMcp = toolkit) },
+      'proj-1',
+      // `mcp` must round-trip as the STRING 'true' (matching the real "Create new" outbound
+      // navigation, which JSON-quotes string search values for symmetric re-parsing — see
+      // `defaultParseSearch`/`defaultStringifySearch`, `@tanstack/router-core/searchParams.ts`)
+      // rather than the bare token `true`, which the router's JSON-based search parser would
+      // instead parse as the boolean `true`.
+      ['/agents/tab/42?newToolkitId=tk-mcp&mcp=%22true%22'],
+    );
+
+    await waitFor(() => expect(attachedMcp).toMatchObject({ id: 'tk-mcp', name: 'Remote MCP Server' }));
+    expect(attachedToolkit).toBeUndefined();
+    await waitFor(() => expect(router.state.location.search).not.toHaveProperty('newToolkitId'));
+    expect(router.state.location.search).not.toHaveProperty('mcp');
+  });
+
+  it('lists pipelines from the real endpoint and associates one, invalidating the application-detail cache on success', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    server.use(
+      getListApplicationsMockHandler((info) => {
+        const url = new URL(info.request.url);
+        if (url.searchParams.get('agents_type') !== 'pipeline') return { rows: [], total: 0, page: 0, page_size: 20, total_pages: 0 };
+        return {
+          rows: [{ id: '9', name: 'Other Pipeline', owner_id: 'user-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', is_forked: false, meta: {}, has_interrupt: false }],
+          total: 1,
+          page: 0,
+          page_size: 20,
+          total_pages: 1,
+        };
+      }),
+    );
+    server.use(getUpdateApplicationRelationMockHandler({ application_id: '42', version_id: '100', has_relation: true }));
+
+    let onToolsChangedCalls = 0;
+    renderToolMenu({ applicationId: 42, onToolsChanged: () => (onToolsChangedCalls += 1) });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pipeline' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Pipeline' }));
+    expect(await screen.findByText('Other Pipeline')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Other Pipeline'));
+
+    await waitFor(() => expect(onToolsChangedCalls).toBe(1));
+  });
+
+  it('does not call onToolsChanged when the association is rejected by a guard (e.g. the candidate is a swarm agent)', async () => {
+    let candidateDetailFetched = false;
+    server.use(
+      getGetApplicationMockHandler((info) => {
+        if (info.params['applicationId'] === '7') {
+          candidateDetailFetched = true;
+          return applicationDetail({
+            id: '7',
+            name: 'Swarm Bot',
+            version_details: { id: '200', application_id: '7', name: 'base', status: 'draft', tools: [], meta: { internal_tools: ['swarm'] }, agent_type: 'classic' },
+          });
+        }
+        return applicationDetail();
+      }),
+    );
+    server.use(
+      getListApplicationsMockHandler((info) => {
+        const url = new URL(info.request.url);
+        if (url.searchParams.get('agents_type') !== 'classic') return { rows: [], total: 0, page: 0, page_size: 20, total_pages: 0 };
+        return {
+          rows: [{ id: '7', name: 'Swarm Bot', owner_id: 'user-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', is_forked: false, meta: {}, has_interrupt: false }],
+          total: 1,
+          page: 0,
+          page_size: 20,
+          total_pages: 1,
+        };
+      }),
+    );
+    let updateRelationCalls = 0;
+    server.use(
+      getUpdateApplicationRelationMockHandler(() => {
+        updateRelationCalls += 1;
+        return { application_id: '42', version_id: '100', has_relation: true };
+      }),
+    );
+
+    let onToolsChangedCalls = 0;
+    renderToolMenu({ applicationId: 42, onToolsChanged: () => (onToolsChangedCalls += 1) });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agent' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
+    fireEvent.click(await screen.findByText('Swarm Bot'));
+
+    // Wait for the candidate's own detail fetch (the last network step before the swarm guard
+    // rejects it) to resolve, then give the guard's synchronous evaluation a tick to run.
+    await waitFor(() => expect(candidateDetailFetched).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(updateRelationCalls).toBe(0);
+    expect(onToolsChangedCalls).toBe(0);
+  });
+
+  it('excludes an agent that is already an attached tool from the Agent dropdown (existing non-application tools do not affect it)', async () => {
+    server.use(
+      getGetApplicationMockHandler(
+        applicationDetail({
+          version_details: {
+            id: '100',
+            application_id: '42',
+            name: 'base',
+            status: 'draft',
+            agent_type: 'pipeline',
+            tools: [
+              { id: 7, type: 'application', settings: { application_id: '7' } },
+              { id: 'tk-1', type: 'toolkit', settings: {} },
+            ],
+            meta: {},
+          },
+        }),
+      ),
+    );
+    server.use(
+      getListApplicationsMockHandler((info) => {
+        const url = new URL(info.request.url);
+        if (url.searchParams.get('agents_type') !== 'classic') return { rows: [], total: 0, page: 0, page_size: 20, total_pages: 0 };
+        return {
+          rows: [
+            { id: '7', name: 'Already Added', owner_id: 'user-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', is_forked: false, meta: {}, has_interrupt: false },
+            { id: '8', name: 'Not Added Yet', owner_id: 'user-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', is_forked: false, meta: {}, has_interrupt: false },
+          ],
+          total: 2,
+          page: 0,
+          page_size: 20,
+          total_pages: 1,
+        };
+      }),
+    );
+
+    renderToolMenu({ applicationId: 42 });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Agent' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
+
+    expect(await screen.findByText('Not Added Yet')).toBeInTheDocument();
+    // "Already Added" (id 7) has an existing `application`-typed tool row -> filtered out of the dropdown.
+    expect(screen.queryByText('Already Added')).not.toBeInTheDocument();
+  });
+
+  it('closes the Pipeline dropdown (clearing its search) on Escape', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    renderToolMenu({ applicationId: 42 });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pipeline' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Pipeline' }));
+    expect(await screen.findByRole('menu')).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+  });
+
+  it('requests more toolkit instances (increases the page limit) when the dropdown is scrolled near its end', async () => {
+    let lastLimit: string | null = null;
+    server.use(
+      getListToolkitInstancesMockHandler((info) => {
+        const url = new URL(info.request.url);
+        lastLimit = url.searchParams.get('limit');
+        return { rows: [{ id: 'tk-1', type: 'github', name: 'GitHub', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }], total: 1 };
+      }),
+    );
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+
+    renderToolMenu({ applicationId: 42 });
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
+    await screen.findByText('GitHub');
+    await waitFor(() => expect(lastLimit).toBe('20'));
+
+    const menu = screen.getByRole('menu');
+    const paper = menu.parentElement as HTMLElement;
+    Object.defineProperty(paper, 'scrollHeight', { value: 500, configurable: true });
+    Object.defineProperty(paper, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(paper, 'scrollTop', { value: 90, configurable: true });
+    fireEvent.scroll(paper);
+
+    await waitFor(() => expect(lastLimit).toBe('40'));
+  });
 });

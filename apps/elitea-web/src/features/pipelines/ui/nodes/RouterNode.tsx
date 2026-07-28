@@ -34,6 +34,8 @@ import { memo, useCallback, useContext, useMemo } from 'react';
 
 import { useEdges, type NodeProps } from '@xyflow/react';
 
+import Box from '@mui/material/Box';
+
 import { HeadingChip } from '@/shared/ui/HeadingChip';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { t } from '@/shared/i18n';
@@ -231,13 +233,31 @@ export const RouterNode = memo(function RouterNode(props: RouterNodeProps): Reac
         disabled={isFieldsDisabled}
       />
       <HeadingChip label={t('pipelines.flowEditor.routerNode.defaultOutput', 'Default output')} />
-      <SingleSelect
-        sx={{ marginBottom: 0 }}
-        value={defaultOutputNode}
-        onChange={handleDefaultOutput}
-        options={[...routes]}
-        disabled={isFieldsDisabled}
-      />
+      {/*
+        BUG FIX (found while writing this file's tests, `RouterNode.test.tsx`):
+        every other node-level `SingleSelect`/`RouteSelect`/`InputSelect` call
+        site in this slice is wrapped in (or itself applies) a `className=
+        "nopan nodrag"` shield -- see `./HITLNode.tsx`'s identical "Edit state
+        key" `SingleSelect`, `./HITLNode.parts.tsx`'s `HITLRouteRow`, and
+        `../select/{InputSelect,OutputSelect,RouteSelect}.tsx`'s own
+        `className` props -- so a mousedown on the control does not bubble to
+        React Flow's node wrapper and start a canvas drag. This one call site
+        had no such wrapper: reproduced empirically -- opening this exact
+        dropdown inside a real `<ReactFlow>` node throws out of `d3-drag`'s
+        `mousedowned` (`Cannot read properties of null (reading 'document')`),
+        the node-drag-start handler firing on a bubbled mousedown the Select's
+        own portal-rendered menu does not expect. Wrapped here to match the
+        established pattern, not a stylistic change.
+      */}
+      <Box className="nopan nodrag">
+        <SingleSelect
+          sx={{ marginBottom: 0 }}
+          value={defaultOutputNode}
+          onChange={handleDefaultOutput}
+          options={[...routes]}
+          disabled={isFieldsDisabled}
+        />
+      </Box>
     </NodeCard>
   );
 });
