@@ -27,7 +27,12 @@ operators return to the current durable recovery path.
    claim, Redis stream, delivery-index or spool state by hand.
 4. Keep the version-`1` worker alive until its Redis deliveries and durable
    output spool are acknowledged, settled and drained. Confirm every
-   version-`1` outbox and claim is retired/released and the old Redis
+   version-`1` claim is released. A pre-authority outbox must be retired by the
+   normal state machine. A post-authority outbox is retained by schema and must
+   instead have an exact committed terminal settlement for the same execution
+   and generation, with `SUCCEEDED`, `FAILED` or `CANCELLED` matching the
+   terminal job state and a non-null job `settled_at`. Do not backfill or
+   manually set `retired_at` on a post-authority outbox. Confirm the old Redis
    stream/PEL/delivery index are empty.
 5. Only after step 4, scale every version-`1` Main producer to zero and stop
    every version-`1` worker. Preserve and mount every stopped replica's durable
@@ -50,7 +55,7 @@ Required environment:
 
 | Name | Requirement |
 | --- | --- |
-| `DATABASE_URL` | Authoritative PostgreSQL URL. Its role needs `SELECT` on `elitea_runtime.execution_jobs`, `elitea_runtime.command_outbox` and `elitea_runtime.execution_claims`. Include the production TLS policy. |
+| `DATABASE_URL` | Authoritative PostgreSQL URL. Its role needs `SELECT` on `elitea_runtime.execution_jobs`, `elitea_runtime.command_outbox`, `elitea_runtime.execution_claims` and `elitea_runtime.execution_settlements`. Include the production TLS policy. |
 | `ELITEA_RUNTIME_ENABLED` | Exact value `true`. |
 | `ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED` | Exact value `true`. |
 | `ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM` | Old version-`1` dedicated index command stream. |

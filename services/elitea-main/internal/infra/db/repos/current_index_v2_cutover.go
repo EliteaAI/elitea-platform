@@ -10,17 +10,25 @@ import (
 )
 
 // CurrentIndexV2CutoverRepository reads the authoritative persisted version-1
-// state. Terminal jobs are retained for audit, but an unretired outbox or
-// unreleased claim still blocks the coordinated capability cutover.
+// state. Terminal jobs and their post-authority outboxes are retained for
+// audit. A retained outbox is safe only after an exact committed terminal
+// settlement; an unreleased claim always blocks the coordinated cutover.
 type CurrentIndexV2CutoverRepository struct {
-	pool *pgxpool.Pool
+	query sqlExecutor
 }
 
 func NewCurrentIndexV2CutoverRepository(pool *pgxpool.Pool) (*CurrentIndexV2CutoverRepository, error) {
 	if pool == nil {
 		return nil, errors.New("index v2 cutover PostgreSQL pool is required")
 	}
-	return &CurrentIndexV2CutoverRepository{pool: pool}, nil
+	return newCurrentIndexV2CutoverRepository(pgxExecutor{queryer: pool})
+}
+
+func newCurrentIndexV2CutoverRepository(query sqlExecutor) (*CurrentIndexV2CutoverRepository, error) {
+	if query == nil {
+		return nil, errors.New("index v2 cutover PostgreSQL query executor is required")
+	}
+	return &CurrentIndexV2CutoverRepository{query: query}, nil
 }
 
 func (r *CurrentIndexV2CutoverRepository) ReadIndexV1CutoverState(
@@ -33,7 +41,7 @@ func (r *CurrentIndexV2CutoverRepository) ReadIndexV1CutoverState(
 		return cutover.IndexV1PersistedState{}, err
 	}
 	var state cutover.IndexV1PersistedState
-	err := r.pool.QueryRow(ctx, `
+	err := r.query.QueryRow(ctx, `
 SELECT
     (
         SELECT count(*)
@@ -51,6 +59,19 @@ SELECT
         WHERE job.capability_id = 'index.ingest.v1'
           AND job.capability_version = '1'
           AND outbox.retired_at IS NULL
+          AND NOT (
+              outbox.authority_granted_at IS NOT NULL
+              AND job.state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+              AND job.settled_at IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM elitea_runtime.execution_settlements AS settlement
+                  WHERE settlement.execution_id = job.execution_id
+                    AND settlement.generation = job.generation
+                    AND settlement.disposition = job.state
+                    AND settlement.committed_at IS NOT NULL
+              )
+          )
     ) AS outstanding_outbox,
     (
         SELECT count(*)
