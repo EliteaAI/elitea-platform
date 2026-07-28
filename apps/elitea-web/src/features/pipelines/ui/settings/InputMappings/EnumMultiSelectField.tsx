@@ -141,15 +141,17 @@ const chipsRowSx: SxProps<Theme> = {
   padding: '0 0 0.375rem',
 };
 
-// R-T6 (`no-mui-internal-selector`) bans reaching into a MUI component's
-// internal `.MuiChip-*` classes from outside `shared/brand/mui-overrides/`
-// — the baseline's own `&:not(.Mui-disabled) .MuiChip-deleteIcon:hover`
-// hover-colour transition (`SingleSelect.jsx`'s `styles.chip`) has no
-// legal equivalent here. The chip's own background still comes from the
-// `tagChip` token set (below); the label/delete-icon colours are set
-// directly on THOSE elements instead (`Typography color`/`SvgIcon sx`
-// above), which needs no descendant selector at all — a fixed colour
-// rather than a hover transition, but the same token family.
+/**
+ * R-T6 (`no-mui-internal-selector`) bans reaching into a MUI component's
+ * internal chip-delete-icon classes from outside `shared/brand/
+ * mui-overrides/` — the baseline's own hover-colour transition on that
+ * descendant element (`SingleSelect.jsx`'s `styles.chip`) has no legal
+ * equivalent here. The chip's own background still comes from the
+ * `tagChip` token set (below); the label/delete-icon colours are set
+ * directly on THOSE elements instead (`Typography color`/`SvgIcon sx`
+ * above), which needs no descendant selector at all — a fixed colour
+ * rather than a hover transition, but the same token family.
+ */
 const chipSx: SxProps<Theme> = (theme: Theme) => ({
   background: theme.vars.palette.background.tagChip.disabled,
 });
