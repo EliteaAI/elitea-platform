@@ -19,6 +19,34 @@ var (
 	)
 )
 
+const (
+	currentCronMaxSearchYears = 50
+	robfigSearchWindowYears   = 5
+)
+
+type extendedCronSchedule struct {
+	base cron.Schedule
+}
+
+func (schedule extendedCronSchedule) Next(after time.Time) time.Time {
+	cursor := after
+	for searchedYears := 0; searchedYears < currentCronMaxSearchYears; searchedYears += robfigSearchWindowYears {
+		next := schedule.base.Next(cursor)
+		if !next.IsZero() {
+			return next
+		}
+		// robfig has proved that its fixed five-year window contains no
+		// occurrence. Move to the next overlapping window; overlap avoids a
+		// boundary skip while retaining croniter's bounded 50-year search.
+		cursor = after.AddDate(
+			searchedYears+robfigSearchWindowYears,
+			0,
+			0,
+		)
+	}
+	return time.Time{}
+}
+
 type filteredCronSchedule struct {
 	base    cron.Schedule
 	matcher *currentSpecialDayMatcher
@@ -140,13 +168,21 @@ func parseCurrentFields(fields []string) (cron.Schedule, error) {
 	}
 	fields[4] = normalizedDOW
 	if len(fields) == 5 {
-		return currentFiveFieldParser.Parse(strings.Join(fields, " "))
+		schedule, err := currentFiveFieldParser.Parse(strings.Join(fields, " "))
+		if err != nil {
+			return nil, err
+		}
+		return extendedCronSchedule{base: schedule}, nil
 	}
 	// croniter's sixth field is seconds; robfig's is first.
 	secondsFirst := []string{
 		fields[5], fields[0], fields[1], fields[2], fields[3], fields[4],
 	}
-	return currentSixFieldParser.Parse(strings.Join(secondsFirst, " "))
+	schedule, err := currentSixFieldParser.Parse(strings.Join(secondsFirst, " "))
+	if err != nil {
+		return nil, err
+	}
+	return extendedCronSchedule{base: schedule}, nil
 }
 
 // croniter 1.4.1 accepts 7 as Sunday and uses an inclusive 0-7 range for the
@@ -291,7 +327,19 @@ func currentSpecialDays(fields []string) (*currentSpecialDayMatcher, []string, e
 		transformedDOW = append(transformedDOW, part)
 	}
 	if hasNth && len(regularDOW) != 0 {
-		return nil, nil, errors.New("cannot mix literal and nth weekday syntax")
+		overlaps, err := currentDOWCoveredBySpecial(
+			strings.Join(regularDOW, ","),
+			matcher.nthDOW,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !overlaps {
+			return nil, nil, errors.New("cannot mix unrelated literal and nth weekday syntax")
+		}
+		// croniter collapses an overlapping literal into its nth/last rule:
+		// MON,MON#2 is second Monday, not every Monday.
+		regularDOW = nil
 	}
 	matcher.dowRegularField = strings.Join(regularDOW, ",")
 	transformed[4] = strings.Join(transformedDOW, ",")
@@ -299,6 +347,38 @@ func currentSpecialDays(fields []string) (*currentSpecialDayMatcher, []string, e
 		return nil, transformed, nil
 	}
 	return matcher, transformed, nil
+}
+
+func currentDOWCoveredBySpecial(
+	regularField string,
+	rules []currentNthWeekday,
+) (bool, error) {
+	expanded, err := expandCurrentRegularDOW(regularField)
+	if err != nil {
+		return false, err
+	}
+	special := [7]bool{}
+	for _, rule := range rules {
+		special[rule.weekday] = true
+	}
+	if expanded == "*" {
+		for _, covered := range special {
+			if !covered {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	for _, value := range strings.Split(expanded, ",") {
+		weekday, err := strconv.Atoi(value)
+		if err != nil || weekday < 0 || weekday >= len(special) {
+			return false, errors.New("invalid regular weekday")
+		}
+		if !special[weekday] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (matcher *currentSpecialDayMatcher) compileRegularFields(fields []string) error {

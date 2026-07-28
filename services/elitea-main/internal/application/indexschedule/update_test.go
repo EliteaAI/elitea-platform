@@ -17,11 +17,14 @@ func TestValidateUpdateCronMatchesCurrentSpecialAndDailyContracts(t *testing.T) 
 		"0 0 * * MON#2",
 		"0 0 * * MON-FRI#2",
 		"0 0 * * MON#2,TUE#2",
+		"0 0 * * MON,MON#2",
+		"0 0 * * FRI,L5",
 		"0 0 * * L7",
 		"0 0 * * 7",
 		"0 0 * * FRI-SUN",
 		"0 0 * * MON/2",
 		"0 0 L,1 * *",
+		"0 0 29 2 *",
 		"0 0 * JAN MON",
 		"0 0 * * * 0",
 		"@daily",
@@ -47,6 +50,7 @@ func TestValidateUpdateCronMatchesCurrentSpecialAndDailyContracts(t *testing.T) 
 		{value: "@every 24h", want: ErrInvalidCron},
 		{value: "0 0 * * 1-5#2", want: ErrInvalidCron},
 		{value: "0 0 * * MON#2,TUE", want: ErrInvalidCron},
+		{value: "0 0 31 2 *", want: ErrInvalidCron},
 		{value: "0 0 ? * *", want: ErrInvalidCron},
 		{value: "0 0 * * ?", want: ErrInvalidCron},
 	} {
@@ -82,6 +86,21 @@ func TestSpecialCronNextMatchesCurrentCalendarSemantics(t *testing.T) {
 			value: "0 0 * * L5",
 			base:  time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC),
 			want:  time.Date(2024, time.January, 26, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			value: "0 0 * * MON,MON#2",
+			base:  time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC),
+			want:  time.Date(2024, time.January, 8, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			value: "0 0 * * FRI,L5",
+			base:  time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC),
+			want:  time.Date(2024, time.January, 26, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			value: "0 0 29 2 *",
+			base:  time.Date(2096, time.February, 29, 0, 0, 0, 0, time.UTC),
+			want:  time.Date(2104, time.February, 29, 0, 0, 0, 0, time.UTC),
 		},
 	}
 	for _, test := range tests {

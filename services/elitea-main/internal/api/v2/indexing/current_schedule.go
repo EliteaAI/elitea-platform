@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -106,6 +107,14 @@ func (handler *currentIndexScheduleHandler) update(
 		writeCurrentIndexScheduleValidation(writer)
 		return
 	}
+	if !currentScheduleJSONMediaType(request.Header.Get("Content-Type")) {
+		writeCurrentIndexScheduleError(
+			writer,
+			http.StatusUnsupportedMediaType,
+			"Unsupported Media Type",
+		)
+		return
+	}
 
 	body, err := decodeCurrentIndexScheduleBody(writer, request)
 	if err != nil {
@@ -140,6 +149,16 @@ func (handler *currentIndexScheduleHandler) update(
 		return
 	}
 	writeJSON(writer, http.StatusOK, result.IndexesMeta)
+}
+
+func currentScheduleJSONMediaType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json" ||
+		(strings.HasPrefix(mediaType, "application/") &&
+			strings.HasSuffix(mediaType, "+json"))
 }
 
 type currentIndexScheduleBody struct {
@@ -350,8 +369,7 @@ func writeCurrentIndexScheduleApplicationError(writer http.ResponseWriter, err e
 	case errors.Is(err, indexscheduleapp.ErrInvalidRequest),
 		errors.Is(err, indexscheduleapp.ErrInvalidCron),
 		errors.Is(err, indexscheduleapp.ErrFrequencyAboveDaily),
-		errors.Is(err, indexscheduleapp.ErrInvalidTimezone),
-		errors.Is(err, indexscheduleapp.ErrPrivateTeamCredentials):
+		errors.Is(err, indexscheduleapp.ErrInvalidTimezone):
 		writeCurrentIndexScheduleValidation(writer)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		writeCurrentIndexScheduleError(

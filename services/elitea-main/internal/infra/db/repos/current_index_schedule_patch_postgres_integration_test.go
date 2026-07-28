@@ -24,6 +24,7 @@ func TestCurrentIndexSchedulePatchRepositoryPostgresTenantAndConcurrentParity(t 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
+	privateCredential := true
 	mutations := []indexscheduleapp.Mutation{
 		{
 			ProjectID: 1, ActorUserID: 11, ToolkitID: 1, IndexMetaID: "docs",
@@ -31,6 +32,9 @@ func TestCurrentIndexSchedulePatchRepositoryPostgresTenantAndConcurrentParity(t 
 			Schedule: indexscheduleapp.Schedule{
 				Cron: "0 3 * * *", Enabled: true, CreatedBy: 11, Timezone: "UTC",
 				LastRun: "2026-07-27T09:34:56+00:00",
+				Credentials: &indexscheduleapp.Credentials{
+					Private: &privateCredential, EliteaTitle: "personal-github",
+				},
 			},
 		},
 		{
@@ -74,6 +78,14 @@ func TestCurrentIndexSchedulePatchRepositoryPostgresTenantAndConcurrentParity(t 
 	projectOneIndexes := projectOne["indexes_meta"].(map[string]any)
 	assertCurrentSchedulePersisted(t, projectOneIndexes, "docs", "-1", "0 3 * * *")
 	assertCurrentSchedulePersisted(t, projectOneIndexes, "wiki", "-1", "0 4 * * *")
+	projectSchedule := projectOneIndexes["docs"].(map[string]any)["schedules"].(map[string]any)["-1"].(map[string]any)
+	credentials, ok := projectSchedule["credentials"].(map[string]any)
+	if !ok ||
+		credentials["private"] != true ||
+		credentials["elitea_title"] != "personal-github" ||
+		projectSchedule["created_by"] != json.Number("11") {
+		t.Fatalf("public project private creator credential drifted: %#v", projectSchedule)
+	}
 
 	projectTwoResult, err := repository.Patch(ctx, indexscheduleapp.Mutation{
 		ProjectID: 2, ActorUserID: 12, ToolkitID: 1, IndexMetaID: "docs",

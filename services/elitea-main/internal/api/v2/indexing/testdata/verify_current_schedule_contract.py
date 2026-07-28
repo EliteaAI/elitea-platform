@@ -128,8 +128,9 @@ def model_dump(model):
     return model.dict()
 
 
-def observe(payload: dict) -> bool:
+def observe(payload) -> bool:
     try:
+        payload = dict(payload)
         update = model_validate(UpdateIndexingSchedule, payload)
         model_validate(
             ToolkitIndexingSchedule,

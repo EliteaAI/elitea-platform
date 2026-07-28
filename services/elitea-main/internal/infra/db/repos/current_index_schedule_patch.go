@@ -96,12 +96,6 @@ FOR UPDATE`,
 			if err != nil {
 				return err
 			}
-			if effectiveUserID == -1 && mutation.Schedule.Credentials != nil &&
-				mutation.Schedule.Credentials.Private != nil &&
-				*mutation.Schedule.Credentials.Private {
-				return indexscheduleapp.ErrPrivateTeamCredentials
-			}
-
 			indexesMeta, err := currentScheduleObject(meta, "indexes_meta")
 			if err != nil {
 				return err
@@ -153,8 +147,7 @@ WHERE id = $2`,
 			errors.Is(err, indexscheduleapp.ErrInvalidRequest) ||
 			errors.Is(err, indexscheduleapp.ErrToolkitNotFound) ||
 			errors.Is(err, indexscheduleapp.ErrInvalidToolkit) ||
-			errors.Is(err, indexscheduleapp.ErrScheduleResultTooLarge) ||
-			errors.Is(err, indexscheduleapp.ErrPrivateTeamCredentials) {
+			errors.Is(err, indexscheduleapp.ErrScheduleResultTooLarge) {
 			return indexscheduleapp.MutationResult{}, err
 		}
 		return indexscheduleapp.MutationResult{}, indexscheduleapp.ErrScheduleUnavailable

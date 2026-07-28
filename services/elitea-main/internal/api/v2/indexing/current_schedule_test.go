@@ -207,6 +207,82 @@ func TestCurrentIndexScheduleRouteRejectsSuspendedPrincipalAndCrossProjectAccess
 	}
 }
 
+func TestCurrentIndexScheduleRouteRequiresCurrentJSONMediaTypeBeforeDecoding(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		contentType string
+		accepted    bool
+	}{
+		{name: "missing"},
+		{name: "plain text", contentType: "text/plain"},
+		{name: "malformed parameter", contentType: "application/json; charset"},
+		{
+			name:        "application json charset",
+			contentType: "application/json; charset=UTF-8",
+			accepted:    true,
+		},
+		{
+			name:        "application json suffix",
+			contentType: "application/vnd.elitea+json; charset=utf-8",
+			accepted:    true,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			updater := &currentScheduleUpdaterStub{result: indexscheduleapp.MutationResult{
+				IndexesMeta: map[string]any{},
+			}}
+			route := newCurrentScheduleRoute(
+				t,
+				updater,
+				allowCurrentSchedulePermission,
+				nil,
+			)
+			body := &trackingBody{Reader: strings.NewReader(
+				`{"cron":"0 3 * * *","timezone":"UTC"}`,
+			)}
+			request := currentScheduleRequest(
+				"/api/v2/elitea_core/index_meta/prompt_lib/7/9/docs",
+				"",
+			)
+			request.Body = body
+			if test.contentType == "" {
+				request.Header.Del("Content-Type")
+			} else {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, request)
+
+			if test.accepted {
+				if response.Code != http.StatusOK || !body.read || updater.calls != 1 {
+					t.Fatalf(
+						"accepted status=%d read=%t calls=%d body=%s",
+						response.Code,
+						body.read,
+						updater.calls,
+						response.Body.String(),
+					)
+				}
+				return
+			}
+			if response.Code != http.StatusUnsupportedMediaType ||
+				body.read ||
+				updater.calls != 0 ||
+				response.Body.String() !=
+					"{\"ok\":false,\"error\":\"Unsupported Media Type\"}\n" {
+				t.Fatalf(
+					"rejected status=%d read=%t calls=%d body=%q",
+					response.Code,
+					body.read,
+					updater.calls,
+					response.Body.String(),
+				)
+			}
+		})
+	}
+}
+
 func TestCurrentIndexScheduleRouteMatchesFrozenPythonDifferentialFixtures(t *testing.T) {
 	fixtureBytes, err := os.ReadFile("testdata/current_python_schedule_contract.json")
 	if err != nil {

@@ -30,7 +30,6 @@ var (
 	ErrInvalidToolkit         = errors.New("schedule toolkit is invalid")
 	ErrScheduleUnavailable    = errors.New("index schedule storage is unavailable")
 	ErrScheduleResultTooLarge = errors.New("index schedule metadata exceeds its limit")
-	ErrPrivateTeamCredentials = errors.New("team schedules require public credentials")
 )
 
 type Credentials struct {

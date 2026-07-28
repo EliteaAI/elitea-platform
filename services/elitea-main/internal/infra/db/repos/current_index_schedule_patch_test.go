@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -108,16 +109,13 @@ func TestCurrentIndexSchedulePatchRepositoryPreservesTeamAndCredentialRules(t *t
 		privateTool bool
 		credentials *indexscheduleapp.Credentials
 		wantUser    int64
-		wantError   error
-		wantUpdate  bool
 	}{
 		{
 			name: "public toolkit keeps project schedule",
 			credentials: &indexscheduleapp.Credentials{
 				Private: boolPointer(false), EliteaTitle: "shared-github",
 			},
-			wantUser:   -1,
-			wantUpdate: true,
+			wantUser: -1,
 		},
 		{
 			name:        "private toolkit maps project sentinel to actor",
@@ -125,15 +123,14 @@ func TestCurrentIndexSchedulePatchRepositoryPreservesTeamAndCredentialRules(t *t
 			credentials: &indexscheduleapp.Credentials{
 				Private: boolPointer(true), EliteaTitle: "personal-github",
 			},
-			wantUser:   11,
-			wantUpdate: true,
+			wantUser: 11,
 		},
 		{
-			name: "public toolkit rejects private team credential",
+			name: "public toolkit preserves private creator credential",
 			credentials: &indexscheduleapp.Credentials{
 				Private: boolPointer(true), EliteaTitle: "personal-github",
 			},
-			wantError: indexscheduleapp.ErrPrivateTeamCredentials,
+			wantUser: -1,
 		},
 	} {
 		test := test
@@ -164,14 +161,27 @@ func TestCurrentIndexSchedulePatchRepositoryPreservesTeamAndCredentialRules(t *t
 				ProjectID: 7, ActorUserID: 11, ToolkitID: 19, IndexMetaID: "docs",
 				RequestedUserID: -1, Schedule: mutationSchedule,
 			})
-			if !errors.Is(err, test.wantError) {
-				t.Fatalf("error=%v want=%v", err, test.wantError)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if len(executor.execCalls) != boolInt(test.wantUpdate) {
-				t.Fatalf("updates=%d want=%t", len(executor.execCalls), test.wantUpdate)
+			if len(executor.execCalls) != 1 {
+				t.Fatalf("updates=%d", len(executor.execCalls))
 			}
-			if test.wantUpdate && result.EffectiveUserID != test.wantUser {
+			if result.EffectiveUserID != test.wantUser {
 				t.Fatalf("effective user=%d want=%d", result.EffectiveUserID, test.wantUser)
+			}
+			persisted, err := decodeCurrentScheduleObject(
+				executor.execCalls[0].args[0].([]byte),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexes := persisted["indexes_meta"].(map[string]any)
+			saved := indexes["docs"].(map[string]any)["schedules"].(map[string]any)[strconv.FormatInt(test.wantUser, 10)].(map[string]any)
+			credentials := saved["credentials"].(map[string]any)
+			if credentials["private"] != *test.credentials.Private ||
+				credentials["elitea_title"] != test.credentials.EliteaTitle {
+				t.Fatalf("credentials drifted: %#v", credentials)
 			}
 		})
 	}
@@ -256,13 +266,6 @@ func (store *currentScheduleProjectStore) WithinProjectTx(
 	store.projectID = projectID
 	store.options = options
 	return fn(store.scriptedExecutor)
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func boolPointer(value bool) *bool {
