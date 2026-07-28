@@ -67,10 +67,11 @@ func TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess(
 		t.Fatalf("%s contains an invalid Docker container name", indexSDKSerializationContainerEnv)
 	}
 
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	requirePostgresSDKSerializationPrerequisites(t, ctx, container)
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
 	requirePostgresVectorExtension(t, ctx, pool)
 
 	policy := IndexIngestDispatchPolicy{
@@ -416,6 +417,51 @@ func TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess(
 	)
 }
 
+func requirePostgresSDKSerializationPrerequisites(
+	t *testing.T,
+	ctx context.Context,
+	container string,
+) {
+	t.Helper()
+	databaseURL := os.Getenv(postgresIntegrationDatabaseURL)
+	if databaseURL == "" &&
+		os.Getenv("ELITEA_TEST_USE_SERVICE_DATABASE_URL") == "1" {
+		databaseURL = os.Getenv("DATABASE_URL")
+	}
+	if databaseURL == "" {
+		t.Fatalf(
+			"%s is required when %s=1",
+			postgresIntegrationDatabaseURL,
+			indexSDKSerializationGateEnv,
+		)
+	}
+	docker, err := osexec.LookPath("docker")
+	if err != nil {
+		t.Fatalf("docker CLI is required when %s=1: %v", indexSDKSerializationGateEnv, err)
+	}
+	output := &boundedSDKGateBuffer{limit: indexSDKSerializationProcessOutput}
+	command := osexec.CommandContext(
+		ctx,
+		docker,
+		"inspect",
+		"--format={{.State.Running}}",
+		container,
+	)
+	command.Stdout = output
+	command.Stderr = output
+	if err := command.Run(); err != nil {
+		t.Fatalf(
+			"inspect configured SDK container %q: %v; output=%q",
+			container,
+			err,
+			output.String(),
+		)
+	}
+	if strings.TrimSpace(output.String()) != "true" {
+		t.Fatalf("configured SDK container %q is not running", container)
+	}
+}
+
 func requirePostgresVectorExtension(
 	t *testing.T,
 	ctx context.Context,
@@ -429,10 +475,10 @@ SELECT 1 FROM pg_catalog.pg_available_extensions WHERE name = 'vector'
 		t.Fatal(err)
 	}
 	if !available {
-		t.Skip("the PostgreSQL integration server does not provide the vector extension")
+		t.Fatal("the enabled SDK serialization gate requires the PostgreSQL vector extension")
 	}
 	if _, err := pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector`); err != nil {
-		t.Skipf("the isolated integration database cannot install vector: %v", err)
+		t.Fatalf("install the required vector extension: %v", err)
 	}
 }
 

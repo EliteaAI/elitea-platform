@@ -190,7 +190,8 @@ settlement, it admits and initializes the next logical generation against real
 PostgreSQL/PgVector, then proves old terminal and task-ID writes are fenced.
 
 Run the opt-in gate against a PostgreSQL 16-18 server with `vector` and the
-existing index-worker container:
+existing index-worker container. The Docker CLI must be installed, configured
+to reach a live daemon, and able to inspect and enter that running container:
 
 ```bash
 ELITEA_INDEX_SDK_SERIALIZATION_GATE=1 \
@@ -200,8 +201,11 @@ go test -count=1 -v ./services/elitea-main/internal/infra/db/repos \
 ```
 
 Override the default `centry-elitea-indexer-worker-1` with
-`ELITEA_INDEX_SDK_CONTAINER` when needed. The tool/provider boundary is a
-deterministic blocker underneath the real installed SDK callable. Redis
-reference delivery, the production worker serve loop, gRPC, public
-authentication and an external source provider remain outside this gate; the
-existing compose and cross-process harnesses own those boundaries.
+`ELITEA_INDEX_SDK_CONTAINER` when needed. Once
+`ELITEA_INDEX_SDK_SERIALIZATION_GATE=1`, missing database configuration,
+PostgreSQL/PgVector support, Docker CLI/daemon access, or a running configured
+container fails the gate; only a disabled gate skips. The tool/provider
+boundary is a deterministic blocker underneath the real installed SDK
+callable. Redis reference delivery, the production worker serve loop, gRPC,
+public authentication and an external source provider remain outside this
+gate; the existing compose and cross-process harnesses own those boundaries.
