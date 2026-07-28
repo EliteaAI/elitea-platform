@@ -2,10 +2,12 @@ package pgvector
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
 	"github.com/jackc/pgx/v5"
@@ -14,8 +16,9 @@ import (
 var ErrCurrentIndexMetaDelete = errors.New("pgvector: current index metadata delete failed")
 
 // CurrentIndexMetaRemover performs the current synchronous PgVector
-// transaction. Its one deliberate correction is requiring the selected ID to
-// be an index_meta row before its collection can be deleted.
+// transaction. Its deliberate safety corrections require the selected ID to
+// be an index_meta row and its collection to be a bounded JSON string before
+// that exact string collection can be deleted.
 type CurrentIndexMetaRemover struct {
 	queryTimeout time.Duration
 	gate         chan struct{}
@@ -92,24 +95,29 @@ func (r *CurrentIndexMetaRemover) Delete(
 	schema := pgx.Identifier{
 		strconv.FormatInt(int64(target.SchemaID), 10),
 	}.Sanitize()
-	var indexName string
+	var rawIndexName []byte
 	err = transaction.QueryRow(queryContext, `
-SELECT cmetadata->>'collection'
+SELECT cmetadata->'collection'
 FROM `+schema+`.langchain_pg_embedding
 WHERE id = $1
-  AND cmetadata->>'type' = 'index_meta'`,
+  AND cmetadata->'type' = to_jsonb('index_meta'::text)`,
 		indexMetaID,
-	).Scan(&indexName)
+	).Scan(&rawIndexName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", indexmetaapp.ErrCurrentIndexMetaNotFound
 	}
 	if err != nil {
 		return "", currentIndexMetaDeleteError(queryContext, err)
 	}
+	var indexName string
+	if err := json.Unmarshal(rawIndexName, &indexName); err != nil ||
+		!validCurrentIndexMetaCollection(indexName) {
+		return "", ErrCurrentIndexMetaDelete
+	}
 
 	_, err = transaction.Exec(queryContext, `
 DELETE FROM `+schema+`.langchain_pg_embedding
-WHERE cmetadata->>'collection' = $1`,
+WHERE cmetadata->'collection' = to_jsonb($1::text)`,
 		indexName,
 	)
 	if err != nil {
@@ -120,6 +128,13 @@ WHERE cmetadata->>'collection' = $1`,
 	}
 	committed = true
 	return indexName, nil
+}
+
+func validCurrentIndexMetaCollection(value string) bool {
+	return value != "" &&
+		len(value) <= indexmetaapp.MaxCurrentIndexMetaCollectionBytes &&
+		utf8.ValidString(value) &&
+		!strings.ContainsAny(value, "\x00\r\n")
 }
 
 func closeCurrentIndexMetaDeleteConnection(connection *pgx.Conn) {

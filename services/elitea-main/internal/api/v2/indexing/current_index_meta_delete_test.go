@@ -243,7 +243,9 @@ func TestCurrentIndexMetaDeleteRouteMatchesWerkzeugIntegerEdges(t *testing.T) {
 	}
 }
 
-func TestCurrentIndexMetaDeleteRoutePreservesCurrentErrors(t *testing.T) {
+func TestCurrentIndexMetaDeleteRouteCurrentErrorsAndSafeCleanupDivergence(
+	t *testing.T,
+) {
 	for name, test := range map[string]struct {
 		err       error
 		want      int
@@ -283,7 +285,7 @@ func TestCurrentIndexMetaDeleteRoutePreservesCurrentErrors(t *testing.T) {
 			want:      http.StatusBadRequest,
 			wantError: "Error occurred while deleting index_meta",
 		},
-		"schedule failure": {
+		"schedule failure intentionally redacts current raw exception": {
 			err: &indexmetaapp.ScheduleCleanupError{
 				ProjectID: 7,
 				ToolkitID: 9,

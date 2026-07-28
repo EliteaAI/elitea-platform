@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func TestCurrentIndexMetaRemoverRealPgvectorParity(t *testing.T) {
+func TestCurrentIndexMetaRemoverRealPgvectorSafetyAndBehavior(t *testing.T) {
 	databaseURL := os.Getenv("ELITEA_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("set ELITEA_TEST_DATABASE_URL to run the current index metadata delete test")
@@ -66,7 +66,30 @@ VALUES
     ('other-meta', 'index_meta_Other',
      '{"type":"index_meta","collection":"Other"}'::jsonb),
     ('other-chunk', 'chunk',
-     '{"type":"document","collection":"Other"}'::jsonb)`); err != nil {
+     '{"type":"document","collection":"Other"}'::jsonb),
+    ('numeric-seven-meta', 'invalid numeric collection',
+     '{"type":"index_meta","collection":7}'::jsonb),
+    ('numeric-seven-peer', 'numeric collision peer',
+     '{"type":"document","collection":7}'::jsonb),
+    ('string-seven-meta', 'string collection',
+     '{"type":"index_meta","collection":"7"}'::jsonb),
+    ('string-seven-peer', 'string collection peer',
+     '{"type":"document","collection":"7"}'::jsonb),
+    ('empty-meta', 'invalid empty collection',
+     '{"type":"index_meta","collection":""}'::jsonb),
+    ('object-meta', 'invalid object collection',
+     '{"type":"index_meta","collection":{"name":"Docs"}}'::jsonb),
+    ('array-meta', 'invalid array collection',
+     '{"type":"index_meta","collection":["Docs"]}'::jsonb),
+    ('null-meta', 'invalid null collection',
+     '{"type":"index_meta","collection":null}'::jsonb),
+    ('missing-meta', 'missing collection',
+     '{"type":"index_meta"}'::jsonb),
+    ('oversized-meta', 'oversized collection',
+     jsonb_build_object(
+         'type', 'index_meta',
+         'collection', repeat('x', 4097)
+     ))`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +117,54 @@ VALUES
 		3,
 	)
 
-	indexName, err := remover.Delete(ctx, target, "docs-meta")
+	for _, indexMetaID := range []string{
+		"numeric-seven-meta",
+		"empty-meta",
+		"object-meta",
+		"array-meta",
+		"null-meta",
+		"missing-meta",
+		"oversized-meta",
+	} {
+		t.Run("invalid_collection_"+indexMetaID, func(t *testing.T) {
+			before := currentIndexTotalRows(t, ctx, connection, schema)
+			indexName, err := remover.Delete(ctx, target, indexMetaID)
+			if indexName != "" || !errors.Is(err, ErrCurrentIndexMetaDelete) {
+				t.Fatalf("index=%q error=%v", indexName, err)
+			}
+			after := currentIndexTotalRows(t, ctx, connection, schema)
+			if after != before {
+				t.Fatalf(
+					"invalid collection mutated rows: before=%d after=%d",
+					before,
+					after,
+				)
+			}
+		})
+	}
+
+	indexName, err := remover.Delete(ctx, target, "string-seven-meta")
+	if err != nil || indexName != "7" {
+		t.Fatalf("delete string collection index=%q err=%v", indexName, err)
+	}
+	assertCurrentIndexJSONCollectionRows(
+		t,
+		ctx,
+		connection,
+		schema,
+		`"7"`,
+		0,
+	)
+	assertCurrentIndexJSONCollectionRows(
+		t,
+		ctx,
+		connection,
+		schema,
+		`7`,
+		2,
+	)
+
+	indexName, err = remover.Delete(ctx, target, "docs-meta")
 	if err != nil || indexName != "Docs" {
 		t.Fatalf("delete index=%q err=%v", indexName, err)
 	}
@@ -134,6 +204,50 @@ VALUES
 	}
 }
 
+func currentIndexTotalRows(
+	t *testing.T,
+	ctx context.Context,
+	connection *pgx.Conn,
+	schema string,
+) int {
+	t.Helper()
+	var count int
+	if err := connection.QueryRow(
+		ctx,
+		`SELECT count(*) FROM `+schema+`.langchain_pg_embedding`,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func assertCurrentIndexJSONCollectionRows(
+	t *testing.T,
+	ctx context.Context,
+	connection *pgx.Conn,
+	schema, collectionJSON string,
+	want int,
+) {
+	t.Helper()
+	var count int
+	if err := connection.QueryRow(ctx, `
+SELECT count(*)
+FROM `+schema+`.langchain_pg_embedding
+WHERE cmetadata->'collection' = $1::jsonb`,
+		collectionJSON,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf(
+			"JSON collection %q rows=%d want=%d",
+			collectionJSON,
+			count,
+			want,
+		)
+	}
+}
+
 func assertCurrentIndexCollectionRows(
 	t *testing.T,
 	ctx context.Context,
@@ -146,7 +260,7 @@ func assertCurrentIndexCollectionRows(
 	if err := connection.QueryRow(ctx, `
 SELECT count(*)
 FROM `+schema+`.langchain_pg_embedding
-WHERE cmetadata->>'collection' = $1`,
+WHERE cmetadata->'collection' = to_jsonb($1::text)`,
 		collection,
 	).Scan(&count); err != nil {
 		t.Fatal(err)

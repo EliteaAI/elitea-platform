@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -41,8 +42,9 @@ func (r DeleteRequest) validate() error {
 	return nil
 }
 
-// ExternalDeleter performs the current PgVector transaction: select one
-// metadata row, derive its collection, delete that collection, then commit.
+// ExternalDeleter performs the current PgVector transaction: select one typed
+// metadata row, validate its collection as a bounded JSON string, delete that
+// exact string collection, then commit.
 type ExternalDeleter interface {
 	Delete(context.Context, ResolvedTarget, string) (indexName string, err error)
 }
@@ -82,8 +84,10 @@ func (e *ScheduleToolkitMissingError) Unwrap() error {
 	return ErrCurrentIndexScheduleToolkitMissing
 }
 
-// ScheduleCleanupError retains the current response context after PgVector has
-// committed while keeping the underlying database error private.
+// ScheduleCleanupError intentionally diverges from the current Python response
+// after PgVector has committed. The Python path interpolates the raw database
+// exception; this type retains the useful request context while returning a
+// stable redacted error.
 type ScheduleCleanupError struct {
 	ProjectID int32
 	ToolkitID int32
@@ -227,7 +231,7 @@ func (s *DeleteService) resolveTarget(
 	}
 
 	pgvectorReference, present := toolkit.Settings["pgvector_configuration"]
-	if !present || pgvectorReference == nil {
+	if !present || !currentPgvectorConfigurationTruthy(pgvectorReference) {
 		return ResolvedTarget{}, ErrCurrentIndexMetaTargetMissing
 	}
 	expanded, err := s.settings.Resolve(
@@ -250,7 +254,7 @@ func (s *DeleteService) resolveTarget(
 		)
 	}
 	if value, present := expanded["pgvector_configuration"]; !present ||
-		value == nil {
+		!currentPgvectorConfigurationTruthy(value) {
 		return ResolvedTarget{}, ErrCurrentIndexMetaTargetMissing
 	}
 	connectionString, ok := currentPgvectorConnectionString(expanded)
@@ -261,6 +265,35 @@ func (s *DeleteService) resolveTarget(
 		ConnectionString: connectionString,
 		SchemaID:         toolkit.ID,
 	}, nil
+}
+
+// currentPgvectorConfigurationTruthy mirrors Python truth testing for the JSON
+// shapes accepted from saved toolkit settings. In particular, an empty object
+// is a missing configuration, not a present configuration with a missing DSN.
+func currentPgvectorConfigurationTruthy(value any) bool {
+	if value == nil {
+		return false
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Bool:
+		return reflected.Bool()
+	case reflect.String, reflect.Array:
+		return reflected.Len() > 0
+	case reflect.Map, reflect.Slice:
+		return !reflected.IsNil() && reflected.Len() > 0
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return reflected.Int() != 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+		reflect.Uint64, reflect.Uintptr:
+		return reflected.Uint() != 0
+	case reflect.Float32, reflect.Float64:
+		return reflected.Float() != 0
+	case reflect.Complex64, reflect.Complex128:
+		return reflected.Complex() != 0
+	default:
+		return true
+	}
 }
 
 func validCurrentIndexMetaDeleteText(value string, limit int) bool {

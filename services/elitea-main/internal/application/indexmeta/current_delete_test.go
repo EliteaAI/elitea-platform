@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -139,10 +140,11 @@ func TestDeleteServicePreservesCurrentMissingMetadataAndCleanupToolkit(t *testin
 	})
 
 	t.Run("schedule cleanup fails after pgvector commit", func(t *testing.T) {
+		const rawDatabaseError = "password=secret-canary schedule update failed"
 		service := validDeleteServiceForTest(
 			t,
 			&deleteExternalStub{indexName: "Docs"},
-			&deleteScheduleStub{err: errors.New("database failed")},
+			&deleteScheduleStub{err: errors.New(rawDatabaseError)},
 		)
 		err := service.Delete(context.Background(), DeleteRequest{
 			ProjectID: 7, ActorUserID: 11, ToolkitID: 19,
@@ -152,6 +154,10 @@ func TestDeleteServicePreservesCurrentMissingMetadataAndCleanupToolkit(t *testin
 		if !errors.As(err, &cleanup) || cleanup.ProjectID != 7 ||
 			cleanup.ToolkitID != 19 || cleanup.IndexName != "Docs" {
 			t.Fatalf("error=%v typed=%+v", err, cleanup)
+		}
+		if strings.Contains(err.Error(), rawDatabaseError) ||
+			strings.Contains(err.Error(), "secret-canary") {
+			t.Fatalf("cleanup error leaked raw database exception: %v", err)
 		}
 	})
 }
@@ -177,7 +183,7 @@ func TestDeleteServicePreservesCurrentTargetValidation(t *testing.T) {
 			settings: &currentSettingsStub{},
 			want:     ErrCurrentIndexMetaTargetMissing,
 		},
-		"connection string missing": {
+		"empty saved pgvector configuration is missing": {
 			toolkits: &currentToolkitStub{
 				found: true,
 				toolkit: indexingapp.CurrentToolkitSnapshot{
@@ -186,22 +192,56 @@ func TestDeleteServicePreservesCurrentTargetValidation(t *testing.T) {
 					},
 				},
 			},
-			settings: &currentSettingsStub{result: map[string]any{
-				"pgvector_configuration": map[string]any{},
-			}},
-			want: ErrCurrentIndexMetaConnectionMissing,
+			settings: &deleteSettingsStub{},
+			want:     ErrCurrentIndexMetaTargetMissing,
 		},
 		"expanded pgvector missing": {
 			toolkits: &currentToolkitStub{
 				found: true,
 				toolkit: indexingapp.CurrentToolkitSnapshot{
 					ID: 19, Type: "github", Settings: map[string]any{
-						"pgvector_configuration": map[string]any{},
+						"pgvector_configuration": map[string]any{
+							"elitea_title": "project-pgvector",
+						},
 					},
 				},
 			},
 			settings: &currentSettingsStub{result: map[string]any{}},
 			want:     ErrCurrentIndexMetaTargetMissing,
+		},
+		"expanded pgvector empty object is missing": {
+			toolkits: &currentToolkitStub{
+				found: true,
+				toolkit: indexingapp.CurrentToolkitSnapshot{
+					ID: 19, Type: "github", Settings: map[string]any{
+						"pgvector_configuration": map[string]any{
+							"elitea_title": "project-pgvector",
+						},
+					},
+				},
+			},
+			settings: &currentSettingsStub{result: map[string]any{
+				"pgvector_configuration": map[string]any{},
+			}},
+			want: ErrCurrentIndexMetaTargetMissing,
+		},
+		"connection string missing from nonempty configuration": {
+			toolkits: &currentToolkitStub{
+				found: true,
+				toolkit: indexingapp.CurrentToolkitSnapshot{
+					ID: 19, Type: "github", Settings: map[string]any{
+						"pgvector_configuration": map[string]any{
+							"elitea_title": "project-pgvector",
+						},
+					},
+				},
+			},
+			settings: &currentSettingsStub{result: map[string]any{
+				"pgvector_configuration": map[string]any{
+					"elitea_title": "project-pgvector",
+				},
+			}},
+			want: ErrCurrentIndexMetaConnectionMissing,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -235,7 +275,9 @@ func validDeleteServiceForTest(
 			found: true,
 			toolkit: indexingapp.CurrentToolkitSnapshot{
 				ID: 19, Type: "github", Settings: map[string]any{
-					"pgvector_configuration": map[string]any{},
+					"pgvector_configuration": map[string]any{
+						"elitea_title": "project-pgvector",
+					},
 				},
 			},
 		},
