@@ -25,7 +25,7 @@ _WRAPPER_SHA256 = (
     "2e8f82530d8fcc55a908355028bef9e6e33b4324d27589848f2151611a95635d"
 )
 _DISPATCH_SHA256 = (
-    "55bb1d9cbecfcb420f64591cf949f8799e23672770e2db480c23ce19bb4d87aa"
+    "cf5f828faa9588b968c57326e81ea765cfb510336f3f760635faff7b5f96b41f"
 )
 
 
@@ -91,6 +91,26 @@ def test_index_ingest_boundary_matches_current_index_data_source_evidence() -> N
     assert isinstance(tool_name, ast.Name) and tool_name.id == "tool_name"
 
     dispatch_function = _function(_DISPATCH, "start_index_task")
+    statements = dispatch_function.body
+    admission_statement = next(
+        index
+        for index, node in enumerate(statements)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "require_pylon_indexing_admission"
+    )
+    first_data_access = next(
+        index
+        for index, node in enumerate(statements)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "toolkit_config"
+            for target in node.targets
+        )
+    )
+    assert admission_statement < first_data_access
+
     start_calls = [
         node
         for node in ast.walk(dispatch_function)
