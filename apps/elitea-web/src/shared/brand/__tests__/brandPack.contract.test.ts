@@ -154,7 +154,13 @@ describe('§4.6 check 7 — brand-pack round trip', () => {
     for (const ref of references) {
       expect(ref.cssVar.startsWith(`--${CSS_VAR_PREFIX}-palette-`)).toBe(true);
     }
-  });
+    // [F2] explicit timeout, not the 5000ms default: `scanThemeVarReferences`
+    // Babel-parses every source file under `src/` (~2400 files as of Wave 2
+    // batch 2) — legitimately slower than 5s under CI's shared runners when
+    // this test lands near the tail of the full, highly-parallel suite run
+    // (observed: PR #21's first batch-2 run, real timeout at 5000ms with
+    // 813/815 other files already passed).
+  }, 20_000);
 
   it('(c) renders the available surface under a hostile pack with zero default-pack colours', () => {
     // Colours the default pack states, minus the ones a bare MUI theme also

@@ -37,7 +37,12 @@ describe('CreateApplication', () => {
     await user.type(screen.getByTestId('agent-description-input'), 'A description');
 
     await waitFor(() => expect(saveButton).not.toBeDisabled());
-  });
+    // [F2] explicit timeout, not the 5000ms default: two userEvent.type()
+    // calls simulate 22 real keystrokes, each round-tripping through React
+    // state — legitimately slower than 5s under CI's shared runners when
+    // this test lands near the tail of the full, highly-parallel suite run
+    // (observed: PR #21's first batch-2 run, real timeout at 5000ms).
+  }, 15_000);
 
   it('clicking Cancel opens a confirm dialog, and confirming navigates back to /agents/:tab', async () => {
     const user = userEvent.setup();
