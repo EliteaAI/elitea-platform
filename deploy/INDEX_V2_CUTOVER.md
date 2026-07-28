@@ -55,7 +55,7 @@ Required environment:
 
 | Name | Requirement |
 | --- | --- |
-| `DATABASE_URL` | Authoritative PostgreSQL URL. Its role needs `SELECT` on `elitea_runtime.execution_jobs`, `elitea_runtime.command_outbox`, `elitea_runtime.execution_claims` and `elitea_runtime.execution_settlements`. Include the production TLS policy. |
+| `DATABASE_URL` | Authoritative PostgreSQL URL. Its role needs `USAGE` on schema `elitea_runtime` and `SELECT` on `elitea_runtime.execution_jobs`, `elitea_runtime.command_outbox`, `elitea_runtime.execution_claims` and `elitea_runtime.execution_settlements`. Include the production TLS policy. |
 | `ELITEA_RUNTIME_ENABLED` | Exact value `true`. |
 | `ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED` | Exact value `true`. |
 | `ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM` | Old version-`1` dedicated index command stream. |

@@ -128,14 +128,28 @@ WHERE execution_id = $1`, executionID)
 		assertPostgresIndexV1CutoverState(t, repository, 1, 1, 0)
 	})
 
-	t.Run("no authority unretired terminal", func(t *testing.T) {
+	t.Run("null authority alone blocks production settlement", func(t *testing.T) {
 		pool, repository := newPostgresIndexV2CutoverFixture(t)
-		fixture := admitPostgresV1CutoverExecution(t, pool, "no-authority")
+		executionID := settlePostgresV1CutoverExecution(
+			t, pool, repository, "null-authority", executionapp.SettlementSucceeded,
+		)
+		execPostgresCutoverFixture(t, pool, `
+UPDATE elitea_runtime.command_outbox
+SET authority_granted_at = NULL
+WHERE execution_id = $1`, executionID)
+
+		assertPostgresIndexV1CutoverState(t, repository, 0, 1, 0)
+	})
+
+	t.Run("null settled at alone blocks production settlement", func(t *testing.T) {
+		pool, repository := newPostgresIndexV2CutoverFixture(t)
+		executionID := settlePostgresV1CutoverExecution(
+			t, pool, repository, "null-settled-at", executionapp.SettlementSucceeded,
+		)
 		execPostgresCutoverFixture(t, pool, `
 UPDATE elitea_runtime.execution_jobs
-SET state = 'SUCCEEDED',
-    settled_at = clock_timestamp()
-WHERE execution_id = $1`, fixture.expected.ExecutionID)
+SET settled_at = NULL
+WHERE execution_id = $1`, executionID)
 
 		assertPostgresIndexV1CutoverState(t, repository, 0, 1, 0)
 	})
