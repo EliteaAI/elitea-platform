@@ -72,7 +72,8 @@ func TestStartServiceResolvesThenAdmitsCurrentUserRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.TaskID != "execution-1" || resolver.calls != 1 || admissions.calls != 1 || generated != 0 {
+	if outcome.TaskID != "execution-1" || !outcome.Created ||
+		resolver.calls != 1 || admissions.calls != 1 || generated != 0 {
 		t.Fatalf("outcome=%+v resolver=%d admission=%d generated=%d", outcome, resolver.calls, admissions.calls, generated)
 	}
 	if !reflect.DeepEqual(resolver.request, request) {
@@ -129,6 +130,110 @@ func TestStartServiceUsesGeneratedCorrelationOnlyWhenCurrentIDsAreAbsent(t *test
 	}
 	if admissions.request.CorrelationID != "generated-correlation-2" {
 		t.Fatalf("generated correlation=%q", admissions.request.CorrelationID)
+	}
+}
+
+func TestStartServiceAdmitsScheduleWithCreatedByAttributionAndNoBrowserStream(t *testing.T) {
+	inputs := validStartServiceInputs()
+	admissions := &startAdmissionStub{outcome: validStartAdmissionOutcome()}
+	service, err := NewStartService(
+		&startResolverStub{},
+		admissions,
+		func() (string, error) { return "unused", nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := service.StartScheduledIndexData(
+		context.Background(),
+		ScheduledStartRequest{
+			ProjectID:              7,
+			AttributionActorUserID: 23,
+			ToolkitID:              42,
+			Inputs:                 inputs,
+			IdempotencyKey:         "index-schedule-v1:stable",
+			CorrelationID:          "index-schedule-v1:stable",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.TaskID != "execution-1" || !outcome.Created ||
+		admissions.calls != 1 {
+		t.Fatalf("outcome=%+v admission calls=%d", outcome, admissions.calls)
+	}
+	if admissions.request.Identity.ActorID != "23" ||
+		admissions.request.Identity.ResourceProjectID != "7" ||
+		admissions.request.Initiator != executiondomain.IndexIngestInitiatorSchedule ||
+		admissions.request.IdempotencyKey != "index-schedule-v1:stable" ||
+		admissions.request.CorrelationID != "index-schedule-v1:stable" ||
+		admissions.request.ClientStreamID != "" ||
+		admissions.request.ClientMessageID != "" ||
+		admissions.request.SIOEvent != "" ||
+		!reflect.DeepEqual(admissions.request.Inputs, inputs) {
+		t.Fatalf("scheduled admission=%+v", admissions.request)
+	}
+
+	admissions.outcome.AdmissionOutcome.Created = false
+	replay, err := service.StartScheduledIndexData(
+		context.Background(),
+		ScheduledStartRequest{
+			ProjectID:              7,
+			AttributionActorUserID: 23,
+			ToolkitID:              42,
+			Inputs:                 inputs,
+			IdempotencyKey:         "index-schedule-v1:stable",
+			CorrelationID:          "index-schedule-v1:stable",
+		},
+	)
+	if err != nil || replay.Created {
+		t.Fatalf("idempotent scheduled replay=%+v error=%v", replay, err)
+	}
+}
+
+func TestStartServiceRejectsInvalidScheduleBeforeAdmission(t *testing.T) {
+	valid := ScheduledStartRequest{
+		ProjectID:              7,
+		AttributionActorUserID: 23,
+		ToolkitID:              42,
+		Inputs:                 validStartServiceInputs(),
+		IdempotencyKey:         "index-schedule-v1:stable",
+		CorrelationID:          "index-schedule-v1:stable",
+	}
+	tests := map[string]func(*ScheduledStartRequest){
+		"project":     func(value *ScheduledStartRequest) { value.ProjectID = 0 },
+		"actor":       func(value *ScheduledStartRequest) { value.AttributionActorUserID = 0 },
+		"toolkit":     func(value *ScheduledStartRequest) { value.ToolkitID = math.MaxInt32 + 1 },
+		"idempotency": func(value *ScheduledStartRequest) { value.IdempotencyKey = "" },
+		"correlation": func(value *ScheduledStartRequest) { value.CorrelationID = "" },
+		"inputs": func(value *ScheduledStartRequest) {
+			value.Inputs.ToolParameters = json.RawMessage(`{}`)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			admissions := &startAdmissionStub{outcome: validStartAdmissionOutcome()}
+			service, err := NewStartService(
+				&startResolverStub{},
+				admissions,
+				func() (string, error) { return "unused", nil },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := valid
+			request.Inputs = valid.Inputs.Clone()
+			mutate(&request)
+			if _, err := service.StartScheduledIndexData(
+				context.Background(),
+				request,
+			); !errors.Is(err, ErrInvalidIndexStart) {
+				t.Fatalf("error=%v", err)
+			}
+			if admissions.calls != 0 {
+				t.Fatal("invalid schedule crossed admission")
+			}
+		})
 	}
 }
 
@@ -270,6 +375,7 @@ func validStartAdmissionOutcome() AdmissionOutcome {
 		AdmissionOutcome: executionapp.AdmissionOutcome{
 			ExecutionID: "execution-1",
 			CommandID:   "command-1",
+			Created:     true,
 			AdmittedAt:  now,
 			Deadline:    now.Add(time.Hour),
 		},

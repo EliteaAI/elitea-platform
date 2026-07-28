@@ -171,10 +171,18 @@ func TestServiceBuildsCurrentShapeAndKeepsActorAsAuditIdentity(t *testing.T) {
 		ProjectID: 7, ActorUserID: 11, ToolkitID: 19, IndexMetaID: "docs",
 		Cron: "0 3 * * *", RequestedUserID: 12, Timezone: "UTC",
 	})
-	if err != nil || store.calls != 2 ||
-		store.mutation.RequestedUserID != 12 ||
-		store.mutation.Schedule.CreatedBy != 11 {
+	if !errors.Is(err, ErrInvalidRequest) || store.calls != 1 {
 		t.Fatalf("other-user error=%v calls=%d", err, store.calls)
+	}
+
+	_, err = service.Update(context.Background(), Update{
+		ProjectID: 7, ActorUserID: 11, ToolkitID: 19, IndexMetaID: "docs",
+		Cron: "0 3 * * *", RequestedUserID: 11, Timezone: "UTC",
+	})
+	if err != nil || store.calls != 2 ||
+		store.mutation.RequestedUserID != 11 ||
+		store.mutation.Schedule.CreatedBy != 11 {
+		t.Fatalf("own-user error=%v calls=%d", err, store.calls)
 	}
 }
 

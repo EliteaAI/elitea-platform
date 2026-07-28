@@ -38,6 +38,15 @@ func (f actorTokenIssuerFunc) IssueToken(ctx context.Context, userID int64) (str
 	return f(ctx, userID)
 }
 
+type projectSystemTokenIssuerFunc func(context.Context, int64) (ProjectSystemToken, error)
+
+func (f projectSystemTokenIssuerFunc) IssueProjectToken(
+	ctx context.Context,
+	projectID int64,
+) (ProjectSystemToken, error) {
+	return f(ctx, projectID)
+}
+
 func TestIndexRuntimeContextReturnsOnlyClaimActorToken(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +108,176 @@ func TestIndexRuntimeContextReturnsOnlyClaimActorToken(t *testing.T) {
 	require.EqualValues(t, 42, value.ProjectID)
 	require.Equal(t, token, value.Token)
 	require.Equal(t, 1, issueCalls)
+}
+
+func TestIndexRuntimeContextUsesProjectSystemPATForScheduledExecution(t *testing.T) {
+	t.Parallel()
+
+	const token = "project.system.signature"
+	actorIssueCalls := 0
+	projectIssueCalls := 0
+	service, err := NewEliteaClientTokenServiceWithSchedules(
+		runtimeContextAuthorizerFunc(func(context.Context, ContentClaim) (RuntimeContextAuthorization, error) {
+			return RuntimeContextAuthorization{
+				ResourceProjectID: 42,
+				ActorID:           "900",
+				Initiator:         runtimeContextInitiatorSchedule,
+			}, nil
+		}),
+		actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+			actorIssueCalls++
+			return "", errors.New("actor issuer must not be used")
+		}),
+		projectSystemTokenIssuerFunc(func(_ context.Context, projectID int64) (ProjectSystemToken, error) {
+			projectIssueCalls++
+			require.EqualValues(t, 42, projectID)
+			return ProjectSystemToken{projectID: 42, userID: 777, token: token}, nil
+		}),
+		projectTokenValidatorFunc(func(_ context.Context, got string) (auth.User, error) {
+			require.Equal(t, token, got)
+			return auth.User{
+				ID: "777", UserID: "777", TokenID: "778",
+				Email: "system_user_42@centry.user", AuthType: "token",
+			}, nil
+		}),
+	)
+	require.NoError(t, err)
+
+	value, err := service.Resolve(context.Background(), ContentClaim{})
+	require.NoError(t, err)
+	require.EqualValues(t, 42, value.ProjectID)
+	require.Equal(t, token, value.Token)
+	require.Zero(t, actorIssueCalls)
+	require.Equal(t, 1, projectIssueCalls)
+}
+
+func TestProjectSystemIdentityPreflightReturnsNoBearerAndUsesExactPrincipal(t *testing.T) {
+	t.Parallel()
+
+	issuer := projectSystemTokenIssuerFunc(func(
+		_ context.Context,
+		projectID int64,
+	) (ProjectSystemToken, error) {
+		require.EqualValues(t, 42, projectID)
+		return ProjectSystemToken{
+			projectID: 42,
+			userID:    777,
+			token:     "project-system-token",
+		}, nil
+	})
+	validator := projectTokenValidatorFunc(func(
+		_ context.Context,
+		token string,
+	) (auth.User, error) {
+		require.Equal(t, "project-system-token", token)
+		return auth.User{
+			ID: "777", UserID: "777", TokenID: "778",
+			Email: "system_user_42@centry.user", AuthType: "token",
+		}, nil
+	})
+	service, err := NewProjectSystemIdentityService(issuer, validator)
+	require.NoError(t, err)
+	require.NoError(t, service.CheckProjectSystemIdentity(
+		context.Background(),
+		42,
+	))
+
+	wrong, err := NewProjectSystemIdentityService(
+		issuer,
+		projectTokenValidatorFunc(func(
+			context.Context,
+			string,
+		) (auth.User, error) {
+			return validActorTokenPrincipal(), nil
+		}),
+	)
+	require.NoError(t, err)
+	err = wrong.CheckProjectSystemIdentity(context.Background(), 42)
+	require.ErrorIs(t, err, ErrContentUnavailable)
+	require.Equal(t, runtimeContextStagePrincipalBinding, runtimeContextUnavailableStage(err))
+	require.NotContains(t, err.Error(), "project-system-token")
+}
+
+func TestIndexRuntimeContextScheduledExecutionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		issued        ProjectSystemToken
+		issue         error
+		principal     auth.User
+		validate      error
+		expectedStage string
+	}{
+		{
+			name:          "issuer unavailable",
+			issue:         errors.New("system issuer secret canary"),
+			expectedStage: runtimeContextStageSystemPATIssuance,
+		},
+		{
+			name:          "wrong project",
+			issued:        ProjectSystemToken{projectID: 41, userID: 777, token: "system-token"},
+			expectedStage: runtimeContextStageSystemPATIssuance,
+		},
+		{
+			name:          "missing system user",
+			issued:        ProjectSystemToken{projectID: 42, token: "system-token"},
+			expectedStage: runtimeContextStageSystemPATIssuance,
+		},
+		{
+			name:          "inactive system PAT",
+			issued:        ProjectSystemToken{projectID: 42, userID: 777, token: "system-token"},
+			validate:      errors.New("inactive token canary"),
+			expectedStage: runtimeContextStagePATValidation,
+		},
+		{
+			name:          "different principal",
+			issued:        ProjectSystemToken{projectID: 42, userID: 777, token: "system-token"},
+			principal:     validActorTokenPrincipal(),
+			expectedStage: runtimeContextStagePrincipalBinding,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			principal := test.principal
+			if principal.ID == "" && test.validate == nil &&
+				test.expectedStage != runtimeContextStageSystemPATIssuance {
+				principal = auth.User{
+					ID: "777", UserID: "777", TokenID: "778",
+					Email: "system_user_42@centry.user", AuthType: "token",
+				}
+			}
+			service, err := NewEliteaClientTokenServiceWithSchedules(
+				runtimeContextAuthorizerFunc(func(context.Context, ContentClaim) (RuntimeContextAuthorization, error) {
+					return RuntimeContextAuthorization{
+						ResourceProjectID: 42,
+						ActorID:           "900",
+						Initiator:         runtimeContextInitiatorSchedule,
+					}, nil
+				}),
+				actorTokenIssuerFunc(func(context.Context, int64) (string, error) {
+					t.Fatal("actor issuer must not be called")
+					return "", nil
+				}),
+				projectSystemTokenIssuerFunc(func(context.Context, int64) (ProjectSystemToken, error) {
+					return test.issued, test.issue
+				}),
+				projectTokenValidatorFunc(func(context.Context, string) (auth.User, error) {
+					return principal, test.validate
+				}),
+			)
+			require.NoError(t, err)
+
+			_, err = service.Resolve(context.Background(), ContentClaim{})
+			require.ErrorIs(t, err, ErrContentUnavailable)
+			require.Equal(t, test.expectedStage, runtimeContextUnavailableStage(err))
+			require.NotContains(t, err.Error(), "canary")
+		})
+	}
 }
 
 func TestIndexRuntimeContextFailsClosedWithoutPrincipalFallback(t *testing.T) {

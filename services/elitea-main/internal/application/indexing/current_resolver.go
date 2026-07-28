@@ -114,6 +114,35 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 	if !found {
 		return AuthoritativeInputs{}, ErrToolkitNotVisible
 	}
+	return r.resolveCurrentToolkitInputs(ctx, request, toolkit)
+}
+
+// ResolveScheduled freezes one schedule-owned toolkit snapshot after the
+// schedule executor has applied the current per-user credential override. It
+// shares the exact schema, model, and input validation path used by an
+// interactive start and never receives unsecreted preflight data.
+func (r *CurrentAuthoritativeInputResolver) ResolveScheduled(
+	ctx context.Context,
+	request StartRequest,
+	toolkit CurrentToolkitSnapshot,
+) (AuthoritativeInputs, error) {
+	if r == nil || ctx == nil || request.Validate() != nil ||
+		request.ProjectID > math.MaxInt32 ||
+		request.ActorUserID > math.MaxInt32 ||
+		request.ToolkitID > math.MaxInt32 {
+		return AuthoritativeInputs{}, ErrInvalidIndexStart
+	}
+	if err := ctx.Err(); err != nil {
+		return AuthoritativeInputs{}, err
+	}
+	return r.resolveCurrentToolkitInputs(ctx, request.Clone(), toolkit)
+}
+
+func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
+	ctx context.Context,
+	request StartRequest,
+	toolkit CurrentToolkitSnapshot,
+) (AuthoritativeInputs, error) {
 	if err := validateCurrentToolkitSnapshot(toolkit, int32(request.ToolkitID)); err != nil {
 		return AuthoritativeInputs{}, err
 	}

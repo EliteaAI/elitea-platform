@@ -125,6 +125,14 @@ func (service *Service) Update(
 			strings.ContainsRune(update.Credentials.EliteaTitle, '\x00')) {
 		return MutationResult{}, ErrInvalidRequest
 	}
+	// A positive schedule key selects a personal credential scope. Only the
+	// authenticated owner may select that scope; -1 remains the project/team
+	// schedule key. Trusting an arbitrary caller-supplied user ID would allow
+	// one project member to redeem another member's private configuration.
+	if update.RequestedUserID != -1 &&
+		update.RequestedUserID != update.ActorUserID {
+		return MutationResult{}, ErrInvalidRequest
+	}
 
 	return service.store.Patch(ctx, Mutation{
 		ProjectID:       update.ProjectID,

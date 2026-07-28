@@ -138,57 +138,22 @@ func (s *Service) List(ctx context.Context, request Request) ([]Item, error) {
 		return nil, err
 	}
 
+	target, err := ResolveCurrentTarget(
+		ctx,
+		s.toolkits,
+		s.settings,
+		request,
+		MaxCurrentIndexMetaRows,
+	)
+	if err != nil {
+		return nil, err
+	}
 	projectID := int32(request.ProjectID)
-	actorUserID := int32(request.ActorUserID)
-	toolkitID := int32(request.ToolkitID)
-	toolkit, found, err := s.toolkits.GetCurrentToolkit(ctx, projectID, actorUserID, toolkitID)
-	if err != nil {
-		return nil, currentIndexMetaDependencyError(ctx, ErrCurrentIndexMetaUnavailable, err)
-	}
-	if !found {
-		return nil, ErrCurrentIndexMetaToolkitMissing
-	}
-	if toolkit.ID != toolkitID || toolkit.ID <= 0 || toolkit.Type == "" ||
-		len(toolkit.Type) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
-		strings.ContainsAny(toolkit.Type, "\x00\r\n") || toolkit.Settings == nil {
-		return nil, ErrCurrentIndexMetaTargetMissing
-	}
-
-	// Reading index metadata needs exactly one schema-declared configuration.
-	// Do not materialize unrelated GitHub, Confluence, model, nested-toolkit, or
-	// secret fields merely to discover the project PgVector target.
-	pgvectorReference, present := toolkit.Settings["pgvector_configuration"]
-	if !present || pgvectorReference == nil {
-		return nil, ErrCurrentIndexMetaTargetMissing
-	}
-	expanded, err := s.settings.Resolve(ctx, configurationapp.CurrentToolkitSettingsRequest{
-		ToolkitType: toolkit.Type,
-		Settings: map[string]any{
-			"pgvector_configuration": pgvectorReference,
-		},
-		ProjectID: projectID,
-		UserID:    actorUserID,
-		Mode:      configurationapp.CurrentToolkitSettingsClaimMode,
-	})
-	if err != nil {
-		return nil, currentIndexMetaDependencyError(ctx, ErrCurrentIndexMetaTargetMissing, err)
-	}
-	connectionString, ok := currentPgvectorConnectionString(expanded)
-	if !ok {
-		return nil, ErrCurrentIndexMetaTargetMissing
-	}
-
 	timeout, err := s.timeouts.ResolveCurrentIndexMetaStaleTimeout(ctx, projectID)
 	if err != nil {
 		return nil, currentIndexMetaDependencyError(ctx, ErrCurrentIndexMetaUnavailable, err)
 	}
-	records, err := s.reader.List(ctx, ResolvedTarget{
-		ConnectionString: connectionString,
-		SchemaID:         toolkit.ID,
-		MaxRows:          MaxCurrentIndexMetaRows,
-		MaxMetadataBytes: MaxCurrentIndexMetaMetadataBytes,
-		MaxTotalBytes:    MaxCurrentIndexMetaTotalBytes,
-	})
+	records, err := s.reader.List(ctx, target)
 	if err != nil {
 		if errors.Is(err, ErrCurrentIndexMetaLimitExceeded) {
 			return nil, ErrCurrentIndexMetaLimitExceeded
@@ -225,6 +190,123 @@ func (s *Service) List(ctx context.Context, request Request) ([]Item, error) {
 		result = append(result, Item{ID: record.ID, Metadata: metadata, Stale: stale})
 	}
 	return result, nil
+}
+
+// ResolveCurrentTarget loads only the saved PgVector reference needed by an
+// index metadata operation and resolves it in ClaimMode. Callers receive the
+// DSN for one synchronous adapter call and must not retain or log it.
+func ResolveCurrentTarget(
+	ctx context.Context,
+	toolkits indexingapp.CurrentToolkitReader,
+	settings indexingapp.CurrentToolkitSettingsValidator,
+	request Request,
+	maxRows int,
+) (ResolvedTarget, error) {
+	if ctx == nil || toolkits == nil || settings == nil ||
+		request.ProjectID <= 0 || request.ProjectID > math.MaxInt32 ||
+		request.ActorUserID <= 0 || request.ActorUserID > math.MaxInt32 ||
+		request.ToolkitID <= 0 || request.ToolkitID > math.MaxInt32 ||
+		maxRows <= 0 || maxRows > MaxCurrentIndexMetaRows {
+		return ResolvedTarget{}, ErrInvalidCurrentIndexMetaRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return ResolvedTarget{}, err
+	}
+	projectID := int32(request.ProjectID)
+	actorUserID := int32(request.ActorUserID)
+	toolkitID := int32(request.ToolkitID)
+	toolkit, found, err := toolkits.GetCurrentToolkit(
+		ctx,
+		projectID,
+		actorUserID,
+		toolkitID,
+	)
+	if err != nil {
+		return ResolvedTarget{}, currentIndexMetaDependencyError(
+			ctx,
+			ErrCurrentIndexMetaUnavailable,
+			err,
+		)
+	}
+	if !found {
+		return ResolvedTarget{}, ErrCurrentIndexMetaToolkitMissing
+	}
+	return ResolveCurrentTargetSnapshot(
+		ctx,
+		settings,
+		request,
+		toolkit,
+		maxRows,
+	)
+}
+
+// ResolveCurrentTargetSnapshot expands the saved PgVector reference from one
+// caller-owned toolkit snapshot. It avoids a second toolkit read when a caller
+// must keep metadata inspection and subsequent execution on the same settings.
+func ResolveCurrentTargetSnapshot(
+	ctx context.Context,
+	settings indexingapp.CurrentToolkitSettingsValidator,
+	request Request,
+	toolkit indexingapp.CurrentToolkitSnapshot,
+	maxRows int,
+) (ResolvedTarget, error) {
+	if ctx == nil || settings == nil ||
+		request.ProjectID <= 0 || request.ProjectID > math.MaxInt32 ||
+		request.ActorUserID <= 0 || request.ActorUserID > math.MaxInt32 ||
+		request.ToolkitID <= 0 || request.ToolkitID > math.MaxInt32 ||
+		maxRows <= 0 || maxRows > MaxCurrentIndexMetaRows {
+		return ResolvedTarget{}, ErrInvalidCurrentIndexMetaRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return ResolvedTarget{}, err
+	}
+	projectID := int32(request.ProjectID)
+	actorUserID := int32(request.ActorUserID)
+	toolkitID := int32(request.ToolkitID)
+	if toolkit.ID != toolkitID || toolkit.ID <= 0 || toolkit.Type == "" ||
+		len(toolkit.Type) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
+		strings.ContainsAny(toolkit.Type, "\x00\r\n") ||
+		toolkit.Settings == nil {
+		return ResolvedTarget{}, ErrCurrentIndexMetaTargetMissing
+	}
+
+	// Reading index metadata needs exactly one schema-declared configuration.
+	// Do not materialize unrelated provider, model, nested-toolkit, or secret
+	// fields merely to discover the project PgVector target.
+	pgvectorReference, present := toolkit.Settings["pgvector_configuration"]
+	if !present || pgvectorReference == nil {
+		return ResolvedTarget{}, ErrCurrentIndexMetaTargetMissing
+	}
+	expanded, err := settings.Resolve(
+		ctx,
+		configurationapp.CurrentToolkitSettingsRequest{
+			ToolkitType: toolkit.Type,
+			Settings: map[string]any{
+				"pgvector_configuration": pgvectorReference,
+			},
+			ProjectID: projectID,
+			UserID:    actorUserID,
+			Mode:      configurationapp.CurrentToolkitSettingsClaimMode,
+		},
+	)
+	if err != nil {
+		return ResolvedTarget{}, currentIndexMetaDependencyError(
+			ctx,
+			ErrCurrentIndexMetaTargetMissing,
+			err,
+		)
+	}
+	connectionString, ok := currentPgvectorConnectionString(expanded)
+	if !ok {
+		return ResolvedTarget{}, ErrCurrentIndexMetaTargetMissing
+	}
+	return ResolvedTarget{
+		ConnectionString: connectionString,
+		SchemaID:         toolkit.ID,
+		MaxRows:          maxRows,
+		MaxMetadataBytes: MaxCurrentIndexMetaMetadataBytes,
+		MaxTotalBytes:    MaxCurrentIndexMetaTotalBytes,
+	}, nil
 }
 
 func currentPgvectorConnectionString(settings map[string]any) (string, bool) {

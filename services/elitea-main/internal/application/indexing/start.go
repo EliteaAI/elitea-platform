@@ -86,7 +86,40 @@ func (r StartRequest) Clone() StartRequest {
 }
 
 type StartOutcome struct {
-	TaskID string
+	TaskID  string
+	Created bool
+}
+
+// ScheduledStartRequest is accepted only from Main's schedule executor after
+// current Configurations and PgVector state have been resolved. Inputs must
+// contain frozen references; transient unsecreted preflight values must never
+// be persisted in this request.
+type ScheduledStartRequest struct {
+	ProjectID              int64
+	AttributionActorUserID int64
+	ToolkitID              int64
+	Inputs                 AuthoritativeInputs
+	IdempotencyKey         string
+	CorrelationID          string
+}
+
+func (request ScheduledStartRequest) Validate() error {
+	if request.ProjectID <= 0 ||
+		request.AttributionActorUserID <= 0 ||
+		request.ToolkitID <= 0 ||
+		request.IdempotencyKey == "" ||
+		len(request.IdempotencyKey) > 200 ||
+		request.CorrelationID == "" ||
+		!validOptionalText(request.CorrelationID, MaxClientCorrelationBytes) ||
+		request.Inputs.validate() != nil {
+		return ErrInvalidIndexStart
+	}
+	if _, err := indexNameFromToolParameters(
+		request.Inputs.ToolParameters,
+	); err != nil {
+		return ErrInvalidIndexStart
+	}
+	return nil
 }
 
 func validJSONObject(value []byte, limit int) bool {

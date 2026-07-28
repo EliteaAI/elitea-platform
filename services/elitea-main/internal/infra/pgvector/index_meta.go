@@ -140,6 +140,135 @@ LIMIT $1`
 	return records, nil
 }
 
+// FindExact reads only one type=index_meta row for the exact collection. It
+// rejects duplicate exact rows and does not let unrelated malformed metadata
+// make a scheduled index unavailable.
+func (r *CurrentIndexMetaReader) FindExact(
+	ctx context.Context,
+	target indexmetaapp.ResolvedTarget,
+	collection string,
+) (indexmetaapp.RawRecord, bool, error) {
+	if r == nil || ctx == nil || r.queryTimeout <= 0 ||
+		r.gate == nil || cap(r.gate) <= 0 ||
+		target.SchemaID <= 0 ||
+		target.MaxMetadataBytes <= 0 ||
+		target.MaxMetadataBytes > indexmetaapp.MaxCurrentIndexMetaMetadataBytes ||
+		collection == "" ||
+		len(collection) > indexmetaapp.MaxCurrentIndexMetaIDBytes ||
+		strings.ContainsAny(collection, "\x00\r\n") {
+		return indexmetaapp.RawRecord{}, false, ErrCurrentIndexMetaRead
+	}
+	if err := ctx.Err(); err != nil {
+		return indexmetaapp.RawRecord{}, false, err
+	}
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	case <-ctx.Done():
+		return indexmetaapp.RawRecord{}, false, ctx.Err()
+	}
+
+	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
+	if !ok {
+		return indexmetaapp.RawRecord{}, false, ErrCurrentIndexMetaRead
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return indexmetaapp.RawRecord{}, false, ErrCurrentIndexMetaRead
+	}
+	queryContext, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(queryContext, config)
+	if err != nil {
+		return indexmetaapp.RawRecord{}, false,
+			currentIndexMetaReadError(queryContext, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeContext, closeCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer closeCancel()
+			_ = connection.Close(closeContext)
+		}
+	}()
+
+	schema := pgx.Identifier{
+		strconv.FormatInt(int64(target.SchemaID), 10),
+	}.Sanitize()
+	rows, err := connection.Query(
+		queryContext,
+		`
+SELECT
+    id,
+    CASE WHEN octet_length(cmetadata::text) <= $2 THEN cmetadata ELSE NULL END,
+    octet_length(cmetadata::text)
+FROM `+schema+`.langchain_pg_embedding
+WHERE cmetadata @> '{"type":"index_meta"}'::jsonb
+  AND cmetadata ->> 'collection' = $1::text
+ORDER BY id
+LIMIT 2`,
+		collection,
+		target.MaxMetadataBytes,
+	)
+	if err != nil {
+		if currentIndexMetaTableMissing(err) {
+			if closeErr := closeCurrentIndexMetaConnection(connection); closeErr != nil {
+				return indexmetaapp.RawRecord{}, false, closeErr
+			}
+			closed = true
+			return indexmetaapp.RawRecord{}, false, nil
+		}
+		return indexmetaapp.RawRecord{}, false,
+			currentIndexMetaReadError(queryContext, err)
+	}
+	defer rows.Close()
+
+	records := make([]indexmetaapp.RawRecord, 0, 2)
+	for rows.Next() {
+		var id string
+		var metadata []byte
+		var storedBytes int32
+		if err := rows.Scan(&id, &metadata, &storedBytes); err != nil {
+			return indexmetaapp.RawRecord{}, false,
+				currentIndexMetaReadError(queryContext, err)
+		}
+		if id == "" ||
+			len(id) > indexmetaapp.MaxCurrentIndexMetaIDBytes ||
+			storedBytes <= 0 ||
+			int(storedBytes) > target.MaxMetadataBytes ||
+			len(metadata) == 0 ||
+			len(metadata) > target.MaxMetadataBytes {
+			return indexmetaapp.RawRecord{}, false,
+				indexmetaapp.ErrCurrentIndexMetaLimitExceeded
+		}
+		records = append(records, indexmetaapp.RawRecord{
+			ID:       id,
+			Metadata: append([]byte(nil), metadata...),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return indexmetaapp.RawRecord{}, false,
+			currentIndexMetaReadError(queryContext, err)
+	}
+	rows.Close()
+	if err := closeCurrentIndexMetaConnection(connection); err != nil {
+		return indexmetaapp.RawRecord{}, false, err
+	}
+	closed = true
+	switch len(records) {
+	case 0:
+		return indexmetaapp.RawRecord{}, false, nil
+	case 1:
+		return records[0], true, nil
+	default:
+		return indexmetaapp.RawRecord{}, false,
+			indexmetaapp.ErrCurrentIndexMetaInvalid
+	}
+}
+
 func normalizeCurrentPgvectorDSN(value string) (string, bool) {
 	if value == "" || len(value) > indexmetaapp.MaxCurrentPgvectorDSNBytes || strings.ContainsAny(value, "\x00\r\n") {
 		return "", false

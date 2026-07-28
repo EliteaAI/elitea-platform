@@ -3,6 +3,7 @@ package pgvector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -56,8 +57,8 @@ cmetadata jsonb
 		t.Fatal(err)
 	}
 	if _, err := connection.Exec(ctx, `INSERT INTO `+schema+`.langchain_pg_embedding (id, cmetadata) VALUES
-('older', '{"type":"index_meta","updated_on":10,"state":"completed"}'::jsonb),
-('newer', '{"type":"index_meta","updated_on":20,"state":"in_progress"}'::jsonb),
+('older', '{"type":"index_meta","collection":"docs","updated_on":10,"state":"completed"}'::jsonb),
+('newer', '{"type":"index_meta","collection":"other","updated_on":20,"state":"in_progress"}'::jsonb),
 ('document', '{"type":"document","updated_on":30}'::jsonb)`); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +80,42 @@ cmetadata jsonb
 	var metadata map[string]any
 	if err := json.Unmarshal(records[0].Metadata, &metadata); err != nil || metadata["type"] != "index_meta" {
 		t.Fatalf("first metadata = %s, %v", records[0].Metadata, err)
+	}
+
+	exact, found, err := reader.FindExact(
+		ctx,
+		indexmetaapp.ResolvedTarget{
+			ConnectionString: databaseURL,
+			SchemaID:         schemaID,
+			MaxRows:          2,
+			MaxMetadataBytes: indexmetaapp.MaxCurrentIndexMetaMetadataBytes,
+			MaxTotalBytes:    indexmetaapp.MaxCurrentIndexMetaTotalBytes,
+		},
+		"docs",
+	)
+	if err != nil || !found || exact.ID != "older" {
+		t.Fatalf("FindExact() record=%+v found=%v error=%v", exact, found, err)
+	}
+	if _, err := connection.Exec(
+		ctx,
+		`INSERT INTO `+schema+`.langchain_pg_embedding (id, cmetadata)
+VALUES ('duplicate', '{"type":"index_meta","collection":"docs","state":"failed"}'::jsonb)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = reader.FindExact(
+		ctx,
+		indexmetaapp.ResolvedTarget{
+			ConnectionString: databaseURL,
+			SchemaID:         schemaID,
+			MaxRows:          2,
+			MaxMetadataBytes: indexmetaapp.MaxCurrentIndexMetaMetadataBytes,
+			MaxTotalBytes:    indexmetaapp.MaxCurrentIndexMetaTotalBytes,
+		},
+		"docs",
+	)
+	if !errors.Is(err, indexmetaapp.ErrCurrentIndexMetaInvalid) {
+		t.Fatalf("duplicate FindExact() error=%v", err)
 	}
 
 	missingSchemaID := schemaID - 1

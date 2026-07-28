@@ -361,7 +361,7 @@ func TestCurrentIndexScheduleRouteMatchesFrozenPythonDifferentialFixtures(t *tes
 	}
 }
 
-func TestCurrentIndexScheduleRoutePreservesUserSelectionAndSafeBoundedErrors(t *testing.T) {
+func TestCurrentIndexScheduleRouteRestrictsPersonalScopeAndUsesSafeBoundedErrors(t *testing.T) {
 	store := &currentScheduleStoreStub{}
 	service, err := indexscheduleapp.NewService(store)
 	if err != nil {
@@ -375,11 +375,27 @@ func TestCurrentIndexScheduleRoutePreservesUserSelectionAndSafeBoundedErrors(t *
 	)
 	response := httptest.NewRecorder()
 	route.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || store.calls != 0 {
+		t.Fatalf(
+			"other-user selection status=%d calls=%d mutation=%#v body=%s",
+			response.Code,
+			store.calls,
+			store.mutation,
+			response.Body.String(),
+		)
+	}
+
+	request = currentScheduleRequest(
+		"/api/v2/elitea_core/index_meta/prompt_lib/7/9/docs",
+		`{"cron":"0 3 * * *","timezone":"UTC","user_id":11}`,
+	)
+	response = httptest.NewRecorder()
+	route.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || store.calls != 1 ||
-		store.mutation.RequestedUserID != 12 ||
+		store.mutation.RequestedUserID != 11 ||
 		store.mutation.Schedule.CreatedBy != 11 {
 		t.Fatalf(
-			"authorized user selection status=%d calls=%d mutation=%#v body=%s",
+			"own-user selection status=%d calls=%d mutation=%#v body=%s",
 			response.Code,
 			store.calls,
 			store.mutation,

@@ -64,8 +64,69 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 		return StartOutcome{}, err
 	}
 
+	return s.submitResolved(ctx, resolvedStart{
+		ProjectID:              request.ProjectID,
+		AttributionActorUserID: request.ActorUserID,
+		ToolkitID:              request.ToolkitID,
+		Inputs:                 inputs,
+		IdempotencyKey:         idempotencyKey,
+		CorrelationID:          correlationID,
+		ClientStreamID:         request.StreamID,
+		ClientMessageID:        request.MessageID,
+		SIOEvent:               request.SIOEvent,
+		Initiator:              executiondomain.IndexIngestInitiatorUser,
+	})
+}
+
+// StartScheduledIndexData enters the same durable index.ingest.v1 path as the
+// public start without re-resolving mutable toolkit state or fabricating a
+// browser stream. The stored actor remains created_by attribution; schedule
+// runtime authorization selects the project-system PAT from the typed
+// initiator at claim time.
+func (s *StartService) StartScheduledIndexData(
+	ctx context.Context,
+	request ScheduledStartRequest,
+) (StartOutcome, error) {
+	if s == nil || s.admissions == nil || ctx == nil ||
+		request.Validate() != nil ||
+		request.ProjectID > math.MaxInt32 ||
+		request.AttributionActorUserID > math.MaxInt32 ||
+		request.ToolkitID > math.MaxInt32 {
+		return StartOutcome{}, ErrInvalidIndexStart
+	}
+	if err := ctx.Err(); err != nil {
+		return StartOutcome{}, err
+	}
+	return s.submitResolved(ctx, resolvedStart{
+		ProjectID:              request.ProjectID,
+		AttributionActorUserID: request.AttributionActorUserID,
+		ToolkitID:              request.ToolkitID,
+		Inputs:                 request.Inputs,
+		IdempotencyKey:         request.IdempotencyKey,
+		CorrelationID:          request.CorrelationID,
+		Initiator:              executiondomain.IndexIngestInitiatorSchedule,
+	})
+}
+
+type resolvedStart struct {
+	ProjectID              int64
+	AttributionActorUserID int64
+	ToolkitID              int64
+	Inputs                 AuthoritativeInputs
+	IdempotencyKey         string
+	CorrelationID          string
+	ClientStreamID         string
+	ClientMessageID        string
+	SIOEvent               string
+	Initiator              executiondomain.IndexIngestInitiator
+}
+
+func (s *StartService) submitResolved(
+	ctx context.Context,
+	request resolvedStart,
+) (StartOutcome, error) {
 	projectID := strconv.FormatInt(request.ProjectID, 10)
-	actorID := strconv.FormatInt(request.ActorUserID, 10)
+	actorID := strconv.FormatInt(request.AttributionActorUserID, 10)
 	outcome, err := s.admissions.Submit(ctx, SubmitRequest{
 		Identity: executionapp.AdmissionIdentity{
 			// The current platform has project-local schemas but no independent
@@ -76,28 +137,37 @@ func (s *StartService) StartIndexData(ctx context.Context, request StartRequest)
 			ProjectionProjectID: projectID,
 			ActorID:             actorID,
 		},
-		IdempotencyKey:  idempotencyKey,
-		CorrelationID:   correlationID,
-		ClientStreamID:  request.StreamID,
-		ClientMessageID: request.MessageID,
+		IdempotencyKey:  request.IdempotencyKey,
+		CorrelationID:   request.CorrelationID,
+		ClientStreamID:  request.ClientStreamID,
+		ClientMessageID: request.ClientMessageID,
 		SIOEvent:        request.SIOEvent,
 		ToolkitID:       int32(request.ToolkitID),
-		Initiator:       executiondomain.IndexIngestInitiatorUser,
-		Inputs:          inputs,
+		Initiator:       request.Initiator,
+		Inputs:          request.Inputs.Clone(),
 	})
 	if err != nil {
 		return StartOutcome{}, err
 	}
-	// The current HTTP contract returns a task only after its initial PgVector
-	// metadata is visible. A production submitter must therefore compose the
-	// external idempotent materializer and durable ready transition around the
-	// bare AdmissionService before it is injected here.
+	return currentStartOutcome(outcome)
+}
+
+func currentStartOutcome(outcome AdmissionOutcome) (StartOutcome, error) {
+	// Both public and scheduled callers observe success only after the initial
+	// project-PgVector metadata row is durable.
 	if outcome.ExecutionID == "" || outcome.CommandID == "" ||
-		outcome.IndexMetaInitializedAt == nil || outcome.IndexMetaInitializedAt.IsZero() ||
-		outcome.AdmittedAt.IsZero() || !outcome.Deadline.After(outcome.AdmittedAt) {
-		return StartOutcome{}, errors.New("index admission returned an invalid outcome")
+		outcome.IndexMetaInitializedAt == nil ||
+		outcome.IndexMetaInitializedAt.IsZero() ||
+		outcome.AdmittedAt.IsZero() ||
+		!outcome.Deadline.After(outcome.AdmittedAt) {
+		return StartOutcome{}, errors.New(
+			"index admission returned an invalid outcome",
+		)
 	}
-	return StartOutcome{TaskID: outcome.ExecutionID}, nil
+	return StartOutcome{
+		TaskID:  outcome.ExecutionID,
+		Created: outcome.Created,
+	}, nil
 }
 
 func (s *StartService) admissionCorrelation(request StartRequest) (string, string, error) {
@@ -136,4 +206,5 @@ func appendLengthPrefixed(target []byte, value string) []byte {
 
 var _ interface {
 	StartIndexData(context.Context, StartRequest) (StartOutcome, error)
+	StartScheduledIndexData(context.Context, ScheduledStartRequest) (StartOutcome, error)
 } = (*StartService)(nil)

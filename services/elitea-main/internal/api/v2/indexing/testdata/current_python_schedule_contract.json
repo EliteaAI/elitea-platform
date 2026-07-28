@@ -8,6 +8,7 @@
     "contract": "dict(request.json), UpdateIndexingSchedule.parse_obj, then ToolkitIndexingSchedule",
     "security_corrections": [
       "explicit user_id null is current-accepted but target-rejected because it creates an ambiguous ownership key",
+      "a positive user_id different from the authenticated actor is current-accepted but target-rejected because it would select another user's private credential scope",
       "croniter random R, R(a-b), and R-step syntax is current-accepted in some forms but target-rejected because admission must be deterministic across languages and repeated validation must not change the schedule",
       "a top-level JSON pair array accepted by Python dict(request.json) is target-rejected because the PATCH contract admits an object only"
     ]
@@ -123,7 +124,7 @@
         "user_id": " 12.0 "
       },
       "current_accepted": true,
-      "target_accepted": true
+      "target_accepted": false
     },
     {
       "name": "credentials default private false",

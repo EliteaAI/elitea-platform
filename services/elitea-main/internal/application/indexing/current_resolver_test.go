@@ -262,6 +262,58 @@ func TestCurrentAuthoritativeInputResolverUsesConfigurationsDefaultWithoutCopyin
 	}
 }
 
+func TestCurrentAuthoritativeInputResolverFreezesScheduledOverrideWithoutReloadingToolkit(t *testing.T) {
+	toolkits := validCurrentToolkitReader()
+	models := &currentModelCatalogStub{}
+	settings := &currentToolkitSettingsValidatorStub{}
+	resolver := newCurrentAuthoritativeResolverWithSettingsForTest(
+		t,
+		toolkits,
+		models,
+		settings,
+	)
+	snapshot := CurrentToolkitSnapshot{
+		ID:   19,
+		Type: "github",
+		Name: "scheduled",
+		Settings: map[string]any{
+			"github_configuration": map[string]any{
+				"elitea_title": "schedule-owner-github",
+				"private":      true,
+			},
+			"pgvector_configuration": map[string]any{
+				"elitea_title": "project-vectorstore",
+				"private":      false,
+			},
+		},
+	}
+
+	inputs, err := resolver.ResolveScheduled(
+		context.Background(),
+		validCurrentStartRequest(nil, `{}`),
+		snapshot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolkits.calls != 0 {
+		t.Fatalf("scheduled snapshot was reloaded %d times", toolkits.calls)
+	}
+	if len(settings.calls) != 1 ||
+		settings.calls[0].Mode != configurationapp.CurrentToolkitSettingsReferenceMode ||
+		settings.calls[0].Settings["github_configuration"].(map[string]any)["elitea_title"] != "schedule-owner-github" {
+		t.Fatalf("scheduled settings call=%+v", settings.calls)
+	}
+	toolkit, err := decodeCurrentResolverObject(inputs.ToolkitConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := toolkit["settings"].(map[string]any)
+	if frozen["github_configuration"].(map[string]any)["elitea_title"] != "schedule-owner-github" {
+		t.Fatalf("scheduled override was not frozen: %#v", frozen)
+	}
+}
+
 func TestCurrentAuthoritativeInputResolverAppliesConfigurationsEmbeddingDefault(t *testing.T) {
 	defaultEmbedding := "configured-embedding"
 	defaultProjectID := int32(7)
