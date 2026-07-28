@@ -38,6 +38,8 @@ function ProbeComponent(props: { options?: ProgressHistoryOptions | null }) {
       <span data-testid="isHistoryMode">{String(result.isHistoryMode)}</span>
       <span data-testid="isHistoryLoading">{String(result.isHistoryLoading)}</span>
       <span data-testid="messageCount">{result.historyMessages.length}</span>
+      <span data-testid="needGenerateProgressingIndexHistory">{String(result.needGenerateProgressingIndexHistory)}</span>
+      <span data-testid="firstMessageContent">{result.historyMessages[0]?.content ?? ''}</span>
     </div>
   );
 }
@@ -111,5 +113,49 @@ describe('useIndexHistory', () => {
     useIndexesStore.getState().selectHistoryItem({ conversation_id: null, state: 'failed', error: 'boom' });
     renderProbe();
     await waitFor(() => expect(screen.getByTestId('messageCount')).toHaveTextContent('1'));
+  });
+
+  /**
+   * Regression test for a real bug (found while writing tests for a sibling
+   * consumer, `features/toolkits/lib/hooks/useToolkitChat.hooks.ts`'s
+   * in-progress-index-recovery effect): during reindex recovery, no History
+   * tab item is ever selected (`selectedHistoryItem` stays `null`, so
+   * `isHistoryMode` is `false`), yet this hook still fires the SAME
+   * conversation-details query for `progressHistoryOptions.conversationId`.
+   * `historyMessages`'s `conversation` derivation used to be gated on
+   * `isHistoryMode`, so it was forced to `null` here regardless of whether
+   * the query had resolved -- silently discarding a successfully recovered
+   * conversation's real messages (`historyMessages` always came out `[]`).
+   * `needGenerateProgressingIndexHistory` is unaffected by that gate (it
+   * only checks `conversationDetails`/`isConversationDetailsFetching`
+   * directly), so it correctly flips `true` even while this bug was live --
+   * which is exactly why the recovery flow's "fetch worked" signal fired
+   * while the messages it was supposed to gate stayed empty.
+   */
+  it('recovers a real in-progress conversation and its messages even though no History item is selected (isHistoryMode stays false)', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/conversation/prompt_lib/proj-1/conv-recovery`, () =>
+        HttpResponse.json({
+          message_groups: [
+            {
+              id: 1,
+              uuid: 'u1',
+              author_participant_id: 'user-1',
+              content: 'recovered in-progress message',
+              created_at: '2024-01-01 00:00:00',
+              sent_to_id: 'toolkit-1',
+            },
+          ],
+          participants: [{ id: 'user-1', entity_name: 'user', meta: { user_name: 'Alice' } }],
+        }),
+      ),
+    );
+
+    renderProbe({ options: { shouldRecover: true, conversationId: 'conv-recovery' } });
+
+    expect(await screen.findByTestId('isHistoryMode')).toHaveTextContent('false');
+    await waitFor(() => expect(screen.getByTestId('needGenerateProgressingIndexHistory')).toHaveTextContent('true'));
+    expect(screen.getByTestId('messageCount')).toHaveTextContent('1');
+    expect(screen.getByTestId('firstMessageContent')).toHaveTextContent('recovered in-progress message');
   });
 });

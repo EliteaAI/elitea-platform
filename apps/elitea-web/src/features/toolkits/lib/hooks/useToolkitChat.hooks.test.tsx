@@ -572,23 +572,24 @@ describe('useToolkitChat', () => {
   });
 
   describe('recovering an in-progress index conversation on mount', () => {
-    it('marks isRunning true and replaces chatHistory once the recovery fetch resolves (needGenerateProgressingIndexHistory effect)', async () => {
-      // `useIndexHistory`'s own `historyMessages` is derived from
+    it('marks isRunning true and replaces chatHistory with the recovered conversation once the recovery fetch resolves (needGenerateProgressingIndexHistory effect)', async () => {
+      // `useIndexHistory`'s own `historyMessages` used to be derived from
       // `conversationDetails` ONLY when `isHistoryMode` (a SEPARATE,
       // zustand-store-driven "History" tab concern — `selectedHistoryItem`)
-      // is true; during this progressing-index-RECOVERY flow (this test's
-      // own scenario) `isHistoryMode` is false, so `historyMessages` itself
-      // resolves to `[]` even though the recovery fetch below genuinely
-      // completes and genuinely flips `needGenerateProgressingIndexHistory`
-      // true — a real, observable gap in `useIndexHistory.hooks.ts` (a
-      // sibling A4a file, not owned by this assignment), not a mistake in
-      // this test. This still exercises `useToolkitChat.hooks.ts`'s OWN
-      // effect body (`ToolkitForm.helpers... ` n/a here — see
-      // `useToolkitChat.hooks.ts:179-184`) end-to-end: the fetch fires, the
-      // effect fires exactly once, and its real, current outcome
-      // (`chatHistory` reset to `[]`, `isRunning` flipped to `true`,
-      // `setProgressingIndexHistoryRecovered(true)` called so the effect
-      // does not refire) is what is asserted below.
+      // was true; during this progressing-index-RECOVERY flow (this test's
+      // own scenario) `isHistoryMode` is false, so `historyMessages` used to
+      // resolve to `[]` even though the recovery fetch below genuinely
+      // completed and genuinely flipped `needGenerateProgressingIndexHistory`
+      // true — a real bug in `useIndexHistory.hooks.ts` (a sibling A4a file,
+      // found while writing this exact test), fixed there (see that file's
+      // own `useMemo`, `conversation = conversationDetails ?? null`, no
+      // longer gated on `isHistoryMode`) with its own regression test in
+      // `useIndexHistory.hooks.test.tsx`. This test now asserts the real,
+      // correct outcome: `useToolkitChat.hooks.ts`'s own effect
+      // (`useToolkitChat.hooks.ts:179-184`) fires the fetch, fires exactly
+      // once, and `setChatHistory([...historyMessages])` replaces the
+      // welcome-message seed with the ACTUAL recovered conversation content,
+      // not an empty array.
       let hit = false;
       server.use(
         http.get(`${BASE}/elitea_core/conversation/prompt_lib/proj-1/conv-99`, () => {
@@ -615,11 +616,9 @@ describe('useToolkitChat', () => {
       await waitFor(() => expect(hit).toBe(true), { timeout: 3000 });
       // The welcome message (chatHistory's initial seed) starts at length 1;
       // once the recovery effect runs, `setChatHistory([...historyMessages])`
-      // replaces it — with `historyMessages` genuinely `[]` here (see the
-      // doc comment above) — leaving `chatHistory` empty, which is itself
-      // proof the effect ran (as opposed to still holding the original
-      // 1-entry welcome message).
-      await waitFor(() => expect(box.current?.chatHistory).toHaveLength(0), { timeout: 3000 });
+      // replaces it with the real recovered conversation content.
+      await waitFor(() => expect(box.current?.chatHistory).toHaveLength(1), { timeout: 3000 });
+      expect(String(box.current?.chatHistory[0]?.content)).toContain('recovered question');
       expect(box.current?.isRunning).toBe(true);
     });
 

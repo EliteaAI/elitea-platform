@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { usePipelineChatConversation } from './usePipelineChatConversation.hooks';
 import type { UsePipelineChatConversationParams } from './usePipelineChatConversation.hooks';
+import type { ChatConversation } from './pipelineChat.types';
 
 function baseParams(overrides: Partial<UsePipelineChatConversationParams> = {}): UsePipelineChatConversationParams {
   return {
@@ -87,6 +88,45 @@ describe('usePipelineChatConversation', () => {
     expect(result.current.activeParticipant).toMatchObject({ id: '9' });
     expect(onInfo).toHaveBeenCalledWith('Chat restored successfully');
     expect(onRestoreConversationComplete).toHaveBeenCalled();
+  });
+
+  /**
+   * Regression test for the module doc comment's "Correction against a naive
+   * port" claim (the version-id reset effect near the bottom of
+   * `usePipelineChatConversation.hooks.ts`): a sibling file,
+   * `features/agents/lib/hooks/useApplicationChatConversation.hooks.ts`, had
+   * the equivalent effect written with a `setActiveConversation(prev => ...)`
+   * functional updater, which fired on mount too (a plain `useEffect` always
+   * runs once on mount) and clobbered a just-restored conversation's `id`/
+   * `uuid` back to `undefined`, because the functional updater's `prev`
+   * reflects state already queued by earlier same-commit effects (the
+   * restore effect above), not the pre-mount `null`. This file avoids that
+   * trap by reading `activeConversation` via the effect's own render-time
+   * closure instead of a functional updater -- on the very first render that
+   * closure is still `null` (this component's initial state, captured
+   * before any effect has run), so the reset guard is always false on mount
+   * regardless of what the restore effect does in the same commit. Proves it
+   * empirically: restores a real conversation, then forces an additional
+   * render/effect flush with the same `pipelineVersionDetails.id` (so the
+   * reset effect's dependency has not changed and it does not re-run), and
+   * confirms `id`/`uuid` are still intact afterward.
+   */
+  it('keeps the restored conversation id/uuid intact across a later render/effect flush (no mount-clobber)', async () => {
+    const restoredConversationData: ChatConversation = {
+      id: 42,
+      uuid: 'uuid-42',
+      chat_history: [{ id: 'm1', role: 'user' }],
+      participants: [{ id: '9', entityName: 'application', entityMeta: {}, entitySettings: {} }],
+    };
+    const { result, rerender } = renderConversation(
+      baseParams({ restoredConversationID: '42', restoredConversationData }),
+    );
+
+    await waitFor(() => expect(result.current.activeConversation?.id).toBe(42));
+
+    rerender(baseParams({ restoredConversationID: '42', restoredConversationData }));
+    await waitFor(() => expect(result.current.activeConversation?.id).toBe(42));
+    expect(result.current.activeConversation?.uuid).toBe('uuid-42');
   });
 
   it('surfaces onError when the restored conversation has no application participant', async () => {

@@ -128,7 +128,25 @@ export function useIndexHistory(progressHistoryOptions: ProgressHistoryOptions |
   const { isHistoryLoading, historyMessages, historyConversation } = useMemo(() => {
     const showMockMessage = isHistoryMode && (historyConversationId === null || Boolean(indexHistoryItem?.['error']));
 
-    const conversation = isHistoryMode ? (conversationDetails ?? null) : null;
+    // BUG FIX (found while writing tests for a sibling consumer,
+    // `features/toolkits/lib/hooks/useToolkitChat.hooks.ts`'s in-progress-
+    // index-recovery effect): this used to be `isHistoryMode ? (conversationDetails
+    // ?? null) : null` -- gating `conversation` on the "History" tab being open.
+    // But this hook also derives `activeConversationId` (and fires the SAME
+    // query) for the reindex-recovery path (`allowProgressingIndexHistoryRecovering`
+    // above), where `indexHistoryItem` is null (the user never opened the History
+    // tab) and so `isHistoryMode` is false. During recovery the old gate forced
+    // `conversation` to `null` even once `conversationDetails` had genuinely
+    // resolved, so `historyMessages` always came out `[]` -- silently discarding a
+    // successfully recovered conversation's real messages. `conversationDetails`
+    // is keyed per-`conversationId` in its own query key
+    // (`indexesApi.ts`'s `useIndexHistoryConversationDetailsQuery`), so it can
+    // never hold stale data for an unrelated conversation here; using it directly,
+    // unconditionally, is exactly as safe as the old `isHistoryMode`-gated read
+    // was for the History-tab case (identical result there: `isHistoryMode` was
+    // already true whenever this file's own History-tab flow set
+    // `activeConversationId`) and additionally correct for the recovery case.
+    const conversation = conversationDetails ?? null;
 
     const currentConversationMessages = conversation
       ? convertConversationToChatHistory(conversation)
