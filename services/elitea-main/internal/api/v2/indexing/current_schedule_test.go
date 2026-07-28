@@ -215,7 +215,11 @@ func TestCurrentIndexScheduleRouteRequiresCurrentJSONMediaTypeBeforeDecoding(t *
 	}{
 		{name: "missing"},
 		{name: "plain text", contentType: "text/plain"},
-		{name: "malformed parameter", contentType: "application/json; charset"},
+		{
+			name:        "application json incomplete charset",
+			contentType: "application/json; charset",
+			accepted:    true,
+		},
 		{
 			name:        "application json charset",
 			contentType: "application/json; charset=UTF-8",
@@ -224,6 +228,11 @@ func TestCurrentIndexScheduleRouteRequiresCurrentJSONMediaTypeBeforeDecoding(t *
 		{
 			name:        "application json suffix",
 			contentType: "application/vnd.elitea+json; charset=utf-8",
+			accepted:    true,
+		},
+		{
+			name:        "application json suffix incomplete charset",
+			contentType: "application/vnd.elitea+json; charset",
 			accepted:    true,
 		},
 	} {

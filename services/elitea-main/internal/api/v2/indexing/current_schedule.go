@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"math"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,10 +151,12 @@ func (handler *currentIndexScheduleHandler) update(
 }
 
 func currentScheduleJSONMediaType(value string) bool {
-	mediaType, _, err := mime.ParseMediaType(value)
-	if err != nil {
-		return false
+	// Flask/Werkzeug decides request.is_json from the media type token and is
+	// intentionally tolerant of incomplete parameters such as "; charset".
+	if separator := strings.IndexByte(value, ';'); separator >= 0 {
+		value = value[:separator]
 	}
+	mediaType := strings.ToLower(strings.TrimSpace(value))
 	return mediaType == "application/json" ||
 		(strings.HasPrefix(mediaType, "application/") &&
 			strings.HasSuffix(mediaType, "+json"))
