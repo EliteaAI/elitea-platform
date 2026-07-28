@@ -610,6 +610,197 @@ WHERE execution_id = $1
 	}
 }
 
+func TestPostgresIndexMetaInitializationQuarantineConvergesExpiredExecution(
+	t *testing.T,
+) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	policy := IndexIngestDispatchPolicy{
+		StreamName:        "elitea:runtime:index:commands",
+		CapabilityVersion: "1",
+		ResourceClass:     "indexing",
+		IsolationClass:    "project",
+		Priority:          1,
+		DeadlineTTL:       time.Hour,
+		LimitsRevision:    "index-limits-v1",
+		MaxOutstanding:    16,
+	}
+	jobs, err := NewIndexIngestJobsRepository(pool, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbox, err := NewCommandOutboxRepository(pool, policy.StreamName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := postgresIndexMetaConvergenceRequest(
+		1_700_000_001,
+		"initializer-deadline-race",
+		"DeadlineRaceDocs",
+	)
+	admission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"initializer-deadline-race",
+	).Submit(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := jobs.ClaimExactIndexMetaInitialization(
+		ctx,
+		indexingapp.IndexMetaInitialization{
+			ExecutionID:     admission.ExecutionID,
+			Generation:      admission.Generation,
+			IndexGeneration: admission.IndexGeneration,
+			MetaID:          admission.IndexMetaID,
+			CorrelationID:   admission.IndexMetaCorrelationID,
+		},
+		"initializer-deadline-race-claim",
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE elitea_runtime.command_outbox
+SET deadline = clock_timestamp() - interval '1 second'
+WHERE execution_id = $1 AND generation = $2`,
+		admission.ExecutionID,
+		int64(admission.Generation),
+	); err != nil {
+		t.Fatal(err)
+	}
+	retired, err := outbox.RetireNoAuthorityIndexIngest(ctx, 1)
+	if err != nil || retired != 1 {
+		t.Fatalf("deadline retirement count=%d error=%v", retired, err)
+	}
+
+	if err := jobs.QuarantineIndexMetaInitialization(
+		ctx,
+		claim,
+		"INITIALIZATION_EXTERNAL_CONFLICT",
+	); err != nil {
+		t.Fatalf("converge initializer after deadline retirement: %v", err)
+	}
+
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs AS i
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = i.execution_id
+ AND j.generation = i.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = i.execution_id
+ AND o.generation = i.generation
+WHERE i.execution_id = $1
+  AND i.index_meta_initialization_status = 'QUARANTINED'
+  AND i.index_meta_initialization_claim_token IS NULL
+  AND i.index_meta_initialization_claim_expires_at IS NULL
+  AND i.index_meta_initialization_last_error_code =
+      'INITIALIZATION_EXTERNAL_CONFLICT'
+  AND i.index_meta_initialization_failed_at IS NOT NULL
+  AND j.state = 'FAILED'
+  AND j.desired_state = 'RUNNING'
+  AND j.terminal_error_code = 'DEADLINE_EXCEEDED'
+  AND j.settled_at IS NOT NULL
+  AND o.retired_at IS NOT NULL
+  AND o.retirement_code = 'DEADLINE_EXCEEDED'
+  AND o.authority_granted_at IS NULL`,
+		admission.ExecutionID,
+	)
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1 AND generation = $2`,
+		admission.ExecutionID,
+		int64(admission.Generation),
+	)
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = $2
+  AND event_id = $3
+  AND event_type = 'execution.failed'`,
+		admission.ExecutionID,
+		int64(admission.Generation),
+		"retirement:initializer-deadline-race-outbox",
+	)
+
+	activeRequest := postgresIndexMetaConvergenceRequest(
+		1_700_000_002,
+		"initializer-active-quarantine",
+		"ActiveQuarantineDocs",
+	)
+	activeAdmission, err := newPostgresIndexAdmissionService(
+		t,
+		jobs,
+		"initializer-active-quarantine",
+	).Submit(ctx, activeRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeClaim, err := jobs.ClaimExactIndexMetaInitialization(
+		ctx,
+		indexingapp.IndexMetaInitialization{
+			ExecutionID:     activeAdmission.ExecutionID,
+			Generation:      activeAdmission.Generation,
+			IndexGeneration: activeAdmission.IndexGeneration,
+			MetaID:          activeAdmission.IndexMetaID,
+			CorrelationID:   activeAdmission.IndexMetaCorrelationID,
+		},
+		"initializer-active-quarantine-claim",
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jobs.QuarantineIndexMetaInitialization(
+		ctx,
+		activeClaim,
+		"INITIALIZATION_EXTERNAL_CONFLICT",
+	); err != nil {
+		t.Fatalf("quarantine active pre-authority initializer: %v", err)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.index_ingest_jobs AS i
+JOIN elitea_runtime.execution_jobs AS j
+  ON j.execution_id = i.execution_id
+ AND j.generation = i.generation
+JOIN elitea_runtime.command_outbox AS o
+  ON o.execution_id = i.execution_id
+ AND o.generation = i.generation
+WHERE i.execution_id = $1
+  AND i.index_meta_initialization_status = 'QUARANTINED'
+  AND j.state = 'QUARANTINED'
+  AND j.desired_state = 'CANCELLED'
+  AND j.terminal_error_code IS NULL
+  AND o.retired_at IS NOT NULL
+  AND o.retirement_code = 'CANCELLED'
+  AND o.prepared_at IS NULL
+  AND o.published_at IS NULL
+  AND o.authority_granted_at IS NULL`,
+		activeAdmission.ExecutionID,
+	)
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM elitea_runtime.execution_replay_events
+WHERE execution_id = $1
+  AND generation = $2
+  AND event_id = $3
+  AND event_type = 'execution.failed'`,
+		activeAdmission.ExecutionID,
+		int64(activeAdmission.Generation),
+		"index-meta-initialization-quarantine:"+
+			"initializer-active-quarantine-outbox",
+	)
+}
+
 func newPostgresDurableIndexMetaInitializer(
 	t *testing.T,
 	jobs *IndexIngestJobsRepository,

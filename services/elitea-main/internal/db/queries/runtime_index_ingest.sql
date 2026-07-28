@@ -451,7 +451,54 @@ WHERE execution_id = sqlc.arg(execution_id)::text
   AND index_meta_initialization_claim_token = sqlc.arg(claim_token)::text;
 
 -- name: QuarantineIndexMetaInitialization :one
-WITH quarantined_index AS (
+WITH locked_triple AS MATERIALIZED (
+    SELECT i.execution_id,
+           i.generation,
+           CASE
+               WHEN j.state = 'PENDING'
+                AND j.desired_state = 'RUNNING'
+                AND o.prepared_at IS NULL
+                AND o.published_at IS NULL
+                AND o.authority_granted_at IS NULL
+                AND o.retired_at IS NULL
+                   THEN 'ACTIVE_PRE_AUTHORITY'::text
+               ELSE 'TERMINAL_DEADLINE'::text
+           END AS classification
+    FROM elitea_runtime.index_ingest_jobs AS i
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = i.execution_id
+     AND j.generation = i.generation
+     AND j.capability_id = i.capability_id
+    JOIN elitea_runtime.command_outbox AS o
+      ON o.execution_id = i.execution_id
+     AND o.generation = i.generation
+    WHERE i.execution_id = sqlc.arg(execution_id)::text
+      AND i.generation = sqlc.arg(generation)::bigint
+      AND i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status = 'RUNNING'
+      AND i.index_meta_initialization_claim_token =
+          sqlc.arg(claim_token)::text
+      AND (
+          (
+              j.state = 'PENDING'
+              AND j.desired_state = 'RUNNING'
+              AND o.prepared_at IS NULL
+              AND o.published_at IS NULL
+              AND o.authority_granted_at IS NULL
+              AND o.retired_at IS NULL
+          )
+          OR (
+              j.state = 'FAILED'
+              AND j.terminal_error_code = 'DEADLINE_EXCEEDED'
+              AND o.retired_at IS NOT NULL
+              AND o.retirement_code = 'DEADLINE_EXCEEDED'
+              AND o.authority_granted_at IS NULL
+          )
+      )
+    FOR UPDATE OF i, j, o
+),
+quarantined_index AS (
     UPDATE elitea_runtime.index_ingest_jobs AS i
     SET index_meta_initialization_status = 'QUARANTINED',
         index_meta_initialization_claim_token = NULL,
@@ -461,27 +508,10 @@ WITH quarantined_index AS (
             sqlc.arg(last_error_code)::text,
         index_meta_initialization_failed_at =
             date_trunc('milliseconds', clock_timestamp())
-    FROM elitea_runtime.execution_jobs AS j,
-         elitea_runtime.command_outbox AS o
-    WHERE i.execution_id = sqlc.arg(execution_id)::text
-      AND i.generation = sqlc.arg(generation)::bigint
-      AND i.capability_id = 'index.ingest.v1'
-      AND i.index_meta_initialized_at IS NULL
-      AND i.index_meta_initialization_status = 'RUNNING'
-      AND i.index_meta_initialization_claim_token =
-          sqlc.arg(claim_token)::text
-      AND j.execution_id = i.execution_id
-      AND j.generation = i.generation
-      AND j.capability_id = i.capability_id
-      AND j.state = 'PENDING'
-      AND j.desired_state = 'RUNNING'
-      AND o.execution_id = i.execution_id
-      AND o.generation = i.generation
-      AND o.prepared_at IS NULL
-      AND o.published_at IS NULL
-      AND o.authority_granted_at IS NULL
-      AND o.retired_at IS NULL
-    RETURNING i.execution_id, i.generation
+    FROM locked_triple AS locked
+    WHERE i.execution_id = locked.execution_id
+      AND i.generation = locked.generation
+    RETURNING i.execution_id, i.generation, locked.classification
 ),
 quarantined_job AS (
     UPDATE elitea_runtime.execution_jobs AS j
@@ -491,6 +521,7 @@ quarantined_job AS (
     FROM quarantined_index AS i
     WHERE j.execution_id = i.execution_id
       AND j.generation = i.generation
+      AND i.classification = 'ACTIVE_PRE_AUTHORITY'
     RETURNING j.execution_id, j.generation, j.projection_project_id
 ),
 retired_outbox AS (
@@ -519,8 +550,16 @@ replayed_failure AS (
       ON o.execution_id = j.execution_id
      AND o.generation = j.generation
     RETURNING execution_id
+),
+converged AS (
+    SELECT execution_id
+    FROM replayed_failure
+    UNION ALL
+    SELECT execution_id
+    FROM quarantined_index
+    WHERE classification = 'TERMINAL_DEADLINE'
 )
-SELECT execution_id FROM replayed_failure;
+SELECT execution_id FROM converged;
 
 -- name: InsertRuntimeCommandOutbox :exec
 INSERT INTO elitea_runtime.command_outbox (
