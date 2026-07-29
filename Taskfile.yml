@@ -185,7 +185,7 @@ tasks:
   images:go:
     desc: Build Go service image
     cmds:
-      - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile services/elitea-main
+      - podman build -t ghcr.io/eliteaai/elitea-main:dev -f services/elitea-main/Containerfile .
 
   images:ui:
     desc: Build UI image
