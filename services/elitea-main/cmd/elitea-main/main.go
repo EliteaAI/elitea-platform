@@ -69,8 +69,12 @@ func main() {
 	}
 
 	// Redis
-	redisAddr := envOr("REDIS_URL", "localhost:6379")
-	rdb := goredis.NewClient(&goredis.Options{Addr: redisAddr})
+	redisOptions, err := redisOptionsFromEnv(os.LookupEnv)
+	if err != nil {
+		slog.Error("failed to configure Redis", "err", err)
+		os.Exit(1)
+	}
+	rdb := goredis.NewClient(redisOptions)
 
 	authClient := authsvc.New(rdb)
 	jwtSecret := envOr("APPLICATION_SECRET_KEY", "")
@@ -265,19 +269,19 @@ func main() {
 			DB:    &poolChecker{pool: pool},
 			Redis: healthPing,
 		},
-		AppsRepo:       appsRepo,
-		SkillsRepo:     skillsRepo,
-		FoldersRepo:    foldersRepo,
-		TagsRepo:       tagsRepo,
-		AnalyticsRepo:  analyticsRepo,
-		ConvsRepo:      convsRepo,
-		WebhookRepo:    webhookRepo,
-		RedisClient:    rdb,
-		EventSource:    eventSource,
-		Shadow:         comparator,
-		ShadowMetrics:  shadowMetrics,
-		CutoverTracker: cutoverTracker,
-		CutoverRouter:  cutoverRouter,
+		AppsRepo:           appsRepo,
+		SkillsRepo:         skillsRepo,
+		FoldersRepo:        foldersRepo,
+		TagsRepo:           tagsRepo,
+		AnalyticsRepo:      analyticsRepo,
+		ConvsRepo:          convsRepo,
+		WebhookRepo:        webhookRepo,
+		RedisClient:        rdb,
+		EventSource:        eventSource,
+		Shadow:             comparator,
+		ShadowMetrics:      shadowMetrics,
+		CutoverTracker:     cutoverTracker,
+		CutoverRouter:      cutoverRouter,
 		AdminUI:            adminUIConfig(),
 		Storage:            storageBackend,
 		LLMProxy:           llmProxy,

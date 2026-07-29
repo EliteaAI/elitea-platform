@@ -3,6 +3,7 @@ version: "3"
 vars:
   SERVICE: services/elitea-main
   PY_SERVICE: services/pylon-indexer
+  CENTRY_DIR: '{{.CENTRY_DIR | default "../centry"}}'
 
 tasks:
   # ── Go ────────────────────────────────────────────────────────────────────────
@@ -122,6 +123,33 @@ tasks:
     desc: Tail logs from all services
     cmds:
       - podman compose -f deploy/docker-compose.yml logs -f --tail=50
+
+  hybrid:config:
+    desc: Validate the mixed Centry and selected Go-slice deployment
+    cmds:
+      - >-
+        ELITEA_PLATFORM_DIR="{{.ROOT_DIR}}"
+        docker compose
+        --project-directory "{{.CENTRY_DIR}}"
+        --env-file "{{.CENTRY_DIR}}/envs/default.env"
+        --env-file "{{.CENTRY_DIR}}/envs/override.env"
+        -f "{{.CENTRY_DIR}}/docker-compose.yml"
+        -f "{{.ROOT_DIR}}/deploy/centry-hybrid/docker-compose.yml"
+        config --quiet
+
+  hybrid:up:
+    desc: Start Centry with the selected Go slices behind the hybrid gateway
+    deps: [hybrid:config]
+    cmds:
+      - >-
+        ELITEA_PLATFORM_DIR="{{.ROOT_DIR}}"
+        docker compose
+        --project-directory "{{.CENTRY_DIR}}"
+        --env-file "{{.CENTRY_DIR}}/envs/default.env"
+        --env-file "{{.CENTRY_DIR}}/envs/override.env"
+        -f "{{.CENTRY_DIR}}/docker-compose.yml"
+        -f "{{.ROOT_DIR}}/deploy/centry-hybrid/docker-compose.yml"
+        up -d --build
 
   # ── Container Images ──────────────────────────────────────────────────────────
   images:

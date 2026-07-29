@@ -38,11 +38,10 @@ COPY --from=builder /out/elitea-main /elitea-main
 # Fail the build on HIGH/CRITICAL vulnerabilities in the binary.
 RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
 
-# ── Stage 4: final runtime image ──────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot AS final
+# ── Stage 4: shared runtime image ─────────────────────────────────────────────
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /out/elitea-main /elitea-main
-COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
 
 ENV ADMIN_UI_STATIC_DIR=/data/admin_ui/static/dist
 
@@ -52,3 +51,14 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD ["/elitea-main", "-healthcheck"]
 
 ENTRYPOINT ["/elitea-main"]
+
+# The mixed Centry deployment keeps the current Admin UI and does not require
+# either UI submodule to build the selected Go slices.
+FROM runtime AS hybrid
+
+ENV ADMIN_UI_STATIC_DIR=/nonexistent
+
+# ── Stage 5: standalone final image ───────────────────────────────────────────
+FROM runtime AS final
+
+COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
