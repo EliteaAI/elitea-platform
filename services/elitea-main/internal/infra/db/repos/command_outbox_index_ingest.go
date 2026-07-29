@@ -360,7 +360,8 @@ SELECT o.outbox_id,
        COALESCE(embedding_binding.binding_count, 0),
        COALESCE(i.client_stream_id, ''),
        COALESCE(i.client_message_id, ''),
-       COALESCE(i.sio_event, '')
+       COALESCE(i.sio_event, ''),
+       i.initiator
 FROM elitea_runtime.command_outbox AS o
 JOIN elitea_runtime.execution_jobs AS j
   ON j.execution_id = o.execution_id AND j.generation = o.generation
@@ -425,6 +426,7 @@ WHERE o.outbox_id = $1
 		&dispatch.ClientStreamID,
 		&dispatch.ClientMessageID,
 		&dispatch.SIOEvent,
+		&dispatch.Initiator,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexingapp.IndexIngestDispatch{}, ErrPendingIndexIngestDispatchNotFound

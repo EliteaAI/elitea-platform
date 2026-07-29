@@ -121,6 +121,7 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         self.raise_error = True
         self._context = context
         self._publish = publish
+        self._scheduled = context.initiator == "schedule"
         self._failure: Exception | None = None
         self._failure_lock = threading.Lock()
         self._tool_lock = threading.Lock()
@@ -153,6 +154,8 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                     return
                 self._tool_run_id = selected_run_id
                 self._tool_started_at = now
+            if self._scheduled:
+                return
             self._emit(
                 "agent_tool_start",
                 {
@@ -205,6 +208,8 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                 run_id = self._tool_run_id
                 started_at = self._tool_started_at
                 self._tool_finalized = True
+            if self._scheduled:
+                return None
             now = datetime.now(tz=timezone.utc).isoformat()
             payload = {
                 "tool_name": "index_data",
@@ -237,6 +242,8 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         _ = tags, metadata, kwargs
         selected = _CURRENT_INDEX_CUSTOM_EVENTS.get(name)
         if selected is None:
+            return
+        if self._scheduled and name in {"thinking_step", "thinking_step_update"}:
             return
         try:
             if not isinstance(data, dict):

@@ -10,6 +10,7 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/redisdispatch"
 )
@@ -98,6 +99,7 @@ func TestConfluenceBulkAndImageBytesNeverEnterRedis(t *testing.T) {
 		ClientStreamID:              "stream-confluence-scale",
 		ClientMessageID:             "message-confluence-scale",
 		SIOEvent:                    "chat_predict",
+		Initiator:                   executiondomain.IndexIngestInitiatorUser,
 	}
 	prepared, err := producer.PrepareIndexIngest(context.Background(), dispatch)
 	if err != nil {

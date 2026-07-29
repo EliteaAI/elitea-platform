@@ -229,6 +229,11 @@ func validateIndexIngestCommand(command *runtimev1.WorkerCommandV1, config comma
 	default:
 		return ErrMalformedWorkerCommand
 	}
+	switch indexing.GetInitiator() {
+	case "user", "llm", "schedule":
+	default:
+		return ErrMalformedWorkerCommand
+	}
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -49,6 +50,7 @@ type IndexIngestDispatch struct {
 	ClientStreamID              string
 	ClientMessageID             string
 	SIOEvent                    string
+	Initiator                   executiondomain.IndexIngestInitiator
 }
 
 func (d IndexIngestDispatch) Validate() error {
@@ -82,7 +84,7 @@ func (d IndexIngestDispatch) Validate() error {
 			return ErrInvalidIndexIngestDispatch
 		}
 	}
-	if !validIndexSIOEvent(d.SIOEvent) {
+	if !validIndexSIOEvent(d.SIOEvent) || !d.Initiator.Valid() {
 		return ErrInvalidIndexIngestDispatch
 	}
 	if d.Generation == 0 || d.DispatchOrdinal == 0 || d.InputBundleByteLength == 0 || d.InputBundleDigest.IsZero() || d.Priority == 0 || d.Deadline.IsZero() {

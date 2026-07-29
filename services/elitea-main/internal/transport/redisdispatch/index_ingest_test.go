@@ -11,6 +11,7 @@ import (
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"google.golang.org/protobuf/proto"
 )
@@ -104,6 +105,7 @@ func TestIndexIngestProducerBuildsTypedReferenceOnlyCommand(t *testing.T) {
 		ClientStreamID:              command.GetIndexIngest().GetClientStreamId(),
 		ClientMessageID:             command.GetIndexIngest().GetClientMessageId(),
 		SIOEvent:                    command.GetIndexIngest().GetSioEvent(),
+		Initiator:                   executiondomain.IndexIngestInitiator(command.GetIndexIngest().GetInitiator()),
 	}
 	prepared, err := producer.PrepareIndexIngest(context.Background(), dispatch)
 	if err != nil {
@@ -120,7 +122,7 @@ func TestIndexIngestProducerBuildsTypedReferenceOnlyCommand(t *testing.T) {
 	if err := proto.Unmarshal(envelope.GetWorkerCommandBytes(), wire); err != nil {
 		t.Fatal(err)
 	}
-	if wire.GetInputBundleRef().GetInputBundleId() != dispatch.InputBundleID || wire.GetIndexIngest().GetToolkitConfigurationEntryId() != dispatch.ToolkitConfigurationEntryID || wire.GetIndexIngest().GetToolParametersEntryId() != dispatch.ToolParametersEntryID || wire.GetIndexIngest().GetClientStreamId() != dispatch.ClientStreamID || wire.GetIndexIngest().GetClientMessageId() != dispatch.ClientMessageID || wire.GetIndexIngest().GetSioEvent() != dispatch.SIOEvent {
+	if wire.GetInputBundleRef().GetInputBundleId() != dispatch.InputBundleID || wire.GetIndexIngest().GetToolkitConfigurationEntryId() != dispatch.ToolkitConfigurationEntryID || wire.GetIndexIngest().GetToolParametersEntryId() != dispatch.ToolParametersEntryID || wire.GetIndexIngest().GetClientStreamId() != dispatch.ClientStreamID || wire.GetIndexIngest().GetClientMessageId() != dispatch.ClientMessageID || wire.GetIndexIngest().GetSioEvent() != dispatch.SIOEvent || wire.GetIndexIngest().GetInitiator() != string(dispatch.Initiator) {
 		t.Fatalf("typed dispatch changed reference identities: %+v", wire)
 	}
 }
@@ -188,6 +190,12 @@ func TestIndexIngestProducerRejectsWrongOrMalformedContractBeforeSigning(t *test
 			name: "duplicate input reference",
 			mutate: func(command *runtimev1.WorkerCommandV1) {
 				command.GetIndexIngest().LlmModelEntryId = command.GetIndexIngest().ToolParametersEntryId
+			},
+		},
+		{
+			name: "unknown initiator",
+			mutate: func(command *runtimev1.WorkerCommandV1) {
+				command.GetIndexIngest().Initiator = "automation"
 			},
 		},
 		{
@@ -408,6 +416,7 @@ func validIndexIngestCommand() *runtimev1.WorkerCommandV1 {
 				ClientStreamId:              "stream-1",
 				ClientMessageId:             "message-1",
 				SioEvent:                    "chat_predict",
+				Initiator:                   "user",
 			},
 		},
 	}

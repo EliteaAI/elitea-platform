@@ -162,6 +162,11 @@ func (p *IndexIngestProducer) validateCommand(command *runtimev1.WorkerCommandV1
 	if !validIndexIngestSIOEvent(index.GetSioEvent()) {
 		return ErrInvalidIndexIngestCommand
 	}
+	switch index.GetInitiator() {
+	case "user", "llm", "schedule":
+	default:
+		return ErrInvalidIndexIngestCommand
+	}
 	entryIDs := []string{
 		index.GetToolkitConfigurationEntryId(), index.GetToolParametersEntryId(), index.GetLlmModelEntryId(),
 		index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(),

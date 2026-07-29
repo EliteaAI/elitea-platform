@@ -615,6 +615,79 @@ def test_current_index_tool_error_omits_exception_detail() -> None:
     assert canary not in json.dumps(current)
 
 
+def test_current_index_callback_filters_only_scheduled_transient_events() -> None:
+    def emitted_types(initiator: str) -> tuple[list[str], list[dict[str, Any]]]:
+        events = []
+        callback = CurrentIndexNodeEventCallback(
+            CurrentIndexNodeEventContext(
+                stream_id="conversation-1" if initiator != "schedule" else "",
+                task_id="execution-1",
+                initiator=initiator,
+                project_id=42,
+                user_id=7,
+                toolkit_id=9,
+                message_id="message-1" if initiator != "schedule" else None,
+                sio_event="chat_predict" if initiator != "schedule" else None,
+            ),
+            events.append,
+        )
+        run_id = UUID("00000000-0000-0000-0000-000000000004")
+        callback.on_tool_start({}, "", run_id=run_id)
+        callback.on_custom_event(
+            "thinking_step",
+            {"message": "10 files processed"},
+            run_id=run_id,
+        )
+        callback.on_custom_event(
+            "thinking_step_update",
+            {"message": "20 files processed"},
+            run_id=run_id,
+        )
+        callback.on_custom_event(
+            "index_data_status",
+            {"index_name": "knowledge", "state": "completed"},
+            run_id=run_id,
+        )
+        callback.on_custom_event(
+            "index_data_removed",
+            {"index_name": "obsolete"},
+            run_id=run_id,
+        )
+        callback.on_tool_end({}, run_id=run_id)
+        terminal = callback.finish_tool(success=True)
+        if terminal is not None:
+            events.append(terminal)
+        callback.raise_if_failed()
+        current = [
+            json.loads(encode_current_node_event_json(event)) for event in events
+        ]
+        return [event["type"] for event in current], current
+
+    manual_types, manual = emitted_types("user")
+    scheduled_types, scheduled = emitted_types("schedule")
+
+    assert manual_types == [
+        "agent_tool_start",
+        "agent_thinking_step",
+        "agent_thinking_step_update",
+        "agent_index_data_status",
+        "agent_index_data_removed",
+        "agent_tool_end",
+    ]
+    assert scheduled_types == [
+        "agent_index_data_status",
+        "agent_index_data_removed",
+    ]
+    assert all(event["stream_id"] is None for event in scheduled)
+    assert all(event["message_id"] is None for event in scheduled)
+    assert all(event["sio_event"] is None for event in scheduled)
+    assert all(
+        event["response_metadata"]["metadata"]["initiator"] == "schedule"
+        for event in scheduled
+    )
+    assert manual[0]["stream_id"] == "conversation-1"
+
+
 def test_current_index_callback_projects_an_oversized_status_error() -> None:
     events = []
     callback = CurrentIndexNodeEventCallback(

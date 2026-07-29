@@ -616,6 +616,8 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             "test_toolkit_tool",
         ):
             raise InvalidInput("The index-ingest event route is malformed.")
+        if command.index_ingest.initiator not in ("user", "llm", "schedule"):
+            raise InvalidInput("The index-ingest initiator is malformed.")
     if (
         command.input_bundle_ref.byte_length < 1
         or command.input_bundle_ref.byte_length > MAX_MANIFEST_BYTES

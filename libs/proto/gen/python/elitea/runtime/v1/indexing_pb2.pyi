@@ -19,7 +19,7 @@ INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_ERROR: IndexIngestStatusV1
 
 class IndexIngestCommandV1(_message.Message):
-    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event", "embedding_binding")
+    __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event", "embedding_binding", "initiator")
     TOOLKIT_CONFIGURATION_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_PARAMETERS_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
     LLM_MODEL_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
@@ -29,6 +29,7 @@ class IndexIngestCommandV1(_message.Message):
     CLIENT_MESSAGE_ID_FIELD_NUMBER: _ClassVar[int]
     SIO_EVENT_FIELD_NUMBER: _ClassVar[int]
     EMBEDDING_BINDING_FIELD_NUMBER: _ClassVar[int]
+    INITIATOR_FIELD_NUMBER: _ClassVar[int]
     toolkit_configuration_entry_id: str
     tool_parameters_entry_id: str
     llm_model_entry_id: str
@@ -38,7 +39,8 @@ class IndexIngestCommandV1(_message.Message):
     client_message_id: str
     sio_event: str
     embedding_binding: IndexIngestInputBindingV1
-    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., client_stream_id: _Optional[str] = ..., client_message_id: _Optional[str] = ..., sio_event: _Optional[str] = ..., embedding_binding: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ...) -> None: ...
+    initiator: str
+    def __init__(self, toolkit_configuration_entry_id: _Optional[str] = ..., tool_parameters_entry_id: _Optional[str] = ..., llm_model_entry_id: _Optional[str] = ..., llm_configuration_entry_id: _Optional[str] = ..., mcp_tokens_entry_id: _Optional[str] = ..., client_stream_id: _Optional[str] = ..., client_message_id: _Optional[str] = ..., sio_event: _Optional[str] = ..., embedding_binding: _Optional[_Union[IndexIngestInputBindingV1, _Mapping]] = ..., initiator: _Optional[str] = ...) -> None: ...
 
 class IndexIngestInputBindingV1(_message.Message):
     __slots__ = ("entry_id", "immutable_version", "content_digest")

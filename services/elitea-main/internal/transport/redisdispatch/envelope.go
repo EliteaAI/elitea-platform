@@ -82,6 +82,7 @@ func indexIngestWorkerCommand(protocolRevision string, dispatch indexingapp.Inde
 		ClientStreamId:              dispatch.ClientStreamID,
 		ClientMessageId:             dispatch.ClientMessageID,
 		SioEvent:                    dispatch.SIOEvent,
+		Initiator:                   string(dispatch.Initiator),
 	}
 	if dispatch.EmbeddingBindingEntryID != "" {
 		indexCommand.EmbeddingBinding = &runtimev1.IndexIngestInputBindingV1{
@@ -153,7 +154,7 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 		values = append(values,
 			index.GetToolkitConfigurationEntryId(), index.GetToolParametersEntryId(), index.GetLlmModelEntryId(),
 			index.GetLlmConfigurationEntryId(), index.GetMcpTokensEntryId(), index.GetClientStreamId(),
-			index.GetClientMessageId(), index.GetSioEvent(),
+			index.GetClientMessageId(), index.GetSioEvent(), index.GetInitiator(),
 		)
 		if binding := index.GetEmbeddingBinding(); binding != nil {
 			values = append(values, binding.GetEntryId(), binding.GetImmutableVersion())

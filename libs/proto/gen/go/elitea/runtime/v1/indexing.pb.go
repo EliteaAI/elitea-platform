@@ -93,8 +93,10 @@ type IndexIngestCommandV1 struct {
 	// Exact non-secret embedding metadata stays in the input data plane.
 	// Redis carries only this immutable entry reference and digest.
 	EmbeddingBinding *IndexIngestInputBindingV1 `protobuf:"bytes,9,opt,name=embedding_binding,json=embeddingBinding,proto3" json:"embedding_binding,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Durable admission origin. Consumers accept only user, llm, or schedule.
+	Initiator     string `protobuf:"bytes,16,opt,name=initiator,proto3" json:"initiator,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *IndexIngestCommandV1) Reset() {
@@ -188,6 +190,13 @@ func (x *IndexIngestCommandV1) GetEmbeddingBinding() *IndexIngestInputBindingV1 
 		return x.EmbeddingBinding
 	}
 	return nil
+}
+
+func (x *IndexIngestCommandV1) GetInitiator() string {
+	if x != nil {
+		return x.Initiator
+	}
+	return ""
 }
 
 // IndexIngestInputBindingV1 identifies one exact input value consumed by the SDK
@@ -519,7 +528,7 @@ var File_elitea_runtime_v1_indexing_proto protoreflect.FileDescriptor
 
 const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\n" +
-	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\x81\x04\n" +
+	" elitea/runtime/v1/indexing.proto\x12\x11elitea.runtime.v1\x1a\x1eelitea/runtime/v1/common.proto\"\x9f\x04\n" +
 	"\x14IndexIngestCommandV1\x12C\n" +
 	"\x1etoolkit_configuration_entry_id\x18\x01 \x01(\tR\x1btoolkitConfigurationEntryId\x127\n" +
 	"\x18tool_parameters_entry_id\x18\x02 \x01(\tR\x15toolParametersEntryId\x12+\n" +
@@ -529,7 +538,8 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\x10client_stream_id\x18\x06 \x01(\tR\x0eclientStreamId\x12*\n" +
 	"\x11client_message_id\x18\a \x01(\tR\x0fclientMessageId\x12\x1b\n" +
 	"\tsio_event\x18\b \x01(\tR\bsioEvent\x12Y\n" +
-	"\x11embedding_binding\x18\t \x01(\v2,.elitea.runtime.v1.IndexIngestInputBindingV1R\x10embeddingBindingJ\x04\b\n" +
+	"\x11embedding_binding\x18\t \x01(\v2,.elitea.runtime.v1.IndexIngestInputBindingV1R\x10embeddingBinding\x12\x1c\n" +
+	"\tinitiator\x18\x10 \x01(\tR\tinitiatorJ\x04\b\n" +
 	"\x10\x10\"\xad\x01\n" +
 	"\x19IndexIngestInputBindingV1\x12\x19\n" +
 	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12+\n" +

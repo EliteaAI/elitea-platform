@@ -22,6 +22,8 @@ message IndexIngestCommandV1 {
   // Redis carries only this immutable entry reference and digest.
   IndexIngestInputBindingV1 embedding_binding = 9;
   reserved 10 to 15;
+  // Durable admission origin. Consumers accept only user, llm, or schedule.
+  string initiator = 16;
 }
 
 // IndexIngestInputBindingV1 identifies one exact input value consumed by the SDK

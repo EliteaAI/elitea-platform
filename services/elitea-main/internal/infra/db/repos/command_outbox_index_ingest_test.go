@@ -9,6 +9,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -66,7 +67,7 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 		"1", "indexing", "project", int32(1), deadline, "index-limits-v1", "", "",
 		"toolkit-configuration", "tool-parameters", "llm-model", "llm-configuration", "mcp-credential-references",
 		"embedding-binding", embeddingBindingDigest[:], int64(1),
-		"stream-1", "message-1", "chat_predict",
+		"stream-1", "message-1", "chat_predict", "schedule",
 	}}}}
 	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
 	if err != nil {
@@ -83,7 +84,8 @@ func TestLoadPendingIndexIngestJoinsMetadataWithoutEntryContent(t *testing.T) {
 		dispatch.EmbeddingBindingDigest != embeddingBindingDigest ||
 		dispatch.ClientStreamID != "stream-1" ||
 		dispatch.ClientMessageID != "message-1" ||
-		dispatch.SIOEvent != "chat_predict" {
+		dispatch.SIOEvent != "chat_predict" ||
+		dispatch.Initiator != executiondomain.IndexIngestInitiatorSchedule {
 		t.Fatalf("unexpected index dispatch: %+v", dispatch)
 	}
 	query := executor.rowCalls[0].sql
@@ -119,7 +121,7 @@ func TestLoadPendingIndexIngestRejectsAmbiguousEmbeddingBindings(t *testing.T) {
 		"1", "indexing", "project", int32(1), deadline, "index-limits-v1", "", "",
 		"toolkit-configuration", "tool-parameters", "llm-model", "llm-configuration", "mcp-credential-references",
 		"embedding-binding", embeddingBindingDigest[:], int64(2),
-		"stream-1", "message-1", "chat_predict",
+		"stream-1", "message-1", "chat_predict", "user",
 	}}}}
 	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
 	if err != nil {

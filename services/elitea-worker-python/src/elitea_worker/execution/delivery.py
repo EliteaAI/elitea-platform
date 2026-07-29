@@ -1842,7 +1842,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             CurrentIndexNodeEventContext(
                 stream_id=command.index_ingest.client_stream_id,
                 task_id=command.execution_id,
-                initiator="user",
+                initiator=command.index_ingest.initiator,
                 project_id=_current_numeric_identity(command.resource_project_id),
                 user_id=_current_user_identity(command.principal_ref),
                 toolkit_id=_current_toolkit_id(
@@ -1869,7 +1869,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             runtime_config={
                 "callbacks": [callback],
                 "metadata": {
-                    "initiator": "user",
+                    "initiator": command.index_ingest.initiator,
                     "tool_name": "index_data",
                     "display_name": _current_toolkit_display_name(
                         resolved_input.toolkit_configuration.value

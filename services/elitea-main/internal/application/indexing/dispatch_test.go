@@ -8,6 +8,7 @@ import (
 	"time"
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
@@ -61,13 +62,15 @@ func (s *indexDispatchStoreStub) MarkIndexIngestPublished(_ context.Context, _ s
 type indexProducerStub struct {
 	prepared     executionapp.PreparedCommandEnvelope
 	prepareCalls int
+	dispatches   []IndexIngestDispatch
 	appendCalls  int
 	appended     [][]byte
 	appendErrors []error
 }
 
-func (p *indexProducerStub) PrepareIndexIngest(context.Context, IndexIngestDispatch) (executionapp.PreparedCommandEnvelope, error) {
+func (p *indexProducerStub) PrepareIndexIngest(_ context.Context, dispatch IndexIngestDispatch) (executionapp.PreparedCommandEnvelope, error) {
 	p.prepareCalls++
+	p.dispatches = append(p.dispatches, dispatch)
 	return p.prepared.Clone(), nil
 }
 
@@ -92,6 +95,7 @@ func TestIndexIngestDispatcherRetainsAndRetriesExactEnvelopeAfterTransportFailur
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dispatch := validIndexIngestDispatch()
+			dispatch.Initiator = executiondomain.IndexIngestInitiatorSchedule
 			store := &indexDispatchStoreStub{dispatch: dispatch}
 			producer := &indexProducerStub{
 				prepared:     indexPreparedEnvelope("before-rotation"),
@@ -112,7 +116,9 @@ func TestIndexIngestDispatcherRetainsAndRetriesExactEnvelopeAfterTransportFailur
 			if err := dispatcher.Dispatch(context.Background(), dispatch.OutboxID); err != nil {
 				t.Fatal(err)
 			}
-			if producer.prepareCalls != 1 || producer.appendCalls != 2 || !bytes.Equal(producer.appended[0], producer.appended[1]) || !store.prepared.Published {
+			if producer.prepareCalls != 1 || len(producer.dispatches) != 1 ||
+				producer.dispatches[0].Initiator != executiondomain.IndexIngestInitiatorSchedule ||
+				producer.appendCalls != 2 || !bytes.Equal(producer.appended[0], producer.appended[1]) || !store.prepared.Published {
 				t.Fatalf("retry changed durable bytes: prepares=%d appends=%d published=%v", producer.prepareCalls, producer.appendCalls, store.prepared.Published)
 			}
 		})
@@ -194,6 +200,30 @@ func TestIndexIngestDispatchRejectsDuplicateEntryReferences(t *testing.T) {
 	}
 }
 
+func TestIndexIngestDispatchRejectsUnknownInitiator(t *testing.T) {
+	dispatch := validIndexIngestDispatch()
+	dispatch.Initiator = executiondomain.IndexIngestInitiator("automation")
+	if !errors.Is(dispatch.Validate(), ErrInvalidIndexIngestDispatch) {
+		t.Fatal("unknown durable initiator was accepted")
+	}
+}
+
+func TestIndexIngestDispatchAcceptsClosedInitiatorSet(t *testing.T) {
+	for _, initiator := range []executiondomain.IndexIngestInitiator{
+		executiondomain.IndexIngestInitiatorUser,
+		executiondomain.IndexIngestInitiatorLLM,
+		executiondomain.IndexIngestInitiatorSchedule,
+	} {
+		t.Run(string(initiator), func(t *testing.T) {
+			dispatch := validIndexIngestDispatch()
+			dispatch.Initiator = initiator
+			if err := dispatch.Validate(); err != nil {
+				t.Fatalf("valid initiator %q rejected: %v", initiator, err)
+			}
+		})
+	}
+}
+
 func indexPreparedEnvelope(keyID string) executionapp.PreparedCommandEnvelope {
 	encoded := []byte("signed-index-envelope:" + keyID)
 	return executionapp.PreparedCommandEnvelope{
@@ -231,5 +261,6 @@ func validIndexIngestDispatch() IndexIngestDispatch {
 		LLMModelEntryID:             "llm-model",
 		LLMConfigurationEntryID:     "llm-configuration",
 		MCPTokensEntryID:            "mcp-credential-references",
+		Initiator:                   executiondomain.IndexIngestInitiatorUser,
 	}
 }

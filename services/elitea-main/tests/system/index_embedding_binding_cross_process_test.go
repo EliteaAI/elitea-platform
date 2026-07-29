@@ -433,6 +433,7 @@ func prepareIndexBindingCrossProcessEnvelope(
 		EmbeddingBindingEntryID:     binding.EmbeddingBindingEntryID,
 		EmbeddingBindingDigest:      binding.EmbeddingBindingDigest,
 		SIOEvent:                    indexingapp.CurrentIndexSIOEvent,
+		Initiator:                   executiondomain.IndexIngestInitiatorUser,
 	})
 	if err != nil {
 		t.Fatal(err)

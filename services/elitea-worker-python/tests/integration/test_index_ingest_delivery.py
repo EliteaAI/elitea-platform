@@ -698,6 +698,21 @@ def test_binding_aware_worker_rejects_index_capability_v1_before_claim() -> None
         )
 
 
+def test_worker_rejects_unknown_index_initiator_before_claim() -> None:
+    case = _case()
+    command = command_pb2.WorkerCommandV1.FromString(
+        case.command.SerializeToString(deterministic=True)
+    )
+    command.index_ingest.initiator = "automation"
+    case = _resign_case(case, command)
+
+    with pytest.raises(InvalidInput):
+        parse_and_verify_signed_command(
+            case.delivery.signed_envelope,
+            authenticator=TestOnlyConformanceHmacAuthenticator(),
+        )
+
+
 @pytest.mark.parametrize("failure", ["missing", "mismatched", "pre_binding"])
 def test_required_embedding_binding_fails_closed_before_sdk(
     monkeypatch: pytest.MonkeyPatch,
@@ -872,10 +887,12 @@ def test_lost_begin_response_replay_never_resolves_inputs_or_invokes_sdk(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("initiator", ["user", "schedule"])
 def test_begin_replay_cannot_double_submit_index_sdk(
     monkeypatch: pytest.MonkeyPatch,
+    initiator: str,
 ) -> None:
-    case = _case()
+    case = _scheduled_case() if initiator == "schedule" else _case()
     sdk = RecordingSdk(
         {"success": True, "result": {"status": "ok", "message": "Indexed once"}}
     )
@@ -914,6 +931,7 @@ def test_begin_replay_cannot_double_submit_index_sdk(
         assert replay.disposition is DeliveryDisposition.RECOVERY_REQUIRED_NOACK
         assert control.begins == 2
         assert len(sdk.calls) == 1
+        assert sdk.calls[0]["runtime_config"]["metadata"]["initiator"] == initiator
         assert supervisor.reserved is False
 
     asyncio.run(run())
@@ -1483,6 +1501,75 @@ def test_current_sdk_index_progress_is_acked_before_contiguous_terminal(
         assert metadata["toolkit_id"] == 9
         assert metadata["index_name"] == "docs"
         assert canary not in json.dumps(browser_event)
+
+    asyncio.run(run())
+
+
+def test_scheduled_index_keeps_durable_status_and_terminal_without_browser_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _scheduled_case()
+        sdk = RecordingSdk(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "Scheduled index complete"},
+            },
+            custom_events=[
+                ("thinking_step", {"message": "10 files processed"}),
+                ("thinking_step_update", {"message": "20 files processed"}),
+                (
+                    "index_data_status",
+                    {"index_name": "docs", "state": "completed", "toolkit_id": 9},
+                ),
+                (
+                    "index_data_removed",
+                    {"index_name": "obsolete", "toolkit_id": 9, "project_id": 42},
+                ),
+            ],
+            emit_tool_lifecycle=True,
+        )
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        output = Output()
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=output,
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.EXECUTED_SETTLED_ACKED
+        assert [frame.sequence for frame in output.frames] == [1, 2, 3]
+        status, removed, terminal = output.frames
+        assert [status.node_event.type, removed.node_event.type] == [
+            "agent_index_data_status",
+            "agent_index_data_removed",
+        ]
+        assert terminal == result.output_frame
+        assert terminal.terminal
+        assert terminal.settlement_proposal.terminal_sequence == 3
+        assert sdk.calls[0]["runtime_config"]["metadata"]["initiator"] == "schedule"
+        for frame in (status, removed):
+            current = json.loads(encode_current_node_event_json(frame.node_event))
+            assert current["stream_id"] is None
+            assert current["message_id"] is None
+            assert current["sio_event"] is None
+            assert current["response_metadata"]["metadata"]["initiator"] == "schedule"
+        status_metadata = json.loads(
+            encode_current_node_event_json(status.node_event)
+        )["response_metadata"]
+        assert status_metadata["initiator"] == "schedule"
+        assert status_metadata["task_id"] == case.command.execution_id
 
     asyncio.run(run())
 
@@ -2572,6 +2659,7 @@ def _case() -> Case:
             client_stream_id="conversation-1",
             client_message_id="message-1",
             sio_event="chat_predict",
+            initiator="user",
         ),
     )
     command_raw = command.SerializeToString(deterministic=True)
@@ -2685,6 +2773,18 @@ def _embedding_case() -> Case:
         ),
         manifest,
     )
+
+
+def _scheduled_case() -> Case:
+    original = _case()
+    command = command_pb2.WorkerCommandV1.FromString(
+        original.command.SerializeToString(deterministic=True)
+    )
+    command.index_ingest.initiator = "schedule"
+    command.index_ingest.ClearField("client_stream_id")
+    command.index_ingest.ClearField("client_message_id")
+    command.index_ingest.ClearField("sio_event")
+    return _resign_case(original, command)
 
 
 def _resign_case(case: Case, command: command_pb2.WorkerCommandV1) -> Case:
