@@ -127,7 +127,8 @@ func TestCurrentProjectPgvectorMaterialRepositoryValidatesAndPreservesCancellati
 	mutator := &currentProjectPgvectorVaultMutatorStub{}
 	repository := newCurrentProjectPgvectorMaterialRepositoryForTest(t, loader, mutator)
 
-	if _, err := repository.LoadProjectPgvectorMaterial(nil, 1); !errors.Is(err, vectorstoreapp.ErrInvalidProjectPgvectorRequest) {
+	var nilContext context.Context
+	if _, err := repository.LoadProjectPgvectorMaterial(nilContext, 1); !errors.Is(err, vectorstoreapp.ErrInvalidProjectPgvectorRequest) {
 		t.Fatalf("nil context error = %v", err)
 	}
 	if err := repository.StoreProjectPgvectorMaterial(context.Background(), 1, "password", ""); !errors.Is(err, vectorstoreapp.ErrInvalidProjectPgvectorRequest) {

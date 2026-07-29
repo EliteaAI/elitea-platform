@@ -171,7 +171,9 @@ func TestAvailable_ContainsRequiredFields(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	var types []handler.ConfigurationType
-	json.NewDecoder(rec.Body).Decode(&types)
+	if err := json.NewDecoder(rec.Body).Decode(&types); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 
 	for _, ct := range types {
 		if ct.Type == "" {
@@ -200,7 +202,9 @@ func TestCheckConnection_Success(t *testing.T) {
 	}
 
 	var result map[string]any
-	json.NewDecoder(rec.Body).Decode(&result)
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if success, _ := result["success"].(bool); !success {
 		t.Error("expected success=true in CheckConnection response")
 	}
@@ -222,7 +226,9 @@ func TestBatchCheckConnections_Empty(t *testing.T) {
 	}
 
 	var results []map[string]any
-	json.NewDecoder(rec.Body).Decode(&results)
+	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if len(results) != 0 {
 		t.Errorf("expected empty results, got %d items", len(results))
 	}
@@ -231,10 +237,13 @@ func TestBatchCheckConnections_Empty(t *testing.T) {
 func TestBatchCheckConnections_MultiplItems(t *testing.T) {
 	r := setupConfigRouter()
 
-	payload, _ := json.Marshal([]map[string]any{
+	payload, err := json.Marshal([]map[string]any{
 		{"id": "cfg-1"},
 		{"id": "cfg-2"},
 	})
+	if err != nil {
+		t.Fatalf("failed to encode request: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v2/check_connections/proj-1", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -245,7 +254,9 @@ func TestBatchCheckConnections_MultiplItems(t *testing.T) {
 	}
 
 	var results []map[string]any
-	json.NewDecoder(rec.Body).Decode(&results)
+	if err := json.NewDecoder(rec.Body).Decode(&results); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if len(results) != 2 {
 		t.Errorf("expected 2 results, got %d", len(results))
 	}
@@ -301,7 +312,9 @@ func TestListModels_Success(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if _, ok := body["items"]; !ok {
 		t.Error("expected 'items' key in ListModels response")
 	}
@@ -312,7 +325,10 @@ func TestListModels_Success(t *testing.T) {
 func TestSetDefaultModel_Success(t *testing.T) {
 	r := setupConfigRouter()
 
-	payload, _ := json.Marshal(map[string]string{"model": "gpt-4", "section": "llm"})
+	payload, err := json.Marshal(map[string]string{"model": "gpt-4", "section": "llm"})
+	if err != nil {
+		t.Fatalf("failed to encode request: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v2/models/proj-1", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -359,7 +375,9 @@ func TestTTSVoices_Success(t *testing.T) {
 	}
 
 	var body map[string]any
-	json.NewDecoder(rec.Body).Decode(&body)
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if _, ok := body["voices"]; !ok {
 		t.Error("expected 'voices' key in TTSVoices response")
 	}

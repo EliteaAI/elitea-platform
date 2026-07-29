@@ -219,7 +219,7 @@ func TestExecutionJobsRepositoryPersistsOneDatabaseAuthoredAdmissionClock(t *tes
 	}
 	for _, call := range []queryCall{inputCall, jobCall, outboxCall} {
 		for _, argument := range call.args {
-			if timestamp, ok := argument.(time.Time); ok && timestamp == applicationTime {
+			if timestamp, ok := argument.(time.Time); ok && timestamp.Equal(applicationTime) {
 				t.Fatalf("application timestamp crossed the persistence boundary: sql=%s", call.sql)
 			}
 		}

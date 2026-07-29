@@ -53,7 +53,7 @@ func Read(path string, maxBytes int64, permissions Permissions) ([]byte, error) 
 
 // ReadSnapshot applies the same path, type, permission, identity and byte
 // bounds as Read and retains the opened file identity for alias checks.
-func ReadSnapshot(path string, maxBytes int64, permissions Permissions) (Snapshot, error) {
+func ReadSnapshot(path string, maxBytes int64, permissions Permissions) (snapshot Snapshot, err error) {
 	if path == "" || len(path) > maxPathBytes || strings.ContainsAny(path, "\r\n\x00") || !filepath.IsAbs(path) || filepath.Clean(path) != path || maxBytes <= 0 {
 		return Snapshot{}, errors.New("secure file path or size is invalid")
 	}
@@ -79,7 +79,12 @@ func ReadSnapshot(path string, maxBytes int64, permissions Permissions) (Snapsho
 	if err != nil {
 		return Snapshot{}, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			snapshot = Snapshot{}
+			err = fmt.Errorf("close secure file: %w", closeErr)
+		}
+	}()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return Snapshot{}, err

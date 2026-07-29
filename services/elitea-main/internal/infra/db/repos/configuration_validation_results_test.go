@@ -482,34 +482,6 @@ func outputRecordScanValues(record outputRecord) []any {
 	}
 }
 
-func assertIndexTerminalIntentCall(
-	t *testing.T,
-	call queryCall,
-	record outputRecord,
-	state string,
-) {
-	t.Helper()
-	for _, predicate := range []string{
-		"UPDATE elitea_runtime.index_ingest_jobs",
-		"capability_id = 'index.ingest.v1'",
-		"index_meta_initialized_at IS NOT NULL",
-		"index_meta_terminal_status IS NULL",
-		"index_meta_terminal_status = 'PENDING'",
-		"index_meta_terminal_attempt_count = 0",
-	} {
-		if !strings.Contains(call.sql, predicate) {
-			t.Fatalf("terminal intent SQL is missing %q", predicate)
-		}
-	}
-	if len(call.args) != 4 ||
-		call.args[0] != record.ExecutionID ||
-		call.args[1] != int64(record.Generation) ||
-		call.args[2] != state ||
-		call.args[3] != record.OccurredAt.UTC() {
-		t.Fatalf("terminal intent args=%#v", call.args)
-	}
-}
-
 func testValidationFrame(t *testing.T) outputapp.ConfigurationValidationFrame {
 	t.Helper()
 	binding := configurationdomain.ValidationBinding{

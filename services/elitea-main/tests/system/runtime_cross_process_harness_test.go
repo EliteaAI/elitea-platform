@@ -80,11 +80,11 @@ func canonicalTempDir(t *testing.T) string {
 	}
 	canonical, err := filepath.EvalSymlinks(created)
 	if err != nil {
-		os.RemoveAll(created)
+		_ = os.RemoveAll(created)
 		t.Fatal(err)
 	}
 	if err := os.Chmod(canonical, 0o700); err != nil {
-		os.RemoveAll(canonical)
+		_ = os.RemoveAll(canonical)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(canonical) })
@@ -409,7 +409,7 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
@@ -473,7 +473,7 @@ func seedRuntimeFixtures(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer transaction.Rollback(ctx)
+	defer func() { _ = transaction.Rollback(ctx) }()
 	if _, err := transaction.Exec(ctx, `
 INSERT INTO p_1.configuration (
     id, uuid, project_id, label, elitea_title, type, section, data, meta,
@@ -662,7 +662,7 @@ func startChild(t *testing.T, name, logPath, directory string, environment []str
 	command.Stdout = logFile
 	command.Stderr = logFile
 	if err := command.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		t.Fatalf("start %s: %v", name, err)
 	}
 	child := &childProcess{name: name, command: command, done: make(chan struct{}), logPath: logPath}
@@ -725,7 +725,7 @@ func waitForMain(t *testing.T, ctx context.Context, publicBaseURL string, proces
 		if err != nil {
 			return false, nil
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 		return response.StatusCode == http.StatusOK, nil
 	}); err != nil {
 		t.Fatalf("elitea-main did not become ready: %v\n%s", err, process.logs())
@@ -782,7 +782,7 @@ func waitForPendingDelivery(t *testing.T, ctx context.Context, client *redis.Cli
 func agePendingDelivery(t *testing.T, ctx context.Context, port int, caPath, consumer string) {
 	t.Helper()
 	worker := newControlRedisClient(t, port, "worker", workerPassword, caPath)
-	defer worker.Close()
+	defer func() { _ = worker.Close() }()
 	pending, err := worker.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: commandStream,
 		Group:  consumerGroup,

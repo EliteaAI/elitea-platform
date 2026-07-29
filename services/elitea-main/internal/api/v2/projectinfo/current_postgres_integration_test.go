@@ -73,7 +73,11 @@ func TestProductionProjectInfoHTTPPostgresContractRBACAndTenantIsolation(t *test
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer response.Body.Close()
+		defer func() {
+			if err := response.Body.Close(); err != nil {
+				t.Errorf("close project-info response body: %v", err)
+			}
+		}()
 		payload, err := io.ReadAll(response.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -235,13 +239,17 @@ func newCurrentProjectInfoPostgresPool(t *testing.T) *pgxpool.Pool {
 	testConfig.MaxConns = 4
 	pool, err := pgxpool.NewWithConfig(ctx, testConfig)
 	if err != nil {
-		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
+		if _, dropErr := adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); dropErr != nil {
+			t.Errorf("drop database after pool open failure: %v", dropErr)
+		}
 		adminPool.Close()
 		t.Fatalf("open isolated PostgreSQL integration database: %v", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		_, _ = adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)")
+		if _, dropErr := adminPool.Exec(context.Background(), "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); dropErr != nil {
+			t.Errorf("drop database after pool ping failure: %v", dropErr)
+		}
 		adminPool.Close()
 		t.Fatalf("ping isolated PostgreSQL integration database: %v", err)
 	}

@@ -573,6 +573,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		CreditBytes:          maxOutputFrameBytes,
 	}
 	var outputServer *output.Server
+	var outputServerErr error
 	if config.IndexIngestDispatchEnabled {
 		indexResults, err := repos.NewIndexIngestResultsRepository(dependencies.OutputPool, repos.IndexIngestOutputPolicy{
 			LimitsRevision:    limitsRevision,
@@ -590,7 +591,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, err
 		}
-		outputServer, err = output.NewServerWithIndexIngestAndNodeEvents(
+		outputServer, outputServerErr = output.NewServerWithIndexIngestAndNodeEvents(
 			outputServerConfig,
 			outputPeerAuthorizer,
 			validationOutput,
@@ -599,10 +600,15 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			nodeEventOutput,
 		)
 	} else {
-		outputServer, err = output.NewServer(outputServerConfig, outputPeerAuthorizer, validationOutput, runtimeFailures)
+		outputServer, outputServerErr = output.NewServer(
+			outputServerConfig,
+			outputPeerAuthorizer,
+			validationOutput,
+			runtimeFailures,
+		)
 	}
-	if err != nil {
-		return nil, err
+	if outputServerErr != nil {
+		return nil, outputServerErr
 	}
 
 	contentRepository, err := storage.NewPostgresContentRepository(dependencies.ContentPool)

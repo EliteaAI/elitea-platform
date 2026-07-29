@@ -116,6 +116,8 @@ jobs:
           python -m pip check
 
       - name: Unit and byte-conformance tests
+        env:
+          ELITEA_CONFORMANCE_ROOT: ${{ github.workspace }}/testdata/proto/runtime/v1
         run: |
           python -m pytest services/elitea-worker-python/tests
           elitea-worker conformance --suite runtime-v1
@@ -144,12 +146,14 @@ jobs:
           python-version: "3.12"
 
       - name: Install the focused Redis lifecycle test dependencies
-        run: python -m pip install 'pytest>=8.3,<10' 'redis>=5.2,<7'
+        run: >-
+          python -m pip install
+          ./libs/proto
+          "./services/elitea-worker-python[test]"
 
       - name: Exercise atomic Python XACK and XDEL retirement
         env:
           ELITEA_TEST_REDIS_URL: redis://127.0.0.1:6379/15
-          PYTHONPATH: services/elitea-worker-python/src
         run: >-
           python -m pytest -q
           services/elitea-worker-python/tests/service/test_redis_commands_service.py

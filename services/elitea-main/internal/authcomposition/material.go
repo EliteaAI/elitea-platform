@@ -188,7 +188,7 @@ func normalizeRedisPassword(raw []byte) ([]byte, bool) {
 		}
 	}
 	if len(value) == 0 || len(value) > maxRedisPasswordBytes ||
-		bytes.IndexAny(value, "\r\n\x00") >= 0 || !utf8.Valid(value) {
+		bytes.ContainsAny(value, "\r\n\x00") || !utf8.Valid(value) {
 		return nil, false
 	}
 	return value, true

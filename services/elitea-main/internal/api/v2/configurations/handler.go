@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -197,8 +198,18 @@ type SharedSection struct {
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit := 0
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil {
+			limit = parsed
+		}
+	}
+	offset := 0
+	if rawOffset := r.URL.Query().Get("offset"); rawOffset != "" {
+		if parsed, err := strconv.Atoi(rawOffset); err == nil {
+			offset = parsed
+		}
+	}
 	if limit <= 0 {
 		limit = defaultConfigurationListLimit
 	}
@@ -250,13 +261,22 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var c Configuration
 		var data, meta []byte
 		var createdAt, updatedAt *time.Time
-		rows.Scan(
+		if err := rows.Scan(
 			&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
 			&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 			&createdAt, &updatedAt,
-		)
-		json.Unmarshal(data, &c.Data)
-		json.Unmarshal(meta, &c.Meta)
+		); err != nil {
+			http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(data, &c.Data); err != nil {
+			http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(meta, &c.Meta); err != nil {
+			http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+			return
+		}
 		if createdAt != nil {
 			c.CreatedAt = createdAt.Format(time.RFC3339)
 		}
@@ -269,7 +289,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	// Shared configs
 	var sharedTotal int
 	sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true`, schema)
-	h.pool.QueryRow(ctx, sharedCountQ).Scan(&sharedTotal)
+	if err := h.pool.QueryRow(ctx, sharedCountQ).Scan(&sharedTotal); err != nil {
+		http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
+		return
+	}
 
 	sharedQ := fmt.Sprintf(`
 		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
@@ -289,13 +312,22 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			var c Configuration
 			var data, meta []byte
 			var createdAt, updatedAt *time.Time
-			sharedRows.Scan(
+			if err := sharedRows.Scan(
 				&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
 				&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 				&createdAt, &updatedAt,
-			)
-			json.Unmarshal(data, &c.Data)
-			json.Unmarshal(meta, &c.Meta)
+			); err != nil {
+				http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
+				return
+			}
+			if err := json.Unmarshal(data, &c.Data); err != nil {
+				http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+				return
+			}
+			if err := json.Unmarshal(meta, &c.Meta); err != nil {
+				http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+				return
+			}
 			if createdAt != nil {
 				c.CreatedAt = createdAt.Format(time.RFC3339)
 			}
@@ -345,8 +377,14 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
 		return
 	}
-	json.Unmarshal(data, &c.Data)
-	json.Unmarshal(meta, &c.Meta)
+	if err := json.Unmarshal(data, &c.Data); err != nil {
+		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := json.Unmarshal(meta, &c.Meta); err != nil {
+		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		return
+	}
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -375,8 +413,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dataBytes, _ := json.Marshal(dataMap)
-	metaBytes, _ := json.Marshal(body["meta"])
+	dataBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusBadRequest)
+		return
+	}
+	metaBytes, err := json.Marshal(body["meta"])
+	if err != nil {
+		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusBadRequest)
+		return
+	}
 	shared, _ := body["shared"].(bool)
 
 	q := fmt.Sprintf(`
@@ -385,7 +431,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		RETURNING id, uuid::text, created_at
 	`, schema)
 
-	pID, _ := strconv.Atoi(projectID)
+	pID, err := strconv.Atoi(projectID)
+	if err != nil {
+		http.Error(w, `{"error":"invalid project"}`, http.StatusBadRequest)
+		return
+	}
 	var authorID any
 	if user, ok := auth.UserFromContext(ctx); ok {
 		if owningUserID, safe := user.OwningUserID(); safe {
@@ -395,7 +445,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var id int
 	var uuid string
 	var createdAt time.Time
-	err := h.pool.QueryRow(ctx, q,
+	err = h.pool.QueryRow(ctx, q,
 		pID,
 		strVal(body, "label"),
 		strVal(body, "name"),
@@ -422,8 +472,14 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Source:    "user",
 		CreatedAt: createdAt.Format(time.RFC3339),
 	}
-	json.Unmarshal(dataBytes, &c.Data)
-	json.Unmarshal(metaBytes, &c.Meta)
+	if err := json.Unmarshal(dataBytes, &c.Data); err != nil {
+		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := json.Unmarshal(metaBytes, &c.Meta); err != nil {
+		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusInternalServerError)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -448,8 +504,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dataBytes, _ := json.Marshal(dataMap)
-	metaBytes, _ := json.Marshal(body["meta"])
+	dataBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusBadRequest)
+		return
+	}
+	metaBytes, err := json.Marshal(body["meta"])
+	if err != nil {
+		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusBadRequest)
+		return
+	}
 	shared, _ := body["shared"].(bool)
 
 	q := fmt.Sprintf(`
@@ -470,7 +534,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	var c Configuration
 	var data2, meta2 []byte
 	var createdAt, updatedAt *time.Time
-	err := h.pool.QueryRow(ctx, q,
+	err = h.pool.QueryRow(ctx, q,
 		strVal(body, "label"),
 		strVal(body, "name"),
 		strVal(body, "type"),
@@ -488,8 +552,14 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
 		return
 	}
-	json.Unmarshal(data2, &c.Data)
-	json.Unmarshal(meta2, &c.Meta)
+	if err := json.Unmarshal(data2, &c.Data); err != nil {
+		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := json.Unmarshal(meta2, &c.Meta); err != nil {
+		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		return
+	}
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -588,7 +658,10 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		m.ProjectID = strconv.Itoa(dbProjectID)
 		m.IsDefault = false
 		if dataBytes != nil {
-			json.Unmarshal(dataBytes, &m.Data)
+			if err := json.Unmarshal(dataBytes, &m.Data); err != nil {
+				http.Error(w, `{"error":"invalid stored model"}`, http.StatusInternalServerError)
+				return
+			}
 		}
 		items = append(items, m)
 	}
@@ -667,7 +740,9 @@ func (h *Handler) TTSVoices(w http.ResponseWriter, _ *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("failed to encode configurations response", "err", err)
+	}
 }
 
 func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

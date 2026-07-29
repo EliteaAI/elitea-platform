@@ -55,7 +55,7 @@ type Producer struct {
 
 func NewProducer(config ProducerConfig, signer CommandSigner, appender StreamAppender) (*Producer, error) {
 	if signer == nil || appender == nil {
-		return nil, errors.New("Redis signer and stream appender are required")
+		return nil, errors.New("redis signer and stream appender are required")
 	}
 	if config.Stream == "" || len(config.Stream) > 256 || strings.ContainsAny(config.Stream, " \r\n\x00") {
 		return nil, errors.New("invalid Redis command stream")
@@ -243,7 +243,7 @@ func NewRedisStreamAppender(client redis.Scripter, config RedisStreamAppenderCon
 	// real-cluster failover coverage.
 	switch client.(type) {
 	case *redis.ClusterClient, *redis.Ring:
-		return nil, errors.New("Redis control stream requires a single logical primary")
+		return nil, errors.New("redis control stream requires a single logical primary")
 	}
 	if err := config.validate(); err != nil {
 		return nil, err

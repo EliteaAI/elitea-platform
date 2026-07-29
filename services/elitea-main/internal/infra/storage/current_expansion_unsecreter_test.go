@@ -303,7 +303,8 @@ func TestCurrentVaultUnsecreterRejectsInvalidConstructionAndInput(t *testing.T) 
 	loader := &fakeSecretVaultLoader{projects: map[int64]SecretVault{1: &fakeSecretVault{}}}
 	unsecreter, err := NewCurrentVaultUnsecreter(loader)
 	require.NoError(t, err)
-	_, err = unsecreter.Unsecret(nil, 1, map[string]any{})
+	var nilContext context.Context
+	_, err = unsecreter.Unsecret(nilContext, 1, map[string]any{})
 	require.ErrorIs(t, err, ErrCurrentUnsecretRejected)
 	_, err = unsecreter.Unsecret(context.Background(), 0, map[string]any{})
 	require.ErrorIs(t, err, ErrCurrentUnsecretRejected)

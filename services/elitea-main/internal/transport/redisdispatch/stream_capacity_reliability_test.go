@@ -116,10 +116,7 @@ func TestRedisStreamServiceBackedCapacityReliability(t *testing.T) {
 	started := time.Now()
 	completedRounds := 0
 	peakConnections := 0
-	for {
-		if rounds > 0 && completedRounds >= rounds {
-			break
-		}
+	for rounds <= 0 || completedRounds < rounds {
 		if soakDuration > 0 && completedRounds > 0 && time.Since(started) >= soakDuration {
 			break
 		}

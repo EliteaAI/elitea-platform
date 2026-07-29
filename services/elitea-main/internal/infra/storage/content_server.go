@@ -212,7 +212,11 @@ func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	defer content.Close()
+	defer func() {
+		if closeErr := content.Close(); closeErr != nil {
+			s.logger.WarnContext(r.Context(), "input content close failed")
+		}
+	}()
 
 	// This validation slice is deliberately small. Buffering here lets the
 	// server verify length/digest before sending any bytes to the worker; larger

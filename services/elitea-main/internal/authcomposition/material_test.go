@@ -25,10 +25,18 @@ func TestMaterializeLoadsExactPurposeSeparatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	redisCAPEM, err := os.ReadFile(config.Redis.CAFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedRedisRoots := x509.NewCertPool()
+	if !expectedRedisRoots.AppendCertsFromPEM(redisCAPEM) {
+		t.Fatal("test Redis CA PEM was not accepted")
+	}
 	if string(material.redisPassword) != " redis password " ||
 		!bytes.Equal(material.attemptKey, bytes.Repeat([]byte{0xa5}, minAttemptKeyBytes)) ||
 		string(material.patSigningKey) != "päss-signing-key\n" || material.redisRoots == nil ||
-		len(material.redisRoots.Subjects()) != 1 || material.formProvider == nil {
+		!material.redisRoots.Equal(expectedRedisRoots) || material.formProvider == nil {
 		t.Fatalf("unexpected materialized snapshot: password=%q attempt=%x PAT=%q roots=%v provider=%v",
 			material.redisPassword,
 			material.attemptKey,

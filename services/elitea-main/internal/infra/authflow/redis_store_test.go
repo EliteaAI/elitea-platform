@@ -206,7 +206,9 @@ func TestRedisStoreCollisionRecomputesRemainingAbsoluteTTL(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = client.Close() })
-	server.Set(testKeyPrefix+firstID, "unrelated")
+	if err := server.Set(testKeyPrefix+firstID, "unrelated"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(testKeyPrefix+firstID, time.Hour)
 
 	calls := 0

@@ -127,7 +127,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	seedRuntimeFixtures(t, ctx, pool, settings)
 
 	observer := newControlRedisClient(t, controlRedisPort, "observer", observerPassword, pki.caPath)
-	defer observer.Close()
+	defer func() { _ = observer.Close() }()
 	waitForRedis(t, ctx, observer, containers, controlRedisName)
 	if err := observer.XGroupCreateMkStream(ctx, commandStream, consumerGroup, "0-0").Err(); err != nil {
 		t.Fatalf("provision single runtime consumer group: %v", err)
@@ -198,9 +198,9 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 func assertBrokerLeastPrivilege(t *testing.T, ctx context.Context, port int, caPath string, observer *redis.Client) {
 	t.Helper()
 	worker := newControlRedisClient(t, port, "worker", workerPassword, caPath)
-	defer worker.Close()
+	defer func() { _ = worker.Close() }()
 	producer := newControlRedisClient(t, port, "producer", producerPassword, caPath)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 
 	assertNOPERM := func(operation string, err error) {
 		t.Helper()
@@ -264,7 +264,7 @@ func submitValidation(t *testing.T, publicBaseURL string, settings []byte) admis
 	if err != nil {
 		t.Fatalf("submit public validation: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var admitted admissionResponse
 	if err := json.NewDecoder(response.Body).Decode(&admitted); err != nil {
 		t.Fatalf("decode admission response with status %d: %v", response.StatusCode, err)
@@ -335,7 +335,7 @@ func assertAuthorizedSSE(t *testing.T, publicBaseURL, executionID, settingsMarke
 	if err != nil {
 		t.Fatalf("open authorized SSE: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("unexpected SSE response status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
 	}
@@ -384,7 +384,7 @@ func assertForwardedIdentityCannotReadSSE(t *testing.T, publicBaseURL, execution
 	if err != nil {
 		t.Fatalf("exercise forwarded-identity rejection: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("forwarded public headers reached protected runtime SSE: status=%d", response.StatusCode)
 	}

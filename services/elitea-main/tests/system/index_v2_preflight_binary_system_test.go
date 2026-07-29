@@ -89,7 +89,7 @@ func TestIndexV2PreflightShippedBinary(t *testing.T) {
 	observer := newControlRedisClient(
 		t, controlRedisPort, "observer", observerPassword, pki.caPath,
 	)
-	defer observer.Close()
+	defer func() { _ = observer.Close() }()
 	waitForRedis(t, ctx, observer, containers, controlRedisName)
 	if err := observer.XGroupCreateMkStream(
 		ctx, commandStream, consumerGroup, "0-0",

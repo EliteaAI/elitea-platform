@@ -73,7 +73,7 @@ func loadPassword(path string) (string, error) {
 		}
 	}
 	if len(contents) == 0 || len(contents) > maxRedisPasswordBytes ||
-		bytes.IndexAny(contents, "\r\n\x00") >= 0 || !utf8.Valid(contents) {
+		bytes.ContainsAny(contents, "\r\n\x00") || !utf8.Valid(contents) {
 		return "", errors.New("runtime Redis password file is invalid")
 	}
 	return string(contents), nil

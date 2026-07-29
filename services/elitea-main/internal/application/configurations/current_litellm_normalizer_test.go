@@ -125,7 +125,8 @@ func TestCurrentLiteLLMDataNormalizerDelegatesNonCredentialCreateRequests(t *tes
 
 func TestCurrentLiteLLMDataNormalizerHonorsContext(t *testing.T) {
 	normalizer := NewCurrentLiteLLMDataNormalizer(nil)
-	if _, err := normalizer.Normalize(nil, CurrentConfigurationNormalizationRequest{}); !errors.Is(err, ErrInvalidCurrentConfigurationMutation) {
+	var nilContext context.Context
+	if _, err := normalizer.Normalize(nilContext, CurrentConfigurationNormalizationRequest{}); !errors.Is(err, ErrInvalidCurrentConfigurationMutation) {
 		t.Fatalf("nil context error=%v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

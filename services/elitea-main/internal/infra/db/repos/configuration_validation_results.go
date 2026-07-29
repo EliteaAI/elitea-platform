@@ -660,8 +660,8 @@ func persistCurrentIndexMetaTerminalIntent(
 	record outputRecord,
 ) error {
 	if record.PayloadType != payloadTypeRuntimeFailure &&
-		!(record.PayloadType == payloadTypeIndexIngestResult &&
-			record.SettlementOutcome == executionapp.SettlementFailed) {
+		(record.PayloadType != payloadTypeIndexIngestResult ||
+			record.SettlementOutcome != executionapp.SettlementFailed) {
 		return outputapp.ErrInvalidValidationOutput
 	}
 	var state string

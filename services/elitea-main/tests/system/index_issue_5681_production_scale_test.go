@@ -646,7 +646,7 @@ func readIssue5681CleanupResources(
 	if err != nil {
 		t.Fatal("open owner cleanup manifest")
 	}
-	defer file.Close()
+	defer closeIndexReliabilityResource(t, file, "owner cleanup manifest")
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024), 8*1024)
 	resources := make([]index5681CleanupResource, 0, 2)
@@ -1121,7 +1121,7 @@ func requireIssue5681GatewayTLSBinding(
 	if err != nil {
 		t.Fatal("establish dedicated gateway TLS connection")
 	}
-	defer connection.Close()
+	defer closeIndexReliabilityResource(t, connection, "dedicated gateway TLS connection")
 	state := connection.ConnectionState()
 	if len(state.PeerCertificates) == 0 ||
 		!bytes.Equal(state.PeerCertificates[0].Raw, block.Bytes) {
@@ -1278,7 +1278,11 @@ func assertIssue5681AdmissionRBAC(
 	if err != nil {
 		t.Fatalf("exercise unauthenticated index admission: %v", err)
 	}
-	defer response.Body.Close()
+	defer closeIndexReliabilityResource(
+		t,
+		response.Body,
+		"unauthenticated index admission response",
+	)
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("unauthenticated forwarded identity reached index admission: status=%d", response.StatusCode)
 	}
@@ -1293,7 +1297,11 @@ func assertIssue5681AdmissionRBAC(
 	if err != nil {
 		t.Fatalf("exercise permission-denied index admission: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(
+		t,
+		response.Body,
+		"permission-denied index admission response",
+	)
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("authenticated actor without index permission reached admission: status=%d", response.StatusCode)
 	}
@@ -1326,7 +1334,7 @@ func assertIssue5681PublicReadBoundaries(
 	if err != nil {
 		t.Fatalf("exercise unauthenticated SSE: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "unauthenticated SSE response")
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("unauthenticated forwarded identity reached SSE: status=%d", response.StatusCode)
 	}
@@ -1340,7 +1348,7 @@ func assertIssue5681PublicReadBoundaries(
 	if err != nil {
 		t.Fatalf("exercise permission-denied SSE: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "permission-denied SSE response")
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("authenticated actor without replay permission reached SSE: status=%d", response.StatusCode)
 	}
@@ -1362,7 +1370,7 @@ func assertIssue5681PublicReadBoundaries(
 	if err != nil {
 		t.Fatalf("exercise permission-denied Stop: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "permission-denied Stop response")
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("authenticated actor without task-delete permission reached Stop: status=%d", response.StatusCode)
 	}
@@ -1382,7 +1390,7 @@ func assertIssue5681PublicReadBoundaries(
 	if err != nil {
 		t.Fatalf("exercise cross-tenant SSE: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "cross-tenant SSE response")
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("execution replay crossed its project boundary: status=%d", response.StatusCode)
 	}
@@ -1417,7 +1425,7 @@ func requireIssue5681SecondProjectAccess(
 	if err != nil {
 		t.Fatalf("verify allowed actor replay permission in the second project: %v", err)
 	}
-	response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "second-project admission response")
 	// The deliberately incomplete body reaches the start handler only after
 	// the exact models.applications.tool.patch project permission succeeds.
 	if response.StatusCode != http.StatusBadRequest {
@@ -1608,8 +1616,11 @@ func waitForIssue5681Fixture(
 			}
 			return false, err
 		}
-		defer response.Body.Close()
-		return response.StatusCode == http.StatusOK, nil
+		matched := response.StatusCode == http.StatusOK
+		if err := response.Body.Close(); err != nil {
+			return false, fmt.Errorf("close issue #5681 fixture health response: %w", err)
+		}
+		return matched, nil
 	})
 	if err != nil {
 		t.Fatalf("wait for issue #5681 fixture: %v", err)
@@ -2342,7 +2353,7 @@ func collectIssue5681SSE(
 	forbiddenValues []string,
 	lastEventID int64,
 	ready chan<- error,
-) (index5681SSEObservation, error) {
+) (observation index5681SSEObservation, resultErr error) {
 	endpoint := fmt.Sprintf(
 		"%s/api/v2/executions/%d/%s/events",
 		harness.config.baseURL,
@@ -2364,7 +2375,11 @@ func collectIssue5681SSE(
 	if err != nil {
 		return index5681SSEObservation{}, err
 	}
-	defer response.Body.Close()
+	defer joinIndexReliabilityCloseError(
+		&resultErr,
+		response.Body,
+		"issue #5681 SSE response",
+	)
 	if response.StatusCode != http.StatusOK ||
 		!strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
 		return index5681SSEObservation{}, fmt.Errorf(
@@ -2375,7 +2390,7 @@ func collectIssue5681SSE(
 	}
 	ready <- nil
 
-	observation := index5681SSEObservation{
+	observation = index5681SSEObservation{
 		ThinkingIndex:   -1,
 		InProgressIndex: -1,
 		CompletedIndex:  -1,
@@ -2719,8 +2734,8 @@ func issue5681UnsafePayload(raw []byte, forbiddenValues []string) bool {
 		}
 	}
 	for _, field := range strings.FieldsFunc(lower, func(character rune) bool {
-		return !(character >= 'a' && character <= 'z') &&
-			!(character >= '0' && character <= '9') &&
+		return (character < 'a' || character > 'z') &&
+			(character < '0' || character > '9') &&
 			character != '+' && character != '/' && character != '='
 	}) {
 		if len(field) > 4096 {
@@ -2976,7 +2991,7 @@ func readIssue5681Receipt(
 func issue5681ReceiptResult(
 	ctx context.Context,
 	baseURL string,
-) (index5681FixtureReceipt, error) {
+) (receipt index5681FixtureReceipt, resultErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/__elitea_issue_5681/receipt", nil)
 	if err != nil {
 		return index5681FixtureReceipt{}, err
@@ -2985,7 +3000,11 @@ func issue5681ReceiptResult(
 	if err != nil {
 		return index5681FixtureReceipt{}, err
 	}
-	defer response.Body.Close()
+	defer joinIndexReliabilityCloseError(
+		&resultErr,
+		response.Body,
+		"issue #5681 receipt response",
+	)
 	if response.StatusCode != http.StatusOK {
 		return index5681FixtureReceipt{}, fmt.Errorf("receipt status=%d", response.StatusCode)
 	}
@@ -2993,7 +3012,6 @@ func issue5681ReceiptResult(
 	if err != nil {
 		return index5681FixtureReceipt{}, err
 	}
-	var receipt index5681FixtureReceipt
 	if err := json.Unmarshal(body, &receipt); err != nil {
 		return index5681FixtureReceipt{}, fmt.Errorf("decode receipt: %w", err)
 	}
@@ -3101,7 +3119,7 @@ func assertIssue5681PgVectorOutcome(
 func listIssue5681IndexMeta(
 	ctx context.Context,
 	harness *indexComposeHarness,
-) ([]index5681MetaItem, error) {
+) (items []index5681MetaItem, resultErr error) {
 	endpoint := fmt.Sprintf(
 		"%s/api/v2/elitea_core/index_meta/prompt_lib/%d/%d",
 		harness.config.baseURL,
@@ -3117,7 +3135,11 @@ func listIssue5681IndexMeta(
 	if err != nil {
 		return nil, fmt.Errorf("read public index metadata: %w", err)
 	}
-	defer response.Body.Close()
+	defer joinIndexReliabilityCloseError(
+		&resultErr,
+		response.Body,
+		"public index metadata response",
+	)
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("read public index metadata: status=%d", response.StatusCode)
 	}
@@ -3127,7 +3149,6 @@ func listIssue5681IndexMeta(
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
-	var items []index5681MetaItem
 	if err := decoder.Decode(&items); err != nil || len(items) > 1000 {
 		return nil, errors.New("decode bounded public index metadata")
 	}
@@ -3167,10 +3188,13 @@ func cleanupIssue5681Index(
 		if requestErr != nil {
 			return fmt.Errorf("delete public index metadata: %w", requestErr)
 		}
-		response.Body.Close()
+		closeErr := response.Body.Close()
 		if response.StatusCode != http.StatusOK &&
 			response.StatusCode != http.StatusNoContent {
 			return fmt.Errorf("delete public index metadata: status=%d", response.StatusCode)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close public index delete response: %w", closeErr)
 		}
 	}
 	remaining, err := listIssue5681IndexMeta(ctx, harness)

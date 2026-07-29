@@ -27,10 +27,6 @@ func NewInputBundlesRepository(pool *pgxpool.Pool) (*InputBundlesRepository, err
 	return &InputBundlesRepository{store: store}, nil
 }
 
-func newInputBundlesRepository(store sqlExecutor) *InputBundlesRepository {
-	return &InputBundlesRepository{store: store}
-}
-
 // ResolveClaimInput returns only the bounded immutable manifest. Content bytes
 // remain behind the separately authorized input-content endpoint.
 func (r *InputBundlesRepository) ResolveClaimInput(

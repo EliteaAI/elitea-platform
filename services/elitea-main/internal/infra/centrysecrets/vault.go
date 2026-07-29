@@ -372,7 +372,7 @@ func decodePythonInteger(raw json.RawMessage) (string, bool) {
 		}
 		return parsePythonDecimalString(value)
 	}
-	if bytes.IndexAny(trimmed, ".eE") < 0 {
+	if !bytes.ContainsAny(trimmed, ".eE") {
 		digitCount := len(trimmed)
 		if trimmed[0] == '-' {
 			digitCount--

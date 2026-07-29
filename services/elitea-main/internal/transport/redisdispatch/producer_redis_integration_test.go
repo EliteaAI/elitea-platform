@@ -272,8 +272,8 @@ func TestRedisStreamServiceBackedControlPlane(t *testing.T) {
 
 	succeeded := 0
 	for err := range results {
-		switch {
-		case err == nil:
+		switch err {
+		case nil:
 			succeeded++
 		default:
 			t.Fatalf("unexpected concurrent Redis append result: %v", err)

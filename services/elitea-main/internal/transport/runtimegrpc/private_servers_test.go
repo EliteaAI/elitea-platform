@@ -9,10 +9,10 @@ import (
 func TestBoundedListenerDoesNotAcceptBeyondConnectionCapacity(t *testing.T) {
 	underlying := newQueuedListener()
 	listener := newBoundedListener(underlying, 1)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	firstServer, firstClient := net.Pipe()
-	defer firstClient.Close()
+	defer func() { _ = firstClient.Close() }()
 	underlying.connections <- firstServer
 	first, err := listener.Accept()
 	if err != nil {
@@ -20,7 +20,7 @@ func TestBoundedListenerDoesNotAcceptBeyondConnectionCapacity(t *testing.T) {
 	}
 
 	secondServer, secondClient := net.Pipe()
-	defer secondClient.Close()
+	defer func() { _ = secondClient.Close() }()
 	underlying.connections <- secondServer
 	accepted := make(chan net.Conn, 1)
 	go func() {
@@ -31,7 +31,7 @@ func TestBoundedListenerDoesNotAcceptBeyondConnectionCapacity(t *testing.T) {
 	}()
 	select {
 	case connection := <-accepted:
-		connection.Close()
+		_ = connection.Close()
 		t.Fatal("second connection bypassed the configured capacity")
 	case <-time.After(20 * time.Millisecond):
 	}

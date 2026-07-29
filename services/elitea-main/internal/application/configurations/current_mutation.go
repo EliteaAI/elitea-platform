@@ -556,7 +556,7 @@ func (s *CurrentConfigurationMutationService) buildReplacement(
 	}
 
 	data := cloneCurrentJSONObject(existing.Data)
-	lifecycleData := cloneCurrentJSONObject(existing.Data)
+	var lifecycleData map[string]any
 	var secretMutations []HiddenSecretMutation
 	if request.DataSet {
 		candidate := cloneCurrentJSONObject(request.Data)

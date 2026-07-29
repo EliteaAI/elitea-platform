@@ -76,7 +76,7 @@ type RetirementReason string
 
 const (
 	RetirementDeadlineExceeded  RetirementReason = "DEADLINE_EXCEEDED"
-	DeadlineExceededSafeMessage                  = "The execution deadline was exceeded before worker authority was granted."
+	DeadlineExceededSafeMessage string           = "The execution deadline was exceeded before worker authority was granted."
 )
 
 func (r RetirementReason) valid() bool {

@@ -28,7 +28,7 @@ func TestPGXProvisionerRealPgVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Port == 0 || config.Port > 65535 {
+	if config.Port == 0 {
 		t.Fatalf("test database port is outside the current connection contract")
 	}
 

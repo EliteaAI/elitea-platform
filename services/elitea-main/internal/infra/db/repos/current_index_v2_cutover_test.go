@@ -84,7 +84,8 @@ func TestCurrentIndexV2CutoverRepositoryRejectsInvalidDependenciesAndContext(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.ReadIndexV1CutoverState(nil); err == nil {
+	var nilContext context.Context
+	if _, err := repository.ReadIndexV1CutoverState(nilContext); err == nil {
 		t.Fatal("accepted nil context")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

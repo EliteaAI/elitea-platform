@@ -24,7 +24,7 @@ func (l Limits) validate() error {
 		return errors.New("invalid Redis dispatch limits")
 	}
 	if l.MaxWorkerCommandBytes > l.MaxSignedEnvelopeBytes || l.MaxSignedEnvelopeBytes > l.MaxRedisFieldBytes || l.MaxRedisFieldBytes > l.MaxRedisEntryBytes {
-		return errors.New("Redis dispatch limits are not monotonic")
+		return errors.New("redis dispatch limits are not monotonic")
 	}
 	return nil
 }

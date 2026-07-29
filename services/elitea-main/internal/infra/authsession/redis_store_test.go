@@ -259,7 +259,9 @@ func TestRedisStoreRotationRetriesCollisionWithoutExposingOldID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.Set(testKeyPrefix+collidingID, "unrelated")
+	if err := server.Set(testKeyPrefix+collidingID, "unrelated"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(testKeyPrefix+collidingID, time.Hour)
 
 	rotatedID, err := store.Rotate(context.Background(), createdID)
@@ -282,7 +284,9 @@ func TestRedisStoreCreateCollisionsAreBounded(t *testing.T) {
 
 	collidingID := testSessionID(30)
 	store, server := newTestStore(t, time.Hour, fixedGenerator(collidingID))
-	server.Set(testKeyPrefix+collidingID, "existing")
+	if err := server.Set(testKeyPrefix+collidingID, "existing"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(testKeyPrefix+collidingID, time.Hour)
 
 	if _, err := store.Create(context.Background(), incompleteState()); !errors.Is(err, ErrIDCollision) {
@@ -335,7 +339,9 @@ func TestRedisStoreRejectsMalformedUnknownAndOversizedRecords(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			id := testSessionID(byte(50 + index))
 			key := testKeyPrefix + id
-			server.Set(key, string(test.record))
+			if err := server.Set(key, string(test.record)); err != nil {
+				t.Fatal(err)
+			}
 			if test.ttl {
 				server.SetTTL(key, time.Hour)
 			}
@@ -540,28 +546,32 @@ func TestRedisStoreConsumeForLogoutHandlesExpiredMissingAndMalformedState(t *tes
 	for _, test := range []struct {
 		name   string
 		id     string
-		mutate func(string)
+		mutate func(*testing.T, string)
 	}{
 		{
 			name: "malformed JSON",
 			id:   testSessionID(78),
-			mutate: func(key string) {
-				server.Set(key, "{")
+			mutate: func(t *testing.T, key string) {
+				if err := server.Set(key, "{"); err != nil {
+					t.Fatal(err)
+				}
 				server.SetTTL(key, time.Hour)
 			},
 		},
 		{
 			name: "oversized record",
 			id:   testSessionID(79),
-			mutate: func(key string) {
-				server.Set(key, strings.Repeat("x", MaxRecordBytes+1))
+			mutate: func(t *testing.T, key string) {
+				if err := server.Set(key, strings.Repeat("x", MaxRecordBytes+1)); err != nil {
+					t.Fatal(err)
+				}
 				server.SetTTL(key, time.Hour)
 			},
 		},
 		{
 			name: "wrong Redis type",
 			id:   testSessionID(80),
-			mutate: func(key string) {
+			mutate: func(_ *testing.T, key string) {
 				server.HSet(key, "record", "{}")
 				server.SetTTL(key, time.Hour)
 			},
@@ -569,14 +579,16 @@ func TestRedisStoreConsumeForLogoutHandlesExpiredMissingAndMalformedState(t *tes
 		{
 			name: "missing Redis TTL",
 			id:   testSessionID(81),
-			mutate: func(key string) {
-				server.Set(key, "{}")
+			mutate: func(t *testing.T, key string) {
+				if err := server.Set(key, "{}"); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			key := testKeyPrefix + test.id
-			test.mutate(key)
+			test.mutate(t, key)
 			if _, err := store.ConsumeForLogout(context.Background(), test.id); !errors.Is(err, sessionstate.ErrInvalidState) {
 				t.Fatalf("error = %v, want %v", err, sessionstate.ErrInvalidState)
 			}

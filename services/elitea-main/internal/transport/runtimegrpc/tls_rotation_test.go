@@ -145,7 +145,7 @@ func rotationRootPool(authorities ...rotationCA) *x509.CertPool {
 
 func runtimeMutualTLSHandshake(serverConfig *tls.Config, clientCertificate tls.Certificate, serverRoots *x509.CertPool) error {
 	listener := bufconn.Listen(1 << 20)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	deadline := time.Now().Add(2 * time.Second)
 	serverResult := make(chan error, 1)
 	go func() {
@@ -154,7 +154,7 @@ func runtimeMutualTLSHandshake(serverConfig *tls.Config, clientCertificate tls.C
 			serverResult <- err
 			return
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		_ = connection.SetDeadline(deadline)
 		serverResult <- tls.Server(connection, serverConfig.Clone()).Handshake()
 	}()
@@ -162,7 +162,7 @@ func runtimeMutualTLSHandshake(serverConfig *tls.Config, clientCertificate tls.C
 	if err != nil {
 		return err
 	}
-	defer clientConnection.Close()
+	defer func() { _ = clientConnection.Close() }()
 	_ = clientConnection.SetDeadline(deadline)
 	client := tls.Client(clientConnection, &tls.Config{
 		MinVersion:   tls.VersionTLS13,

@@ -2,6 +2,7 @@ package projects_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,12 +31,20 @@ func TestCurrentProjectListPostgresCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close(context.Background())
+	t.Cleanup(func() {
+		if err := connection.Close(context.Background()); err != nil {
+			t.Errorf("close PostgreSQL connection: %v", err)
+		}
+	})
 	tx, err := connection.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	t.Cleanup(func() {
+		if err := tx.Rollback(context.Background()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback PostgreSQL transaction: %v", err)
+		}
+	})
 
 	var publicUserTable, centrySchema *string
 	if err := tx.QueryRow(ctx, `SELECT to_regclass('public.auth_core__project_user_role')::text`).Scan(&publicUserTable); err != nil {

@@ -280,7 +280,9 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeProxyError(writer, http.StatusBadGateway, "LLM upstream is unavailable")
 		return
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close()
+	}()
 
 	copyResponseHeaders(writer.Header(), response.Header)
 	writer.Header().Set("Server", "Centry")
@@ -589,7 +591,7 @@ func parseUpstreamBaseURL(raw string) (*url.URL, bool) {
 		parsed.Path = "/"
 	}
 	cleaned := path.Clean(parsed.Path)
-	if cleaned != strings.TrimSuffix(parsed.Path, "/") && !(cleaned == "/" && parsed.Path == "/") {
+	if cleaned != strings.TrimSuffix(parsed.Path, "/") && (cleaned != "/" || parsed.Path != "/") {
 		return nil, false
 	}
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")

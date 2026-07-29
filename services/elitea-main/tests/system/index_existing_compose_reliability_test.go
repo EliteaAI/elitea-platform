@@ -500,7 +500,7 @@ func (h *indexComposeHarness) startIndex(t *testing.T, ctx context.Context, body
 	if err != nil {
 		t.Fatalf("public index start: %v", err)
 	}
-	defer response.Body.Close()
+	defer closeIndexReliabilityResource(t, response.Body, "public index start response")
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		t.Fatalf("read public index start response: %v", err)
@@ -517,7 +517,11 @@ func (h *indexComposeHarness) startIndex(t *testing.T, ctx context.Context, body
 	return result.TaskID
 }
 
-func (h *indexComposeHarness) stopIndex(ctx context.Context, executionID, indexName string) error {
+func (h *indexComposeHarness) stopIndex(
+	ctx context.Context,
+	executionID,
+	indexName string,
+) (resultErr error) {
 	if !executionIDPattern.MatchString(executionID) {
 		return errors.New("invalid execution identity")
 	}
@@ -538,7 +542,11 @@ func (h *indexComposeHarness) stopIndex(ctx context.Context, executionID, indexN
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer joinIndexReliabilityCloseError(
+		&resultErr,
+		response.Body,
+		"public Stop response",
+	)
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("status=%d", response.StatusCode)
 	}
@@ -580,7 +588,7 @@ func (h *indexComposeHarness) collectSSE(
 	executionID string,
 	canary string,
 	ready chan<- error,
-) (indexSSEObservation, error) {
+) (observation indexSSEObservation, resultErr error) {
 	endpoint := fmt.Sprintf(
 		"%s/api/v2/executions/%d/%s/events",
 		h.config.baseURL,
@@ -599,7 +607,11 @@ func (h *indexComposeHarness) collectSSE(
 	if err != nil {
 		return indexSSEObservation{}, err
 	}
-	defer response.Body.Close()
+	defer joinIndexReliabilityCloseError(
+		&resultErr,
+		response.Body,
+		"public SSE response",
+	)
 	if response.StatusCode != http.StatusOK ||
 		!strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
 		return indexSSEObservation{}, fmt.Errorf(
@@ -610,7 +622,6 @@ func (h *indexComposeHarness) collectSSE(
 	}
 	ready <- nil
 
-	var observation indexSSEObservation
 	var eventType string
 	var data strings.Builder
 	scanner := bufio.NewScanner(response.Body)
@@ -967,10 +978,8 @@ func pollIndexReliability(
 		if err == nil && matched {
 			return nil
 		}
-		if err != nil && ctx.Err() == nil {
-			// Compose process startup and database visibility can race briefly.
-			// Retain the last bounded failure only if the caller times out.
-		}
+		// Compose process startup and database visibility can race briefly.
+		// The last bounded failure is retained and returned if the caller times out.
 		select {
 		case <-ctx.Done():
 			if err != nil {
@@ -979,6 +988,30 @@ func pollIndexReliability(
 			return ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+func closeIndexReliabilityResource(
+	t *testing.T,
+	resource io.Closer,
+	description string,
+) {
+	t.Helper()
+	if err := resource.Close(); err != nil {
+		t.Errorf("close %s: %v", description, err)
+	}
+}
+
+func joinIndexReliabilityCloseError(
+	resultErr *error,
+	resource io.Closer,
+	description string,
+) {
+	if err := resource.Close(); err != nil {
+		*resultErr = errors.Join(
+			*resultErr,
+			fmt.Errorf("close %s: %w", description, err),
+		)
 	}
 }
 

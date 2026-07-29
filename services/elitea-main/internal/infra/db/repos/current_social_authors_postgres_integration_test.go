@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -26,12 +27,20 @@ func TestCurrentSocialAuthorsPostgresCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close(context.Background())
+	t.Cleanup(func() {
+		if err := connection.Close(context.Background()); err != nil {
+			t.Errorf("close PostgreSQL connection: %v", err)
+		}
+	})
 	tx, err := connection.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
+	t.Cleanup(func() {
+		if err := tx.Rollback(context.Background()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback PostgreSQL transaction: %v", err)
+		}
+	})
 
 	for _, relation := range []string{
 		"public.auth_core__user",

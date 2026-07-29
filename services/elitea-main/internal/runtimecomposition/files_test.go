@@ -177,15 +177,20 @@ func TestLoadRedisRootsUsesOnlyConfiguredTrustAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	path := filepath.Join(root, "redis-ca.pem")
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+	if err := os.WriteFile(path, certificatePEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	roots, err := loadRedisRoots(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roots.Subjects()) != 1 {
-		t.Fatalf("Redis trust roots = %d, want only configured CA", len(roots.Subjects()))
+	expectedRoots := x509.NewCertPool()
+	if !expectedRoots.AppendCertsFromPEM(certificatePEM) {
+		t.Fatal("test Redis CA PEM was not accepted")
+	}
+	if !roots.Equal(expectedRoots) {
+		t.Fatal("Redis trust roots do not contain exactly the configured CA")
 	}
 }

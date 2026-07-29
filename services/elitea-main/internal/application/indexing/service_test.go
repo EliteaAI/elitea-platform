@@ -174,7 +174,7 @@ func TestStartServiceAdmitsScheduleWithCreatedByAttributionAndNoBrowserStream(t 
 		t.Fatalf("scheduled admission=%+v", admissions.request)
 	}
 
-	admissions.outcome.AdmissionOutcome.Created = false
+	admissions.outcome.Created = false
 	replay, err := service.StartScheduledIndexData(
 		context.Background(),
 		ScheduledStartRequest{

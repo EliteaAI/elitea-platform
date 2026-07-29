@@ -190,8 +190,15 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	var groups []Group
 	for rows.Next() {
 		var g Group
-		rows.Scan(&g.ID, &g.Name)
+		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			return
+		}
 		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
 	}
 	if groups == nil {
 		groups = []Group{}
@@ -201,12 +208,23 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	payload = append(payload, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	if _, err := w.Write(payload); err != nil {
+		return
+	}
 }

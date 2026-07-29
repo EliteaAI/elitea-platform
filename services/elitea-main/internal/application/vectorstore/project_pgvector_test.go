@@ -349,7 +349,8 @@ func TestProjectPgvectorServiceValidatesInputAndPreservesCancellation(t *testing
 			t.Fatalf("request=%+v error=%v", request, err)
 		}
 	}
-	if _, err := service.Provision(nil, validProjectProvisionRequest(1)); !errors.Is(err, ErrInvalidProjectPgvectorRequest) {
+	var nilContext context.Context
+	if _, err := service.Provision(nilContext, validProjectProvisionRequest(1)); !errors.Is(err, ErrInvalidProjectPgvectorRequest) {
 		t.Fatalf("nil context error = %v", err)
 	}
 	canceled, cancel := context.WithCancel(context.Background())

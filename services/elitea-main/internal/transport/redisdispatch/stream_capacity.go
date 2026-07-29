@@ -63,7 +63,7 @@ func (c RedisStreamAppenderConfig) validate() error {
 	// Division avoids multiplication overflow. It also keeps MaxEntries far
 	// inside Redis Lua 5.1's exact-integer range.
 	if int64(c.MaxEntryBytes) > maxSupportedControlStreamEncodedBytes || c.MaxEntries > maxSupportedControlStreamEncodedBytes/int64(c.MaxEntryBytes) {
-		return errors.New("Redis control stream capacity exceeds the supported encoded-byte budget")
+		return errors.New("redis control stream capacity exceeds the supported encoded-byte budget")
 	}
 	return nil
 }

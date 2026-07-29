@@ -88,10 +88,7 @@ func (t *currentEffectsTransport) RoundTrip(request *http.Request) (*http.Respon
 		if err := json.Unmarshal(body, &projection); err != nil {
 			return nil, err
 		}
-		t.credentials = append(t.credentials, CredentialRecord{
-			CredentialName: projection.CredentialName, CredentialValues: projection.CredentialValues,
-			CredentialInfo: projection.CredentialInfo,
-		})
+		t.credentials = append(t.credentials, CredentialRecord(projection))
 		if t.failCredentialCreateAfterApply {
 			t.failCredentialCreateAfterApply = false
 			return currentEffectsResponse(

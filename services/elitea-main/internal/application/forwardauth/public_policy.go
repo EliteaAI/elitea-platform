@@ -129,9 +129,10 @@ func normalizeCurrentPattern(pattern string) string {
 			index++
 			continue
 		}
-		if character == '[' {
+		switch character {
+		case '[':
 			inClass = true
-		} else if character == ']' {
+		case ']':
 			inClass = false
 		}
 		if normalized != nil {

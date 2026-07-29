@@ -69,7 +69,7 @@ func NewTrustedProxyResolver(config TrustedProxyConfig) (*TrustedProxyResolver, 
 	if err != nil || !origin.IsAbs() || origin.Opaque != "" || origin.User != nil ||
 		origin.Host == "" || origin.RawQuery != "" || origin.Fragment != "" ||
 		(origin.EscapedPath() != "" && origin.EscapedPath() != "/") ||
-		(origin.Scheme != "https" && !(config.Development && origin.Scheme == "http")) ||
+		(origin.Scheme != "https" && (!config.Development || origin.Scheme != "http")) ||
 		!httpguts.ValidHostHeader(origin.Host) {
 		return nil, ErrInvalidForwardedRequest
 	}

@@ -6,34 +6,10 @@ import (
 
 	vectorstoreapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/vectorstore"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5"
 )
-
-// newCurrentProjectPgvectorService composes the existing PostgreSQL
-// provisioner, current Centry vault reader/writer, and tenant SQLC repository.
-// Route and project-created event ownership remain outside this narrow slice.
-func newCurrentProjectPgvectorService(
-	bootstrap *pgx.ConnConfig,
-	loader storage.SecretVaultLoader,
-	vault *repos.CurrentSecretVaultRepository,
-	configurations *repos.CurrentProjectPgvectorConfigurationsRepository,
-) (*vectorstoreapp.ProjectPgvectorService, error) {
-	if vault == nil || configurations == nil {
-		return nil, errors.New("current project pgvector persistence is required")
-	}
-	databaseAdapter, err := newCurrentProjectPgvectorDatabaseProvisioner(bootstrap)
-	if err != nil {
-		return nil, err
-	}
-	materialAdapter, err := newCurrentProjectPgvectorMaterialRepository(loader, vault)
-	if err != nil {
-		return nil, err
-	}
-	return vectorstoreapp.NewProjectPgvectorService(databaseAdapter, materialAdapter, configurations)
-}
 
 type currentProjectPgvectorDatabaseProvisioner struct {
 	provisioner *pgvector.Provisioner

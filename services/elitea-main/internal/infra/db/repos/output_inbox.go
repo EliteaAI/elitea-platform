@@ -404,7 +404,7 @@ SELECT COALESCE((SELECT claim_id FROM inserted LIMIT 1), ''),
 	if sequenceRejected {
 		return outputInsertResult{}, outputapp.ErrValidationOutputConflict
 	}
-	cancellationRejected := authorityClaimID != "" && desiredState == string(runtimedomain.DesiredCancelled) && !conflictExists && !(record.PayloadType == payloadTypeRuntimeFailure && record.SettlementOutcome == executionapp.SettlementCancelled)
+	cancellationRejected := authorityClaimID != "" && desiredState == string(runtimedomain.DesiredCancelled) && !conflictExists && (record.PayloadType != payloadTypeRuntimeFailure || record.SettlementOutcome != executionapp.SettlementCancelled)
 	deadlineRejected := authorityClaimID != "" && desiredState == string(runtimedomain.DesiredRunning) && deadlineExpired && !conflictExists && !canonicalDeadline
 	return outputInsertResult{CancellationRejected: cancellationRejected, DeadlineRejected: deadlineRejected}, nil
 }

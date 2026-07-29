@@ -228,7 +228,7 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var userID int
 	err = tx.QueryRow(ctx,

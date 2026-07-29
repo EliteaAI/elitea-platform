@@ -234,7 +234,7 @@ func validKeySecret(secret []byte) bool {
 
 func isNilInterface(value any) bool {
 	reflected := reflect.ValueOf(value)
-	return reflected.Kind() == reflect.Ptr && reflected.IsNil()
+	return reflected.Kind() == reflect.Pointer && reflected.IsNil()
 }
 
 func dependencyError(ctx context.Context, err error) error {

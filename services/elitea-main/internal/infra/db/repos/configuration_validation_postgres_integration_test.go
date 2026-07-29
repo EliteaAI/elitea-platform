@@ -568,7 +568,8 @@ JOIN elitea_runtime.command_outbox AS o USING (execution_id, generation)
 WHERE j.execution_id = $1`, raceFrame.Fence.ExecutionID).Scan(&raceState, &raceDesired, &raceCode); err != nil {
 		t.Fatal(err)
 	}
-	if !((raceState == "FAILED" && raceCode == retirementCodeDeadlineExceeded) || (raceState == "CANCELLED" && raceDesired == "CANCELLED" && raceCode == retirementCodeCancelled)) {
+	if (raceState != "FAILED" || raceCode != retirementCodeDeadlineExceeded) &&
+		(raceState != "CANCELLED" || raceDesired != "CANCELLED" || raceCode != retirementCodeCancelled) {
 		t.Fatalf("mixed or stuck cancellation/deadline race: state=%s desired=%s code=%s", raceState, raceDesired, raceCode)
 	}
 

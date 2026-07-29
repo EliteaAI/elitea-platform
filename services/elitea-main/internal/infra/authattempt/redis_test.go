@@ -338,12 +338,16 @@ func TestRedisAdmitterFailsClosedOnCorruptStateAndOutage(t *testing.T) {
 	}
 	attempt := browserapp.BrowserAttempt{ClientKey: "192.0.2.7", Stage: browserapp.BrowserAttemptFormBegin}
 	key := limiter.keys(attempt)[0]
-	server.Set(key, "not-an-integer")
+	if err := server.Set(key, "not-an-integer"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(key, time.Minute)
 	if _, err := limiter.Admit(context.Background(), attempt); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("corrupt state error = %v", err)
 	}
-	server.Set(key, "1")
+	if err := server.Set(key, "1"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := limiter.Admit(context.Background(), attempt); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("missing TTL error = %v", err)
 	}
@@ -356,9 +360,13 @@ func TestRedisAdmitterFailsClosedOnCorruptStateAndOutage(t *testing.T) {
 	}
 	server.FlushAll()
 	keys := limiter.keys(attempt)
-	server.Set(keys[0], "1")
+	if err := server.Set(keys[0], "1"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(keys[0], time.Minute)
-	server.Set(keys[1], "invalid")
+	if err := server.Set(keys[1], "invalid"); err != nil {
+		t.Fatal(err)
+	}
 	server.SetTTL(keys[1], time.Minute)
 	if _, err := limiter.Admit(context.Background(), attempt); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("one corrupt dimension error = %v", err)

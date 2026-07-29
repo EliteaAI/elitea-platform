@@ -386,7 +386,8 @@ func TestExtractCurrentConfigurationSecretsPreservesCancellationIdentity(t *test
 		t.Fatalf("cancellation after generation = %v", err)
 	}
 
-	_, _, err = ExtractCurrentConfigurationSecrets(nil, map[string]any{}, map[string]any{}, "test", nil)
+	var nilContext context.Context
+	_, _, err = ExtractCurrentConfigurationSecrets(nilContext, map[string]any{}, map[string]any{}, "test", nil)
 	if !errors.Is(err, ErrInvalidCurrentConfigurationSecrets) {
 		t.Fatalf("nil context error = %v", err)
 	}
