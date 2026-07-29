@@ -434,6 +434,15 @@ func expectedInputRoles(command *runtimev1.WorkerCommandV1) (map[string]string, 
 			{indexing.GetLlmConfigurationEntryId(), executiondomain.IndexLLMConfigurationRole},
 			{indexing.GetMcpTokensEntryId(), executiondomain.IndexMCPTokensRole},
 		}
+		if embedding := indexing.GetEmbeddingBinding(); embedding != nil {
+			if embedding.GetEntryId() == "" {
+				return nil, errors.New("index embedding input binding is required")
+			}
+			bindings = append(bindings, struct {
+				entryID string
+				role    string
+			}{embedding.GetEntryId(), executiondomain.IndexEmbeddingBindingRole})
+		}
 		expected := make(map[string]string, len(bindings))
 		for _, binding := range bindings {
 			if binding.entryID == "" {

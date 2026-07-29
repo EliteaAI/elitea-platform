@@ -516,7 +516,7 @@ func TestClaimCommandAcceptsBoundedIndexManifestAfterAuthorizedClaim(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.GetRejection() != nil || response.GetReceipt().GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_ACCEPTED || len(response.GetReceipt().GetInputBundle().GetEntries()) != 2 {
+	if response.GetRejection() != nil || response.GetReceipt().GetDisposition() != runtimev1.ClaimDispositionV1_CLAIM_DISPOSITION_V1_ACCEPTED || len(response.GetReceipt().GetInputBundle().GetEntries()) != 3 {
 		t.Fatalf("unexpected index claim response: %v", response)
 	}
 	wantOrder := []string{"authorize-peer", "verify-command", "claim", "resolve-reference-manifest"}
@@ -1177,6 +1177,7 @@ func validIndexManifest() *runtimev1.ExecutionInputBundleV1 {
 	}{
 		{entryID: "toolkit-configuration", role: executiondomain.IndexToolkitConfigurationRole, contentID: "content-toolkit"},
 		{entryID: "tool-parameters", role: executiondomain.IndexToolParametersRole, contentID: "content-parameters"},
+		{entryID: "embedding-binding", role: executiondomain.IndexEmbeddingBindingRole, contentID: "content-embedding"},
 	} {
 		manifest.Entries = append(manifest.Entries, &runtimev1.ExecutionInputEntryV1{
 			EntryId:          binding.entryID,

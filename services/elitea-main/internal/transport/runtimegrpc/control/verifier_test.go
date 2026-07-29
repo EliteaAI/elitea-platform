@@ -212,7 +212,12 @@ func validRawIndexWorkerCommand(t *testing.T) []byte {
 		IndexIngest: &runtimev1.IndexIngestCommandV1{
 			ToolkitConfigurationEntryId: "toolkit-configuration",
 			ToolParametersEntryId:       "tool-parameters",
-			Initiator:                   "user",
+			EmbeddingBinding: &runtimev1.IndexIngestInputBindingV1{
+				EntryId:          "embedding-binding",
+				ImmutableVersion: "revision-1",
+				ContentDigest:    testDigest([]byte(`{}`)),
+			},
+			Initiator: "user",
 		},
 	}
 	raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(command)
