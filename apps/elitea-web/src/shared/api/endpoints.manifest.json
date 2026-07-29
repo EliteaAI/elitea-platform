@@ -1204,7 +1204,8 @@
             "responseSchema": "unknown",
             "fixture": null,
             "usedBy": [
-                "features/pipelines"
+                "features/pipelines",
+                "entities/conversation"
             ]
         },
         {
@@ -1276,7 +1277,320 @@
             "responseSchema": "ConversationDetailsWire",
             "fixture": null,
             "usedBy": [
-                "features/toolkits"
+                "features/toolkits",
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.create",
+            "method": "POST",
+            "path": "/elitea_core/conversations/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ConversationWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.edit",
+            "method": "PUT",
+            "path": "/elitea_core/conversation/prompt_lib/{projectId}/{id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ConversationWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.delete",
+            "method": "DELETE",
+            "path": "/elitea_core/conversation/prompt_lib/{projectId}/{id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.select",
+            "method": "POST",
+            "path": "/elitea_core/select_conversation/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.unselect",
+            "method": "DELETE",
+            "path": "/elitea_core/select_conversation/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.regenerate",
+            "method": "POST",
+            "path": "/elitea_core/regenerate/prompt_lib/{projectId}/{id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.messageList",
+            "method": "GET",
+            "path": "/elitea_core/messages/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "MessageListResponse",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.deleteMessage",
+            "method": "DELETE",
+            "path": "/elitea_core/message/prompt_lib/{projectId}/{id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.deleteAllMessages",
+            "method": "DELETE",
+            "path": "/elitea_core/messages/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.getContextStatus",
+            "method": "GET",
+            "path": "/elitea_core/context_analytics/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ContextStatusWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.updateContextStrategy",
+            "method": "PUT",
+            "path": "/elitea_core/context_strategy/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.optimizeContext",
+            "method": "POST",
+            "path": "/context_manager/optimize_context/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.getContextAnalytics",
+            "method": "GET",
+            "path": "/context_manager/analytics/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ContextAnalyticsWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.generateSummary",
+            "method": "POST",
+            "path": "/context_manager/summaries/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SummaryWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.getConversationSummaries",
+            "method": "GET",
+            "path": "/context_manager/summaries/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SummaryListWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.updateSummary",
+            "method": "PUT",
+            "path": "/context_manager/summary/{projectId}/{conversationId}/{summaryId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SummaryWire",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "conversation.deleteSummary",
+            "method": "DELETE",
+            "path": "/context_manager/summary/{projectId}/{conversationId}/{summaryId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/conversation"
+            ]
+        },
+        {
+            "id": "canvas.createCanvas",
+            "method": "POST",
+            "path": "/elitea_core/canvases/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/canvas"
+            ]
+        },
+        {
+            "id": "canvas.editCanvas",
+            "method": "PUT",
+            "path": "/elitea_core/canvas/prompt_lib/{projectId}/{canvasUUID}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/canvas"
+            ]
+        },
+        {
+            "id": "canvas.canvasDetails",
+            "method": "GET",
+            "path": "/elitea_core/canvas/prompt_lib/{projectId}/{id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/canvas"
+            ]
+        },
+        {
+            "id": "canvas.setAttachmentStorage",
+            "method": "PUT",
+            "path": "/elitea_core/attachment_storage/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/canvas"
+            ]
+        },
+        {
+            "id": "canvas.removeAttachments",
+            "method": "DELETE",
+            "path": "/elitea_core/attachments/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "entities/canvas"
+            ]
+        },
+        {
+            "id": "participant.addParticipantIntoConversation",
+            "method": "POST",
+            "path": "/elitea_core/participants/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ParticipantWire[]",
+            "fixture": null,
+            "usedBy": [
+                "entities/participant"
+            ]
+        },
+        {
+            "id": "participant.deleteParticipantFromConversation",
+            "method": "DELETE",
+            "path": "/elitea_core/participant/prompt_lib/{projectId}/{conversationId}/{participantId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "void (204)",
+            "fixture": null,
+            "usedBy": [
+                "entities/participant"
+            ]
+        },
+        {
+            "id": "participant.updateParticipantSettings",
+            "method": "PUT",
+            "path": "/elitea_core/entity_settings/prompt_lib/{projectId}/{conversationId}/{participantId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "{entity_settings: Record<string,unknown>}",
+            "fixture": null,
+            "usedBy": [
+                "entities/participant"
+            ]
+        },
+        {
+            "id": "participant.updateParticipantLlmSettings",
+            "method": "PATCH",
+            "path": "/elitea_core/entity_settings/prompt_lib/{projectId}/{conversationId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "{ok: boolean}",
+            "fixture": null,
+            "usedBy": [
+                "entities/participant"
             ]
         }
     ]

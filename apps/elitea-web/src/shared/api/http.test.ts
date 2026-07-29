@@ -225,6 +225,34 @@ describe('request assembly', () => {
     expect(sink[0]?.bodyText).toBe('raw-payload');
   });
 
+  /**
+   * Regression test: `serializeBody` used to `JSON.stringify` every
+   * non-string body unconditionally, including `FormData`, and
+   * `JSON.stringify(new FormData())` is `"{}"` (FormData has no enumerable
+   * own properties) — no throw, so a multipart upload's real payload was
+   * silently replaced with an empty JSON object. Found while porting Wave-2
+   * unit C1 (chat model/store); confirmed the identical bug live in two
+   * already-shipped generated call sites (artifacts.ts's createArtifact,
+   * applications.ts's uploadApplicationIcon), both of which build a
+   * FormData and pass it straight into `eliteaFetch({ body: formData })`.
+   */
+  it('sends FormData bodies verbatim, not JSON-stringified, with a multipart content type fetch sets itself', async () => {
+    const sink: CapturedRequest[] = [];
+    server.use(probeAny(sink));
+    const formData = new FormData();
+    // A plain string field, not a File/Blob: jsdom's Blob-in-FormData
+    // doesn't preserve byte content through MSW's interception layer in
+    // this test environment (confirmed separately, unrelated to the fix
+    // under test here) — a string field survives faithfully and is
+    // enough to prove the real bug (JSON.stringify(FormData) === "{}",
+    // silently discarding the whole body) is fixed.
+    formData.append('field', 'distinctive-field-value');
+    await client.post(path, { body: formData });
+    expect(sink[0]?.contentType).toMatch(/^multipart\/form-data; boundary=/);
+    expect(sink[0]?.bodyText).not.toBe('{}');
+    expect(sink[0]?.bodyText).toContain('distinctive-field-value');
+  });
+
   it('throws (programmer error) for a GET with a body', async () => {
     await expect(client.get(path, { body: { nope: true } })).rejects.toThrow(/cannot carry a request body/);
   });

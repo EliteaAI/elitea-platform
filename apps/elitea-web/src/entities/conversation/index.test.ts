@@ -16,6 +16,18 @@ const PUBLIC_SURFACE = [
   'hasPlaybackConversation',
   'isPinnedConversation',
   'sortConversations',
+  'conversationApi',
+  'contextManagementApi',
+  'useChatSessionStore',
+  'useConversationLifecycle',
+  'conversationNavigation',
+  'useUpdateConversationTimestamp',
+  'useHighlightUserMessage',
+  'useChatStreaming',
+  'useAttachmentState',
+  'useUploadAttachments',
+  'chatHelpers',
+  'newConversationHelpers',
 ] as const;
 
 describe('entities/conversation public surface', () => {

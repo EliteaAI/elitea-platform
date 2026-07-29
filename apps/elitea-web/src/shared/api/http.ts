@@ -75,7 +75,7 @@ export interface HttpRequestOptions {
   /** react-query passes its per-query `signal` straight through here (§5.4). */
   signal?: AbortSignal;
   headers?: Readonly<Record<string, string>>;
-  /** JSON-serialized once (replayable); pass a string to send it verbatim. */
+  /** JSON-serialized once (replayable); pass a string to send it verbatim. `FormData`/`Blob`/`URLSearchParams`/`ArrayBuffer` also pass through unchanged (their own Content-Type, e.g. multipart, is left for `fetch` to set). */
   body?: unknown;
   query?: Readonly<Record<string, string | number | boolean | undefined>>;
 }
@@ -151,12 +151,33 @@ function buildUrl(base: string, path: string, query?: HttpRequestOptions['query'
   return url.toString();
 }
 
-function serializeBody(method: HttpMethod, body: unknown, url: string): string | undefined {
+/** True for the `BodyInit` variants `fetch` already knows how to send verbatim, with their own Content-Type — JSON-stringifying any of these silently discards the payload (`JSON.stringify(new FormData())` is `"{}"`, no throw). */
+function isPreEncodedBody(body: unknown): body is FormData | Blob | URLSearchParams | ArrayBuffer {
+  return body instanceof FormData || body instanceof Blob || body instanceof URLSearchParams || body instanceof ArrayBuffer;
+}
+
+/**
+ * BUG FIX, found while porting Wave-2 unit C1 (chat model/store): this used
+ * to `JSON.stringify` every non-string body unconditionally, including
+ * `FormData` — `JSON.stringify(new FormData())` returns `"{}"` (FormData has
+ * no enumerable own properties), so a multipart upload's real payload was
+ * silently replaced with an empty JSON object and no error was ever thrown.
+ * Reproduced live: `shared/api/generated/artifacts/artifacts.ts`'s
+ * `createArtifact` and `shared/api/generated/applications/applications.ts`'s
+ * `uploadApplicationIcon` both build a `FormData` and pass it straight into
+ * `eliteaFetch({ body: formData })` — both were silently sending an empty
+ * body to the server. `FormData`/`Blob`/`URLSearchParams`/`ArrayBuffer` are
+ * passed through unchanged now; `prepare()` below also stops forcing
+ * `Content-Type: application/json` onto them, so `fetch` sets its own
+ * (for `FormData`, `multipart/form-data` with the correct boundary).
+ */
+function serializeBody(method: HttpMethod, body: unknown, url: string): string | FormData | Blob | URLSearchParams | ArrayBuffer | undefined {
   if (body === undefined) return undefined;
   if (method === 'GET' || method === 'HEAD') {
     throw new TypeError(`http: ${method} ${url} cannot carry a request body`);
   }
   if (typeof body === 'string') return body;
+  if (isPreEncodedBody(body)) return body;
   try {
     return JSON.stringify(body);
   } catch (cause) {
@@ -174,7 +195,7 @@ function prepare(cfg: HttpConfig, credentials: RequestCredentials, method: HttpM
   const url = buildUrl(new URL(cfg.baseUrl, window.location.origin).toString(), path, options.query);
   const headers = new Headers(options.headers);
   const body = serializeBody(method, options.body, url);
-  if (body !== undefined && typeof options.body !== 'string' && !headers.has('Content-Type')) {
+  if (body !== undefined && typeof options.body !== 'string' && !isPreEncodedBody(options.body) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
   if (cfg.tracingEnabled === true) headers.set('traceparent', generateTraceparent());

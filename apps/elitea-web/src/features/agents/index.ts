@@ -99,3 +99,15 @@ export type { AgentEditorProps } from './ui/AgentEditor';
  * may already import them without going through this barrel).
  */
 export { parseYamlToMermaid } from './lib/helpers/parseYamlToMermaid.helpers';
+
+/**
+ * Unit C1 addition (`processes/chat/model`): `useApplicationsStore`, per
+ * this Wave-2 run's own cross-cluster guidance — `processes/chat/model/
+ * useRefetchAgentVersionDetailsOnClose.ts` reuses this store's
+ * `shouldRefetchDetails`/`setShouldRefetchDetails` directly rather than
+ * re-deriving a chat-scoped duplicate (a duplicate store instance would be
+ * silently broken: two independent zustand singletons never see each
+ * other's writes). Purely additive — no existing export above changed;
+ * still 19/20 against the shared ≤20 budget.
+ */
+export { useApplicationsStore } from './model/applicationsStore';

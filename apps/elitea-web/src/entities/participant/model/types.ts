@@ -46,8 +46,14 @@ export interface ParticipantEntityMeta {
 /**
  * `meta` — fields read across participants.helpers.js:23-77 (name/liveness
  * derivation) and useCanvasSocket/CanvasEditor.jsx (`is_container`, `mcp`).
+ *
+ * `id` (unit C1 addition): read by `hooks/chat/
+ * useIsActiveParticipantBeingEdited.js:33` (`activeParticipant.meta?.id`) as
+ * one of four candidate id fields matched against the `edited_participant_id`
+ * URL param — not previously modeled because no earlier consumer needed it.
  */
 export interface ParticipantMeta {
+  readonly id?: string;
   readonly name?: string;
   readonly userName?: string;
   readonly userAvatar?: string;
@@ -67,4 +73,14 @@ export interface Participant {
    * both are checked, not just the nested one.
    */
   readonly agentType?: string;
+  /**
+   * Top-level `entity_id` (unit C1 addition): read by `hooks/chat/
+   * useIsActiveParticipantBeingEdited.js:34` as a fourth candidate id field.
+   * Not present in the `conversations.Participant` wire shape this app's
+   * backend actually emits (`services/elitea-main/internal/api/v2/
+   * conversations/handler.go:59-65`: `id`/`entity_name`/`entity_meta`/
+   * `entity_settings`/`meta` only) — modeled anyway, always absent on real
+   * data, for byte-for-byte parity with the old hook's defensive check.
+   */
+  readonly entityId?: string;
 }

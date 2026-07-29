@@ -186,7 +186,22 @@
     // as `ConfigurationTabProps`'s other groupings, not slot types, but have
     // the identical "no current caller needs the type by name, only the
     // grouped prop" shape.
-    "src/features/toolkits/ui/ConfigurationTab.tsx"
+    "src/features/toolkits/ui/ConfigurationTab.tsx",
+    // Unit C1 ("entities/conversation extension"): same "public surface
+    // awaiting a Wave-2 consumer" gap as everything else in this list.
+    // `entities/conversation/index.ts`'s own §3.5 20-export budget left no
+    // room to re-export `useConversationLifecycle.ts`'s
+    // `NewConversationInput`/`EditConversationInput`/`ConversationIdentity`,
+    // `useUploadAttachments.ts`'s `UploadAttachmentsParams`/
+    // `UploadedAttachment`/`UploadAttachmentsOutcome`, or
+    // `chatSessionStore.ts`'s `StreamingInfoByProject` (see that barrel's
+    // own doc comment for the full trade-off) — each is a real, exported
+    // parameter/result/state-shape type with no current caller outside its
+    // own file (the C2-C6 chat page/feature units that will construct
+    // these object literals haven't landed in this worktree yet).
+    "src/entities/conversation/lib/hooks/useConversationLifecycle.ts",
+    "src/entities/conversation/lib/hooks/useUploadAttachments.ts",
+    "src/entities/conversation/model/chatSessionStore.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
