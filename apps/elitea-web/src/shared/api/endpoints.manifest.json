@@ -1006,7 +1006,8 @@
             "responseSchema": "ModelList",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/chat-input"
             ]
         },
         {
@@ -1042,7 +1043,8 @@
             "responseSchema": "unknown",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/chat-input"
             ]
         },
         {

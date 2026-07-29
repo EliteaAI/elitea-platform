@@ -2,13 +2,32 @@ import { useEffect, useMemo } from 'react';
 
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
-import { toolkitValidationErrors } from '@/entities/toolkit';
+import { toolkitValidationErrors } from '../model/validationStatus';
+import type { ToolkitValidationErrorBody, ToolkitValidationErrorEntry } from '../model/validationStatus';
 import { buildErrorMessage } from '@/shared/lib/http-error';
 
 /**
  * Ported from `apps/elitea-ui/src/hooks/application/useValidateToolkit.js`
  * (both exports — `useValidateToolkit` default export and the named
  * `useToolkitValidationInfo`; Wave-2 unit A1e).
+ *
+ * **Promoted from `features/agents/api/useValidateToolkit.ts` into this
+ * slice** (Wave-2 unit C3 build): the zustand store below is the shared
+ * replacement for the baseline's single Redux `state.chat
+ * .toolkitValidationInfo` slice, read by BOTH the agent-instructions editor
+ * (`features/agents`) and the chat message-input's slash-suggestion-list
+ * toolkit validator (a `features/chat-input` sibling cluster in this same
+ * build, porting the baseline's `ToolkitValidator.jsx`/
+ * `SlashSuggestionList.jsx`). `features/chat-input` may not import
+ * `features/agents` (no-sideways-features), so this file — which already
+ * depended ON `entities/toolkit` for `toolkitValidationErrors` — moved into
+ * `entities/toolkit` itself as the one legal shared home for a single store
+ * instance both features can reach. It had zero real consumers at its old
+ * location (built ahead of its first caller in A1e), so the move is a pure
+ * relocation with no behavior change. Now that it lives inside this slice,
+ * the `toolkitValidationErrors`/type imports below go directly to the
+ * sibling `../model/validationStatus` module instead of round-tripping
+ * through the slice's own public barrel — see the next doc comment.
  *
  * The settings/connection-error combination itself was already promoted
  * verbatim to `entities/toolkit`'s `toolkitValidationErrors` (Wave-2
@@ -54,33 +73,24 @@ import { buildErrorMessage } from '@/shared/lib/http-error';
  */
 
 /**
- * Structurally compatible with `entities/toolkit`'s (non-exported)
- * `ToolkitValidationErrorEntry` — that type itself isn't re-exported from
- * `entities/toolkit`'s public `index.ts` (only the `toolkitValidationErrors`
- * VALUE is), and R-L3 forbids a deep import to `model/validationStatus.ts`
- * to reach it, so this is `ReturnType<typeof toolkitValidationErrors>`'s
- * element type instead — always exactly in sync with the real return type,
- * with no local duplication of the shape's fields to drift.
+ * `ToolkitValidationEntry`/`ToolkitValidationErrorBodyLike` used to be local
+ * structural stand-ins here (`ReturnType<typeof toolkitValidationErrors>
+ * [number]` and a hand-duplicated body shape) because, at this file's old
+ * `features/agents` location, `entities/toolkit`'s real
+ * `ToolkitValidationErrorEntry`/`ToolkitValidationErrorBody` types aren't
+ * re-exported from that slice's public `index.ts` and R-L3 forbids a deep
+ * cross-slice import to `model/validationStatus.ts` to reach them directly.
+ * Now that this file lives INSIDE `entities/toolkit`, that restriction
+ * doesn't apply — `../model/validationStatus` is a normal same-slice
+ * sibling import — so the real types are used directly below instead of a
+ * parallel structural copy.
  */
-type ToolkitValidationEntry = ReturnType<typeof toolkitValidationErrors>[number];
-
-/** Structurally compatible with `entities/toolkit`'s (non-exported) `ToolkitValidationErrorBody` — see `toolkitValidationErrors`'s own parameter type. */
-interface ToolkitValidationErrorBodyLike {
-  readonly settings_errors?: readonly Record<string, unknown>[];
-  readonly connection_errors?: readonly {
-    readonly message?: string;
-    readonly configuration_title?: string;
-    readonly configuration_type?: string;
-    readonly requires_authorization?: boolean;
-    readonly auth_metadata?: unknown;
-  }[];
-}
 
 /* ── cross-component validation-info store (deviation 3) ─────────────────── */
 
 interface ToolkitValidationStoreState {
-  readonly infoByKey: Readonly<Record<string, readonly ToolkitValidationEntry[]>>;
-  readonly setToolkitValidationInfo: (key: string, info: readonly ToolkitValidationEntry[]) => void;
+  readonly infoByKey: Readonly<Record<string, readonly ToolkitValidationErrorEntry[]>>;
+  readonly setToolkitValidationInfo: (key: string, info: readonly ToolkitValidationErrorEntry[]) => void;
 }
 
 type ToolkitValidationStore = UseBoundStore<StoreApi<ToolkitValidationStoreState>>;
@@ -139,7 +149,7 @@ function extractErrorStatus(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
-function extractErrorBody(error: unknown): ToolkitValidationErrorBodyLike | undefined {
+function extractErrorBody(error: unknown): ToolkitValidationErrorBody | undefined {
   if (!isRecord(error)) return undefined;
   const data = error['data'];
   return isRecord(data) ? data : undefined;
@@ -195,10 +205,10 @@ export interface UseToolkitValidationInfoParams {
 }
 
 export interface UseToolkitValidationInfoResult {
-  readonly toolkitValidationInfoList: readonly ToolkitValidationEntry[];
+  readonly toolkitValidationInfoList: readonly ToolkitValidationErrorEntry[];
 }
 
-const EMPTY_VALIDATION_INFO: readonly ToolkitValidationEntry[] = [];
+const EMPTY_VALIDATION_INFO: readonly ToolkitValidationErrorEntry[] = [];
 
 export function useToolkitValidationInfo({ projectId, toolkitId }: UseToolkitValidationInfoParams): UseToolkitValidationInfoResult {
   const key = useMemo(() => buildToolkitValidationKey(projectId, toolkitId), [projectId, toolkitId]);

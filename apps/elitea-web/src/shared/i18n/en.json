@@ -472,5 +472,15 @@
   "features.chatConversationList.folderItem.unpin": "Unpin",
   "features.chatConversationList.folderItemEditor.cancel": "Cancel",
   "features.chatConversationList.folderItemEditor.confirm": "Confirm",
-  "features.chatConversationList.groupedConversations.emptyState": "Still no conversations created."
+  "features.chatConversationList.groupedConversations.emptyState": "Still no conversations created.",
+  "features.chatInput.voiceConfigControls.defaultPlaceholder": "Default",
+  "features.chatInput.voiceConfigControls.online": "(online)",
+  "features.chatInput.voiceConfigControls.previewVoice": "Preview Voice",
+  "features.chatInput.voiceConfigControls.speedLabel": "Speed",
+  "features.chatInput.voiceConfigControls.voiceLabel": "Voice",
+  "features.chatInput.voiceConfigControls.volumeLabel": "Volume",
+  "features.chatInput.voiceConfigDialog.apply": "Apply",
+  "features.chatInput.voiceConfigDialog.cancel": "Cancel",
+  "features.chatInput.voiceConfigDialog.title": "Voice settings",
+  "features.chatInput.voicePersonalizationSection.title": "Voice Personalization"
 }

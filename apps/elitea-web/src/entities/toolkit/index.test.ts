@@ -25,6 +25,7 @@ const PUBLIC_SURFACE = [
   'toolIconStaticUrl',
   'toolkitDisplayName',
   'toolkitTypeMenuEntries',
+  'toolkitValidation',
   'toolkitValidationErrors',
 ] as const;
 
