@@ -71,17 +71,11 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
         '"elitea-sdk @ file:///build/elitea-sdk"'
     ) in containerfile
     assert "git -C ./elitea-sdk archive --format=tar HEAD" in containerfile
-    pytesseract = lock["indexing_capability_profile"]["verified_wheels"][
-        "pytesseract"
-    ]
-    assert (
-        f"ARG PYTESSERACT_WHEEL_SHA256={pytesseract['sha256']}"
-        in containerfile
-    )
-    assert (
-        f"/wheels/{pytesseract['filename']}"
-        in containerfile
-    )
+    assert "scripts/verify_locked_artifacts.py" in containerfile
+    assert "verified_source_archives" in containerfile
+    assert "verified_wheels" in containerfile
+    assert "FigmaPy-2018.1.0.tar.gz" in containerfile
+    assert "AZURE_DEVOPS_CACHE_DIR=/tmp/.azure-devops" in containerfile
     assert "fonts-dejavu-core" in containerfile
     go_ci = (_PLATFORM_ROOT / ".github/workflows/ci-go.yml").read_text()
     assert (
@@ -93,6 +87,23 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     assert lock["source"]["git_archive_sha256"] == SDK_SOURCE_ARCHIVE_SHA256
     assert lock["installed_package_tree"]["sha256"] == SDK_PACKAGE_TREE_SHA256
     assert lock["installed_package_tree"]["file_count"] > 0
+
+    profile = lock["indexing_capability_profile"]
+    artifact_records = {
+        **profile["verified_wheels"],
+        **profile["verified_source_archives"],
+    }
+    artifacts = [
+        artifact
+        for record in artifact_records.values()
+        for artifact in record.get("artifacts", [record])
+    ]
+    assert len({record["filename"] for record in artifacts}) == len(artifacts)
+    for record in artifact_records.values():
+        assert record.get("origin") == "PyPI" or record.get("license")
+    for record in artifacts:
+        assert len(record["sha256"]) == 64
+        int(record["sha256"], 16)
 
 
 def test_local_pinned_sdk_checkout_matches_lock_when_available() -> None:

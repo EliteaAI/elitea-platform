@@ -31,6 +31,8 @@ def _passing_check(**overrides) -> str:
     def importer(name: str):
         if name == "elitea_sdk":
             return SimpleNamespace(__file__="/opt/elitea_sdk/__init__.py")
+        if name == "elitea_sdk.tools":
+            return SimpleNamespace(FAILED_IMPORTS={})
         return SimpleNamespace()
 
     parameters = {
@@ -62,6 +64,81 @@ def test_profile_digest_and_exact_requirements_match_project_extra() -> None:
 
 def test_complete_profile_is_admitted() -> None:
     assert _passing_check() == _profile()["profile_sha256"]
+
+
+def test_required_indexing_families_and_sdk_import_aliases_are_explicit() -> None:
+    profile = _profile()
+
+    assert profile["required_indexing_families"] == [
+        "ado_boards",
+        "ado_plans",
+        "ado_repos",
+        "ado_wiki",
+        "bitbucket",
+        "confluence",
+        "figma",
+        "github",
+        "gitlab",
+        "jira",
+        "qtest",
+        "sharepoint",
+        "testrail",
+        "xray_cloud",
+        "zephyr_enterprise",
+        "zephyr_essential",
+        "zephyr_scale",
+    ]
+    assert set(profile["required_indexing_family_imports"]) == set(
+        profile["required_indexing_families"]
+    )
+    assert profile["required_indexing_family_imports"]["ado_boards"] == (
+        "elitea_sdk.tools.ado.work_item"
+    )
+    assert profile["required_indexing_family_imports"]["xray_cloud"] == (
+        "elitea_sdk.tools.xray"
+    )
+    assert profile["required_sdk_tool_import_keys"] == [
+        "ado",
+        *profile["required_indexing_families"],
+    ]
+
+
+def test_unrelated_sdk_optional_tool_failures_do_not_block_indexing() -> None:
+    def importer(name: str):
+        if name == "elitea_sdk":
+            return SimpleNamespace(__file__="/opt/elitea_sdk/__init__.py")
+        if name == "elitea_sdk.tools":
+            return SimpleNamespace(
+                FAILED_IMPORTS={
+                    "aws": "sensitive optional failure",
+                    "playwright": "sensitive optional failure",
+                }
+            )
+        return SimpleNamespace()
+
+    assert _passing_check(import_module=importer) == _profile()["profile_sha256"]
+
+
+def test_required_sdk_indexing_tool_failure_fails_closed_without_error_text() -> None:
+    canary = "https://secret.invalid/token"
+
+    def importer(name: str):
+        if name == "elitea_sdk":
+            return SimpleNamespace(__file__="/opt/elitea_sdk/__init__.py")
+        if name == "elitea_sdk.tools":
+            return SimpleNamespace(
+                FAILED_IMPORTS={"github": canary, "aws": canary}
+            )
+        return SimpleNamespace()
+
+    with pytest.raises(DependencyUnavailable) as captured:
+        _passing_check(import_module=importer)
+
+    assert captured.value.__cause__ is not None
+    cause = str(captured.value.__cause__)
+    assert "sdk-indexing-toolkit:github:failed-import" in cause
+    assert "aws" not in cause
+    assert canary not in cause
 
 
 @pytest.mark.parametrize(

@@ -65,6 +65,7 @@ def require_indexing_runtime_capabilities(
                 )
 
         sdk_module: Any | None = None
+        sdk_tool_registry: Any | None = None
         for module_name in profile["required_imports"]:
             try:
                 # The SDK's optional-tool discovery prints diagnostics. Keep
@@ -73,8 +74,57 @@ def require_indexing_runtime_capabilities(
                     module = import_module(module_name)
                 if module_name == "elitea_sdk.runtime.clients.client":
                     sdk_module = import_module("elitea_sdk")
+                if module_name == "elitea_sdk.tools":
+                    sdk_tool_registry = module
             except Exception as exc:
                 failures.append(f"import:{module_name}:{type(exc).__name__}")
+
+        required_families = profile.get("required_indexing_families")
+        family_imports = profile.get("required_indexing_family_imports")
+        if (
+            not isinstance(required_families, list)
+            or not required_families
+            or not all(isinstance(key, str) and key for key in required_families)
+            or not isinstance(family_imports, dict)
+            or set(required_families) != set(family_imports)
+        ):
+            failures.append("sdk-indexing-family-contract:invalid")
+        else:
+            for family in required_families:
+                module_name = family_imports.get(family)
+                if not isinstance(module_name, str) or not module_name:
+                    failures.append(
+                        f"sdk-indexing-family:{family}:invalid-import"
+                    )
+                    continue
+                try:
+                    with redirect_stdout(sys.stderr):
+                        import_module(module_name)
+                except Exception as exc:
+                    failures.append(
+                        f"sdk-indexing-family:{family}:{type(exc).__name__}"
+                    )
+
+        required_sdk_keys = profile.get("required_sdk_tool_import_keys")
+        if (
+            not isinstance(required_sdk_keys, list)
+            or not required_sdk_keys
+            or not all(isinstance(key, str) and key for key in required_sdk_keys)
+        ):
+            failures.append("sdk-tool-import-key-contract:invalid")
+        elif sdk_tool_registry is None:
+            failures.append("sdk-indexing-toolkit-registry:missing")
+        else:
+            failed_imports = getattr(sdk_tool_registry, "FAILED_IMPORTS", None)
+            if not isinstance(failed_imports, dict):
+                failures.append("sdk-indexing-toolkit-failures:missing")
+            else:
+                for key in sorted(
+                    set(required_sdk_keys).intersection(failed_imports)
+                ):
+                    # Never include the SDK's exception text: it may contain
+                    # endpoints or other deployment-specific values.
+                    failures.append(f"sdk-indexing-toolkit:{key}:failed-import")
 
         if sdk_module is not None:
             package_file = getattr(sdk_module, "__file__", None)
