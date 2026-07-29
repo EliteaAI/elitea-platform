@@ -595,7 +595,9 @@
             "source": "generated",
             "responseSchema": "S3ObjectListResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.bucketList",
@@ -605,7 +607,9 @@
             "source": "generated",
             "responseSchema": "S3BucketListResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.createArtifact",
@@ -625,7 +629,9 @@
             "source": "generated",
             "responseSchema": "BucketCreatedResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.deleteArtifact",
@@ -635,7 +641,9 @@
             "source": "generated",
             "responseSchema": "ArtifactDeletedResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.deleteArtifacts",
@@ -645,7 +653,9 @@
             "source": "generated",
             "responseSchema": null,
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.deleteBucket",
@@ -655,7 +665,9 @@
             "source": "generated",
             "responseSchema": "BucketDeletedResponse",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.editBucket",
@@ -665,7 +677,9 @@
             "source": "generated",
             "responseSchema": "Bucket",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "artifacts.updateBucketPin",
@@ -675,7 +689,9 @@
             "source": "generated",
             "responseSchema": "Bucket",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "auth.permissionList",
@@ -697,7 +713,9 @@
             "source": "generated",
             "responseSchema": "ChatConfig",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/artifacts"
+            ]
         },
         {
             "id": "chat.webchatSync",
@@ -1839,6 +1857,54 @@
             "usedBy": [
                 "entities/folder",
                 "features/chat-conversation-list"
+            ]
+        },
+        {
+            "id": "artifacts.listBucketMetadata",
+            "method": "GET",
+            "path": "/artifacts/buckets/default/{project_id}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "BucketMetadataPageWire",
+            "fixture": null,
+            "usedBy": [
+                "features/artifacts"
+            ]
+        },
+        {
+            "id": "artifacts.getArtifactContent",
+            "method": "GET",
+            "path": "/artifacts/artifact/default/{project_id}/{bucket}/{file_path}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "Blob",
+            "fixture": null,
+            "usedBy": [
+                "features/artifacts"
+            ]
+        },
+        {
+            "id": "artifacts.putArtifactToS3",
+            "method": "PUT",
+            "path": "/artifacts/s3/{bucket}/{file_path}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": null,
+            "fixture": null,
+            "usedBy": [
+                "features/artifacts"
+            ]
+        },
+        {
+            "id": "artifacts.listS3Configurations",
+            "method": "GET",
+            "path": "/configurations/configurations/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "ConfigurationPageWire",
+            "fixture": null,
+            "usedBy": [
+                "features/artifacts"
             ]
         }
     ]
