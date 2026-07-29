@@ -545,11 +545,17 @@ func TestExistingComposeIndexIssue5681OwnerCleanup(t *testing.T) {
 	}
 	err := pollIndexReliability(ctx, 250*time.Millisecond, func() (bool, error) {
 		for _, resource := range resources {
-			snapshot, snapshotErr := harness.jobSnapshot(ctx, resource.ExecutionID)
+			snapshot, snapshotErr := issue5681DurableSnapshotResult(
+				ctx,
+				harness,
+				resource.ExecutionID,
+			)
 			if snapshotErr != nil {
 				return false, snapshotErr
 			}
-			if !isIndexTerminal(snapshot.State) {
+			if !isIndexTerminal(snapshot.State) ||
+				snapshot.ReleasedClaims != snapshot.Claims ||
+				(!snapshot.Retired && !snapshot.CommittedSettlement) {
 				return false, nil
 			}
 		}
