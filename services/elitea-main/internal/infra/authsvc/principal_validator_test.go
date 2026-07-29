@@ -208,3 +208,25 @@ func TestPrincipalValidatorRejectsIDsOutsideBaselineDatabaseRangeBeforeLookup(t 
 		t.Fatalf("database lookups = %d, want 0", calls)
 	}
 }
+
+func TestPrincipalDatabaseIDRejectsBeforeNarrowing(t *testing.T) {
+	for value, wantOK := range map[string]bool{
+		"1":                   true,
+		"2147483647":          true,
+		"0":                   false,
+		"-1":                  false,
+		"2147483648":          false,
+		"9223372036854775807": false,
+		"not-an-integer":      false,
+	} {
+		t.Run(value, func(t *testing.T) {
+			id, ok := principalDatabaseID(value)
+			if ok != wantOK {
+				t.Fatalf("principalDatabaseID(%q) = %d, %v", value, id, ok)
+			}
+			if !ok && id != 0 {
+				t.Fatalf("rejected principalDatabaseID(%q) narrowed to %d", value, id)
+			}
+		})
+	}
+}

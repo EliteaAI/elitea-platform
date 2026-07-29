@@ -53,23 +53,33 @@ func TestValidateReturnTargetKeepsRedirectLocalAndBounded(t *testing.T) {
 		"/",
 		"/projects/42",
 		"/projects/42?tab=artifacts",
+		"/app/chat?project=7#message",
 		"/path%20with%20spaces",
 	} {
-		if err := ValidateReturnTarget(target); err != nil {
+		canonical, err := CanonicalReturnTarget(target)
+		if err != nil {
 			t.Fatalf("valid target %q: %v", target, err)
+		}
+		if canonical != target {
+			t.Fatalf("canonical target = %q, want %q", canonical, target)
 		}
 	}
 
 	for _, target := range []string{
 		"",
 		"projects/42",
+		"http://attacker.example/",
 		"https://attacker.example/",
 		"//attacker.example/",
+		`\\attacker.example`,
 		`/\attacker.example`,
+		`/%2fattacker.example`,
+		`/%5cattacker.example`,
 		"/path\nsecond-header",
+		"/path%0d%0aLocation:%20https://attacker.example",
 		strings.Repeat("x", MaxReturnTargetBytes+1),
 	} {
-		if err := ValidateReturnTarget(target); !errors.Is(err, ErrInvalidValue) {
+		if _, err := CanonicalReturnTarget(target); !errors.Is(err, ErrInvalidValue) {
 			t.Fatalf("invalid target %q error = %v, want %v", target, err, ErrInvalidValue)
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -55,13 +56,21 @@ func (r *CurrentIndexCancellationRepository) RequestCurrentIndexCancellation(
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	projectID, ok := currentIndexCancellationDatabaseID(request.ProjectID)
+	if !ok {
+		return false, indexingapp.ErrInvalidCurrentIndexCancel
+	}
+	toolkitID, ok := currentIndexCancellationDatabaseID(request.ToolkitID)
+	if !ok {
+		return false, indexingapp.ErrInvalidCurrentIndexCancel
+	}
 
 	transitioned, err := r.queries.RequestCurrentIndexIngestCancellation(
 		ctx,
 		sqlcgen.RequestCurrentIndexIngestCancellationParams{
 			ExecutionID:       request.ExecutionID,
-			ResourceProjectID: int32(request.ProjectID),
-			ToolkitID:         int32(request.ToolkitID),
+			ResourceProjectID: projectID,
+			ToolkitID:         toolkitID,
 			IndexName:         request.IndexName,
 		},
 	)
@@ -72,6 +81,13 @@ func (r *CurrentIndexCancellationRepository) RequestCurrentIndexCancellation(
 		return false, fmt.Errorf("request current index cancellation: %w", err)
 	}
 	return transitioned, nil
+}
+
+func currentIndexCancellationDatabaseID(value int64) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 var _ indexingapp.CurrentIndexCancellationStore = (*CurrentIndexCancellationRepository)(nil)

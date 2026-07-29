@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -100,20 +101,50 @@ func TestCurrentIndexCancellationRepositoryPreservesIdempotentNoTransition(t *te
 func TestCurrentIndexCancellationRepositoryRejectsBeforeQuery(t *testing.T) {
 	t.Parallel()
 
-	database := &currentIndexCancelDB{row: scriptedRow{values: []any{true}}}
-	repository, err := newCurrentIndexCancellationRepository(sqlcgen.New(database))
-	if err != nil {
-		t.Fatal(err)
+	valid := indexingapp.CurrentIndexCancelRequest{
+		ProjectID:   7,
+		ToolkitID:   9,
+		IndexName:   "documents",
+		ExecutionID: "0123456789abcdef0123456789abcdef",
 	}
-	if _, err := repository.RequestCurrentIndexCancellation(
-		context.Background(),
-		indexingapp.CurrentIndexCancelRequest{},
-	); !errors.Is(err, indexingapp.ErrInvalidCurrentIndexCancel) {
-		t.Fatalf("RequestCurrentIndexCancellation() error=%v", err)
+	for name, request := range map[string]indexingapp.CurrentIndexCancelRequest{
+		"empty":            {},
+		"project overflow": withCancelProjectID(valid, math.MaxInt32+1),
+		"toolkit overflow": withCancelToolkitID(valid, math.MaxInt32+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := &currentIndexCancelDB{row: scriptedRow{values: []any{true}}}
+			repository, err := newCurrentIndexCancellationRepository(sqlcgen.New(database))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repository.RequestCurrentIndexCancellation(
+				context.Background(),
+				request,
+			); !errors.Is(err, indexingapp.ErrInvalidCurrentIndexCancel) {
+				t.Fatalf("RequestCurrentIndexCancellation() error=%v", err)
+			}
+			if len(database.calls) != 0 {
+				t.Fatalf("invalid request issued %d queries", len(database.calls))
+			}
+		})
 	}
-	if len(database.calls) != 0 {
-		t.Fatalf("invalid request issued %d queries", len(database.calls))
-	}
+}
+
+func withCancelProjectID(
+	request indexingapp.CurrentIndexCancelRequest,
+	projectID int64,
+) indexingapp.CurrentIndexCancelRequest {
+	request.ProjectID = projectID
+	return request
+}
+
+func withCancelToolkitID(
+	request indexingapp.CurrentIndexCancelRequest,
+	toolkitID int64,
+) indexingapp.CurrentIndexCancelRequest {
+	request.ToolkitID = toolkitID
+	return request
 }
 
 type currentIndexCancelDB struct {

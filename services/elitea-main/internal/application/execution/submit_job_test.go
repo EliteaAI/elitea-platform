@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +135,64 @@ func TestSubmitValidationRetryIgnoresOnlyGeneratedBundleIdentity(t *testing.T) {
 	changedPolicy.InputBundle.Entries[0].Classification = "different-policy"
 	if _, err := service.SubmitValidation(context.Background(), changedPolicy); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("semantic input policy change did not conflict: %v", err)
+	}
+}
+
+func TestSubmitValidationDigestMaterialHonorsExactProtocolBoundsBeforeAdmission(t *testing.T) {
+	store := &memoryAdmissionStore{byKey: make(map[string]ValidationAdmission)}
+	ids := 0
+	service, err := NewSubmitJobService(store, time.Now, func() (string, error) {
+		ids++
+		return fmt.Sprintf("bounded-%d", ids), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	atLimit := validSubmitValidationRequest(make([]byte, executiondomain.MaxInputEntryContentBytes))
+	atLimit.Identity.TenantID = strings.Repeat("t", maxValidationRequestDigestStringBytes)
+	if _, err := service.SubmitValidation(context.Background(), atLimit); err != nil {
+		t.Fatalf("exact protocol limits were rejected: %v", err)
+	}
+	if ids != 3 || len(store.byKey) != 1 {
+		t.Fatalf("exact limit admission side effects: ids=%d admissions=%d", ids, len(store.byKey))
+	}
+
+	overContentLimit := validSubmitValidationRequest(make([]byte, executiondomain.MaxInputEntryContentBytes+1))
+	if _, err := service.SubmitValidation(context.Background(), overContentLimit); !errors.Is(err, ErrInvalidAdmission) {
+		t.Fatalf("content above protocol limit error = %v", err)
+	}
+	overStringLimit := validSubmitValidationRequest([]byte(`{}`))
+	overStringLimit.Identity.TenantID = strings.Repeat("t", maxValidationRequestDigestStringBytes+1)
+	if _, err := service.SubmitValidation(context.Background(), overStringLimit); !errors.Is(err, ErrInvalidAdmission) {
+		t.Fatalf("metadata above protocol limit error = %v", err)
+	}
+	if ids != 3 || len(store.byKey) != 1 {
+		t.Fatalf("rejected inputs reached admission side effects: ids=%d admissions=%d", ids, len(store.byKey))
+	}
+}
+
+func TestValidationRequestDigestMaterialSizeRejectsArithmeticOverflow(t *testing.T) {
+	values := make([]string, validationRequestDigestValueCount)
+	for index := range values {
+		values[index] = strings.Repeat("v", maxValidationRequestDigestStringBytes)
+	}
+	size, err := validationRequestDigestMaterialSize(values, executiondomain.MaxInputEntryContentBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != maxValidationRequestDigestMaterialBytes {
+		t.Fatalf("exact maximum material size = %d, want %d", size, maxValidationRequestDigestMaterialBytes)
+	}
+
+	if _, err := validationRequestDigestMaterialSize(values, math.MaxInt); !errors.Is(err, ErrInvalidAdmission) {
+		t.Fatalf("overflow-sized content error = %v", err)
+	}
+	if _, ok := checkedValidationRequestDigestSize(math.MaxInt, 1); ok {
+		t.Fatal("integer overflow was accepted")
+	}
+	if _, ok := checkedValidationRequestDigestSize(0, -1); ok {
+		t.Fatal("negative increment was accepted")
 	}
 }
 

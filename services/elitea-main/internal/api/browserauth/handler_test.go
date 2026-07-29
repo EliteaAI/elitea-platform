@@ -184,6 +184,9 @@ func TestBeginLoginFallsBackFromUntrustedOrAmbiguousTarget(t *testing.T) {
 		"target_to=%2Fok&target_to=%2Fother",
 		"target_to=%2F%5Cattacker.example",
 		"target_to=%2Fok%0D%0ALocation%3Aevil",
+		"target_to=%2F%252Fattacker.example",
+		"target_to=%2F%255Cattacker.example",
+		"target_to=%2Fok%250D%250ALocation%3Aevil",
 	} {
 		t.Run(rawQuery, func(t *testing.T) {
 			handler, dependencies := newTestHandler(t)
@@ -602,6 +605,29 @@ func TestFormAuthorizeRejectsNonRotatedSession(t *testing.T) {
 	}
 }
 
+func TestFormAuthorizeRejectsUnsafeReturnTarget(t *testing.T) {
+	for _, target := range []string{
+		"https://attacker.example/path",
+		"//attacker.example/path",
+		`/\attacker.example`,
+		`/%5cattacker.example`,
+		`/%2fattacker.example`,
+		"/ok%0d%0aLocation:https://attacker.example",
+	} {
+		t.Run(target, func(t *testing.T) {
+			handler, dependencies := newTestHandler(t)
+			dependencies.flow.completeResult.ReturnTarget = target
+			recorder := authorize(t, handler, dependencies, "admin", "secret")
+			if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Location") != "" {
+				t.Fatalf("status = %d location = %q", recorder.Code, recorder.Header().Get("Location"))
+			}
+			if cookies := recorder.Result().Cookies(); len(cookies) != 1 || cookies[0].MaxAge != -1 {
+				t.Fatalf("cookies = %+v, want exact deletion", cookies)
+			}
+		})
+	}
+}
+
 func TestLogoutPreservesProviderRouteAndFailsClosedOnUncertainRevocation(t *testing.T) {
 	t.Run("provider dispatch", func(t *testing.T) {
 		handler, _ := newTestHandler(t)
@@ -624,6 +650,29 @@ func TestLogoutPreservesProviderRouteAndFailsClosedOnUncertainRevocation(t *test
 		}
 		if cookies := recorder.Result().Cookies(); len(cookies) != 1 || cookies[0].MaxAge != -1 {
 			t.Fatalf("cookies = %+v", cookies)
+		}
+	})
+
+	t.Run("unsafe target falls back", func(t *testing.T) {
+		for _, target := range []string{
+			"https://attacker.example/path",
+			"//attacker.example/path",
+			`/\attacker.example`,
+			`/%5cattacker.example`,
+			`/%2fattacker.example`,
+			"/ok%0d%0aLocation:https://attacker.example",
+		} {
+			handler, _ := newTestHandler(t)
+			request := httptest.NewRequest(
+				http.MethodGet,
+				BasePath+FormLogoutPath+"?target_to="+url.QueryEscape(target),
+				nil,
+			)
+			recorder := httptest.NewRecorder()
+			mount(handler).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "/logout-default" {
+				t.Fatalf("target = %q status = %d location = %q", target, recorder.Code, recorder.Header().Get("Location"))
+			}
 		}
 	})
 

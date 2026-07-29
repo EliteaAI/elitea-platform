@@ -1,11 +1,15 @@
 package eliteacore_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +23,12 @@ import (
 // (those that never dereference h.pool).
 func newHandler() *eliteacore.Handler {
 	return eliteacore.NewHandler(nil)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 type permissionResolverStub struct{}
@@ -322,6 +332,175 @@ func TestUploadIcon(t *testing.T) {
 	}
 }
 
+func TestUploadIconStoresFileWithinConfiguredRoot(t *testing.T) {
+	iconsDir := t.TempDir()
+	t.Setenv("ICONS_DATA_DIR", iconsDir)
+
+	var requestBody bytes.Buffer
+	form := multipart.NewWriter(&requestBody)
+	part, err := form.CreateFormFile("file", `parent\icon.svg`)
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write([]byte("<svg/>")); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close multipart form: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/", map[string]string{"projectID": "project-1"}, &requestBody)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	w := httptest.NewRecorder()
+	newHandler().UploadIcon(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	response := decodeObj(t, w)
+	iconURL, _ := response["url"].(string)
+	const prefix = "/icons/project-1/"
+	if !strings.HasPrefix(iconURL, prefix) || !strings.HasSuffix(iconURL, ".svg") {
+		t.Fatalf("unexpected icon URL %q", iconURL)
+	}
+
+	stored, err := os.ReadFile(filepath.Join(iconsDir, "project-1", strings.TrimPrefix(iconURL, prefix)))
+	if err != nil {
+		t.Fatalf("read stored icon: %v", err)
+	}
+	if string(stored) != "<svg/>" {
+		t.Fatalf("stored icon = %q, want %q", stored, "<svg/>")
+	}
+}
+
+func TestUploadIconRejectsTraversalAndSymlinkEscape(t *testing.T) {
+	t.Run("traversal", func(t *testing.T) {
+		iconsDir := t.TempDir()
+		t.Setenv("ICONS_DATA_DIR", iconsDir)
+
+		req := multipartIconRequest(t, "..", "icon.png", []byte("untrusted"))
+		w := httptest.NewRecorder()
+		newHandler().UploadIcon(w, req)
+
+		assertStatus(t, w, http.StatusBadRequest)
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		iconsDir := t.TempDir()
+		outsideDir := t.TempDir()
+		t.Setenv("ICONS_DATA_DIR", iconsDir)
+		if err := os.Symlink(outsideDir, filepath.Join(iconsDir, "project-1")); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+
+		req := multipartIconRequest(t, "project-1", "icon.png", []byte("untrusted"))
+		w := httptest.NewRecorder()
+		newHandler().UploadIcon(w, req)
+
+		assertStatus(t, w, http.StatusInternalServerError)
+		entries, err := os.ReadDir(outsideDir)
+		if err != nil {
+			t.Fatalf("read outside directory: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("upload escaped icon root: outside directory contains %d entries", len(entries))
+		}
+	})
+}
+
+func TestDeleteIconIsConfinedToConfiguredRoot(t *testing.T) {
+	t.Run("stored file", func(t *testing.T) {
+		iconsDir := t.TempDir()
+		t.Setenv("ICONS_DATA_DIR", iconsDir)
+		projectDir := filepath.Join(iconsDir, "project-1")
+		if err := os.Mkdir(projectDir, 0755); err != nil {
+			t.Fatalf("create project directory: %v", err)
+		}
+		iconPath := filepath.Join(projectDir, "icon.png")
+		if err := os.WriteFile(iconPath, []byte("icon"), 0644); err != nil {
+			t.Fatalf("create icon: %v", err)
+		}
+
+		req := newRequest(http.MethodDelete, "/", map[string]string{
+			"projectID": "project-1",
+			"name":      "icon.png",
+		}, nil)
+		w := httptest.NewRecorder()
+		newHandler().DeleteIcon(w, req)
+
+		assertStatus(t, w, http.StatusNoContent)
+		if _, err := os.Stat(iconPath); !os.IsNotExist(err) {
+			t.Fatalf("deleted icon still exists or stat failed unexpectedly: %v", err)
+		}
+	})
+
+	t.Run("symlink escape", func(t *testing.T) {
+		iconsDir := t.TempDir()
+		outsideDir := t.TempDir()
+		t.Setenv("ICONS_DATA_DIR", iconsDir)
+		outsideIcon := filepath.Join(outsideDir, "icon.png")
+		if err := os.WriteFile(outsideIcon, []byte("outside"), 0644); err != nil {
+			t.Fatalf("create outside icon: %v", err)
+		}
+		if err := os.Symlink(outsideDir, filepath.Join(iconsDir, "project-1")); err != nil {
+			t.Skipf("symlinks are unavailable: %v", err)
+		}
+
+		req := newRequest(http.MethodDelete, "/", map[string]string{
+			"projectID": "project-1",
+			"name":      "icon.png",
+		}, nil)
+		w := httptest.NewRecorder()
+		newHandler().DeleteIcon(w, req)
+
+		assertStatus(t, w, http.StatusNoContent)
+		if _, err := os.Stat(outsideIcon); err != nil {
+			t.Fatalf("delete escaped icon root: %v", err)
+		}
+	})
+
+	t.Run("traversal", func(t *testing.T) {
+		iconsDir := t.TempDir()
+		outsideDir := t.TempDir()
+		t.Setenv("ICONS_DATA_DIR", iconsDir)
+		outsideIcon := filepath.Join(outsideDir, "icon.png")
+		if err := os.WriteFile(outsideIcon, []byte("outside"), 0644); err != nil {
+			t.Fatalf("create outside icon: %v", err)
+		}
+
+		req := newRequest(http.MethodDelete, "/", map[string]string{
+			"projectID": "..",
+			"name":      "icon.png",
+		}, nil)
+		w := httptest.NewRecorder()
+		newHandler().DeleteIcon(w, req)
+
+		assertStatus(t, w, http.StatusNoContent)
+		if _, err := os.Stat(outsideIcon); err != nil {
+			t.Fatalf("delete escaped icon root: %v", err)
+		}
+	})
+}
+
+func multipartIconRequest(t *testing.T, projectID, filename string, content []byte) *http.Request {
+	t.Helper()
+
+	var requestBody bytes.Buffer
+	form := multipart.NewWriter(&requestBody)
+	part, err := form.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close multipart form: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/", map[string]string{"projectID": projectID}, &requestBody)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return req
+}
+
 // ---- Export / Import --------------------------------------------------------
 
 func TestExportImportPost(t *testing.T) {
@@ -442,6 +621,158 @@ func TestMCPDCRProxy(t *testing.T) {
 	body := decodeObj(t, w)
 	if ok, _ := body["ok"].(bool); !ok {
 		t.Error("ok should be true")
+	}
+}
+
+func TestMCPOAuthProxyAllowsCustomHTTPSHost(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://identity.custom.example/oauth/token" {
+			t.Fatalf("unexpected request URL %q", req.URL)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatalf("parse OAuth form: %v", err)
+		}
+		if got := req.Form.Get("client_id"); got != "client&id" {
+			t.Fatalf("client_id = %q, want %q", got, "client&id")
+		}
+		if got := req.Form.Get("code"); got != "code=value" {
+			t.Fatalf("code = %q, want %q", got, "code=value")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"token"}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	body := `{
+		"token_endpoint":"https://identity.custom.example/oauth/token",
+		"client_id":"client&id",
+		"code":"code=value"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	eliteacore.NewHandler(nil, eliteacore.WithHTTPClient(client)).MCPOAuthProxy(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	response := decodeObj(t, w)
+	if response["access_token"] != "token" {
+		t.Fatalf("unexpected OAuth response: %#v", response)
+	}
+}
+
+func TestMCPDCRProxyAllowsCustomHTTPSHost(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://mcp.custom.example/register" {
+			t.Fatalf("unexpected request URL %q", req.URL)
+		}
+		var requestBody map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode DCR body: %v", err)
+		}
+		if requestBody["client_name"] != "Elitea" {
+			t.Fatalf("unexpected DCR body: %#v", requestBody)
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"client_id":"registered"}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	body := `{
+		"registration_endpoint":"https://mcp.custom.example/register",
+		"client_name":"Elitea"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	eliteacore.NewHandler(nil, eliteacore.WithHTTPClient(client)).MCPDCRProxy(w, req)
+
+	assertStatus(t, w, http.StatusCreated)
+	response := decodeObj(t, w)
+	if response["client_id"] != "registered" {
+		t.Fatalf("unexpected DCR response: %#v", response)
+	}
+}
+
+func TestMCPProxiesRejectUnsafeEndpointURLs(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*eliteacore.Handler, http.ResponseWriter, *http.Request)
+		field   string
+	}{
+		{
+			name:    "OAuth",
+			handler: (*eliteacore.Handler).MCPOAuthProxy,
+			field:   "token_endpoint",
+		},
+		{
+			name:    "DCR",
+			handler: (*eliteacore.Handler).MCPDCRProxy,
+			field:   "registration_endpoint",
+		},
+	}
+	unsafeURLs := []string{
+		"file:///etc/passwd",
+		"http://mcp.internal.example/token",
+		"https:///missing-host",
+		"https://user:password@mcp.example/token",
+	}
+
+	for _, test := range tests {
+		for _, unsafeURL := range unsafeURLs {
+			t.Run(test.name+"/"+unsafeURL, func(t *testing.T) {
+				transportCalled := false
+				client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					transportCalled = true
+					return nil, nil
+				})}
+				requestBody, err := json.Marshal(map[string]string{test.field: unsafeURL})
+				if err != nil {
+					t.Fatalf("marshal request: %v", err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(requestBody))
+				w := httptest.NewRecorder()
+
+				test.handler(eliteacore.NewHandler(nil, eliteacore.WithHTTPClient(client)), w, req)
+
+				assertStatus(t, w, http.StatusBadRequest)
+				if transportCalled {
+					t.Fatal("unsafe endpoint reached the HTTP transport")
+				}
+			})
+		}
+	}
+}
+
+func TestMCPProxyRejectsCrossOriginRedirect(t *testing.T) {
+	requestCount := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		response := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}
+		response.Header.Set("Location", "https://different.example/token")
+		return response, nil
+	})}
+
+	body := `{"token_endpoint":"https://identity.custom.example/oauth/token"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	eliteacore.NewHandler(nil, eliteacore.WithHTTPClient(client)).MCPOAuthProxy(w, req)
+
+	assertStatus(t, w, http.StatusBadGateway)
+	if requestCount != 1 {
+		t.Fatalf("request count = %d, want 1", requestCount)
+	}
+	response := decodeObj(t, w)
+	if _, exposesDetails := response["error_description"]; exposesDetails {
+		t.Fatalf("proxy exposed transport details: %#v", response)
 	}
 }
 

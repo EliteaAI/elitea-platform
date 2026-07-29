@@ -26,6 +26,8 @@ from typing import Any, Callable
 
 
 SCHEMA_VERSION = 1
+FORM_CREDENTIAL_ENVIRONMENT_SENTINEL = "environment_expansion"
+FORM_CREDENTIAL_INLINE_SENTINEL = "inline_value_present_but_redacted"
 
 AUTH_CORE_FILES = (
     "config.yml",
@@ -1032,7 +1034,7 @@ def _selected_main_shared_config(text: str) -> dict[str, str]:
 def _safe_form_config(text: str) -> dict[str, Any]:
     users: list[set[str]] = []
     current: set[str] | None = None
-    password_sources: list[str] = []
+    credential_source_sentinels: list[str] = []
     in_users = False
     user_entry_indent: int | None = None
     for raw_line in text.splitlines():
@@ -1054,7 +1056,11 @@ def _safe_form_config(text: str) -> dict[str, Any]:
             key, value = stripped[2:].split(":", 1)
             current.add(key.strip())
             if key.strip() == "password":
-                password_sources.append(_credential_source(value.strip()))
+                credential_source_sentinels.append(
+                    FORM_CREDENTIAL_ENVIRONMENT_SENTINEL
+                    if _is_environment_expansion(value)
+                    else FORM_CREDENTIAL_INLINE_SENTINEL
+                )
             continue
         if (
             current is not None
@@ -1065,22 +1071,26 @@ def _safe_form_config(text: str) -> dict[str, Any]:
             key, value = stripped.split(":", 1)
             current.add(key.strip())
             if key.strip() == "password":
-                password_sources.append(_credential_source(value.strip()))
+                credential_source_sentinels.append(
+                    FORM_CREDENTIAL_ENVIRONMENT_SENTINEL
+                    if _is_environment_expansion(value)
+                    else FORM_CREDENTIAL_INLINE_SENTINEL
+                )
     if not users:
         raise ValueError("tracked Form configuration has no users")
     return {
         "configured_user_count": len(users),
         "configured_user_keys": [sorted(user) for user in users],
-        "credential_sources": password_sources,
+        # These are fixed classification sentinels. Credential bytes are
+        # discarded above and never reach the deterministic evidence digest.
+        "credential_sources": credential_source_sentinels,
         "credential_values_exported": False,
     }
 
 
-def _credential_source(value: str) -> str:
+def _is_environment_expansion(value: str) -> bool:
     unquoted = value.strip().strip('"').strip("'")
-    if unquoted.startswith("${") and unquoted.endswith("}"):
-        return "environment_expansion"
-    return "inline_value_present_but_redacted"
+    return unquoted.startswith("${") and unquoted.endswith("}")
 
 
 def _tracked_literal_paths(

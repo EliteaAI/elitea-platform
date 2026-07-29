@@ -3,6 +3,7 @@ package indexmeta
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,6 +102,47 @@ func TestDeleteServiceDoesNotCleanScheduleBeforePgvectorCommit(t *testing.T) {
 	if !errors.Is(err, ErrCurrentIndexMetaUnavailable) ||
 		schedules.calls != 0 {
 		t.Fatalf("error=%v schedule calls=%d", err, schedules.calls)
+	}
+}
+
+func TestDeleteServiceRejectsDatabaseIdentityOverflowBeforeDependencies(t *testing.T) {
+	valid := DeleteRequest{
+		ProjectID: 7, ActorUserID: 11, ToolkitID: 19,
+		IndexMetaID: "meta-1",
+	}
+	for name, mutate := range map[string]func(*DeleteRequest){
+		"project": func(request *DeleteRequest) {
+			request.ProjectID = math.MaxInt32 + 1
+		},
+		"actor": func(request *DeleteRequest) {
+			request.ActorUserID = math.MaxInt32 + 1
+		},
+		"toolkit": func(request *DeleteRequest) {
+			request.ToolkitID = math.MaxInt32 + 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := valid
+			mutate(&request)
+			toolkits := &currentToolkitStub{}
+			service := newDeleteServiceForTest(
+				t,
+				toolkits,
+				&currentSettingsStub{},
+				&deleteExternalStub{},
+				&deleteScheduleStub{},
+			)
+			if err := service.Delete(context.Background(), request); !errors.Is(
+				err,
+				ErrInvalidCurrentIndexMetaRequest,
+			) {
+				t.Fatalf("Delete() error=%v", err)
+			}
+			if toolkits.projectID != 0 || toolkits.userID != 0 ||
+				toolkits.toolkitID != 0 {
+				t.Fatalf("invalid request reached toolkit lookup: %+v", toolkits)
+			}
+		})
 	}
 }
 

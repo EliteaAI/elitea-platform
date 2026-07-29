@@ -368,6 +368,28 @@ class BrowserAuthHTTPBaselineTest(unittest.TestCase):
         self.assertNotIn("SYNTHETIC_TEST_CREDENTIAL", json.dumps(evidence))
         self.assertFalse(evidence["credential_values_exported"])
 
+    def test_form_config_digest_uses_only_redacted_source_sentinels(self) -> None:
+        first = exporter._safe_form_config(
+            "users:\n- login: admin\n  password: SYNTHETIC_CREDENTIAL_ONE\n"
+        )
+        second = exporter._safe_form_config(
+            "users:\n- login: admin\n  password: SYNTHETIC_CREDENTIAL_TWO\n"
+        )
+        environment = exporter._safe_form_config(
+            "users:\n- login: admin\n  password: ${FORM_ADMIN_PASSWORD}\n"
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            exporter._canonical_sha256(first),
+            exporter._canonical_sha256(second),
+        )
+        self.assertNotEqual(first, environment)
+        self.assertEqual(
+            environment["credential_sources"],
+            ["environment_expansion"],
+        )
+
     def test_form_config_is_scoped_to_top_level_users(self) -> None:
         evidence = exporter._safe_form_config(
             "metadata:\n"

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -105,8 +104,11 @@ func (v *PrincipalValidator) ValidatePrincipal(ctx context.Context, principal au
 }
 
 func principalDatabaseID(value string) (int32, bool) {
-	id, err := strconv.ParseInt(value, 10, 64)
-	return int32(id), err == nil && id > 0 && id <= math.MaxInt32
+	id, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return int32(id), true
 }
 
 func principalValidationError(kind string, err error) error {

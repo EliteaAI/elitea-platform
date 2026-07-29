@@ -35,6 +35,33 @@ func TestConfigFromEnvAcceptsCompleteBoundedProductionConfig(t *testing.T) {
 	}
 }
 
+func TestConfigIntegerConversionsRespectProtocolBounds(t *testing.T) {
+	environment := validEnvironment()
+	environment["ELITEA_RUNTIME_REDIS_POOL_SIZE"] = "64"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err != nil {
+		t.Fatalf("maximum Redis pool size rejected: %v", err)
+	}
+
+	environment["ELITEA_RUNTIME_REDIS_POOL_SIZE"] = "65"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil ||
+		!strings.Contains(err.Error(), "runtime Redis pool size is invalid") {
+		t.Fatalf("out-of-range Redis pool size error = %v", err)
+	}
+
+	if err := validateRedisURL("rediss://runtime@redis.internal:65535/0"); err != nil {
+		t.Fatalf("maximum Redis TCP port rejected: %v", err)
+	}
+	if err := validateRedisURL("rediss://runtime@redis.internal:65536/0"); err == nil {
+		t.Fatal("out-of-range Redis TCP port was accepted")
+	}
+	if err := validateTCPAddress(":65535"); err != nil {
+		t.Fatalf("maximum listener TCP port rejected: %v", err)
+	}
+	if err := validateTCPAddress(":65536"); err == nil {
+		t.Fatal("out-of-range listener TCP port was accepted")
+	}
+}
+
 func TestConfigIndexIngestDispatchIsOptionalAndDedicated(t *testing.T) {
 	baseline, err := ConfigFromEnv(mapLookup(validEnvironment()))
 	if err != nil {

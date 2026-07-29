@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -225,6 +226,56 @@ func TestCurrentAuthoritativeInputResolverLoadsSavedToolkitAndConfigurationModel
 	}
 	if inputs.MCPReferences != nil {
 		t.Fatalf("unexpected invented MCP credential input: %s", inputs.MCPReferences)
+	}
+}
+
+func TestCurrentAuthoritativeInputResolverRejectsDatabaseIdentityOverflowBeforeDependencies(
+	t *testing.T,
+) {
+	for name, mutate := range map[string]func(*StartRequest){
+		"project": func(request *StartRequest) {
+			request.ProjectID = math.MaxInt32 + 1
+		},
+		"actor": func(request *StartRequest) {
+			request.ActorUserID = math.MaxInt32 + 1
+		},
+		"toolkit": func(request *StartRequest) {
+			request.ToolkitID = math.MaxInt32 + 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := validCurrentStartRequest(nil, `{}`)
+			mutate(&request)
+			toolkits := validCurrentToolkitReader()
+			settings := &currentToolkitSettingsValidatorStub{}
+			resolver := newCurrentAuthoritativeResolverWithSettingsForTest(
+				t,
+				toolkits,
+				&currentModelCatalogStub{},
+				settings,
+			)
+
+			if _, err := resolver.Resolve(
+				context.Background(),
+				request,
+			); !errors.Is(err, ErrInvalidIndexStart) {
+				t.Fatalf("Resolve() error=%v", err)
+			}
+			if _, err := resolver.ResolveScheduled(
+				context.Background(),
+				request,
+				toolkits.toolkit,
+			); !errors.Is(err, ErrInvalidIndexStart) {
+				t.Fatalf("ResolveScheduled() error=%v", err)
+			}
+			if toolkits.calls != 0 || len(settings.calls) != 0 {
+				t.Fatalf(
+					"invalid request crossed dependencies: toolkits=%d settings=%d",
+					toolkits.calls,
+					len(settings.calls),
+				)
+			}
+		})
 	}
 }
 

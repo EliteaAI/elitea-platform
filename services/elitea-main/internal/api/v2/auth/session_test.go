@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -55,17 +56,33 @@ func TestSafeRedirectTargetAllowsOnlySameOriginPaths(t *testing.T) {
 }
 
 func TestLogoutUsesSecureCookieAndRejectsExternalRedirect(t *testing.T) {
-	handler := NewSessionHandler(nil, "secret")
-	req := httptest.NewRequest(http.MethodGet, "/logout?target_to=https://attacker.example", nil)
-	rec := httptest.NewRecorder()
+	for _, test := range []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{name: "same-origin", target: "/app/chat?project=7#message", want: "/app/chat?project=7#message"},
+		{name: "absolute external", target: "https://attacker.example/path", want: "/"},
+		{name: "scheme relative", target: "//attacker.example/path", want: "/"},
+		{name: "backslash", target: `/\attacker.example`, want: "/"},
+		{name: "encoded backslash", target: `/%5cattacker.example`, want: "/"},
+		{name: "encoded scheme relative", target: `/%2fattacker.example`, want: "/"},
+		{name: "encoded control", target: "/ok%0d%0aLocation:https://attacker.example", want: "/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := NewSessionHandler(nil, "secret")
+			req := httptest.NewRequest(http.MethodGet, "/logout?target_to="+url.QueryEscape(test.target), nil)
+			rec := httptest.NewRecorder()
 
-	handler.Logout(rec, req)
+			handler.Logout(rec, req)
 
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
-		t.Fatalf("status=%d location=%q", rec.Code, rec.Header().Get("Location"))
-	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
-		t.Fatalf("logout cookie = %+v", cookies)
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != test.want {
+				t.Fatalf("status=%d location=%q, want %q", rec.Code, rec.Header().Get("Location"), test.want)
+			}
+			cookies := rec.Result().Cookies()
+			if len(cookies) != 1 || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+				t.Fatalf("logout cookie = %+v", cookies)
+			}
+		})
 	}
 }

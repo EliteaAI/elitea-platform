@@ -91,8 +91,11 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 	ctx context.Context,
 	request StartRequest,
 ) (AuthoritativeInputs, error) {
-	if ctx == nil || request.Validate() != nil || request.ProjectID > math.MaxInt32 ||
-		request.ActorUserID > math.MaxInt32 || request.ToolkitID > math.MaxInt32 {
+	if ctx == nil || request.Validate() != nil {
+		return AuthoritativeInputs{}, ErrInvalidIndexStart
+	}
+	projectID, actorUserID, toolkitID, ok := currentResolverDatabaseIDs(request)
+	if !ok {
 		return AuthoritativeInputs{}, ErrInvalidIndexStart
 	}
 	if err := ctx.Err(); err != nil {
@@ -101,9 +104,9 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 
 	toolkit, found, err := r.toolkits.GetCurrentToolkit(
 		ctx,
-		int32(request.ProjectID),
-		int32(request.ActorUserID),
-		int32(request.ToolkitID),
+		projectID,
+		actorUserID,
+		toolkitID,
 	)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -114,7 +117,14 @@ func (r *CurrentAuthoritativeInputResolver) Resolve(
 	if !found {
 		return AuthoritativeInputs{}, ErrToolkitNotVisible
 	}
-	return r.resolveCurrentToolkitInputs(ctx, request, toolkit)
+	return r.resolveCurrentToolkitInputs(
+		ctx,
+		request,
+		toolkit,
+		projectID,
+		actorUserID,
+		toolkitID,
+	)
 }
 
 // ResolveScheduled freezes one schedule-owned toolkit snapshot after the
@@ -126,31 +136,40 @@ func (r *CurrentAuthoritativeInputResolver) ResolveScheduled(
 	request StartRequest,
 	toolkit CurrentToolkitSnapshot,
 ) (AuthoritativeInputs, error) {
-	if r == nil || ctx == nil || request.Validate() != nil ||
-		request.ProjectID > math.MaxInt32 ||
-		request.ActorUserID > math.MaxInt32 ||
-		request.ToolkitID > math.MaxInt32 {
+	if r == nil || ctx == nil || request.Validate() != nil {
+		return AuthoritativeInputs{}, ErrInvalidIndexStart
+	}
+	projectID, actorUserID, toolkitID, ok := currentResolverDatabaseIDs(request)
+	if !ok {
 		return AuthoritativeInputs{}, ErrInvalidIndexStart
 	}
 	if err := ctx.Err(); err != nil {
 		return AuthoritativeInputs{}, err
 	}
-	return r.resolveCurrentToolkitInputs(ctx, request.Clone(), toolkit)
+	return r.resolveCurrentToolkitInputs(
+		ctx,
+		request.Clone(),
+		toolkit,
+		projectID,
+		actorUserID,
+		toolkitID,
+	)
 }
 
 func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
 	ctx context.Context,
 	request StartRequest,
 	toolkit CurrentToolkitSnapshot,
+	projectID, actorUserID, toolkitID int32,
 ) (AuthoritativeInputs, error) {
-	if err := validateCurrentToolkitSnapshot(toolkit, int32(request.ToolkitID)); err != nil {
+	if err := validateCurrentToolkitSnapshot(toolkit, toolkitID); err != nil {
 		return AuthoritativeInputs{}, err
 	}
 	expandedSettings, err := r.settings.Resolve(ctx, configurationapp.CurrentToolkitSettingsRequest{
 		ToolkitType: toolkit.Type,
 		Settings:    cloneCurrentResolverObject(toolkit.Settings),
-		ProjectID:   int32(request.ProjectID),
-		UserID:      int32(request.ActorUserID),
+		ProjectID:   projectID,
+		UserID:      actorUserID,
 		Mode:        configurationapp.CurrentToolkitSettingsReferenceMode,
 	})
 	if err != nil {
@@ -161,7 +180,7 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
 	}
 	defaultEmbeddingProjectID, err := r.applyCurrentEmbeddingModelDefault(
 		ctx,
-		int32(request.ProjectID),
+		projectID,
 		expandedSettings,
 	)
 	if err != nil {
@@ -169,7 +188,7 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
 	}
 	embeddingBinding, err := r.resolveCurrentEmbeddingBinding(
 		ctx,
-		int32(request.ProjectID),
+		projectID,
 		expandedSettings,
 		defaultEmbeddingProjectID,
 	)
@@ -192,7 +211,7 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
 		return AuthoritativeInputs{}, ErrInvalidIndexStart
 	}
 	requestedModel := cloneCurrentResolverString(request.RequestedLLMModel)
-	if err := r.resolveCurrentModelMetadata(ctx, int32(request.ProjectID), &requestedModel, llmSettings); err != nil {
+	if err := r.resolveCurrentModelMetadata(ctx, projectID, &requestedModel, llmSettings); err != nil {
 		return AuthoritativeInputs{}, err
 	}
 	llmConfiguration, err := json.Marshal(llmSettings)
@@ -207,6 +226,31 @@ func (r *CurrentAuthoritativeInputResolver) resolveCurrentToolkitInputs(
 		LLMConfiguration:     llmConfiguration,
 		EmbeddingBinding:     embeddingBinding,
 	}, nil
+}
+
+func currentResolverDatabaseIDs(
+	request StartRequest,
+) (projectID, actorUserID, toolkitID int32, ok bool) {
+	projectID, ok = currentResolverDatabaseID(request.ProjectID)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	actorUserID, ok = currentResolverDatabaseID(request.ActorUserID)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	toolkitID, ok = currentResolverDatabaseID(request.ToolkitID)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	return projectID, actorUserID, toolkitID, true
+}
+
+func currentResolverDatabaseID(value int64) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func (r *CurrentAuthoritativeInputResolver) resolveCurrentEmbeddingBinding(

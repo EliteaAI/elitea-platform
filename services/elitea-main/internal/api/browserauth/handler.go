@@ -290,7 +290,8 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 		}
 		return
 	}
-	if browserflow.ValidateReturnTarget(result.ReturnTarget) != nil ||
+	returnTarget, targetErr := browserflow.CanonicalReturnTarget(result.ReturnTarget)
+	if targetErr != nil ||
 		result.SessionID == sessionID || browserflow.ValidateOpaqueID(result.SessionID) != nil {
 		_ = h.cookies.Clear(writer)
 		writeProblem(writer, http.StatusServiceUnavailable)
@@ -301,7 +302,7 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 		writeProblem(writer, http.StatusServiceUnavailable)
 		return
 	}
-	http.Redirect(writer, request, result.ReturnTarget, http.StatusFound)
+	http.Redirect(writer, request, returnTarget, http.StatusFound)
 }
 
 func (h *Handler) admit(writer http.ResponseWriter, request *http.Request, attempt BrowserAttempt) bool {
@@ -381,10 +382,14 @@ func (h *Handler) writeFlowError(writer http.ResponseWriter, err error) {
 
 func queryReturnTarget(values url.Values, fallback string) string {
 	value, ok := singleValue(values, "target_to")
-	if !ok || browserflow.ValidateReturnTarget(value) != nil {
+	if !ok {
 		return fallback
 	}
-	return value
+	canonical, err := browserflow.CanonicalReturnTarget(value)
+	if err != nil {
+		return fallback
+	}
+	return canonical
 }
 
 func singleValue(values url.Values, key string) (string, bool) {

@@ -150,9 +150,18 @@ func (s *DeleteService) Delete(ctx context.Context, request DeleteRequest) error
 		return err
 	}
 
-	projectID := int32(request.ProjectID)
-	actorUserID := int32(request.ActorUserID)
-	toolkitID := int32(request.ToolkitID)
+	projectID, ok := currentIndexMetaDatabaseID(request.ProjectID)
+	if !ok {
+		return ErrInvalidCurrentIndexMetaRequest
+	}
+	actorUserID, ok := currentIndexMetaDatabaseID(request.ActorUserID)
+	if !ok {
+		return ErrInvalidCurrentIndexMetaRequest
+	}
+	toolkitID, ok := currentIndexMetaDatabaseID(request.ToolkitID)
+	if !ok {
+		return ErrInvalidCurrentIndexMetaRequest
+	}
 	target, err := s.resolveTarget(ctx, projectID, actorUserID, toolkitID)
 	if err != nil {
 		return err
@@ -202,6 +211,13 @@ func (s *DeleteService) Delete(ctx context.Context, request DeleteRequest) error
 		}
 	}
 	return nil
+}
+
+func currentIndexMetaDatabaseID(value int64) (int32, bool) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
 }
 
 func (s *DeleteService) resolveTarget(

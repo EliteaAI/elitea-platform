@@ -126,19 +126,38 @@ func ValidateTransactionID(id string) error {
 	return nil
 }
 
+// CanonicalReturnTarget accepts only a same-origin absolute path and returns
+// the parsed, canonical value that is safe to pass to an HTTP redirect.
+func CanonicalReturnTarget(target string) (string, error) {
+	if len(target) == 0 || len(target) > MaxReturnTargetBytes || !utf8.ValidString(target) ||
+		strings.ContainsFunc(target, unicode.IsControl) || target[0] != '/' ||
+		(len(target) > 1 && (target[1] == '/' || target[1] == '\\')) ||
+		strings.ContainsRune(target, '\\') {
+		return "", ErrInvalidValue
+	}
+	decoded, err := url.PathUnescape(target)
+	if err != nil || len(decoded) == 0 || !utf8.ValidString(decoded) ||
+		strings.ContainsFunc(decoded, unicode.IsControl) ||
+		decoded[0] != '/' || (len(decoded) > 1 && (decoded[1] == '/' || decoded[1] == '\\')) ||
+		strings.ContainsRune(decoded, '\\') {
+		return "", ErrInvalidValue
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.IsAbs() || parsed.Hostname() != "" || parsed.Host != "" ||
+		parsed.User != nil || parsed.Opaque != "" {
+		return "", ErrInvalidValue
+	}
+	if _, err := url.ParseRequestURI(target); err != nil {
+		return "", ErrInvalidValue
+	}
+	return parsed.String(), nil
+}
+
 // ValidateReturnTarget accepts only a same-origin absolute path. Redirect
 // scheme, host, and cookie policy remain responsibilities of the HTTP adapter.
 func ValidateReturnTarget(target string) error {
-	if len(target) == 0 || len(target) > MaxReturnTargetBytes || !utf8.ValidString(target) ||
-		strings.ContainsFunc(target, unicode.IsControl) || strings.Contains(target, `\`) ||
-		!strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
-		return ErrInvalidValue
-	}
-	parsed, err := url.ParseRequestURI(target)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" {
-		return ErrInvalidValue
-	}
-	return nil
+	_, err := CanonicalReturnTarget(target)
+	return err
 }
 
 func (c ProtocolCorrelation) Validate() error {

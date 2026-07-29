@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -37,7 +38,11 @@ func (h *SessionHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 
-	http.Redirect(w, r, safeRedirectTarget(r.URL.Query().Get("target_to")), http.StatusFound)
+	target := "/"
+	if canonical, err := browserflow.CanonicalReturnTarget(r.URL.Query().Get("target_to")); err == nil {
+		target = canonical
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (h *SessionHandler) Info(w http.ResponseWriter, r *http.Request) {

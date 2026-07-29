@@ -8,9 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,7 @@ type Handler struct {
 	pool               *pgxpool.Pool
 	mcpSyncer          MCPToolSyncer
 	permissionResolver auth.PermissionResolver
+	httpClient         *http.Client
 }
 
 type Option func(*Handler)
@@ -49,8 +51,21 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	}
 }
 
+// WithHTTPClient configures the client used by the MCP OAuth and DCR proxies.
+// It is primarily useful when the service needs a custom trusted CA bundle.
+func WithHTTPClient(client *http.Client) Option {
+	return func(handler *Handler) {
+		if client != nil {
+			handler.httpClient = client
+		}
+	}
+}
+
 func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
-	handler := &Handler{pool: pool}
+	handler := &Handler{
+		pool:       pool,
+		httpClient: http.DefaultClient,
+	}
 	for _, opt := range opts {
 		opt(handler)
 	}
@@ -1818,24 +1833,46 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 
-	iconDir := fmt.Sprintf("/data/icons/%s", projectID)
-	_ = os.MkdirAll(iconDir, 0755) // best-effort; os.Create below will fail if dir doesn't exist
-
-	ext := ".png"
-	if strings.Contains(header.Filename, ".") {
-		parts := strings.Split(header.Filename, ".")
-		ext = "." + parts[len(parts)-1]
+	if !validIconPathSegment(projectID) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
+		return
 	}
-	filename := fmt.Sprintf("%s%s", generateID(), ext)
-	filepath := fmt.Sprintf("%s/%s", iconDir, filename)
 
-	dst, err := os.Create(filepath)
+	iconsDir := os.Getenv("ICONS_DATA_DIR")
+	if iconsDir == "" {
+		iconsDir = "/data/icons"
+	}
+	if err := os.MkdirAll(iconsDir, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
+		return
+	}
+
+	iconsRoot, err := os.OpenRoot(iconsDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
+		return
+	}
+	defer func() { _ = iconsRoot.Close() }()
+
+	if err := iconsRoot.MkdirAll(projectID, 0755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
+		return
+	}
+
+	filename := generateID() + safeIconExtension(header.Filename)
+	relativeName := projectID + "/" + filename
+	dst, err := iconsRoot.OpenFile(relativeName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
 		return
 	}
 	defer func() { _ = dst.Close() }()
-	_, _ = io.Copy(dst, file) // best-effort copy; error here results in partial file but we still return URL
+	if _, err := io.Copy(dst, file); err != nil {
+		_ = dst.Close()
+		_ = iconsRoot.Remove(relativeName)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
+		return
+	}
 
 	url := fmt.Sprintf("/icons/%s/%s", projectID, filename)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1847,6 +1884,40 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 			"height": 64,
 		},
 	})
+}
+
+func validIconPathSegment(value string) bool {
+	return value != "" &&
+		value != "." &&
+		value != ".." &&
+		len(value) <= 255 &&
+		!strings.ContainsAny(value, "/\\\x00")
+}
+
+func safeIconExtension(filename string) string {
+	const defaultExtension = ".png"
+
+	lastSeparator := strings.LastIndexAny(filename, "/\\")
+	if lastSeparator >= 0 {
+		filename = filename[lastSeparator+1:]
+	}
+	lastDot := strings.LastIndexByte(filename, '.')
+	if lastDot <= 0 || lastDot == len(filename)-1 {
+		return defaultExtension
+	}
+
+	extension := filename[lastDot:]
+	if len(extension) > 16 {
+		return defaultExtension
+	}
+	for _, char := range extension[1:] {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') {
+			return defaultExtension
+		}
+	}
+	return extension
 }
 
 func (h *Handler) ListUploadedIcons(w http.ResponseWriter, _ *http.Request) {
@@ -1876,19 +1947,29 @@ func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	name := chi.URLParam(r, "name")
+	if !validIconPathSegment(projectID) || !validIconPathSegment(name) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	ctx := r.Context()
 	s := fmt.Sprintf("p_%s", projectID)
 
 	// Clear icon_meta from all versions referencing this icon
-	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
+	if h.pool != nil {
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
+			`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
+	}
 
 	// Remove file from disk
 	iconsDir := os.Getenv("ICONS_DATA_DIR")
 	if iconsDir == "" {
 		iconsDir = "/data/icons"
 	}
-	_ = os.Remove(filepath.Join(iconsDir, projectID, name)) // best-effort remove
+	if iconsRoot, err := os.OpenRoot(iconsDir); err == nil {
+		_ = iconsRoot.Remove(projectID + "/" + name) // best-effort remove within the configured root
+		_ = iconsRoot.Close()
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -2797,6 +2878,87 @@ func (h *Handler) DeleteProjectIcon(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func validateMCPProxyURL(rawURL string) (*url.URL, error) {
+	endpoint, err := url.ParseRequestURI(rawURL)
+	if err != nil ||
+		!endpoint.IsAbs() ||
+		endpoint.Host == "" ||
+		endpoint.User != nil ||
+		endpoint.Fragment != "" ||
+		endpoint.Opaque != "" {
+		return nil, fmt.Errorf("invalid MCP endpoint")
+	}
+
+	scheme := strings.ToLower(endpoint.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(endpoint.Hostname()), ".")
+	if host == "" {
+		return nil, fmt.Errorf("invalid MCP endpoint host")
+	}
+
+	switch scheme {
+	case "https":
+		// Custom HTTPS provider hosts are intentionally supported.
+	case "http":
+		if !isLoopbackMCPHost(host) {
+			return nil, fmt.Errorf("plain HTTP MCP endpoints must use a loopback host")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported MCP endpoint scheme")
+	}
+
+	endpoint.Scheme = scheme
+	return endpoint, nil
+}
+
+func isLoopbackMCPHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func sameMCPProxyOrigin(first, second *url.URL) bool {
+	return strings.EqualFold(first.Scheme, second.Scheme) &&
+		strings.EqualFold(strings.TrimSuffix(first.Hostname(), "."), strings.TrimSuffix(second.Hostname(), ".")) &&
+		effectiveURLPort(first) == effectiveURLPort(second)
+}
+
+func effectiveURLPort(endpoint *url.URL) string {
+	if port := endpoint.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(endpoint.Scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+func (h *Handler) doMCPProxyRequest(req *http.Request) (*http.Response, error) {
+	client := h.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	origin := req.URL
+	safeClient := *client
+	inheritedRedirectPolicy := client.CheckRedirect
+	safeClient.CheckRedirect = func(redirected *http.Request, via []*http.Request) error {
+		validated, err := validateMCPProxyURL(redirected.URL.String())
+		if err != nil || !sameMCPProxyOrigin(origin, validated) {
+			return fmt.Errorf("MCP endpoint redirect is not allowed")
+		}
+		if inheritedRedirectPolicy != nil {
+			return inheritedRedirectPolicy(redirected, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return safeClient.Do(req)
+}
+
 func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
@@ -2822,11 +2984,16 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	tokenEndpoint, err := validateMCPProxyURL(body.TokenEndpoint)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_token_endpoint"})
+		return
+	}
 
 	clientID := body.ClientID
 	clientSecret := body.ClientSecret
 
-	if body.ToolkitID != "" && (clientID == "" || clientSecret == "") {
+	if h.pool != nil && body.ToolkitID != "" && (clientID == "" || clientSecret == "") {
 		s := fmt.Sprintf("p_%s", projectID)
 		var settings []byte
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT settings FROM %q.elitea_tools WHERE id = $1`, s), body.ToolkitID).Scan(&settings) // failure leaves settings nil
@@ -2851,29 +3018,37 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 		grantType = "authorization_code"
 	}
 
-	formData := fmt.Sprintf("grant_type=%s&client_id=%s", grantType, clientID)
+	formData := url.Values{
+		"grant_type": {grantType},
+		"client_id":  {clientID},
+	}
 	if clientSecret != "" {
-		formData += "&client_secret=" + clientSecret
+		formData.Set("client_secret", clientSecret)
 	}
 	if body.Scope != "" {
-		formData += "&scope=" + body.Scope
+		formData.Set("scope", body.Scope)
 	}
 
 	if grantType == "refresh_token" {
-		formData += "&refresh_token=" + body.RefreshToken
+		formData.Set("refresh_token", body.RefreshToken)
 	} else {
-		formData += "&code=" + body.Code + "&redirect_uri=" + body.RedirectURI
+		formData.Set("code", body.Code)
+		formData.Set("redirect_uri", body.RedirectURI)
 		if body.CodeVerifier != "" {
-			formData += "&code_verifier=" + body.CodeVerifier
+			formData.Set("code_verifier", body.CodeVerifier)
 		}
 	}
 
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", body.TokenEndpoint, strings.NewReader(formData))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint.String(), strings.NewReader(formData.Encode()))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_token_endpoint"})
+		return
+	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := h.doMCPProxyRequest(httpReq)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "token_exchange_failed", "error_description": err.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "token_exchange_failed"})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -2902,6 +3077,11 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	registrationEndpoint, err := validateMCPProxyURL(body.RegistrationEndpoint)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_registration_endpoint"})
+		return
+	}
 
 	regBody := map[string]any{
 		"client_name":   body.ClientName,
@@ -2913,12 +3093,16 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	reqBytes, _ := json.Marshal(regBody)
 
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", body.RegistrationEndpoint, bytes.NewReader(reqBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, registrationEndpoint.String(), bytes.NewReader(reqBytes))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_registration_endpoint"})
+		return
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := h.doMCPProxyRequest(httpReq)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "dcr_failed", "error_description": err.Error()})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "dcr_failed"})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()

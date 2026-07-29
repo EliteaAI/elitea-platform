@@ -30,17 +30,17 @@ func TestCurrentMainRoutePublicRulesMatchPinnedCatalog(t *testing.T) {
 		name    string
 		pattern string
 		match   string
-		near    string
+		near    []string
 	}{
-		{"current.artifacts.s3", `/artifacts/s3/.*`, "/artifacts/s3/bucket/key", "/x/artifacts/s3/key"},
-		{"current.admin_ui.assets", `/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`, "/admin/app/assets/main.js", "/admin/app/config.json"},
-		{"current.elitea_core.socket_io", `/socket\.io/.*`, "/socket.io/connect", "/socketXio/connect"},
-		{"current.elitea_core.robots", `/robots\.txt`, "/robots.txt", "/robots.txt/extra"},
-		{"current.elitea_core.favicon", `/favicon\.ico`, "/favicon.ico", "/faviconXico"},
-		{"current.elitea_core.access_denied", `/app/access_denied`, "/app/access_denied", "/app/access_denied/extra"},
-		{"current.elitea_core.webhook", `/api/v2/elitea_core/webhook/prompt_lib/[0-9]+/[0-9]+/(github|gitlab|custom)`, "/api/v2/elitea_core/webhook/prompt_lib/7/9/github", "/api/v2/elitea_core/webhook/prompt_lib/7/x/github"},
-		{"current.elitea_core.public_messages", `/elitea_core/[0-9]+/messages\?session_id=.+`, "/elitea_core/7/messages?session_id=abc", "/elitea_core/7/messages"},
-		{"current.runtime_interface_litellm", `/llm/.*`, "/llm/v1/chat/completions", "/api/llm/v1/chat/completions"},
+		{"current.artifacts.s3", `^/artifacts/s3/.*$`, "/artifacts/s3/bucket/key", []string{"/x/artifacts/s3/key", "https://evil.example/artifacts/s3/key"}},
+		{"current.admin_ui.assets", `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`, "/admin/app/assets/main.js", []string{"/admin/app/config.json", "https://evil.example/admin/app/assets/main.js"}},
+		{"current.elitea_core.socket_io", `^/socket\.io/.*$`, "/socket.io/connect", []string{"/socketXio/connect", "https://evil.example/socket.io/connect"}},
+		{"current.elitea_core.robots", `^/robots\.txt$`, "/robots.txt", []string{"/robots.txt/extra", "https://evil.example/robots.txt"}},
+		{"current.elitea_core.favicon", `^/favicon\.ico$`, "/favicon.ico", []string{"/faviconXico", "https://evil.example/favicon.ico"}},
+		{"current.elitea_core.access_denied", `^/app/access_denied$`, "/app/access_denied", []string{"/app/access_denied/extra", "https://evil.example/app/access_denied"}},
+		{"current.elitea_core.webhook", `^/api/v2/elitea_core/webhook/prompt_lib/[0-9]+/[0-9]+/(github|gitlab|custom)$`, "/api/v2/elitea_core/webhook/prompt_lib/7/9/github", []string{"/api/v2/elitea_core/webhook/prompt_lib/7/x/github", "https://evil.example/api/v2/elitea_core/webhook/prompt_lib/7/9/github"}},
+		{"current.elitea_core.public_messages", `^/elitea_core/[0-9]+/messages\?session_id=.+$`, "/elitea_core/7/messages?session_id=abc", []string{"/elitea_core/7/messages", "https://evil.example/elitea_core/7/messages?session_id=abc"}},
+		{"current.runtime_interface_litellm", `^/llm/.*$`, "/llm/v1/chat/completions", []string{"/api/llm/v1/chat/completions", "https://evil.example/llm/v1/chat/completions"}},
 	}
 	if len(rules) != len(want) {
 		t.Fatalf("route-owned public rule count = %d, want %d", len(rules), len(want))
@@ -66,8 +66,10 @@ func TestCurrentMainRoutePublicRulesMatchPinnedCatalog(t *testing.T) {
 			decision.PublicMatch.RuleName != expected.name {
 			t.Fatalf("positive %q decision = %+v", expected.match, decision)
 		}
-		if decision := authorizePublicURI(t, kernel, expected.near); decision.Kind != forwardapp.DecisionLogin {
-			t.Fatalf("near-match %q decision = %+v, want login", expected.near, decision)
+		for _, near := range expected.near {
+			if decision := authorizePublicURI(t, kernel, near); decision.Kind != forwardapp.DecisionLogin {
+				t.Fatalf("near-match %q decision = %+v, want login", near, decision)
+			}
 		}
 	}
 }
@@ -77,7 +79,7 @@ func TestCurrentMainRoutePublicRulesReturnsDetachedCatalog(t *testing.T) {
 	rules[0].Name = "mutated"
 	rules[0].Conditions[0].Pattern = ".*"
 	again := CurrentMainRoutePublicRules()
-	if again[0].Name != "current.artifacts.s3" || again[0].Conditions[0].Pattern != `/artifacts/s3/.*` {
+	if again[0].Name != "current.artifacts.s3" || again[0].Conditions[0].Pattern != `^/artifacts/s3/.*$` {
 		t.Fatalf("catalog aliased caller mutation: %+v", again[0])
 	}
 }

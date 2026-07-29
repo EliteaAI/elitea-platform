@@ -136,8 +136,8 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if poolSize > int64(^uint(0)>>1) {
-		return Config{}, errors.New("ELITEA_RUNTIME_REDIS_POOL_SIZE exceeds this platform")
+	if poolSize > int64(maxRedisPoolSize) {
+		return Config{}, errors.New("runtime Redis pool size is invalid")
 	}
 	config.RedisPoolSize = int(poolSize)
 	if config.SigningKeyID, err = required("ELITEA_RUNTIME_SIGNING_KEY_ID"); err != nil {
@@ -266,8 +266,8 @@ func validateRedisURL(raw string) error {
 	if !validRedisACLUsername(username) || parsed.User.String() != username {
 		return errors.New("runtime Redis ACL username is not canonical")
 	}
-	port, err := strconv.Atoi(parsed.Port())
-	if parsed.Hostname() == "" || err != nil || port <= 0 || port > 65535 || strconv.Itoa(port) != parsed.Port() {
+	port, err := strconv.ParseUint(parsed.Port(), 10, 16)
+	if parsed.Hostname() == "" || err != nil || port == 0 || strconv.FormatUint(port, 10) != parsed.Port() {
 		return errors.New("runtime Redis URL must include a numeric TCP port")
 	}
 	if parsed.Path != "/0" {
@@ -319,8 +319,8 @@ func validateTCPAddress(address string) error {
 	if err != nil {
 		return errors.New("runtime listener address must include a numeric TCP port")
 	}
-	port, err := strconv.Atoi(portValue)
-	if err != nil || port <= 0 || port > 65535 {
+	port, err := strconv.ParseUint(portValue, 10, 16)
+	if err != nil || port == 0 {
 		return errors.New("runtime listener address must include a numeric TCP port")
 	}
 	return nil
