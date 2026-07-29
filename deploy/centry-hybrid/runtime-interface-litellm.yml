@@ -1,0 +1,3 @@
+litellm_mode: external
+external_litellm_url: http://elitea-litellm:8081
+litellm_master_key: sk-${DEFAULT_ADMIN_PASSWORD}
