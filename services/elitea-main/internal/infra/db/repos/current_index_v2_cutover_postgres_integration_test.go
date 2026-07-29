@@ -7,7 +7,9 @@ import (
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/proto"
@@ -125,7 +127,11 @@ WHERE execution_id = $1`, executionID)
 			t.Fatalf("prepare unknown settlement: receipt=%+v err=%v", receipt, err)
 		}
 
-		assertPostgresIndexV1CutoverState(t, repository, 1, 1, 0)
+		assertPostgresIndexV1CutoverStateExact(t, repository, cutover.IndexV1PersistedState{
+			LiveJobs:                   1,
+			OutstandingOutbox:          1,
+			PendingTerminalProjections: 1,
+		})
 	})
 
 	t.Run("null authority alone blocks production settlement", func(t *testing.T) {
@@ -175,6 +181,122 @@ INSERT INTO elitea_runtime.execution_claims (
 	})
 }
 
+func TestPostgresServiceBackedIndexV2CutoverBlocksPendingExternalEffects(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mutate     string
+		want       cutover.IndexV1PersistedState
+		settleWith executionapp.SettlementOutcome
+	}{
+		{
+			name:       "initialization pending",
+			settleWith: executionapp.SettlementSucceeded,
+			mutate: `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_initialized_at = NULL,
+    index_meta_initialization_status = 'PENDING',
+    index_meta_initialization_attempt_count = 1,
+    index_meta_initialization_next_attempt_at = clock_timestamp(),
+    index_meta_initialization_resolved_at = NULL
+WHERE execution_id = $1`,
+			want: cutover.IndexV1PersistedState{PendingInitializations: 1},
+		},
+		{
+			name:       "initialization running",
+			settleWith: executionapp.SettlementSucceeded,
+			mutate: `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_initialized_at = NULL,
+    index_meta_initialization_status = 'RUNNING',
+    index_meta_initialization_claim_token = 'cutover-initialization-claim',
+    index_meta_initialization_claim_expires_at = clock_timestamp() + interval '5 minutes',
+    index_meta_initialization_attempt_count = 1,
+    index_meta_initialization_next_attempt_at = NULL,
+    index_meta_initialization_resolved_at = NULL
+WHERE execution_id = $1`,
+			want: cutover.IndexV1PersistedState{PendingInitializations: 1},
+		},
+		{
+			name:       "terminal projection pending",
+			settleWith: executionapp.SettlementFailed,
+			mutate: `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_terminal_status = 'PENDING',
+    index_meta_terminal_next_attempt_at = clock_timestamp(),
+    index_meta_terminalized_at = NULL
+WHERE execution_id = $1`,
+			want: cutover.IndexV1PersistedState{PendingTerminalProjections: 1},
+		},
+		{
+			name:       "manual cleanup pending",
+			settleWith: executionapp.SettlementCancelled,
+			mutate: `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_manual_stop_requested_at = clock_timestamp(),
+    index_manual_cleanup_status = 'PENDING',
+    index_manual_cleanup_attempt_count = 0,
+    index_manual_cleanup_next_attempt_at = clock_timestamp()
+WHERE execution_id = $1`,
+			want: cutover.IndexV1PersistedState{PendingManualCleanups: 1},
+		},
+		{
+			name:       "task restamp pending",
+			settleWith: executionapp.SettlementSucceeded,
+			mutate: `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_task_restamp_source_event_id = 'cutover-task-restamp',
+    index_meta_task_restamp_occurred_at = clock_timestamp(),
+    index_meta_task_restamp_created_on = 1700000000.25,
+    index_meta_task_restamp_status = 'PENDING',
+    index_meta_task_restamp_attempt_count = 0,
+    index_meta_task_restamp_next_attempt_at = clock_timestamp()
+WHERE execution_id = $1`,
+			want: cutover.IndexV1PersistedState{PendingTaskRestamps: 1},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			pool, repository := newPostgresIndexV2CutoverFixture(t)
+			executionID := settlePostgresV1CutoverExecution(
+				t,
+				pool,
+				repository,
+				"pending-effect",
+				test.settleWith,
+			)
+			execPostgresCutoverFixture(t, pool, test.mutate, executionID)
+
+			assertPostgresIndexV1CutoverStateExact(t, repository, test.want)
+		})
+	}
+}
+
+func TestPostgresServiceBackedIndexV2CutoverAcceptsResolvedExternalEffects(t *testing.T) {
+	pool, repository := newPostgresIndexV2CutoverFixture(t)
+	executionID := settlePostgresV1CutoverExecution(
+		t,
+		pool,
+		repository,
+		"resolved-effects",
+		executionapp.SettlementCancelled,
+	)
+	execPostgresCutoverFixture(t, pool, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_manual_stop_requested_at = clock_timestamp(),
+    index_manual_cleanup_status = 'APPLIED',
+    index_manual_cleanup_attempt_count = 1,
+    index_manual_cleanup_resolved_at = clock_timestamp(),
+    index_meta_task_restamp_source_event_id = 'resolved-cutover-task-restamp',
+    index_meta_task_restamp_occurred_at = clock_timestamp(),
+    index_meta_task_restamp_created_on = 1700000000.25,
+    index_meta_task_restamp_status = 'APPLIED',
+    index_meta_task_restamp_attempt_count = 1,
+    index_meta_task_restamped_at = clock_timestamp()
+WHERE execution_id = $1`, executionID)
+
+	assertPostgresIndexV1CutoverStateExact(t, repository, cutover.IndexV1PersistedState{})
+}
+
 func newPostgresIndexV2CutoverFixture(
 	t *testing.T,
 ) (*pgxpool.Pool, *CurrentIndexV2CutoverRepository) {
@@ -187,6 +309,8 @@ func newPostgresIndexV2CutoverFixture(
 type postgresV1CutoverFixture struct {
 	expected outputapp.ExpectedIndexIngest
 	fence    runtimedomain.Fence
+	jobs     *IndexIngestJobsRepository
+	meta     indexingapp.IndexMetaInitialization
 }
 
 func newPostgresIndexV2CutoverRepository(
@@ -241,7 +365,17 @@ func admitPostgresV1CutoverExecution(
 	if err != nil {
 		t.Fatalf("load admitted index binding: %v", err)
 	}
-	return postgresV1CutoverFixture{expected: expected}
+	return postgresV1CutoverFixture{
+		expected: expected,
+		jobs:     jobs,
+		meta: indexingapp.IndexMetaInitialization{
+			ExecutionID:     admitted.ExecutionID,
+			Generation:      admitted.Generation,
+			IndexGeneration: admitted.IndexGeneration,
+			MetaID:          admitted.IndexMetaID,
+			CorrelationID:   admitted.IndexMetaCorrelationID,
+		},
+	}
 }
 
 func admitAndClaimPostgresV1CutoverExecution(
@@ -252,6 +386,17 @@ func admitAndClaimPostgresV1CutoverExecution(
 ) postgresV1CutoverFixture {
 	t.Helper()
 	fixture := admitPostgresV1CutoverExecution(t, pool, suffix)
+	assertPostgresIndexV1CutoverStateExact(t, repository, cutover.IndexV1PersistedState{
+		LiveJobs:               1,
+		OutstandingOutbox:      1,
+		PendingInitializations: 1,
+	})
+	if _, err := fixture.jobs.MarkIndexMetaInitialized(
+		context.Background(),
+		fixture.meta,
+	); err != nil {
+		t.Fatalf("initialize index metadata before claim: %v", err)
+	}
 	assertPostgresIndexV1CutoverState(t, repository, 1, 1, 0)
 	fixture.fence = claimPostgresIndexExecution(t, pool, fixture.expected)
 	assertPostgresIndexV1CutoverState(t, repository, 1, 1, 1)
@@ -313,6 +458,23 @@ WHERE execution_id = $1
 	receipt, err := settlements.PrepareSettlement(context.Background(), proposal)
 	if err != nil || receipt.ID == "" || receipt.Outcome != outcome {
 		t.Fatalf("prepare %s settlement: receipt=%+v err=%v", outcome, receipt, err)
+	}
+	if outcome == executionapp.SettlementFailed ||
+		outcome == executionapp.SettlementCancelled {
+		execPostgresCutoverFixture(t, pool, `
+UPDATE elitea_runtime.index_ingest_jobs
+SET index_meta_terminal_status = 'APPLIED',
+    index_meta_terminal_attempt_count =
+        GREATEST(index_meta_terminal_attempt_count, 1),
+    index_meta_terminal_next_attempt_at = NULL,
+    index_meta_terminal_last_error_code = NULL,
+    index_meta_terminalized_at = clock_timestamp()
+WHERE execution_id = $1
+  AND generation = $2
+  AND index_meta_terminal_status = 'PENDING'`,
+			fixture.expected.ExecutionID,
+			int64(fixture.expected.Generation),
+		)
 	}
 	return fixture.expected.ExecutionID
 }
@@ -398,19 +560,27 @@ func assertPostgresIndexV1CutoverState(
 	activeClaims int64,
 ) {
 	t.Helper()
+	assertPostgresIndexV1CutoverStateExact(t, repository, cutover.IndexV1PersistedState{
+		LiveJobs:          liveJobs,
+		OutstandingOutbox: outstandingOutbox,
+		ActiveClaims:      activeClaims,
+	})
+}
+
+func assertPostgresIndexV1CutoverStateExact(
+	t *testing.T,
+	repository *CurrentIndexV2CutoverRepository,
+	want cutover.IndexV1PersistedState,
+) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	state, err := repository.ReadIndexV1CutoverState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LiveJobs != liveJobs ||
-		state.OutstandingOutbox != outstandingOutbox ||
-		state.ActiveClaims != activeClaims {
-		t.Fatalf(
-			"unexpected persisted cutover state: got=%+v want={LiveJobs:%d OutstandingOutbox:%d ActiveClaims:%d}",
-			state, liveJobs, outstandingOutbox, activeClaims,
-		)
+	if state != want {
+		t.Fatalf("unexpected persisted cutover state: got=%+v want=%+v", state, want)
 	}
 }
 

@@ -17,9 +17,13 @@ var ErrIndexV2CutoverBlocked = errors.New("index capability v2 cutover is blocke
 // terminally reconciled before Main and workers switch to index capability
 // version 2.
 type IndexV1PersistedState struct {
-	LiveJobs          int64 `json:"live_jobs"`
-	OutstandingOutbox int64 `json:"outstanding_outbox"`
-	ActiveClaims      int64 `json:"active_claims"`
+	LiveJobs                   int64 `json:"live_jobs"`
+	OutstandingOutbox          int64 `json:"outstanding_outbox"`
+	ActiveClaims               int64 `json:"active_claims"`
+	PendingInitializations     int64 `json:"pending_initializations"`
+	PendingTerminalProjections int64 `json:"pending_terminal_projections"`
+	PendingManualCleanups      int64 `json:"pending_manual_cleanups"`
+	PendingTaskRestamps        int64 `json:"pending_task_restamps"`
 }
 
 // IndexControlState covers the complete version-1 source stream/group. Every
@@ -105,16 +109,24 @@ func (p *IndexV2Preflight) Check(ctx context.Context) (IndexV2PreflightReport, e
 	if persisted.LiveJobs != 0 ||
 		persisted.OutstandingOutbox != 0 ||
 		persisted.ActiveClaims != 0 ||
+		persisted.PendingInitializations != 0 ||
+		persisted.PendingTerminalProjections != 0 ||
+		persisted.PendingManualCleanups != 0 ||
+		persisted.PendingTaskRestamps != 0 ||
 		control.StreamEntries != 0 ||
 		control.PendingEntries != 0 ||
 		control.DeliveryMappings != 0 ||
 		nonEmpty != 0 {
 		return report, fmt.Errorf(
-			"%w: live_jobs=%d outstanding_outbox=%d active_claims=%d stream_entries=%d pending_entries=%d delivery_mappings=%d non_empty_spool_roots=%d",
+			"%w: live_jobs=%d outstanding_outbox=%d active_claims=%d pending_initializations=%d pending_terminal_projections=%d pending_manual_cleanups=%d pending_task_restamps=%d stream_entries=%d pending_entries=%d delivery_mappings=%d non_empty_spool_roots=%d",
 			ErrIndexV2CutoverBlocked,
 			persisted.LiveJobs,
 			persisted.OutstandingOutbox,
 			persisted.ActiveClaims,
+			persisted.PendingInitializations,
+			persisted.PendingTerminalProjections,
+			persisted.PendingManualCleanups,
+			persisted.PendingTaskRestamps,
 			control.StreamEntries,
 			control.PendingEntries,
 			control.DeliveryMappings,
@@ -125,7 +137,13 @@ func (p *IndexV2Preflight) Check(ctx context.Context) (IndexV2PreflightReport, e
 }
 
 func validateIndexV1PersistedState(state IndexV1PersistedState) error {
-	if state.LiveJobs < 0 || state.OutstandingOutbox < 0 || state.ActiveClaims < 0 {
+	if state.LiveJobs < 0 ||
+		state.OutstandingOutbox < 0 ||
+		state.ActiveClaims < 0 ||
+		state.PendingInitializations < 0 ||
+		state.PendingTerminalProjections < 0 ||
+		state.PendingManualCleanups < 0 ||
+		state.PendingTaskRestamps < 0 {
 		return errors.New("persisted index v1 state contains a negative count")
 	}
 	return nil

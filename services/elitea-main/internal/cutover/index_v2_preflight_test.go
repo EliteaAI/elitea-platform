@@ -37,6 +37,10 @@ func TestIndexV2PreflightRequiresEveryPersistedControlAndSpoolCountToBeZero(t *t
 		{name: "live job", persisted: IndexV1PersistedState{LiveJobs: 1}},
 		{name: "outstanding outbox", persisted: IndexV1PersistedState{OutstandingOutbox: 1}},
 		{name: "active claim", persisted: IndexV1PersistedState{ActiveClaims: 1}},
+		{name: "pending initialization", persisted: IndexV1PersistedState{PendingInitializations: 1}},
+		{name: "pending terminal projection", persisted: IndexV1PersistedState{PendingTerminalProjections: 1}},
+		{name: "pending manual cleanup", persisted: IndexV1PersistedState{PendingManualCleanups: 1}},
+		{name: "pending task restamp", persisted: IndexV1PersistedState{PendingTaskRestamps: 1}},
 		{name: "stream reference", control: IndexControlState{StreamEntries: 1}},
 		{name: "pending reference", control: IndexControlState{PendingEntries: 1}},
 		{name: "delivery mapping", control: IndexControlState{DeliveryMappings: 1}},
@@ -72,6 +76,30 @@ func TestIndexV2PreflightRequiresEveryPersistedControlAndSpoolCountToBeZero(t *t
 				t.Fatalf("blocked report=%+v err=%v", report, err)
 			}
 		})
+	}
+}
+
+func TestIndexV2PreflightFailsClosedWhenPersistedStateCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	databaseFailure := errors.New("database unavailable")
+	preflight, err := NewIndexV2Preflight(
+		indexV1PersistedStateStub{err: databaseFailure},
+		indexControlStateStub{},
+		[]string{root},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := preflight.Check(context.Background())
+	if !errors.Is(err, databaseFailure) {
+		t.Fatalf("database failure was not preserved: report=%+v err=%v", report, err)
+	}
+	if report != (IndexV2PreflightReport{}) {
+		t.Fatalf("database failure returned partial report: %+v", report)
 	}
 }
 

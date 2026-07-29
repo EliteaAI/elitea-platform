@@ -42,6 +42,28 @@ func (r *CurrentIndexV2CutoverRepository) ReadIndexV1CutoverState(
 	}
 	var state cutover.IndexV1PersistedState
 	err := r.query.QueryRow(ctx, `
+WITH index_effects AS (
+    SELECT
+        count(*) FILTER (
+            WHERE ingest.index_meta_initialization_status IN ('PENDING', 'RUNNING')
+        ) AS pending_initializations,
+        count(*) FILTER (
+            WHERE ingest.index_meta_terminal_status = 'PENDING'
+        ) AS pending_terminal_projections,
+        count(*) FILTER (
+            WHERE ingest.index_manual_cleanup_status = 'PENDING'
+        ) AS pending_manual_cleanups,
+        count(*) FILTER (
+            WHERE ingest.index_meta_task_restamp_status = 'PENDING'
+        ) AS pending_task_restamps
+    FROM elitea_runtime.index_ingest_jobs AS ingest
+    JOIN elitea_runtime.execution_jobs AS job
+      ON job.execution_id = ingest.execution_id
+     AND job.generation = ingest.generation
+     AND job.capability_id = ingest.capability_id
+    WHERE job.capability_id = 'index.ingest.v1'
+      AND job.capability_version = '1'
+)
 SELECT
     (
         SELECT count(*)
@@ -82,11 +104,20 @@ SELECT
         WHERE job.capability_id = 'index.ingest.v1'
           AND job.capability_version = '1'
           AND claim.released_at IS NULL
-    ) AS active_claims`,
+    ) AS active_claims,
+    index_effects.pending_initializations,
+    index_effects.pending_terminal_projections,
+    index_effects.pending_manual_cleanups,
+    index_effects.pending_task_restamps
+FROM index_effects`,
 	).Scan(
 		&state.LiveJobs,
 		&state.OutstandingOutbox,
 		&state.ActiveClaims,
+		&state.PendingInitializations,
+		&state.PendingTerminalProjections,
+		&state.PendingManualCleanups,
+		&state.PendingTaskRestamps,
 	)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
