@@ -34,6 +34,8 @@ import (
 
 const (
 	index5681OptIn                       = "ELITEA_INDEX_5681_SYSTEM_TEST"
+	index5681CleanupOnly                 = "ELITEA_INDEX_5681_CLEANUP_ONLY"
+	index5681CleanupManifestEnv          = "ELITEA_INDEX_5681_CLEANUP_MANIFEST"
 	index5681FixturePortEnv              = "ELITEA_INDEX_5681_FIXTURE_PORT"
 	index5681PythonEnv                   = "ELITEA_INDEX_5681_PYTHON"
 	index5681DeniedCookieFileEnv         = "ELITEA_INDEX_5681_DENIED_COOKIE_FILE"
@@ -213,6 +215,13 @@ type index5681FixtureProcess struct {
 	once    sync.Once
 }
 
+type index5681CleanupResource struct {
+	ExecutionID string `json:"execution_id"`
+	ProjectID   int64  `json:"project_id"`
+	ToolkitID   int64  `json:"toolkit_id"`
+	IndexName   string `json:"index_name"`
+}
+
 // TestExistingComposeIndexIssue5681ProductionScale is the opt-in, real-process
 // acceptance gate for the production incident. The 62 MiB corpus stays on the
 // Confluence/LiteLLM HTTP data plane. PostgreSQL owns only the bounded protected
@@ -220,6 +229,9 @@ type index5681FixtureProcess struct {
 func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	if os.Getenv(index5681OptIn) != "1" {
 		t.Skip("run the fail-fast index_5681/run.sh wrapper to execute the production-scale gate")
+	}
+	if os.Getenv(index5681CleanupOnly) == "1" {
+		t.Skip("cleanup-only owner process")
 	}
 
 	config := loadIndexReliabilityConfig(t)
@@ -308,6 +320,12 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 		environment.deniedCookie,
 	)
 	executionID := harness.startIndex(t, ctx, startBody)
+	appendIssue5681CleanupResource(t, index5681CleanupResource{
+		ExecutionID: executionID,
+		ProjectID:   config.projectID,
+		ToolkitID:   config.toolkitID,
+		IndexName:   indexName,
+	})
 	admittedMu.Lock()
 	admitted = append(admitted, admittedExecution{id: executionID, indexName: indexName})
 	admittedMu.Unlock()
@@ -442,6 +460,12 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	indexNames = append(indexNames, cancelIndexName)
 	harness.stopWorker(t, ctx)
 	cancelExecution := harness.startIndex(t, ctx, cancelBody)
+	appendIssue5681CleanupResource(t, index5681CleanupResource{
+		ExecutionID: cancelExecution,
+		ProjectID:   config.projectID,
+		ToolkitID:   config.toolkitID,
+		IndexName:   cancelIndexName,
+	})
 	admittedMu.Lock()
 	admitted = append(admitted, admittedExecution{id: cancelExecution, indexName: cancelIndexName})
 	admittedMu.Unlock()
@@ -488,6 +512,174 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 		reference.MaxFieldBytes,
 		terminal.ReplayEvents,
 	)
+}
+
+// TestExistingComposeIndexIssue5681OwnerCleanup is invoked only by run.sh from
+// a fresh, separately bounded process after the main test process exits or is
+// killed. The manifest contains resource identities only.
+func TestExistingComposeIndexIssue5681OwnerCleanup(t *testing.T) {
+	if os.Getenv(index5681OptIn) != "1" || os.Getenv(index5681CleanupOnly) != "1" {
+		t.Skip("owner cleanup is run only by the bounded issue #5681 wrapper")
+	}
+	config := loadIndexReliabilityConfig(t)
+	if !strings.HasPrefix(config.composeProject, "elitea-5681-") ||
+		config.baseURL != "https://localhost:18443" {
+		t.Fatal("owner cleanup requires the exact dedicated issue #5681 environment")
+	}
+	resources, manifestPath := readIssue5681CleanupResources(t, config)
+	if len(resources) == 0 {
+		return
+	}
+	harness := &indexComposeHarness{config: config}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	for _, resource := range resources {
+		if err := harness.stopIndex(
+			ctx,
+			resource.ExecutionID,
+			resource.IndexName,
+		); err != nil {
+			t.Fatalf("owner cleanup Stop %s: %v", resource.ExecutionID, err)
+		}
+	}
+	err := pollIndexReliability(ctx, 250*time.Millisecond, func() (bool, error) {
+		for _, resource := range resources {
+			snapshot, snapshotErr := harness.jobSnapshot(ctx, resource.ExecutionID)
+			if snapshotErr != nil {
+				return false, snapshotErr
+			}
+			if !isIndexTerminal(snapshot.State) {
+				return false, nil
+			}
+		}
+		redisState, redisErr := harness.redisReferenceResult(ctx, "")
+		if redisErr != nil {
+			return false, redisErr
+		}
+		pending, pendingErr := harness.pendingEntriesResult(ctx)
+		if pendingErr != nil {
+			return false, pendingErr
+		}
+		return redisState.Length == 0 &&
+			redisState.Mappings == 0 &&
+			redisState.EntryCount == 0 &&
+			len(pending) == 0, nil
+	})
+	if err != nil {
+		t.Fatalf("owner cleanup did not converge Redis/DB execution state: %v", err)
+	}
+	for _, resource := range resources {
+		if err := cleanupIssue5681Index(ctx, harness, resource.IndexName); err != nil {
+			t.Fatalf("owner cleanup delete index %q: %v", resource.IndexName, err)
+		}
+	}
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal("remove converged owner cleanup manifest")
+	}
+}
+
+func appendIssue5681CleanupResource(
+	t *testing.T,
+	resource index5681CleanupResource,
+) {
+	t.Helper()
+	path := strings.TrimSpace(os.Getenv(index5681CleanupManifestEnv))
+	if !validIssue5681CleanupResource(resource) ||
+		!filepath.IsAbs(path) ||
+		strings.ContainsAny(path, "\x00\r\n") {
+		t.Fatal("invalid owner cleanup manifest resource")
+	}
+	parent, err := os.Lstat(filepath.Dir(path))
+	if err != nil || !parent.IsDir() || parent.Mode().Perm()&0o077 != 0 {
+		t.Fatal("owner cleanup manifest parent must be an owner-only directory")
+	}
+	if existing, statErr := os.Lstat(path); statErr == nil {
+		if !existing.Mode().IsRegular() || existing.Mode().Perm()&0o077 != 0 {
+			t.Fatal("owner cleanup manifest must be an owner-only regular file")
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("inspect owner cleanup manifest")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal("open owner cleanup manifest")
+	}
+	value, err := json.Marshal(resource)
+	if err == nil {
+		value = append(value, '\n')
+		_, err = file.Write(value)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		t.Fatal("durably append owner cleanup resource")
+	}
+}
+
+func readIssue5681CleanupResources(
+	t *testing.T,
+	config indexReliabilityConfig,
+) ([]index5681CleanupResource, string) {
+	t.Helper()
+	path := strings.TrimSpace(os.Getenv(index5681CleanupManifestEnv))
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
+		t.Fatal("owner cleanup manifest path must be absolute")
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, path
+	}
+	if err != nil || !info.Mode().IsRegular() ||
+		info.Mode().Perm()&0o077 != 0 || info.Size() <= 0 || info.Size() > 64*1024 {
+		t.Fatal("owner cleanup manifest must be one bounded owner-only regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal("open owner cleanup manifest")
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024), 8*1024)
+	resources := make([]index5681CleanupResource, 0, 2)
+	seen := make(map[string]struct{})
+	for scanner.Scan() {
+		decoder := json.NewDecoder(strings.NewReader(scanner.Text()))
+		decoder.DisallowUnknownFields()
+		var resource index5681CleanupResource
+		if decoder.Decode(&resource) != nil ||
+			decoder.Decode(new(any)) != io.EOF ||
+			!validIssue5681CleanupResource(resource) ||
+			resource.ProjectID != config.projectID ||
+			resource.ToolkitID != config.toolkitID {
+			t.Fatal("owner cleanup manifest contains an invalid resource")
+		}
+		key := resource.ExecutionID + "\x00" + resource.IndexName
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		resources = append(resources, resource)
+		if len(resources) > 16 {
+			t.Fatal("owner cleanup manifest exceeds its resource bound")
+		}
+	}
+	if err := scanner.Err(); err != nil || len(resources) == 0 {
+		t.Fatal("read owner cleanup manifest")
+	}
+	return resources, path
+}
+
+func validIssue5681CleanupResource(resource index5681CleanupResource) bool {
+	return executionIDPattern.MatchString(resource.ExecutionID) &&
+		resource.ProjectID > 0 &&
+		resource.ToolkitID > 0 &&
+		len(resource.IndexName) > 0 &&
+		len(resource.IndexName) <= 256 &&
+		!strings.ContainsAny(resource.IndexName, "\x00\r\n/\\") &&
+		url.PathEscape(resource.IndexName) == resource.IndexName
 }
 
 func requiredIssue5681Port(t *testing.T) int {
@@ -885,6 +1077,13 @@ func requireIssue5681GatewayTLSBinding(
 		if strings.Count(base, required) != 1 {
 			t.Fatal("attested gateway middleware contract is incomplete or ambiguous")
 		}
+	}
+	serviceStart := strings.Index(base, "    elitea-main:\n")
+	serviceEnd := strings.Index(base, "\n    current-main:")
+	if serviceStart < 0 || serviceEnd <= serviceStart ||
+		base[serviceStart:serviceEnd] !=
+			"    elitea-main:\n      loadBalancer:\n        servers:\n          - url: http://elitea-main-auth:8080\n" {
+		t.Fatal("attested gateway elitea-main service must have exactly one auth-bound target")
 	}
 
 	certificateBytes, err := os.ReadFile(expectedMounts["/run/elitea-auth/gateway.crt"])
@@ -3118,5 +3317,40 @@ func TestIssue5681DigestValidatesExactBytes(t *testing.T) {
 	}
 	if validIssue5681Digest(digest, []byte("different")) {
 		t.Fatal("issue #5681 digest accepted different bytes")
+	}
+}
+
+func TestIssue5681CleanupManifestIsOwnerOnlyAndRoundTripsSafeIDs(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "cleanup.jsonl")
+	t.Setenv(index5681CleanupManifestEnv, path)
+	first := index5681CleanupResource{
+		ExecutionID: "0123456789abcdef0123456789abcdef",
+		ProjectID:   7,
+		ToolkitID:   9,
+		IndexName:   "rel-5681-first",
+	}
+	second := index5681CleanupResource{
+		ExecutionID: "abcdef0123456789abcdef0123456789",
+		ProjectID:   7,
+		ToolkitID:   9,
+		IndexName:   "rel-5681-second",
+	}
+	appendIssue5681CleanupResource(t, first)
+	appendIssue5681CleanupResource(t, second)
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatal("cleanup manifest is not owner-only")
+	}
+	resources, actualPath := readIssue5681CleanupResources(t, indexReliabilityConfig{
+		projectID: 7,
+		toolkitID: 9,
+	})
+	if actualPath != path || len(resources) != 2 ||
+		resources[0] != first || resources[1] != second {
+		t.Fatal("cleanup manifest did not preserve exact safe resource identities")
 	}
 }

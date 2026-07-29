@@ -221,11 +221,14 @@ timed_owner_dir="$(
 chmod 700 "${timed_owner_dir}" \
   || prerequisite_failure "cannot protect timeout-owner directory"
 timed_owner_file="${timed_owner_dir}/process-group"
+cleanup_owner_file="${timed_owner_dir}/cleanup-process-group"
+cleanup_manifest="${timed_owner_dir}/cleanup-manifest.jsonl"
 
-cleanup_timed_child_group() {
+cleanup_owned_process_group() {
+  local owner_file="$1"
   local process_group=""
-  if [[ -f "${timed_owner_file}" && ! -L "${timed_owner_file}" ]]; then
-    IFS= read -r process_group <"${timed_owner_file}" || true
+  if [[ -f "${owner_file}" && ! -L "${owner_file}" ]]; then
+    IFS= read -r process_group <"${owner_file}" || true
   fi
   if [[ "${process_group}" =~ ^[1-9][0-9]*$ ]] \
     && kill -0 -- "-${process_group}" 2>/dev/null; then
@@ -236,18 +239,56 @@ cleanup_timed_child_group() {
     done
     kill -KILL -- "-${process_group}" 2>/dev/null || true
   fi
-  rm -f "${timed_owner_file}"
-  rmdir "${timed_owner_dir}" 2>/dev/null || true
+  rm -f "${owner_file}"
 }
 
-restore_worker() {
-  cleanup_timed_child_group
+start_cleanup_worker() {
   if [[ "${worker_was_running}" == true ]]; then
     ELITEA_AUTH_POV_RUNTIME_DIR="${ELITEA_AUTH_POV_RUNTIME_DIR}" \
-      docker "${compose_args[@]}" start elitea-indexer-worker >/dev/null 2>&1 || true
+      docker "${compose_args[@]}" start elitea-indexer-worker >/dev/null 2>&1
   fi
 }
-trap restore_worker EXIT
+
+finish_gate() {
+  local gate_status="$?"
+  local cleanup_status=0
+  local restore_status=0
+  trap - EXIT INT TERM
+  set +e
+
+  cleanup_owned_process_group "${timed_owner_file}"
+  if [[ -f "${cleanup_manifest}" && ! -L "${cleanup_manifest}" ]]; then
+    start_cleanup_worker
+    restore_status="$?"
+    if (( restore_status == 0 )); then
+      ELITEA_INDEX_5681_CLEANUP_ONLY=1 \
+      ELITEA_INDEX_5681_CLEANUP_MANIFEST="${cleanup_manifest}" \
+      ELITEA_TIMEOUT_OWNER_FILE="${cleanup_owner_file}" \
+        "${python}" "${SCRIPT_DIR}/run_with_timeout.py" 150 \
+        go test -count=1 -v -timeout=2m \
+          ./services/elitea-main/tests/system \
+          -run '^TestExistingComposeIndexIssue5681OwnerCleanup$'
+      cleanup_status="$?"
+    else
+      cleanup_status=1
+    fi
+    cleanup_owned_process_group "${cleanup_owner_file}"
+  fi
+  start_cleanup_worker
+  restore_status="$?"
+
+  rm -f "${timed_owner_file}" "${cleanup_owner_file}"
+  if [[ ! -e "${cleanup_manifest}" ]]; then
+    rmdir "${timed_owner_dir}" 2>/dev/null || true
+  fi
+  if (( cleanup_status != 0 || restore_status != 0 )); then
+    printf 'issue #5681 owner cleanup failed; manifest retained at %s\n' \
+      "${cleanup_manifest}" >&2
+    exit 1
+  fi
+  exit "${gate_status}"
+}
+trap finish_gate EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -259,6 +300,7 @@ export ELITEA_INDEX_5681_DEDICATED=1
 export ELITEA_INDEX_TEST_TIMEOUT="${ELITEA_INDEX_TEST_TIMEOUT:-12m}"
 export GOCACHE="${GOCACHE:-/tmp/elitea-index-5681-go-cache}"
 export ELITEA_TIMEOUT_OWNER_FILE="${timed_owner_file}"
+export ELITEA_INDEX_5681_CLEANUP_MANIFEST="${cleanup_manifest}"
 
 cd "${REPOSITORY_ROOT}"
 "${python}" "${SCRIPT_DIR}/run_with_timeout.py" 900 \

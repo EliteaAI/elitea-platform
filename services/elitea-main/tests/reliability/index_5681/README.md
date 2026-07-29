@@ -39,7 +39,9 @@ The gate asserts:
 - the public origin is exactly `https://localhost:18443`; the gateway's route
   and base configuration match operator-supplied SHA-256 digests, their exact
   router/service/middleware semantics are checked, their mounts are read-only,
-  and the served TLS leaf matches the mounted certificate under the runtime CA;
+  `elitea-main` has exactly one load-balancer target
+  (`http://elitea-main-auth:8080`), and the served TLS leaf matches the mounted
+  certificate under the runtime CA;
 - the selected toolkit is the requested project's current Confluence toolkit;
 - the signed envelope and command pass the strict protobuf scanner, reject
   unknown/duplicate fields, and carry only `index.ingest.v1` references;
@@ -173,8 +175,16 @@ The wrapper returns 2 for missing prerequisites, 1 for a failed contract, and
 and enforces an outer 15-minute process-group deadline. Deadline, interrupt,
 hangup, and termination signals are forwarded to the full child process group
 before restoration. A private outer-owner record lets the shell terminate the
-group even if the timeout wrapper itself is killed. It restores the worker only
-when it was initially running.
+group even if the timeout wrapper itself is killed. Every successful admission
+is immediately fsynced to a separate owner-only JSONL cleanup manifest
+containing only execution/project/toolkit/index identities. On every exit, the
+shell kills the original child group, starts the dedicated worker, and invokes
+a fresh 150-second cleanup-only Go process to issue exact idempotent Stop and
+index deletion requests and verify terminal PostgreSQL execution state plus
+empty Redis stream/index/PEL state. The manifest is removed only after
+convergence; cleanup or worker-restoration failure fails the gate and retains
+the manifest path for operator recovery. It restores the worker only when it
+was initially running.
 API bodies, Compose stderr, signed
 envelopes, Cookies/PATs, and source/model payloads are not printed.
 
