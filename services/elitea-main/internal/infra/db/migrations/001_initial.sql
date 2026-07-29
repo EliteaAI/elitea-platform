@@ -260,7 +260,7 @@ BEGIN
             author_participant_id INTEGER REFERENCES %I.chat_participants(id),
             conversation_id INTEGER REFERENCES %I.chat_conversations(id) ON DELETE CASCADE,
             sent_to_id INTEGER REFERENCES %I.chat_participants(id),
-            reply_to_id INTEGER REFERENCES %I.chat_message_group(id) ON SET NULL,
+            reply_to_id INTEGER REFERENCES %I.chat_message_group(id) ON DELETE SET NULL,
             meta JSONB NOT NULL DEFAULT ''{}''::jsonb,
             is_streaming BOOLEAN NOT NULL DEFAULT false,
             task_id VARCHAR(64),
