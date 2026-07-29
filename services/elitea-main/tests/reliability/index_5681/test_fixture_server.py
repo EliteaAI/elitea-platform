@@ -12,6 +12,7 @@ from fixture_server import (
     SOURCE_PAYLOAD_BYTES,
     Receipt,
     _matches_header_digest,
+    _valid_credential_canary,
     _valid_sha256,
     generate_deterministic_png,
     profile_description,
@@ -76,6 +77,17 @@ class FixtureProfileTest(unittest.TestCase):
         self.assertFalse(_matches_header_digest(header + "-other", fingerprint))
         self.assertFalse(_matches_header_digest("", fingerprint))
         self.assertFalse(_valid_sha256("A" * 64))
+
+    def test_credential_canary_is_bounded_and_explicit(self) -> None:
+        self.assertTrue(
+            _valid_credential_canary("issue-5681-credential-canary-source")
+        )
+        self.assertFalse(_valid_credential_canary("ordinary-value"))
+        self.assertFalse(
+            _valid_credential_canary(
+                "issue-5681-credential-canary-" + ("x" * 128)
+            )
+        )
 
 
 if __name__ == "__main__":

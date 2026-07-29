@@ -33,30 +33,35 @@ import (
 )
 
 const (
-	index5681OptIn                     = "ELITEA_INDEX_5681_SYSTEM_TEST"
-	index5681FixturePortEnv            = "ELITEA_INDEX_5681_FIXTURE_PORT"
-	index5681PythonEnv                 = "ELITEA_INDEX_5681_PYTHON"
-	index5681DeniedCookieFileEnv       = "ELITEA_INDEX_5681_DENIED_COOKIE_FILE"
-	index5681SecondProjectEnv          = "ELITEA_INDEX_5681_SECOND_PROJECT_ID"
-	index5681SecondToolkitEnv          = "ELITEA_INDEX_5681_SECOND_TOOLKIT_ID"
-	index5681WorkloadIdentityEnv       = "ELITEA_INDEX_5681_WORKLOAD_IDENTITY"
-	index5681SourceAuthDigestEnv       = "ELITEA_INDEX_5681_SOURCE_AUTH_SHA256"
-	index5681ModelAuthDigestEnv        = "ELITEA_INDEX_5681_MODEL_AUTH_SHA256"
-	index5681ProxyAttestationEnv       = "ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256"
-	index5681PlatformSHAEnv            = "ELITEA_INDEX_5681_PLATFORM_SHA"
-	index5681MainImageIDEnv            = "ELITEA_INDEX_5681_MAIN_IMAGE_ID"
-	index5681WorkerImageIDEnv          = "ELITEA_INDEX_5681_WORKER_IMAGE_ID"
-	index5681LiteLLMImageIDEnv         = "ELITEA_INDEX_5681_LITELLM_IMAGE_ID"
-	index5681GatewayImageIDEnv         = "ELITEA_INDEX_5681_GATEWAY_IMAGE_ID"
-	index5681LiteLLMServiceEnv         = "ELITEA_INDEX_5681_LITELLM_SERVICE"
-	index5681LiteLLMRevisionEnv        = "ELITEA_INDEX_5681_LITELLM_REVISION"
-	index5681SDKRevisionEnv            = "ELITEA_INDEX_5681_SDK_REVISION"
-	index5681ReceiptSchema             = "elitea.issue-5681.fixture-receipt.v1"
-	index5681FixtureProfile            = "elitea.issue-5681.confluence-images.v1"
-	index5681FixtureBytes        int64 = 62 << 20
-	index5681LargeImageBytes           = 32 << 20
-	index5681CurrentSourceBytes        = 2 * index5681FixtureBytes
-	index5681CurrentVisionCalls        = 22
+	index5681OptIn                       = "ELITEA_INDEX_5681_SYSTEM_TEST"
+	index5681FixturePortEnv              = "ELITEA_INDEX_5681_FIXTURE_PORT"
+	index5681PythonEnv                   = "ELITEA_INDEX_5681_PYTHON"
+	index5681DeniedCookieFileEnv         = "ELITEA_INDEX_5681_DENIED_COOKIE_FILE"
+	index5681SecondProjectEnv            = "ELITEA_INDEX_5681_SECOND_PROJECT_ID"
+	index5681SecondToolkitEnv            = "ELITEA_INDEX_5681_SECOND_TOOLKIT_ID"
+	index5681WorkloadIdentityEnv         = "ELITEA_INDEX_5681_WORKLOAD_IDENTITY"
+	index5681SourceAuthDigestEnv         = "ELITEA_INDEX_5681_SOURCE_AUTH_SHA256"
+	index5681ModelAuthDigestEnv          = "ELITEA_INDEX_5681_MODEL_AUTH_SHA256"
+	index5681ProxyAttestationEnv         = "ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256"
+	index5681SourceCanaryEnv             = "ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY"
+	index5681ModelCanaryEnv              = "ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY"
+	index5681ProxyCanaryEnv              = "ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY"
+	index5681PlatformSHAEnv              = "ELITEA_INDEX_5681_PLATFORM_SHA"
+	index5681MainImageIDEnv              = "ELITEA_INDEX_5681_MAIN_IMAGE_ID"
+	index5681WorkerImageIDEnv            = "ELITEA_INDEX_5681_WORKER_IMAGE_ID"
+	index5681LiteLLMImageIDEnv           = "ELITEA_INDEX_5681_LITELLM_IMAGE_ID"
+	index5681GatewayImageIDEnv           = "ELITEA_INDEX_5681_GATEWAY_IMAGE_ID"
+	index5681GatewayRouteDigestEnv       = "ELITEA_INDEX_5681_GATEWAY_ROUTE_SHA256"
+	index5681GatewayBaseDigestEnv        = "ELITEA_INDEX_5681_GATEWAY_BASE_SHA256"
+	index5681LiteLLMServiceEnv           = "ELITEA_INDEX_5681_LITELLM_SERVICE"
+	index5681LiteLLMRevisionEnv          = "ELITEA_INDEX_5681_LITELLM_REVISION"
+	index5681SDKRevisionEnv              = "ELITEA_INDEX_5681_SDK_REVISION"
+	index5681ReceiptSchema               = "elitea.issue-5681.fixture-receipt.v1"
+	index5681FixtureProfile              = "elitea.issue-5681.confluence-images.v1"
+	index5681FixtureBytes          int64 = 62 << 20
+	index5681LargeImageBytes             = 32 << 20
+	index5681CurrentSourceBytes          = 2 * index5681FixtureBytes
+	index5681CurrentVisionCalls          = 22
 )
 
 type index5681FixtureReceipt struct {
@@ -84,11 +89,16 @@ type index5681Environment struct {
 	sourceAuthDigest         string
 	modelAuthDigest          string
 	proxyAttestationDigest   string
+	sourceCredentialCanary   string
+	modelCredentialCanary    string
+	proxyCredentialCanary    string
 	platformSHA              string
 	mainImageID              string
 	workerImageID            string
 	liteLLMImageID           string
 	gatewayImageID           string
+	gatewayRouteDigest       string
+	gatewayBaseDigest        string
 	liteLLMService           string
 	liteLLMRevision          string
 	sdkRevision              string
@@ -214,6 +224,11 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 
 	config := loadIndexReliabilityConfig(t)
 	environment := loadIssue5681Environment(t, config)
+	credentialCanaries := []string{
+		environment.sourceCredentialCanary,
+		environment.modelCredentialCanary,
+		environment.proxyCredentialCanary,
+	}
 	requireIssue5681RequestProfile(t, config.startBody)
 	harness := &indexComposeHarness{config: config}
 	ctx, cancel := context.WithTimeout(context.Background(), config.timeout)
@@ -235,6 +250,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 
 	requireIssue5681CleanDedicatedBaseline(t, ctx, harness)
 	requireIssue5681RedisNoEviction(t, ctx, harness)
+	t.Log("bounded PoV restriction: no adversarial recovery claimant and no preexisting Redis state/corruption; recovery-purpose enforcement and full Redis bijection are excluded")
 	requireIssue5681ConfluenceToolkit(t, ctx, harness)
 	requireIssue5681SecondProjectAccess(
 		t,
@@ -317,6 +333,9 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 			controlCanary,
 			initialReceipt.SmallImageSHA256,
 			initialReceipt.LargeImageSHA256,
+			environment.sourceCredentialCanary,
+			environment.modelCredentialCanary,
+			environment.proxyCredentialCanary,
 		},
 	)
 	harness.waitForJob(t, ctx, executionID, func(snapshot indexJobSnapshot) bool {
@@ -324,6 +343,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	}, "published production-scale execution")
 	reference := harness.waitForRedisReference(t, ctx, controlCanary, 1)
 	assertReferenceOnlyIndexRedis(t, reference)
+	assertIssue5681RedisExcludesValues(t, ctx, harness, credentialCanaries)
 	commandEvidence := assertIssue5681DecodedRedisReference(
 		t,
 		ctx,
@@ -383,6 +403,9 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 			controlCanary,
 			initialReceipt.SmallImageSHA256,
 			initialReceipt.LargeImageSHA256,
+			environment.sourceCredentialCanary,
+			environment.modelCredentialCanary,
+			environment.proxyCredentialCanary,
 		},
 		sse,
 	)
@@ -429,6 +452,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 		t,
 		harness.waitForRedisReference(t, ctx, cancelCanary, 1),
 	)
+	assertIssue5681RedisExcludesValues(t, ctx, harness, credentialCanaries)
 	if err := harness.stopIndex(ctx, cancelExecution, cancelIndexName); err != nil {
 		t.Fatalf("cancel production-scale execution: %v", err)
 	}
@@ -458,7 +482,7 @@ func TestExistingComposeIndexIssue5681ProductionScale(t *testing.T) {
 	)
 
 	t.Logf(
-		"issue #5681 gate passed: source_bytes=%d max_model_request_bytes=%d redis_envelope_bytes=%d replay_events=%d",
+		"issue #5681 bounded PoV passed (not a production security/recovery proof): source_bytes=%d max_model_request_bytes=%d redis_envelope_bytes=%d replay_events=%d",
 		receipt.SourceCompletedBytes,
 		receipt.MaxChatRequestBytes,
 		reference.MaxFieldBytes,
@@ -481,6 +505,7 @@ func loadIssue5681Environment(
 ) index5681Environment {
 	t.Helper()
 	if os.Getenv("ELITEA_INDEX_5681_DEDICATED") != "1" ||
+		os.Getenv("ELITEA_INDEX_5681_NO_ADVERSARIAL_RECOVERY_CLAIMANT") != "1" ||
 		!strings.HasPrefix(config.composeProject, "elitea-5681-") ||
 		len(config.composeProject) > 64 {
 		t.Fatal("issue #5681 requires an explicitly dedicated elitea-5681-* Compose project")
@@ -498,17 +523,27 @@ func loadIssue5681Environment(
 		sourceAuthDigest:         requiredIssue5681SHA256(t, index5681SourceAuthDigestEnv, false),
 		modelAuthDigest:          requiredIssue5681SHA256(t, index5681ModelAuthDigestEnv, false),
 		proxyAttestationDigest:   requiredIssue5681SHA256(t, index5681ProxyAttestationEnv, false),
+		sourceCredentialCanary:   requiredIssue5681Text(t, index5681SourceCanaryEnv, "issue-5681-credential-canary-", 128),
+		modelCredentialCanary:    requiredIssue5681Text(t, index5681ModelCanaryEnv, "issue-5681-credential-canary-", 128),
+		proxyCredentialCanary:    requiredIssue5681Text(t, index5681ProxyCanaryEnv, "issue-5681-credential-canary-", 128),
 		platformSHA:              requiredIssue5681Hex(t, index5681PlatformSHAEnv, 40),
 		mainImageID:              requiredIssue5681SHA256(t, index5681MainImageIDEnv, true),
 		workerImageID:            requiredIssue5681SHA256(t, index5681WorkerImageIDEnv, true),
 		liteLLMImageID:           requiredIssue5681SHA256(t, index5681LiteLLMImageIDEnv, true),
 		gatewayImageID:           requiredIssue5681SHA256(t, index5681GatewayImageIDEnv, true),
+		gatewayRouteDigest:       requiredIssue5681SHA256(t, index5681GatewayRouteDigestEnv, false),
+		gatewayBaseDigest:        requiredIssue5681SHA256(t, index5681GatewayBaseDigestEnv, false),
 		liteLLMService:           requiredIssue5681Text(t, index5681LiteLLMServiceEnv, "", 128),
 		liteLLMRevision:          requiredIssue5681Hex(t, index5681LiteLLMRevisionEnv, 40),
 		sdkRevision:              requiredIssue5681Hex(t, index5681SDKRevisionEnv, 40),
 	}
 	if environment.secondProjectID == config.projectID {
 		t.Fatal("issue #5681 second project must differ from the execution project")
+	}
+	if environment.sourceCredentialCanary == environment.modelCredentialCanary ||
+		environment.sourceCredentialCanary == environment.proxyCredentialCanary ||
+		environment.modelCredentialCanary == environment.proxyCredentialCanary {
+		t.Fatal("issue #5681 credential canaries must be distinct seeded values")
 	}
 	if environment.liteLLMService == "" ||
 		strings.ContainsAny(environment.liteLLMService, "/\\.:") {
@@ -663,7 +698,7 @@ func requireIssue5681SUTProvenance(
 			}
 		}
 	}
-	requireIssue5681GatewayTLSBinding(t, ctx, harness)
+	requireIssue5681GatewayTLSBinding(t, ctx, harness, environment)
 
 	var lock struct {
 		DistributionVersion string `json:"distribution_version"`
@@ -741,6 +776,7 @@ func requireIssue5681GatewayTLSBinding(
 	t *testing.T,
 	ctx context.Context,
 	harness *indexComposeHarness,
+	environment index5681Environment,
 ) {
 	t.Helper()
 	containerID, err := harness.compose(ctx, "ps", "-q", "auth_gateway")
@@ -763,6 +799,11 @@ func requireIssue5681GatewayTLSBinding(
 		t.Fatal("decode auth gateway mount attestation")
 	}
 	expectedMounts := map[string]string{
+		"/etc/traefik/dynamic/base.yml": filepath.Join(
+			harness.config.centryDir,
+			"hybrid_auth",
+			"traefik-dynamic.yml",
+		),
 		"/etc/traefik/dynamic/index.yml": filepath.Join(
 			harness.config.centryDir,
 			"hybrid_auth",
@@ -787,6 +828,62 @@ func requireIssue5681GatewayTLSBinding(
 		}
 		if !found {
 			t.Fatalf("auth gateway lacks exact read-only %s mount", destination)
+		}
+	}
+
+	routeBytes := readIssue5681AttestedFile(
+		t,
+		expectedMounts["/etc/traefik/dynamic/index.yml"],
+		environment.gatewayRouteDigest,
+	)
+	baseBytes := readIssue5681AttestedFile(
+		t,
+		expectedMounts["/etc/traefik/dynamic/base.yml"],
+		environment.gatewayBaseDigest,
+	)
+	route := string(routeBytes)
+	routerStart := strings.Index(route, "    go-current-index-runtime:\n")
+	routerEnd := strings.Index(route, "\n    runtime-worker-current-tools-list:")
+	if routerStart < 0 || routerEnd <= routerStart {
+		t.Fatal("attested gateway route lacks the exact index-runtime router")
+	}
+	router := route[routerStart:routerEnd]
+	for _, required := range []string{
+		"PathRegexp(`^/api/v2/elitea_core/test_toolkit_tool/prompt_lib/[1-9][0-9]*$`)",
+		"Query(`execution_contract`, `index.ingest.v1`)",
+		"PathRegexp(`^/api/v2/elitea_core/index_cancel/prompt_lib/",
+		"PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/",
+		"PathRegexp(`^/api/v2/executions/[1-9][0-9]*/[^/]+/events$`)",
+		"priority: 90",
+		"entryPoints: [websecure]",
+		"tls: {}",
+		"middlewares:\n        - strip-caller-auth-context\n        - normalize-runtime-public-authority\n        - go-main-forward-auth",
+		"service: elitea-main",
+	} {
+		if strings.Count(router, required) != 1 {
+			t.Fatal("attested gateway index router has an unexpected semantic contract")
+		}
+	}
+	if strings.Contains(router, "PathPrefix(") ||
+		strings.Contains(router, "service: current-main") {
+		t.Fatal("attested gateway index router is broader than the Go runtime route")
+	}
+	base := string(baseBytes)
+	for _, required := range []string{
+		"normalize-runtime-public-authority:",
+		"Host: localhost:18443",
+		"strip-caller-auth-context:",
+		`X-Auth-Type: ""`,
+		`X-Auth-ID: ""`,
+		`X-Auth-Reference: ""`,
+		"go-main-forward-auth:",
+		"address: http://elitea-main-auth:8080/internal/forward-auth/main",
+		"trustForwardHeader: false",
+		"forwardBody: false",
+		"preserveRequestMethod: false",
+	} {
+		if strings.Count(base, required) != 1 {
+			t.Fatal("attested gateway middleware contract is incomplete or ambiguous")
 		}
 	}
 
@@ -825,6 +922,23 @@ func requireIssue5681GatewayTLSBinding(
 		!bytes.Equal(state.PeerCertificates[0].Raw, block.Bytes) {
 		t.Fatal("public HTTPS origin is not serving the attested gateway certificate")
 	}
+}
+
+func readIssue5681AttestedFile(
+	t *testing.T,
+	path string,
+	expectedDigest string,
+) []byte {
+	t.Helper()
+	value, err := os.ReadFile(path)
+	if err != nil || len(value) == 0 || len(value) > 64*1024 {
+		t.Fatal("read bounded gateway configuration")
+	}
+	digest := sha256.Sum256(value)
+	if hex.EncodeToString(digest[:]) != expectedDigest {
+		t.Fatal("gateway configuration digest does not match the operator attestation")
+	}
+	return value
 }
 
 func requireIssue5681CleanDedicatedBaseline(
@@ -884,6 +998,39 @@ func requireIssue5681RedisNoEviction(
 		!hasPair("--appendonly", "yes") ||
 		!hasPair("--appendfsync", "everysec") {
 		t.Fatal("runtime Redis lacks the exact bounded noeviction/durable process profile")
+	}
+}
+
+func assertIssue5681RedisExcludesValues(
+	t *testing.T,
+	ctx context.Context,
+	harness *indexComposeHarness,
+	forbiddenValues []string,
+) {
+	t.Helper()
+	const script = `
+local rows = redis.call('XRANGE', KEYS[1], '-', '+')
+local mappings = redis.call('HGETALL', KEYS[2])
+for _, needle in ipairs(ARGV) do
+  if needle == '' then return 1 end
+  for _, row in ipairs(rows) do
+    for _, value in ipairs(row[2]) do
+      if string.find(value, needle, 1, true) then return 1 end
+    end
+  end
+  for _, value in ipairs(mappings) do
+    if string.find(value, needle, 1, true) then return 1 end
+  end
+end
+return 0`
+	arguments := []string{
+		"--raw", "EVAL", script, "2",
+		indexCommandStream, indexCommandStream + ":delivery-index.v1",
+	}
+	arguments = append(arguments, forbiddenValues...)
+	output, err := harness.redis(ctx, "producer", arguments...)
+	if err != nil || strings.TrimSpace(output) != "0" {
+		t.Fatal("Redis control state contains a seeded credential canary")
 	}
 }
 
@@ -1149,6 +1296,9 @@ func startIssue5681Fixture(
 		"--source-authorization-sha256", environment.sourceAuthDigest,
 		"--model-authorization-sha256", environment.modelAuthDigest,
 		"--proxy-attestation-sha256", environment.proxyAttestationDigest,
+		"--source-credential-canary", environment.sourceCredentialCanary,
+		"--model-credential-canary", environment.modelCredentialCanary,
+		"--proxy-credential-canary", environment.proxyCredentialCanary,
 	)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -2066,7 +2216,16 @@ func collectIssue5681SSE(
 			if err != nil || !bytes.Equal(canonical, raw) ||
 				event.GetStreamId() != expectedStreamID ||
 				event.GetMessageId() != expectedMessageID ||
-				event.GetSioEvent() != "chat_predict" {
+				event.GetSioEvent() != "chat_predict" ||
+				event.QuestionId != nil ||
+				!bytes.Equal(event.GetContent(), []byte("null")) ||
+				event.Thinking != nil ||
+				!bytes.Equal(event.GetReferences(), []byte("[]")) ||
+				event.CreatedAt == nil ||
+				!issue5681RFC3339(event.GetCreatedAt()) ||
+				event.ParentMessageId != nil ||
+				event.AgentName != nil ||
+				event.ExecutionGeneration != nil {
 				observation.InvalidContract = true
 			}
 			eventIndex := len(observation.NodeTypes)
@@ -2096,6 +2255,7 @@ func collectIssue5681SSE(
 					metadata["tool_run_id"] != observation.ToolRunID ||
 					!startedAtOK ||
 					!issue5681RFC3339(startedAt) ||
+					startedAt != event.GetCreatedAt() ||
 					!issue5681ValidToolMetadata(metadata["metadata"], &observation) {
 					observation.InvalidContract = true
 				}
@@ -2109,6 +2269,7 @@ func collectIssue5681SSE(
 					"name", "run_id", "tool_run_id", "metadata", "datetime",
 					"message", "tool_name", "toolkit") ||
 					metadata["name"] != "thinking_step" ||
+					metadata["datetime"] != event.GetCreatedAt() ||
 					!issue5681ValidCommonNodeMetadata(metadata, &observation) {
 					observation.InvalidContract = true
 				}
@@ -2131,6 +2292,7 @@ func collectIssue5681SSE(
 					"task_id", "initiator", "project_id", "user_id") ||
 					metadata["name"] != "index_data_status" ||
 					metadata["task_id"] != executionID ||
+					metadata["datetime"] != event.GetCreatedAt() ||
 					!issue5681JSONIntegerEquals(metadata["project_id"], harness.config.projectID) ||
 					!issue5681JSONIntegerEquals(metadata["toolkit_id"], harness.config.toolkitID) ||
 					!issue5681ValidCommonNodeMetadata(metadata, &observation) {
@@ -2181,7 +2343,8 @@ func collectIssue5681SSE(
 					metadata["tool_run_id"] != observation.ToolRunID ||
 					metadata["finish_reason"] != "stop" ||
 					metadata["timestamp_start"] != observation.ToolStartedAt ||
-					!finishedAtOK || !issue5681RFC3339(finishedAt) {
+					!finishedAtOK || !issue5681RFC3339(finishedAt) ||
+					finishedAt != event.GetCreatedAt() {
 					observation.InvalidContract = true
 				}
 			default:

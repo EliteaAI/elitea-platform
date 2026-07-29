@@ -1,6 +1,6 @@
 # Issue #5681 production-scale indexing gate
 
-This is the opt-in acceptance gate for the production failure where large
+This is the opt-in, bounded PoV gate for the production failure where large
 Confluence image-analysis traffic shared Redis with control traffic. The
 protected PostgreSQL bundle contains only bounded configuration references.
 The 62 MiB corpus and all model traffic stay on HTTP:
@@ -37,8 +37,9 @@ The gate asserts:
   attested by immutable revisions, Docker image IDs, image revision labels,
   a completely clean checkout, and the SDK tree;
 - the public origin is exactly `https://localhost:18443`; the gateway's route
-  and certificate are exact read-only mounts and the served TLS leaf matches
-  that certificate under the runtime CA;
+  and base configuration match operator-supplied SHA-256 digests, their exact
+  router/service/middleware semantics are checked, their mounts are read-only,
+  and the served TLS leaf matches the mounted certificate under the runtime CA;
 - the selected toolkit is the requested project's current Confluence toolkit;
 - the signed envelope and command pass the strict protobuf scanner, reject
   unknown/duplicate fields, and carry only `index.ingest.v1` references;
@@ -60,8 +61,9 @@ The gate asserts:
 - SSE/replay excludes canaries, source digests, credentials, URLs,
   configuration markers, base64 and source/model payloads;
 - source receipts prove every image twice, 124 MiB, 22 authenticated vision
-  calls, embedding calls, the configured proxy-attestation header, and no
-  rejected source/model/proxy request;
+  calls, embedding calls, three distinct seeded credential canaries inside the
+  exact source/model/proxy header values, and no rejected request; those
+  canaries are absent from Redis and SSE;
 - the public index-meta API proves one non-stale completed PgVector collection
   with the exact indexed/updated counts, and cleanup deletes it through the
   public API;
@@ -75,7 +77,8 @@ The gate asserts:
 Never point this test at shared development, staging, or production state. It
 requires a disposable Compose namespace named `elitea-5681-*`, a dedicated
 product project and project-specific PgVector database, an empty runtime
-execution table, and empty dedicated Redis index stream/group state.
+execution table, empty/non-corrupt dedicated Redis index stream/group state,
+and an operator-confirmed environment with no adversarial recovery claimant.
 
 Provision through current product APIs/UI:
 
@@ -89,6 +92,10 @@ Provision through current product APIs/UI:
    `X-Elitea-5681-Proxy-Attestation` value. The fixture stores only SHA-256
    fingerprints and rejects requests missing any configured header. The
    stronger per-request proxy-origin proof is listed below as uncovered.
+   Seed three distinct non-secret values beginning with
+   `issue-5681-credential-canary-` inside the source Authorization, model
+   Authorization, and proxy-attestation header values. The fixture verifies
+   both the exact header digests and those canaries.
 4. An active PAT for the allowed browser actor.
 5. Two owner-only Cookie files: one actor allowed to index/read/delete and one
    authenticated actor denied those permissions. Also provide a second existing
@@ -140,14 +147,20 @@ ELITEA_INDEX_5681_WORKLOAD_IDENTITY=spiffe://elitea/runtime/indexer-worker \
 ELITEA_INDEX_5681_SOURCE_AUTH_SHA256=<64-hex> \
 ELITEA_INDEX_5681_MODEL_AUTH_SHA256=<64-hex> \
 ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256=<64-hex> \
+ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY=issue-5681-credential-canary-source \
+ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY=issue-5681-credential-canary-model \
+ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY=issue-5681-credential-canary-proxy \
 ELITEA_INDEX_5681_PLATFORM_SHA=<40-hex> \
 ELITEA_INDEX_5681_MAIN_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_WORKER_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_LITELLM_IMAGE_ID=sha256:<64-hex> \
 ELITEA_INDEX_5681_GATEWAY_IMAGE_ID=sha256:<64-hex> \
+ELITEA_INDEX_5681_GATEWAY_ROUTE_SHA256=<64-hex> \
+ELITEA_INDEX_5681_GATEWAY_BASE_SHA256=<64-hex> \
 ELITEA_INDEX_5681_LITELLM_SERVICE=elitea-litellm \
 ELITEA_INDEX_5681_LITELLM_REVISION=<40-hex> \
 ELITEA_INDEX_5681_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b \
+ELITEA_INDEX_5681_NO_ADVERSARIAL_RECOVERY_CLAIMANT=1 \
 services/elitea-main/tests/reliability/index_5681/run.sh
 ```
 
@@ -159,7 +172,9 @@ The wrapper returns 2 for missing prerequisites, 1 for a failed contract, and
 0 only for a pass. It gives the test context 12 minutes, `go test` 14 minutes,
 and enforces an outer 15-minute process-group deadline. Deadline, interrupt,
 hangup, and termination signals are forwarded to the full child process group
-before restoration. It restores the worker only when it was initially running.
+before restoration. A private outer-owner record lets the shell terminate the
+group even if the timeout wrapper itself is killed. It restores the worker only
+when it was initially running.
 API bodies, Compose stderr, signed
 envelopes, Cookies/PATs, and source/model payloads are not printed.
 
@@ -174,8 +189,8 @@ toolkit, and external LiteLLM/PgVector resources used by that run.
 
 ## Explicit uncovered boundaries
 
-This executable gate deliberately does not overclaim two proofs that the
-current product interfaces cannot safely expose:
+This executable gate deliberately does not overclaim the following proofs that
+the current product interfaces or bounded PoV environment cannot safely expose:
 
 - The attested LiteLLM container and the fixture's exact proxy-header
   fingerprint do not cryptographically prove that LiteLLM, rather than another
@@ -187,7 +202,16 @@ current product interfaces cannot safely expose:
   not expose the exact physical content/vector row count or prove zero physical
   rows after deletion. Closing that boundary requires a tenant-safe
   aggregate/cleanup receipt from the vector-store owner.
+- Recovery-claim purpose authorization is not adversarially tested. The gate
+  requires one attested worker and an operator-confirmed absence of any
+  adversarial recovery claimant; it is not evidence for production recovery
+  authorization.
+- The gate starts from an empty Redis stream, delivery index, and PEL and
+  checks the one-command mapping it creates. It does not prove a general
+  server-side bijection in the presence of preexisting or concurrently injected
+  Redis corruption.
 
 This is also not a soak, multi-worker load, certificate-rotation,
 external-Confluence, or external-model-provider test. Those remain separate
-release gates.
+release gates. A pass is production-scale PoV evidence only; it is not a
+production security or recovery proof.

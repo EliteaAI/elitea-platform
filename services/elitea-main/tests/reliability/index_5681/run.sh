@@ -24,14 +24,20 @@ required=(
   ELITEA_INDEX_5681_SOURCE_AUTH_SHA256
   ELITEA_INDEX_5681_MODEL_AUTH_SHA256
   ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256
+  ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY
+  ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY
+  ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY
   ELITEA_INDEX_5681_PLATFORM_SHA
   ELITEA_INDEX_5681_MAIN_IMAGE_ID
   ELITEA_INDEX_5681_WORKER_IMAGE_ID
   ELITEA_INDEX_5681_LITELLM_IMAGE_ID
   ELITEA_INDEX_5681_GATEWAY_IMAGE_ID
+  ELITEA_INDEX_5681_GATEWAY_ROUTE_SHA256
+  ELITEA_INDEX_5681_GATEWAY_BASE_SHA256
   ELITEA_INDEX_5681_LITELLM_SERVICE
   ELITEA_INDEX_5681_LITELLM_REVISION
   ELITEA_INDEX_5681_SDK_REVISION
+  ELITEA_INDEX_5681_NO_ADVERSARIAL_RECOVERY_CLAIMANT
 )
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -94,6 +100,9 @@ fi
 if [[ "${ELITEA_INDEX_5681_WORKLOAD_IDENTITY}" != spiffe://* ]]; then
   prerequisite_failure "ELITEA_INDEX_5681_WORKLOAD_IDENTITY must be the exact expected SPIFFE identity"
 fi
+if [[ "${ELITEA_INDEX_5681_NO_ADVERSARIAL_RECOVERY_CLAIMANT}" != "1" ]]; then
+  prerequisite_failure "the bounded PoV requires an operator-confirmed non-adversarial recovery environment"
+fi
 if [[ ! "${ELITEA_INDEX_5681_LITELLM_SERVICE}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
   prerequisite_failure "ELITEA_INDEX_5681_LITELLM_SERVICE must be one Compose service name"
 fi
@@ -101,11 +110,27 @@ fi
 for name in \
   ELITEA_INDEX_5681_SOURCE_AUTH_SHA256 \
   ELITEA_INDEX_5681_MODEL_AUTH_SHA256 \
-  ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256; do
+  ELITEA_INDEX_5681_LITELLM_ATTESTATION_SHA256 \
+  ELITEA_INDEX_5681_GATEWAY_ROUTE_SHA256 \
+  ELITEA_INDEX_5681_GATEWAY_BASE_SHA256; do
   value="${!name}"
   [[ "${value}" =~ ^[0-9a-f]{64}$ ]] \
     || prerequisite_failure "${name} must be one lowercase SHA-256 digest"
 done
+for name in \
+  ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY \
+  ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY \
+  ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY; do
+  value="${!name}"
+  [[ "${value}" == issue-5681-credential-canary-* ]] \
+    && (( ${#value} <= 128 )) \
+    || prerequisite_failure "${name} must be a bounded seeded test canary"
+done
+if [[ "${ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY}" == "${ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY}" ]] \
+  || [[ "${ELITEA_INDEX_5681_SOURCE_CREDENTIAL_CANARY}" == "${ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY}" ]] \
+  || [[ "${ELITEA_INDEX_5681_MODEL_CREDENTIAL_CANARY}" == "${ELITEA_INDEX_5681_PROXY_CREDENTIAL_CANARY}" ]]; then
+  prerequisite_failure "credential canaries must be distinct"
+fi
 for name in \
   ELITEA_INDEX_5681_MAIN_IMAGE_ID \
   ELITEA_INDEX_5681_WORKER_IMAGE_ID \
@@ -190,7 +215,33 @@ for service_name in \
   fi
 done
 
+timed_owner_dir="$(
+  mktemp -d "${TMPDIR:-/tmp}/elitea-index-5681-owner.XXXXXX"
+)" || prerequisite_failure "cannot create private timeout-owner directory"
+chmod 700 "${timed_owner_dir}" \
+  || prerequisite_failure "cannot protect timeout-owner directory"
+timed_owner_file="${timed_owner_dir}/process-group"
+
+cleanup_timed_child_group() {
+  local process_group=""
+  if [[ -f "${timed_owner_file}" && ! -L "${timed_owner_file}" ]]; then
+    IFS= read -r process_group <"${timed_owner_file}" || true
+  fi
+  if [[ "${process_group}" =~ ^[1-9][0-9]*$ ]] \
+    && kill -0 -- "-${process_group}" 2>/dev/null; then
+    kill -TERM -- "-${process_group}" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 -- "-${process_group}" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-${process_group}" 2>/dev/null || true
+  fi
+  rm -f "${timed_owner_file}"
+  rmdir "${timed_owner_dir}" 2>/dev/null || true
+}
+
 restore_worker() {
+  cleanup_timed_child_group
   if [[ "${worker_was_running}" == true ]]; then
     ELITEA_AUTH_POV_RUNTIME_DIR="${ELITEA_AUTH_POV_RUNTIME_DIR}" \
       docker "${compose_args[@]}" start elitea-indexer-worker >/dev/null 2>&1 || true
@@ -207,6 +258,7 @@ export ELITEA_INDEX_5681_SYSTEM_TEST=1
 export ELITEA_INDEX_5681_DEDICATED=1
 export ELITEA_INDEX_TEST_TIMEOUT="${ELITEA_INDEX_TEST_TIMEOUT:-12m}"
 export GOCACHE="${GOCACHE:-/tmp/elitea-index-5681-go-cache}"
+export ELITEA_TIMEOUT_OWNER_FILE="${timed_owner_file}"
 
 cd "${REPOSITORY_ROOT}"
 "${python}" "${SCRIPT_DIR}/run_with_timeout.py" 900 \

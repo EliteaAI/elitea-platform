@@ -11,6 +11,7 @@ import time
 
 
 _TERMINATION_GRACE_SECONDS = 10.0
+_OWNER_FILE_ENV = "ELITEA_TIMEOUT_OWNER_FILE"
 
 
 def _signal_process_group(process: subprocess.Popen[bytes], signum: int) -> None:
@@ -32,6 +33,31 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
+def _create_owner_file(process_group: int) -> str | None:
+    path = os.environ.get(_OWNER_FILE_ENV)
+    if path is None:
+        return None
+    if not os.path.isabs(path) or "\x00" in path:
+        raise OSError("owner file must be absolute")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, f"{process_group}\n".encode("ascii"))
+    finally:
+        os.close(descriptor)
+    return path
+
+
+def _remove_owner_file(path: str | None) -> None:
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         return 2
@@ -43,6 +69,11 @@ def main() -> int:
         return 2
 
     process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+    try:
+        owner_file = _create_owner_file(process.pid)
+    except OSError:
+        _terminate_process_group(process)
+        return 2
     received_signal: int | None = None
 
     def forward_signal(signum: int, _frame: object) -> None:
@@ -73,6 +104,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 continue
     finally:
+        _remove_owner_file(owner_file)
         for signum, previous_handler in previous_handlers.items():
             signal.signal(signum, previous_handler)
 

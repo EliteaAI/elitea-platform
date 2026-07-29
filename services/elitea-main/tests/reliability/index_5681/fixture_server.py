@@ -182,6 +182,9 @@ class Fixture:
     source_authorization_sha256: str
     model_authorization_sha256: str
     proxy_attestation_sha256: str
+    source_credential_canary: str
+    model_credential_canary: str
+    proxy_credential_canary: str
     receipt: Receipt
 
     @property
@@ -380,11 +383,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
         valid_authorization = _matches_header_digest(
             authorization,
             self.fixture.model_authorization_sha256,
-        )
+        ) and self.fixture.model_credential_canary in authorization
         valid_proxy = _matches_header_digest(
             proxy_attestation,
             self.fixture.proxy_attestation_sha256,
-        )
+        ) and self.fixture.proxy_credential_canary in proxy_attestation
         valid = (
             valid_authorization
             and valid_proxy
@@ -410,7 +413,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if _matches_header_digest(
             authorization,
             self.fixture.source_authorization_sha256,
-        ):
+        ) and self.fixture.source_credential_canary in authorization:
             return True
         self.fixture.receipt.reject_source()
         self._json(401, {"message": "fixture source authorization rejected"})
@@ -511,6 +514,15 @@ def _valid_sha256(value: object) -> bool:
     )
 
 
+def _valid_credential_canary(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("issue-5681-credential-canary-")
+        and len(value.encode("utf-8")) <= 128
+        and all(character not in value for character in "\x00\r\n")
+    )
+
+
 def prepare_fixture(
     root: Path,
     project_id: int,
@@ -518,6 +530,9 @@ def prepare_fixture(
     source_authorization_sha256: str,
     model_authorization_sha256: str,
     proxy_attestation_sha256: str,
+    source_credential_canary: str,
+    model_credential_canary: str,
+    proxy_credential_canary: str,
 ) -> Fixture:
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
@@ -544,6 +559,9 @@ def prepare_fixture(
         source_authorization_sha256=source_authorization_sha256,
         model_authorization_sha256=model_authorization_sha256,
         proxy_attestation_sha256=proxy_attestation_sha256,
+        source_credential_canary=source_credential_canary,
+        model_credential_canary=model_credential_canary,
+        proxy_credential_canary=proxy_credential_canary,
         receipt=Receipt(
             project_id=project_id,
             small_sha256=small_sha256,
@@ -576,6 +594,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-authorization-sha256")
     parser.add_argument("--model-authorization-sha256")
     parser.add_argument("--proxy-attestation-sha256")
+    parser.add_argument("--source-credential-canary")
+    parser.add_argument("--model-credential-canary")
+    parser.add_argument("--proxy-credential-canary")
     return parser.parse_args()
 
 
@@ -594,9 +615,20 @@ def main() -> int:
         or not _valid_sha256(args.source_authorization_sha256)
         or not _valid_sha256(args.model_authorization_sha256)
         or not _valid_sha256(args.proxy_attestation_sha256)
+        or not _valid_credential_canary(args.source_credential_canary)
+        or not _valid_credential_canary(args.model_credential_canary)
+        or not _valid_credential_canary(args.proxy_credential_canary)
+        or len(
+            {
+                args.source_credential_canary,
+                args.model_credential_canary,
+                args.proxy_credential_canary,
+            }
+        )
+        != 3
     ):
         raise SystemExit(
-            "--port, --project-id, absolute --root and three SHA-256 header fingerprints are required"
+            "--port, --project-id, absolute --root, three SHA-256 header fingerprints, and three distinct credential canaries are required"
         )
     fixture = prepare_fixture(
         args.root.resolve(),
@@ -604,6 +636,9 @@ def main() -> int:
         source_authorization_sha256=args.source_authorization_sha256,
         model_authorization_sha256=args.model_authorization_sha256,
         proxy_attestation_sha256=args.proxy_attestation_sha256,
+        source_credential_canary=args.source_credential_canary,
+        model_credential_canary=args.model_credential_canary,
+        proxy_credential_canary=args.proxy_credential_canary,
     )
     server = ThreadingHTTPServer((args.host, args.port), FixtureHandler)
     server.fixture = fixture  # type: ignore[attr-defined]
