@@ -188,6 +188,11 @@ class OutputSession(Protocol):
         expected: output_pb2.ExecutionOutputFrameV1,
         replacement: output_pb2.ExecutionOutputFrameV1,
     ) -> None: ...
+    async def replace_pending_ambiguous_recovery(
+        self,
+        expected: output_pb2.ExecutionOutputFrameV1,
+        replacement: output_pb2.ExecutionOutputFrameV1,
+    ) -> None: ...
     async def start(self) -> None: ...
     async def send(self, frame: output_pb2.ExecutionOutputFrameV1) -> None: ...
     async def wait_for_ack(self, sequence: int, timeout_seconds: float) -> None: ...
@@ -847,6 +852,25 @@ class ConfigurationValidationDeliveryProcessor:
                 raise InvalidInput("The durable output spool state is inconsistent.")
             verified = _verified_claim_command(signed, command, receipt)
             if pending is not None:
+                if (
+                    self._validate_pending_output(
+                        pending,
+                        command=verified.command,
+                        receipt=receipt,
+                    )
+                    and not _pending_output_binding_matches(pending, receipt)
+                    and receipt.desired_state
+                    == common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING
+                    and int(receipt.claim_handoff_watermark)
+                    == int(pending.sequence) - 1
+                ):
+                    return await self._recover_ambiguous_running(
+                        delivery=delivery,
+                        output=output,
+                        receipt=receipt,
+                        verified=verified,
+                        replace_pending=pending,
+                    )
                 return await self._recover_pending_output(
                     delivery=delivery,
                     frame=pending,
@@ -1297,12 +1321,13 @@ class ConfigurationValidationDeliveryProcessor:
         output: OutputSession,
         receipt: control_pb2.ClaimReceiptV1,
         verified: VerifiedWorkerCommand,
+        replace_pending: output_pb2.ExecutionOutputFrameV1 | None = None,
     ) -> DeliveryResult:
-        """Settle a no-spool invocation recovery without invoking the SDK.
+        """Settle an ambiguous invocation recovery without invoking the SDK.
 
         Main issues this recovery-only fence only after an invocation was
-        durably authorized and its predecessor lease expired. Absence of a
-        local frame is not evidence that the synchronous SDK did not run.
+        durably authorized and its predecessor lease expired. Neither absence
+        nor an unsigned old-fence local terminal proves the SDK outcome.
         """
 
         failure = AmbiguousExecutionRecovery()
@@ -1313,6 +1338,16 @@ class ConfigurationValidationDeliveryProcessor:
             claim_handoff_watermark=int(receipt.claim_handoff_watermark),
             sequence=int(receipt.claim_handoff_watermark) + 1,
         )
+        self._validate_pending_output(
+            frame,
+            command=verified.command,
+            receipt=receipt,
+        )
+        if replace_pending is not None:
+            await output.replace_pending_ambiguous_recovery(
+                replace_pending,
+                frame,
+            )
         lease = _ClaimLeaseMonitor(
             control=self._control,
             receipt=receipt,
@@ -1370,12 +1405,25 @@ class ConfigurationValidationDeliveryProcessor:
                 receipt=receipt,
             )
             if terminal:
-                # A terminal was already made durable locally before the
-                # restart. Its immutable result remains the single winner.
                 if not _pending_output_binding_matches(frame, receipt):
-                    raise AuthorizationFailure(
-                        "The durable terminal output spool uses a different "
-                        "claim fence; server-side recovery is required."
+                    if watermark != int(frame.sequence) - 1:
+                        raise AuthorizationFailure(
+                            "The durable terminal output spool is not contiguous "
+                            "with the cancellation recovery watermark."
+                        )
+                    # Main has authenticated cancellation under a replacement
+                    # fence and has not accepted this old-fence terminal. The
+                    # unsigned local result cannot win across that fence.
+                    # Replace it atomically with the canonical cancellation at
+                    # the same sequence; never re-enter the SDK.
+                    return await self._settle_cancelled_recovery(
+                        delivery=delivery,
+                        receipt=receipt,
+                        verified=verified,
+                        sequence=int(frame.sequence),
+                        initial_output=output,
+                        replace_pending=frame,
+                        allow_cancelled_fence_rebind=True,
                     )
                 return await self._recover_local_output(
                     delivery=delivery,

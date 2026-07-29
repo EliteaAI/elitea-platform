@@ -40,7 +40,7 @@ func TestOutputServerMapsTypedIndexIngestResultWithoutArtifactBytes(t *testing.T
 		t.Fatalf("index output was routed incorrectly: validations=%d failures=%d indexes=%d", len(validations.frames), len(failures.frames), len(indexes.frames))
 	}
 	mapped := indexes.frames[0]
-	if mapped.Result.InputBundleID != "input-bundle-index-1" || mapped.Result.Bindings.ToolkitConfiguration.EntryID != "toolkit-configuration" || mapped.Result.Bindings.ToolParameters.EntryID != "tool-parameters" || !mapped.Result.Bindings.LLMModel.Present || mapped.Result.Bindings.LLMConfiguration.Present || !mapped.Result.Bindings.MCPTokens.Present {
+	if mapped.Result.InputBundleID != "input-bundle-index-1" || mapped.Result.Bindings.ToolkitConfiguration.EntryID != "toolkit-configuration" || mapped.Result.Bindings.ToolParameters.EntryID != "tool-parameters" || !mapped.Result.Bindings.LLMModel.Present || mapped.Result.Bindings.LLMConfiguration.Present || !mapped.Result.Bindings.MCPTokens.Present || !mapped.Result.Bindings.EmbeddingBinding.Present {
 		t.Fatalf("index input bindings changed during mapping: %+v", mapped.Result.Bindings)
 	}
 	if mapped.Result.ResultArtifact.ArtifactID != "artifact-index-1" || mapped.Result.ResultArtifact.ByteLength != uint64(len("durable artifact bytes stay on the data plane")) || mapped.Result.ResultArtifact.MediaType != "application/json" || mapped.Result.ResultArtifact.Classification != "project-confidential" {
@@ -282,6 +282,7 @@ func validIndexWireFrame(t *testing.T) *runtimev1.ExecutionOutputFrameV1 {
 	parameters := indexWireBinding("tool-parameters", "tool-parameters")
 	llmModel := indexWireBinding("llm-model", "llm-model")
 	mcpTokens := indexWireBinding("mcp-credential-references", "mcp-references")
+	embeddingBinding := indexWireBinding("embedding-binding", "embedding")
 	artifactContent := []byte("durable artifact bytes stay on the data plane")
 	artifactDigest := testOutputDigest(artifactContent)
 	fenceDigest := runtimedomain.SHA256([]byte("unpredictable-index-fence-token"))
@@ -292,6 +293,7 @@ func validIndexWireFrame(t *testing.T) *runtimev1.ExecutionOutputFrameV1 {
 		ToolParameters:       parameters,
 		LlmModel:             llmModel,
 		McpTokens:            mcpTokens,
+		EmbeddingBinding:     embeddingBinding,
 		ResultArtifact: &runtimev1.IndexIngestArtifactReferenceV1{
 			ArtifactId:       "artifact-index-1",
 			ImmutableVersion: runtimedomain.SHA256(artifactContent).String(),

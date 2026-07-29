@@ -300,6 +300,7 @@ type EliteaRuntimeIndexIngestJob struct {
 	LlmModelEntryID                       *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
 	LlmConfigurationEntryID               *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
 	McpTokensEntryID                      *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	EmbeddingBindingEntryID               *string            `db:"embedding_binding_entry_id" json:"embedding_binding_entry_id"`
 	ClientStreamID                        *string            `db:"client_stream_id" json:"client_stream_id"`
 	ClientMessageID                       *string            `db:"client_message_id" json:"client_message_id"`
 	SioEvent                              *string            `db:"sio_event" json:"sio_event"`

@@ -846,6 +846,149 @@ def test_cancelled_recovery_rebinds_only_old_progress_to_new_fence(
     asyncio.run(run())
 
 
+def test_cancelled_recovery_rebinds_old_terminal_to_canonical_cancellation(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.terminal = True
+        original.fence.fence_token = b"o" * 32
+        replacement = _frame(6)
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.terminal = True
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_CANCELLED
+        )
+        spool = _spool(tmp_path)
+        spool.put(6, original.SerializeToString(deterministic=True))
+        session = OutputGrpcSession(
+            Stub(FakeCall()),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        await session.replace_pending_cancelled_recovery(original, replacement)
+
+        assert session.replays(replacement)
+        assert not session.replays(original)
+        assert spool.pending()[0].payload == replacement.SerializeToString(
+            deterministic=True
+        )
+
+    asyncio.run(run())
+
+
+def test_ambiguous_recovery_replaces_old_terminal_with_canonical_failure(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.terminal = True
+        original.claim_handoff_watermark = 0
+        original.fence.fence_token = b"o" * 32
+        replacement = output_pb2.ExecutionOutputFrameV1.FromString(
+            original.SerializeToString(deterministic=True)
+        )
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.ClearField("node_event")
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        replacement.runtime_error.safe_message = "The runtime operation failed."
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_FAILED
+        )
+        spool = _spool(tmp_path)
+        spool.put(6, original.SerializeToString(deterministic=True))
+        call = FakeCall()
+        call.write_gate.set()
+        session = OutputGrpcSession(
+            Stub(call),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        await session.replace_pending_ambiguous_recovery(original, replacement)
+        assert session.replays(replacement)
+        assert not session.replays(original)
+        assert spool.pending()[0].payload == replacement.SerializeToString(
+            deterministic=True
+        )
+
+        await session.start()
+        await call.controls.put(_ack(0))
+        while not call.writes:
+            await asyncio.sleep(0)
+        assert call.writes == [replacement]
+        await call.controls.put(_ack(6, bind_identity=True, frame=replacement))
+        await session.wait_for_ack(6, 1)
+        assert spool.pending() == ()
+        await session.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda frame: setattr(frame, "event_id", "changed-event"),
+        lambda frame: setattr(frame, "sequence", 7),
+        lambda frame: setattr(frame, "terminal", False),
+        lambda frame: setattr(frame.fence, "claim_attempt", 1),
+        lambda frame: setattr(frame.fence, "lease_epoch", 1),
+        lambda frame: setattr(frame.fence, "fence_token", b"o" * 32),
+        lambda frame: setattr(frame, "claim_handoff_watermark", 4),
+    ),
+)
+def test_ambiguous_recovery_rejects_invalid_replacement(tmp_path: Path, mutate) -> None:
+    async def run() -> None:
+        original = _frame(6)
+        original.terminal = True
+        original.fence.fence_token = b"o" * 32
+        replacement = output_pb2.ExecutionOutputFrameV1.FromString(
+            original.SerializeToString(deterministic=True)
+        )
+        replacement.fence.claim_attempt = 2
+        replacement.fence.lease_epoch = 2
+        replacement.fence.fence_token = b"n" * 32
+        replacement.claim_handoff_watermark = 5
+        replacement.runtime_error.code = errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        replacement.runtime_error.safe_message = "The runtime operation failed."
+        replacement.settlement_proposal.requested_outcome = (
+            common_pb2.EXECUTION_OUTCOME_V1_FAILED
+        )
+        mutate(replacement)
+        spool = _spool(tmp_path)
+        encoded_original = original.SerializeToString(deterministic=True)
+        spool.put(6, encoded_original)
+        session = OutputGrpcSession(
+            Stub(FakeCall()),
+            spool=spool,
+            metadata=lambda: (("x-elitea-workload-session", "session-1"),),
+            max_queued_frames=1,
+            max_queued_bytes=2048,
+            max_frame_bytes=1024,
+        )
+
+        with pytest.raises(AuthorizationFailure, match="ambiguous recovery"):
+            await session.replace_pending_ambiguous_recovery(original, replacement)
+        assert spool.pending()[0].payload == encoded_original
+        assert session.replays(original)
+
+    asyncio.run(run())
+
+
 def test_cancelled_recovery_rebind_requires_one_fresh_exact_pending_frame(
     tmp_path: Path,
 ) -> None:
@@ -953,7 +1096,7 @@ def test_cancelled_recovery_rebind_rejects_old_fence_ack(
     asyncio.run(run())
 
 
-def test_cancelled_recovery_rebind_rejects_old_fence_terminal(
+def test_cancelled_recovery_rebind_rejects_terminal_without_advancing_fence(
     tmp_path: Path,
 ) -> None:
     async def run() -> None:
@@ -961,7 +1104,7 @@ def test_cancelled_recovery_rebind_rejects_old_fence_terminal(
         original.fence.fence_token = b"o" * 32
         original.terminal = True
         replacement = _frame(6)
-        replacement.fence.claim_attempt = 2
+        replacement.fence.claim_attempt = original.fence.claim_attempt
         replacement.fence.lease_epoch = 2
         replacement.fence.fence_token = b"n" * 32
         replacement.claim_handoff_watermark = 5

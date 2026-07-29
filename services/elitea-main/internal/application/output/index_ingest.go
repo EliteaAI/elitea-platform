@@ -58,7 +58,7 @@ func (b OptionalIndexInputBinding) Validate() error {
 	return b.Binding.Validate()
 }
 
-// IndexIngestBindings is deliberately closed over the five v1 input roles.
+// IndexIngestBindings is deliberately closed over the six v1 input roles.
 // Unknown protobuf fields are rejected at the transport boundary, so a worker
 // cannot smuggle an unadmitted sixth binding through a newer message shape.
 type IndexIngestBindings struct {
@@ -67,6 +67,7 @@ type IndexIngestBindings struct {
 	LLMModel             OptionalIndexInputBinding
 	LLMConfiguration     OptionalIndexInputBinding
 	MCPTokens            OptionalIndexInputBinding
+	EmbeddingBinding     OptionalIndexInputBinding
 }
 
 func (b IndexIngestBindings) Validate() error {
@@ -76,15 +77,15 @@ func (b IndexIngestBindings) Validate() error {
 	if err := b.ToolParameters.Validate(); err != nil {
 		return err
 	}
-	for _, optional := range []OptionalIndexInputBinding{b.LLMModel, b.LLMConfiguration, b.MCPTokens} {
+	for _, optional := range []OptionalIndexInputBinding{b.LLMModel, b.LLMConfiguration, b.MCPTokens, b.EmbeddingBinding} {
 		if err := optional.Validate(); err != nil {
 			return err
 		}
 	}
 
-	bindings := [5]IndexInputBinding{b.ToolkitConfiguration, b.ToolParameters}
+	bindings := [6]IndexInputBinding{b.ToolkitConfiguration, b.ToolParameters}
 	bindingCount := 2
-	for _, optional := range []OptionalIndexInputBinding{b.LLMModel, b.LLMConfiguration, b.MCPTokens} {
+	for _, optional := range []OptionalIndexInputBinding{b.LLMModel, b.LLMConfiguration, b.MCPTokens, b.EmbeddingBinding} {
 		if optional.Present {
 			bindings[bindingCount] = optional.Binding
 			bindingCount++

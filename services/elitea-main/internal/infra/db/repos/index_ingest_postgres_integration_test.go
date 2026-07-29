@@ -492,7 +492,12 @@ func newPostgresIndexAdmissionService(t *testing.T, repository *IndexIngestJobsR
 	factory, err := indexingapp.NewInputBundleFactory(indexingapp.InputProfile{
 		Classification:        "project-confidential",
 		RequiredGrantAudience: "elitea.runtime.input.read.v1",
-	}, postgresIndexIDs(prefix+"-bundle", prefix+"-toolkit-content", prefix+"-parameters-content"))
+	}, postgresIndexIDs(
+		prefix+"-bundle",
+		prefix+"-toolkit-content",
+		prefix+"-parameters-content",
+		prefix+"-embedding-content",
+	))
 	if err != nil {
 		t.Fatal(err)
 	}

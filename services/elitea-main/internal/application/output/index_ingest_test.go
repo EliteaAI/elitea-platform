@@ -407,6 +407,10 @@ func validIndexIngestOutput() (IndexIngestFrame, ExpectedIndexIngest, DurableInd
 			Present: true,
 			Binding: testIndexBinding("mcp-credential-references", "mcp-references"),
 		},
+		EmbeddingBinding: OptionalIndexInputBinding{
+			Present: true,
+			Binding: testIndexBinding("embedding-binding", "embedding"),
+		},
 	}
 	fence := runtimedomain.Fence{
 		CommandID:         "command-index-1",

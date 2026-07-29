@@ -219,6 +219,11 @@ class Output:
         self.frame = replacement
         self.frames.append(replacement)
 
+    async def replace_pending_ambiguous_recovery(self, expected, replacement) -> None:
+        assert self.frame == expected
+        self.frame = replacement
+        self.frames.append(replacement)
+
     async def start(self) -> None:
         self.started += 1
 
@@ -356,6 +361,11 @@ class CancellationWinnerOutput:
         self.frames.append(replacement)
 
     async def replace_pending_cancelled_recovery(self, expected, replacement) -> None:
+        assert self.shared.frame == expected
+        self.shared.frame = replacement
+        self.frames.append(replacement)
+
+    async def replace_pending_ambiguous_recovery(self, expected, replacement) -> None:
         assert self.shared.frame == expected
         self.shared.frame = replacement
         self.frames.append(replacement)
@@ -1224,6 +1234,83 @@ def test_ambiguous_running_recovery_reuses_lost_terminal_on_redelivery() -> None
         assert sum(control.settlements for control in controls) == 1
         assert all(control.begins == 0 for control in controls)
         assert all(control.invocations == 0 for control in controls)
+        assert acker.calls == 1
+        assert not supervisor.submitted
+
+    asyncio.run(run())
+
+
+def test_ambiguous_recovery_replaces_old_fence_terminal_without_sdk_reentry() -> None:
+    async def run() -> None:
+        case = _case()
+        old_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        old_fence.fence_token = b"o" * 32
+        replacement_fence = common_pb2.ExecutionFenceV1.FromString(
+            case.fence.SerializeToString(deterministic=True)
+        )
+        replacement_fence.claim_attempt += 1
+        replacement_fence.lease_epoch += 1
+        replacement_fence.fence_token = b"n" * 32
+        old_envelope = envelope_pb2.WorkerExecutionEnvelopeV1(
+            signed_command=case.signed,
+            fence=old_fence,
+        )
+        pending = build_output_frame(
+            VerifiedWorkerCommand(envelope=old_envelope, command=case.command),
+            bind_result_summary(_terminal_result()),
+            occurred_at_unix_millis=_NOW,
+            claim_handoff_watermark=0,
+            sequence=6,
+        )
+        output = Output(pending)
+        control = Control(
+            case,
+            claim_disposition=(
+                control_pb2.CLAIM_DISPOSITION_V1_RECOVER_AMBIGUOUS_INVOCATION_NOACK
+            ),
+            claim_handoff_watermark=5,
+            receipt_fence=replacement_fence,
+        )
+        acker = Acker()
+        supervisor = InlineSupervisor()
+
+        class ForbiddenInput:
+            async def fetch_materialized(self, *args, **kwargs):
+                raise AssertionError("terminal recovery must not fetch input")
+
+        async def forbidden_context(claim):
+            raise AssertionError("terminal recovery must not create SDK context")
+
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
+
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame is not None
+        assert result.output_frame.fence == replacement_fence
+        assert result.output_frame.claim_handoff_watermark == 5
+        assert result.output_frame.sequence == pending.sequence
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+        )
+        assert result.output_frame.runtime_error.safe_message == (
+            "The runtime operation failed."
+        )
+        assert result.output_frame.payload_digest != pending.payload_digest
+        assert output.frame is None
+        assert output.frames == [result.output_frame]
+        assert control.begins == 0
+        assert control.invocations == 0
+        assert control.settlements == 1
         assert acker.calls == 1
         assert not supervisor.submitted
 
@@ -2124,7 +2211,7 @@ def test_cancelled_running_recovery_discards_uncommitted_old_fence_progress() ->
     asyncio.run(run())
 
 
-def test_cancelled_running_recovery_rejects_old_fence_terminal_spool() -> None:
+def test_cancelled_running_recovery_replaces_old_fence_terminal_spool() -> None:
     async def run() -> None:
         case = _case()
         old_fence = common_pb2.ExecutionFenceV1.FromString(
@@ -2166,21 +2253,28 @@ def test_cancelled_running_recovery_rejects_old_fence_terminal_spool() -> None:
         async def forbidden_context(claim):
             raise AssertionError("cancelled recovery must not create SDK context")
 
-        with pytest.raises(AuthorizationFailure, match="terminal output spool"):
-            await _processor(
-                case,
-                control=control,
-                input_client=ForbiddenInput(),
-                output=output,
-                acker=acker,
-                context_factory=forbidden_context,
-                supervisor=supervisor,
-            ).process(case.delivery)
+        result = await _processor(
+            case,
+            control=control,
+            input_client=ForbiddenInput(),
+            output=output,
+            acker=acker,
+            context_factory=forbidden_context,
+            supervisor=supervisor,
+        ).process(case.delivery)
 
-        assert output.frame == pending
+        assert result.disposition is DeliveryDisposition.RECOVERED_LOCAL_OUTPUT_SETTLED_ACKED
+        assert result.output_frame is not None
+        assert result.output_frame.terminal
+        assert result.output_frame.sequence == pending.sequence
+        assert result.output_frame.runtime_error.code == (
+            errors_pb2.RUNTIME_ERROR_CODE_V1_CANCELLED
+        )
+        assert result.output_frame.fence == replacement_fence
+        assert output.frame is None
         assert control.begins == 0
-        assert control.settlements == 0
-        assert acker.calls == 0
+        assert control.settlements == 1
+        assert acker.calls == 1
         assert not supervisor.submitted
 
     asyncio.run(run())

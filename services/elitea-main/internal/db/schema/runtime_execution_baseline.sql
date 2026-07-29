@@ -117,6 +117,7 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     llm_model_entry_id text,
     llm_configuration_entry_id text,
     mcp_tokens_entry_id text,
+    embedding_binding_entry_id text,
     client_stream_id text,
     client_message_id text,
     sio_event text,

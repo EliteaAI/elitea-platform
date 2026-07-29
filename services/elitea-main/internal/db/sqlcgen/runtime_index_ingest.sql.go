@@ -369,6 +369,7 @@ SELECT j.tenant_id,
        i.llm_model_entry_id,
        i.llm_configuration_entry_id,
        i.mcp_tokens_entry_id,
+       i.embedding_binding_entry_id,
        o.limits_revision
 FROM elitea_runtime.execution_jobs AS j
 JOIN elitea_runtime.index_ingest_jobs AS i
@@ -404,6 +405,7 @@ type GetExpectedIndexIngestHeaderRow struct {
 	LlmModelEntryID             *string `db:"llm_model_entry_id" json:"llm_model_entry_id"`
 	LlmConfigurationEntryID     *string `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
 	McpTokensEntryID            *string `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	EmbeddingBindingEntryID     *string `db:"embedding_binding_entry_id" json:"embedding_binding_entry_id"`
 	LimitsRevision              string  `db:"limits_revision" json:"limits_revision"`
 }
 
@@ -425,6 +427,7 @@ func (q *Queries) GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpec
 		&i.LlmModelEntryID,
 		&i.LlmConfigurationEntryID,
 		&i.McpTokensEntryID,
+		&i.EmbeddingBindingEntryID,
 		&i.LimitsRevision,
 	)
 	return i, err
@@ -562,6 +565,7 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     execution_id, generation, index_generation, capability_id, input_bundle_id,
     toolkit_configuration_entry_id, tool_parameters_entry_id,
     llm_model_entry_id, llm_configuration_entry_id, mcp_tokens_entry_id,
+    embedding_binding_entry_id,
     client_stream_id, client_message_id, sio_event,
     index_meta_id, index_meta_correlation_id,
     index_meta_initialization_status,
@@ -584,12 +588,13 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     $12::text,
     $13::text,
     $14::text,
+    $15::text,
     'PENDING',
     0,
-    $15::timestamptz,
-    $16::integer,
-    $17::text,
-    $18::text
+    $16::timestamptz,
+    $17::integer,
+    $18::text,
+    $19::text
 )
 `
 
@@ -603,6 +608,7 @@ type InsertIndexIngestJobParams struct {
 	LlmModelEntryID                      *string            `db:"llm_model_entry_id" json:"llm_model_entry_id"`
 	LlmConfigurationEntryID              *string            `db:"llm_configuration_entry_id" json:"llm_configuration_entry_id"`
 	McpTokensEntryID                     *string            `db:"mcp_tokens_entry_id" json:"mcp_tokens_entry_id"`
+	EmbeddingBindingEntryID              *string            `db:"embedding_binding_entry_id" json:"embedding_binding_entry_id"`
 	ClientStreamID                       *string            `db:"client_stream_id" json:"client_stream_id"`
 	ClientMessageID                      *string            `db:"client_message_id" json:"client_message_id"`
 	SioEvent                             *string            `db:"sio_event" json:"sio_event"`
@@ -625,6 +631,7 @@ func (q *Queries) InsertIndexIngestJob(ctx context.Context, arg InsertIndexInges
 		arg.LlmModelEntryID,
 		arg.LlmConfigurationEntryID,
 		arg.McpTokensEntryID,
+		arg.EmbeddingBindingEntryID,
 		arg.ClientStreamID,
 		arg.ClientMessageID,
 		arg.SioEvent,

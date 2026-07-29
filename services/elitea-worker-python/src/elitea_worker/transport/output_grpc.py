@@ -259,6 +259,38 @@ class OutputGrpcSession:
             _QueuedFrame(replacement, int(replacement.sequence), len(encoded_replacement)),
         )
 
+    async def replace_pending_ambiguous_recovery(
+        self,
+        expected: output_pb2.ExecutionOutputFrameV1,
+        replacement: output_pb2.ExecutionOutputFrameV1,
+    ) -> None:
+        """CAS an old terminal to the canonical fresh-fence ambiguous failure."""
+
+        if self._call is not None or self._closing:
+            raise RuntimeError("output replacement requires a fresh, unstarted session")
+        if len(self._pending_replay) != 1 or not self.replays(expected):
+            raise AuthorizationFailure(
+                "The durable output spool changed before ambiguous recovery."
+            )
+        self._validate_ambiguous_recovery_rebind(expected, replacement)
+        encoded_expected = expected.SerializeToString(deterministic=True)
+        encoded_replacement = replacement.SerializeToString(deterministic=True)
+        if len(encoded_replacement) > self._max_frame_bytes:
+            raise ResourceExhausted("The replacement output frame exceeds the transport limit.")
+        await asyncio.to_thread(
+            self._spool.replace_exact,
+            int(expected.sequence),
+            encoded_expected,
+            encoded_replacement,
+        )
+        self._stream_id = replacement.stream_id
+        self._identity_bytes = replacement.identity.SerializeToString(deterministic=True)
+        self._fence_bytes = replacement.fence.SerializeToString(deterministic=True)
+        self._claim_handoff_watermark = int(replacement.claim_handoff_watermark)
+        self._pending_replay = (
+            _QueuedFrame(replacement, int(replacement.sequence), len(encoded_replacement)),
+        )
+
     async def start(self) -> None:
         if self._call is not None or self._closing:
             raise RuntimeError("output session is already started or closed")
@@ -623,11 +655,16 @@ class OutputGrpcSession:
             or not expected.HasField("fence")
             or not replacement.HasField("identity")
             or not replacement.HasField("fence")
-            or expected.terminal
             or not replacement.terminal
+            or int(replacement.sequence) != int(expected.sequence)
             or expected.stream_id != replacement.stream_id
             or expected.identity.SerializeToString(deterministic=True)
             != replacement.identity.SerializeToString(deterministic=True)
+            or int(replacement.fence.claim_attempt)
+            <= int(expected.fence.claim_attempt)
+            or int(replacement.fence.lease_epoch)
+            <= int(expected.fence.lease_epoch)
+            or replacement.fence.fence_token == expected.fence.fence_token
             or int(replacement.claim_handoff_watermark)
             < int(expected.claim_handoff_watermark)
             or int(replacement.claim_handoff_watermark)
@@ -651,6 +688,58 @@ class OutputGrpcSession:
         ):
             raise AuthorizationFailure(
                 "The durable output spool identity changed before cancellation recovery."
+            )
+
+    def _validate_ambiguous_recovery_rebind(
+        self,
+        expected: output_pb2.ExecutionOutputFrameV1,
+        replacement: output_pb2.ExecutionOutputFrameV1,
+    ) -> None:
+        if (
+            not expected.HasField("identity")
+            or not expected.HasField("fence")
+            or not replacement.HasField("identity")
+            or not replacement.HasField("fence")
+            or not expected.terminal
+            or not replacement.terminal
+            or int(replacement.sequence) != int(expected.sequence)
+            or int(replacement.claim_handoff_watermark)
+            != int(replacement.sequence) - 1
+            or int(replacement.claim_handoff_watermark)
+            < int(expected.claim_handoff_watermark)
+            or int(replacement.fence.claim_attempt)
+            <= int(expected.fence.claim_attempt)
+            or int(replacement.fence.lease_epoch)
+            <= int(expected.fence.lease_epoch)
+            or replacement.fence.fence_token == expected.fence.fence_token
+            or expected.stream_id != replacement.stream_id
+            or expected.identity.SerializeToString(deterministic=True)
+            != replacement.identity.SerializeToString(deterministic=True)
+            or expected.logical_output_id != replacement.logical_output_id
+            or expected.event_id != replacement.event_id
+            or replacement.WhichOneof("payload") != "runtime_error"
+            or replacement.runtime_error.code
+            != errors_pb2.RUNTIME_ERROR_CODE_V1_INTERNAL
+            or replacement.runtime_error.safe_message
+            != "The runtime operation failed."
+            or replacement.runtime_error.retryable
+            or not replacement.HasField("settlement_proposal")
+            or replacement.settlement_proposal.requested_outcome
+            != common_pb2.EXECUTION_OUTCOME_V1_FAILED
+        ):
+            raise AuthorizationFailure(
+                "The ambiguous recovery replacement is not exactly bound."
+            )
+        if (
+            self._stream_id != expected.stream_id
+            or self._identity_bytes
+            != expected.identity.SerializeToString(deterministic=True)
+            or self._fence_bytes != expected.fence.SerializeToString(deterministic=True)
+            or self._claim_handoff_watermark
+            != int(expected.claim_handoff_watermark)
+        ):
+            raise AuthorizationFailure(
+                "The durable output spool identity changed before ambiguous recovery."
             )
 
     def _restore_pending(

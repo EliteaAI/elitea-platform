@@ -42,9 +42,19 @@ func TestPostgresServiceBackedIndexIngestOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	request := postgresIndexSubmitRequest("request-output", "output")
+	request.Inputs.EmbeddingBinding = &indexingapp.EmbeddingBinding{
+		SchemaVersion:          indexingapp.CurrentEmbeddingBindingSchema,
+		ModelName:              "text-embedding-3-small",
+		ResolvedModelGroup:     "1_text-embedding-3-small",
+		Route:                  "public",
+		ConfigurationProjectID: 1,
+		ConfigurationUUID:      "00000000-0000-0000-0000-000000000111",
+		ConfigurationDigest:    runtimedomain.SHA256([]byte("configuration:output")),
+	}
 	admitted, err := newPostgresIndexAdmissionService(t, jobs, "output").Submit(
 		context.Background(),
-		postgresIndexSubmitRequest("request-output", "output"),
+		request,
 	)
 	if err != nil || !admitted.Created {
 		t.Fatalf("admit index execution: outcome=%+v err=%v", admitted, err)
@@ -63,7 +73,7 @@ func TestPostgresServiceBackedIndexIngestOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load SQLC-backed admitted index binding: %v", err)
 	}
-	if expected.CommandID != admitted.CommandID || expected.ExecutionID != admitted.ExecutionID || expected.InputBundleID == "" || expected.Bindings.ToolkitConfiguration.EntryID == "" || expected.Bindings.ToolParameters.EntryID == "" || expected.Bindings.LLMModel.Present || expected.Bindings.LLMConfiguration.Present || expected.Bindings.MCPTokens.Present {
+	if expected.CommandID != admitted.CommandID || expected.ExecutionID != admitted.ExecutionID || expected.InputBundleID == "" || expected.Bindings.ToolkitConfiguration.EntryID == "" || expected.Bindings.ToolParameters.EntryID == "" || expected.Bindings.LLMModel.Present || expected.Bindings.LLMConfiguration.Present || expected.Bindings.MCPTokens.Present || !expected.Bindings.EmbeddingBinding.Present {
 		t.Fatalf("unexpected admitted index output binding: %+v", expected)
 	}
 

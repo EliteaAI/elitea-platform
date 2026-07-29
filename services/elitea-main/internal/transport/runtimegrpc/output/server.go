@@ -520,6 +520,12 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 	if err != nil {
 		return outputapp.IndexIngestResult{}, err
 	}
+	embeddingBinding, err := optionalIndexInputBindingDomain(
+		result.GetEmbeddingBinding(),
+	)
+	if err != nil {
+		return outputapp.IndexIngestResult{}, err
+	}
 	artifact := outputapp.IndexArtifactReference{}
 	if result.GetResultArtifact() != nil {
 		artifact, err = indexArtifactReferenceDomain(result.GetResultArtifact())
@@ -544,6 +550,7 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 			LLMModel:             llmModel,
 			LLMConfiguration:     llmConfiguration,
 			MCPTokens:            mcpTokens,
+			EmbeddingBinding:     embeddingBinding,
 		},
 		ResultArtifact: artifact,
 		ResultSummary:  resultSummary,

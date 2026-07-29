@@ -134,6 +134,9 @@ func (r *IndexIngestResultsRepository) mapExpectedIndexIngest(header sqlcgen.Get
 	if header.McpTokensEntryID != nil {
 		expected.Bindings.MCPTokens.Present = true
 	}
+	if header.EmbeddingBindingEntryID != nil {
+		expected.Bindings.EmbeddingBinding.Present = true
+	}
 
 	classification := ""
 	for _, entry := range entries {
@@ -172,6 +175,11 @@ func (r *IndexIngestResultsRepository) mapExpectedIndexIngest(header sqlcgen.Get
 				return outputapp.ExpectedIndexIngest{}, errors.New("stored MCP token binding is duplicated")
 			}
 			expected.Bindings.MCPTokens.Binding = binding
+		case header.EmbeddingBindingEntryID != nil && entry.EntryID == *header.EmbeddingBindingEntryID && entry.SemanticRole == executiondomain.IndexEmbeddingBindingRole:
+			if expected.Bindings.EmbeddingBinding.Binding != (outputapp.IndexInputBinding{}) {
+				return outputapp.ExpectedIndexIngest{}, errors.New("stored embedding binding is duplicated")
+			}
+			expected.Bindings.EmbeddingBinding.Binding = binding
 		default:
 			return outputapp.ExpectedIndexIngest{}, errors.New("stored index input entry is unbound or has the wrong semantic role")
 		}

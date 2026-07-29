@@ -248,6 +248,7 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 		LlmModelEntryID:                      optionalString(admission.Binding.LLMModelEntryID),
 		LlmConfigurationEntryID:              optionalString(admission.Binding.LLMConfigurationEntryID),
 		McpTokensEntryID:                     optionalString(admission.Binding.MCPTokensEntryID),
+		EmbeddingBindingEntryID:              optionalString(admission.Binding.EmbeddingBindingEntryID),
 		ClientStreamID:                       optionalString(admission.Binding.ClientStreamID),
 		ClientMessageID:                      optionalString(admission.Binding.ClientMessageID),
 		SioEvent:                             optionalString(admission.Binding.SIOEvent),

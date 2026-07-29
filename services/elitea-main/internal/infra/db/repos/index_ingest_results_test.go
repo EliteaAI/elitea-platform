@@ -60,7 +60,7 @@ func TestIndexIngestResultsRepositoryMapsSQLCBindingExactly(t *testing.T) {
 	if expected.CapabilityID != executiondomain.IndexIngestCapability || expected.LogicalOutputID != "index-ingest:"+header.ExecutionID || expected.InputBundleID != header.InputBundleID || expected.InputBundleDigest != runtimedomain.SHA256([]byte("manifest")) {
 		t.Fatalf("unexpected expected index identity: %+v", expected)
 	}
-	if expected.Bindings.ToolkitConfiguration.EntryID != "toolkit-configuration" || expected.Bindings.ToolParameters.EntryID != "tool-parameters" || !expected.Bindings.LLMModel.Present || expected.Bindings.LLMConfiguration.Present || !expected.Bindings.MCPTokens.Present {
+	if expected.Bindings.ToolkitConfiguration.EntryID != "toolkit-configuration" || expected.Bindings.ToolParameters.EntryID != "tool-parameters" || !expected.Bindings.LLMModel.Present || expected.Bindings.LLMConfiguration.Present || !expected.Bindings.MCPTokens.Present || !expected.Bindings.EmbeddingBinding.Present {
 		t.Fatalf("optional binding presence changed: %+v", expected.Bindings)
 	}
 	if expected.ArtifactContract.MediaType != "application/json" || expected.ArtifactContract.Classification != "project-confidential" || expected.ArtifactContract.MaxByteLength != 16*1024*1024 {
@@ -84,6 +84,9 @@ func TestIndexIngestResultsRepositoryRejectsUnboundMissingAndWrongRoleEntries(t 
 		}},
 		{name: "unexpected optional absence", mutate: func(header *sqlcgen.GetExpectedIndexIngestHeaderRow, _ *[]sqlcgen.ListExpectedIndexIngestEntriesRow) {
 			header.LlmModelEntryID = nil
+		}},
+		{name: "unexpected embedding absence", mutate: func(header *sqlcgen.GetExpectedIndexIngestHeaderRow, _ *[]sqlcgen.ListExpectedIndexIngestEntriesRow) {
+			header.EmbeddingBindingEntryID = nil
 		}},
 		{name: "mixed classifications", mutate: func(_ *sqlcgen.GetExpectedIndexIngestHeaderRow, entries *[]sqlcgen.ListExpectedIndexIngestEntriesRow) {
 			(*entries)[0].Classification = "public"
@@ -360,6 +363,7 @@ func newTestIndexResultsRepository(t *testing.T, queries indexIngestReadQueries,
 func storedIndexIngestFixture() (sqlcgen.GetExpectedIndexIngestHeaderRow, []sqlcgen.ListExpectedIndexIngestEntriesRow) {
 	llmModel := "llm-model"
 	mcpTokens := "mcp-credential-references"
+	embeddingBinding := "embedding-binding"
 	manifestDigest := runtimedomain.SHA256([]byte("manifest"))
 	header := sqlcgen.GetExpectedIndexIngestHeaderRow{
 		TenantID:                    "tenant-1",
@@ -375,11 +379,13 @@ func storedIndexIngestFixture() (sqlcgen.GetExpectedIndexIngestHeaderRow, []sqlc
 		ToolParametersEntryID:       "tool-parameters",
 		LlmModelEntryID:             &llmModel,
 		McpTokensEntryID:            &mcpTokens,
+		EmbeddingBindingEntryID:     &embeddingBinding,
 		LimitsRevision:              "index-limits-v1",
 	}
 	entries := []sqlcgen.ListExpectedIndexIngestEntriesRow{
 		storedIndexEntry("llm-model", executiondomain.IndexLLMModelRole, "llm"),
 		storedIndexEntry("mcp-credential-references", executiondomain.IndexMCPTokensRole, "mcp"),
+		storedIndexEntry("embedding-binding", executiondomain.IndexEmbeddingBindingRole, "embedding"),
 		storedIndexEntry("tool-parameters", executiondomain.IndexToolParametersRole, "parameters"),
 		storedIndexEntry("toolkit-configuration", executiondomain.IndexToolkitConfigurationRole, "toolkit"),
 	}
