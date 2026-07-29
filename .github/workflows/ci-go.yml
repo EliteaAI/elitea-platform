@@ -129,7 +129,8 @@ jobs:
         run: |
           cd services/elitea-main
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/elitea-main ./cmd/elitea-main
-          echo "Build OK: $(/tmp/elitea-main --version 2>&1 || true)"
+          test -x /tmp/elitea-main
+          echo "Build OK: /tmp/elitea-main"
 
       - name: Build cutover-ctl
         run: |
