@@ -264,10 +264,8 @@ jobs:
           go run ./tools/uictl parity-routes --baseline apps/elitea-ui
           go run ./tools/uictl parity-manifest --validate
       - name: Require-must parity (release/cutover gate)
-        # TEMPORARY gating (same mechanism as the e2e/visual/mutation jobs):
-        # flips to PR-blocking at cutover step 3 (§7.5) — remove the `if:` so
-        # --require-must blocks every PR from that step on.
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/cutover/')
+        # This parity threshold is deterministic and blocks every PR. The
+        # release tag reruns it as defence in depth.
         working-directory: .
         run: go run ./tools/uictl parity-manifest --require-must
 

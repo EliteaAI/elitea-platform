@@ -85,6 +85,13 @@ jobs:
             libs/go/*/go.sum
             libs/proto/gen/go/go.sum
 
+      - name: Verify generated OpenAPI server is current
+        run: |
+          cd services/elitea-main
+          go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.7.2 \
+            --config api/openapi/oapi-codegen.yaml api/openapi/v2.yaml
+          git diff --exit-code -- internal/api/generated/api.gen.go
+
       # go.work wildcards must resolve within a module root, so `./services/...`
       # fails with "directory prefix does not contain modules". Iterate the real
       # module directories reported by `go list -m` instead.
@@ -109,12 +116,42 @@ jobs:
           name: coverage
           path: coverage.out
 
+  integration:
+    name: Integration (Postgres + pgvector)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.5-pg18-trixie
+        env:
+          POSTGRES_USER: elitea
+          POSTGRES_PASSWORD: elitea
+          POSTGRES_DB: elitea
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U elitea -d elitea"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/elitea-main/go.sum
+      - name: Run database integration tests
+        env:
+          INTEGRATION_DATABASE_URL: postgres://elitea:elitea@localhost:5432/elitea?sslmode=disable
+        run: |
+          cd services/elitea-main
+          go test -count=1 -timeout=120s ./tests/integration/
+
   build:
     name: Build
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
     # Production images are built via Containerfile in publish.yml, not here.
     runs-on: ubuntu-latest
-    needs: [sqlc, lint, test]
+    needs: [sqlc, lint, test, integration]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6

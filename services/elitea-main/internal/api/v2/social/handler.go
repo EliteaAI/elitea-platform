@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
@@ -25,27 +26,30 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/author", h.GetAuthor)
 	r.Put("/author/", h.UpdateAuthor)
 	r.Put("/author", h.UpdateAuthor)
-	r.Get("/authors/{projectID}", h.ListAuthors)
-	r.Get("/trending_authors/prompt_lib/{projectID}", h.TrendingAuthors)
-	r.Post("/like/prompt_lib/{projectID}/application/{applicationID}", h.Like)
-	r.Delete("/like/prompt_lib/{projectID}/application/{applicationID}", h.Unlike)
-	r.Post("/like/prompt_lib/{projectID}/{entityType}/{entityID}", h.Like)
-	r.Delete("/like/prompt_lib/{projectID}/{entityType}/{entityID}", h.Unlike)
-	r.Post("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", h.Pin)
-	r.Delete("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", h.Unpin)
-	r.Get("/feedbacks/default/{projectID}", h.ListFeedbacks)
-	r.Post("/feedbacks/default/{projectID}", h.CreateFeedback)
+	r.Group(func(r chi.Router) {
+		r.Use(apimw.RequireProjectAccess(h.pool))
+		r.Get("/authors/{projectID}", h.ListAuthors)
+		r.Get("/trending_authors/prompt_lib/{projectID}", h.TrendingAuthors)
+		r.Post("/like/prompt_lib/{projectID}/application/{applicationID}", h.Like)
+		r.Delete("/like/prompt_lib/{projectID}/application/{applicationID}", h.Unlike)
+		r.Post("/like/prompt_lib/{projectID}/{entityType}/{entityID}", h.Like)
+		r.Delete("/like/prompt_lib/{projectID}/{entityType}/{entityID}", h.Unlike)
+		r.Post("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", h.Pin)
+		r.Delete("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", h.Unpin)
+		r.Get("/feedbacks/default/{projectID}", h.ListFeedbacks)
+		r.Post("/feedbacks/default/{projectID}", h.CreateFeedback)
+	})
 	return r
 }
 
 type AuthorResponse struct {
-	ID                string  `json:"id"`
-	Name              string  `json:"name"`
-	Email             string  `json:"email"`
-	Avatar            string  `json:"avatar"`
-	Description       string  `json:"description"`
-	PersonalProjectID string  `json:"personal_project_id"`
-	Personalization   any     `json:"personalization,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Email             string `json:"email"`
+	Avatar            string `json:"avatar"`
+	Description       string `json:"description"`
+	PersonalProjectID string `json:"personal_project_id"`
+	Personalization   any    `json:"personalization,omitempty"`
 }
 
 func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +183,7 @@ func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 		LIMIT 50
 	`)
 	if err != nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list authors"})
 		return
 	}
 	defer rows.Close()
@@ -196,6 +200,10 @@ func (h *Handler) ListAuthors(w http.ResponseWriter, r *http.Request) {
 			"avatar": avatar, "description": desc,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list authors"})
+		return
+	}
 	writeJSON(w, http.StatusOK, items)
 }
 
@@ -207,31 +215,37 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	rows, err := h.pool.Query(ctx, `
+	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT su.user_id, COALESCE(au.name, ''), COALESCE(au.email, ''),
 			COALESCE(su.avatar, ''), COUNT(sl.id) as like_count
 		FROM centry.social_users su
 		JOIN auth_core__user au ON au.id = su.user_id
-		LEFT JOIN centry.social_likes sl ON sl.user_id = su.user_id AND sl.project_id = $1
+		LEFT JOIN %q.social_likes sl ON sl.user_id = su.user_id
 		GROUP BY su.user_id, au.name, au.email, su.avatar
 		ORDER BY like_count DESC
-		LIMIT 10`, projectID)
+		LIMIT 10`, fmt.Sprintf("p_%s", projectID)))
 
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list trending authors"})
+		return
+	}
+	defer rows.Close()
 	items := make([]map[string]any, 0)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var name, email, avatar string
-			var likes int
-			if err := rows.Scan(&id, &name, &email, &avatar, &likes); err != nil {
-				continue
-			}
-			items = append(items, map[string]any{
-				"id": intToStr(id), "name": name, "email": email,
-				"avatar": avatar, "likes": likes,
-			})
+	for rows.Next() {
+		var id int
+		var name, email, avatar string
+		var likes int
+		if err := rows.Scan(&id, &name, &email, &avatar, &likes); err != nil {
+			continue
 		}
+		items = append(items, map[string]any{
+			"id": intToStr(id), "name": name, "email": email,
+			"avatar": avatar, "likes": likes,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list trending authors"})
+		return
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -259,11 +273,11 @@ func (h *Handler) Like(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := h.pool.Exec(ctx, `
-		INSERT INTO centry.social_likes (entity, user_id, project_id, entity_id, created_at)
-		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (entity, user_id, project_id, entity_id) DO NOTHING`,
-		entityType, user.ID, projectID, entityID)
+	_, err := h.pool.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %q.social_likes (entity_name, user_id, entity_id, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (entity_name, user_id, entity_id) DO NOTHING`, fmt.Sprintf("p_%s", projectID)),
+		entityType, user.ID, entityID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to like"})
 		return
@@ -294,10 +308,10 @@ func (h *Handler) Unlike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.pool.Exec(ctx, `
-		DELETE FROM centry.social_likes
-		WHERE entity = $1 AND user_id = $2 AND project_id = $3 AND entity_id = $4`,
-		entityType, user.ID, projectID, entityID); err != nil {
+	if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+		DELETE FROM %q.social_likes
+		WHERE entity_name = $1 AND user_id = $2 AND entity_id = $3`, fmt.Sprintf("p_%s", projectID)),
+		entityType, user.ID, entityID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unlike"})
 		return
 	}
@@ -359,21 +373,27 @@ func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 		FROM %q.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
 
 	rows, err := h.pool.Query(ctx, q)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list feedback"})
+		return
+	}
 	items := make([]map[string]any, 0)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var entityName, entityID, userID, comment string
-			var rating int
-			var createdAt interface{}
-			if rows.Scan(&id, &entityName, &entityID, &userID, &rating, &comment, &createdAt) == nil {
-				items = append(items, map[string]any{
-					"id": intToStr(id), "entity_name": entityName, "entity_id": entityID,
-					"user_id": userID, "rating": rating, "comment": comment, "created_at": createdAt,
-				})
-			}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var entityName, entityID, userID, comment string
+		var rating int
+		var createdAt interface{}
+		if rows.Scan(&id, &entityName, &entityID, &userID, &rating, &comment, &createdAt) == nil {
+			items = append(items, map[string]any{
+				"id": intToStr(id), "entity_name": entityName, "entity_id": entityID,
+				"user_id": userID, "rating": rating, "comment": comment, "created_at": createdAt,
+			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list feedback"})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }

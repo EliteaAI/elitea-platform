@@ -44,6 +44,11 @@ servers:
   - url: /api/v2
     description: Admin and auxiliary APIs
 
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+  - SessionCookie: []
+
 tags:
   - name: admin
     description: User, role, and moderation management
@@ -82,6 +87,19 @@ tags:
 # Reusable components
 # ---------------------------------------------------------------------------
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: elitea_session
+
   parameters:
     ProjectId:
       name: project_id
@@ -2417,25 +2435,10 @@ components:
       description: >
         NOTE(W2): social.TrendingAuthors row shape
         (internal/api/v2/social/handler.go:202-237, fields at :230-233) —
-        ranks centry.social_users by `COUNT(sl.id)` joined against
-        `centry.social_likes sl ON sl.user_id = su.user_id AND sl.project_id
-        = $1` (:210-218). In this repo's only migration
-        (internal/infra/db/migrations/001_initial.sql:315-322) `social_likes`
-        is a PER-PROJECT table (`%I.social_likes`, i.e.
-        `p_{project_id}.social_likes`) with columns
-        `entity_name/entity_id/user_id` and NO `project_id` column — there is
-        no `centry.social_likes` relation with a `project_id` column for this
-        query to join against. The handler's query error is checked but only
-        gates whether the result loop runs; the error itself is never
-        surfaced, so the handler always writes `[]` on failure
-        (handler.go:220-236). As far as this repo's migration history shows,
-        this endpoint is therefore behaviorally always-empty today — the same
-        wire output as the pre-existing eliteacore stub at
-        `/elitea_core/trending_authors/prompt_lib/{project_id}`
-        (`getTrendingAuthors`), despite living at a different path and having
-        real ranking logic in the Go source. Flagged for a human call (W2
-        report); not fixed here (Go source is out of scope for this
-        spec-only change).
+        ranks social authors by their like activity in the authorized project
+        schema (social/handler.go:206-240). The handler reads
+        `p_{project_id}.social_likes`, matching migration 001's per-project
+        table shape.
 
     SocialActionErrorResponse:
       type: object
@@ -2536,12 +2539,10 @@ components:
           additionalProperties: true
           x-elitea-passthrough: >-
             NOTE(W2): `p_{project_id}.elitea_tools.settings` jsonb, decoded
-            and re-emitted verbatim, UNREDACTED
-            (internal/api/v2/toolkits/handler.go:811-859, scan+decode at
-            :836, 844) — toolkit-type-specific, may contain credentials.
-            Unlike ToolkitExport's settings
-            (internal/api/v2/eliteacore/handler.go:2532-2547), this path does
-            NOT strip sensitive keys. Channel-B fixture recommended (M1).
+            decoded from `p_{project_id}.elitea_tools.settings` and redacted
+            before response. Keys whose names contain secret, token, password,
+            credential, api_key, or apikey are removed recursively
+            (toolkits/handler.go:847-888).
         meta:
           type: object
           additionalProperties: true
@@ -2552,37 +2553,15 @@ components:
         created_at:
           type: string
           format: date-time
-        updated_at:
-          type: string
-          format: date-time
-          nullable: true
         author_id: { type: integer }
-        shared_id:
-          nullable: true
-          oneOf:
-            - type: string
-            - type: integer
-          description: >
-            Nullable forked-from reference. Selected by the query
-            (handler.go:824) but, like updated_at, NOT present anywhere in
-            this repo's elitea_tools migration — see this schema's own
-            description.
       description: >
         NOTE(W2): ListToolkits row (internal/api/v2/toolkits/handler.go:811-860).
         id/type/name are `elitea_tools` columns
         (internal/infra/db/migrations/001_initial.sql:177-179); description
         is COALESCE'd to `''` (never null, handler.go:822). created_at and
         author_id match the migration's `created_at TIMESTAMP NOT NULL` /
-        `author_id INTEGER NOT NULL` (migration :182-183) — typed
-        accordingly. updated_at and shared_id are SELECTed by this query
-        (handler.go:824) but NEITHER column appears in this repo's only
-        migration for `elitea_tools` (:176-188); both are scanned into a bare
-        Go `any` (handler.go:838), consistent with genuine uncertainty about
-        their wire shape on the Go side too. Flagged for a human call: either
-        an out-of-repo/legacy migration adds these columns, or this query
-        errors in every real deployment and List's error handler (:527-530)
-        silently masks that as an empty `{rows: [], total: 0}` 200 — see the
-        operation's own NOTE(W2).
+        `author_id INTEGER NOT NULL` (migration :182-183). The listing query
+        intentionally selects only those migrated columns.
 
     ToolkitInstanceListResponse:
       type: object
@@ -2594,10 +2573,9 @@ components:
         total: { type: integer }
       description: >
         NOTE(W2): `{rows, total}` envelope
-        (internal/api/v2/toolkits/handler.go:526-534). A repository error
-        (which, per ToolkitInstance's NOTE(W2), may be the common case if
-        updated_at/shared_id truly don't exist) is swallowed to `{rows: [],
-        total: 0}` with 200, never surfaced as an error (:527-530).
+        (internal/api/v2/toolkits/handler.go:526-534). Repository failures are
+        returned as a safe 500 error rather than an indistinguishable empty
+        successful listing.
 
     # ---- Author detail (eliteacore) ---------------------------------------
     AuthorDetail:
@@ -5263,11 +5241,8 @@ paths:
       summary: List social author profiles (global, not project-scoped)
       description: |
         NOTE(W2): internal/api/v2/social/handler.go:169-200 (ListAuthors).
-        The {project_id} path segment is captured by the chi route
-        (`/authors/{projectID}`) but never read inside the handler body — the
-        query has no WHERE/project filter and is capped at a hardcoded
-        LIMIT 50 with no pagination. A query error is swallowed to `[]` with
-        200, never surfaced as an error (:181-184).
+        The caller must be a member of {project_id} (or a super-admin). The
+        query is capped at a hardcoded LIMIT 50 with no pagination.
       tags: [social]
       responses:
         '200':
@@ -5279,6 +5254,8 @@ paths:
                 items:
                   $ref: '#/components/schemas/SocialAuthorSummary'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
   /social/trending_authors/prompt_lib/{project_id}:
     parameters:
@@ -5292,14 +5269,8 @@ paths:
         NOT the same operation as the pre-existing getTrendingAuthors
         (/elitea_core/trending_authors/prompt_lib/{project_id}) — that one is
         an eliteacore stub always returning [] (eliteacore/handler.go:1582-1584).
-        This handler has real ranking logic (COUNT(sl.id) joined, GROUP BY,
-        ORDER BY like_count DESC LIMIT 10) — BUT see SocialTrendingAuthor's
-        schema description: the join target centry.social_likes does not
-        exist with a project_id column anywhere in this repo's migration
-        history, so the query likely errors on every call and the handler
-        silently swallows that to `[]`, making its real-world output
-        currently identical to the eliteacore stub despite the different
-        path and real Go-side logic. Needs a human call (see W2 report).
+        This handler ranks social authors by their like activity in the
+        authorized project schema (COUNT(sl.id), GROUP BY, ORDER BY, LIMIT 10).
       tags: [social]
       responses:
         '200':
@@ -5311,6 +5282,8 @@ paths:
                 items:
                   $ref: '#/components/schemas/SocialTrendingAuthor'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
   /social/like/prompt_lib/{project_id}/application/{application_id}:
     parameters:
@@ -5327,17 +5300,8 @@ paths:
         NOTE(W2): internal/api/v2/social/handler.go:239-272 (Like), the
         application-specific route registration (router-level, handler.go:30)
         — entityType defaults to "application" and entityID falls back to
-        the {applicationID} path segment (:243-248). INSERTs into
-        centry.social_likes with columns (entity, user_id, project_id,
-        entity_id) — that exact table/column shape does NOT appear anywhere
-        in this repo's migration history
-        (internal/infra/db/migrations/001_initial.sql:315-322 defines a
-        PER-PROJECT %I.social_likes with entity_name/entity_id/user_id and no
-        project_id column, not a global centry.social_likes with these
-        columns). As far as this repo's migrations show, every call likely
-        hits the 500 SocialActionErrorResponse path (:268) rather than the
-        200 OkResponse path — needs a human call (W2 report); documented per
-        the Go source's declared behavior regardless.
+        the {applicationID} path segment (:243-248). Writes the migrated
+        per-project p_{project_id}.social_likes table.
       tags: [social]
       responses:
         '200':
@@ -5349,6 +5313,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Like failed (pylon-era ok:false envelope)
           content:
@@ -5361,9 +5326,8 @@ paths:
       summary: Unlike a published application
       description: |
         NOTE(W2): internal/api/v2/social/handler.go:274-305 (Unlike), the
-        application-specific route registration. Same centry.social_likes
-        table/column mismatch as likeApplication above — see that
-        operation's NOTE(W2).
+        application-specific route registration. Deletes from the migrated
+        per-project p_{project_id}.social_likes table.
       tags: [social]
       responses:
         '200':
@@ -5375,6 +5339,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Unlike failed (pylon-era ok:false envelope)
           content:
@@ -5401,9 +5366,7 @@ paths:
       description: |
         NOTE(W2): internal/api/v2/social/handler.go:239-272 (Like), the
         generic route registration (handler.go:32) — entity_type/entity_id
-        read straight from the path (:241-242). Same centry.social_likes
-        table/column mismatch as likeApplication (see that operation's
-        NOTE(W2)); this generic route shares the identical handler body.
+        read straight from the path (:241-242).
       tags: [social]
       responses:
         '200':
@@ -5415,6 +5378,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Like failed (pylon-era ok:false envelope)
           content:
@@ -5427,9 +5391,7 @@ paths:
       summary: Unlike an arbitrary entity
       description: |
         NOTE(W2): internal/api/v2/social/handler.go:274-305 (Unlike), the
-        generic route registration (handler.go:33). Same
-        centry.social_likes table/column mismatch — see likeApplication's
-        NOTE(W2).
+        generic route registration (handler.go:33).
       tags: [social]
       responses:
         '200':
@@ -5441,6 +5403,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Unlike failed (pylon-era ok:false envelope)
           content:
@@ -5482,6 +5445,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Pin failed (pylon-era ok:false envelope)
           content:
@@ -5508,6 +5472,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OkResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Unpin failed (pylon-era ok:false envelope)
           content:
@@ -5528,7 +5493,8 @@ paths:
         (internal/infra/db/migrations/001_initial.sql:337-347). {items,
         total} envelope where total is simply len(items) (no real COUNT(*),
         no offset — hardcoded LIMIT 50, :359); a query error is swallowed to
-        items: [] / total: 0 rather than surfaced as an error (:361-377).
+        items: [] / total: 0 when no feedback exists. Database failures are
+        returned as safe 500 errors.
       tags: [social]
       responses:
         '200':
@@ -5538,6 +5504,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/FeedbackListResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
 
     post:
       operationId: createFeedback
@@ -5563,6 +5531,7 @@ paths:
                 $ref: '#/components/schemas/CreateFeedbackResponse'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
         '500':
           description: Feedback creation failed (pylon-era ok:false envelope)
           content:
@@ -5641,9 +5610,9 @@ paths:
         pgRepo.ListToolkits (:811-860). limit/offset are read from the query
         string with their OWN clamp — out-of-[1,100] resets to 20
         (handler.go:518-520), narrower than the shared Limit parameter's
-        documented [1,1000]/default 20; offset<0 resets to 0 (:521-523). A
-        repository error is swallowed to {rows: [], total: 0} with 200,
-        never surfaced as an error (:527-530).
+        documented [1,1000]/default 20; offset<0 resets to 0 (:521-523).
+        The caller must be a member of {project_id} (or a super-admin), and a
+        repository failure is returned as a safe 500 error.
       tags: [toolkits]
       parameters:
         - $ref: '#/components/parameters/Limit'
@@ -5656,3 +5625,5 @@ paths:
               schema:
                 $ref: '#/components/schemas/ToolkitInstanceListResponse'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
