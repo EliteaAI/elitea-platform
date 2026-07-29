@@ -19,11 +19,11 @@
   },
   "indexing_capability_profile": {
     "schema_revision": "elitea.indexing-runtime-capability-profile.v1",
-    "profile_sha256": "f62efcf7141bbcedcdcedcb4ff2de0d689b734524612fad94a0062702337b7ce",
+    "profile_sha256": "e9af6e69ab1053ee04ff5f6618a80381b9a781b38fea0be0338f12fd207b66fc",
     "python_requirements": [
       "anthropic==0.76.0",
       "atlassian-python-api==4.0.7",
-      "azure-core==1.30.2",
+      "azure-core==1.38.0",
       "azure-devops==7.1.0b4",
       "beautifulsoup4==4.12.2",
       "cairocffi==1.7.1",
@@ -71,7 +71,7 @@
       "rlpycairo==0.3.0",
       "scipy==1.13.1",
       "scikit-learn==1.7.0",
-      "setuptools==80.9.0",
+      "setuptools==83.0.0",
       "six==1.17.0",
       "svglib==1.5.1",
       "testrail-api==1.13.4",
@@ -86,7 +86,7 @@
       "PyGithub": "2.3.0",
       "anthropic": "0.76.0",
       "atlassian-python-api": "4.0.7",
-      "azure-core": "1.30.2",
+      "azure-core": "1.38.0",
       "azure-devops": "7.1.0b4",
       "beautifulsoup4": "4.12.2",
       "cairocffi": "1.7.1",
@@ -136,7 +136,7 @@
       "rlpycairo": "0.3.0",
       "scipy": "1.13.1",
       "scikit-learn": "1.7.0",
-      "setuptools": "80.9.0",
+      "setuptools": "83.0.0",
       "six": "1.17.0",
       "svglib": "1.5.1",
       "testrail-api": "1.13.4",
@@ -146,6 +146,29 @@
       "typing-extensions": "4.15.0",
       "xlrd": "1.2.0"
     },
+    "artifact_verified_requirements": [
+      "azure-core==1.38.0",
+      "azure-devops==7.1.0b4",
+      "cryptography==48.0.1",
+      "FigmaPy==2018.1.0",
+      "isodate==0.7.2",
+      "joblib==1.5.3",
+      "msrest==0.7.1",
+      "oauthlib==3.3.1",
+      "PyGithub==2.3.0",
+      "pytesseract==0.3.13",
+      "python-gitlab==4.5.0",
+      "python-graphql-client==0.4.3",
+      "qtest-swagger-client==0.0.3",
+      "requests==2.34.0",
+      "requests-oauthlib==2.0.0",
+      "scikit-learn==1.7.0",
+      "setuptools==83.0.0",
+      "six==1.17.0",
+      "testrail-api==1.13.4",
+      "threadpoolctl==3.6.0",
+      "typing-extensions==4.15.0"
+    ],
     "verified_wheels": {
       "PyGithub": {
         "filename": "PyGithub-2.3.0-py3-none-any.whl",
@@ -154,16 +177,32 @@
         "sha256": "65b499728be3ce7b0cd2cd760da3b32f0f4d7bc55e5e0677617f90f6564e793e"
       },
       "azure-core": {
-        "filename": "azure_core-1.30.2-py3-none-any.whl",
+        "filename": "azure_core-1.38.0-py3-none-any.whl",
         "origin": "PyPI",
-        "pin_basis": "elitea-sdk 0.8.30 tools extra exact pin",
-        "sha256": "cf019c1ca832e96274ae85abd3d9f752397194d9fea3b41487290562ac8abe4a"
+        "pin_basis": "msrest runtime import; first release containing the reviewed CVE fix",
+        "sha256": "ab0c9b2cd71fecb1842d52c965c95285d3cfb38902f6766e4a471f1cd8905335"
       },
       "azure-devops": {
         "filename": "azure_devops-7.1.0b4-py3-none-any.whl",
         "origin": "PyPI",
         "pin_basis": "elitea-sdk 0.8.30 tools extra exact pin",
         "sha256": "f827e9fbc7c77bc6f2aaee46e5717514e9fe7d676c87624eccd0ca640b54f122"
+      },
+      "cryptography": {
+        "artifacts": [
+          {
+            "filename": "cryptography-48.0.1-cp311-abi3-manylinux_2_34_aarch64.whl",
+            "platform_machine": "aarch64",
+            "sha256": "66fd0771e7b9c6dcd44cf1120690d2338d16d72795cf40cae2786a39eba65429"
+          },
+          {
+            "filename": "cryptography-48.0.1-cp311-abi3-manylinux_2_34_x86_64.whl",
+            "platform_machine": "x86_64",
+            "sha256": "0ee6ea481db1ab889cba043ec1eda17bb9c1ea79db6722f779c3667f9f70322f"
+          }
+        ],
+        "origin": "PyPI",
+        "pin_basis": "worker signing, spool encryption and workload TLS security fix"
       },
       "isodate": {
         "filename": "isodate-0.7.2-py3-none-any.whl",
@@ -239,6 +278,12 @@
         ],
         "origin": "PyPI",
         "pin_basis": "elitea-sdk 0.8.30 qtest imports sklearn directly; latest Python 3.12 Linux compatibility release available on both target architectures"
+      },
+      "setuptools": {
+        "filename": "setuptools-83.0.0-py3-none-any.whl",
+        "origin": "PyPI",
+        "pin_basis": "elitea-sdk distutils compatibility; removes vulnerable jaraco.context and vendors wheel 0.46.3",
+        "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3"
       },
       "six": {
         "filename": "six-1.17.0-py2.py3-none-any.whl",

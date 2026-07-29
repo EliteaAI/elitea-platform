@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "cryptography>=44,<47",
+  "cryptography>=48.0.1,<49",
   "elitea-sdk==0.8.30",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
@@ -32,7 +32,9 @@ indexing-current = [
   # that the standalone index worker cannot reach are not installed.
   "anthropic==0.76.0",
   "atlassian-python-api==4.0.7",
-  "azure-core==1.30.2",
+  # msrest imports azure.core exceptions at runtime for all four ADO indexing
+  # families, so this cannot be removed from the admitted image.
+  "azure-core==1.38.0",
   "azure-devops==7.1.0b4",
   "beautifulsoup4==4.12.2",
   "cairocffi==1.7.1",
@@ -80,7 +82,9 @@ indexing-current = [
   "rlpycairo==0.3.0",
   "scipy==1.13.1",
   "scikit-learn==1.7.0",
-  "setuptools==80.9.0",
+  # The SDK still imports distutils through setuptools. 83.0.0 removes the
+  # vulnerable vendored jaraco.context and carries wheel 0.46.3.
+  "setuptools==83.0.0",
   "six==1.17.0",
   "svglib==1.5.1",
   "testrail-api==1.13.4",

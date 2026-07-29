@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -89,10 +90,38 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     assert lock["installed_package_tree"]["file_count"] > 0
 
     profile = lock["indexing_capability_profile"]
+    verified_requirements = profile["artifact_verified_requirements"]
     artifact_records = {
         **profile["verified_wheels"],
         **profile["verified_source_archives"],
     }
+    normalize = lambda name: re.sub(r"[-_.]+", "-", name).lower()
+    requirement_names = {
+        normalize(requirement.split("==", 1)[0])
+        for requirement in verified_requirements
+    }
+    record_names = {normalize(name) for name in artifact_records}
+    assert all(requirement.count("==") == 1 for requirement in verified_requirements)
+    assert len(requirement_names) == len(verified_requirements)
+    assert requirement_names == record_names
+    assert not (
+        set(map(normalize, profile["verified_wheels"]))
+        & set(map(normalize, profile["verified_source_archives"]))
+    )
+    project_requirements = {
+        normalize(requirement.split("==", 1)[0])
+        for requirement in profile["python_requirements"]
+    }
+    worker_dependencies = {
+        normalize(
+            requirement.split("[", 1)[0]
+            .split("=", 1)[0]
+            .split("<", 1)[0]
+            .split(">", 1)[0]
+        )
+        for requirement in project["project"]["dependencies"]
+    }
+    assert requirement_names <= project_requirements | worker_dependencies
     artifacts = [
         artifact
         for record in artifact_records.values()
