@@ -77,13 +77,13 @@ func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, se
 }
 
 func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
-	targetTo := r.URL.Query().Get("target_to")
-	if targetTo == "" {
-		targetTo = "/"
-	}
+	targetTo := safeRedirectTarget(r.URL.Query().Get("target_to"))
 
 	rawState := make([]byte, 16)
-	_, _ = rand.Read(rawState)
+	if _, err := rand.Read(rawState); err != nil {
+		http.Error(w, "failed to initialize OIDC state", http.StatusInternalServerError)
+		return
+	}
 	stateNonce := base64.RawURLEncoding.EncodeToString(rawState)
 
 	stateValue := stateNonce + "|" + targetTo
@@ -98,6 +98,7 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   300,
 	})
@@ -144,13 +145,15 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 
 	// Extract target_to from state
 	targetTo := "/"
 	if idx := strings.Index(storedState, "|"); idx >= 0 {
-		targetTo = storedState[idx+1:]
+		targetTo = safeRedirectTarget(storedState[idx+1:])
 	}
 
 	// Exchange authorization code for tokens
@@ -211,6 +214,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
@@ -224,13 +228,14 @@ func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer tx.Rollback(ctx)
 
 	var userID int
 	err = tx.QueryRow(ctx,
 		`INSERT INTO auth_core__user (email, name, last_login)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (email) DO UPDATE SET last_login = $3
+		 WHERE auth_core__user.suspended = false
 		 RETURNING id`,
 		email, name, time.Now(),
 	).Scan(&userID)

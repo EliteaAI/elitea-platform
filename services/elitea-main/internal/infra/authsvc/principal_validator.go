@@ -1,0 +1,117 @@
+package authsvc
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+)
+
+var ErrPrincipalInactive = auth.ErrPrincipalInactive
+
+type principalQueries interface {
+	GetActivePATPrincipalByID(
+		context.Context,
+		int32,
+	) (sqlcgen.GetActivePATPrincipalByIDRow, error)
+	GetActiveUserPrincipalByID(
+		context.Context,
+		int32,
+	) (sqlcgen.GetActiveUserPrincipalByIDRow, error)
+}
+
+// PrincipalValidator rechecks mutable account state after a credential or
+// session has been validated. This keeps suspension authoritative even when
+// the credential result came from the short-lived authentication cache.
+type PrincipalValidator struct {
+	queries principalQueries
+}
+
+func NewPrincipalValidator(pool *pgxpool.Pool) *PrincipalValidator {
+	if pool == nil {
+		return &PrincipalValidator{}
+	}
+	return &PrincipalValidator{queries: sqlcgen.New(pool)}
+}
+
+func (v *PrincipalValidator) ValidatePrincipal(ctx context.Context, principal auth.User) (auth.User, error) {
+	if v == nil || v.queries == nil {
+		return auth.User{}, ErrPrincipalInactive
+	}
+
+	isToken := principal.TokenID != "" || strings.EqualFold(principal.AuthType, "token")
+	if isToken {
+		// ID was historically ambiguous: depending on the producer it could be
+		// either auth_core__token.id or auth_core__user.id. New trusted producers
+		// must provide both typed IDs, so stale or partial cache entries fail
+		// closed instead of being resolved through a colliding numeric row.
+		if principal.TokenID == "" || principal.UserID == "" {
+			return auth.User{}, ErrPrincipalInactive
+		}
+		id, ok := principalDatabaseID(principal.TokenID)
+		if !ok {
+			return auth.User{}, ErrPrincipalInactive
+		}
+		claimedUserID, ok := principalDatabaseID(principal.UserID)
+		if !ok {
+			return auth.User{}, ErrPrincipalInactive
+		}
+		row, err := v.queries.GetActivePATPrincipalByID(ctx, id)
+		if err != nil {
+			return auth.User{}, principalValidationError("token", err)
+		}
+		if row.TokenID <= 0 || row.UserID <= 0 || claimedUserID != row.UserID {
+			return auth.User{}, ErrPrincipalInactive
+		}
+		principal.TokenID = strconv.FormatInt(int64(row.TokenID), 10)
+		principal.UserID = strconv.FormatInt(int64(row.UserID), 10)
+		// Compatibility handlers still use User.ID as an owning-user foreign
+		// key. Never allow the forwarded token row ID to reach those paths.
+		principal.ID = principal.UserID
+		// ForwardAuth intentionally emits the current-baseline token reference
+		// "-". Resolve mutable identity attributes from PostgreSQL instead of
+		// trusting that transport field or a stale session/cache value.
+		principal.Email = row.Email
+		return principal, nil
+	}
+
+	userIDValue := principal.UserID
+	if userIDValue == "" {
+		userIDValue = principal.ID
+	}
+	userID, ok := principalDatabaseID(userIDValue)
+	if !ok {
+		return auth.User{}, ErrPrincipalInactive
+	}
+	row, err := v.queries.GetActiveUserPrincipalByID(ctx, userID)
+	if err != nil {
+		return auth.User{}, principalValidationError("user", err)
+	}
+	if row.UserID <= 0 || row.UserID != userID {
+		return auth.User{}, ErrPrincipalInactive
+	}
+	principal.UserID = strconv.FormatInt(int64(row.UserID), 10)
+	principal.ID = principal.UserID
+	principal.Email = row.Email
+	return principal, nil
+}
+
+func principalDatabaseID(value string) (int32, bool) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return int32(id), err == nil && id > 0 && id <= math.MaxInt32
+}
+
+func principalValidationError(kind string, err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPrincipalInactive
+	}
+	return fmt.Errorf("authsvc: validate active %s: %w", kind, err)
+}

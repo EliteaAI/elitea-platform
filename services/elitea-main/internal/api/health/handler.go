@@ -49,7 +49,7 @@ func readinessHandler(deps Deps) http.HandlerFunc {
 
 		if deps.DB != nil {
 			if err := deps.DB.Ping(ctx); err != nil {
-				checks["db"] = err.Error()
+				checks["db"] = "unavailable"
 				allOK = false
 			} else {
 				checks["db"] = "ok"
@@ -58,7 +58,7 @@ func readinessHandler(deps Deps) http.HandlerFunc {
 
 		if deps.Redis != nil {
 			if err := deps.Redis.Ping(ctx); err != nil {
-				checks["redis"] = err.Error()
+				checks["redis"] = "unavailable"
 				allOK = false
 			} else {
 				checks["redis"] = "ok"
@@ -79,6 +79,7 @@ func startupHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)

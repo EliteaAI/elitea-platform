@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// SignatureProfileV1 identifies the complete signature-input and algorithm
+// contract. TEST_ONLY_HMAC_SHA256 is a public offline vector and must be
+// rejected by production composition. ED25519 signs the domain-separated,
+// length-bound worker_command_bytes defined by runtime protocol v1.
+enum SignatureProfileV1 {
+  SIGNATURE_PROFILE_V1_UNSPECIFIED = 0;
+  SIGNATURE_PROFILE_V1_TEST_ONLY_HMAC_SHA256 = 1;
+  SIGNATURE_PROFILE_V1_ED25519 = 2;
+}
+
+// SignedWorkerCommandEnvelopeV1 preserves worker_command_bytes exactly as
+// emitted. Signature input is profile-defined: TEST_ONLY_HMAC_SHA256 signs the
+// exact bytes, while ED25519 signs the runtime-v1 domain and uint64 big-endian
+// byte length followed by those exact bytes. Receivers verify the digest and
+// signature before parsing and never reserialize to create verification bytes.
+// Protocol-v1 decoders also reject unknown tags and duplicate singular fields
+// in this envelope and in the signed command's raw wire representation.
+message SignedWorkerCommandEnvelopeV1 {
+  string envelope_schema_revision = 1;
+  SignatureProfileV1 signature_profile = 2;
+  string key_id = 3;
+  bytes worker_command_bytes = 4;
+  DigestV1 worker_command_digest = 5;
+  bytes signature = 6;
+  reserved 7 to 15;
+}
+
+// WorkerExecutionEnvelopeV1 is the offline execution fixture and the logical
+// post-claim worker input. Production obtains the fence from authenticated
+// control gRPC; the Redis entry contains only signed_command.
+message WorkerExecutionEnvelopeV1 {
+  SignedWorkerCommandEnvelopeV1 signed_command = 1;
+  ExecutionFenceV1 fence = 2;
+  reserved 3 to 15;
+}

@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+import ast
+import hashlib
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from elitea_worker.constants import SDK_SOURCE_REVISION
+
+
+_SERVICE_ROOT = Path(__file__).resolve().parents[2]
+_PLATFORM_ROOT = _SERVICE_ROOT.parents[1]
+_PROJECTS_ROOT = _PLATFORM_ROOT.parent
+_INDEXER_ROOT = _PROJECTS_ROOT / "centry/pylon_indexer/plugins/indexer_worker"
+_WRAPPER = _INDEXER_ROOT / "methods/indexer_test_toolkit.py"
+_DISPATCH = (
+    _PROJECTS_ROOT
+    / "centry/pylon_main/plugins/elitea_core/utils/application_tools.py"
+)
+_SDK_ROOT = _PROJECTS_ROOT / "elitea-sdk"
+_SDK_CLIENT_PATH = "elitea_sdk/runtime/clients/client.py"
+_WRAPPER_SHA256 = (
+    "2e8f82530d8fcc55a908355028bef9e6e33b4324d27589848f2151611a95635d"
+)
+_DISPATCH_SHA256 = (
+    "cf5f828faa9588b968c57326e81ea765cfb510336f3f760635faff7b5f96b41f"
+)
+
+
+def test_index_ingest_boundary_matches_current_index_data_source_evidence() -> None:
+    if not _WRAPPER.is_file() or not _DISPATCH.is_file():
+        pytest.skip("current Centry evidence checkout is unavailable")
+
+    assert hashlib.sha256(_WRAPPER.read_bytes()).hexdigest() == _WRAPPER_SHA256
+    assert hashlib.sha256(_DISPATCH.read_bytes()).hexdigest() == _DISPATCH_SHA256
+
+    wrapper_tree = ast.parse(_WRAPPER.read_text(encoding="utf-8"))
+    copy_imports = [
+        alias
+        for node in wrapper_tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "copy"
+        for alias in node.names
+    ]
+    assert [(alias.name, alias.asname) for alias in copy_imports] == [
+        ("deepcopy", "copy")
+    ]
+
+    wrapper_function = _function(_WRAPPER, "_indexer_test_toolkit_tool_task")
+    sdk_calls = [
+        node
+        for node in ast.walk(wrapper_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "test_toolkit_tool"
+    ]
+    assert len(sdk_calls) == 1
+    call = sdk_calls[0]
+    assert [keyword.arg for keyword in call.keywords] == [
+        "toolkit_config",
+        "tool_name",
+        "tool_params",
+        "runtime_config",
+        "llm_model",
+        "llm_config",
+        "mcp_tokens",
+    ]
+    keyword_values = {keyword.arg: keyword.value for keyword in call.keywords}
+    for keyword_name, source_name in (
+        ("toolkit_config", "toolkit_config"),
+        ("tool_params", "tool_params"),
+        ("llm_config", "llm_settings"),
+    ):
+        copied = keyword_values[keyword_name]
+        assert isinstance(copied, ast.Call)
+        assert isinstance(copied.func, ast.Name) and copied.func.id == "copy"
+        assert len(copied.args) == 1
+        assert isinstance(copied.args[0], ast.Name)
+        assert copied.args[0].id == source_name
+    for keyword_name, source_name in (
+        ("runtime_config", "runtime_config"),
+        ("llm_model", "llm_model"),
+        ("mcp_tokens", "mcp_tokens"),
+    ):
+        direct = keyword_values[keyword_name]
+        assert isinstance(direct, ast.Name) and direct.id == source_name
+    tool_name = next(
+        keyword.value for keyword in call.keywords if keyword.arg == "tool_name"
+    )
+    assert isinstance(tool_name, ast.Name) and tool_name.id == "tool_name"
+
+    dispatch_function = _function(_DISPATCH, "start_index_task")
+    statements = dispatch_function.body
+    admission_statement = next(
+        index
+        for index, node in enumerate(statements)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "require_pylon_indexing_admission"
+    )
+    first_data_access = next(
+        index
+        for index, node in enumerate(statements)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "toolkit_config"
+            for target in node.targets
+        )
+    )
+    assert admission_statement < first_data_access
+
+    start_calls = [
+        node
+        for node in ast.walk(dispatch_function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "start_task"
+    ]
+    assert len(start_calls) == 1
+    start = start_calls[0]
+    assert isinstance(start.args[0], ast.Constant)
+    assert start.args[0].value == "indexer_test_toolkit_tool"
+    pool = next(keyword.value for keyword in start.keywords if keyword.arg == "pool")
+    assert isinstance(pool, ast.Constant) and pool.value == "agents"
+
+
+def test_admitted_sdk_revision_contains_the_same_public_method() -> None:
+    if not (_SDK_ROOT / ".git").exists():
+        pytest.skip("current SDK evidence checkout is unavailable")
+    process = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_SDK_ROOT),
+            "show",
+            f"{SDK_SOURCE_REVISION}:{_SDK_CLIENT_PATH}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if process.returncode != 0:
+        pytest.skip("the admitted SDK revision is unavailable in the local checkout")
+    tree = ast.parse(process.stdout)
+    method = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "test_toolkit_tool"
+    )
+    arguments = [argument.arg for argument in method.args.args]
+    assert arguments == [
+        "self",
+        "toolkit_config",
+        "tool_name",
+        "tool_params",
+        "runtime_config",
+        "llm_model",
+        "llm_config",
+        "mcp_tokens",
+    ]
+
+
+def _function(path: Path, name: str) -> ast.FunctionDef:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )

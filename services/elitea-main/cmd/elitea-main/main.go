@@ -2,325 +2,693 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
-	sioserver "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/socketio"
-	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
-	v2events "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/events"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
+	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
+	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
+	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
+	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
+	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
+	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	socialapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/social"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/indexersvc"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/natsbus"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/redis"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/llmproxy"
+	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
-		resp, err := http.Get("http://localhost:8080/healthz")
+		endpoint, err := healthcheckURL(os.LookupEnv)
+		if err != nil {
+			os.Exit(1)
+		}
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get(endpoint)
 		if err != nil || resp.StatusCode != 200 {
 			os.Exit(1)
 		}
+		_ = resp.Body.Close()
 		os.Exit(0)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, logger); err != nil {
+		logger.Error("elitea-main stopped with an error", "err", err)
+		os.Exit(1)
+	}
+}
 
-	ctx := context.Background()
+func run(ctx context.Context, logger *slog.Logger) (runErr error) {
+	publicAddress, err := configuredHTTPAddress(os.LookupEnv)
+	if err != nil {
+		return err
+	}
+	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
+	bootstrapLegacySchema := os.Getenv("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") == "true"
+	if bootstrapLegacySchema && !devMode {
+		return errors.New("ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA requires AUTH_DEV_MODE=true")
+	}
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
 	pool, err := pgxpool.New(ctx, dbDSN)
 	if err != nil {
-		slog.Error("failed to create db pool", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("create database pool: %w", err)
 	}
 	defer pool.Close()
 
-	// Run migrations (skip if loading from an existing dump)
-	if envOr("SKIP_MIGRATIONS", "") == "" {
+	// The unversioned legacy bootstrap exists only for an empty local developer
+	// database. Production shared/tenant histories are owned by elitea-migrate.
+	if bootstrapLegacySchema {
 		if err := infradb.RunMigrations(ctx, pool); err != nil {
-			slog.Error("failed to run migrations", "err", err)
-			os.Exit(1)
+			return fmt.Errorf("bootstrap local legacy database schema: %w", err)
 		}
-	} else {
-		slog.Info("SKIP_MIGRATIONS set, skipping schema migrations")
 	}
 
-	// Redis
-	redisOptions, err := redisOptionsFromEnv(os.LookupEnv)
+	var productionAuth *api.ProductionAuthRoutes
+	var currentProjectList *v2projects.CurrentProjectListRoute
+	var currentSocialAuthors *socialapi.CurrentAuthorsRoute
+	var formGraph *authcomposition.FormGraph
+	var authReadiness health.Checker
+	var principalValidator apimw.PrincipalValidator
+	var forwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
+	authConfigPath, authEnabled, err := configuredAuthConfigPath(os.LookupEnv)
 	if err != nil {
-		slog.Error("failed to configure Redis", "err", err)
-		os.Exit(1)
+		return err
 	}
-	rdb := goredis.NewClient(redisOptions)
-
-	authClient := authsvc.New(rdb)
-	jwtSecret := envOr("APPLICATION_SECRET_KEY", "")
-	devMode := os.Getenv("AUTH_DEV_MODE") == "true"
-	var localValidator *authsvc.LocalValidator
-	var sessionHandler *v2auth.SessionHandler
-	if jwtSecret != "" {
-		if devMode {
-			slog.Error("FATAL: AUTH_DEV_MODE=true conflicts with APPLICATION_SECRET_KEY being set. " +
-				"DevMode uses a fake user ID that breaks database queries. " +
-				"Remove AUTH_DEV_MODE or unset APPLICATION_SECRET_KEY.")
-			os.Exit(1)
+	if authEnabled {
+		if err := pool.Ping(ctx); err != nil {
+			return fmt.Errorf("verify authentication PostgreSQL dependency: %w", err)
 		}
-		localValidator = authsvc.NewLocalValidator(pool, jwtSecret)
-		sessionHandler = v2auth.NewSessionHandler(pool, rdb, jwtSecret)
-		slog.Info("auth: using local token validator (pylon_auth not required)")
-	} else {
-		if devMode {
-			slog.Warn("auth: AUTH_DEV_MODE enabled (no real authentication, dev user only)")
-		} else {
-			slog.Warn("auth: APPLICATION_SECRET_KEY not set, falling back to pylon_auth RPC")
+		authConfig, loadErr := authcomposition.Load(authConfigPath)
+		if loadErr != nil {
+			return fmt.Errorf("load production Form authentication: %w", loadErr)
 		}
-	}
-
-	// OIDC (optional — enabled when OIDC_ISSUER_URL is set)
-	var oidcHandler *v2auth.OIDCHandler
-	oidcCfg, err := v2auth.OIDCConfigFromEnv()
-	if err != nil {
-		slog.Error("OIDC config invalid", "err", err)
-		os.Exit(1)
-	}
-	if oidcCfg != nil {
-		oidcHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, jwtSecret)
-		if err != nil {
-			slog.Error("OIDC provider discovery failed", "err", err)
-			os.Exit(1)
-		}
-		slog.Info("auth: OIDC enabled", "issuer", oidcCfg.IssuerURL)
-	}
-	// EventBus: NATS gateway.events.* when GATEWAY_NATS_URL is set (design §8.1
-	// re-points the platform event stream off Redis pub/sub), else Redis
-	// pub/sub. A NATS dial failure at boot is non-fatal — elitea-main falls back
-	// to Redis rather than refusing to start, matching the gateway's
-	// non-fatal-NATS-boot policy.
-	redisEventBus := redis.NewEventBus(rdb, "elitea-main")
-	var (
-		eventBus    eventSubscriber = redisEventBus
-		healthPing  health.Checker  = redisEventBus
-		eventSource v2events.EventSource
-	)
-	if natsURL := os.Getenv("GATEWAY_NATS_URL"); natsURL != "" {
-		nb, nerr := natsbus.Connect(natsURL, "elitea-main", "elitea-main")
-		if nerr != nil {
-			slog.Warn("eventbus: NATS connect failed, falling back to Redis pub/sub", "err", nerr, "url", natsURL)
-		} else {
-			slog.Info("eventbus: using NATS gateway.events.*", "url", natsURL)
-			eventBus = nb
-			healthPing = nb
-			eventSource = nb
-			defer nb.Close()
-		}
-	}
-
-	// Repositories (declared early so dispatcher can reference webhookRepo)
-	appsRepo := repos.NewApplicationsRepo(pool)
-	skillsRepo := repos.NewSkillsRepo(pool)
-	foldersRepo := repos.NewFoldersRepo(pool)
-	tagsRepo := repos.NewTagsRepo(pool)
-	analyticsRepo := repos.NewAnalyticsRepo(pool)
-	convsRepo := repos.NewConversationsRepo(pool)
-	webhookRepo := repos.NewWebhooksRepo(pool)
-
-	// Webhook dispatcher: fires HTTP callbacks on platform events
-	webhookDispatcher := webhook.NewDispatcher(webhookRepo)
-	eventBus.Subscribe(ctx, "elitea:*", webhookDispatcher.HandleEvent)
-
-	// Shadow mode
-	shadowWeight := 0.1
-	if w := os.Getenv("SHADOW_WEIGHT"); w != "" {
-		if f, err := strconv.ParseFloat(w, 64); err == nil {
-			shadowWeight = f
-		}
-	}
-	shadowCfg := shadow.Config{
-		Enabled:       os.Getenv("SHADOW_ENABLED") == "true",
-		LegacyBaseURL: os.Getenv("SHADOW_LEGACY_URL"),
-		Weight:        shadowWeight,
-		Timeout:       5 * time.Second,
-		LogDiffs:      true,
-	}
-	comparator := shadow.NewComparator(shadowCfg)
-	shadowMetrics := shadow.NewMetrics(1000)
-
-	// Indexer RPC client (predict/chat/pipelines)
-	indexerClient := indexersvc.New(rdb)
-
-	// Cutover tracker + routing
-	cutoverTracker := cutover.NewTracker(rdb)
-
-	canaryWeight := 0.1
-	if w := os.Getenv("CANARY_WEIGHT"); w != "" {
-		if f, err := strconv.ParseFloat(w, 64); err == nil {
-			canaryWeight = f
-		}
-	}
-	if err := cutoverTracker.SeedDefaults(ctx); err != nil {
-		slog.Warn("failed to seed cutover defaults", "err", err)
-	}
-
-	var cutoverRouter *cutover.Router
-	if legacyURL := os.Getenv("LEGACY_URL"); legacyURL != "" {
-		cutoverRouter = cutover.NewRouter(cutover.RouterConfig{
-			Tracker:      cutoverTracker,
-			LegacyURL:    legacyURL,
-			CanaryWeight: canaryWeight,
+		formGraph, err = authcomposition.NewFormGraph(ctx, authConfig, authcomposition.FormGraphDependencies{
+			PostgreSQL:           pool,
+			MainRoutePublicRules: api.CurrentMainRoutePublicRules(),
 		})
-	}
-
-	// Socket.IO server for real-time streaming (chat/application predict)
-	sioSrv := sioserver.NewServer(sioserver.Config{
-		Indexer: indexerClient,
-		Redis:   rdb,
-	})
-
-	// Storage backend
-	storageCfg := storage.ConfigFromEnv()
-	var storageBackend storage.Backend
-	switch storageCfg.Backend {
-	case "", "filesystem":
-		storageBackend = filesystem.New(storageCfg.DataDir)
-	default:
-		slog.Error("unsupported storage backend", "backend", storageCfg.Backend)
-		os.Exit(1)
-	}
-
-	// LLM gateway proxy (BF0.9c): optional — only wired when GATEWAY_HTTP_ADDR is
-	// set. Existing deployments without the gateway env var start normally.
-	var (
-		llmProxy           *llmproxy.Proxy
-		llmProjectResolver apimw.PersonalProjectResolver
-	)
-	if gatewayAddr := os.Getenv("GATEWAY_HTTP_ADDR"); gatewayAddr != "" {
-		proxyCfg := llmproxy.Config{
-			TargetURL:      gatewayAddr,
-			IdentitySecret: os.Getenv("GATEWAY_IDENTITY_SECRET"),
-			ClientCertFile: os.Getenv("GATEWAY_CLIENT_CERT_FILE"),
-			ClientKeyFile:  os.Getenv("GATEWAY_CLIENT_KEY_FILE"),
-			CAFile:         os.Getenv("GATEWAY_CA_FILE"),
-			ServerName:     os.Getenv("GATEWAY_SERVER_NAME"),
+		if err != nil {
+			return fmt.Errorf("compose production Form authentication: %w", err)
 		}
-		p, perr := llmproxy.New(proxyCfg)
-		if perr != nil {
-			slog.Error("llmproxy: failed to construct gateway proxy, /llm will not be mounted", "err", perr)
-		} else {
-			llmProxy = p
-			llmProjectResolver = apimw.NewDBPersonalProjectResolver(pool)
-			slog.Info("llmproxy: /llm mounted → gateway", "target", gatewayAddr)
+		defer func() {
+			if err := formGraph.Close(); runErr == nil && err != nil {
+				runErr = fmt.Errorf("close production Form authentication: %w", err)
+			}
+		}()
+		productionAuth, err = api.NewProductionAuthRoutes(formGraph.BrowserRoutes(), formGraph.MainForwardAuth())
+		if err != nil {
+			return fmt.Errorf("mount production Form authentication: %w", err)
 		}
-	} else {
-		slog.Info("llmproxy: GATEWAY_HTTP_ADDR not set, /llm route disabled")
+		principalValidator = authsvc.NewPrincipalValidator(pool)
+		forwardedIdentityVerifier = formGraph.ForwardedIdentityVerifier()
+		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
+			sqlcgen.New(pool),
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current project-list route: %w", err)
+		}
+		socialAuthorsRepository, repositoryErr := dbrepos.NewCurrentSocialAuthorsRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current Social authors repository: %w", repositoryErr)
+		}
+		socialAuthorsService, serviceErr := socialapp.NewCurrentAuthorsService(socialAuthorsRepository)
+		if serviceErr != nil {
+			return fmt.Errorf("compose current Social authors service: %w", serviceErr)
+		}
+		currentSocialAuthors, err = socialapi.NewCurrentAuthorsRoute(
+			socialAuthorsService,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Social authors route: %w", err)
+		}
+		authReadiness = formGraph
+		logger.Info("production Form authentication enabled")
 	}
 
-	// Fix round-3 #5: resolve TrustedProxyCIDRs once and pass them into AuthDeps
-	// so BOTH AuthConfig{} constructions in api.NewRouter receive the same list.
-	// Relying on the env-fallback inside apimw.Auth() would work but makes the
-	// router's behaviour invisible at the call site and breaks tests that set the
-	// CIDRs programmatically rather than via the environment.
-	var trustedProxyCIDRs []string
-	if raw := os.Getenv("TRUSTED_PROXY_CIDRS"); raw != "" {
-		trustedProxyCIDRs = strings.Split(raw, ",")
+	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current project-info settings: %w", err)
+	}
+	if currentProjectInfoSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_PROJECT_INFO_ENABLED requires production authentication")
+	}
+	var currentProjectInfo *projectinfoapi.CurrentProjectInfoRoute
+	if currentProjectInfoSettings.Enabled {
+		currentProjectInfoRepository, repositoryErr :=
+			projectinfoapi.NewCurrentProjectInfoRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current project-info repository: %w", repositoryErr)
+		}
+		currentProjectInfo, err = projectinfoapi.NewCurrentProjectInfoRoute(
+			currentProjectInfoRepository,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current project-info route: %w", err)
+		}
+		logger.Info("current project-info route enabled")
+	}
+
+	currentIndexTypesSettings, err := currentIndexTypesConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current index-types settings: %w", err)
+	}
+	if currentIndexTypesSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_INDEX_TYPES_ENABLED requires production authentication")
+	}
+	var currentIndexTypes *indextypesapi.CurrentIndexTypesRoute
+	if currentIndexTypesSettings.Enabled {
+		currentIndexTypesSnapshot, snapshotErr :=
+			runtimecomposition.LoadPinnedCurrentIndexTypesSnapshot()
+		if snapshotErr != nil {
+			return fmt.Errorf("load pinned current index-types snapshot: %w", snapshotErr)
+		}
+		currentIndexTypes, err = indextypesapi.NewCurrentIndexTypesRoute(
+			currentIndexTypesSnapshot,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current index-types route: %w", err)
+		}
+		logger.Info(
+			"current index-types route enabled",
+			"sdk_revision",
+			currentIndexTypesSnapshot.SDKRevision(),
+			"entry_count",
+			currentIndexTypesSnapshot.EntryCount(),
+		)
+	}
+
+	currentApplicationSkillsSettings, err :=
+		currentApplicationSkillsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current application-skills settings: %w", err)
+	}
+	if currentApplicationSkillsSettings.Enabled &&
+		(formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_APPLICATION_SKILLS_ENABLED requires production authentication")
+	}
+	var currentApplicationSkills *applicationskillsapi.CurrentApplicationSkillsRoute
+	if currentApplicationSkillsSettings.Enabled {
+		currentApplicationSkillsRepository, repositoryErr :=
+			applicationskillsapi.NewCurrentApplicationSkillsRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf(
+				"compose current application-skills repository: %w",
+				repositoryErr,
+			)
+		}
+		currentApplicationSkills, err =
+			applicationskillsapi.NewCurrentApplicationSkillsRoute(
+				currentApplicationSkillsRepository,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+		if err != nil {
+			return fmt.Errorf("compose current application-skills route: %w", err)
+		}
+		logger.Info("current application-skills route enabled")
+	}
+
+	currentConfigurationsConfig, err := currentConfigurationsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current Configurations settings: %w", err)
+	}
+	currentPromptContextReadsSettings, err :=
+		currentPromptContextReadsConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load current prompt-context read settings: %w", err)
+	}
+	if currentPromptContextReadsSettings.Enabled && !currentConfigurationsConfig.Enabled {
+		return errors.New("ELITEA_PROMPT_CONTEXT_READS_ENABLED requires ELITEA_CONFIGURATIONS_ENABLED=true")
+	}
+	if currentConfigurationsConfig.Enabled && (formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
+	}
+	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	var currentConfigurationRead http.Handler
+	var currentConfigurationAvailable http.Handler
+	var currentConfigurationTypes http.Handler
+	var currentConfigurationMutation http.Handler
+	var currentModelCatalog http.Handler
+	var currentModelDefault http.Handler
+	var currentLLMFacade http.Handler
+	var currentLLMRoot *runtimecomposition.CurrentLLMRuntime
+	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
+	if currentConfigurationsConfig.Enabled {
+		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
+			pool,
+			currentConfigurationsConfig.PublicProjectID,
+			currentConfigurationsConfig.VaultMasterKeyFile,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations services: %w", err)
+		}
+		defer currentConfigurationsRoot.Destroy()
+		currentAuth := apimw.AuthConfig{
+			Validator:                 formGraph,
+			PrincipalValidator:        principalValidator,
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+		}
+		currentPermissions := legacyrbac.NewPostgresResolver(pool)
+		currentConfigurationAvailable, err = configurationapi.NewCurrentAvailableRoute(
+			currentConfigurationsRoot.AvailableCatalog(),
+			currentAuth,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations available route: %w", err)
+		}
+		currentConfigurationRead, err = configurationapi.NewCurrentConfigurationReadRoute(
+			currentConfigurationsRoot.Reader(),
+			currentConfigurationsConfig.PublicProjectID,
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations read routes: %w", err)
+		}
+		currentConfigurationTypes, err = configurationapi.NewCurrentConfigurationTypesRoute(
+			currentConfigurationsRoot.Types(),
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations types route: %w", err)
+		}
+		currentModelCatalog, err = configurationapi.NewCurrentModelCatalogRoute(
+			currentConfigurationsRoot.ModelCatalog(),
+			currentConfigurationsConfig.PublicProjectID,
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations model route: %w", err)
+		}
+		currentModelDefault, err = configurationapi.NewCurrentModelDefaultRoute(
+			currentConfigurationsRoot.VaultWriter(),
+			currentAuth,
+			currentPermissions,
+		)
+		if err != nil {
+			return fmt.Errorf("compose current Configurations model-default route: %w", err)
+		}
+		if currentConfigurationsConfig.LiteLLMBaseURL != "" {
+			currentLLMRoot, err = runtimecomposition.NewCurrentLLMRuntime(
+				pool,
+				currentConfigurationsRoot,
+				runtimecomposition.CurrentLLMConfig{
+					BaseURL:       currentConfigurationsConfig.LiteLLMBaseURL,
+					MasterKeyFile: currentConfigurationsConfig.LiteLLMMasterKeyFile,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("compose current LiteLLM facade: %w", err)
+			}
+			defer currentLLMRoot.Close()
+			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
+		}
+		if currentPromptContextReadsSettings.Enabled {
+			chatConfigReader, readerErr :=
+				promptcontextreadsapi.NewCurrentChatConfigVaultReader(
+					currentConfigurationsRoot.VaultLoader(),
+				)
+			if readerErr != nil {
+				return fmt.Errorf("compose current chat configuration reader: %w", readerErr)
+			}
+			projectContextReader, readerErr :=
+				promptcontextreadsapi.NewCurrentProjectContextRepository(pool)
+			if readerErr != nil {
+				return fmt.Errorf("compose current project-context reader: %w", readerErr)
+			}
+			currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
+				chatConfigReader,
+				projectContextReader,
+				currentAuth,
+				currentPermissions,
+			)
+			if err != nil {
+				return fmt.Errorf("compose current prompt-context read routes: %w", err)
+			}
+			logger.Info("current prompt-context read routes enabled")
+		}
+		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
+	}
+
+	runtimeConfig, err := runtimecomposition.ConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load optional runtime configuration: %w", err)
+	}
+	if runtimeConfig.Enabled && (principalValidator == nil || forwardedIdentityVerifier == nil) {
+		return errors.New("ELITEA_RUNTIME_ENABLED requires production authentication")
+	}
+	if err := validateRuntimeComposition(currentConfigurationsConfig, runtimeConfig); err != nil {
+		return err
+	}
+	var runtimeRoot *runtimecomposition.Runtime
+	var productionRuntime *api.ProductionRuntimeRoutes
+	var currentIndexStart http.Handler
+	var currentIndexCancel http.Handler
+	var currentIndexMeta http.Handler
+	var currentIndexMetaDelete http.Handler
+	if runtimeConfig.Enabled {
+		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
+		if openErr != nil {
+			return openErr
+		}
+		defer runtimePools.Close()
+		var configurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
+		if currentConfigurationsConfig.MutationEnabled {
+			configurationLifecycleReconciler, err = runtimecomposition.NewCurrentConfigurationLifecycleReconciler(
+				runtimePools.Control,
+				currentConfigurationsRoot,
+				currentLLMRoot,
+				currentConfigurationsConfig.AllowProjectOwnLLMs,
+			)
+			if err != nil {
+				return fmt.Errorf("compose current Configurations lifecycle: %w", err)
+			}
+		}
+		runtimeRoot, err = runtimecomposition.New(ctx, runtimeConfig, runtimecomposition.Dependencies{
+			AdmissionPool:                    runtimePools.Admission,
+			ControlPool:                      runtimePools.Control,
+			OutputPool:                       runtimePools.Output,
+			ReplayPool:                       runtimePools.Replay,
+			TerminalEffectsPool:              runtimePools.TerminalEffects,
+			ContentPool:                      runtimePools.Content,
+			CurrentConfigurations:            currentConfigurationsRoot,
+			CurrentEmbeddingRuntime:          currentLLMRoot,
+			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
+			ActorTokenIssuer:                 formGraph,
+			ProjectTokenValidator:            formGraph,
+			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
+			Logger:                           logger,
+		})
+		if err != nil {
+			return fmt.Errorf("compose optional runtime: %w", err)
+		}
+		defer func() {
+			if err := runtimeRoot.Close(); runErr == nil && err != nil {
+				runErr = fmt.Errorf("close optional runtime: %w", err)
+			}
+		}()
+		if currentConfigurationsConfig.MutationEnabled {
+			mutationService, mutationErr := currentConfigurationsRoot.NewMutationService(
+				runtimeRoot.CurrentSDKConfigurationValidator(),
+			)
+			if mutationErr != nil {
+				return fmt.Errorf("compose current Configurations mutation service: %w", mutationErr)
+			}
+			currentConfigurationMutation, mutationErr = configurationapi.NewCurrentConfigurationMutationRoute(
+				mutationService,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if mutationErr != nil {
+				return fmt.Errorf("compose current Configurations mutation routes: %w", mutationErr)
+			}
+		}
+		publicRoutes := runtimeRoot.PublicRoutes()
+		productionRuntime, err = api.NewProductionRuntimeRoutes(
+			publicRoutes.Validation,
+			publicRoutes.ExecutionEvents,
+			principalValidator,
+			forwardedIdentityVerifier,
+		)
+		if err != nil {
+			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
+		}
+		if publicRoutes.IndexStart != nil {
+			currentIndexStart, err = indexingapi.NewCurrentIndexStartRoute(
+				publicRoutes.IndexStart,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-start route: %w", err)
+			}
+		}
+		if publicRoutes.IndexCancel != nil {
+			currentIndexCancel, err = indexingapi.NewCurrentIndexCancelRoute(
+				publicRoutes.IndexCancel,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-cancel route: %w", err)
+			}
+		}
+		if publicRoutes.IndexMeta != nil {
+			currentIndexMeta, err = indexingapi.NewCurrentIndexMetaRoute(
+				publicRoutes.IndexMeta,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current index-meta route: %w", err)
+			}
+		}
+		if publicRoutes.IndexMetaDelete != nil {
+			currentIndexMetaDelete, err =
+				indexingapi.NewCurrentIndexMetaDeleteRoute(
+					publicRoutes.IndexMetaDelete,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index metadata delete route: %w",
+					err,
+				)
+			}
+		}
+		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
 	r := api.NewRouter(api.RouterConfig{
-		Auth: api.AuthDeps{
-			Client:            authClient,
-			Validator:         localValidator,
-			SessionHandler:    sessionHandler,
-			OIDCHandler:       oidcHandler,
-			SessionSecret:     jwtSecret,
-			TrustedProxyCIDRs: trustedProxyCIDRs,
-		},
-		Indexer: api.IndexerDeps{
-			Predictor:      indexerClient,
-			LLMService:     indexerClient,
-			ChatService:    indexerClient,
-			PipelineRunner: indexerClient,
-			ToolTester:     indexerClient,
-			MCPSyncer:      indexerClient,
-		},
-		Pool: pool,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
-			Redis: healthPing,
+			Redis: authReadiness,
 		},
-		AppsRepo:           appsRepo,
-		SkillsRepo:         skillsRepo,
-		FoldersRepo:        foldersRepo,
-		TagsRepo:           tagsRepo,
-		AnalyticsRepo:      analyticsRepo,
-		ConvsRepo:          convsRepo,
-		WebhookRepo:        webhookRepo,
-		RedisClient:        rdb,
-		EventSource:        eventSource,
-		Shadow:             comparator,
-		ShadowMetrics:      shadowMetrics,
-		CutoverTracker:     cutoverTracker,
-		CutoverRouter:      cutoverRouter,
-		AdminUI:            adminUIConfig(),
-		Storage:            storageBackend,
-		LLMProxy:           llmProxy,
-		LLMProjectResolver: llmProjectResolver,
+		ProductionAuth:                productionAuth,
+		ProductionRuntime:             productionRuntime,
+		CurrentProjectInfo:            currentProjectInfo,
+		CurrentIndexTypes:             currentIndexTypes,
+		CurrentApplicationSkills:      currentApplicationSkills,
+		CurrentPromptContextReads:     currentPromptContextReads,
+		CurrentProjectList:            currentProjectList,
+		CurrentSocialAuthors:          currentSocialAuthors,
+		CurrentConfigurationAvailable: currentConfigurationAvailable,
+		CurrentConfigurationRead:      currentConfigurationRead,
+		CurrentConfigurationTypes:     currentConfigurationTypes,
+		CurrentConfigurationMutation:  currentConfigurationMutation,
+		CurrentIndexStart:             currentIndexStart,
+		CurrentIndexCancel:            currentIndexCancel,
+		CurrentIndexMeta:              currentIndexMeta,
+		CurrentIndexMetaDelete:        currentIndexMetaDelete,
+		CurrentModelCatalog:           currentModelCatalog,
+		CurrentModelDefault:           currentModelDefault,
+		CurrentLLMFacade:              currentLLMFacade,
 	})
 
-	// Combine chi router + Socket.IO on one port
-	mux := http.NewServeMux()
-	mux.Handle("/socket.io/", sioSrv.Handler())
-	mux.Handle("/", r)
-
 	srv := &http.Server{
-		Addr:         ":8080",
-		Handler:      mux,
+		Addr: publicAddress,
+		// Socket.IO remains unmounted until its legacy connection
+		// authentication, project-membership checks, room authorization, and
+		// per-event permission contract are implemented. Mounting the current
+		// prototype would expose cross-tenant rooms and execution events.
+		Handler:      r,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	go func() {
-		slog.Info("starting server", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "err", err)
-			os.Exit(1)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	slog.Info("shutting down server")
-	shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		slog.Error("server forced to shutdown", "err", err)
+	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)
+	var runtimeLifecycleRoot runtimeLifecycle
+	if runtimeRoot != nil {
+		runtimeLifecycleRoot = runtimeRoot
 	}
-	_ = rdb.Close()
+	if err := serveApplication(ctx, srv, runtimeLifecycleRoot, 15*time.Second); err != nil {
+		return err
+	}
 	slog.Info("server stopped")
+	return nil
+}
+
+const maxAuthConfigPathBytes = 4096
+
+func configuredAuthConfigPath(lookup func(string) (string, bool)) (string, bool, error) {
+	if lookup == nil {
+		return "", false, errors.New("authentication configuration environment lookup is required")
+	}
+	path, present := lookup("ELITEA_AUTH_CONFIG_FILE")
+	if !present {
+		return "", false, nil
+	}
+	if path == "" || len(path) > maxAuthConfigPathBytes || path != strings.TrimSpace(path) || strings.ContainsAny(path, "\r\n\x00") {
+		return "", false, errors.New("ELITEA_AUTH_CONFIG_FILE is invalid")
+	}
+	return path, true, nil
+}
+
+type publicServerLifecycle interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
+type runtimeLifecycle interface {
+	Run(context.Context) error
+	Shutdown(context.Context) error
+}
+
+var ErrApplicationDrainTimeout = errors.New("application drain deadline exceeded")
+
+func serveApplication(ctx context.Context, public publicServerLifecycle, runtime runtimeLifecycle, shutdownTimeout time.Duration) error {
+	if ctx == nil || public == nil || shutdownTimeout <= 0 {
+		return errors.New("application lifecycle dependencies are incomplete")
+	}
+	type result struct {
+		name string
+		err  error
+	}
+	componentCount := 1
+	results := make(chan result, 2)
+	go func() { results <- result{name: "public HTTP", err: public.ListenAndServe()} }()
+	if runtime != nil {
+		componentCount++
+		// Runtime cancellation is owned by Shutdown below so the same drain
+		// deadline reaches its publisher and private listeners before pools close.
+		go func() { results <- result{name: "production runtime", err: runtime.Run(context.Background())} }()
+	}
+
+	var primary *result
+	select {
+	case first := <-results:
+		primary = &first
+	case <-ctx.Done():
+	}
+	causes := make([]error, 0, componentCount+1)
+	if primary != nil {
+		if primary.err == nil {
+			causes = append(causes, fmt.Errorf("%s stopped unexpectedly", primary.name))
+		} else {
+			causes = append(causes, fmt.Errorf("%s failed: %w", primary.name, primary.err))
+		}
+	}
+
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer drainCancel()
+	shutdownResults := make(chan result, 2)
+	go func() { shutdownResults <- result{name: "public HTTP", err: public.Shutdown(drainCtx)} }()
+	shutdownPending := 1
+	if runtime != nil {
+		shutdownPending++
+		go func() { shutdownResults <- result{name: "production runtime", err: runtime.Shutdown(drainCtx)} }()
+	}
+	remainingComponents := componentCount
+	if primary != nil {
+		remainingComponents--
+	}
+	drainDone := drainCtx.Done()
+	deadlineObserved := false
+	for remainingComponents > 0 || shutdownPending > 0 {
+		select {
+		case drained := <-results:
+			remainingComponents--
+			if drained.err == nil {
+				causes = append(causes, fmt.Errorf("%s stopped unexpectedly", drained.name))
+				continue
+			}
+			if errors.Is(drained.err, http.ErrServerClosed) || errors.Is(drained.err, context.Canceled) || errors.Is(drained.err, context.DeadlineExceeded) {
+				continue
+			}
+			causes = append(causes, fmt.Errorf("%s failed during drain: %w", drained.name, drained.err))
+		case stopped := <-shutdownResults:
+			shutdownPending--
+			if stopped.err != nil && !errors.Is(stopped.err, context.Canceled) && !errors.Is(stopped.err, context.DeadlineExceeded) {
+				causes = append(causes, fmt.Errorf("shutdown %s: %w", stopped.name, stopped.err))
+			}
+		case <-drainDone:
+			deadlineObserved = true
+			drainDone = nil
+			causes = append(causes, fmt.Errorf("%w after %s", ErrApplicationDrainTimeout, shutdownTimeout))
+		}
+	}
+	if deadlineObserved && !errors.Is(errors.Join(causes...), ErrApplicationDrainTimeout) {
+		causes = append(causes, fmt.Errorf("%w after %s", ErrApplicationDrainTimeout, shutdownTimeout))
+	}
+	return errors.Join(causes...)
 }
 
 func envOr(key, fallback string) string {
@@ -330,35 +698,10 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func adminUIConfig() *adminui.Config {
-	staticDir := os.Getenv("ADMIN_UI_STATIC_DIR")
-	if staticDir == "" {
-		staticDir = "/data/admin_ui/static/dist"
-	}
-	if _, err := os.Stat(staticDir); err != nil {
-		slog.Info("admin UI disabled (static dir not found)", "path", staticDir)
-		return nil
-	}
-	return &adminui.Config{
-		StaticDir:     staticDir,
-		ViteServerURL: envOr("ADMIN_UI_API_URL", "/api/v2"),
-		BasePath:      envOr("ADMIN_UI_BASE_PATH", "/admin/app"),
-		SecretKey:     envOr("APPLICATION_SECRET_KEY", ""),
-	}
-}
-
 type poolChecker struct {
 	pool *pgxpool.Pool
 }
 
 func (p *poolChecker) Ping(ctx context.Context) error {
 	return p.pool.Ping(ctx)
-}
-
-// eventSubscriber is the subset of the EventBus main.go needs: subscribing the
-// webhook dispatcher to platform events. Both transports satisfy it —
-// redis.EventBus and natsbus.EventBus share Subscribe(ctx, channel,
-// redis.EventHandler).
-type eventSubscriber interface {
-	Subscribe(ctx context.Context, channel string, handler redis.EventHandler)
 }

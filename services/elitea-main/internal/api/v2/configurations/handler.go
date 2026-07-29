@@ -1,37 +1,52 @@
 package configurations
 
 import (
-	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed sdk_config_schemas.json
-var sdkConfigSchemasRaw []byte
-
-var sdkConfigSchemas map[string]any
-
-func init() {
-	sdkConfigSchemas = make(map[string]any)
-	_ = json.Unmarshal(sdkConfigSchemasRaw, &sdkConfigSchemas) // embedded JSON — cannot fail at runtime if the file compiled
-}
+const (
+	defaultConfigurationListLimit = 20
+	maxConfigurationListLimit     = 200
+	maxConfigurationModelRows     = 1000
+	maxConfigurationRequestBytes  = 1 << 20
+)
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool               *pgxpool.Pool
+	permissionResolver auth.PermissionResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+type Option func(*Handler)
+
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(handler *Handler) {
+		handler.permissionResolver = resolver
+	}
+}
+
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	return handler
 }
 
 func (h *Handler) Routes() chi.Router {
+	// Routes is the broad current-main compatibility surface used by parity
+	// tests and the default-off prototype router. Production composition uses
+	// ProductionRoutes or the typed current handlers instead.
 	r := chi.NewRouter()
 	r.Get("/available/", h.Available)
 	r.Get("/configurations/{projectID}", h.List)
@@ -59,372 +74,110 @@ func (h *Handler) Routes() chi.Router {
 	return r
 }
 
+// ProductionRoutes is an unmounted cutover candidate containing only methods
+// with an audited exact legacy permission, mode, and project extractor. RBAC
+// parity alone is not business-logic parity; NewRouter must not mount this set
+// until the tenant repository, validation, secret, event, and DTO contracts are
+// complete. Routes() retains the wider prototype surface for parity work.
+func (h *Handler) ProductionRoutes() chi.Router {
+	r := chi.NewRouter()
+	r.With(h.require("configurations.configurations.list")).Get("/configurations/{projectID}", h.List)
+	r.With(h.require("configurations.configuration.create")).Post("/configurations/{projectID}", h.Create)
+	r.With(h.require("configurations.configuration.details")).Get("/configuration/{projectID}/{configID}", h.Get)
+	r.With(h.require("configurations.configuration.update")).Put("/configuration/{projectID}/{configID}", h.Update)
+	r.With(h.require("configurations.configuration.delete")).Delete("/configuration/{projectID}/{configID}", h.Delete)
+	return r
+}
+
+func (h *Handler) require(permission string) func(http.Handler) http.Handler {
+	return middleware.RequireResolvedPermissions(
+		h.permissionResolver,
+		auth.PermissionModeDefault,
+		permission,
+	)
+}
+
+type ConfigurationType struct {
+	Type        string `json:"type"`
+	DisplayName string `json:"display_name"`
+	Section     string `json:"section"`
+	Description string `json:"description,omitempty"`
+}
+
 func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
-	result := make([]map[string]any, 0, len(sdkConfigSchemas)+len(fallbackConfigTypes()))
+	hardcoded := []ConfigurationType{
+		{Type: "openai", DisplayName: "OpenAI", Section: "llm"},
+		{Type: "azure_openai", DisplayName: "Azure OpenAI", Section: "llm"},
+		{Type: "anthropic", DisplayName: "Anthropic", Section: "llm"},
+		{Type: "google_ai", DisplayName: "Google AI", Section: "llm"},
+		{Type: "openai_embedding", DisplayName: "OpenAI Embedding", Section: "embedding"},
+		{Type: "chroma", DisplayName: "Chroma", Section: "vectorstorage"},
+		{Type: "pinecone", DisplayName: "Pinecone", Section: "vectorstorage"},
+		{Type: "weaviate", DisplayName: "Weaviate", Section: "vectorstorage"},
+	}
+
+	// Build a set of known types to avoid duplicates
 	known := make(map[string]bool)
-
-	// Primary source: SDK-defined schemas (embedded from elitea-sdk)
-	for typeName, schema := range sdkConfigSchemas {
-		schemaMap, ok := schema.(map[string]any)
-		if !ok {
-			continue
-		}
-		metadata, _ := schemaMap["metadata"].(map[string]any)
-		section := ""
-		if metadata != nil {
-			section, _ = metadata["section"].(string)
-		}
-
-		entry := buildConfigTypeFromSDKSchema(typeName, section, schemaMap)
-		result = append(result, entry)
-		known[typeName] = true
+	for _, t := range hardcoded {
+		known[t.Type] = true
 	}
 
-	// Secondary: fallback types (llm_model, embedding_model, etc.) not covered by SDK
-	for _, fallback := range fallbackConfigTypes() {
-		tp, _ := fallback["type"].(string)
-		if !known[tp] {
-			result = append(result, fallback)
-			known[tp] = true
-		}
-	}
-
-	// Tertiary: discover any types from DB not covered by SDK or fallbacks
-	ctx := r.Context()
-	schemaRows, err := h.pool.Query(ctx, `SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'p_%'`)
-	if err == nil {
-		defer schemaRows.Close()
-		var schemas []string
-		for schemaRows.Next() {
-			var s string
-			if err := schemaRows.Scan(&s); err == nil {
-				schemas = append(schemas, s)
-			}
-		}
-		schemaRows.Close()
-
-		typeData := make(map[string]map[string]any)
-		typeSections := make(map[string]string)
-		for _, schema := range schemas {
-			dbQ := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration WHERE type IS NOT NULL`, schema)
-			rows, err := h.pool.Query(ctx, dbQ)
-			if err != nil {
-				continue
-			}
-			for rows.Next() {
-				var typeName, section string
-				if err := rows.Scan(&typeName, &section); err != nil {
-					continue
-				}
-				if known[typeName] {
-					continue
-				}
-				if _, exists := typeData[typeName]; !exists {
-					typeData[typeName] = make(map[string]any)
-					typeSections[typeName] = section
-				}
-			}
-			rows.Close()
-		}
-		// For undiscovered types, fetch a sample row to infer schema
-		for typeName, section := range typeSections {
-			for _, schema := range schemas {
-				dbQ := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE type = $1 AND data IS NOT NULL LIMIT 1`, schema)
-				var dataRaw []byte
-				if err := h.pool.QueryRow(ctx, dbQ, typeName).Scan(&dataRaw); err != nil {
-					continue
-				}
-				var rowData map[string]any
-				if err := json.Unmarshal(dataRaw, &rowData); err != nil {
-					continue
-				}
-				typeData[typeName] = rowData
-				break
-			}
-			result = append(result, buildConfigTypeFromSample(typeName, section, typeData[typeName]))
-			known[typeName] = true
-		}
-	}
-
-	// Filter by section if requested
-	sections := r.URL.Query()["section"]
-	if len(sections) > 0 {
-		sectionSet := make(map[string]bool, len(sections))
-		for _, s := range sections {
-			sectionSet[s] = true
-		}
-		filtered := make([]map[string]any, 0)
-		for _, t := range result {
-			sec, _ := t["section"].(string)
-			if sectionSet[sec] {
-				filtered = append(filtered, t)
-			}
-		}
-		result = filtered
-	}
-
-	writeJSON(w, http.StatusOK, result)
-}
-
-// buildConfigTypeFromSDKSchema wraps an SDK-provided schema into the config_schema format expected by the SPA.
-func buildConfigTypeFromSDKSchema(typeName, section string, sdkSchema map[string]any) map[string]any {
-	metadata, _ := sdkSchema["metadata"].(map[string]any)
-	displayName := typeName
-	if metadata != nil {
-		if l, ok := metadata["label"].(string); ok && l != "" {
-			displayName = l
-		}
-	}
-
-	hasTestConnection := false
-	if metadata != nil {
-		if _, ok := metadata["check_connection_supported"]; ok {
-			hasTestConnection = true
-		}
-	}
-
-	checkConnectionLabel := "Test Connection"
-	if metadata != nil {
-		if l, ok := metadata["check_connection_label"].(string); ok && l != "" {
-			checkConnectionLabel = l
-		}
-	}
-
-	return map[string]any{
-		"type":    typeName,
-		"section": section,
-		"config_schema": map[string]any{
-			"title": displayName,
-			"type":  "object",
-			"properties": map[string]any{
-				"elitea_title": map[string]any{"type": "string", "title": "ID", "description": "Unique identifier"},
-				"label":        map[string]any{"type": "string", "title": "Display Name"},
-				"type":         map[string]any{"type": "string", "const": typeName},
-				"shared":       map[string]any{"type": "boolean", "title": "Shared", "default": false},
-				"data":         sdkSchema,
-			},
-			"required": []string{"elitea_title", "type", "data"},
-		},
-		"has_test_connection":    hasTestConnection,
-		"check_connection_label": checkConnectionLabel,
-	}
-}
-
-// buildConfigTypeFromSample derives a JSON Schema for a config type from a sample data row.
-func buildConfigTypeFromSample(typeName, section string, sampleData map[string]any) map[string]any {
-	displayName := configDisplayName(typeName)
-
-	// Infer properties from sample data keys
-	props := make(map[string]any)
-	required := make([]string, 0)
-	for key, val := range sampleData {
-		prop := inferPropertySchema(key, val)
-		props[key] = prop
-		// Fields that look like credentials are required
-		if isLikelyRequired(key) {
-			required = append(required, key)
-		}
-	}
-
-	// For AI-backed types, add ai_credentials reference
-	isAIType := section == "llm" || section == "embedding" || section == "image_generation" || section == "asr" || section == "tts"
-	if isAIType {
-		if _, has := props["ai_credentials"]; has {
-			props["ai_credentials"] = map[string]any{
-				"type":  "object",
-				"title": "AI Credentials",
-				"properties": map[string]any{
-					"elitea_title": map[string]any{"type": "string", "title": "Credential Name"},
-					"private":      map[string]any{"type": "boolean", "title": "Private", "default": false},
-				},
-				"required":               []string{"elitea_title"},
-				"configuration_sections": []string{"ai_credentials"},
-			}
-			if !contains(required, "ai_credentials") {
-				required = append(required, "ai_credentials")
-			}
-		}
-	}
-
-	metadata := map[string]any{
-		"label":   displayName,
-		"section": section,
-		"type":    typeName,
-	}
-
-	return map[string]any{
-		"type":    typeName,
-		"section": section,
-		"config_schema": map[string]any{
-			"title": displayName,
-			"type":  "object",
-			"properties": map[string]any{
-				"elitea_title": map[string]any{"type": "string", "title": "ID", "description": "Unique identifier"},
-				"label":        map[string]any{"type": "string", "title": "Display Name"},
-				"type":         map[string]any{"type": "string", "const": typeName},
-				"shared":       map[string]any{"type": "boolean", "title": "Shared", "default": false},
-				"data": map[string]any{
-					"type":       "object",
-					"title":      displayName,
-					"properties": props,
-					"required":   required,
-					"metadata":   metadata,
-				},
-			},
-			"required": []string{"elitea_title", "type", "data"},
-		},
-		"has_test_connection":    true,
-		"check_connection_label": "Test Connection",
-	}
-}
-
-func inferPropertySchema(key string, val any) map[string]any {
-	title := strings.ReplaceAll(strings.ReplaceAll(key, "_", " "), "-", " ")
-	title = titleCase(title)
-
-	prop := map[string]any{"title": title}
-
-	switch v := val.(type) {
-	case bool:
-		prop["type"] = "boolean"
-		prop["default"] = v
-	case float64:
-		if v == float64(int(v)) {
-			prop["type"] = "integer"
-			prop["default"] = int(v)
-		} else {
-			prop["type"] = "number"
-			prop["default"] = v
-		}
-	case map[string]any:
-		prop["type"] = "object"
-		subProps := make(map[string]any)
-		for sk, sv := range v {
-			subProps[sk] = inferPropertySchema(sk, sv)
-		}
-		prop["properties"] = subProps
-	default:
-		prop["type"] = "string"
-		// Mark password-like fields
-		if isPasswordField(key) {
-			prop["format"] = "password"
-		}
-	}
-	return prop
-}
-
-func isPasswordField(key string) bool {
-	return strings.Contains(key, "key") ||
-		strings.Contains(key, "secret") ||
-		strings.Contains(key, "token") ||
-		strings.Contains(key, "password") ||
-		strings.Contains(key, "private_key")
-}
-
-func isLikelyRequired(key string) bool {
-	return key == "name" || key == "api_key" || key == "base_url" || key == "url" ||
-		key == "access_token" || key == "username"
-}
-
-func contains(sl []string, s string) bool {
-	for _, v := range sl {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-func configDisplayName(typeName string) string {
-	names := map[string]string{
+	displayNames := map[string]string{
 		"llm_model":              "LLM Model",
 		"embedding_model":        "Embedding Model",
 		"asr_model":              "ASR Model",
 		"tts_model":              "TTS Model",
 		"image_generation_model": "Image Generation Model",
-		"ai_dial":                "AI Dial",
-		"azure_open_ai":          "Azure OpenAI",
-		"amazon_bedrock":         "Amazon Bedrock",
-		"github":                 "GitHub",
-		"jira":                   "Jira",
-		"s3":                     "S3 Storage",
-		"s3_api_credentials":     "S3 API Credentials",
-		"pgvector":               "PGVector",
-		"service_prompt":         "Service Prompt",
-		"environment_settings":   "Environment Settings",
 	}
-	if n, ok := names[typeName]; ok {
-		return n
-	}
-	return titleCase(strings.ReplaceAll(typeName, "_", " "))
-}
 
-func titleCase(s string) string {
-	words := strings.Fields(s)
-	for i, w := range words {
-		if len(w) > 0 {
-			words[i] = strings.ToUpper(w[:1]) + w[1:]
+	// Until the versioned catalog is composed, supplement the compatibility
+	// response only when a database is configured. Never make p_1 availability
+	// a process-start requirement for static handler tests or tooling.
+	if h.pool != nil {
+		ctx := r.Context()
+		dbQ := `SELECT DISTINCT type, section FROM "p_1".configuration WHERE type IS NOT NULL ORDER BY type`
+		rows, err := h.pool.Query(ctx, dbQ)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var typeName, section string
+				if err := rows.Scan(&typeName, &section); err != nil || known[typeName] {
+					continue
+				}
+				displayName := displayNames[typeName]
+				if displayName == "" {
+					displayName = typeName
+				}
+				hardcoded = append(hardcoded, ConfigurationType{
+					Type:        typeName,
+					DisplayName: displayName,
+					Section:     section,
+				})
+				known[typeName] = true
+			}
 		}
 	}
-	return strings.Join(words, " ")
-}
 
-// fallbackConfigTypes returns types that should always be available even if the DB is empty.
-func fallbackConfigTypes() []map[string]any {
-	return []map[string]any{
-		buildConfigTypeFromSample("llm_model", "llm", map[string]any{
-			"name": "gpt-4o", "context_window": float64(128000), "max_output_tokens": float64(16384),
-			"low_tier": false, "high_tier": false, "supports_reasoning": false, "supports_vision": true,
-			"ai_credentials": map[string]any{"elitea_title": "", "private": false},
-		}),
-		buildConfigTypeFromSample("embedding_model", "embedding", map[string]any{
-			"name":           "text-embedding-3-small",
-			"ai_credentials": map[string]any{"elitea_title": "", "private": false},
-		}),
-		buildConfigTypeFromSample("ai_dial", "ai_credentials", map[string]any{
-			"api_key": "", "api_base": "https://ai-proxy.lab.epam.com", "api_version": "2025-04-01-preview",
-		}),
-		buildConfigTypeFromSample("azure_open_ai", "ai_credentials", map[string]any{
-			"api_key": "", "api_base": "", "api_version": "2025-04-01-preview",
-		}),
-		buildConfigTypeFromSample("amazon_bedrock", "ai_credentials", map[string]any{
-			"aws_region_name": "us-east-1", "aws_access_key_id": "", "aws_secret_access_key": "",
-		}),
-		buildConfigTypeFromSample("github", "credentials", map[string]any{
-			"base_url": "https://api.github.com", "access_token": "", "username": "", "password": "",
-			"app_id": "", "app_private_key": "",
-		}),
-		buildConfigTypeFromSample("jira", "credentials", map[string]any{
-			"base_url": "", "username": "", "api_key": "", "hosting": "Cloud",
-		}),
-		buildConfigTypeFromSample("s3", "storage", map[string]any{
-			"storage_url": "", "access_key": "", "secret_access_key": "", "region_name": "us-east-1",
-			"use_compatible_storage": true,
-		}),
-		buildConfigTypeFromSample("pgvector", "vectorstorage", map[string]any{
-			"host": "", "port": float64(5432), "database": "", "user": "", "password": "",
-		}),
-	}
+	writeJSON(w, http.StatusOK, hardcoded)
 }
 
 type Configuration struct {
-	ID          int            `json:"id"`
-	UUID        string         `json:"uuid,omitempty"`
-	ProjectID   string         `json:"project_id"`
-	Label       string         `json:"label,omitempty"`
-	Name        string         `json:"name"`
-	EliteaTitle string         `json:"elitea_title"`
-	Type        string         `json:"type"`
-	Section     string         `json:"section"`
-	Data        map[string]any `json:"data,omitempty"`
-	Meta        map[string]any `json:"meta,omitempty"`
-	Shared      bool           `json:"shared"`
-	StatusOK    bool           `json:"status_ok"`
-	StatusLogs  string         `json:"status_logs,omitempty"`
-	Source      string         `json:"source"`
-	AuthorID    *int           `json:"author_id,omitempty"`
-	CreatedAt   string         `json:"created_at"`
-	UpdatedAt   string         `json:"updated_at,omitempty"`
+	ID         int            `json:"id"`
+	UUID       string         `json:"uuid,omitempty"`
+	ProjectID  string         `json:"project_id"`
+	Label      string         `json:"label,omitempty"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	Section    string         `json:"section"`
+	Data       map[string]any `json:"data,omitempty"`
+	Meta       map[string]any `json:"meta,omitempty"`
+	Shared     bool           `json:"shared"`
+	StatusOK   bool           `json:"status_ok"`
+	StatusLogs string         `json:"status_logs,omitempty"`
+	Source     string         `json:"source"`
+	AuthorID   *int           `json:"author_id,omitempty"`
+	CreatedAt  string         `json:"created_at"`
+	UpdatedAt  string         `json:"updated_at,omitempty"`
 }
 
 type ListResponse struct {
@@ -447,49 +200,26 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 {
-		limit = 20
+		limit = defaultConfigurationListLimit
 	}
-	sharedLimit, _ := strconv.Atoi(r.URL.Query().Get("shared_limit"))
-	sharedOffset, _ := strconv.Atoi(r.URL.Query().Get("shared_offset"))
-	if sharedLimit <= 0 {
-		sharedLimit = 20
+	if limit > maxConfigurationListLimit {
+		limit = maxConfigurationListLimit
 	}
-
-	typeFilter := r.URL.Query().Get("type")
-	sectionFilter := r.URL.Query().Get("section")
-	searchQuery := r.URL.Query().Get("query")
-	includeShared := r.URL.Query().Get("include_shared") != "false"
+	if offset < 0 {
+		offset = 0
+	}
 
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
-	// Build WHERE clause for filters
-	filterWhere := ""
-	filterArgs := []any{}
-	argIdx := 1
-	if typeFilter != "" {
-		filterWhere += fmt.Sprintf(` AND type = $%d`, argIdx)
-		filterArgs = append(filterArgs, typeFilter)
-		argIdx++
-	}
-	if sectionFilter != "" {
-		filterWhere += fmt.Sprintf(` AND section = $%d`, argIdx)
-		filterArgs = append(filterArgs, sectionFilter)
-		argIdx++
-	}
-	if searchQuery != "" {
-		filterWhere += fmt.Sprintf(` AND (label ILIKE $%d OR elitea_title ILIKE $%d)`, argIdx, argIdx)
-		filterArgs = append(filterArgs, "%"+searchQuery+"%")
-		argIdx++
-	}
-
-	// Count own configs
+	// Count
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = false`, schema) + filterWhere
-	if err := h.pool.QueryRow(ctx, countQ, filterArgs...).Scan(&total); err != nil {
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = false`, schema)
+	if err := h.pool.QueryRow(ctx, countQ).Scan(&total); err != nil {
+		// Schema may not exist yet — return empty
 		writeJSON(w, http.StatusOK, ListResponse{
 			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
-			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: sharedLimit},
+			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: 20},
 		})
 		return
 	}
@@ -500,15 +230,16 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
 			created_at, updated_at
 		FROM %q.configuration
-		WHERE shared = false`, schema) + filterWhere +
-		fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, argIdx, argIdx+1)
-	listArgs := append(append([]any{}, filterArgs...), limit, offset)
+		WHERE shared = false
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2
+	`, schema)
 
-	rows, err := h.pool.Query(ctx, listQ, listArgs...)
+	rows, err := h.pool.Query(ctx, listQ, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusOK, ListResponse{
 			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
-			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: sharedLimit},
+			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: 20},
 		})
 		return
 	}
@@ -519,16 +250,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var c Configuration
 		var data, meta []byte
 		var createdAt, updatedAt *time.Time
-		if err := rows.Scan(
+		rows.Scan(
 			&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
 			&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 			&createdAt, &updatedAt,
-		); err != nil {
-			continue
-		}
-		c.EliteaTitle = c.Name
-		_ = json.Unmarshal(data, &c.Data) // data is a DB JSONB column; malformed rows are skipped above
-		_ = json.Unmarshal(meta, &c.Meta)
+		)
+		json.Unmarshal(data, &c.Data)
+		json.Unmarshal(meta, &c.Meta)
 		if createdAt != nil {
 			c.CreatedAt = createdAt.Format(time.RFC3339)
 		}
@@ -539,82 +267,43 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Shared configs
-	sharedItems := make([]Configuration, 0)
 	var sharedTotal int
-	if includeShared {
-		// Build shared filter args separately
-		sharedFilterWhere := ""
-		sharedFilterArgs := []any{}
-		sharedArgIdx := 1
-		if typeFilter != "" {
-			sharedFilterWhere += fmt.Sprintf(` AND type = $%d`, sharedArgIdx)
-			sharedFilterArgs = append(sharedFilterArgs, typeFilter)
-			sharedArgIdx++
-		}
-		if sectionFilter != "" {
-			sharedFilterWhere += fmt.Sprintf(` AND section = $%d`, sharedArgIdx)
-			sharedFilterArgs = append(sharedFilterArgs, sectionFilter)
-			sharedArgIdx++
-		}
-		if searchQuery != "" {
-			sharedFilterWhere += fmt.Sprintf(` AND (label ILIKE $%d OR elitea_title ILIKE $%d)`, sharedArgIdx, sharedArgIdx)
-			sharedFilterArgs = append(sharedFilterArgs, "%"+searchQuery+"%")
-			sharedArgIdx++
-		}
+	sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true`, schema)
+	h.pool.QueryRow(ctx, sharedCountQ).Scan(&sharedTotal)
 
-		sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true`, schema) + sharedFilterWhere
-		_ = h.pool.QueryRow(ctx, sharedCountQ, sharedFilterArgs...).Scan(&sharedTotal) // sharedTotal stays 0 on error — acceptable for pagination
+	sharedQ := fmt.Sprintf(`
+		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
+			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
+			created_at, updated_at
+		FROM %q.configuration
+		WHERE shared = true
+		ORDER BY created_at DESC
+		LIMIT 20
+	`, schema)
 
-		sharedQ := fmt.Sprintf(`
-			SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
-				data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
-				created_at, updated_at
-			FROM %q.configuration
-			WHERE shared = true`, schema) + sharedFilterWhere +
-			fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, sharedArgIdx, sharedArgIdx+1)
-		sharedListArgs := append(append([]any{}, sharedFilterArgs...), sharedLimit, sharedOffset)
-
-		sharedRows, err := h.pool.Query(ctx, sharedQ, sharedListArgs...)
-		if err == nil {
-			defer sharedRows.Close()
-			for sharedRows.Next() {
-				var c Configuration
-				var data, meta []byte
-				var createdAt, updatedAt *time.Time
-				if err := sharedRows.Scan(
-					&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
-					&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
-					&createdAt, &updatedAt,
-				); err != nil {
-					continue
-				}
-				_ = json.Unmarshal(data, &c.Data) // DB JSONB column
-				_ = json.Unmarshal(meta, &c.Meta)
-				if createdAt != nil {
-					c.CreatedAt = createdAt.Format(time.RFC3339)
-				}
-				if updatedAt != nil {
-					c.UpdatedAt = updatedAt.Format(time.RFC3339)
-				}
-				sharedItems = append(sharedItems, c)
+	sharedItems := make([]Configuration, 0)
+	sharedRows, err := h.pool.Query(ctx, sharedQ)
+	if err == nil {
+		defer sharedRows.Close()
+		for sharedRows.Next() {
+			var c Configuration
+			var data, meta []byte
+			var createdAt, updatedAt *time.Time
+			sharedRows.Scan(
+				&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
+				&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
+				&createdAt, &updatedAt,
+			)
+			json.Unmarshal(data, &c.Data)
+			json.Unmarshal(meta, &c.Meta)
+			if createdAt != nil {
+				c.CreatedAt = createdAt.Format(time.RFC3339)
 			}
+			if updatedAt != nil {
+				c.UpdatedAt = updatedAt.Format(time.RFC3339)
+			}
+			sharedItems = append(sharedItems, c)
 		}
-	}
-
-	// Inject virtual "default" local storage when filtering for s3 and nothing found.
-	// The internal artifact system is always available without requiring a DB entry.
-	if typeFilter == "s3" && len(items) == 0 && len(sharedItems) == 0 {
-		items = []Configuration{{
-			ID:        -1,
-			ProjectID: projectID,
-			Name:      "default",
-			Type:      "s3",
-			Section:   "storage",
-			Source:    "system",
-			StatusOK:  true,
-			CreatedAt: "2024-01-01T00:00:00Z",
-		}}
-		total = 1
 	}
 
 	writeJSON(w, http.StatusOK, ListResponse{
@@ -656,9 +345,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
 		return
 	}
-	c.EliteaTitle = c.Name
-	_ = json.Unmarshal(data, &c.Data) // DB JSONB column
-	_ = json.Unmarshal(meta, &c.Meta)
+	json.Unmarshal(data, &c.Data)
+	json.Unmarshal(meta, &c.Meta)
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -674,23 +362,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
-		return
-	}
-
-	eliteaTitle := strVal(body, "elitea_title")
-	if eliteaTitle == "" {
-		eliteaTitle = strVal(body, "name")
-	}
-	configType := strVal(body, "type")
-
-	if eliteaTitle == "" || configType == "" {
-		http.Error(w, `{"error":"elitea_title and type are required"}`, http.StatusBadRequest)
-		return
-	}
-	if _, hasData := body["data"]; !hasData {
-		http.Error(w, `{"error":"data is required"}`, http.StatusBadRequest)
+	if !decodeBoundedJSON(w, r, &body) {
 		return
 	}
 
@@ -698,105 +370,62 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if dataMap == nil {
 		dataMap = map[string]any{}
 	}
-
-	// Type-specific validation
-	if err := validateConfigData(configType, dataMap); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
-		return
-	}
-	// Circular-routing guard #1 (spec §2.6): reject self-referential api_base
-	// at authoring time, on every upsert.
 	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
-	dataMap = maskSecrets(h.pool, projectID, dataMap, r)
 	dataBytes, _ := json.Marshal(dataMap)
 	metaBytes, _ := json.Marshal(body["meta"])
-	if metaBytes == nil || string(metaBytes) == "null" {
-		metaBytes = []byte("{}")
-	}
 	shared, _ := body["shared"].(bool)
-	section := strVal(body, "section")
-	if section == "" {
-		section = sectionForType(configType)
-	}
 
 	q := fmt.Sprintf(`
-		INSERT INTO %q.configuration (project_id, label, elitea_title, type, section, data, meta, shared, source, author_id, status_ok)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'user', $9, true)
+		INSERT INTO %q.configuration (project_id, label, elitea_title, type, section, data, meta, shared, source, author_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'user', $9)
 		RETURNING id, uuid::text, created_at
 	`, schema)
 
 	pID, _ := strconv.Atoi(projectID)
+	var authorID any
+	if user, ok := auth.UserFromContext(ctx); ok {
+		if owningUserID, safe := user.OwningUserID(); safe {
+			authorID = owningUserID
+		}
+	}
 	var id int
 	var uuid string
 	var createdAt time.Time
 	err := h.pool.QueryRow(ctx, q,
 		pID,
 		strVal(body, "label"),
-		eliteaTitle,
-		configType,
-		section,
+		strVal(body, "name"),
+		strVal(body, "type"),
+		strVal(body, "section"),
 		dataBytes,
 		metaBytes,
 		shared,
-		nil,
+		authorID,
 	).Scan(&id, &uuid, &createdAt)
 	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "duplicate key") || strings.Contains(errMsg, "unique constraint") {
-			http.Error(w, `{"error":"configuration with this name already exists"}`, http.StatusConflict)
-			return
-		}
-		http.Error(w, fmt.Sprintf(`{"error":"create failed: %s"}`, errMsg), http.StatusInternalServerError)
+		http.Error(w, `{"error":"create failed"}`, http.StatusInternalServerError)
 		return
 	}
 
 	c := Configuration{
-		ID:          id,
-		UUID:        uuid,
-		ProjectID:   projectID,
-		Name:        eliteaTitle,
-		EliteaTitle: eliteaTitle,
-		Label:       strVal(body, "label"),
-		Type:        configType,
-		Section:     section,
-		Shared:      shared,
-		Source:      "user",
-		StatusOK:    true,
-		CreatedAt:   createdAt.Format(time.RFC3339),
+		ID:        id,
+		UUID:      uuid,
+		ProjectID: projectID,
+		Name:      strVal(body, "name"),
+		Type:      strVal(body, "type"),
+		Section:   strVal(body, "section"),
+		Shared:    shared,
+		Source:    "user",
+		CreatedAt: createdAt.Format(time.RFC3339),
 	}
-	_ = json.Unmarshal(dataBytes, &c.Data) // dataBytes was produced by json.Marshal above
-	_ = json.Unmarshal(metaBytes, &c.Meta)
+	json.Unmarshal(dataBytes, &c.Data)
+	json.Unmarshal(metaBytes, &c.Meta)
 
-	writeJSON(w, http.StatusOK, c)
-}
-
-func sectionForType(configType string) string {
-	sections := map[string]string{
-		"llm_model":              "llm",
-		"embedding_model":        "embedding",
-		"asr_model":              "asr",
-		"tts_model":              "tts",
-		"image_generation_model": "image_generation",
-		"ai_dial":                "ai_credentials",
-		"azure_open_ai":          "ai_credentials",
-		"amazon_bedrock":         "ai_credentials",
-		"github":                 "credentials",
-		"jira":                   "credentials",
-		"confluence":             "credentials",
-		"s3":                     "storage",
-		"s3_api_credentials":     "storage",
-		"pgvector":               "vectorstorage",
-		"service_prompt":         "prompts",
-		"environment_settings":   "settings",
-	}
-	if s, ok := sections[configType]; ok {
-		return s
-	}
-	return "other"
+	writeJSON(w, http.StatusCreated, c)
 }
 
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
@@ -806,8 +435,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+	if !decodeBoundedJSON(w, r, &body) {
 		return
 	}
 
@@ -815,14 +443,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if dataMap == nil {
 		dataMap = map[string]any{}
 	}
-	// Circular-routing guard #1 (spec §2.6) runs on UPDATE as well — the spec
-	// requires the self-referential check on every credential upsert, not
-	// only initial provisioning.
 	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	dataMap = maskSecrets(h.pool, projectID, dataMap, r)
+
 	dataBytes, _ := json.Marshal(dataMap)
 	metaBytes, _ := json.Marshal(body["meta"])
 	shared, _ := body["shared"].(bool)
@@ -863,9 +488,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
 		return
 	}
-	c.EliteaTitle = c.Name
-	_ = json.Unmarshal(data2, &c.Data) // DB JSONB column returned by RETURNING clause
-	_ = json.Unmarshal(meta2, &c.Meta)
+	json.Unmarshal(data2, &c.Data)
+	json.Unmarshal(meta2, &c.Meta)
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
 	}
@@ -896,8 +520,7 @@ func (h *Handler) CheckConnection(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) {
 	var items []map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+	if !decodeBoundedJSON(w, r, &items) {
 		return
 	}
 	results := make([]map[string]any, 0, len(items))
@@ -927,6 +550,10 @@ type TypeDescriptor struct {
 }
 
 func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
@@ -938,7 +565,8 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		FROM %q.configuration
 		WHERE type = ANY($1)
 		ORDER BY id
-	`, schema)
+		LIMIT %d
+	`, schema, maxConfigurationModelRows)
 
 	rows, err := h.pool.Query(ctx, q, modelTypes)
 	if err != nil {
@@ -960,7 +588,7 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		m.ProjectID = strconv.Itoa(dbProjectID)
 		m.IsDefault = false
 		if dataBytes != nil {
-			_ = json.Unmarshal(dataBytes, &m.Data) // DB JSONB column
+			json.Unmarshal(dataBytes, &m.Data)
 		}
 		items = append(items, m)
 	}
@@ -970,14 +598,17 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+	if !decodeBoundedJSON(w, r, &body) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
 }
 
 func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		writeJSON(w, http.StatusOK, []TypeDescriptor{})
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	schema := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
@@ -1033,43 +664,29 @@ func (h *Handler) TTSVoices(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"voices": []map[string]string{}})
 }
 
-func validateConfigData(configType string, data map[string]any) error {
-	switch configType {
-	case "azure_openai", "azure_open_ai":
-		if s, _ := data["api_base"].(string); s == "" {
-			return fmt.Errorf("api_base is required for azure_openai configuration")
-		}
-	case "github":
-		username, _ := data["username"].(string)
-		password, _ := data["password"].(string)
-		token, _ := data["token"].(string)
-		if username != "" && password == "" && token == "" {
-			return fmt.Errorf("password or token is required when username is provided")
-		}
-	case "embedding_model":
-		name, _ := data["name"].(string)
-		modelName, _ := data["model_name"].(string)
-		if name == "" && modelName == "" {
-			return fmt.Errorf("name is required for embedding_model configuration")
-		}
-		if data["ai_credentials"] == nil {
-			return fmt.Errorf("ai_credentials is required for embedding_model configuration")
-		}
-		if creds, ok := data["ai_credentials"].(map[string]any); ok {
-			title, _ := creds["elitea_title"].(string)
-			if title == "" {
-				return fmt.Errorf("ai_credentials.elitea_title is required for embedding_model configuration")
-			}
-			if _, hasPrivate := creds["private"]; !hasPrivate {
-				return fmt.Errorf("ai_credentials.private is required for embedding_model configuration")
-			}
-		}
-	}
-	return nil
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v) // response already committed; nothing useful to do with a write error
+	json.NewEncoder(w).Encode(v)
+}
+
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxConfigurationRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return false
+	}
+
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return false
+	}
+	return true
 }

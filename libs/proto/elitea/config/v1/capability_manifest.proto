@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package elitea.config.v1;
+
+import "elitea/runtime/v1/command.proto";
+import "elitea/runtime/v1/common.proto";
+import "elitea/runtime/v1/envelope.proto";
+import "elitea/runtime/v1/output.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/config/v1;configv1";
+
+// RuntimeIdentityV1 describes the immutable implementation artifact rather
+// than current load or mutable process health.
+message RuntimeIdentityV1 {
+  string implementation_name = 1;
+  string language = 2;
+  string runtime_version = 3;
+  string build_revision = 4;
+  string source_revision = 5;
+  elitea.runtime.v1.DigestV1 artifact_digest = 6;
+  string startup_mode = 7;
+  elitea.runtime.v1.DigestV1 conformance_report_digest = 8;
+  reserved 9 to 15;
+}
+
+message ProtocolCompatibilityV1 {
+  uint32 minimum_major = 1;
+  uint32 minimum_minor = 2;
+  uint32 maximum_major = 3;
+  uint32 maximum_minor = 4;
+  repeated elitea.runtime.v1.SignatureProfileV1 signature_profiles = 5;
+  repeated string required_feature_flags = 6;
+  reserved 7 to 15;
+}
+
+// SDKFrameworkCompatibilityV1 pins revisions and digests. Mutable package
+// version strings alone are never sufficient for capability admission.
+message SDKFrameworkCompatibilityV1 {
+  string elitea_sdk_revision = 1;
+  elitea.runtime.v1.DigestV1 elitea_sdk_artifact_digest = 2;
+  string configuration_catalog_revision = 3;
+  elitea.runtime.v1.DigestV1 configuration_catalog_digest = 4;
+  repeated string framework_revisions = 5;
+  reserved 6 to 15;
+}
+
+message RuntimeCapabilityV1 {
+  string capability_id = 1;
+  string capability_version = 2;
+  repeated elitea.runtime.v1.WorkerCommandTypeV1 accepted_command_types = 3;
+  repeated elitea.runtime.v1.ExecutionOutputEventTypeV1 emitted_event_types = 4;
+  string interaction_model = 5;
+  repeated string resource_classes = 6;
+  repeated string feature_flags = 7;
+  string catalog_revision = 8;
+  elitea.runtime.v1.DigestV1 catalog_digest = 9;
+  string schema_id = 10;
+  string schema_revision = 11;
+  elitea.runtime.v1.DigestV1 schema_digest = 12;
+  reserved 13 to 31;
+}
+
+message RuntimeConstraintsV1 {
+  repeated string isolation_classes = 1;
+  repeated string architectures = 2;
+  bool child_process_support = 3;
+  repeated string network_egress_classes = 4;
+  bool artifact_support = 5;
+  bool realtime_session_support = 6;
+  reserved 7 to 15;
+}
+
+message RuntimeLimitsProfileReferenceV1 {
+  string limits_schema_revision = 1;
+  repeated string limits_revisions = 2;
+  repeated string resource_profile_classes = 3;
+  reserved 4 to 15;
+}
+
+// RuntimeCapabilitiesV1 is the canonical language-neutral source for both the
+// capabilities --json diagnostic form and authenticated runtime registration.
+// Load, slots, leases, and health belong to heartbeat, not this identity.
+message RuntimeCapabilitiesV1 {
+  string manifest_schema_revision = 1;
+  RuntimeIdentityV1 runtime_identity = 2;
+  ProtocolCompatibilityV1 protocol_compatibility = 3;
+  SDKFrameworkCompatibilityV1 sdk_framework_compatibility = 4;
+  repeated RuntimeCapabilityV1 capabilities = 5;
+  RuntimeConstraintsV1 runtime_constraints = 6;
+  RuntimeLimitsProfileReferenceV1 limits_profiles = 7;
+  reserved 8 to 15;
+}

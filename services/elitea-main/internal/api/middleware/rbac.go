@@ -2,9 +2,10 @@ package middleware
 
 import (
 	"net/http"
-	"strings"
+	"strconv"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/go-chi/chi/v5"
 )
 
 func RequirePermissions(required ...string) func(http.Handler) http.Handler {
@@ -21,9 +22,7 @@ func RequirePermissions(required ...string) func(http.Handler) http.Handler {
 				return
 			}
 
-			expanded := ExpandPermissions(user.Permissions)
-
-			if !hasIntersection(requiredSet, expanded) {
+			if !hasIntersection(requiredSet, permissionSet(user.Permissions)) {
 				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
 				return
 			}
@@ -33,15 +32,82 @@ func RequirePermissions(required ...string) func(http.Handler) http.Handler {
 	}
 }
 
-func ExpandPermissions(perms []string) map[string]struct{} {
-	expanded := make(map[string]struct{})
-	for _, p := range perms {
-		parts := strings.Split(p, ".")
-		for i := 1; i <= len(parts); i++ {
-			expanded[strings.Join(parts[:i], ".")] = struct{}{}
-		}
+func RequireResolvedPermissions(
+	resolver auth.PermissionResolver,
+	mode string,
+	required ...string,
+) func(http.Handler) http.Handler {
+	return RequireResolvedPermissionsForProject(
+		resolver,
+		mode,
+		func(r *http.Request) (string, bool) {
+			projectID := chi.URLParam(r, "projectID")
+			return projectID, projectID != ""
+		},
+		required...,
+	)
+}
+
+type ProjectIDExtractor func(*http.Request) (string, bool)
+
+func ProjectIDFromQuery(parameter string) ProjectIDExtractor {
+	return func(r *http.Request) (string, bool) {
+		projectID := r.URL.Query().Get(parameter)
+		value, err := strconv.ParseInt(projectID, 10, 64)
+		return projectID, err == nil && value > 0 && strconv.FormatInt(value, 10) == projectID
 	}
-	return expanded
+}
+
+func RequireResolvedPermissionsForProject(
+	resolver auth.PermissionResolver,
+	mode string,
+	projectID ProjectIDExtractor,
+	required ...string,
+) func(http.Handler) http.Handler {
+	requiredSet := permissionSet(required)
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := auth.UserFromContext(r.Context())
+			if !ok {
+				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+				return
+			}
+			if resolver == nil || projectID == nil {
+				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				return
+			}
+
+			resolvedProjectID, validProjectID := projectID(r)
+			if !validProjectID {
+				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				return
+			}
+
+			resolution, err := resolver.ResolvePermissions(
+				r.Context(),
+				user,
+				mode,
+				resolvedProjectID,
+			)
+			if err != nil || !hasIntersection(requiredSet, permissionSet(resolution.Permissions)) {
+				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				return
+			}
+
+			user.UserID = strconv.FormatInt(resolution.UserID, 10)
+			ctx := auth.ContextWithUser(r.Context(), user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func permissionSet(perms []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(perms))
+	for _, p := range perms {
+		result[p] = struct{}{}
+	}
+	return result
 }
 
 func hasIntersection(required, userPerms map[string]struct{}) bool {

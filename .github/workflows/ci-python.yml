@@ -1,15 +1,24 @@
-name: CI — Pylon Indexer
+name: CI — Python
 
 on:
   pull_request:
     paths:
       - "services/pylon-indexer/**"
+      - "services/elitea-worker-python/**"
+      - "libs/proto/gen/python/**"
+      - "libs/proto/pyproject.toml"
+      - "testdata/proto/runtime/v1/**"
       - ".github/workflows/ci-python.yml"
   push:
     branches:
       - main
     paths:
       - "services/pylon-indexer/**"
+      - "services/elitea-worker-python/**"
+      - "libs/proto/gen/python/**"
+      - "libs/proto/pyproject.toml"
+      - "testdata/proto/runtime/v1/**"
+      - ".github/workflows/ci-python.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -61,3 +70,86 @@ jobs:
         run: |
           grep -q "FROM ghcr.io/eliteaai/pylon" Containerfile
           echo "Containerfile base image OK."
+
+  runtime-worker:
+    name: Runtime worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            libs/proto/pyproject.toml
+            services/elitea-worker-python/pyproject.toml
+
+      - name: Install current binary indexing prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libcairo2-dev \
+            libpango1.0-dev \
+            pkg-config \
+            poppler-utils \
+            tesseract-ocr
+
+      - name: Check out the exact worker-locked SDK source
+        env:
+          SDK_REVISION: 48c51a16634a9924f6c5d5313c3bacedb0b5b56b
+          SDK_ARCHIVE_SHA256: 85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/EliteaAI/elitea-sdk.git \
+            /tmp/elitea-sdk-current
+          git -C /tmp/elitea-sdk-current checkout --detach "${SDK_REVISION}"
+          test "$(git -C /tmp/elitea-sdk-current rev-parse HEAD)" = "${SDK_REVISION}"
+          test "$(git -C /tmp/elitea-sdk-current archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${SDK_ARCHIVE_SHA256}"
+
+      - name: Install the pinned worker and protocol packages
+        run: |
+          python -m pip install \
+            "elitea-sdk @ file:///tmp/elitea-sdk-current" \
+            ./libs/proto \
+            "./services/elitea-worker-python[indexing-current,test]"
+          python -m pip check
+
+      - name: Unit and byte-conformance tests
+        run: |
+          python -m pytest services/elitea-worker-python/tests
+          elitea-worker conformance --suite runtime-v1
+
+      - name: Compile Python sources
+        run: python -m compileall -q services/elitea-worker-python/src libs/proto/gen/python
+
+  redis-runtime-worker:
+    name: Real Redis Python lifecycle integration
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the focused Redis lifecycle test dependencies
+        run: python -m pip install 'pytest>=8.3,<10' 'redis>=5.2,<7'
+
+      - name: Exercise atomic Python XACK and XDEL retirement
+        env:
+          ELITEA_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+          PYTHONPATH: services/elitea-worker-python/src
+        run: >-
+          python -m pytest -q
+          services/elitea-worker-python/tests/service/test_redis_commands_service.py

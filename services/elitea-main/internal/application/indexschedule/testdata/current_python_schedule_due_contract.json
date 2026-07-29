@@ -1,0 +1,129 @@
+{
+  "provenance": {
+    "source": "centry/pylon_main/plugins/elitea_core/rpc/index_scheduling.py and utils/cron_utils.py",
+    "contract": "enabled and croniter(cron, last_run, ret_type=datetime).get_next() <= now in schedule timezone",
+    "observed_croniter_version": "1.4.1"
+  },
+  "cases": [
+    {
+      "name": "daily UTC due",
+      "cron": "0 3 * * *",
+      "timezone": "UTC",
+      "last_run": "2026-07-27T03:00:00+00:00",
+      "now": "2026-07-28T03:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-28T03:00:00Z"
+    },
+    {
+      "name": "daily UTC before due",
+      "cron": "0 3 * * *",
+      "timezone": "UTC",
+      "last_run": "2026-07-27T03:00:00+00:00",
+      "now": "2026-07-28T02:59:59Z",
+      "enabled": true,
+      "due": false,
+      "occurrence": ""
+    },
+    {
+      "name": "disabled remains not due",
+      "cron": "0 3 * * *",
+      "timezone": "UTC",
+      "last_run": "2026-07-27T03:00:00+00:00",
+      "now": "2026-07-29T03:00:00Z",
+      "enabled": false,
+      "due": false,
+      "occurrence": ""
+    },
+    {
+      "name": "Kyiv local daily",
+      "cron": "0 9 * * *",
+      "timezone": "Europe/Kyiv",
+      "last_run": "2026-07-27T06:00:00+00:00",
+      "now": "2026-07-28T06:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-28T06:00:00Z"
+    },
+    {
+      "name": "last day of month",
+      "cron": "0 0 L * *",
+      "timezone": "UTC",
+      "last_run": "2026-06-30T00:00:00+00:00",
+      "now": "2026-07-31T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-31T00:00:00Z"
+    },
+    {
+      "name": "second Monday",
+      "cron": "0 0 * * MON#2",
+      "timezone": "UTC",
+      "last_run": "2026-06-08T00:00:00+00:00",
+      "now": "2026-07-13T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-13T00:00:00Z"
+    },
+    {
+      "name": "sixth seconds field",
+      "cron": "0 0 * * * 30",
+      "timezone": "UTC",
+      "last_run": "2026-07-27T00:00:30+00:00",
+      "now": "2026-07-28T00:00:30Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-28T00:00:30Z"
+    },
+    {
+      "name": "descriptor daily",
+      "cron": "@daily",
+      "timezone": "UTC",
+      "last_run": "2026-07-27T00:00:00+00:00",
+      "now": "2026-07-28T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-28T00:00:00Z"
+    },
+    {
+      "name": "naive last run treated UTC then localized",
+      "cron": "0 9 * * *",
+      "timezone": "Europe/Kyiv",
+      "last_run": "2026-07-27T06:00:00",
+      "now": "2026-07-28T06:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-28T06:00:00Z"
+    },
+    {
+      "name": "long horizon leap day",
+      "cron": "0 0 29 2 *",
+      "timezone": "UTC",
+      "last_run": "2096-02-29T00:00:00+00:00",
+      "now": "2104-02-29T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2104-02-29T00:00:00Z"
+    },
+    {
+      "name": "mixed weekday and nth weekday",
+      "cron": "0 0 * * MON,MON#2",
+      "timezone": "UTC",
+      "last_run": "2026-07-12T00:00:00+00:00",
+      "now": "2026-07-13T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-13T00:00:00Z"
+    },
+    {
+      "name": "mixed weekday and last weekday",
+      "cron": "0 0 * * FRI,L5",
+      "timezone": "UTC",
+      "last_run": "2026-07-01T00:00:00+00:00",
+      "now": "2026-07-31T00:00:00Z",
+      "enabled": true,
+      "due": true,
+      "occurrence": "2026-07-31T00:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "type": "agent_thinking_step",
+  "stream_id": "10000000-0000-4000-8000-000000000001",
+  "message_id": "20000000-0000-4000-8000-000000000001",
+  "question_id": null,
+  "content": null,
+  "thinking": null,
+  "response_metadata": {
+    "name": "thinking_step",
+    "run_id": "00000000-0000-0000-0000-000000000001",
+    "tool_run_id": "00000000-0000-0000-0000-000000000001",
+    "metadata": {
+      "initiator": "user",
+      "tool_name": "index_data",
+      "display_name": "configurations"
+    },
+    "datetime": "2026-07-27T10:00:00.001000+00:00",
+    "message": "10 files processed",
+    "tool_name": "loader",
+    "toolkit": "EliteaGitHubAPIWrapper"
+  },
+  "references": [],
+  "sio_event": "chat_predict",
+  "created_at": "2026-07-27T10:00:00.001000+00:00",
+  "parent_message_id": null,
+  "agent_name": null,
+  "execution_generation": null
+}

@@ -6,6 +6,7 @@ use (
 	./libs/go/eventslib
 	./libs/go/observability
 	./libs/go/rpclib
+	./libs/proto/gen/go
 	./services/elitea-main
 	./services/elitea-scheduler
 	./tools/uictl

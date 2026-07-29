@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+enum RuntimeErrorCodeV1 {
+  RUNTIME_ERROR_CODE_V1_UNSPECIFIED = 0;
+  RUNTIME_ERROR_CODE_V1_UNSUPPORTED_CAPABILITY = 1;
+  RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION = 2;
+  RUNTIME_ERROR_CODE_V1_INVALID_INPUT = 3;
+  RUNTIME_ERROR_CODE_V1_RESOURCE_EXHAUSTED = 4;
+  RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE = 5;
+  RUNTIME_ERROR_CODE_V1_AUTHENTICATION_FAILED = 6;
+  RUNTIME_ERROR_CODE_V1_AUTHORIZATION_FAILED = 7;
+  RUNTIME_ERROR_CODE_V1_STALE_FENCE = 8;
+  RUNTIME_ERROR_CODE_V1_CANCELLED = 9;
+  RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION = 10;
+  RUNTIME_ERROR_CODE_V1_INTERNAL = 11;
+  RUNTIME_ERROR_CODE_V1_DEADLINE_EXCEEDED = 12;
+}
+
+// RuntimeErrorV1 contains only a registered safe code/message pair. Detailed
+// causes remain in the owning service's protected diagnostics.
+message RuntimeErrorV1 {
+  RuntimeErrorCodeV1 code = 1;
+  string safe_message = 2;
+  bool retryable = 3;
+  reserved 4 to 15;
+}

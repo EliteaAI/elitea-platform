@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// ExecutionInputBundleReferenceV1 is safe for the bounded Redis command. It
+// identifies content but cannot itself redeem or fetch that content.
+message ExecutionInputBundleReferenceV1 {
+  string input_bundle_id = 1;
+  string immutable_version = 2;
+  DigestV1 digest = 3;
+  uint64 byte_length = 4;
+  string media_type = 5;
+  reserved 6 to 15;
+}
+
+// ScopedContentReferenceV1 is resolved only after a successful claim. It is
+// metadata, not a URI, bearer token, object-store credential, or inline body.
+message ScopedContentReferenceV1 {
+  string content_id = 1;
+  string immutable_version = 2;
+  string media_type = 3;
+  uint64 byte_length = 4;
+  DigestV1 digest = 5;
+  string classification = 6;
+  string required_grant_audience = 7;
+  reserved 8 to 15;
+}
+
+message ExecutionInputEntryV1 {
+  string entry_id = 1;
+  string immutable_version = 2;
+  string semantic_role = 3;
+  ScopedContentReferenceV1 content = 4;
+  reserved 5 to 15;
+}
+
+// ExecutionInputBundleV1 is the bounded immutable manifest returned on the
+// control plane. Bulk content is always fetched through a separate scoped data
+// plane using the references above.
+message ExecutionInputBundleV1 {
+  string input_bundle_id = 1;
+  string immutable_version = 2;
+  repeated ExecutionInputEntryV1 entries = 3;
+  reserved 4 to 15;
+}

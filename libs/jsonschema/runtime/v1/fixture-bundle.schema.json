@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.elitea.ai/runtime/v1/fixture-bundle.schema.json",
+  "title": "Elitea Runtime V1 Offline Fixture Bundle",
+  "description": "Test-only, credential-free manifest for deterministic offline runtime conformance. It is never a production content or authorization format.",
+  "$comment": "ELITEA_TEST_JSON_CANONICAL_V1 is UTF-8 JSON with keys sorted lexicographically, separators ',' and ':', ensure_ascii=false, finite values only, and exactly one trailing LF. This JSON is a test-only locator, not the authoritative input manifest. The signed command and result bind exact deterministic input-bundle.pb bytes; every locator field is checked against that verified protobuf before content is exposed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "canonicalization",
+    "input_bundle_manifest",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "elitea.runtime.fixture-bundle.v1"
+    },
+    "profile": {
+      "const": "TEST_ONLY_OFFLINE_CONFORMANCE_V1"
+    },
+    "canonicalization": {
+      "const": "ELITEA_TEST_JSON_CANONICAL_V1"
+    },
+    "input_bundle_manifest": {
+      "$ref": "#/$defs/inputBundleManifest"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+@/-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "inputBundleManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blob_name",
+        "media_type",
+        "byte_length",
+        "digest"
+      ],
+      "properties": {
+        "blob_name": {
+          "const": "input-bundle.pb"
+        },
+        "media_type": {
+          "const": "application/x-protobuf"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "immutable_version",
+        "semantic_role",
+        "content"
+      ],
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "immutable_version": {
+          "$ref": "#/$defs/version"
+        },
+        "semantic_role": {
+          "$ref": "#/$defs/identifier"
+        },
+        "content": {
+          "$ref": "#/$defs/content"
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_id",
+        "immutable_version",
+        "media_type",
+        "byte_length",
+        "digest",
+        "classification",
+        "required_grant_audience",
+        "blob_name"
+      ],
+      "properties": {
+        "content_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "immutable_version": {
+          "$ref": "#/$defs/version"
+        },
+        "media_type": {
+          "const": "application/json"
+        },
+        "byte_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "classification": {
+          "$ref": "#/$defs/identifier"
+        },
+        "required_grant_audience": {
+          "$ref": "#/$defs/identifier"
+        },
+        "blob_name": {
+          "type": "string",
+          "pattern": "^blobs/sha256/[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

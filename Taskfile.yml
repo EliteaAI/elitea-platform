@@ -3,16 +3,20 @@ version: "3"
 vars:
   SERVICE: services/elitea-main
   PY_SERVICE: services/pylon-indexer
+  WORKER_SERVICE: services/elitea-worker-python
   CENTRY_DIR: '{{.CENTRY_DIR | default "../centry"}}'
 
 tasks:
   # ── Go ────────────────────────────────────────────────────────────────────────
   build:
-    desc: Build elitea-main binary
+    desc: Build elitea-main and replatform support binaries
     dir: "{{.SERVICE}}"
     cmds:
       - go build -o bin/elitea-main ./cmd/elitea-main
+      - go build -o bin/elitea-migrate ./cmd/elitea-migrate
       - go build -o bin/cutover-ctl ./cmd/cutover-ctl
+      - go build -o bin/elitea-auth-validate ./cmd/elitea-auth-validate
+      - go build -o bin/index-v2-preflight ./cmd/index-v2-preflight
 
   test:
     desc: Run all Go tests across the workspace
@@ -55,8 +59,27 @@ tasks:
   proto:
     desc: Lint and generate protobuf stubs (Go + Python)
     cmds:
-      - cd proto && buf lint
-      - cd proto && buf generate
+      - buf lint libs/proto
+      - scripts/contract/generate_proto.sh
+
+  contract:check:
+    desc: Validate checked-in runtime-v1 bindings and byte vectors
+    cmds:
+      - buf format --diff --exit-code libs/proto
+      - buf lint libs/proto
+      - buf build libs/proto
+      - python3 scripts/contract/generate_configuration_validation_fixtures.py --check
+      - python3 scripts/contract/check_configuration_validation_contract.py
+
+  worker:test:
+    desc: Run the standalone Python worker test suite
+    cmds:
+      - python -m pytest "{{.WORKER_SERVICE}}/tests"
+
+  worker:conformance:
+    desc: Execute the standalone worker against runtime-v1 byte vectors
+    cmds:
+      - ELITEA_CONFORMANCE_ROOT="{{.ROOT_DIR}}/testdata/proto/runtime/v1" elitea-worker conformance --suite runtime-v1
 
   openapi:
     desc: Generate OpenAPI server interface for elitea-main
@@ -139,7 +162,7 @@ tasks:
 
   hybrid:up:
     desc: Start Centry with the selected Go slices behind the hybrid gateway
-    deps: [hybrid:config]
+    deps: ["hybrid:config"]
     cmds:
       - >-
         ELITEA_PLATFORM_DIR="{{.ROOT_DIR}}"

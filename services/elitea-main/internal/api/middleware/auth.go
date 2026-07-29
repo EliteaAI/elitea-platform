@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,116 +25,76 @@ type TokenValidator interface {
 	ValidateToken(ctx context.Context, token string) (auth.User, error)
 }
 
-// AuthCache provides get/set for caching validated tokens.
-type AuthCache interface {
-	GetCached(ctx context.Context, key string) (*auth.User, error)
-	SetCached(ctx context.Context, key string, user auth.User) error
+// PrincipalValidator checks mutable account state after credentials have been
+// validated, including signed sessions.
+type PrincipalValidator interface {
+	ValidatePrincipal(ctx context.Context, principal auth.User) (auth.User, error)
+}
+
+// ForwardedIdentityPeerVerifier proves that an X-Auth-* request arrived over
+// the isolated, header-stripping ingress boundary. Reloading an active user is
+// not proof that the caller was entitled to assert that user ID.
+type ForwardedIdentityPeerVerifier interface {
+	VerifyForwardedIdentityPeer(*http.Request) error
 }
 
 type AuthConfig struct {
-	Client        *authsvc.Client // Legacy RPC client (also implements cache)
-	Validator     TokenValidator  // Local validator (used if non-nil, falls back to Client)
-	SessionSecret string          // HMAC key for session cookies
-
-	// TrustedProxyCIDRs is the list of CIDR ranges from which Traefik
-	// forward-auth headers (X-Auth-Type / X-Auth-Id / X-Auth-Reference) are
-	// accepted. When empty at Auth() call time, the value of the
-	// TRUSTED_PROXY_CIDRS environment variable is used instead. If neither is
-	// configured, Traefik header-auth is disabled (safe default).
+	Client                    *authsvc.Client // Legacy RPC validator used only when Validator is nil.
+	Validator                 TokenValidator  // Local validator (used if non-nil, falls back to Client)
+	PrincipalValidator        PrincipalValidator
+	ForwardedIdentityVerifier ForwardedIdentityPeerVerifier
+	SessionSecret             string // HMAC key for session cookies
+	// TrustedProxyCIDRs preserves the current Main compatibility boundary for
+	// deployments where Traefik is the authenticated identity peer. New
+	// production composition should prefer ForwardedIdentityVerifier.
 	TrustedProxyCIDRs []string
-}
-
-// parseTrustedCIDRs converts a slice of CIDR strings into *net.IPNet values,
-// logging and skipping any entries that cannot be parsed.
-func parseTrustedCIDRs(cidrs []string) []*net.IPNet {
-	var out []*net.IPNet
-	for _, cidr := range cidrs {
-		cidr = strings.TrimSpace(cidr)
-		if cidr == "" {
-			continue
-		}
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			slog.Default().Error("middleware: invalid CIDR in trusted proxy list; ignoring", "cidr", cidr, "err", err)
-			continue
-		}
-		out = append(out, network)
-	}
-	return out
-}
-
-// isFromTrustedProxy reports whether the request's direct RemoteAddr (NOT any
-// X-Forwarded-For value, which is spoofable) belongs to one of the provided
-// trusted proxy CIDRs. Returns false when cidrs is empty.
-func isFromTrustedProxy(r *http.Request, cidrs []*net.IPNet) bool {
-	if len(cidrs) == 0 {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		// RemoteAddr without a port (uncommon in production); try it raw.
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	for _, network := range cidrs {
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 	// devMode and session auth are mutually exclusive (enforced at startup in main.go).
 	// devMode is ONLY allowed when APPLICATION_SECRET_KEY is unset.
 	devMode := os.Getenv("AUTH_DEV_MODE") == "true" && cfg.SessionSecret == ""
-
-	// Resolve the trusted-proxy CIDR list once at construction time. If the
-	// caller did not supply CIDRs, fall back to the TRUSTED_PROXY_CIDRS env var.
-	// An empty result disables Traefik header-auth (safe default).
-	rawCIDRs := cfg.TrustedProxyCIDRs
-	if len(rawCIDRs) == 0 {
-		raw := os.Getenv("TRUSTED_PROXY_CIDRS")
-		if raw == "" {
-			slog.Default().Warn("middleware: TRUSTED_PROXY_CIDRS is not set; Traefik header-auth (X-Auth-Type/X-Auth-Id) is DISABLED until it is configured")
-		} else {
-			rawCIDRs = strings.Split(raw, ",")
-		}
-	}
-	trustedCIDRs := parseTrustedCIDRs(rawCIDRs)
+	trustedCIDRs := configuredTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only honor Traefik forward-auth headers when the request arrives from
-			// a trusted proxy source. The check is intentionally on the direct
-			// RemoteAddr (not X-Forwarded-For) so a client cannot spoof it.
-			if isFromTrustedProxy(r, trustedCIDRs) {
-				if user, ok := tryTraefikHeaders(r); ok {
-					ctx := auth.ContextWithUser(r.Context(), user)
-					next.ServeHTTP(w, r.WithContext(ctx))
+			if user, ok := tryTraefikHeaders(r, cfg.ForwardedIdentityVerifier); ok {
+				// A forwarded token ID is not an owning user ID. The authoritative
+				// principal check must cross-check both typed IDs and normalize the
+				// compatibility ID before any downstream handler can use it as a
+				// user foreign key.
+				if cfg.PrincipalValidator == nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				user, err := validatePrincipal(r.Context(), cfg, user)
+				if err != nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
+				return
+			}
+			if cfg.ForwardedIdentityVerifier == nil && isFromTrustedProxy(r, trustedCIDRs) {
+				if user, ok := tryTrustedProxyHeaders(r); ok {
+					serveAuthenticated(next, w, r, user, auth.AuthenticationSourceForwarded)
 					return
 				}
 			}
 
 			// X-API-Key header (pylon compatibility)
 			if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-				cacheKey := authCacheKey("apikey:" + apiKey)
-				if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-					ctx := auth.ContextWithUser(r.Context(), *cached)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
 				user, err := validateToken(r.Context(), cfg, apiKey)
 				if err != nil {
 					http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
 					return
 				}
-				_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
-				ctx := auth.ContextWithUser(r.Context(), user)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				user, err = validatePrincipal(r.Context(), cfg, user)
+				if err != nil {
+					writeInactivePrincipal(w)
+					return
+				}
+				serveAuthenticated(next, w, r, user, auth.AuthenticationSourceAPIKey)
 				return
 			}
 
@@ -142,14 +103,17 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				// Try session cookie (set by OIDC/form login)
 				if cookie, err := r.Cookie("elitea_session"); err == nil && cfg.SessionSecret != "" {
 					if user, ok := verifySessionCookie(cookie.Value, cfg.SessionSecret); ok {
-						ctx := auth.ContextWithUser(r.Context(), user)
-						next.ServeHTTP(w, r.WithContext(ctx))
+						user, validationErr := validatePrincipal(r.Context(), cfg, user)
+						if validationErr != nil {
+							writeInactivePrincipal(w)
+							return
+						}
+						serveAuthenticated(next, w, r, user, auth.AuthenticationSourceSession)
 						return
 					}
 				}
 				if devMode {
-					ctx := auth.ContextWithUser(r.Context(), devUser())
-					next.ServeHTTP(w, r.WithContext(ctx))
+					serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 					return
 				}
 				http.Error(w, `{"error":"missing authorization header"}`, http.StatusUnauthorized)
@@ -157,15 +121,7 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 			}
 
 			if devMode {
-				ctx := auth.ContextWithUser(r.Context(), devUser())
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			cacheKey := authCacheKey(authHeader)
-			if cached, err := cfg.Client.GetCached(r.Context(), cacheKey); err == nil && cached != nil {
-				ctx := auth.ContextWithUser(r.Context(), *cached)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				serveAuthenticated(next, w, r, devUser(), auth.AuthenticationSourceDevelopment)
 				return
 			}
 
@@ -191,28 +147,140 @@ func Auth(cfg AuthConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			_ = cfg.Client.SetCached(r.Context(), cacheKey, user)
-
-			ctx := auth.ContextWithUser(r.Context(), user)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			user, err = validatePrincipal(r.Context(), cfg, user)
+			if err != nil {
+				writeInactivePrincipal(w)
+				return
+			}
+			serveAuthenticated(next, w, r, user, auth.AuthenticationSourceToken)
 		})
 	}
 }
 
-func tryTraefikHeaders(r *http.Request) (auth.User, bool) {
+func configuredTrustedProxyCIDRs(configured []string) []*net.IPNet {
+	rawCIDRs := configured
+	if len(rawCIDRs) == 0 {
+		if raw := os.Getenv("TRUSTED_PROXY_CIDRS"); raw != "" {
+			rawCIDRs = strings.Split(raw, ",")
+		}
+	}
+	networks := make([]*net.IPNet, 0, len(rawCIDRs))
+	for _, cidr := range rawCIDRs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			slog.Default().Error("middleware: ignoring invalid trusted proxy CIDR", "cidr", cidr, "err", err)
+			continue
+		}
+		networks = append(networks, network)
+	}
+	return networks
+}
+
+func isFromTrustedProxy(r *http.Request, networks []*net.IPNet) bool {
+	if len(networks) == 0 {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func tryTrustedProxyHeaders(r *http.Request) (auth.User, bool) {
 	authType := r.Header.Get("X-Auth-Type")
 	authID := r.Header.Get("X-Auth-Id")
-	authRef := r.Header.Get("X-Auth-Reference")
-
-	if authType == "" || authID == "" {
+	if authType == "" || authID == "" || strings.ContainsAny(authType+authID, "\x00\r\n") {
 		return auth.User{}, false
 	}
-
 	return auth.User{
 		ID:       authID,
+		UserID:   authID,
+		Email:    r.Header.Get("X-Auth-Reference"),
 		AuthType: authType,
-		Email:    authRef,
 	}, true
+}
+
+func tryTraefikHeaders(r *http.Request, verifier ForwardedIdentityPeerVerifier) (auth.User, bool) {
+	authType, typePresent, typeValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-Type")
+	authID, idPresent, idValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-ID")
+	if !typePresent && !idPresent {
+		return auth.User{}, false
+	}
+	if verifier == nil || !typePresent || !idPresent || !typeValid || !idValid ||
+		verifier.VerifyForwardedIdentityPeer(r) != nil {
+		return auth.User{}, false
+	}
+	// X-Auth-Reference is compatibility routing material and may be a browser
+	// session bearer value. It is never an identity claim; the mandatory
+	// PrincipalValidator reloads mutable email from PostgreSQL.
+
+	if !strings.EqualFold(authType, "token") && !strings.EqualFold(authType, "user") {
+		return auth.User{}, false
+	}
+	authType = strings.ToLower(authType)
+
+	user := auth.User{
+		ID:       authID,
+		AuthType: authType,
+	}
+	if authType == "token" {
+		userID, present, valid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-User-ID")
+		if !present || !valid {
+			return auth.User{}, false
+		}
+		user.TokenID = authID
+		user.UserID = userID
+	} else {
+		user.UserID = authID
+	}
+	return user, true
+}
+
+func uniqueForwardedIdentityHeader(headers http.Header, name string) (string, bool, bool) {
+	var values []string
+	for key, current := range headers {
+		if strings.EqualFold(key, name) {
+			values = append(values, current...)
+		}
+	}
+	if len(values) == 0 {
+		return "", false, true
+	}
+	if len(values) != 1 || values[0] == "" || values[0] != strings.TrimSpace(values[0]) ||
+		strings.ContainsAny(values[0], "\x00\r\n") {
+		return "", true, false
+	}
+	return values[0], true, true
+}
+
+func validatePrincipal(ctx context.Context, cfg AuthConfig, user auth.User) (auth.User, error) {
+	if cfg.PrincipalValidator == nil {
+		return user, nil
+	}
+	return cfg.PrincipalValidator.ValidatePrincipal(ctx, user)
+}
+
+func serveAuthenticated(next http.Handler, w http.ResponseWriter, r *http.Request, user auth.User, source auth.AuthenticationSource) {
+	ctx := auth.ContextWithAuthenticatedUser(r.Context(), user, source)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func writeInactivePrincipal(w http.ResponseWriter) {
+	http.Error(w, `{"error":"authenticated principal is inactive"}`, http.StatusUnauthorized)
 }
 
 func verifySessionCookie(token, secret string) (auth.User, bool) {
@@ -238,10 +306,9 @@ func verifySessionCookie(token, secret string) (auth.User, bool) {
 		return auth.User{}, false
 	}
 
-	if exp, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(exp) {
-			return auth.User{}, false
-		}
+	exp, ok := claims["exp"].(float64)
+	if !ok || exp != float64(int64(exp)) || time.Now().Unix() > int64(exp) {
+		return auth.User{}, false
 	}
 
 	var uid string
@@ -251,34 +318,41 @@ func verifySessionCookie(token, secret string) (auth.User, bool) {
 	case float64:
 		uid = fmt.Sprintf("%d", int64(v))
 	}
+	if _, ok := positiveSessionUserID(uid); !ok {
+		return auth.User{}, false
+	}
 
 	email, _ := claims["email"].(string)
 
 	return auth.User{
 		ID:       uid,
+		UserID:   uid,
 		Email:    email,
 		AuthType: "session",
-		Roles:    []string{"admin"},
 	}, true
+}
+
+func positiveSessionUserID(value string) (int64, bool) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return id, err == nil && id > 0
 }
 
 func devUser() auth.User {
 	return auth.User{
 		ID:       "1",
+		UserID:   "1",
 		Email:    "dev@elitea.ai",
 		AuthType: "dev",
 		Roles:    []string{"admin"},
 	}
 }
 
-func authCacheKey(authHeader string) string {
-	h := sha256.Sum256([]byte(authHeader))
-	return "auth:token:" + hex.EncodeToString(h[:])
-}
-
 func validateToken(ctx context.Context, cfg AuthConfig, token string) (auth.User, error) {
 	if cfg.Validator != nil {
 		return cfg.Validator.ValidateToken(ctx, token)
+	}
+	if cfg.Client == nil {
+		return auth.User{}, fmt.Errorf("authentication validator is not configured")
 	}
 	return cfg.Client.ValidateToken(ctx, token)
 }

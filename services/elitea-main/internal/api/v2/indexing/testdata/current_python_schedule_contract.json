@@ -1,0 +1,277 @@
+{
+  "provenance": {
+    "source": "centry/pylon_main/plugins/elitea_core/models/pd/index.py",
+    "source_sha256": "2d1e85720f090f31a4c49169cfe3f050d4426d318734d6f6e88c0126274ea2aa",
+    "observed_pydantic_version": "2.12.5",
+    "observed_croniter_version": "1.4.1",
+    "croniter_source_sha256": "eb9714cf83a8b09a0ab6a009df0fe71cce96af8f337e6bd4763f6ef6b729d92a",
+    "contract": "dict(request.json), UpdateIndexingSchedule.parse_obj, then ToolkitIndexingSchedule",
+    "security_corrections": [
+      "explicit user_id null is current-accepted but target-rejected because it creates an ambiguous ownership key",
+      "a positive user_id different from the authenticated actor is current-accepted but target-rejected because it would select another user's private credential scope",
+      "croniter random R, R(a-b), and R-step syntax is current-accepted in some forms but target-rejected because admission must be deterministic across languages and repeated validation must not change the schedule",
+      "a top-level JSON pair array accepted by Python dict(request.json) is target-rejected because the PATCH contract admits an object only"
+    ]
+  },
+  "cases": [
+    {
+      "name": "daily five field",
+      "payload": {"cron": "0 3 * * *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "last day of month",
+      "payload": {"cron": "0 0 L * *", "timezone": "Europe/Kyiv"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "nth named weekday",
+      "payload": {"cron": "0 0 * * MON#2", "timezone": "Etc/GMT-3"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "named month and weekday",
+      "payload": {"cron": "0 0 * JAN MON", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "sixth seconds field",
+      "payload": {"cron": "0 0 * * * 0", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "last Sunday numeric seven",
+      "payload": {"cron": "0 0 * * L7", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "Sunday numeric seven",
+      "payload": {"cron": "0 0 * * 7", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "Friday through Sunday range",
+      "payload": {"cron": "0 0 * * FRI-SUN", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "weekday start step reaches Sunday seven",
+      "payload": {"cron": "0 0 * * MON/2", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "named nth weekday range",
+      "payload": {"cron": "0 0 * * MON-FRI#2", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "multiple nth weekdays",
+      "payload": {"cron": "0 0 * * MON#2,TUE#2", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "overlapping literal and nth weekday",
+      "payload": {"cron": "0 0 * * MON,MON#2", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "overlapping literal and last weekday",
+      "payload": {"cron": "0 0 * * FRI,L5", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "last and literal month days",
+      "payload": {"cron": "0 0 L,1 * *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "leap day crosses robfig five year horizon",
+      "payload": {"cron": "0 0 29 2 *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "descriptor and coercions",
+      "payload": {
+        "cron": "@daily",
+        "timezone": "UTC",
+        "enabled": "true",
+        "user_id": "11.0",
+        "ignored": "current model ignores extras"
+      },
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "other integer user and whitespace decimal coercion",
+      "payload": {
+        "cron": "0 3 * * *",
+        "timezone": "UTC",
+        "user_id": " 12.0 "
+      },
+      "current_accepted": true,
+      "target_accepted": false
+    },
+    {
+      "name": "credentials default private false",
+      "payload": {
+        "cron": "0 3 * * *",
+        "timezone": "UTC",
+        "credentials": {"elitea_title": "shared-github"}
+      },
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "credentials explicit private null",
+      "payload": {
+        "cron": "0 3 * * *",
+        "timezone": "UTC",
+        "credentials": {"elitea_title": "shared-github", "private": null}
+      },
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "credentials null",
+      "payload": {
+        "cron": "0 3 * * *",
+        "timezone": "UTC",
+        "credentials": null
+      },
+      "current_accepted": true,
+      "target_accepted": true
+    },
+    {
+      "name": "top level pair array object-only correction",
+      "payload": [
+        ["cron", "0 3 * * *"],
+        ["timezone", "UTC"]
+      ],
+      "current_accepted": true,
+      "target_accepted": false
+    },
+    {
+      "name": "random hour deterministic correction",
+      "payload": {"cron": "0 R * * *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": false
+    },
+    {
+      "name": "random ranged minute deterministic correction",
+      "payload": {"cron": "R(0-59) 0 * * *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": false
+    },
+    {
+      "name": "random ranged stepped hour deterministic correction",
+      "payload": {"cron": "0 R(0-23)/24 * * *", "timezone": "UTC"},
+      "current_accepted": true,
+      "target_accepted": false
+    },
+    {
+      "name": "more than daily multiple hours",
+      "payload": {"cron": "0 2,14 * * *", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "more than daily minute interval",
+      "payload": {"cron": "*/30 * * * *", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "more than daily sixth field",
+      "payload": {"cron": "0 0 * * * */30", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "invalid cron",
+      "payload": {"cron": "not a cron", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "numeric nth weekday range unsupported",
+      "payload": {"cron": "0 0 * * 1-5#2", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "mixed nth and literal weekday unsupported",
+      "payload": {"cron": "0 0 * * MON#2,TUE", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "impossible February date",
+      "payload": {"cron": "0 0 31 2 *", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "hourly descriptor violates daily floor",
+      "payload": {"cron": "@hourly", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "question mark day of month unsupported",
+      "payload": {"cron": "0 0 ? * *", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "question mark weekday unsupported",
+      "payload": {"cron": "0 0 * * ?", "timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "missing cron",
+      "payload": {"timezone": "UTC"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "missing timezone",
+      "payload": {"cron": "0 3 * * *"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "invalid timezone",
+      "payload": {"cron": "0 3 * * *", "timezone": "Mars/Olympus"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "string exponent is not an integer coercion",
+      "payload": {"cron": "0 3 * * *", "timezone": "UTC", "user_id": "1e1"},
+      "current_accepted": false,
+      "target_accepted": false
+    },
+    {
+      "name": "explicit null user security correction",
+      "payload": {"cron": "0 3 * * *", "timezone": "UTC", "user_id": null},
+      "current_accepted": true,
+      "target_accepted": false
+    }
+  ]
+}

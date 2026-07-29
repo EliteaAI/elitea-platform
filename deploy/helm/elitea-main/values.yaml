@@ -1,3 +1,5 @@
+# PROTOTYPE VALUES ONLY. This chart does not yet define TLS ingress,
+# NetworkPolicy, split database principals, or production secret delivery.
 replicaCount: 2
 
 image:
@@ -22,12 +24,6 @@ resources:
 # adding a key here is all that is needed to set a new env var.
 env:
   DATABASE_URL: ""
-  REDIS_URL: ""
-  SHADOW_ENABLED: "false"
-  SHADOW_LEGACY_URL: ""
-  SHADOW_WEIGHT: "0.1"
-  LEGACY_URL: ""
-  CANARY_WEIGHT: "0.1"
 
   # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
   # Comma-separated list of the platform's OWN /llm origins, e.g.

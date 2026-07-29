@@ -1,3 +1,5 @@
+# DEVELOPMENT TOPOLOGY ONLY. This listener is cleartext and has no request
+# admission policy. Production requires TLS termination and network policy.
 entryPoints:
   web:
     address: ":80"

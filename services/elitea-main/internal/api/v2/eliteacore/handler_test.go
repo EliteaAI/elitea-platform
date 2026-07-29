@@ -21,6 +21,20 @@ func newHandler() *eliteacore.Handler {
 	return eliteacore.NewHandler(nil)
 }
 
+type permissionResolverStub struct{}
+
+func (permissionResolverStub) ResolvePermissions(
+	context.Context,
+	auth.User,
+	string,
+	string,
+) (auth.PermissionResolution, error) {
+	return auth.PermissionResolution{
+		UserID:      1,
+		Permissions: []string{"configurations.view"},
+	}, nil
+}
+
 // newRequest builds an httptest.Request with optional chi URL params and body.
 func newRequest(method, target string, params map[string]string, body io.Reader) *http.Request {
 	req := httptest.NewRequest(method, target, body)
@@ -220,7 +234,10 @@ func TestPermissions_NoAuth_ReturnsEmptyArray(t *testing.T) {
 }
 
 func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
-	h := newHandler()
+	h := eliteacore.NewHandler(
+		nil,
+		eliteacore.WithPermissionResolver(permissionResolverStub{}),
+	)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{
 		ID:    "user-1",

@@ -1,0 +1,279 @@
+package indexing_test
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+)
+
+const currentGoIndexExecutionID = "0123456789abcdef0123456789abcdef"
+
+func TestCurrentIndexCancelRouteBindsCurrentContractAndSecurityBeforeUseCase(t *testing.T) {
+	t.Parallel()
+
+	if handler.CurrentIndexCancelPath != "/api/v2/elitea_core/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}" ||
+		handler.CurrentIndexCancelPermission != "models.applications.task.delete" ||
+		handler.CurrentIndexCancelMode != auth.PermissionModeDefault {
+		t.Fatalf(
+			"current cancel constants drifted: path=%q permission=%q mode=%q",
+			handler.CurrentIndexCancelPath,
+			handler.CurrentIndexCancelPermission,
+			handler.CurrentIndexCancelMode,
+		)
+	}
+
+	canceller := &currentIndexCancellerStub{transitioned: true}
+	permissionCalls := 0
+	route := currentIndexCancelRouteForTest(
+		t,
+		canceller,
+		func(request *http.Request) error {
+			if request.RemoteAddr != "10.0.0.8:43120" {
+				return errors.New("untrusted peer")
+			}
+			return nil
+		},
+		func(_ context.Context, user auth.User, mode, projectID string) (auth.PermissionResolution, error) {
+			permissionCalls++
+			if user.UserID != "11" || mode != auth.PermissionModeDefault || projectID != "7" {
+				t.Fatalf("permission input user=%+v mode=%q project=%q", user, mode, projectID)
+			}
+			return auth.PermissionResolution{
+				UserID:      11,
+				Permissions: []string{"models.applications.task.delete"},
+			}, nil
+		},
+	)
+
+	response := serveCurrentIndexCancel(
+		route,
+		http.MethodDelete,
+		"/api/v2/elitea_core/index_cancel/prompt_lib/007/9/documents/"+currentGoIndexExecutionID,
+		"10.0.0.8:43120",
+	)
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 ||
+		permissionCalls != 1 || canceller.calls != 1 {
+		t.Fatalf(
+			"status=%d body=%q permissions=%d cancels=%d",
+			response.Code,
+			response.Body.String(),
+			permissionCalls,
+			canceller.calls,
+		)
+	}
+	want := indexingapp.CurrentIndexCancelRequest{
+		ProjectID:   7,
+		ToolkitID:   9,
+		IndexName:   "documents",
+		ExecutionID: currentGoIndexExecutionID,
+	}
+	if canceller.request != want {
+		t.Fatalf("cancel request=%+v want=%+v", canceller.request, want)
+	}
+}
+
+func TestCurrentIndexCancelRouteRejectsUntrustedUnauthorizedAndInvalidRequests(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		remoteAddress string
+		permissions   []string
+		path          string
+		wantStatus    int
+	}{
+		"untrusted peer": {
+			remoteAddress: "192.0.2.9:443",
+			permissions:   []string{"models.applications.task.delete"},
+			path:          "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/" + currentGoIndexExecutionID,
+			wantStatus:    http.StatusUnauthorized,
+		},
+		"permission denied": {
+			remoteAddress: "10.0.0.8:43120",
+			path:          "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/" + currentGoIndexExecutionID,
+			wantStatus:    http.StatusForbidden,
+		},
+		"arbiter UUID": {
+			remoteAddress: "10.0.0.8:43120",
+			permissions:   []string{"models.applications.task.delete"},
+			path:          "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/01234567-89ab-cdef-0123-456789abcdef",
+			wantStatus:    http.StatusBadRequest,
+		},
+		"wrong execution case": {
+			remoteAddress: "10.0.0.8:43120",
+			permissions:   []string{"models.applications.task.delete"},
+			path:          "/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/0123456789ABCDEF0123456789abcdef",
+			wantStatus:    http.StatusBadRequest,
+		},
+		"invalid toolkit": {
+			remoteAddress: "10.0.0.8:43120",
+			permissions:   []string{"models.applications.task.delete"},
+			path:          "/api/v2/elitea_core/index_cancel/prompt_lib/7/no/documents/" + currentGoIndexExecutionID,
+			wantStatus:    http.StatusBadRequest,
+		},
+	} {
+		name, test := name, test
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			canceller := &currentIndexCancellerStub{}
+			route := currentIndexCancelRouteForTest(
+				t,
+				canceller,
+				func(request *http.Request) error {
+					if request.RemoteAddr != "10.0.0.8:43120" {
+						return errors.New("untrusted peer")
+					}
+					return nil
+				},
+				func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+					return auth.PermissionResolution{UserID: 11, Permissions: test.permissions}, nil
+				},
+			)
+			response := serveCurrentIndexCancel(route, http.MethodDelete, test.path, test.remoteAddress)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if canceller.calls != 0 {
+				t.Fatalf("rejected request reached use case %d times", canceller.calls)
+			}
+		})
+	}
+}
+
+func TestCurrentIndexCancelRouteReturns204ForNoTransition(t *testing.T) {
+	t.Parallel()
+
+	canceller := &currentIndexCancellerStub{}
+	route := currentIndexCancelRouteForTest(
+		t,
+		canceller,
+		func(*http.Request) error { return nil },
+		func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+			return auth.PermissionResolution{
+				UserID:      11,
+				Permissions: []string{"models.applications.task.delete"},
+			}, nil
+		},
+	)
+	response := serveCurrentIndexCancel(
+		route,
+		http.MethodDelete,
+		"/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/"+currentGoIndexExecutionID,
+		"10.0.0.8:43120",
+	)
+	if response.Code != http.StatusNoContent || response.Body.Len() != 0 || canceller.calls != 1 {
+		t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), canceller.calls)
+	}
+}
+
+func TestCurrentIndexCancelRouteRejectsIncompleteCompositionAndOtherMethods(t *testing.T) {
+	t.Parallel()
+
+	canceller := &currentIndexCancellerStub{}
+	principal := principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+		return user, nil
+	})
+	peer := forwardedPeerVerifierFunc(func(*http.Request) error { return nil })
+	permissions := permissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{}, nil
+	})
+	for name, test := range map[string]struct {
+		canceller   handler.CurrentIndexCanceller
+		authConfig  apimw.AuthConfig
+		permissions auth.PermissionResolver
+	}{
+		"missing use case":    {authConfig: apimw.AuthConfig{PrincipalValidator: principal, ForwardedIdentityVerifier: peer}, permissions: permissions},
+		"missing principal":   {canceller: canceller, authConfig: apimw.AuthConfig{ForwardedIdentityVerifier: peer}, permissions: permissions},
+		"missing peer proof":  {canceller: canceller, authConfig: apimw.AuthConfig{PrincipalValidator: principal}, permissions: permissions},
+		"missing permissions": {canceller: canceller, authConfig: apimw.AuthConfig{PrincipalValidator: principal, ForwardedIdentityVerifier: peer}},
+	} {
+		name, test := name, test
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := handler.NewCurrentIndexCancelRoute(test.canceller, test.authConfig, test.permissions); !errors.Is(err, handler.ErrInvalidCurrentIndexCancelRoute) {
+				t.Fatalf("error=%v want=%v", err, handler.ErrInvalidCurrentIndexCancelRoute)
+			}
+		})
+	}
+
+	route := currentIndexCancelRouteForTest(
+		t,
+		canceller,
+		func(*http.Request) error { return nil },
+		func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+			return auth.PermissionResolution{
+				UserID:      11,
+				Permissions: []string{"models.applications.task.delete"},
+			}, nil
+		},
+	)
+	response := serveCurrentIndexCancel(
+		route,
+		http.MethodGet,
+		"/api/v2/elitea_core/index_cancel/prompt_lib/7/9/documents/"+currentGoIndexExecutionID,
+		"10.0.0.8:43120",
+	)
+	if response.Code != http.StatusMethodNotAllowed || canceller.calls != 0 {
+		t.Fatalf("GET status=%d calls=%d", response.Code, canceller.calls)
+	}
+}
+
+func currentIndexCancelRouteForTest(
+	t *testing.T,
+	canceller handler.CurrentIndexCanceller,
+	verifyPeer func(*http.Request) error,
+	resolvePermissions func(context.Context, auth.User, string, string) (auth.PermissionResolution, error),
+) *handler.CurrentIndexCancelRoute {
+	t.Helper()
+	route, err := handler.NewCurrentIndexCancelRoute(
+		canceller,
+		apimw.AuthConfig{
+			PrincipalValidator: principalValidatorFunc(func(_ context.Context, user auth.User) (auth.User, error) {
+				return user, nil
+			}),
+			ForwardedIdentityVerifier: forwardedPeerVerifierFunc(verifyPeer),
+		},
+		permissionResolverFunc(resolvePermissions),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return route
+}
+
+func serveCurrentIndexCancel(
+	route http.Handler,
+	method string,
+	path string,
+	remoteAddress string,
+) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = remoteAddress
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, request)
+	return response
+}
+
+type currentIndexCancellerStub struct {
+	request      indexingapp.CurrentIndexCancelRequest
+	transitioned bool
+	err          error
+	calls        int
+}
+
+func (s *currentIndexCancellerStub) Cancel(
+	_ context.Context,
+	request indexingapp.CurrentIndexCancelRequest,
+) (bool, error) {
+	s.calls++
+	s.request = request
+	return s.transitioned, s.err
+}

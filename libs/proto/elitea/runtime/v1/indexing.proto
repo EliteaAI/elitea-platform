@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// IndexIngestCommandV1 is the reference-only command for index.ingest.v1. Toolkit,
+// tool, model and token values are immutable input-bundle entries fetched only
+// after an authorized claim. They are never embedded in Redis.
+message IndexIngestCommandV1 {
+  string toolkit_configuration_entry_id = 1;
+  string tool_parameters_entry_id = 2;
+  string llm_model_entry_id = 3;
+  string llm_configuration_entry_id = 4;
+  string mcp_tokens_entry_id = 5;
+  string client_stream_id = 6;
+  string client_message_id = 7;
+  string sio_event = 8;
+  // Exact non-secret embedding metadata stays in the input data plane.
+  // Redis carries only this immutable entry reference and digest.
+  IndexIngestInputBindingV1 embedding_binding = 9;
+  reserved 10 to 15;
+  // Durable admission origin. Consumers accept only user, llm, or schedule.
+  string initiator = 16;
+}
+
+// IndexIngestInputBindingV1 identifies one exact input value consumed by the SDK
+// call. An absent optional binding never carries a value; the worker applies
+// the field-specific current-wrapper default before invoking the SDK.
+message IndexIngestInputBindingV1 {
+  string entry_id = 1;
+  string immutable_version = 2;
+  DigestV1 content_digest = 3;
+  reserved 4 to 15;
+}
+
+// IndexIngestArtifactReferenceV1 identifies an immutable terminal SDK result on
+// the data plane. It contains no URI, bearer token or inline result bytes.
+message IndexIngestArtifactReferenceV1 {
+  string artifact_id = 1;
+  string immutable_version = 2;
+  string media_type = 3;
+  uint64 byte_length = 4;
+  DigestV1 digest = 5;
+  string classification = 6;
+  reserved 7 to 15;
+}
+
+// IndexIngestStatusV1 is the closed status set returned by
+// BaseIndexerToolkit.index_data. It deliberately does not model the outer
+// EliteAClient.test_toolkit_tool result, which can contain redeemed toolkit
+// configuration and other worker-local data.
+enum IndexIngestStatusV1 {
+  INDEX_INGEST_STATUS_V1_UNSPECIFIED = 0;
+  INDEX_INGEST_STATUS_V1_OK = 1;
+  INDEX_INGEST_STATUS_V1_PARTLY_INDEXED = 2;
+  INDEX_INGEST_STATUS_V1_ERROR = 3;
+}
+
+// IndexIngestSummaryV1 is the bounded, typed inline form of the current
+// index_data terminal result. It is carried only on the authenticated output
+// gRPC data plane and is forbidden on Redis and control gRPC.
+message IndexIngestSummaryV1 {
+  IndexIngestStatusV1 status = 1;
+  string message = 2;
+  reserved 3 to 15;
+}
+
+// IndexIngestResultV1 binds one terminal result to the exact immutable inputs
+// consumed by EliteAClient.test_toolkit_tool. Exactly one of result_artifact or
+// result_summary is required. Progress, index-status and callback events use
+// non-terminal NodeEventV1 output frames; runtime composition is a separate
+// implementation slice.
+message IndexIngestResultV1 {
+  string input_bundle_id = 1;
+  DigestV1 input_bundle_digest = 2;
+  IndexIngestInputBindingV1 toolkit_configuration = 3;
+  IndexIngestInputBindingV1 tool_parameters = 4;
+  IndexIngestInputBindingV1 llm_model = 5;
+  IndexIngestInputBindingV1 llm_configuration = 6;
+  IndexIngestInputBindingV1 mcp_tokens = 7;
+  IndexIngestArtifactReferenceV1 result_artifact = 8;
+  IndexIngestSummaryV1 result_summary = 9;
+  IndexIngestInputBindingV1 embedding_binding = 10;
+  reserved 11 to 15;
+}

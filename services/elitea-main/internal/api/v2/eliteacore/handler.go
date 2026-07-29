@@ -36,12 +36,25 @@ type MCPToolSyncer interface {
 }
 
 type Handler struct {
-	pool       *pgxpool.Pool
-	mcpSyncer  MCPToolSyncer
+	pool               *pgxpool.Pool
+	mcpSyncer          MCPToolSyncer
+	permissionResolver auth.PermissionResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+type Option func(*Handler)
+
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(handler *Handler) {
+		handler.permissionResolver = resolver
+	}
+}
+
+func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	return handler
 }
 
 func (h *Handler) SetMCPSyncer(s MCPToolSyncer) {
@@ -2992,29 +3005,25 @@ func (h *Handler) AgentCategories(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Permissions(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
+	if !ok || h.permissionResolver == nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	_ = user
-	writeJSON(w, http.StatusOK, defaultPermissions())
-}
-
-func defaultPermissions() []map[string]any {
-	perms := []string{
-		"models.create", "models.read", "models.update", "models.delete",
-		"prompts.create", "prompts.read", "prompts.update", "prompts.delete",
-		"datasources.create", "datasources.read", "datasources.update", "datasources.delete",
-		"applications.create", "applications.read", "applications.update", "applications.delete",
-		"conversations.create", "conversations.read", "conversations.update", "conversations.delete",
-		"settings.read", "settings.update",
-		"integrations.create", "integrations.read", "integrations.update", "integrations.delete",
+	resolution, err := h.permissionResolver.ResolvePermissions(
+		r.Context(),
+		user,
+		auth.PermissionModeDefault,
+		chi.URLParam(r, "projectID"),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
 	}
-	result := make([]map[string]any, 0, len(perms))
-	for _, p := range perms {
-		result = append(result, map[string]any{"name": p, "enabled": true})
+	result := make([]map[string]any, 0, len(resolution.Permissions))
+	for _, permission := range resolution.Permissions {
+		result = append(result, map[string]any{"name": permission, "enabled": true})
 	}
-	return result
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
