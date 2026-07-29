@@ -747,7 +747,9 @@
             "source": "generated",
             "responseSchema": "Skill",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/skills"
+            ]
         },
         {
             "id": "skills.listApplicationSkills",
@@ -757,7 +759,153 @@
             "source": "generated",
             "responseSchema": "SkillsList",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.getSkill",
+            "method": "GET",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.getSkillVersion",
+            "method": "GET",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}/{versionId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.updateSkill",
+            "method": "PUT",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.updateSkillVersion",
+            "method": "PUT",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}/{versionId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.createSkillVersion",
+            "method": "POST",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.deleteSkill",
+            "method": "DELETE",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.deleteSkillVersion",
+            "method": "DELETE",
+            "path": "/elitea_core/skill/prompt_lib/{projectId}/{skillId}/{versionId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "unknown",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.setDefaultVersion",
+            "method": "PATCH",
+            "path": "/elitea_core/skill_default_version/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.generateDraft",
+            "method": "POST",
+            "path": "/elitea_core/generate_skill_draft/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillDraft",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.import",
+            "method": "POST",
+            "path": "/elitea_core/skill_import/prompt_lib/{projectId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "SkillRecord",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.export",
+            "method": "GET",
+            "path": "/elitea_core/skill_export/prompt_lib/{projectId}/{skillId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "string",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
+        },
+        {
+            "id": "skills.exportVersion",
+            "method": "GET",
+            "path": "/elitea_core/skill_export/prompt_lib/{projectId}/{skillId}/{versionId}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "string",
+            "fixture": null,
+            "usedBy": [
+                "features/skills"
+            ]
         },
         {
             "id": "skills.listSkills",
@@ -1200,7 +1348,8 @@
             "responseSchema": "GenerateContentStreamingResult",
             "fixture": null,
             "usedBy": [
-                "features/pipelines"
+                "features/pipelines",
+                "features/skills"
             ]
         },
         {
@@ -1213,6 +1362,7 @@
             "fixture": null,
             "usedBy": [
                 "features/pipelines",
+                "features/skills",
                 "entities/conversation"
             ]
         },

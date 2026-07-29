@@ -1,0 +1,178 @@
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
+
+import { EditSkill, skillVersionKey, toSkillForm } from './EditSkill';
+import { renderSkillsRoute } from './__tests__/testRouter';
+
+const BASE = '/api/v2';
+const detail = {
+  id: 'skill-1',
+  project_id: 'project-1',
+  name: 'Reviewer',
+  description: 'Reviews code',
+  type: 'skill',
+  is_default: false,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+  version_details: { id: 'v1', name: 'base', instructions: 'Be careful', tags: ['quality'] },
+  versions: [
+    { id: 'v1', name: 'base', instructions: 'Be careful', tags: ['quality'] },
+    { id: 'v2', name: 'second', instructions: 'Be very careful', tags: [] },
+  ],
+};
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: BASE });
+  server.use(
+    http.get(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () =>
+      HttpResponse.json(detail),
+    ),
+    http.get(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId/:versionId`, () =>
+      HttpResponse.json(detail),
+    ),
+  );
+});
+afterEach(() => {
+  resetGeneratedClient();
+  vi.restoreAllMocks();
+});
+
+describe('EditSkill', () => {
+  it('maps basic and versioned skill responses into editable form values', () => {
+    const {
+      description: _description,
+      version_details: _versionDetails,
+      ...skillWithVersions
+    } = detail;
+    const {
+      version_details: _withoutVersionDetails,
+      versions: _versions,
+      ...skillWithoutVersions
+    } = detail;
+    expect(toSkillForm(undefined)).toEqual({ name: '', description: '', instructions: '', tags: [] });
+    expect(toSkillForm(skillWithVersions)).toEqual({
+      name: 'Reviewer',
+      description: '',
+      instructions: 'Be careful',
+      tags: ['quality'],
+    });
+    expect(toSkillForm(skillWithoutVersions)).toMatchObject({ instructions: '', tags: [] });
+    expect(skillVersionKey({ name: 'named', instructions: '', tags: [] })).toBe('named');
+    expect(skillVersionKey({ id: 2, name: 'named', instructions: '', tags: [] })).toBe('2');
+  });
+
+  it('loads the form and ephemeral test panel', async () => {
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    expect(await screen.findByTestId('skill-name-input')).toHaveValue('Reviewer');
+    expect(screen.getByTestId('skill-test-panel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Icon' })).toBeDisabled();
+  });
+
+  it('saves edits through the version-aware endpoint', async () => {
+    const user = userEvent.setup();
+    let updated = false;
+    server.use(
+      http.put(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () => {
+        updated = true;
+        return HttpResponse.json(detail);
+      }),
+    );
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    const name = await screen.findByTestId('skill-name-input');
+    await user.type(name, ' updated');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(updated).toBe(true));
+  });
+
+  it('creates a named version from the current instructions', async () => {
+    const user = userEvent.setup();
+    let created = false;
+    server.use(
+      http.post(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () => {
+        created = true;
+        return HttpResponse.json(detail);
+      }),
+    );
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    await user.click(await screen.findByRole('button', { name: 'New version' }));
+    await user.type(screen.getByLabelText('Version name'), 'v3');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(created).toBe(true));
+  });
+
+  it('sets the route-selected version as default', async () => {
+    const user = userEvent.setup();
+    let defaulted = false;
+    server.use(
+      http.patch(`${BASE}/elitea_core/skill_default_version/prompt_lib/:projectId/:skillId`, () => {
+        defaulted = true;
+        return HttpResponse.json(detail);
+      }),
+    );
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1/v2');
+    await user.click(await screen.findByRole('button', { name: 'Set default' }));
+    await waitFor(() => expect(defaulted).toBe(true));
+  });
+
+  it('navigates when another version is selected', async () => {
+    const user = userEvent.setup();
+    const { router } = renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    await user.click(await screen.findByRole('combobox'));
+    await user.click(screen.getByRole('option', { name: 'second' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/skills/all/skill-1/v2'));
+  });
+
+  it('discards edits and deletes the skill', async () => {
+    const user = userEvent.setup();
+    let deleted = false;
+    server.use(
+      http.delete(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () => {
+        deleted = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const { router } = renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    const name = await screen.findByTestId('skill-name-input');
+    await user.type(name, ' changed');
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(name).toHaveValue('Reviewer');
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    const deleteButtons = screen.getAllByRole('button', { name: 'Delete' });
+    await user.click(deleteButtons[deleteButtons.length - 1]!);
+    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/skills/all'));
+  });
+
+  it('exports the selected skill as Markdown', async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get(`${BASE}/elitea_core/skill_export/prompt_lib/:projectId/:skillId`, () =>
+        HttpResponse.text('# Reviewer'),
+      ),
+    );
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:skill');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    await user.click(await screen.findByRole('button', { name: 'Export' }));
+    await waitFor(() => expect(click).toHaveBeenCalled());
+  });
+
+  it('shows load and save failures without exposing raw server errors', async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.put(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () =>
+        HttpResponse.json({ error: 'secret' }, { status: 500 }),
+      ),
+    );
+    renderSkillsRoute(<EditSkill />, '/skills/all/skill-1');
+    await user.type(await screen.findByTestId('skill-name-input'), ' changed');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to save');
+  });
+});
