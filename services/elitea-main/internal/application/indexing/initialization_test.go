@@ -54,6 +54,8 @@ type indexMetaInitializationStoreStub struct {
 	mu             sync.Mutex
 	work           IndexMetaInitializationWork
 	pending        []IndexMetaInitializationClaim
+	staleTerminal  int
+	staleErr       error
 	exactErr       error
 	loadErr        error
 	resolveErr     error
@@ -63,6 +65,20 @@ type indexMetaInitializationStoreStub struct {
 	quarantined    int
 	lastErrorCode  string
 	claimedExactID IndexMetaInitialization
+}
+
+func (s *indexMetaInitializationStoreStub) QuarantineExpiredTerminalIndexMetaInitializations(
+	_ context.Context,
+	limit int,
+) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.staleErr != nil {
+		return 0, s.staleErr
+	}
+	count := min(limit, s.staleTerminal)
+	s.staleTerminal -= count
+	return count, nil
 }
 
 func (s *indexMetaInitializationStoreStub) ClaimExactIndexMetaInitialization(
@@ -499,6 +515,40 @@ func TestDurableIndexMetaInitializerBoundsRecoveryConcurrency(t *testing.T) {
 	}
 	if got := materializer.maximum.Load(); got > 2 {
 		t.Fatalf("maximum concurrency=%d exceeded bound", got)
+	}
+}
+
+func TestDurableIndexMetaInitializerQuarantinesTerminalDeadlineBeforeRecovery(
+	t *testing.T,
+) {
+	work := validInitializationWork()
+	store := &indexMetaInitializationStoreStub{
+		work:          work,
+		staleTerminal: 2,
+		pending:       []IndexMetaInitializationClaim{work.Claim},
+		initializedAt: time.Now().UTC(),
+	}
+	materializer := &indexMetaMaterializerStub{}
+	initializer := newTestDurableIndexMetaInitializer(
+		t,
+		store,
+		materializer,
+		1,
+	)
+	initializer.config.BatchSize = 2
+
+	count, err := initializer.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || store.staleTerminal != 0 ||
+		materializer.calls.Load() != 0 {
+		t.Fatalf(
+			"count=%d stale=%d materializations=%d",
+			count,
+			store.staleTerminal,
+			materializer.calls.Load(),
+		)
 	}
 }
 

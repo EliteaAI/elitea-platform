@@ -104,6 +104,10 @@ func (w IndexMetaInitializationWork) Validate() error {
 }
 
 type IndexMetaInitializationRepository interface {
+	QuarantineExpiredTerminalIndexMetaInitializations(
+		context.Context,
+		int,
+	) (int, error)
 	ClaimExactIndexMetaInitialization(
 		context.Context,
 		IndexMetaInitialization,
@@ -224,18 +228,26 @@ func (i *DurableIndexMetaInitializer) Reconcile(ctx context.Context) (int, error
 	if ctx == nil {
 		return 0, ErrIndexMetaInitializationMismatch
 	}
+	quarantined, err :=
+		i.store.QuarantineExpiredTerminalIndexMetaInitializations(
+			ctx,
+			i.config.BatchSize,
+		)
+	if err != nil || quarantined == i.config.BatchSize {
+		return quarantined, err
+	}
 	token, err := i.claimID()
 	if err != nil {
-		return 0, err
+		return quarantined, err
 	}
 	claims, err := i.store.ClaimPendingIndexMetaInitializations(
 		ctx,
 		token,
-		i.config.BatchSize,
+		i.config.BatchSize-quarantined,
 		i.config.ClaimLease,
 	)
 	if err != nil || len(claims) == 0 {
-		return 0, err
+		return quarantined, err
 	}
 
 	errorsByClaim := make([]error, len(claims))
@@ -280,7 +292,7 @@ send:
 		)
 		cycleErrors = append(cycleErrors, wrapped)
 	}
-	return len(claims), errors.Join(cycleErrors...)
+	return quarantined + len(claims), errors.Join(cycleErrors...)
 }
 
 func (i *DurableIndexMetaInitializer) Run(ctx context.Context) error {

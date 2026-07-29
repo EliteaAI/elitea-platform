@@ -1087,6 +1087,60 @@ func (q *Queries) MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMet
 	return index_meta_initialized_at, err
 }
 
+const quarantineExpiredTerminalIndexMetaInitializations = `-- name: QuarantineExpiredTerminalIndexMetaInitializations :one
+WITH candidates AS MATERIALIZED (
+    SELECT i.execution_id, i.generation
+    FROM elitea_runtime.index_ingest_jobs AS i
+    JOIN elitea_runtime.execution_jobs AS j
+      ON j.execution_id = i.execution_id
+     AND j.generation = i.generation
+     AND j.capability_id = i.capability_id
+    JOIN elitea_runtime.command_outbox AS o
+      ON o.execution_id = i.execution_id
+     AND o.generation = i.generation
+    WHERE i.capability_id = 'index.ingest.v1'
+      AND i.index_meta_initialized_at IS NULL
+      AND i.index_meta_initialization_status = 'RUNNING'
+      AND i.index_meta_initialization_claim_expires_at <= clock_timestamp()
+      AND j.state = 'FAILED'
+      AND j.terminal_error_code = 'DEADLINE_EXCEEDED'
+      AND o.prepared_at IS NULL
+      AND o.published_at IS NULL
+      AND o.authority_granted_at IS NULL
+      AND o.retired_at IS NOT NULL
+      AND o.retirement_code = 'DEADLINE_EXCEEDED'
+    ORDER BY i.index_meta_initialization_claim_expires_at,
+             i.execution_id,
+             i.generation
+    LIMIT $1::integer
+    FOR UPDATE OF i, j, o SKIP LOCKED
+),
+quarantined AS (
+    UPDATE elitea_runtime.index_ingest_jobs AS i
+    SET index_meta_initialization_status = 'QUARANTINED',
+        index_meta_initialization_claim_token = NULL,
+        index_meta_initialization_claim_expires_at = NULL,
+        index_meta_initialization_next_attempt_at = NULL,
+        index_meta_initialization_last_error_code =
+            'INITIALIZATION_DEADLINE_EXCEEDED',
+        index_meta_initialization_failed_at =
+            date_trunc('milliseconds', clock_timestamp())
+    FROM candidates
+    WHERE i.execution_id = candidates.execution_id
+      AND i.generation = candidates.generation
+    RETURNING i.execution_id
+)
+SELECT count(*)::bigint AS quarantined_count
+FROM quarantined
+`
+
+func (q *Queries) QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error) {
+	row := q.db.QueryRow(ctx, quarantineExpiredTerminalIndexMetaInitializations, quarantineLimit)
+	var quarantined_count int64
+	err := row.Scan(&quarantined_count)
+	return quarantined_count, err
+}
+
 const quarantineIndexMetaInitialization = `-- name: QuarantineIndexMetaInitialization :one
 WITH locked_triple AS MATERIALIZED (
     SELECT i.execution_id,

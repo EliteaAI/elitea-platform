@@ -368,6 +368,33 @@ func (r *IndexIngestJobsRepository) ClaimExactIndexMetaInitialization(
 	)
 }
 
+func (r *IndexIngestJobsRepository) QuarantineExpiredTerminalIndexMetaInitializations(
+	ctx context.Context,
+	limit int,
+) (int, error) {
+	if ctx == nil || limit <= 0 ||
+		limit > executionapp.MaxOutboxPublisherBatchSize {
+		return 0, indexingapp.ErrIndexMetaInitializationMismatch
+	}
+	count, err := sqlcgen.New(r.pool).
+		QuarantineExpiredTerminalIndexMetaInitializations(
+			ctx,
+			int32(limit),
+		)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"quarantine expired terminal index metadata initializations: %w",
+			err,
+		)
+	}
+	if count < 0 || count > int64(limit) {
+		return 0, errors.New(
+			"database returned invalid expired terminal initialization count",
+		)
+	}
+	return int(count), nil
+}
+
 func (r *IndexIngestJobsRepository) ClaimPendingIndexMetaInitializations(
 	ctx context.Context,
 	claimToken string,

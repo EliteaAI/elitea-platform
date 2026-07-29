@@ -70,6 +70,18 @@ func TestIndexMetaInitializationRecoveryQueriesFenceLeaseAndDispatch(t *testing.
 	}
 	sql := string(queries)
 	for _, fragment := range []string{
+		"-- name: QuarantineExpiredTerminalIndexMetaInitializations :one",
+		"LIMIT sqlc.arg(quarantine_limit)::integer",
+		"FOR UPDATE OF i, j, o SKIP LOCKED",
+		"index_meta_initialization_claim_expires_at <= clock_timestamp()",
+		"j.state = 'FAILED'",
+		"j.terminal_error_code = 'DEADLINE_EXCEEDED'",
+		"o.prepared_at IS NULL",
+		"o.published_at IS NULL",
+		"o.authority_granted_at IS NULL",
+		"o.retired_at IS NOT NULL",
+		"o.retirement_code = 'DEADLINE_EXCEEDED'",
+		"'INITIALIZATION_DEADLINE_EXCEEDED'",
 		"-- name: ClaimPendingIndexMetaInitializations :many",
 		"FOR UPDATE OF i SKIP LOCKED",
 		"LIMIT sqlc.arg(claim_limit)::integer",

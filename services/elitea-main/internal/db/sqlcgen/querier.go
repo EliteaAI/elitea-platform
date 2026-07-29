@@ -115,6 +115,7 @@ type Querier interface {
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
+	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
 	ReleaseIndexMetaInitialization(ctx context.Context, arg ReleaseIndexMetaInitializationParams) (int64, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
