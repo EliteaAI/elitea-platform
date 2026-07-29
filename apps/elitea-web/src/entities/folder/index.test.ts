@@ -17,6 +17,7 @@ const PUBLIC_SURFACE = [
   'DEFAULT_FOLDER_NAME',
   'conversationMatchId',
   'flattenGroupedConversations',
+  'folderApi',
   'isPinnedFolder',
   'resolveInitialExpandedGroup',
   'sortFoldersByName',
