@@ -615,6 +615,68 @@ def test_current_index_tool_error_omits_exception_detail() -> None:
     assert canary not in json.dumps(current)
 
 
+def test_current_index_failure_status_is_safe_and_emitted_once() -> None:
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            index_name="knowledge",
+            message_id="message-1",
+            sio_event="chat_predict",
+        ),
+        lambda event: None,
+    )
+
+    event = callback.finish_index_status_on_failure()
+
+    assert event is not None
+    assert callback.finish_index_status_on_failure() is None
+    current = json.loads(encode_current_node_event_json(event))
+    assert current["type"] == "agent_index_data_status"
+    assert current["response_metadata"] == {
+        "task_id": "execution-1",
+        "index_name": "knowledge",
+        "state": "failed",
+        "error": "Indexing reported an error.",
+        "indexed": 0,
+        "updated": 0,
+        "toolkit_id": 9,
+        "initiator": "user",
+        "project_id": 42,
+        "user_id": 7,
+    }
+    assert len(encode_current_node_event_json(event)) < 1024
+
+
+def test_current_index_terminal_status_suppresses_failure_fallback() -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            index_name="knowledge",
+        ),
+        events.append,
+    )
+
+    callback.on_custom_event(
+        "index_data_status",
+        {"index_name": "knowledge", "state": "partly_indexed"},
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+
+    assert callback.finish_index_status_on_failure() is None
+    assert len(events) == 1
+
+
 def test_current_index_callback_filters_only_scheduled_transient_events() -> None:
     def emitted_types(initiator: str) -> tuple[list[str], list[dict[str, Any]]]:
         events = []

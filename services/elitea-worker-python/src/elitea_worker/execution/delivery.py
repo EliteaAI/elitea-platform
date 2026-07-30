@@ -1896,6 +1896,9 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 toolkit_id=_current_toolkit_id(
                     resolved_input.toolkit_configuration.value
                 ),
+                index_name=_current_index_name(
+                    resolved_input.tool_parameters.value
+                ),
                 message_id=command.index_ingest.client_message_id,
                 sio_event=command.index_ingest.sio_event,
                 display_name=_current_toolkit_display_name(
@@ -1936,6 +1939,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             try:
                 projected = bind_result_summary(result)
             except InternalFailure as error:
+                await _publish_missing_index_failure_status(callback, progress)
                 tool_event = callback.finish_tool(success=False)
                 if tool_event is not None:
                     await progress.publish_from_delivery(tool_event)
@@ -1947,6 +1951,11 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                     sdk_failure_category=_sdk_failure_category(result.sdk_result),
                 )
                 raise
+            if (
+                projected.result_summary.status
+                == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+            ):
+                await _publish_missing_index_failure_status(callback, progress)
             tool_event = callback.finish_tool(
                 success=projected.result_summary.status
                 != indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
@@ -1957,13 +1966,16 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             return projected
         except _IndexProgressTransportFailure:
             raise
-        except WorkerError:
+        except WorkerError as error:
+            if not isinstance(error, ExecutionCancelled):
+                await _publish_missing_index_failure_status(callback, progress)
             tool_event = callback.finish_tool(success=False)
             if tool_event is not None:
                 await progress.publish_from_delivery(tool_event)
             callback.raise_if_failed()
             raise
         except Exception as error:
+            await _publish_missing_index_failure_status(callback, progress)
             tool_event = callback.finish_tool(success=False)
             if tool_event is not None:
                 await progress.publish_from_delivery(tool_event)
@@ -2005,6 +2017,16 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
         raise InvalidInput("The invocation authorization disposition is malformed.")
 
 
+async def _publish_missing_index_failure_status(
+    callback: CurrentIndexNodeEventCallback,
+    progress: _IndexProgressOutput,
+) -> None:
+    event = callback.finish_index_status_on_failure()
+    if event is not None:
+        await progress.publish_from_delivery(event)
+    callback.raise_if_failed()
+
+
 def _current_numeric_identity(value: str) -> int | str:
     try:
         parsed = int(value)
@@ -2030,6 +2052,23 @@ def _current_toolkit_id(toolkit_configuration: Any) -> int | str | None:
         parsed = _current_numeric_identity(value)
         return parsed if parsed else None
     return None
+
+
+def _current_index_name(tool_parameters: Any) -> str | None:
+    if not isinstance(tool_parameters, dict):
+        return None
+    value = tool_parameters.get("index_name")
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(character in value for character in ("\x00", "\r", "\n"))
+    ):
+        return None
+    try:
+        return value if len(value.encode("utf-8")) <= MAX_SAFE_STRING_BYTES else None
+    except UnicodeEncodeError:
+        return None
 
 
 def _current_toolkit_display_name(toolkit_configuration: Any) -> str:

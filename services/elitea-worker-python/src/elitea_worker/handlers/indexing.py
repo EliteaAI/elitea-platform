@@ -60,6 +60,9 @@ _CURRENT_INDEX_CUSTOM_EVENTS = {
         frozenset({"index_name", "toolkit_id", "project_id"}),
     ),
 }
+_CURRENT_INDEX_TERMINAL_STATES = frozenset(
+    {"completed", "failed", "partly_indexed", "scheduled_reindex", "cancelled"}
+)
 
 # SDK callbacks are durable, replayable UI output.  Treat progress text as an
 # untrusted observation, not as a diagnostic channel: some current SDK tools
@@ -96,6 +99,7 @@ class CurrentIndexNodeEventContext:
     project_id: int | str
     user_id: int | str
     toolkit_id: int | str | None
+    index_name: str | None = None
     message_id: str | None = None
     sio_event: str | None = None
     display_name: str = "index_data"
@@ -128,6 +132,8 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         self._tool_run_id: str | None = None
         self._tool_started_at: str | None = None
         self._tool_finalized = False
+        self._terminal_index_status_observed = False
+        self._fallback_index_status_finalized = False
 
     def on_tool_start(
         self,
@@ -227,6 +233,39 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
             self._record_failure(exc)
             raise
 
+    def finish_index_status_on_failure(self) -> node_event_pb2.NodeEventV1 | None:
+        """Build one safe failed status when the SDK emitted no terminal status."""
+
+        try:
+            with self._tool_lock:
+                if (
+                    self._terminal_index_status_observed
+                    or self._fallback_index_status_finalized
+                ):
+                    return None
+                self._fallback_index_status_finalized = True
+            now = datetime.now(tz=timezone.utc).isoformat()
+            payload = {
+                "task_id": self._context.task_id,
+                "index_name": self._context.index_name,
+                "state": "failed",
+                "error": _SAFE_INDEX_ERROR_FALLBACK,
+                "indexed": 0,
+                "updated": 0,
+                "toolkit_id": self._context.toolkit_id,
+                "initiator": self._context.initiator,
+                "project_id": self._context.project_id,
+                "user_id": self._context.user_id,
+            }
+            return self._build_event(
+                "agent_index_data_status",
+                payload,
+                now=now,
+            )
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
     def on_custom_event(
         self,
         name: str,
@@ -296,6 +335,12 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                     payload["toolkit_id"] = self._context.toolkit_id
 
             self._emit(event_type, payload, now=now)
+            if (
+                name == "index_data_status"
+                and payload.get("state") in _CURRENT_INDEX_TERMINAL_STATES
+            ):
+                with self._tool_lock:
+                    self._terminal_index_status_observed = True
         except Exception as exc:
             self._record_failure(exc)
             raise
