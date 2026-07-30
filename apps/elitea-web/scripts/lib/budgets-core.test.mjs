@@ -291,7 +291,7 @@ describe('budget waivers', () => {
       'Canvas.tsx': 'src/features/chat-messages/ui/canvas/Canvas.tsx',
       'ChatMessageWrapper.tsx': 'src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx',
     };
-    expect(checkComponents(files[rel], parseSource(files[rel], component(13, 1, 1)))).toEqual([]);
+    expect(checkComponents(files[_rel], parseSource(files[_rel], component(13, 1, 1)))).toEqual([]);
   });
 
   it('checkComponents(CanvasEditor.tsx, with useEffects breach) with waiver -> no findings', () => {
