@@ -48,17 +48,112 @@ func (q *Queries) InsertCurrentIndexScheduleNotification(ctx context.Context, ar
 	return result.RowsAffected(), nil
 }
 
-const lockCurrentIndexScheduleToolkitMeta = `-- name: LockCurrentIndexScheduleToolkitMeta :one
+const listCurrentIndexScheduleProjects = `-- name: ListCurrentIndexScheduleProjects :many
 
+SELECT project.id::integer
+FROM centry.project AS project
+WHERE project.create_success IS TRUE
+  AND project.id > $1::integer
+ORDER BY project.id
+LIMIT $2::integer
+`
+
+type ListCurrentIndexScheduleProjectsParams struct {
+	AfterProjectID int32 `db:"after_project_id" json:"after_project_id"`
+	PageLimit      int32 `db:"page_limit" json:"page_limit"`
+}
+
+// The unqualified toolkit table is intentional. These queries execute only
+// inside an authorized project transaction whose local search_path is the
+// exact p_<project_id> tenant schema.
+func (q *Queries) ListCurrentIndexScheduleProjects(ctx context.Context, arg ListCurrentIndexScheduleProjectsParams) ([]int32, error) {
+	rows, err := q.db.Query(ctx, listCurrentIndexScheduleProjects, arg.AfterProjectID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int32{}
+	for rows.Next() {
+		var project_id int32
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCurrentIndexScheduleToolkits = `-- name: ListCurrentIndexScheduleToolkits :many
+SELECT toolkit.id,
+       toolkit.type,
+       jsonb_extract_path(toolkit.meta, 'indexes_meta') AS indexes_meta
+FROM elitea_tools AS toolkit
+WHERE toolkit.id > $1::integer
+  AND jsonb_typeof(toolkit.meta -> 'indexes_meta') = 'object'
+ORDER BY toolkit.id
+LIMIT $2::integer
+`
+
+type ListCurrentIndexScheduleToolkitsParams struct {
+	AfterToolkitID int32 `db:"after_toolkit_id" json:"after_toolkit_id"`
+	PageLimit      int32 `db:"page_limit" json:"page_limit"`
+}
+
+type ListCurrentIndexScheduleToolkitsRow struct {
+	ID          int32  `db:"id" json:"id"`
+	Type        string `db:"type" json:"type"`
+	IndexesMeta []byte `db:"indexes_meta" json:"indexes_meta"`
+}
+
+func (q *Queries) ListCurrentIndexScheduleToolkits(ctx context.Context, arg ListCurrentIndexScheduleToolkitsParams) ([]ListCurrentIndexScheduleToolkitsRow, error) {
+	rows, err := q.db.Query(ctx, listCurrentIndexScheduleToolkits, arg.AfterToolkitID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCurrentIndexScheduleToolkitsRow{}
+	for rows.Next() {
+		var i ListCurrentIndexScheduleToolkitsRow
+		if err := rows.Scan(&i.ID, &i.Type, &i.IndexesMeta); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCurrentIndexScheduleToolkit = `-- name: LockCurrentIndexScheduleToolkit :one
+SELECT settings, meta
+FROM elitea_tools
+WHERE id = $1::integer
+FOR UPDATE
+`
+
+type LockCurrentIndexScheduleToolkitRow struct {
+	Settings []byte `db:"settings" json:"settings"`
+	Meta     []byte `db:"meta" json:"meta"`
+}
+
+func (q *Queries) LockCurrentIndexScheduleToolkit(ctx context.Context, toolkitID int32) (LockCurrentIndexScheduleToolkitRow, error) {
+	row := q.db.QueryRow(ctx, lockCurrentIndexScheduleToolkit, toolkitID)
+	var i LockCurrentIndexScheduleToolkitRow
+	err := row.Scan(&i.Settings, &i.Meta)
+	return i, err
+}
+
+const lockCurrentIndexScheduleToolkitMeta = `-- name: LockCurrentIndexScheduleToolkitMeta :one
 SELECT meta
 FROM elitea_tools
 WHERE id = $1::integer
 FOR UPDATE
 `
 
-// The unqualified toolkit table is intentional. These queries execute only
-// inside an authorized project transaction whose local search_path is the
-// exact p_<project_id> tenant schema.
 func (q *Queries) LockCurrentIndexScheduleToolkitMeta(ctx context.Context, toolkitID int32) ([]byte, error) {
 	row := q.db.QueryRow(ctx, lockCurrentIndexScheduleToolkitMeta, toolkitID)
 	var meta []byte

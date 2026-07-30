@@ -99,6 +99,11 @@ type Querier interface {
 	// current UI contract. The caller caps limit_rows at the 257-row sentinel.
 	ListCurrentConfigurationTypes(ctx context.Context, arg ListCurrentConfigurationTypesParams) ([]string, error)
 	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
+	// The unqualified toolkit table is intentional. These queries execute only
+	// inside an authorized project transaction whose local search_path is the
+	// exact p_<project_id> tenant schema.
+	ListCurrentIndexScheduleProjects(ctx context.Context, arg ListCurrentIndexScheduleProjectsParams) ([]int32, error)
+	ListCurrentIndexScheduleToolkits(ctx context.Context, arg ListCurrentIndexScheduleToolkitsParams) ([]ListCurrentIndexScheduleToolkitsRow, error)
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
 	ListCurrentProjectAuthors(ctx context.Context, projectID int32) ([]ListCurrentProjectAuthorsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
@@ -118,9 +123,7 @@ type Querier interface {
 	// only inside a tenant transaction whose local search_path was derived from an
 	// already authorized positive project identity.
 	LockCurrentConfigurationForMutation(ctx context.Context, arg LockCurrentConfigurationForMutationParams) (LockCurrentConfigurationForMutationRow, error)
-	// The unqualified toolkit table is intentional. These queries execute only
-	// inside an authorized project transaction whose local search_path is the
-	// exact p_<project_id> tenant schema.
+	LockCurrentIndexScheduleToolkit(ctx context.Context, toolkitID int32) (LockCurrentIndexScheduleToolkitRow, error)
 	LockCurrentIndexScheduleToolkitMeta(ctx context.Context, toolkitID int32) ([]byte, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)

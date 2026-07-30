@@ -11,14 +11,31 @@ import (
 	"strconv"
 
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const maxCurrentIndexScheduleMetadataBytes = 16 << 20
 
+type currentIndexSchedulePatchQueries interface {
+	LockCurrentIndexScheduleToolkit(
+		context.Context,
+		int32,
+	) (sqlcgen.LockCurrentIndexScheduleToolkitRow, error)
+	UpdateCurrentIndexScheduleToolkitMeta(
+		context.Context,
+		sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams,
+	) (int64, error)
+}
+
+type currentIndexSchedulePatchQueryFactory func(
+	sqlExecutor,
+) (currentIndexSchedulePatchQueries, error)
+
 type CurrentIndexSchedulePatchRepository struct {
 	projects projectStore
+	queries  currentIndexSchedulePatchQueryFactory
 }
 
 func NewCurrentIndexSchedulePatchRepository(
@@ -28,16 +45,35 @@ func NewCurrentIndexSchedulePatchRepository(
 	if err != nil {
 		return nil, err
 	}
-	return newCurrentIndexSchedulePatchRepository(projects)
+	return newCurrentIndexSchedulePatchRepository(
+		projects,
+		newCurrentIndexSchedulePatchQueries,
+	)
 }
 
 func newCurrentIndexSchedulePatchRepository(
 	projects projectStore,
+	queries currentIndexSchedulePatchQueryFactory,
 ) (*CurrentIndexSchedulePatchRepository, error) {
-	if projects == nil {
+	if projects == nil || queries == nil {
 		return nil, errors.New("current index schedule database is required")
 	}
-	return &CurrentIndexSchedulePatchRepository{projects: projects}, nil
+	return &CurrentIndexSchedulePatchRepository{
+		projects: projects,
+		queries:  queries,
+	}, nil
+}
+
+func newCurrentIndexSchedulePatchQueries(
+	tx sqlExecutor,
+) (currentIndexSchedulePatchQueries, error) {
+	executor, ok := tx.(pgxExecutor)
+	if !ok || executor.queryer == nil {
+		return nil, errors.New(
+			"current index schedule transaction does not support generated queries",
+		)
+	}
+	return sqlcgen.New(executor.queryer), nil
 }
 
 func (repository *CurrentIndexSchedulePatchRepository) Patch(
@@ -61,20 +97,21 @@ func (repository *CurrentIndexSchedulePatchRepository) Patch(
 		mutation.ProjectID,
 		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
 		func(tx sqlExecutor) error {
-			var settingsRaw, metaRaw []byte
-			err := tx.QueryRow(ctx, `
-SELECT settings, meta
-FROM elitea_tools
-WHERE id = $1
-FOR UPDATE`,
+			queries, err := repository.queries(tx)
+			if err != nil {
+				return indexscheduleapp.ErrScheduleUnavailable
+			}
+			toolkit, err := queries.LockCurrentIndexScheduleToolkit(
+				ctx,
 				int32(mutation.ToolkitID),
-			).Scan(&settingsRaw, &metaRaw)
+			)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return indexscheduleapp.ErrToolkitNotFound
 			}
 			if err != nil {
 				return indexscheduleapp.ErrScheduleUnavailable
 			}
+			settingsRaw, metaRaw := toolkit.Settings, toolkit.Meta
 			if len(settingsRaw) > maxCurrentIndexScheduleMetadataBytes ||
 				len(metaRaw) > maxCurrentIndexScheduleMetadataBytes {
 				return indexscheduleapp.ErrScheduleResultTooLarge
@@ -124,15 +161,14 @@ FOR UPDATE`,
 			if len(updatedMeta) > maxCurrentIndexScheduleMetadataBytes {
 				return indexscheduleapp.ErrScheduleResultTooLarge
 			}
-			tag, err := tx.Exec(ctx, `
-UPDATE elitea_tools
-SET meta = $1::jsonb,
-    updated_at = clock_timestamp()
-WHERE id = $2`,
-				updatedMeta,
-				int32(mutation.ToolkitID),
+			updatedRows, err := queries.UpdateCurrentIndexScheduleToolkitMeta(
+				ctx,
+				sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams{
+					Meta:      updatedMeta,
+					ToolkitID: int32(mutation.ToolkitID),
+				},
 			)
-			if err != nil || tag.RowsAffected() != 1 {
+			if err != nil || updatedRows != 1 {
 				return indexscheduleapp.ErrScheduleUnavailable
 			}
 			result = indexscheduleapp.MutationResult{
