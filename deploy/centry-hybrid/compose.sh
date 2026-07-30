@@ -55,6 +55,40 @@ export ELITEA_INDEXER_WORKER_IMAGE="${ELITEA_INDEXER_WORKER_IMAGE:-$ELITEA_WORKE
 
 "$script_dir/prepare-runtime.sh" "$centry_dir" "$runtime_root"
 
+deploy_ui() {
+  local ui_input="${ELITEA_HYBRID_UI_DIR:-}"
+  if [[ -z "$ui_input" ]]; then
+    return
+  fi
+  if [[ ! -f "$ui_input/package.json" ]]; then
+    echo "EliteaUI checkout does not contain package.json: $ui_input" >&2
+    exit 2
+  fi
+
+  local ui_dir
+  ui_dir="$(cd "$ui_input" && pwd -P)"
+  local ui_target="$centry_dir/pylon_main/plugins/elitea_core/static/ui/dist"
+  local ui_stage
+  ui_stage="$(mktemp -d "$runtime_root/.elitea-ui-dist.XXXXXX")"
+  trap 'rm -rf "$ui_stage"' RETURN
+
+  (
+    cd "$ui_dir"
+    VITE_SERVER_URL="${ELITEA_HYBRID_UI_SERVER_URL:-/api/v2}" npm run build
+  )
+  cp -R "$ui_dir/dist/." "$ui_stage/"
+  rm -rf "$ui_target"
+  mkdir -p "$(dirname "$ui_target")"
+  mv "$ui_stage" "$ui_target"
+  trap - RETURN
+
+  local ui_revision="unknown"
+  if git -C "$ui_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+    ui_revision="$(git -C "$ui_dir" rev-parse --short=12 HEAD)"
+  fi
+  echo "deployed EliteaUI revision $ui_revision from $ui_dir"
+}
+
 compose=(
   docker compose
   --project-directory "$centry_dir"
@@ -114,6 +148,7 @@ case "$action" in
     ;;
   up)
     validate_model
+    deploy_ui
     "${compose[@]}" --profile runtime up \
       -d \
       --build \
