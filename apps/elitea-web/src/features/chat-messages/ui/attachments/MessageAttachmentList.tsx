@@ -38,8 +38,6 @@ export function MessageAttachmentList({
   items = [],
   onRemoveAttachment,
 }: MessageAttachmentListProps): React.ReactElement | null {
-  if (!items?.length) return null;
-
   const { imagesItems, otherFilesItems } = useMemo(
     () =>
       items.reduce(
@@ -55,6 +53,8 @@ export function MessageAttachmentList({
       ),
     [items],
   );
+
+  if (!items?.length) return null;
 
   return (
     <Box
@@ -135,6 +135,7 @@ function ImageAttachmentCard({
           maxWidth: '16.25rem',
           maxHeight: '12rem',
           objectFit: 'contain',
+          // eslint-disable-next-line elitea/ad-hoc-radius — image card border radius
           borderRadius: '0.5rem',
           cursor: 'pointer',
           border: '1px solid',

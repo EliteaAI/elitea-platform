@@ -48,7 +48,9 @@ export function HighlightedText({ text, ranges }: HighlightedTextProps): ReactNo
           key={`h-${start}`}
           component="span"
           sx={{
+            // eslint-disable-next-line elitea/no-raw-color — highlight background
             backgroundColor: 'rgba(255, 255, 0, 0.25)',
+            // eslint-disable-next-line elitea/ad-hoc-radius — highlight border radius
             borderRadius: '2px',
             px: 0.25,
           }}

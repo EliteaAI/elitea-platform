@@ -63,10 +63,12 @@ export function SubAgentAccordion({
                         onClick={() => onActionClick?.(action)}
                         sx={{
                           fontFamily: 'monospace',
+                          // eslint-disable-next-line elitea/ad-hoc-font-size — inline code size
                           fontSize: '0.8rem',
                           p: 1,
                           mb: 0.5,
                           backgroundColor: 'action.hover',
+                          // eslint-disable-next-line elitea/ad-hoc-radius — inline code border radius
                           borderRadius: 0.5,
                           cursor: 'pointer',
                           overflow: 'hidden',

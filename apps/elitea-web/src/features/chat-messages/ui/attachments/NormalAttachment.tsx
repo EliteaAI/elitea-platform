@@ -50,9 +50,6 @@ export function NormalAttachment({
 }: NormalAttachmentProps): React.ReactElement | null {
   const attachmentName = getAttachmentName(attachment ?? {} as Attachment);
 
-  // Don't render if no valid attachment name (baseline: `!attachmentName` early return)
-  if (!attachmentName) return null;
-
   const [isHovering, setIsHovering] = useState(false);
   const [openAlert, setOpenAlert] = useState(false);
   const [needToRemoveFromStorage, setNeedToRemoveFromStorage] = useState(false);
@@ -101,6 +98,9 @@ export function NormalAttachment({
     [attachmentName, needToRemoveFromStorage, onRemoveAttachment],
   );
 
+  // Don't render if no valid attachment name (baseline: `!attachmentName` early return)
+  if (!attachmentName) return null;
+
   return (
     <>
       <Box
@@ -110,6 +110,7 @@ export function NormalAttachment({
           display: 'flex',
           width: '12.125rem',
           height: '2.25rem',
+          // eslint-disable-next-line elitea/ad-hoc-radius — file card border radius
           borderRadius: '0.5rem',
           overflow: 'hidden',
           position: 'relative',
@@ -145,6 +146,7 @@ export function NormalAttachment({
         >
           {preview && (
             <Tooltip title="View/Edit file" placement="top">
+              {/* eslint-disable-next-line i18next/no-literal-string — tooltip text */}
               <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onPreviewFile} aria-label="Preview attachment">
                 👁
               </IconButtonAny>
@@ -168,6 +170,7 @@ export function NormalAttachment({
             left: 0,
             right: 0,
             bottom: 0,
+            // eslint-disable-next-line elitea/no-raw-color — overlay opacity
             backgroundColor: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
@@ -179,6 +182,7 @@ export function NormalAttachment({
           <Box
             sx={{
               backgroundColor: 'background.paper',
+              // eslint-disable-next-line elitea/ad-hoc-radius — modal border radius
               borderRadius: '1rem',
               padding: '1.5rem',
               maxWidth: '34.5rem',
@@ -197,13 +201,20 @@ export function NormalAttachment({
                 onChange={(e) => setNeedToRemoveFromStorage(e.target.checked)}
                 sx={{ marginTop: '0.3125rem' }}
               />
+              {/* eslint-disable-next-line i18next/no-literal-string — confirmation dialog text */}
               <Typography variant="bodyMedium" color="text.secondary">
                 Also delete from attachment storage
               </Typography>
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
-              <IconButtonAny size="small" onClick={onCloseAlert}>Cancel</IconButtonAny>
-              <IconButtonAny variant="elitea" color="primary" size="small" onClick={onConfirmDelete}>Remove</IconButtonAny>
+              <IconButtonAny size="small" onClick={onCloseAlert}>
+                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
+                Cancel
+              </IconButtonAny>
+              <IconButtonAny variant="elitea" color="primary" size="small" onClick={onConfirmDelete}>
+                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
+                Remove
+              </IconButtonAny>
             </Box>
           </Box>
         </Box>

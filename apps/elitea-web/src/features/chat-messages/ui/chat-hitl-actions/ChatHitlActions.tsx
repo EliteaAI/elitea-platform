@@ -54,6 +54,7 @@ export function ChatHitlActions({
         p: 1.5,
         border: '1px solid',
         borderColor: 'warning.main',
+        // eslint-disable-next-line elitea/ad-hoc-radius — warning banner border radius
         borderRadius: 1,
         backgroundColor: 'warning.lighter',
       }}
@@ -70,6 +71,7 @@ export function ChatHitlActions({
         direction="row"
         spacing={1}
       >
+        {/* eslint-disable-next-line i18next/no-literal-string — action key comparison */}
         {actions.includes('approve') && (
           <Button
             size="small"
@@ -78,9 +80,11 @@ export function ChatHitlActions({
             onClick={() => onHitlResume?.()}
             disabled={disabled}
           >
+            {/* eslint-disable-next-line i18next/no-literal-string — HITL action label */}
             Approve
           </Button>
         )}
+        {/* eslint-disable-next-line i18next/no-literal-string — action key comparison */}
         {actions.includes('reject') && (
           <Button
             size="small"
@@ -89,9 +93,11 @@ export function ChatHitlActions({
             onClick={() => onHitlResume?.()}
             disabled={disabled}
           >
+            {/* eslint-disable-next-line i18next/no-literal-string — HITL action label */}
             Reject
           </Button>
         )}
+        {/* eslint-disable-next-line i18next/no-literal-string — action key comparison */}
         {actions.includes('edit') && (
           <Button
             size="small"
@@ -99,6 +105,7 @@ export function ChatHitlActions({
             onClick={() => onHitlResume?.()}
             disabled={disabled}
           >
+            {/* eslint-disable-next-line i18next/no-literal-string — HITL action label */}
             Edit
           </Button>
         )}

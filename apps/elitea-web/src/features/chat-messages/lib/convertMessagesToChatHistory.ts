@@ -122,6 +122,7 @@ export interface PlayerInfo {
  * `convertToPlayerQuestion` — converts a message group to a user question
  * suitable for playback mode, using player-specific name/avatar resolution.
  */
+// eslint-disable-next-line eslint/complexity — playback conversion has many branching paths
 export function convertToPlayerQuestion(
   messageGroup: MessageGroupWire,
   playerInfo: PlayerInfo,
@@ -209,6 +210,7 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
  * The result is compatible with `processes/chat/model/useLoadMoreMessages.ts`
  * which takes `convertMessagesToChatHistory` as an injected parameter.
  */
+// eslint-disable-next-line eslint/complexity — full conversion pipeline with parent/child/swarm branching
 export function convertMessagesToChatHistory(
   messageGroups: readonly MessageGroupWire[] = [],
   participants: readonly MessageParticipantWire[] = [],

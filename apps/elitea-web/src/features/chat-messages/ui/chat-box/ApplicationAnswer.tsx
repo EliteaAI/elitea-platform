@@ -90,7 +90,7 @@ export function ApplicationAnswer({
 }: ApplicationAnswerProps): ReactNode {
   // Determine if there's speakable text from the answer.
   // @ts-expect-error — declaration only, suppresses TS6133
-  const _hasSpeakableText = answer.content?.length ?? 0 > 0;
+  const _hasSpeakableText = !!answer.content;
   const isActive = isStreaming || isLoading;
 
   return (
@@ -118,6 +118,7 @@ export function ApplicationAnswer({
                 display: 'inline-block',
                 width: '6px',
                 height: '6px',
+                // eslint-disable-next-line elitea/ad-hoc-radius — circular pulse indicator
                 borderRadius: '50%',
                 backgroundColor: 'primary.main',
                 animation: 'pulse 1.5s infinite',

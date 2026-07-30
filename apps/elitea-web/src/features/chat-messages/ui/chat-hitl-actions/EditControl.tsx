@@ -59,6 +59,7 @@ export function EditControl({
           onClick={() => onSubmit(value)}
           disabled={disabled || !value.trim()}
         >
+          {/* eslint-disable-next-line i18next/no-literal-string — edit action label */}
           Submit
         </Button>
         {onCancel && (
@@ -68,6 +69,7 @@ export function EditControl({
             onClick={onCancel}
             disabled={disabled}
           >
+            {/* eslint-disable-next-line i18next/no-literal-string — edit action label */}
             Cancel
           </Button>
         )}

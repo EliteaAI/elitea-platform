@@ -43,6 +43,7 @@ export function BlockWithCommentControl({
         multiline
         minRows={2}
         fullWidth
+        // eslint-disable-next-line i18next/no-literal-string — placeholder text
         placeholder="Add a comment (optional)..."
         value={comment}
         onChange={(e) => setComment(e.target.value)}
@@ -57,6 +58,7 @@ export function BlockWithCommentControl({
           onClick={onApprove}
           disabled={disabled}
         >
+          {/* eslint-disable-next-line i18next/no-literal-string — HITL action label */}
           Approve
         </Button>
         <Button
@@ -66,6 +68,7 @@ export function BlockWithCommentControl({
           onClick={() => onReject?.(comment)}
           disabled={disabled}
         >
+          {/* eslint-disable-next-line i18next/no-literal-string — HITL action label */}
           Reject
         </Button>
       </Box>

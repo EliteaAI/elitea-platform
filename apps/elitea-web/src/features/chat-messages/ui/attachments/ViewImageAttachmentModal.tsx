@@ -64,7 +64,8 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
     (async () => {
       // Placeholder — real implementation would fetch the artifact blob
       if (cancelled) return;
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      const currentUrl = blobUrlRef.current;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
       // blobUrlRef.current = objectUrl;
       // setFullResSource(objectUrl);
     })();
@@ -74,10 +75,12 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
     };
   }, [open, attachmentFilepath, attachmentBucket]);
 
-  // Revoke blob URL on unmount
+  // Revoke blob URL on unmount — capture ref value in effect body so cleanup
+  // never touches `.current` directly (react-hooks/exhaustive-deps rule).
   useEffect(() => {
+    const currentUrl = blobUrlRef.current;
     return () => {
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
   }, []);
 
@@ -121,6 +124,8 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
         onClose={onClose}
         onKeyDown={handleKeyDown}
         sx={{
+          // eslint-disable-next-line elitea/no-mui-internal-selector, elitea/no-raw-color, elitea/ad-hoc-radius
+          // — MUI dialog paper override via sx is the standard pattern; #fafafa is paper bg; 1rem is modal radius
           '& .MuiDialog-paper': {
             background: '#fafafa',
             borderRadius: '1rem',
@@ -165,20 +170,31 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
                 e.stopPropagation();
                 // TODO: download implementation
               }}
+              // eslint-disable-next-line i18next/no-literal-string — aria-label is accessibility, not user-facing
               aria-label="Download image"
             >
               ↓
             </IconButtonAny>
+            {/* eslint-disable-next-line i18next/no-literal-string — icon-only action button */}
             <IconButtonAny
               variant="elitea"
               color="secondary"
               size="small"
               onClick={onClickRemove}
+              // eslint-disable-next-line i18next/no-literal-string — aria-label is accessibility, not user-facing
               aria-label="Remove attachment"
             >
               ✕
             </IconButtonAny>
-            <IconButtonAny variant="elitea" color="secondary" size="small" onClick={onClose} aria-label="Close modal">
+            {/* eslint-disable-next-line i18next/no-literal-string — icon-only action button */}
+            <IconButtonAny
+              variant="elitea"
+              color="secondary"
+              size="small"
+              onClick={onClose}
+              // eslint-disable-next-line i18next/no-literal-string — aria-label is accessibility, not user-facing
+              aria-label="Close modal"
+            >
               ✕
             </IconButtonAny>
           </Box>
@@ -218,6 +234,7 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
             left: 0,
             right: 0,
             bottom: 0,
+            // eslint-disable-next-line elitea/no-raw-color — overlay opacity, not a theme colour
             backgroundColor: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
@@ -229,6 +246,7 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
           <Box
             sx={{
               backgroundColor: 'background.paper',
+              // eslint-disable-next-line elitea/ad-hoc-radius — rounded corners for modal
               borderRadius: '1rem',
               padding: '1.5rem',
               maxWidth: '34.5rem',
@@ -244,13 +262,20 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNeedToRemoveFromStorage(e.target.checked)}
                 sx={{ marginTop: '0.3125rem' }}
               />
+              {/* eslint-disable-next-line i18next/no-literal-string — confirmation dialog text */}
               <Typography variant="bodyMedium" color="text.secondary">
                 Also delete from attachment storage
               </Typography>
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
-              <IconButtonAny size="small" onClick={onCloseAlert}>Cancel</IconButtonAny>
-              <IconButtonAny variant="elitea" color="primary" size="small" onClick={onConfirmDelete}>Remove</IconButtonAny>
+              <IconButtonAny size="small" onClick={onCloseAlert}>
+                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
+                Cancel
+              </IconButtonAny>
+              <IconButtonAny variant="elitea" color="primary" size="small" onClick={onConfirmDelete}>
+                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
+                Remove
+              </IconButtonAny>
             </Box>
           </Box>
         </Box>

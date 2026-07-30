@@ -32,6 +32,7 @@ export interface SubAgentTool {
  * Mirrors how `ActionView.renderIcon` picks an icon in the old app —
  * custom icon_meta image for app/pipeline, else type icon.
  */
+// eslint-disable-next-line eslint/complexity — icon resolution has many branching types
 export function resolveSubAgentIcon(
   name: string,
   tools: readonly SubAgentTool[] | undefined,
@@ -64,6 +65,7 @@ export function resolveSubAgentIcon(
       sx: {
         width: '1rem',
         height: '1rem',
+        // eslint-disable-next-line elitea/ad-hoc-radius — circular icon avatar
         borderRadius: '50%',
         overflow: 'hidden',
         flexShrink: 0,
