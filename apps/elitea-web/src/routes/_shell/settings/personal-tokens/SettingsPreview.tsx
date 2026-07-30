@@ -218,8 +218,8 @@ export const SettingsPreview = memo(function SettingsPreview({
             fontFamily: 'monospace',
             overflow: 'auto',
             height: '100%',
-            background: theme.palette.background.paper,
-            color: theme.palette.text.primary,
+            background: theme.vars.palette.background.paper,
+            color: theme.vars.palette.text.primary,
           }}
         >
           {settingsContent}

@@ -214,7 +214,7 @@ export const TokensTable = memo(function TokensTable({
               sx={{
                 backgroundColor:
                   hoveredRowId === row.uuid
-                    ? theme.palette.action.hover
+                    ? theme.vars.palette.action.hover
                     : 'inherit',
               }}
             >

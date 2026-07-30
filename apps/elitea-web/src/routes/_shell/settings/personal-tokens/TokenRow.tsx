@@ -40,10 +40,10 @@ export const ExpiryCell = memo(function ExpiryCell({
   }, [status]);
 
   const statusColor = useMemo(() => {
-    if (status === 'never' || status === 'safe') return theme.palette.status.published;
-    if (status === 'warning') return theme.palette.status.onModeration;
-    return theme.palette.icon.fill.disabled;
-  }, [status, theme.palette]);
+    if (status === 'never' || status === 'safe') return theme.vars.palette.status.published;
+    if (status === 'warning') return theme.vars.palette.status.onModeration;
+    return theme.vars.palette.icon.fill.disabled;
+  }, [status, theme.vars.palette]);
 
   const s = tokenRowStyles.expiry();
 

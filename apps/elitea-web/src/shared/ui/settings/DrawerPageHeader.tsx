@@ -65,7 +65,7 @@ export const DrawerPageHeader = memo(function DrawerPageHeader({
     width: '15rem',
     height: '2.25rem',
     // oxlint-disable-next-line elitea/no-theme-palette — ported from baseline
-    backgroundColor: theme.palette.background.userInputBackgroundActive,
+    backgroundColor: theme.vars.palette.background.userInputBackgroundActive,
     // oxlint-disable-next-line elitea/ad-hoc-radius — ported from baseline
     borderRadius: '1.6875rem',
     gap: '.5rem',
