@@ -1906,6 +1906,78 @@
             "usedBy": [
                 "features/artifacts"
             ]
+        },
+        {
+            "id": "secrets.list",
+            "method": "GET",
+            "path": "/secrets/{mode}/{projectID}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "Secret[]",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
+        },
+        {
+            "id": "secrets.create",
+            "method": "POST",
+            "path": "/secrets/{mode}/{projectID}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "void",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
+        },
+        {
+            "id": "secrets.show",
+            "method": "GET",
+            "path": "/secret/{mode}/{projectID}/{name}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "RevealedSecret",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
+        },
+        {
+            "id": "secrets.update",
+            "method": "PUT",
+            "path": "/secret/{mode}/{projectID}/{name}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "void",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
+        },
+        {
+            "id": "secrets.delete",
+            "method": "DELETE",
+            "path": "/secret/{mode}/{projectID}/{name}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "void",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
+        },
+        {
+            "id": "secrets.hide",
+            "method": "POST",
+            "path": "/hide/{mode}/{projectID}/{name}",
+            "operationId": null,
+            "source": "handwritten",
+            "responseSchema": "void",
+            "fixture": null,
+            "usedBy": [
+                "entities/secret"
+            ]
         }
     ]
 }

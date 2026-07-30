@@ -15,6 +15,12 @@ const PUBLIC_SURFACE = [
   'isPublicProject',
   'isSuspendedProject',
   'sortProjectsByName',
+  'useDeleteProjectIconMutation',
+  'useGenerateProjectContextDraftMutation',
+  'useProjectIconsQuery',
+  'useProjectInfoQuery',
+  'useUpdateProjectInfoMutation',
+  'useUploadProjectIconMutation',
 ] as const;
 
 describe('entities/project public surface', () => {

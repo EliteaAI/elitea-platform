@@ -1,0 +1,113 @@
+/**
+ * EditorSection — the project context editor with toolbar, preview, and char counter.
+ */
+import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
+
+import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
+import { Markdown } from '@/shared/ui/Markdown';
+import { GenerateProjectContextButton } from './GenerateProjectContextButton';
+import { BaseTabs } from '@/shared/ui/BaseTabs';
+import { BaseTab } from '@/shared/ui/BaseTab';
+import { t } from '@/shared/i18n';
+import { projectContextStyles } from './ProjectContextContent.styles';
+import { memo, useMemo } from 'react';
+
+const MAX_CHARS = 2500;
+
+export interface EditorSectionProps {
+  content: string;
+  mode: 'edit' | 'preview';
+  isEditorFocused: boolean;
+  showEditorControls: boolean;
+  canEdit: boolean;
+  onContentChange: (val: string) => void;
+  onModeChange: (e: React.SyntheticEvent, newValue: 'edit' | 'preview') => void;
+  onFocus: () => void;
+  onBlur: (e: React.FocusEvent) => void;
+  onAIGenerated: (generatedContent: string) => void;
+}
+
+export const EditorSection = memo(function EditorSection({
+  content,
+  mode,
+  isEditorFocused,
+  showEditorControls,
+  canEdit,
+  onContentChange,
+  onModeChange,
+  onFocus,
+  onBlur,
+  onAIGenerated,
+}: EditorSectionProps) {
+  const s = projectContextStyles.editor();
+  const limitReached = content.length >= MAX_CHARS;
+
+  const modeButtons = useMemo(
+    () => [
+      { value: 'edit' as const, label: t('entities.projectContext.content.editMode', 'Edit mode') },
+      { value: 'preview' as const, label: t('entities.projectContext.content.previewMode', 'Preview mode') },
+    ],
+    [],
+  );
+
+  return (
+    <Box sx={s.section}>
+      <Box sx={s.header}>
+        <Box sx={s.textBlock}>
+          <Typography variant="labelMedium" color="text.secondary">
+            {t('entities.projectContext.content.backgroundLabel', 'Project Background')}
+          </Typography>
+          <Typography variant="bodySmall">
+            {t('entities.projectContext.content.backgroundDescription', 'Include goals, terminology, workflows, or constraints relevant to the project.')}
+          </Typography>
+        </Box>
+        {showEditorControls && (
+          <Box sx={s.toolbar}>
+            <GenerateProjectContextButton
+              existingContent={content}
+              onApply={onAIGenerated}
+            />
+            <BaseTabs value={mode} onChange={onModeChange}>
+              {modeButtons.map((btn) => (
+                <BaseTab key={btn.value} value={btn.value} label={btn.label} />
+              ))}
+            </BaseTabs>
+          </Box>
+        )}
+      </Box>
+
+      {mode === 'edit' ? (
+        <Box sx={s.wrapper} onFocus={onFocus} onBlur={onBlur}>
+          <CodeMirrorEditor
+            value={content}
+            onChange={onContentChange}
+            height="100%"
+            minHeight="0"
+            maxLength={MAX_CHARS}
+            readOnly={!canEdit}
+          />
+        </Box>
+      ) : (
+        <Box sx={s.preview}>
+          <Markdown renderHtml={false}>{content}</Markdown>
+        </Box>
+      )}
+
+      {showEditorControls && (
+        <Typography
+          variant="bodySmall"
+          sx={{
+            color: limitReached ? 'error.main' : 'text.primary',
+            visibility: isEditorFocused ? 'visible' : 'hidden',
+            textAlign: 'right',
+          }}
+        >
+          {MAX_CHARS - content.length}{' '}
+          {t('entities.projectContext.content.charactersLeft', 'characters left.')}
+          {limitReached && t('entities.projectContext.content.maxReached', ' You have reached the maximum character limit.')}
+        </Typography>
+      )}
+    </Box>
+  );
+});
