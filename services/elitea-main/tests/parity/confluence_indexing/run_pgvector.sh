@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 if [[ -z "${ELITEA_CURRENT_SDK_ROOT:-}" ]]; then
-  echo "ELITEA_CURRENT_SDK_ROOT must point to the exact SDK revision in elitea-sdk.lock.json" >&2
+  echo "ELITEA_CURRENT_SDK_ROOT must point to the exact SDK revision in current_pylon_sdk_baseline.json" >&2
   exit 2
 fi
 

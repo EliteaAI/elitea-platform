@@ -161,7 +161,7 @@ ELITEA_INDEX_5681_GATEWAY_ROUTE_SHA256=<64-hex> \
 ELITEA_INDEX_5681_GATEWAY_BASE_SHA256=<64-hex> \
 ELITEA_INDEX_5681_LITELLM_SERVICE=elitea-litellm \
 ELITEA_INDEX_5681_LITELLM_REVISION=<40-hex> \
-ELITEA_INDEX_5681_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b \
+ELITEA_INDEX_5681_SDK_REVISION="$(jq -r '.source.revision' services/elitea-worker-python/elitea-sdk.lock.json)" \
 ELITEA_INDEX_5681_NO_ADVERSARIAL_RECOVERY_CLAIMANT=1 \
 services/elitea-main/tests/reliability/index_5681/run.sh
 ```
