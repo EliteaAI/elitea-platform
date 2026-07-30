@@ -102,4 +102,22 @@ describe('useArtifactUpload', () => {
     act(() => hook.result.current.confirmPath(''));
     await waitFor(() => expect(hook.result.current.error).toContain('Failed to upload'));
   });
+
+  it('uploads a batch best-effort — one failing file does not stop the others from completing', async () => {
+    const hook = renderUpload([]);
+    vi.mocked(putArtifactToS3).mockImplementation(({ fileKey }) =>
+      Promise.resolve(
+        fileKey.endsWith('bad.txt')
+          ? { ok: false, error: { kind: 'http', status: 500, url: '/upload', body: null } }
+          : { ok: true, data: undefined, status: 200, headers: new Headers() },
+      ),
+    );
+    act(() => hook.result.current.stageFiles([new File(['x'], 'good.txt'), new File(['y'], 'bad.txt')]));
+    act(() => hook.result.current.confirmPath(''));
+    await waitFor(() => expect(hook.onUploaded).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.error).toContain('bad.txt');
+    expect(hook.result.current.error).not.toContain('good.txt');
+    expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'good.txt' }));
+    expect(putArtifactToS3).toHaveBeenCalledWith(expect.objectContaining({ fileKey: 'bad.txt' }));
+  });
 });

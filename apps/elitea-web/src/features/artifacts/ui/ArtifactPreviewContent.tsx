@@ -27,6 +27,8 @@ interface ArtifactPreviewContentProps {
   readonly mode: 'code' | 'rendered';
   readonly onChange: (content: string) => void;
   readonly onDownload: () => void;
+  /** File exceeds ARTIFACT_PREVIEW_SIZE_LIMIT_BYTES — content was never fetched. */
+  readonly isOversized?: boolean;
 }
 
 function DataPreview({ content, kind }: { readonly content: string; readonly kind: 'csv' | 'tsv' }): ReactNode {
@@ -74,7 +76,7 @@ export function ArtifactPreviewContent(props: ArtifactPreviewContentProps): Reac
       />
     );
   }
-  if (props.kind === 'docx' || props.kind === 'unsupported') {
+  if (props.isOversized || props.kind === 'docx' || props.kind === 'unsupported') {
     return (
       <Box sx={{ display: 'grid', placeItems: 'center', minHeight: '16rem', textAlign: 'center' }}>
         <Box>
@@ -85,12 +87,14 @@ export function ArtifactPreviewContent(props: ArtifactPreviewContentProps): Reac
             variant="bodySmall"
             sx={{ mt: 1, mb: 2 }}
           >
-            {props.kind === 'docx'
-              ? t(
-                'artifacts.preview.docxUnavailable',
-                'DOCX editing is not available in this release. Download the file to open it.',
-              )
-              : t('artifacts.preview.typeUnavailable', 'This file type cannot be previewed.')}
+            {props.isOversized
+              ? t('artifacts.preview.tooLarge', 'This file is too large to preview. Download it to view the contents.')
+              : props.kind === 'docx'
+                ? t(
+                  'artifacts.preview.docxUnavailable',
+                  'DOCX editing is not available in this release. Download the file to open it.',
+                )
+                : t('artifacts.preview.typeUnavailable', 'This file type cannot be previewed.')}
           </Typography>
           <Button
             variant="contained"

@@ -121,15 +121,26 @@ export function useArtifactUpload(options: UseArtifactUploadOptions) {
     setIsUploading(true);
     setError(undefined);
     try {
-      for (const file of files) {
-        const result = await putArtifactToS3({
-          baseUrl: config.config.vite_server_url,
-          s3Path: `/artifacts/s3/${bucket}`,
-          fileKey: `${targetPrefix}${file.name}`,
-          projectId,
-          file,
-        });
-        if (!result.ok) throw new Error(`Failed to upload ${file.name}.`);
+      // Every file uploads concurrently, best-effort — one failing file must not
+      // stop the others (baseline: slices/upload.js:89-159's Promise.allSettled).
+      const results = await Promise.allSettled(
+        files.map((file) =>
+          putArtifactToS3({
+            baseUrl: config.config.vite_server_url,
+            s3Path: `/artifacts/s3/${bucket}`,
+            fileKey: `${targetPrefix}${file.name}`,
+            projectId,
+            file,
+          }).then((result) => {
+            if (!result.ok) throw new Error(file.name);
+          }),
+        ),
+      );
+      const failedNames = results
+        .map((result, index) => (result.status === 'rejected' ? files[index]?.name : undefined))
+        .filter((name): name is string => name !== undefined);
+      if (failedNames.length > 0) {
+        setError(`Failed to upload: ${failedNames.join(', ')}.`);
       }
       await options.onUploaded();
       setPendingFiles([]);

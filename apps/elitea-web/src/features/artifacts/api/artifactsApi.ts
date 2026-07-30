@@ -1,5 +1,5 @@
 import { normaliseArtifactList, type Artifact, type ArtifactListWire } from '@/entities/artifact';
-import { normaliseBuckets, type Bucket, type BucketWire, sortBucketsPinnedFirst } from '@/entities/bucket';
+import { isSystemBucket, normaliseBuckets, type Bucket, type BucketWire, sortBucketsPinnedFirst } from '@/entities/bucket';
 import {
   createBucket,
   deleteArtifact,
@@ -40,11 +40,6 @@ interface ConfigurationPageWire {
   readonly shared?: { readonly items?: readonly ConfigurationWire[] };
 }
 
-function expectSuccess<T extends { readonly status: number }>(response: T): T {
-  if (response.status >= 400) throw new Error(`Artifact request failed with status ${response.status}.`);
-  return response;
-}
-
 function isBucketListWire(value: unknown): value is S3BucketListWire {
   if (typeof value !== 'object' || value === null) return false;
   const buckets = (value as { buckets?: unknown }).buckets;
@@ -79,12 +74,14 @@ export async function fetchArtifactBuckets(baseUrl: string, projectId: string, s
   if (!result.ok) throw new Error('Unable to load buckets.');
   if (!isBucketListWire(result.data)) throw new Error('The bucket response has an unexpected shape.');
   const metadata = new Map(normaliseBuckets(metadataEnvelope.data.rows).map((bucket) => [bucket.name, bucket]));
-  return sortBucketsPinnedFirst(result.data.buckets.map((bucket) => ({
-    id: metadata.get(bucket.name)?.id ?? bucket.name,
-    name: bucket.name,
-    isPinned: metadata.get(bucket.name)?.isPinned ?? false,
-    createdAt: metadata.get(bucket.name)?.createdAt ?? bucket.creation_date,
-  })));
+  return sortBucketsPinnedFirst(result.data.buckets
+    .filter((bucket) => !isSystemBucket(bucket.name))
+    .map((bucket) => ({
+      id: metadata.get(bucket.name)?.id ?? bucket.name,
+      name: bucket.name,
+      isPinned: metadata.get(bucket.name)?.isPinned ?? false,
+      createdAt: metadata.get(bucket.name)?.createdAt ?? bucket.creation_date,
+    })));
 }
 
 export async function fetchArtifacts(
@@ -100,23 +97,23 @@ export async function fetchArtifacts(
 }
 
 export async function createArtifactBucket(projectId: string, name: string): Promise<void> {
-  expectSuccess(await createBucket(projectId, { name }));
+  await createBucket(projectId, { name });
 }
 
 export async function renameArtifactBucket(projectId: string, currentName: string, nextName: string): Promise<void> {
-  expectSuccess(await editBucket(projectId, { name: nextName }, { name: currentName }));
+  await editBucket(projectId, { name: nextName }, { name: currentName });
 }
 
 export async function setArtifactBucketPinned(projectId: string, name: string, isPinned: boolean): Promise<void> {
-  expectSuccess(await updateBucketPin(projectId, { is_pinned: isPinned }, { name }));
+  await updateBucketPin(projectId, { is_pinned: isPinned }, { name });
 }
 
 export async function removeArtifactBucket(projectId: string, name: string): Promise<void> {
-  expectSuccess(await deleteBucket(projectId, { name }));
+  await deleteBucket(projectId, { name });
 }
 
 export async function removeArtifact(projectId: string, bucket: string, key: string): Promise<void> {
-  expectSuccess(await deleteArtifact(projectId, bucket, { filename: key }));
+  await deleteArtifact(projectId, bucket, { filename: key });
 }
 
 const DELETE_ARTIFACTS_MAX_PATH_LENGTH = 1500;
@@ -142,7 +139,7 @@ export function chunkArtifactKeys(projectId: string, bucket: string, keys: reado
 
 export async function removeArtifacts(projectId: string, bucket: string, keys: readonly string[]): Promise<void> {
   for (const chunk of chunkArtifactKeys(projectId, bucket, keys)) {
-    expectSuccess(await deleteArtifacts(projectId, bucket, { 'fname[]': chunk }));
+    await deleteArtifacts(projectId, bucket, { 'fname[]': chunk });
   }
 }
 

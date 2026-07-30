@@ -23,7 +23,7 @@ import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { triggerBlobDownload } from '@/shared/lib/download';
 
-import { artifactPreviewKind } from '../lib/artifactParsers';
+import { artifactPreviewKind, isArtifactPreviewableSize } from '../lib/artifactParsers';
 import type { ArtifactListItem } from '../model/types';
 import { ArtifactPreviewContent } from './ArtifactPreviewContent';
 
@@ -40,8 +40,9 @@ interface FilePreviewCanvasProps {
 // oxlint-disable-next-line complexity -- this is the preview state machine across text, image, unavailable, save, and delete modes.
 export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
   const kind = useMemo(() => artifactPreviewKind(props.file.name), [props.file.name]);
+  const isOversized = useMemo(() => !isArtifactPreviewableSize(props.file.size, kind), [kind, props.file.size]);
   const supportsRendered = kind === 'markdown' || kind === 'csv' || kind === 'tsv' || kind === 'mermaid';
-  const needsContent = kind !== 'docx' && kind !== 'unsupported';
+  const needsContent = kind !== 'docx' && kind !== 'unsupported' && !isOversized;
   const [mode, setMode] = useState<'code' | 'rendered'>(supportsRendered || kind === 'image' ? 'rendered' : 'code');
   const [originalContent, setOriginalContent] = useState('');
   const [editedContent, setEditedContent] = useState('');
@@ -131,7 +132,7 @@ export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
   }, [props.bucket, props.file.key, props.file.name, props.projectId]);
 
   const save = useCallback(async () => {
-    if (!hasChanges || kind === 'image' || kind === 'docx' || kind === 'unsupported') return;
+    if (!hasChanges || kind === 'image' || kind === 'docx' || kind === 'unsupported' || isOversized) return;
     const config = getConfig();
     if (config.status !== 'ok') {
       setError('Runtime configuration is unavailable.');
@@ -154,7 +155,7 @@ export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
     }
     setOriginalContent(editedContent);
     await props.onSaved();
-  }, [editedContent, hasChanges, kind, props]);
+  }, [editedContent, hasChanges, isOversized, kind, props]);
 
   const requestClose = (): void => {
     if (hasChanges) setCloseConfirmation(true);
@@ -182,7 +183,7 @@ export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
               <ToggleButton value="rendered">{t('artifacts.preview.rendered', 'Rendered')}</ToggleButton>
             </ToggleButtonGroup>
           )}
-          {kind !== 'image' && kind !== 'docx' && kind !== 'unsupported' && (
+          {kind !== 'image' && kind !== 'docx' && kind !== 'unsupported' && !isOversized && (
             <>
               <Button
                 disabled={!hasChanges || saving}
@@ -234,6 +235,7 @@ export function FilePreviewCanvas(props: FilePreviewCanvasProps): ReactNode {
             content={editedContent}
             {...(imageUrl === undefined ? {} : { imageUrl })}
             mode={mode}
+            isOversized={isOversized}
             onChange={setEditedContent}
             onDownload={() => void download()}
           />

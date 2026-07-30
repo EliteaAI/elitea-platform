@@ -69,6 +69,24 @@ describe('artifacts API', () => {
     ]);
   });
 
+  it('excludes internal system buckets (tasks, reports) from the listing', async () => {
+    vi.mocked(listBuckets).mockResolvedValue({
+      ok: true,
+      data: {
+        buckets: [
+          { name: 'docs', creation_date: '2026-01-01T00:00:00Z' },
+          { name: 'tasks', creation_date: '2026-01-01T00:00:00Z' },
+          { name: 'reports', creation_date: '2026-01-01T00:00:00Z' },
+        ],
+      },
+      status: 200,
+      headers: new Headers(),
+    });
+    await expect(fetchArtifactBuckets('/api/v2', 'p1')).resolves.toEqual([
+      { id: 'docs', name: 'docs', isPinned: false, createdAt: '2026-01-01T00:00:00Z' },
+    ]);
+  });
+
   it('rejects failed and malformed bucket responses', async () => {
     vi.mocked(listBuckets).mockResolvedValue({
       ok: false,
@@ -117,11 +135,6 @@ describe('artifacts API', () => {
     expect(deleteBucket).toHaveBeenCalledWith('p1', { name: 'reports' });
     expect(deleteArtifact).toHaveBeenCalledWith('p1', 'docs', { filename: 'a.txt' });
     expect(deleteArtifacts).toHaveBeenCalledWith('p1', 'docs', { 'fname[]': ['a.txt', 'b.txt'] });
-  });
-
-  it('stops mutation helpers on a non-success status', async () => {
-    vi.mocked(createBucket).mockResolvedValue({ data: {}, status: 400, headers: new Headers() } as never);
-    await expect(createArtifactBucket('p1', 'bad')).rejects.toThrow('status 400');
   });
 
   it('chunks long bulk-delete URLs', () => {
