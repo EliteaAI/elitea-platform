@@ -4,6 +4,8 @@
  */
 import { memo } from 'react';
 
+import { useTheme } from '@mui/material/styles';
+import type { Theme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Typography from '@mui/material/Typography';
@@ -15,7 +17,8 @@ export interface ModelCapabilitiesSectionProps {
 }
 
 export default memo(function ModelCapabilitiesSection({ capabilities }: ModelCapabilitiesSectionProps) {
-  const styles = modelCapabilitiesSectionStyles();
+  const theme = useTheme();
+  const styles = modelCapabilitiesSectionStyles(theme);
 
   if (!capabilities || capabilities.length === 0) {
     return null;
@@ -35,13 +38,13 @@ export default memo(function ModelCapabilitiesSection({ capabilities }: ModelCap
   );
 });
 
-function modelCapabilitiesSectionStyles() {
+function modelCapabilitiesSectionStyles(theme: Theme) {
   return {
     capabilitiesSection: { flexShrink: 0 },
     sectionTitle: {
       color: '#9ca3af',
       fontWeight: 600,
-      fontSize: '1rem',
+      fontSize: theme.typography.headingMedium.fontSize,
       display: 'flex',
       alignItems: 'center',
       gap: '0.5rem',
@@ -51,9 +54,9 @@ function modelCapabilitiesSectionStyles() {
       backgroundColor: '#1976d2',
       color: '#ffffff',
       fontWeight: 500,
-      fontSize: '0.75rem',
+      fontSize: theme.typography.bodySmall.fontSize,
       height: '1.75rem',
-      borderRadius: '0.875rem',
+      borderRadius: theme.shape.radiusLg,
       border: 'none',
       '&:hover': { backgroundColor: '#115293' },
     },

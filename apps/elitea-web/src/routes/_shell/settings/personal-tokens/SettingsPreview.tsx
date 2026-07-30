@@ -143,7 +143,7 @@ export const SettingsPreview = memo(function SettingsPreview({
             onClick={onClose}
             aria-label={t('entities.token.preview.close', 'Close preview')}
           >
-            <span style={{ fontSize: '0.875rem' }}>✕</span>
+            <span style={{ fontSize: '0.875rem' }}>{t('common.close', '✕')}</span>
           </IconButton>
           <Typography
             variant="headingSmall"
@@ -185,7 +185,7 @@ export const SettingsPreview = memo(function SettingsPreview({
           <Tooltip title={t('entities.token.preview.copy', 'Copy settings')}>
             <IconButton
               size="small"
-              onClick={handleCopy}
+              onClick={() => void handleCopy()}
             >
               <SvgIcon
                 component={OpenEyeIcon}

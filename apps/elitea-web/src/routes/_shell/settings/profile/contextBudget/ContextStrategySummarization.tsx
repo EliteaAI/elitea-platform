@@ -5,6 +5,7 @@ import { memo } from 'react';
 
 import Box from '@mui/material/Box';
 
+import { t } from '@/shared/i18n';
 import { BaseSwitch } from '@/shared/ui/BaseSwitch';
 import { InfoLabelWithTooltip } from '@/shared/ui/InfoLabelWithTooltip';
 import { InputBase } from '@/shared/ui/InputBase';
@@ -77,8 +78,8 @@ const ContextStrategySummarization = memo(
         {/* Summarization Instructions */}
         <Box sx={[styles.section, styles.sectionSummarizationInstruction]}>
           <InfoLabelWithTooltip
-            label="Summarization instructions"
-            tooltip="Custom instructions for how summaries should be generated"
+            label={t('settings.profile.contextBudget.summarization.instructions', 'Summarization instructions')}
+            tooltip={t('settings.profile.contextBudget.summarization.instructionsTooltip', 'Custom instructions for how summaries should be generated')}
           />
           <InputBase
             expand={{ minRows: 3, maxRows: 6 }}
@@ -96,8 +97,8 @@ const ContextStrategySummarization = memo(
           {/* Target Summary Tokens */}
           <Box sx={styles.section}>
             <InfoLabelWithTooltip
-              label="Target Summary Tokens"
-              tooltip="Target length for summary generation"
+              label={t('settings.profile.contextBudget.summarization.targetTokens', 'Target Summary Tokens')}
+              tooltip={t('settings.profile.contextBudget.summarization.targetTokensTooltip', 'Target length for summary generation')}
             />
             <InputBase
               type="text"

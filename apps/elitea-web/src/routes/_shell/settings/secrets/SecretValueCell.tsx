@@ -80,7 +80,7 @@ export const SecretValueCell = memo(function SecretValueCell({
         <IconButton
           size="small"
           color="tertiary"
-          onClick={handleCopyValue}
+          onClick={() => void handleCopyValue()}
           sx={styles.icon}
         >
           <ContentCopyIcon fontSize="small" />

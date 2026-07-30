@@ -245,7 +245,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
                   delete: {
                     userIds: selectedUsers.map(u => u.id),
                     disabled: false,
-                    onConfirm: handleDelete,
+                    onConfirm: () => { void handleDelete(); },
                   },
                 })
               : selectedUsers.length === 1

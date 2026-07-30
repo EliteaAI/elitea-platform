@@ -176,7 +176,7 @@ export const ActionsCell = memo(function ActionsCell({
         open={deleteModalOpen}
         tokenName={token.name}
         onClose={() => setDeleteModalOpen(false)}
-        onConfirm={handleDeleteConfirm}
+        onConfirm={() => void handleDeleteConfirm()}
         isLoading={isDeleting}
       />
     </>

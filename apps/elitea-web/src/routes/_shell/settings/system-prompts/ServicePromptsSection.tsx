@@ -306,11 +306,14 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
         <Box sx={promptsStyles.cards}>
           {prompts.map((item) => (
             <ServicePromptCard
+              key={item.id}
               item={item}
               hasDefault={hasDefaultPrompt(item.key)}
               isBusy={isBusy}
-              onEdit={handleOpenEdit}
-              onRestore={handleRestoreToDefault}
+              onEdit={(config) => void handleOpenEdit(config)}
+              onRestore={() => {
+                void handleRestoreToDefault(prompts.find(p => p.key === item.key) as PromptConfig);
+              }}
             />
           ))}
         </Box>
@@ -349,7 +352,7 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
                 </Button>
                 <Button
                   variant="contained"
-                  onClick={handleSave}
+                  onClick={() => void handleSave()}
                   disabled={isBusy || !hasChanges}
                 >
                   {t('shared.ui.settings.prompts.save', 'Save')}

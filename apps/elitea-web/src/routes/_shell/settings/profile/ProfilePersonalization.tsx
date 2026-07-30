@@ -12,6 +12,8 @@ import { InputBase } from '@/shared/ui/InputBase';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { useFormikContext } from 'formik';
 
+import { t } from '@/shared/ui/lib/t';
+
 import type { ProfileFormValues } from './profileUtils';
 import { ProfileBasicAccordion } from './ProfileBasicAccordion';
 
@@ -44,14 +46,14 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
 
   const handlePersonaChange = useCallback(
     (value: string) => {
-      setFieldValue('persona', value);
+      void setFieldValue('persona', value);
       onAutoSaveRequested?.();
     },
     [onAutoSaveRequested, setFieldValue],
   );
 
   const handleInstructionsChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => setFieldValue('default_instructions', e.target.value),
+    (e: React.ChangeEvent<HTMLInputElement>) => void setFieldValue('default_instructions', e.target.value),
     [setFieldValue],
   );
 
@@ -60,7 +62,7 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
       <ProfileBasicAccordion
         showMode={AccordionConstants.AccordionShowMode.LeftMode}
         defaultExpanded
-        title="General"
+        title={t('settings.general', 'General')}
         slotSx={{ accordion: { background: 'transparent !important' } }}
         content={
           <Box sx={styles.accordionContent}>
@@ -68,7 +70,7 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
               <InfoLabelWithTooltip label="Theme" tooltip="Choose between light and dark theme" />
               <Box sx={styles.themeToggleContainer}>
                 <Typography variant="bodySmall" color="text.secondary">
-                  Controlled by system settings
+                  {t('settings.controlledBySystem', 'Controlled by system settings')}
                 </Typography>
               </Box>
             </Box>
@@ -78,14 +80,14 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
       <ProfileBasicAccordion
         showMode={AccordionConstants.AccordionShowMode.LeftMode}
         defaultExpanded
-        title="Default Personality Management"
+        title={t('settings.personality', 'Default Personality Management')}
         slotSx={{ accordion: { background: 'transparent !important' } }}
         content={
           <Box sx={styles.accordionContent}>
             <Box sx={styles.section}>
               <InfoLabelWithTooltip
-                label="Default Personality"
-                tooltip="Select the default assistant personality for your conversations"
+                label={t('settings.defaultPersonality', 'Default Personality')}
+                tooltip={t('settings.selectDefaultPersonality', 'Select the default assistant personality for your conversations')}
               />
               <SingleSelect
                 value={values.persona}
@@ -97,14 +99,14 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
             </Box>
             <Box sx={styles.section}>
               <InfoLabelWithTooltip
-                label="Default User Instructions"
-                tooltip="Custom instructions that will be applied to all new conversations"
+                label={t('settings.defaultUserInstructions', 'Default User Instructions')}
+                tooltip={t('settings.customInstructions', 'Custom instructions that will be applied to all new conversations')}
               />
               <InputBase
                 expand={{ minRows: 3, maxRows: 6 }}
                 value={values.default_instructions}
                 onChange={handleInstructionsChange}
-                placeholder="Example: Always respond in a concise manner."
+                placeholder={t('settings.instructionsExample', 'Example: Always respond in a concise manner.')}
                 containerSx={styles.inputContainer}
               />
             </Box>

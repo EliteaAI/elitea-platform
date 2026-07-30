@@ -123,7 +123,7 @@ export function ProjectIconDialog({
                   <ProjectIconItem
                     key={icon.name}
                     isSelected={selectedIcon?.name === icon.name}
-                    onClick={() => onClose()}
+                    onClick={() => { void onClose(); }}
                   >
                     <IconPlaceholder name={icon.name} url={icon.url} />
                   </ProjectIconItem>
@@ -146,8 +146,8 @@ export function ProjectIconDialog({
                 <UserIconItem
                   key={icon.name}
                   isSelected={selectedIcon?.name === icon.name}
-                  onClick={() => onClose()}
-                  onDelete={() => handleDeleteIcon(icon.name)}
+                  onClick={() => { void onClose(); }}
+                  onDelete={() => { void handleDeleteIcon(icon.name); }}
                 >
                   <IconPlaceholder name={icon.name} url={icon.url} />
                 </UserIconItem>
@@ -165,7 +165,7 @@ export function ProjectIconDialog({
             type="file"
             accept=".jpg,.jpeg,.png,.tiff,.webp,.gif,.bmp,.ico"
             style={{ display: 'none' }}
-            onChange={handleFileSelect}
+            onChange={(e) => { void handleFileSelect(e); }}
           />
         </Box>
       }

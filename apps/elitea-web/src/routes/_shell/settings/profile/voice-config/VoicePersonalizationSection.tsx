@@ -48,8 +48,8 @@ function loadStored(): VoiceConfig {
       return {
         voiceName: (p.voiceName as string | null) ?? null,
         voiceId: (p.voiceId as string | null) ?? null,
-        rate: typeof p.rate === 'number' ? Math.max(0.5, Math.min(2, p.rate as number)) : 1.0,
-        volume: typeof p.volume === 'number' ? Math.max(0, Math.min(1, p.volume as number)) : 1.0,
+        rate: typeof p.rate === 'number' ? Math.max(0.5, Math.min(2, p.rate)) : 1.0,
+        volume: typeof p.volume === 'number' ? Math.max(0, Math.min(1, p.volume)) : 1.0,
       };
     }
   } catch {
@@ -72,7 +72,7 @@ export const VoicePersonalizationSection = memo(() => {
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    const load = () => setBrowserVoices(window.speechSynthesis.getVoices() as Array<{ name: string; localService: boolean }>);
+    const load = () => setBrowserVoices(window.speechSynthesis.getVoices());
     load();
     window.speechSynthesis.addEventListener('voiceschanged', load);
     return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
@@ -86,7 +86,7 @@ export const VoicePersonalizationSection = memo(() => {
   const hasModelTTS = !!ttsModel;
 
   const displayVoices = hasModelTTS
-    ? (ttsModelsData?.items as Array<{ name: string; localService: boolean } | unknown> ?? [])
+    ? (ttsModelsData?.items as unknown as Array<{ name: string; localService: boolean }> ?? [])
     : browserVoices;
 
   const handleConfigChange = useCallback((updates: Partial<VoiceConfig>) => {
@@ -147,7 +147,7 @@ export const VoicePersonalizationSection = memo(() => {
   return (
     <BasicAccordion
       showMode={AccordionConstants.AccordionShowMode.LeftMode}
-      slotSx={{ accordion: { background: 'transparent !important' } }}
+      slotSx={{ accordion: { background: 'transparent' } }}
       data-testid="voice-personalization-section"
       items={[
         {

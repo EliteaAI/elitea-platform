@@ -12,6 +12,7 @@ import ProjectAIConfiguration from './ProjectAIConfiguration';
 import ConfigurationSection from './ConfigurationSection';
 import { useGetConfigurationsListQuery } from '@/shared/api/configurationsApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
+import { t } from '@/shared/ui/lib/t';
 
 const SECTION_MODEL = 'model';
 
@@ -42,7 +43,7 @@ export const AIConfiguration = memo(function AIConfiguration() {
     >
       <ProjectAIConfiguration />
       <ConfigurationSection
-        title="Model Configuration"
+        title={t('settings.ai_configuration.model', 'Model Configuration')}
         configurations={items as unknown as readonly Record<string, unknown>[]}
         isLoading={isLoading}
         groupTheModelsByProvider

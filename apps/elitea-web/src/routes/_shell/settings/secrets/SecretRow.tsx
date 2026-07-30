@@ -116,7 +116,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
           if (isVisible) {
             actions.onHideSecret(row.id);
           } else {
-            actions.onShowSecret(row.id)();
+            void actions.onShowSecret(row.id)();
           }
         }}
       />
@@ -132,7 +132,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
           <IconButton
             size="small"
             color="primary"
-            onClick={() => actions.onSave(row.id)()}
+            onClick={() => void actions.onSave(row.id)()}
             disabled={hasValidationErrors}
             sx={styles.actionButton}
             aria-label={t('entities.secret.actions.save', 'Save')}
@@ -162,7 +162,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
               if (isVisible) {
                 actions.onHideSecret(row.id);
               } else {
-                actions.onShowSecret(row.id)();
+                void actions.onShowSecret(row.id)();
               }
             }}
             disabled={row.isDefault}

@@ -8,8 +8,10 @@ import { Form, Formik, type FormikValues } from 'formik';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
+import { t } from '@/shared/ui/lib/t';
+
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
-import { useDefaultModel } from '@/shared/lib/hooks/useDefaultModel';
+import { useDefaultModel } from './useDefaultModel';
 
 import { ProfileFormContent } from './ProfileFormContent';
 import {
@@ -52,7 +54,7 @@ const ProfilePage = memo(() => {
     <Box sx={styles.container}>
       <Box sx={styles.header}>
         <Typography variant="labelMedium" color="text.secondary">
-          Personalization
+          {t('settings.personalization', 'Personalization')}
         </Typography>
       </Box>
       <Box sx={styles.content}>

@@ -204,8 +204,8 @@ export const EnvironmentSection = memo(function EnvironmentSection() {
           value={draftValues[field.key] ?? ''}
           disabled={isBusy}
           onChange={handleChange}
-          onBlur={handleBlur}
-          onRestore={handleRestore}
+          onBlur={(...args) => void handleBlur(...args)}
+          onRestore={(...args) => void handleRestore(...args)}
         />
       ))}
     </Box>

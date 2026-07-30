@@ -2,6 +2,9 @@
  * GenerateProjectContextReviewForm — form displayed inside the generate
  * modal for reviewing and editing the AI-generated context draft.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/GenerateProjectContextReviewForm.jsx`.
+ *
+ * Styling is provided by shared MUI overrides (MuiOutlinedInput, MuiFormControlLabel,
+ * MuiFormHelperText) — no internal selectors or theme.palette reads here.
  */
 import Box from '@mui/material/Box';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -9,7 +12,6 @@ import Radio from '@mui/material/Radio';
 import RadioGroup from '@mui/material/RadioGroup';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import type { SxProps, Theme } from '@mui/material/styles';
 import { memo, useCallback, useEffect, useMemo } from 'react';
 
 import { t } from '@/shared/i18n';
@@ -69,12 +71,10 @@ export const GenerateProjectContextReviewForm = memo(function GenerateProjectCon
     [draft, onChange],
   );
 
-  const sx = formStyles();
-
   return (
-    <Box sx={sx.container}>
-      <Box sx={sx.field}>
-        <Typography sx={sx.label}>
+    <Box sx={styles.container}>
+      <Box sx={styles.field}>
+        <Typography variant="bodyMedium" sx={styles.label}>
           {t('entities.projectContext.reviewForm.projectBackground', 'Project Background')}
         </Typography>
         <TextField
@@ -92,13 +92,12 @@ export const GenerateProjectContextReviewForm = memo(function GenerateProjectCon
               : `${effectiveLength}/${MAX_CHARS}`
           }
           error={charError}
-          sx={sx.textField}
         />
       </Box>
 
       {hasExistingContent && (
-        <Box sx={sx.field}>
-          <Typography sx={sx.label}>
+        <Box sx={styles.field}>
+          <Typography variant="bodyMedium" sx={styles.label}>
             {t('entities.projectContext.reviewForm.existingContent', 'Existing content detected')}
           </Typography>
           <RadioGroup
@@ -109,13 +108,11 @@ export const GenerateProjectContextReviewForm = memo(function GenerateProjectCon
               value={APPLY_MODE.REPLACE}
               control={<Radio size="small" />}
               label={t('entities.projectContext.reviewForm.replaceExisting', 'Replace existing content')}
-              sx={sx.radio}
             />
             <FormControlLabel
               value={APPLY_MODE.APPEND}
               control={<Radio size="small" />}
               label={t('entities.projectContext.reviewForm.appendExisting', 'Append to existing content')}
-              sx={sx.radio}
             />
           </RadioGroup>
         </Box>
@@ -124,58 +121,18 @@ export const GenerateProjectContextReviewForm = memo(function GenerateProjectCon
   );
 });
 
-function formStyles(): Record<string, SxProps<Theme>> {
-  return {
-    container: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '1rem',
-    },
-    field: {
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '0.5rem',
-    },
-    label: {
-      fontSize: '0.875rem',
-      fontWeight: 500,
-      lineHeight: '1.5rem',
-      color: 'text.primary',
-    },
-    radio: {
-      '& .MuiFormControlLabel-label': {
-        fontSize: '0.875rem',
-      },
-    },
-    textField: ({ palette }) => ({
-      '& .MuiOutlinedInput-root': {
-        backgroundColor: palette.background.userInputBackground,
-        borderRadius: '0.5rem',
-        fontSize: '0.875rem',
-        color: palette.text.secondary,
-        '& .MuiOutlinedInput-notchedOutline': {
-          borderColor: palette.border.lines,
-        },
-        '&:hover .MuiOutlinedInput-notchedOutline': {
-          borderColor: palette.border.lines,
-        },
-        '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-          borderColor: palette.primary.main,
-          borderWidth: '0.0625rem',
-        },
-      },
-      '& .MuiFormHelperText-root': {
-        fontSize: '0.625rem',
-        margin: '0.125rem 0 0',
-        color: 'text.primary',
-        visibility: 'visible',
-        lineHeight: '1rem',
-        textAlign: 'right',
-      },
-      '& .MuiFormHelperText-root.Mui-error': {
-        visibility: 'visible',
-        color: 'error.main',
-      },
-    }),
-  };
-}
+const styles = {
+  container: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '1rem',
+  },
+  field: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  label: {
+    fontWeight: 500,
+  },
+};

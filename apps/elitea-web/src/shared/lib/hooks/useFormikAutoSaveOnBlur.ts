@@ -60,7 +60,7 @@ export function useFormikAutoSaveOnBlur(
       clearTimeout(debounceTimerRef.current);
     }
     debounceTimerRef.current = setTimeout(() => {
-      attemptSubmit();
+      void attemptSubmit();
     }, debounceMs);
   }, [attemptSubmit, debounceMs, isEnabled]);
 
@@ -78,7 +78,7 @@ export function useFormikAutoSaveOnBlur(
   useEffect(() => {
     if (!pendingSubmitRef.current) return;
     if (!canAttemptSubmit) return;
-    attemptSubmit();
+    void attemptSubmit();
   }, [attemptSubmit, canAttemptSubmit]);
 
   useEffect(

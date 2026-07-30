@@ -119,6 +119,8 @@ export const SecretsTable = memo(function SecretsTable({
 }: SecretsTableProps) {
   const styles = tableStyles;
 
+  /* ── hooks (must be before any early return) ─────────────────────── */
+
   // Auto-set new rows to edit mode
   useEffect(() => {
     rows.forEach((row) => {
@@ -139,26 +141,6 @@ export const SecretsTable = memo(function SecretsTable({
     );
     return [...newRows, ...existingRows];
   }, [rows]);
-
-  /* ── loading state ────────────────────────────────────────────────── */
-
-  if (isFetching || rows.length === 0) {
-    return (
-      <Box sx={styles.skeletonContainer}>
-        {Array.from({ length: 8 }).map((_, i) => (
-          <Skeleton
-            key={`skeleton-${i}`}
-            variant="rectangular"
-            width="100%"
-            height={48}
-            sx={styles.skeleton}
-          />
-        ))}
-      </Box>
-    );
-  }
-
-  /* ── render ───────────────────────────────────────────────────────── */
 
   const renderRowCell = useCallback(
     (params: GridRenderCellParams) => (
@@ -183,6 +165,26 @@ export const SecretsTable = memo(function SecretsTable({
     { ...COLUMNS[2] } as GridColDef,
   ] as GridColDef[];
 
+  /* ── loading state ────────────────────────────────────────────────── */
+
+  if (isFetching || rows.length === 0) {
+    return (
+      <Box sx={styles.skeletonContainer}>
+        {Array.from({ length: 8 }).map((_, i) => (
+          <Skeleton
+            key={`skeleton-${i}`}
+            variant="rectangular"
+            width="100%"
+            height={48}
+            sx={styles.skeleton}
+          />
+        ))}
+      </Box>
+    );
+  }
+
+  /* ── render ───────────────────────────────────────────────────────── */
+
   return (
     <Box sx={styles.container}>
       <DataGrid
@@ -190,7 +192,7 @@ export const SecretsTable = memo(function SecretsTable({
         columns={columnsWithCell}
         rowHeight={48}
         hideFooter
-        getRowId={(row) => row.id}
+        getRowId={(row: SecretRow) => row.id}
         sx={styles.dataGrid!}
       />
 
@@ -213,8 +215,8 @@ export const SecretsTable = memo(function SecretsTable({
         open={!!dialog.openAlert}
         alertType={dialog.openAlertType}
         rowName={dialog.openAlert ?? ''}
-        onClose={actions.onCloseAlert()}
-        onConfirm={actions.onConfirmAlert(dialog.openAlert ?? '')}
+        onClose={() => { void actions.onCloseAlert()(); }}
+        onConfirm={() => { void actions.onConfirmAlert(dialog.openAlert ?? '')(); }}
       />
     </Box>
   );

@@ -18,7 +18,7 @@ export const Route = createFileRoute('/_shell/settings/users')({
 });
 
 function UsersPageComponent() {
-  const context = useRouteContext({ strict: false });
+  const context = useRouteContext({ strict: false }) as Record<string, unknown> | undefined;
   const projectId =
     (context as { auth?: { getSelectedProjectId?: () => string | undefined } })
       ?.auth?.getSelectedProjectId?.() ?? '';

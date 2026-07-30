@@ -12,6 +12,7 @@ import { BaseSwitch } from '@/shared/ui/BaseSwitch';
 import { DiscreteSlider } from '@/shared/ui/DiscreteSlider';
 
 import { type UseSoundNotificationResult } from '@/shared/lib/hooks/useSoundNotification';
+import { t } from '@/shared/ui/lib/t';
 
 const VOLUME_MARKS = [
   { value: 0, label: '0%' },
@@ -55,12 +56,12 @@ export const SoundNotificationControls = memo(
               }}
             />
           }
-          label="Play sound when tasks complete"
+          label={t('settings.playSoundOnComplete', 'Play sound when tasks complete')}
         />
         {config.enabled && (
           <Box sx={styles.sliderRow}>
             <Typography variant="caption" sx={styles.sliderLabel}>
-              Volume
+              {t('settings.volume', 'Volume')}
             </Typography>
             <DiscreteSlider
               value={config.volume}
@@ -74,7 +75,7 @@ export const SoundNotificationControls = memo(
         {config.enabled && (
           <Box>
             <BaseBtn variant="elitea" color="secondary" onClick={playCompletionSound}>
-              Preview Sound
+              {t('settings.previewSound', 'Preview Sound')}
             </BaseBtn>
           </Box>
         )}

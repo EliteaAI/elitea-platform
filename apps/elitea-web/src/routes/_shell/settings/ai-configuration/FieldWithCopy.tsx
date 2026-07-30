@@ -10,6 +10,8 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
+import { t } from '@/shared/ui/lib/t';
+
 export interface FieldWithCopyProps {
   label: string;
   value: string;
@@ -45,8 +47,11 @@ export default memo(function FieldWithCopy({ label, value }: FieldWithCopyProps)
       >
         {value}
       </Typography>
-      <Tooltip title="Copy">
-        <IconButton size="small" onClick={handleCopy}>
+      <Tooltip title={t('settings.copy', 'Copy')}>
+        <IconButton
+          size="small"
+          onClick={() => void handleCopy()}
+        >
           <ContentCopyIcon fontSize="small" sx={{ fontSize: '0.875rem' }} />
         </IconButton>
       </Tooltip>

@@ -229,10 +229,10 @@ export function ProjectContextContent({
           )}
 
           <Box sx={s.actions}>
-            <BaseBtn variant="contained" color="primary" disabled={!isDirty || isSaving} onClick={handleSave}>
+            <BaseBtn variant="contained" color="primary" disabled={!isDirty || isSaving} onClick={() => void handleSave()}>
               {t('entities.projectContext.content.save', 'Save')}
             </BaseBtn>
-            <BaseBtn variant="secondary" color="secondary" disabled={!isDirty} onClick={handleDiscard}>
+            <BaseBtn variant="secondary" color="secondary" disabled={!isDirty} onClick={() => void handleDiscard()}>
               {t('entities.projectContext.content.discard', 'Discard')}
             </BaseBtn>
           </Box>

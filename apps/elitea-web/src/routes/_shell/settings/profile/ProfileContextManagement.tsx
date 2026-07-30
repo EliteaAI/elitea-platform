@@ -36,7 +36,7 @@ export function ProfileContextManagement({
 
   const handleContextEnabledChange = useCallback(
     (_event: React.ChangeEvent<HTMLInputElement>, checkedValue: boolean) => {
-      setFieldValue('context_enabled', checkedValue);
+      void setFieldValue('context_enabled', checkedValue);
       onAutoSaveRequested?.();
     },
     [setFieldValue, onAutoSaveRequested],
@@ -44,7 +44,8 @@ export function ProfileContextManagement({
 
   const handleNumericInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>, fieldName: keyof Pick<ProfileFormValues, 'max_context_tokens' | 'preserve_recent_messages'>) => {
-      handleConvertToNumberChange(e.target.value, fieldName, setFieldValue);
+      const setValue = (f: string, v: unknown) => void setFieldValue(f, v);
+      handleConvertToNumberChange(e.target.value, fieldName, setValue);
     },
     [setFieldValue],
   );

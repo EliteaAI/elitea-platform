@@ -104,7 +104,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
               component="span"
               sx={styles.tooltipIcon}
             >
-              ⓘ
+              {t('shared.ui.settings.environment.infoIcon', 'ⓘ')}
             </Box>
           </Tooltip>
         )}

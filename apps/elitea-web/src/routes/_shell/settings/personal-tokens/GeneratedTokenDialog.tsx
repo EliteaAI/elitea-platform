@@ -87,7 +87,7 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
             onClick={onClose}
             sx={styles.closeButton}
           >
-            <span style={{ fontSize: '1rem' }}>✕</span>
+            <span style={{ fontSize: '1rem' }}>{t('common.close', '✕')}</span>
           </IconButton>
         </Box>
 

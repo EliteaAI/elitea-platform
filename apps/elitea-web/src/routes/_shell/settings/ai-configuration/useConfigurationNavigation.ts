@@ -20,7 +20,7 @@ export function useConfigurationNavigation() {
 
   const navigateToConfiguration = useCallback(
     (configurationId: string) => {
-      navigate({
+      void navigate({
         to: '/settings/create-configuration',
         search: { from: 'model-configuration' },
         state: {

@@ -54,10 +54,11 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
     ) => {
       const target = _event.target as HTMLInputElement;
       if (target.type === 'checkbox') {
-        setFieldValue(field, (target as HTMLInputElement).checked);
+        void setFieldValue(field, (target as HTMLInputElement).checked);
         return;
       }
-      handleConvertToNumberChange((target as HTMLInputElement).value, field, setFieldValue);
+      const setValue = (f: string, v: unknown) => void setFieldValue(f, v);
+      handleConvertToNumberChange((target as HTMLInputElement).value, field, setValue);
     },
     [setFieldValue],
   );
@@ -69,10 +70,11 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
       isNumeric?: boolean,
     ) => {
       if (isNumeric) {
-        handleConvertToNumberChange(event.target.value, `summary_llm_settings.${field}`, setFieldValue);
+        const setValue = (f: string, v: unknown) => void setFieldValue(f, v);
+        handleConvertToNumberChange(event.target.value, `summary_llm_settings.${field}`, setValue);
         return;
       }
-      setFieldValue(`summary_llm_settings.${field}`, event.target.value);
+      void setFieldValue(`summary_llm_settings.${field}`, event.target.value);
     },
     [setFieldValue],
   );
@@ -90,8 +92,8 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
               <ContextStrategySummarization
                 formData={contextFormData}
                 errors={contextErrors}
-                handleInputChange={handleInputChange}
-                handleSummaryLLMInputChange={handleSummaryLLMInputChange}
+                handleInputChange={(e, f) => void handleInputChange(e, f)}
+                handleSummaryLLMInputChange={(e, f, n) => void handleSummaryLLMInputChange(e, f, n)}
                 isEnabled={values.context_enabled}
               />
             </Box>

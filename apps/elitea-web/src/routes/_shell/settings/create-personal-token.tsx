@@ -139,7 +139,7 @@ export function CreatePersonalTokenPage() {
                 variant="elitea"
                 color="primary"
                 disabled={isGenerateDisabled}
-                onClick={handleSubmit(onSubmit)}
+                onClick={() => void handleSubmit(onSubmit)()}
               >
                 {t('entities.token.form.generate', 'Generate')}
                 {isGenerating && (
@@ -162,7 +162,7 @@ export function CreatePersonalTokenPage() {
         />
         <Box sx={styles.content}>
           <Box sx={styles.formWrapper}>
-            <form onSubmit={handleSubmit(onSubmit)}>
+            <form onSubmit={() => void handleSubmit(onSubmit)()}>
               <Box sx={styles.formFields}>
                 {/* Name field */}
                 <Box sx={styles.nameField}>

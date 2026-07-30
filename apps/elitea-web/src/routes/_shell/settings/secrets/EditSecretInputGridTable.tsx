@@ -9,7 +9,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/
  * EditSecretInputGridTable.jsx`.
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SxProps, Theme } from '@mui/material/styles';
 import TextField from '@mui/material/TextField';
@@ -99,14 +99,19 @@ export const EditSecretInputGridTable = memo(function EditSecretInputGridTable({
   /* ── render ───────────────────────────────────────────────────────── */
   const helperText = validationError || (isAtLimit ? `${MAX_SECRET_LENGTH}` : undefined);
 
-  const autoFocus = field === 'name' && row.isNew;
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (field === 'name' && row.isNew) {
+      inputRef.current?.focus();
+    }
+  }, [field, row.isNew]);
 
   return (
     <TextField
       fullWidth
       multiline
       maxRows={15}
-      autoFocus={autoFocus}
+      inputRef={inputRef}
       value={inputValue}
       onChange={handleChange}
       onKeyDown={handleKeyDown}

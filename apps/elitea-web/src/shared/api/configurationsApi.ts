@@ -184,8 +184,8 @@ export function useCreateConfigurationMutation(
     mutationFn: (body) => createConfiguration(projectId, body),
     onSuccess: () => {
       // Invalidate all configuration queries for this project
-      queryClient.invalidateQueries({ queryKey: ['settings', 'configurations'] });
-      queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'configurations'] });
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });
     },
   });
 }
@@ -219,8 +219,8 @@ export function useUpdateConfigurationMutation(
     mutationFn: (args: UpdateConfigurationArgs) =>
       updateConfiguration({ configId: args.configId, body: args.body }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['settings', 'configurations', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'configurations', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });
     },
   });
 }

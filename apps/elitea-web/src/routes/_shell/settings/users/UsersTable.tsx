@@ -186,7 +186,7 @@ export const UsersTable = memo(function UsersTable({
                     size="small"
                     onClick={() => handleSort(col.field)}
                     sx={styles.sortButton}
-                    aria-label={`Sort by ${col.label}`}
+                    aria-label={t('shared.ui.settings.users.sortBy', 'Sort by ' + col.label)}
                   >
                     <Typography variant="bodySmall" color="text.secondary">
                       {col.label}

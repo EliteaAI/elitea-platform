@@ -33,7 +33,8 @@ const LEGACY_TABS = ['configuration', 'information'] as const;
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/settings-drawer/SettingsRedirect.jsx`.
  */
 export function SettingsRedirect() {
-  const { tab } = useParams({ strict: false });
+  const params = useParams({ strict: false }) as Record<string, string | undefined>;
+  const { tab } = params;
   const navigate = useNavigate();
 
   const shouldRedirect = useMemo(() => {
