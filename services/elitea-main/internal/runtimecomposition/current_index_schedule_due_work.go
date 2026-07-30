@@ -6,19 +6,30 @@ import (
 	"time"
 
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
+	schedulingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/scheduling"
 )
 
-const currentIndexScheduleCapability = "index.schedule.scan.v1"
+const (
+	currentIndexScheduleCapability     = "index.schedule.scan.v1"
+	currentIndexScheduleRevision       = "current-index-scheduling-r1"
+	currentIndexScheduleCadence        = "* * * * *"
+	currentIndexScheduleLeaseDuration  = 2 * time.Minute
+	currentIndexScheduleHandlerTimeout = 30 * time.Second
+)
+
+type currentIndexScheduleScanner interface {
+	RunDue(context.Context, time.Time) (indexscheduleapp.TickResult, error)
+}
 
 // currentIndexScheduleDueWork is the typed indexing adapter behind the generic
 // platform scheduler. It owns product-aware discovery and durable admission;
 // it does not own a clock, replica claim, or occurrence ledger.
 type currentIndexScheduleDueWork struct {
-	indexes *indexscheduleapp.Runner
+	indexes currentIndexScheduleScanner
 }
 
 func newCurrentIndexScheduleDueWork(
-	indexes *indexscheduleapp.Runner,
+	indexes currentIndexScheduleScanner,
 ) (*currentIndexScheduleDueWork, error) {
 	if indexes == nil {
 		return nil, errors.New("current index schedule due work is required")
@@ -30,12 +41,28 @@ func (*currentIndexScheduleDueWork) Name() string {
 	return currentIndexScheduleCapability
 }
 
-func (work *currentIndexScheduleDueWork) RunDue(
+func (work *currentIndexScheduleDueWork) Execute(
 	ctx context.Context,
-	occurrence time.Time,
-) (indexscheduleapp.TickResult, error) {
-	if work == nil || work.indexes == nil || ctx == nil || occurrence.IsZero() {
-		return indexscheduleapp.TickResult{}, indexscheduleapp.ErrInvalidRequest
+	occurrence schedulingapp.Occurrence,
+) (schedulingapp.Outcome, error) {
+	if work == nil || work.indexes == nil || ctx == nil ||
+		occurrence.InvocationID == "" ||
+		occurrence.JobID != currentIndexScheduleCapability ||
+		occurrence.ScheduleRevision != currentIndexScheduleRevision ||
+		occurrence.DueAt.IsZero() ||
+		occurrence.LeaseEpoch <= 0 ||
+		occurrence.ClaimFence == "" {
+		return "", indexscheduleapp.ErrInvalidRequest
 	}
-	return work.indexes.RunDue(ctx, occurrence)
+	result, err := work.indexes.RunDue(ctx, occurrence.DueAt)
+	if err != nil {
+		return "", err
+	}
+	if result.SkippedOverlap || result.SkippedUnavailable ||
+		result.DependencyErrors > 0 {
+		return "", indexscheduleapp.ErrScheduleDependency
+	}
+	return schedulingapp.OutcomeDurablyAdmitted, nil
 }
+
+var _ schedulingapp.Handler = (*currentIndexScheduleDueWork)(nil)

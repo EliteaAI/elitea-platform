@@ -13,6 +13,7 @@ import (
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	schedulingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/scheduling"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
@@ -783,6 +784,59 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			currentIndex.scheduleUpdate = scheduleUpdate
 			currentIndex.scheduleDelete = scheduleDelete
 			currentIndex.scheduleAction = indexDueWork
+			schedule, scheduleErr := schedulingapp.ParseCron(
+				currentIndexScheduleCadence,
+			)
+			if scheduleErr != nil {
+				return nil, fmt.Errorf(
+					"parse current index schedule cadence: %w",
+					scheduleErr,
+				)
+			}
+			schedulerConfig := schedulingapp.Config{
+				InstanceID:    config.SchedulerInstanceID,
+				LeaseDuration: currentIndexScheduleLeaseDuration,
+			}
+			registry, registryErr := schedulingapp.NewRegistry(
+				schedulerConfig.LeaseDuration,
+				schedulingapp.Job{
+					ID:       currentIndexScheduleCapability,
+					Revision: currentIndexScheduleRevision,
+					Mode:     schedulingapp.ModeDurableAdmission,
+					Schedule: schedule,
+					Timeout:  currentIndexScheduleHandlerTimeout,
+					Handler:  indexDueWork,
+				},
+			)
+			if registryErr != nil {
+				return nil, fmt.Errorf(
+					"register current index scheduled admission: %w",
+					registryErr,
+				)
+			}
+			occurrences, occurrenceErr :=
+				repos.NewScheduleOccurrenceRepository(
+					dependencies.AdmissionPool,
+				)
+			if occurrenceErr != nil {
+				return nil, fmt.Errorf(
+					"construct scheduled occurrence repository: %w",
+					occurrenceErr,
+				)
+			}
+			scheduler, schedulerErr := schedulingapp.NewRunner(
+				occurrences,
+				registry,
+				schedulerConfig,
+				dependencies.Logger,
+			)
+			if schedulerErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index scheduler: %w",
+					schedulerErr,
+				)
+			}
+			indexPublishers = append(indexPublishers, scheduler)
 		}
 		publisherRoot, err = newPublisherSet(indexPublishers...)
 		if err != nil {
