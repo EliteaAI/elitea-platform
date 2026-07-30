@@ -31,7 +31,7 @@ export interface MessageAuthorWire {
 /** A `participants` array entry (lines 48, 74-78, 128-129, 205). */
 export interface MessageParticipantWire {
   readonly id: string;
-  readonly meta?: { readonly tools?: readonly MessageParticipantToolWire[] };
+  readonly meta?: { readonly tools?: readonly MessageParticipantToolWire[]; readonly user_name?: string; readonly user_avatar?: string };
 }
 
 /** `foundParticipant.meta.tools[]` (line 205). */
