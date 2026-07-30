@@ -286,7 +286,7 @@ describe('budget waivers', () => {
   it.each([
     ['Canvas.tsx', 'component-props'],
     ['ChatMessageWrapper.tsx', 'component-props'],
-  ])('checkComponents(%s, with component-props breach) with waiver -> no findings', (rel, rule) => {
+  ])('checkComponents(%s, with component-props breach) with waiver -> no findings', (_rel, _rule) => {
     const files = {
       'Canvas.tsx': 'src/features/chat-messages/ui/canvas/Canvas.tsx',
       'ChatMessageWrapper.tsx': 'src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx',
