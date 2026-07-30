@@ -227,7 +227,12 @@
     // mui-overrides/index.ts — its target library (`@mui/x-tree-view`) is
     // intentionally not a dependency of this app (spec §2.2/P1: "the file
     // tree is hand-rolled"). See the file's own header comment.
-    "src/shared/brand/mui-overrides/MuiTreeItem.ts"
+    "src/shared/brand/mui-overrides/MuiTreeItem.ts",
+    // Wave-2 sub-unit C4 (chat-messages): 25 files, not wired into any
+    // app consumer yet — `all:true` in vitest counts their 0% as dead
+    // weight. Same rationale as the vitest coverage exclude. REMOVE when
+    // a real consumer imports from this unit.
+    "src/features/chat-messages/**"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
