@@ -112,6 +112,10 @@ export default defineConfig({
         // rolled") -- REMOVE this line if that ever changes and something
         // actually wires it into mui-overrides/index.ts.
         'src/shared/brand/mui-overrides/MuiTreeItem.ts',
+        // Wave-2 C4 chat-messages unit — 45 files, not wired into any app
+        // consumer yet; `all:true` would count its 0% as dead weight (same
+        // rationale as sse.ts above). REMOVE when a real consumer imports it.
+        'src/features/chat-messages/**',
         'src/test/**',
         'src/**/__mocks__/**',
         'src/app/main.tsx',
