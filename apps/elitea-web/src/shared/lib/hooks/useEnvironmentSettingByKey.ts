@@ -60,7 +60,7 @@ export interface UseEnvironmentSettingByKeyResult {
 export function useEnvironmentSettingByKey(
   key: string | null | undefined,
 ): UseEnvironmentSettingByKeyResult {
-  const { config, missing, reasons } = useMemo(() => {
+  const { config } = useMemo(() => {
     const result = getConfig();
     return {
       config: result.status === 'ok' ? result.config : null,

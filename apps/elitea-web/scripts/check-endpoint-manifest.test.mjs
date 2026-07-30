@@ -125,7 +125,7 @@ describe('GREEN — the real, checked-in manifest', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('check-endpoint-manifest: OK');
     expect(result.stdout).toContain('generated operations on disk: 92');
-    expect(result.stdout).toContain('manifest entries: 154');
+    expect(result.stdout).toContain('manifest entries: 170');
   });
 
   it('the same real manifest also passes as --json with ok:true', () => {
@@ -136,7 +136,7 @@ describe('GREEN — the real, checked-in manifest', () => {
     expect(parsed.violations).toEqual([]);
     expect(parsed.duplicateIds).toEqual([]);
     expect(parsed.generatedOperationCount).toBe(92);
-    expect(parsed.totalEntries).toBe(154);
+    expect(parsed.totalEntries).toBe(170);
   });
 });
 
