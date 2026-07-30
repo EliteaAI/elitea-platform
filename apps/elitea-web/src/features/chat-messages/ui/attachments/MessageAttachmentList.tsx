@@ -78,9 +78,9 @@ export function MessageAttachmentList({
         >
           {imagesItems.map((file, index) => (
             <ImageAttachmentCard
-              key={`${(file as Record<string, unknown>)?.uuid ?? `file_${index}`}`}
+              key={getAttachmentKey(file, index)}
               attachment={file}
-              onRemoveAttachment={onRemoveAttachment as any}
+              onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
             />
           ))}
         </Box>
@@ -99,9 +99,9 @@ export function MessageAttachmentList({
         >
           {otherFilesItems.map((file, index) => (
             <NormalAttachment
-              key={`${(file as Record<string, unknown>)?.uuid ?? `file_${index}`}`}
+              key={getAttachmentKey(file, index)}
               attachment={file}
-              onRemoveAttachment={onRemoveAttachment as any}
+              onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
             />
           ))}
         </Box>
@@ -150,7 +150,7 @@ function ImageAttachmentCard({
           open={true}
           onClose={() => setIsOpen(false)}
           attachment={attachment}
-          onRemoveAttachment={onRemoveAttachment as any}
+          onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
         />
       )}
     </>
@@ -183,4 +183,11 @@ function getAttachmentName(attachment: Attachment): string {
     (itemDet?.name as string) ||
     (det?.name as string) ||
     '';
+}
+
+/** Returns a stable string key for an attachment list item. */
+function getAttachmentKey(file: Attachment, index: number): string {
+  const det = file as Record<string, unknown>;
+  const uuid = det?.uuid as string | undefined;
+  return uuid ?? `file_${index}`;
 }

@@ -29,7 +29,6 @@ export function useEditingCanvasNavBlocker({
 
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
-      event.returnValue = message;
       return message;
     };
 

@@ -9,7 +9,7 @@ import { useMemo } from 'react';
 
 import { Box, IconButton, Typography } from '@mui/material';
 
-const IconButtonAny = IconButton as React.ComponentType<any>;
+const IconButtonAny = IconButton as unknown as any;
 
 import Tooltip from '@mui/material/Tooltip';
 
@@ -60,6 +60,8 @@ export interface CanvasEditHeaderProps {
   readonly langSelect?: CanvasEditHeaderLangSelect;
   /** When true, all action buttons are disabled. */
   readonly disabledAll?: boolean | undefined;
+  /** Called when the user closes the editor (shorthand for actions?.onClose). */
+  readonly onClose?: (() => void) | undefined;
 }
 
 /**
@@ -78,9 +80,10 @@ export function CanvasEditHeader({
   isThisWholeMessage,
   langSelect,
   disabledAll,
+  onClose: topLevelOnClose,
 }: CanvasEditHeaderProps): React.ReactElement {
   const {
-    onClose,
+    onClose: actionsOnClose,
     onUndo,
     disableUndo = false,
     onRedo,
@@ -89,6 +92,8 @@ export function CanvasEditHeader({
     onRegenerate,
     onDelete,
   } = actions ?? {};
+
+  const onClose = topLevelOnClose ?? actionsOnClose;
 
   const {
     isTableEditing,

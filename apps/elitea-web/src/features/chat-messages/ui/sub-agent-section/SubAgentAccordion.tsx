@@ -83,7 +83,7 @@ export function SubAgentAccordion({
                             mb: 0.5,
                           }}
                         >
-                          {(action.name as string) || (action.type as string) || 'Action'}
+                          {(action.name as string) || action.type || 'Action'}
                         </Typography>
                         {(action.toolOutputs as string) || ''}
                       </Box>

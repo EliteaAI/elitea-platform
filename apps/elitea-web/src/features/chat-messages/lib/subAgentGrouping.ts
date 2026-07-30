@@ -247,6 +247,6 @@ export function inflightToolChipId(
   const pcid = action.parent_agent_call_id ?? '';
   const resolvedKey = pcidAnchorMap.get(pcid) || pcid;
   const actionData = action as unknown as Record<string, unknown>;
-  const actionId = typeof actionData?.id === 'string' ? actionData.id : String(actionData?.id ?? '');
+  const actionId = typeof actionData?.id === 'string' ? actionData.id : '';
   return `${block.kind}:${resolvedKey}:${actionId}`;
 }

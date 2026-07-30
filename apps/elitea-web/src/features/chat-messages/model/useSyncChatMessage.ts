@@ -29,7 +29,7 @@ export function useSyncChatMessage({ conversationId, onSyncMessage }: UseSyncCha
     channelRef.current = channel;
 
     channel.onmessage = (event) => {
-      onSyncMessage?.(event.data);
+      onSyncMessage?.(event.data as { type: string; data?: unknown });
     };
 
     return () => {

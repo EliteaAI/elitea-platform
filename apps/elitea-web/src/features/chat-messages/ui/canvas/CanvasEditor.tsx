@@ -108,7 +108,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     const [canRedo, _setCanRedo] = useState(false);
     const [_tableId] = useState(`table-${Date.now()}`);
     const [hasSelectedRowsColumns] = useState({ hasSelectedRows: false, hasSelectedColumns: false });
-    const [_editorError, setEditorError] = useState<unknown | null>(null);
+    const [_editorError, setEditorError] = useState<unknown>(null);
     const [codeLanguage, setCodeLanguage] = useState(selectedCodeBlockInfo?.language ?? 'markdown');
 
     const { sendChangeToRemote: _sendChangeToRemote } = useCanvasEditSocket();
@@ -310,10 +310,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         >
           <CanvasEditHeader
             title={title}
-            onClose={onCloseEditor}
-            disableUndo
-            disableRedo
-            disableLanguageSelect
+            actions={{
+              onClose: onCloseEditor,
+              disableUndo: true,
+              disableRedo: true,
+            }}
+            langSelect={{ disableLanguageSelect: true }}
             disabledAll
           />
           <Box
@@ -349,10 +351,12 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
         >
           <CanvasEditHeader
             title={title}
-            onClose={onCloseEditor}
-            disableUndo
-            disableRedo
-            disableLanguageSelect
+            actions={{
+              onClose: onCloseEditor,
+              disableUndo: true,
+              disableRedo: true,
+            }}
+            langSelect={{ disableLanguageSelect: true }}
             disabledAll
           />
           <Box
@@ -370,7 +374,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
             }}
           >
             <Typography variant="labelMedium" color="error">
-              {String(selectedCodeBlockInfo.createCanvasError)}
+              {JSON.stringify(selectedCodeBlockInfo.createCanvasError)}
             </Typography>
           </Box>
         </Box>
@@ -391,24 +395,30 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
       >
         <CanvasEditHeader
           title={title}
-          onClose={onCloseEditor}
-          onUndo={() => { /* TODO: editorRef?.undo() */ }}
-          disableUndo={!canUndo}
-          onRedo={() => { /* TODO: editorRef?.redo() */ }}
-          disableRedo={!canRedo}
-          onCopy={() => {
-            navigator.clipboard.writeText(code).catch(() => { /* non-fatal */ });
-            // TODO: toast
+          actions={{
+            onClose: onCloseEditor,
+            onUndo: () => { /* TODO: editorRef?.undo() */ },
+            disableUndo: !canUndo,
+            onRedo: () => { /* TODO: editorRef?.redo() */ },
+            disableRedo: !canRedo,
+            onCopy: () => {
+              navigator.clipboard.writeText(code).catch(() => { /* non-fatal */ });
+              // TODO: toast
+            },
+            onRegenerate,
+            onDelete,
           }}
-          onRegenerate={onRegenerate}
-          onDelete={onDelete}
-          showLangSelect={codeLanguage !== 'markdownTable'}
-          onChangeLanguage={onChangeLanguage}
-          language={codeLanguage}
-          disableLanguageSelect={codeLanguage === 'mermaid'}
+          langSelect={{
+            showLangSelect: codeLanguage !== 'markdownTable',
+            onChangeLanguage: onChangeLanguage,
+            language: codeLanguage,
+            disableLanguageSelect: codeLanguage === 'mermaid',
+          }}
           isThisWholeMessage={!selectedCodeBlockInfo?.isBlock}
-          isTableEditing={codeLanguage === 'markdownTable'}
-          hasSelectedRowsColumns={hasSelectedRowsColumns}
+          table={{
+            isTableEditing: codeLanguage === 'markdownTable',
+            hasSelectedRowsColumns,
+          }}
           disabledAll={readOnly || selectedCodeBlockInfo?.isCreatingCanvas || !!selectedCodeBlockInfo?.createCanvasError}
         />
         {codeLanguage === 'mermaid' ? (

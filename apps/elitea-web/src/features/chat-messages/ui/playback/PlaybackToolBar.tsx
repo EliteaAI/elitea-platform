@@ -113,22 +113,19 @@ export function PlaybackToolBar({
   }, []);
 
   // Extract content from the message
-  const msgRecord = message as Record<string, unknown> | undefined;
-  const messageContent =
-    msgRecord?.content ??
-    ((msgRecord?.message_items as unknown[] | undefined)
-      ?.filter((item: unknown) => {
-        const itemRec = item as Record<string, unknown>;
-        return itemRec?.item_type !== 'attachment_message';
-      })
-      .map((item: unknown) => {
-        const itemRec = item as Record<string, unknown>;
-        const details = itemRec?.item_details as Record<string, unknown> | undefined;
-        return details?.content;
-      })
-      .filter((c): c is string => c != null)
-      .join(', ')) ??
-    '';
+  const rawItems = message?.message_items as unknown[] | undefined;
+  const itemsFiltered = rawItems?.filter((item: unknown) => {
+    const itemRec = item as Record<string, unknown>;
+    return itemRec?.item_type !== 'attachment_message';
+  }) ?? [];
+  const itemsMapped = itemsFiltered.map((item: unknown) => {
+    const itemRec = item as Record<string, unknown>;
+    const details = itemRec?.item_details as Record<string, unknown> | undefined;
+    return (details?.content as string) ?? '';
+  });
+  const itemsFinal = itemsMapped.filter((c): c is string => c.length > 0);
+
+  const messageContent: string = (message?.content ?? itemsFinal.join(', ')) as string;
 
   return (
     <Box
@@ -204,7 +201,7 @@ export function PlaybackToolBar({
               WebkitTextFillColor: 'text.secondary',
             }}
           >
-            {String(messageContent).trim()}
+            {messageContent ? messageContent.trim() : ''}
           </Typography>
           {showExpandIcon && (
             <IconButtonAny

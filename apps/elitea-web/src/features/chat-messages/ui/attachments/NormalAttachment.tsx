@@ -17,7 +17,7 @@ import Tooltip from '@mui/material/Tooltip';
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName } from '@/entities/attachment/model/selectors';
 
-const IconButtonAny = IconButton as any;
+const IconButtonAny = IconButton as unknown as any;
 
 import type { NormalAttachmentArtifactData } from './types';
 
@@ -48,7 +48,7 @@ export function NormalAttachment({
   preview = false,
   onOpenArtifactPreview,
 }: NormalAttachmentProps): React.ReactElement | null {
-  const attachmentName = getAttachmentName(attachment ?? {} as Attachment);
+  const attachmentName = getAttachmentName(attachment ?? {});
 
   const [isHovering, setIsHovering] = useState(false);
   const [openAlert, setOpenAlert] = useState(false);
@@ -117,7 +117,7 @@ export function NormalAttachment({
           gap: '0.75rem',
           padding: '0.375rem 0.75rem',
           alignItems: 'center',
-          background: (theme as any)?.palette?.background?.button?.default,
+          background: (theme as { palette?: { background?: { button?: { default?: string } } } })?.palette?.background?.button?.default,
           ...sx,
         })}
         data-testid="chat-artifact-file-card"
@@ -145,16 +145,18 @@ export function NormalAttachment({
           }}
         >
           {preview && (
+            /* eslint-disable-next-line i18next/no-literal-string */
             <Tooltip title="View/Edit file" placement="top">
-              {/* eslint-disable-next-line i18next/no-literal-string — tooltip text */}
               <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onPreviewFile} aria-label="Preview attachment">
                 👁
               </IconButtonAny>
             </Tooltip>
           )}
+          /* eslint-disable-next-line i18next/no-literal-string */
           <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickDownload} aria-label="Download attachment">
             ↓
           </IconButtonAny>
+          /* eslint-disable-next-line i18next/no-literal-string */
           <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickRemove} aria-label="Remove attachment">
             ✕
           </IconButtonAny>
@@ -190,6 +192,7 @@ export function NormalAttachment({
             }}
             onClick={(e: React.MouseEvent<HTMLElement>) => e.stopPropagation()}
           >
+            {/* eslint-disable-next-line i18next/no-literal-string — confirmation dialog text */}
             <Typography variant="bodyMedium" sx={{ marginBottom: '1rem' }}>
               Are you sure you want to remove {attachmentName}?
             </Typography>
@@ -207,12 +210,12 @@ export function NormalAttachment({
               </Typography>
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
+              {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
               <IconButtonAny size="small" onClick={onCloseAlert}>
-                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
                 Cancel
               </IconButtonAny>
+              {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
               <IconButtonAny variant="elitea" color="primary" size="small" onClick={onConfirmDelete}>
-                {/* eslint-disable-next-line i18next/no-literal-string — confirmation button */}
                 Remove
               </IconButtonAny>
             </Box>

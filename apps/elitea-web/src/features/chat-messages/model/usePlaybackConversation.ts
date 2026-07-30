@@ -36,7 +36,7 @@ export function usePlaybackConversation({
   conversationId: _conversationId,
   projectId: _projectId,
 }: UsePlaybackConversationParams): UsePlaybackConversationResult {
-  const [conversation] = useMemo(() => [undefined] as [unknown | undefined], []);
+  const [conversation] = useMemo(() => [undefined] as [unknown], []);
 
   // In a real implementation, this would use entities/conversation API:
   //   const { data, isLoading } = conversationApi.useConversationDetailsQuery({

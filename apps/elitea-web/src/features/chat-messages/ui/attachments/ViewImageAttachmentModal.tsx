@@ -10,7 +10,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 
 import { Box, Dialog, DialogContent, IconButton, Typography } from '@mui/material';
 
-const IconButtonAny = IconButton as any;
+const IconButtonAny = IconButton as unknown as any;
 
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName, getImageSource } from '@/entities/attachment/model/selectors';
@@ -61,7 +61,7 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
     let cancelled = false;
     // TODO: replace with shared fetchArtifactBlob (S6)
     // Baseline: `fetchArtifactBlobUrl({ projectId, filepath: attachmentFilepath })`
-    (async () => {
+    (() => {
       // Placeholder — real implementation would fetch the artifact blob
       if (cancelled) return;
       const currentUrl = blobUrlRef.current;

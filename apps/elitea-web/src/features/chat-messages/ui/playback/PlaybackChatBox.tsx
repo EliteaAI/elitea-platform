@@ -67,11 +67,10 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
   function PlaybackChatBox({ conversation, messageListSX, hidden, toastError: _toastError }, ref) {
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    const [chatHistory, setChatHistory] = useState<PlaybackChatMessage[]>(() => [
-      { isStart: true } as PlaybackChatMessage,
-      ...(conversation.chat_history as PlaybackChatMessage[] ?? []),
-      { isEnd: true } as PlaybackChatMessage,
-    ]);
+    const [chatHistory, setChatHistory] = useState<PlaybackChatMessage[]>(() => {
+      const items = (conversation.chat_history ?? []) as unknown as PlaybackChatMessage[];
+      return [{ isStart: true }, ...items, { isEnd: true }];
+    });
 
     const [messageList, setMessageList] = useState<PlaybackChatMessage[]>([]);
     const messageListRef = useRef<PlaybackChatMessage[]>(messageList);
@@ -94,11 +93,8 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
 
     // Reset chat history when conversation changes
     useEffect(() => {
-      setChatHistory([
-        { isStart: true } as PlaybackChatMessage,
-        ...(conversation.chat_history as PlaybackChatMessage[] ?? []),
-        { isEnd: true } as PlaybackChatMessage,
-      ]);
+      const items = (conversation.chat_history ?? []) as unknown as PlaybackChatMessage[];
+      setChatHistory([{ isStart: true }, ...items, { isEnd: true }]);
     }, [conversation.chat_history]);
 
     // Auto-scroll to bottom of message list
@@ -175,7 +171,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
     }, [currentIndex, message]);
 
     /** Step forward through the chat history, loading more messages when needed. */
-    const onForward = useCallback(async () => {
+    const onForward = useCallback(() => {
       const nextIndex = currentIndex + 1;
       const currentMsg = chatHistoryRef.current[currentIndex];
       let nextMsg = chatHistoryRef.current[nextIndex];
@@ -196,10 +192,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
         if (nextMsg?.role === 'user') {
           setMessage(nextMsg);
           if (currentMsg?.role === 'user') {
-            setMessageList((prev) => [
-              ...prev,
-              { ...currentMsg, created_at: Date.now() },
-            ]);
+            setMessageList([{ ...currentMsg, created_at: Date.now() }]);
           }
         } else if (nextMsg?.role === 'assistant') {
           setMessage(null);
@@ -253,15 +246,11 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
       currentIndex >= messagesCountNum + lastUserIndex || currentIndex >= chatHistoryRef.current.length - 1;
 
     // Extract message attachments for the toolbar
-    const attachments = message?.message_items
-      ? (message.message_items as unknown[]).map((item: unknown) => {
-          const rec = item as Record<string, unknown>;
-          const details = rec.item_details as Record<string, unknown> | undefined;
-          return {
-            name: details?.name as string | undefined,
-            id: details?.id as string | number | undefined,
-          };
-        }).filter((a) => a.name != null && a.id != null)
+    const attachments: import('./PlaybackToolBar').PlaybackToolBarAttachment[] = message?.message_items
+      ? ((message.message_items as unknown as Array<{ item_details?: { name?: string; id?: string | number } }>).map((item) => ({
+          name: item.item_details?.name ?? '',
+          id: item.item_details?.id ?? '',
+        })).filter((a) => a.name.length > 0 && a.id != null) as import('./PlaybackToolBar').PlaybackToolBarAttachment[])
       : [];
 
     return (
@@ -269,7 +258,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
         role="presentation"
         sx={{
           paddingBottom: '0px',
-          ...(messageListSX as Record<string, unknown>),
+          ...messageListSX,
         }}
       >
         {/* Chat message list area */}
@@ -310,8 +299,8 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
           disableForward={disableForward}
           sx={{ gap: '8px', alignItems: 'center', marginTop: '0.5rem' }}
           isMockingThinking={isMockingThinking || isLoadingMore}
-          attachments={attachments as Array<{ name: string; id: string | number }>}
-          {...(message != null ? { message: message as Record<string, unknown> } : {})}
+          attachments={attachments}
+          {...(message != null ? { message: message as unknown as Record<string, unknown> } : {})}
         />
       </Box>
     );

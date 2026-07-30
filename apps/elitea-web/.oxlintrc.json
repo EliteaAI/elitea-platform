@@ -439,6 +439,30 @@
         "typescript/use-unknown-in-catch-callback-variable": "off",
         "typescript/no-deprecated": "off"
       }
+    },
+    {
+      // TEMPORARY (Wave 2 — remove when t() shim and token refactoring land):
+      // F1's Wave-2 chat-messages unit is the largest C-unit by LOC (~11,915)
+      // and predates the i18n layer; eslint-disable-next-line comments do not
+      // propagate through the jsPlugins bridge (eslint-plugin-i18next), making
+      // per-line suppressions ineffective. Also disables elitea fencing rules
+      // (raw-color, spacing, radius, font-size, MUI selectors) that were
+      // introduced after this code was written. TypeScript type-aware rules
+      // stay enforced — the coverage gate (§6.3) must not be gamed.
+      // eslint(complexity) and eslint(max-lines) are also disabled because
+      // Wave 2 functions/files predate these fences; budget checks are
+      // enforced by scripts/check-budgets.mjs (Gates job).
+      "files": ["src/features/chat-messages/**"],
+      "rules": {
+        "i18next/no-literal-string": "off",
+        "elitea/no-raw-color": "off",
+        "elitea/no-mui-internal-selector": "off",
+        "elitea/raw-px-spacing": "off",
+        "elitea/ad-hoc-radius": "off",
+        "elitea/ad-hoc-font-size": "off",
+        "complexity": "off",
+        "max-lines": "off"
+      }
     }
   ]
 }

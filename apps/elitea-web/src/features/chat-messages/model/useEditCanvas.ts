@@ -30,11 +30,11 @@ export interface UseEditCanvasResult {
  * `useEditCanvas` — provides a function to create or update a canvas
  * using the entities-layer mutations.
  */
-export function useEditCanvas({ projectId }: UseEditCanvasParams): UseEditCanvasResult {
+export function useEditCanvas({ projectId: _projectId }: UseEditCanvasParams): UseEditCanvasResult {
   const [isLoading, setIsLoading] = useState(false);
 
   const editCanvas = useCallback(
-    async (params: { canvasId?: string; content: string; title?: string }): Promise<unknown> => {
+    (params: { canvasId?: string; content: string; title?: string }): Promise<unknown> => {
       setIsLoading(true);
       try {
         if (params.canvasId) {
@@ -46,7 +46,7 @@ export function useEditCanvas({ projectId }: UseEditCanvasParams): UseEditCanvas
           //     content: params.content,
           //     title: params.title,
           //   });
-          return null;
+          return Promise.resolve();
         } else {
           // Create new canvas
           // In a real implementation:
@@ -55,13 +55,13 @@ export function useEditCanvas({ projectId }: UseEditCanvasParams): UseEditCanvas
           //     content: params.content,
           //     title: params.title,
           //   });
-          return null;
+          return Promise.resolve();
         }
       } finally {
         setIsLoading(false);
       }
     },
-    [projectId],
+    [],
   );
 
   return { editCanvas, isLoading };

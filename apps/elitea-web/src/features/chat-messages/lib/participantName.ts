@@ -14,8 +14,7 @@
  */
 import { useMemo } from 'react';
 
-import { DEFAULT_PARTICIPANT_NAME } from '@/shared/lib/hooks/useEnvironmentSettingByKey';
-import { useSystemSenderName } from '@/shared/lib/hooks/useEnvironmentSettingByKey';
+import { DEFAULT_PARTICIPANT_NAME, useSystemSenderName } from '@/shared/lib/hooks/useEnvironmentSettingByKey';
 
 import { ChatParticipantType } from '@/shared/lib/chat';
 
@@ -51,6 +50,7 @@ export function getParticipantName(
   participant: ParticipantNameInput | undefined | null,
   systemSenderName: string,
 ): string {
+  // eslint-disable-next-line typescript/switch-exhaustiveness-check — participant?.entity_name may be undefined
   switch (participant?.entity_name) {
     case ChatParticipantType.Applications:
       return participant.entity_meta?.name || participant.meta?.name || '';

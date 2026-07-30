@@ -39,6 +39,10 @@ export interface CanvasProps {
   readonly type?: 'code' | 'diagram' | 'table';
   /** List of editors currently working on this canvas. */
   readonly editors?: readonly CanvasEditorPresence[];
+  /** Interaction UUID for canvas tracking. */
+  readonly interaction_uuid?: string;
+  /** Conversation UUID for canvas tracking. */
+  readonly conversation_uuid?: string;
 }
 
 export interface CodeBlockInfo {
@@ -89,6 +93,8 @@ export function Canvas({
   language = 'markdown',
   type = 'code',
   editors = [],
+  interaction_uuid,
+  conversation_uuid,
 }: CanvasProps): React.ReactElement {
   const { canvasId, messageItemId, startPos, endPos } = canvasRef ?? {};
   // Filter out admin/system editors (baseline: CANVAS_ADMIN_USER / CANVAS_SYSTEM_USER)
@@ -127,6 +133,8 @@ export function Canvas({
           return `\`\`\`${language}\n${content}\n\`\`\`\n`;
         case 'diagram':
           return `\`\`\`mermaid\n${content}\n\`\`\`\n`;
+        case 'table':
+          return content;
         default:
           return content;
       }
@@ -156,7 +164,7 @@ export function Canvas({
       ...(selectedCodeBlockInfo?.blockId != null ? { blockId: selectedCodeBlockInfo.blockId } : {}),
       viewOnly: !!realEditors.length,
     });
-  }, [onEdit, content, type, language, canvasRef, realEditors, selectedCodeBlockInfo]);
+  }, [onEdit, content, type, language, canvasRef, realEditors, selectedCodeBlockInfo, messageItemId, canvasId, startPos, endPos]);
 
   return (
     <Box sx={{ width: '100%' }}>

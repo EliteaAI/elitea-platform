@@ -62,18 +62,18 @@ export interface ChatMessage {
   readonly messageItems?: readonly MessageItemWire[] | undefined;
   readonly userId?: string | undefined;
   readonly participantId?: string | undefined;
-  readonly sentTo?: unknown | undefined;
+  readonly sentTo?: unknown;
   readonly likes?: number | undefined;
   readonly interactionUuid?: string | undefined;
   readonly toolActions?: readonly SubAgentGroupable[] | undefined;
-  readonly exception?: unknown | undefined;
+  readonly exception?: unknown;
   readonly isStreaming?: boolean | undefined;
   readonly isLoading?: boolean | undefined;
   readonly questionId?: string | undefined;
   readonly replyToId?: string | undefined;
   readonly references?: readonly unknown[] | undefined;
   readonly isSummarized?: boolean | undefined;
-  readonly hitlInterrupt?: unknown | undefined;
+  readonly hitlInterrupt?: unknown;
   readonly hitlInterrupts?: readonly unknown[] | undefined;
   readonly threadId?: string | undefined;
   readonly taskId?: string | undefined;
@@ -151,7 +151,7 @@ export function convertToPlayerQuestion(
     content,
     messageItems: sortedItems,
     createdAt: convertTime(created_at),
-    participantId: sent_to_id as string | undefined,
+    participantId: sent_to_id,
     sentTo: sentToParticipant,
     likes,
   };
@@ -170,15 +170,15 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
   // Get text content from message_items — API uses 'text_message' as item_type.
   const textItem = child.message_items?.find(
     (item) => (item as unknown as Record<string, unknown>).item_type === 'text_message',
-  ) as MessageItemWire | undefined;
+  ) as unknown as Record<string, unknown> | undefined;
   const content =
-    (((textItem as unknown) as Record<string, unknown>)?.content as string | undefined) ??
-    (child.content as string | undefined) ??
+    (textItem as Record<string, unknown>)?.content ??
+    child.content ??
     '';
 
   return {
     id: child.uuid,
-    name: (meta?.child_agent_name as string | undefined) ?? 'Child Agent',
+    name: meta?.child_agent_name ?? 'Child Agent',
     type: TOOL_ACTION_TYPES.SwarmChild,
     status: ToolActionStatus.complete,
     content,
@@ -188,7 +188,7 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
     ended_at: child.created_at,
     timestamp: child.created_at,
     isSwarmChild: true,
-    agentName: (meta?.child_agent_name as string | undefined) ?? 'Child Agent',
+    agentName: meta?.child_agent_name ?? 'Child Agent',
   };
 }
 
@@ -262,7 +262,7 @@ export function convertMessagesToChatHistory(
       sent_to_id,
       userIds,
       reply_to_id,
-      sent_to as { entity_name?: string } | undefined,
+      sent_to,
     );
 
     if (isUser) {
@@ -270,7 +270,7 @@ export function convertMessagesToChatHistory(
         return convertToPlayerQuestion(messageGroup, playerInfo, participants);
       }
       // normaliseUserMessage returns a UserMessage; cast to ChatMessage.
-      return normaliseUserMessage(messageGroup, [], participants) as unknown as ChatMessage;
+      return normaliseUserMessage(messageGroup, [], participants) as ChatMessage;
     }
 
     // Convert AI answer using entities-level normaliser.
@@ -279,11 +279,11 @@ export function convertMessagesToChatHistory(
     // Attach child messages as SwarmChild toolActions.
     const childMessages = childMessagesByParent[uuid] ?? [];
     if (childMessages.length > 0) {
-      const swarmChildActions = childMessages.map((child) => buildSwarmChildAction(child));
+      const swarmChildActions: SubAgentGroupable[] = childMessages.map((child) => buildSwarmChildAction(child) as unknown as SubAgentGroupable);
 
       // Prepend SwarmChild actions to toolActions (they appear before other tools).
-      const existingActions = (aiMessage.toolActions as unknown[] | undefined) ?? [];
-      (aiMessage as unknown as Record<string, unknown>).toolActions = [...swarmChildActions, ...existingActions];
+      const existingActions = aiMessage.toolActions ?? [];
+      return { ...aiMessage, toolActions: [...swarmChildActions, ...existingActions] };
     }
 
     return aiMessage;
