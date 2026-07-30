@@ -402,6 +402,38 @@ type EliteaRuntimeInputBundleEntry struct {
 	ContentBytes          []byte `db:"content_bytes" json:"content_bytes"`
 }
 
+type EliteaRuntimeScheduledJobCursor struct {
+	JobID            string             `db:"job_id" json:"job_id"`
+	ScheduleRevision string             `db:"schedule_revision" json:"schedule_revision"`
+	ObservedThrough  pgtype.Timestamptz `db:"observed_through" json:"observed_through"`
+	LeaseOwner       *string            `db:"lease_owner" json:"lease_owner"`
+	LeaseEpoch       int64              `db:"lease_epoch" json:"lease_epoch"`
+	ClaimFence       []byte             `db:"claim_fence" json:"claim_fence"`
+	LeaseExpiresAt   pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type EliteaRuntimeScheduledOccurrence struct {
+	InvocationID     string             `db:"invocation_id" json:"invocation_id"`
+	JobID            string             `db:"job_id" json:"job_id"`
+	ScheduleRevision string             `db:"schedule_revision" json:"schedule_revision"`
+	DueAt            pgtype.Timestamptz `db:"due_at" json:"due_at"`
+	OutcomeMode      string             `db:"outcome_mode" json:"outcome_mode"`
+	State            string             `db:"state" json:"state"`
+	NextAttemptAt    pgtype.Timestamptz `db:"next_attempt_at" json:"next_attempt_at"`
+	LeaseOwner       *string            `db:"lease_owner" json:"lease_owner"`
+	LeaseEpoch       int64              `db:"lease_epoch" json:"lease_epoch"`
+	ClaimFence       []byte             `db:"claim_fence" json:"claim_fence"`
+	LeaseExpiresAt   pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	AttemptCount     int32              `db:"attempt_count" json:"attempt_count"`
+	Outcome          *string            `db:"outcome" json:"outcome"`
+	AdmittedAt       pgtype.Timestamptz `db:"admitted_at" json:"admitted_at"`
+	CompletedAt      pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	LastErrorCode    *string            `db:"last_error_code" json:"last_error_code"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
 type EliteaTool struct {
 	ID            int32            `db:"id" json:"id"`
 	CreatedAt     pgtype.Timestamp `db:"created_at" json:"created_at"`
