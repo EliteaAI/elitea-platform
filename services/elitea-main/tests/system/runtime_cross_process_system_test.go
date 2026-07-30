@@ -16,6 +16,11 @@ import (
 	"time"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
+	configurationdomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/configurations"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/jackc/pgx/v5/pgxpool"
 	redis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
@@ -44,15 +49,13 @@ const (
 	schemaDigest    = "1c43c41a5304c6f73c68deebd37ba70f8c2266a59dfd4f9d4fa20b819e7ab3f1"
 )
 
-// TestProductionRuntimeCrossProcessSystem is retained as a topology fixture,
-// but cannot be production evidence while public admission/SSE are deliberately
-// unmounted. The next system slice must drive a private authenticated admission
-// seam and test public routes separately after exact legacy RBAC/audit parity.
+// TestProductionRuntimeCrossProcessSystem drives the production publisher,
+// control, content and output components through a private admission seam.
+// Public route/RBAC compatibility remains a separate deployment gate.
 func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	if os.Getenv(systemTestOptIn) != "1" {
 		t.Skip("set ELITEA_RUNTIME_SYSTEM_TEST=1 to run the Docker-backed cross-process runtime system test")
 	}
-	t.Skip("pending private admission refactor; public runtime routes are intentionally unmounted")
 
 	repositoryRoot := findRepositoryRoot(t)
 	python := systemPython(t, repositoryRoot)
@@ -133,9 +136,15 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 		t.Fatalf("provision single runtime consumer group: %v", err)
 	}
 	assertBrokerLeastPrivilege(t, ctx, controlRedisPort, pki.caPath, observer)
+	redisFaultProxy := startRedisRetirementResponseDropProxy(
+		t,
+		pki,
+		fmt.Sprintf("localhost:%d", controlRedisPort),
+	)
+	workerRedisPort := redisFaultProxy.Port()
 
 	mainLog := filepath.Join(root, "elitea-main.log")
-	mainProcess := startChild(t, "elitea-main", mainLog, filepath.Join(repositoryRoot, "services", "elitea-main"), runtimeMainEnvironment(
+	mainEnvironment := runtimeMainEnvironment(
 		databaseURL,
 		legacyRedisPort,
 		controlRedisPort,
@@ -146,27 +155,41 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 		producerPasswordPath,
 		pki,
 		signing,
-	), mainBinary)
+	)
+	mainProcess := startChild(t, "elitea-main", mainLog, filepath.Join(repositoryRoot, "services", "elitea-main"), mainEnvironment, mainBinary)
 	t.Cleanup(func() { mainProcess.stop(t) })
 	publicBaseURL := fmt.Sprintf("http://127.0.0.1:%d", publicPort)
 	waitForMain(t, ctx, publicBaseURL, mainProcess)
+	outputFaultProxy := startOutputACKDropProxy(t, fmt.Sprintf("localhost:%d", outputPort), pki)
+	workerOutputPort := outputFaultProxy.port(t)
 
-	badSignatureConfigPath := writeWorkerConfig(t, root, "bad-signature", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, pki, signing.badKeyringPath, spoolRoot, spoolKeyPath)
+	badSignatureConfigPath := writeWorkerConfig(t, root, "bad-signature", workerRedisPort, controlPort, workerOutputPort, contentPort, publicPort, workerPasswordPath, pki, signing.badKeyringPath, spoolRoot, spoolKeyPath)
 	badSignatureWorker := startWorker(t, python, repositoryRoot, badSignatureConfigPath, filepath.Join(root, "worker-bad-signature.log"))
 	t.Cleanup(func() { badSignatureWorker.stop(t) })
 	waitForWorkerConsumer(t, ctx, observer, "worker-bad-signature", badSignatureWorker)
 
-	admission := submitValidation(t, publicBaseURL, settings)
+	admission := submitValidationPrivate(t, ctx, pool, settings)
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-signature", badSignatureWorker)
 	assertReferenceOnlyRedisEntry(t, ctx, observer, settingsMarker)
 	assertNoClaim(t, ctx, pool, admission.ExecutionID)
 	badSignatureWorker.stop(t)
+
+	// Preserve a real pending delivery through every durable infrastructure
+	// process restart before any authorized worker can claim it.
+	containers.restart(t, controlRedisName)
+	waitForRedis(t, ctx, observer, containers, controlRedisName)
+	containers.restart(t, postgresName)
+	waitForPostgresPool(t, ctx, pool, containers, postgresName)
+	mainProcess.stop(t)
+	mainProcess = startChild(t, "elitea-main", mainLog, filepath.Join(repositoryRoot, "services", "elitea-main"), mainEnvironment, mainBinary)
+	waitForMain(t, ctx, publicBaseURL, mainProcess)
+
 	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-signature")
 
 	wrongIdentityPKI := pki
 	wrongIdentityPKI.workerCertPath = pki.wrongIdentityWorkerCertPath
 	wrongIdentityPKI.workerKeyPath = pki.wrongIdentityWorkerKeyPath
-	badIdentityConfigPath := writeWorkerConfig(t, root, "bad-identity", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, wrongIdentityPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	badIdentityConfigPath := writeWorkerConfig(t, root, "bad-identity", workerRedisPort, controlPort, workerOutputPort, contentPort, publicPort, workerPasswordPath, wrongIdentityPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	badIdentityWorker := startWorker(t, python, repositoryRoot, badIdentityConfigPath, filepath.Join(root, "worker-bad-identity.log"))
 	t.Cleanup(func() { badIdentityWorker.stop(t) })
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-identity", badIdentityWorker)
@@ -177,7 +200,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	untrustedPKI := pki
 	untrustedPKI.workerCertPath = pki.untrustedWorkerCertPath
 	untrustedPKI.workerKeyPath = pki.untrustedWorkerKeyPath
-	badTLSConfigPath := writeWorkerConfig(t, root, "bad-tls", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, untrustedPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	badTLSConfigPath := writeWorkerConfig(t, root, "bad-tls", workerRedisPort, controlPort, workerOutputPort, contentPort, publicPort, workerPasswordPath, untrustedPKI, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	badTLSWorker := startWorker(t, python, repositoryRoot, badTLSConfigPath, filepath.Join(root, "worker-bad-tls.log"))
 	t.Cleanup(func() { badTLSWorker.stop(t) })
 	waitForPendingDelivery(t, ctx, observer, pool, admission.ExecutionID, "worker-bad-tls", badTLSWorker)
@@ -185,14 +208,41 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	badTLSWorker.stop(t)
 	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-bad-tls")
 
-	goodConfigPath := writeWorkerConfig(t, root, "good", controlRedisPort, controlPort, outputPort, contentPort, publicPort, workerPasswordPath, pki, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
+	outputACKDropped := outputFaultProxy.armCommittedACKDrop(t)
+	redisFaultProxy.Arm()
+	goodConfigPath := writeWorkerConfig(t, root, "good", workerRedisPort, controlPort, workerOutputPort, contentPort, publicPort, workerPasswordPath, pki, signing.goodKeyringPath, spoolRoot, spoolKeyPath)
 	goodWorker := startWorker(t, python, repositoryRoot, goodConfigPath, filepath.Join(root, "worker-good.log"))
 	t.Cleanup(func() { goodWorker.stop(t) })
 
+	waitForFault(t, ctx, "committed output ACK loss", outputACKDropped, goodWorker)
+	goodWorker.stop(t)
+	mainProcess.stop(t)
+	containers.restart(t, postgresName)
+	waitForPostgresPool(t, ctx, pool, containers, postgresName)
+	mainProcess = startChild(t, "elitea-main", mainLog, filepath.Join(repositoryRoot, "services", "elitea-main"), mainEnvironment, mainBinary)
+	waitForMain(t, ctx, publicBaseURL, mainProcess)
+	agePendingDelivery(t, ctx, controlRedisPort, pki.caPath, "worker-good")
+	outputFaultProxy.releaseCommittedACKDrop(t)
+	goodWorker = startWorker(t, python, repositoryRoot, goodConfigPath, filepath.Join(root, "worker-good-restarted.log"))
+
 	waitForSettlementAndRetirement(t, ctx, pool, observer, admission.ExecutionID, goodWorker)
-	assertAuthorizedSSE(t, publicBaseURL, admission.ExecutionID, settingsMarker)
-	assertForwardedIdentityCannotReadSSE(t, publicBaseURL, admission.ExecutionID)
+	waitForFault(t, ctx, "committed Redis retirement response loss", redisFaultProxy.Dropped(), goodWorker)
 	assertDurableTerminalState(t, ctx, pool, admission.ExecutionID)
+	assertSpoolEmpty(t, spoolRoot)
+}
+
+func waitForFault(t *testing.T, ctx context.Context, description string, observed <-chan struct{}, process *childProcess) {
+	t.Helper()
+	for {
+		select {
+		case <-observed:
+			return
+		case <-ctx.Done():
+			t.Fatalf("did not observe %s: %v\n%s", description, ctx.Err(), process.logs())
+		case <-time.After(100 * time.Millisecond):
+			process.ensureRunning(t)
+		}
+	}
 }
 
 func assertBrokerLeastPrivilege(t *testing.T, ctx context.Context, port int, caPath string, observer *redis.Client) {
@@ -249,30 +299,72 @@ type admissionResponse struct {
 	Created     bool   `json:"created"`
 }
 
-func submitValidation(t *testing.T, publicBaseURL string, settings []byte) admissionResponse {
+func submitValidationPrivate(t *testing.T, ctx context.Context, pool *pgxpool.Pool, settings []byte) admissionResponse {
 	t.Helper()
-	body := append([]byte(`{"settings":`), settings...)
-	body = append(body, '}')
-	request, err := http.NewRequest(http.MethodPost, publicBaseURL+"/api/v2/configurations/validation/1/"+revisionID, bytes.NewReader(body))
+	catalog, err := runtimedomain.ParseDigest(catalogDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", "system-validation-1")
-	request.AddCookie(&http.Cookie{Name: "elitea_session", Value: sessionCookie(t, publicSecret)})
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	schema, err := runtimedomain.ParseDigest(schemaDigest)
 	if err != nil {
-		t.Fatalf("submit public validation: %v", err)
+		t.Fatal(err)
 	}
-	defer func() { _ = response.Body.Close() }()
-	var admitted admissionResponse
-	if err := json.NewDecoder(response.Body).Decode(&admitted); err != nil {
-		t.Fatalf("decode admission response with status %d: %v", response.StatusCode, err)
+	repository, err := repos.NewExecutionJobsRepository(pool, repos.ValidationDispatchPolicy{
+		StreamName:        commandStream,
+		CapabilityVersion: "1",
+		ResourceClass:     "validation-small",
+		IsolationClass:    "shared-claim-scoped-authority",
+		Priority:          1,
+		DeadlineTTL:       time.Minute,
+		LimitsRevision:    "elitea.runtime.limits.conformance.v1",
+		MaxOutstanding:    16,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusAccepted || admitted.ExecutionID == "" || admitted.CommandID == "" || !admitted.Created {
-		t.Fatalf("unexpected admission status=%d body=%+v", response.StatusCode, admitted)
+	bundles := executionapp.NewConformanceValidationInputBundleFactory(nil)
+	bundle, err := bundles.BuildValidationInput(ctx, revisionID, "settings-system-1", "1", settings)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return admitted
+	jobs, err := executionapp.NewSubmitJobService(repository, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := jobs.SubmitValidation(ctx, executionapp.SubmitValidationRequest{
+		Identity: executionapp.AdmissionIdentity{
+			TenantID:            "tenant-1",
+			ResourceProjectID:   "1",
+			ProjectionProjectID: "1",
+			ActorID:             "1",
+		},
+		IdempotencyKey: "system-validation-private-1",
+		InputBundle:    bundle,
+		Command: configurationdomain.ValidationCommand{
+			ConfigurationRevisionID: revisionID,
+			ConfigurationType:       "openapi",
+			CatalogRevision:         catalogRevision,
+			CatalogDigest:           catalog,
+			SchemaID:                schemaID,
+			SchemaRevision:          schemaRevision,
+			SchemaDigest:            schema,
+			SettingsEntryID:         "settings-system-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit private validation: %v", err)
+	}
+	if outcome.ExecutionID == "" || outcome.CommandID == "" || !outcome.Created {
+		t.Fatalf("private admission returned invalid outcome: %+v", outcome)
+	}
+	if bundle.MediaType != executiondomain.InputBundleManifestMediaType {
+		t.Fatalf("private admission built wrong bundle media type: %q", bundle.MediaType)
+	}
+	return admissionResponse{
+		ExecutionID: outcome.ExecutionID,
+		CommandID:   outcome.CommandID,
+		Created:     outcome.Created,
+	}
 }
 
 func assertReferenceOnlyRedisEntry(t *testing.T, ctx context.Context, client *redis.Client, settingsMarker string) {
@@ -393,17 +485,60 @@ func assertForwardedIdentityCannotReadSSE(t *testing.T, publicBaseURL, execution
 func assertDurableTerminalState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, executionID string) {
 	t.Helper()
 	var state string
-	var results, settlements, replayEvents int
+	var claims, inbox, results, settlements, replayEvents, replayCursors int
+	var minimumReplayCursor, maximumReplayCursor int64
 	if err := pool.QueryRow(ctx, `
 SELECT j.state,
+       (SELECT count(*) FROM elitea_runtime.execution_claims AS c WHERE c.execution_id = j.execution_id),
+       (SELECT count(*) FROM elitea_runtime.output_inbox AS i WHERE i.execution_id = j.execution_id),
        (SELECT count(*) FROM elitea_runtime.configuration_validation_results AS r WHERE r.execution_id = j.execution_id),
        (SELECT count(*) FROM elitea_runtime.execution_settlements AS s WHERE s.execution_id = j.execution_id),
-       (SELECT count(*) FROM elitea_runtime.execution_replay_events AS e WHERE e.execution_id = j.execution_id)
+       (SELECT count(*) FROM elitea_runtime.execution_replay_events AS e WHERE e.execution_id = j.execution_id),
+       (SELECT count(DISTINCT cursor) FROM elitea_runtime.execution_replay_events AS e WHERE e.execution_id = j.execution_id),
+       (SELECT min(cursor) FROM elitea_runtime.execution_replay_events AS e WHERE e.execution_id = j.execution_id),
+       (SELECT max(cursor) FROM elitea_runtime.execution_replay_events AS e WHERE e.execution_id = j.execution_id)
 FROM elitea_runtime.execution_jobs AS j
-WHERE j.execution_id = $1`, executionID).Scan(&state, &results, &settlements, &replayEvents); err != nil {
+WHERE j.execution_id = $1`, executionID).Scan(
+		&state,
+		&claims,
+		&inbox,
+		&results,
+		&settlements,
+		&replayEvents,
+		&replayCursors,
+		&minimumReplayCursor,
+		&maximumReplayCursor,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if state != "SUCCEEDED" || results != 1 || settlements != 1 || replayEvents != 1 {
-		t.Fatalf("terminal durability mismatch state=%s results=%d settlements=%d replay=%d", state, results, settlements, replayEvents)
+	if state != "SUCCEEDED" || claims != 1 || inbox != 1 || results != 1 || settlements != 1 || replayEvents != 1 || replayCursors != replayEvents || minimumReplayCursor <= 0 || maximumReplayCursor < minimumReplayCursor {
+		t.Fatalf(
+			"terminal durability mismatch state=%s claims=%d inbox=%d results=%d settlements=%d replay=%d distinct-cursors=%d cursor-range=%d..%d",
+			state,
+			claims,
+			inbox,
+			results,
+			settlements,
+			replayEvents,
+			replayCursors,
+			minimumReplayCursor,
+			maximumReplayCursor,
+		)
+	}
+}
+
+func assertSpoolEmpty(t *testing.T, spoolRoot string) {
+	t.Helper()
+	err := filepath.WalkDir(spoolRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path != spoolRoot && !entry.IsDir() {
+			return fmt.Errorf("retained output spool file %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

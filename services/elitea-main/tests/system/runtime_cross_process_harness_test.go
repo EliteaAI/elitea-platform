@@ -303,7 +303,9 @@ func prepareTLSRedisConfig(t *testing.T, directory string, pki runtimePKI) {
 		"tls-auth-clients no",
 		"aclfile /runtime/users.acl",
 		"save \"\"",
-		"appendonly no",
+		"dir /data",
+		"appendonly yes",
+		"appendfsync always",
 	}, "\n")+"\n"), 0o644)
 }
 
@@ -332,6 +334,14 @@ func (s *containerSet) start(t *testing.T, role, image string, runOptions []stri
 func (s *containerSet) logs(name string) string {
 	output, _ := exec.Command("docker", "logs", name).CombinedOutput()
 	return string(output)
+}
+
+func (s *containerSet) restart(t *testing.T, name string) {
+	t.Helper()
+	output, err := exec.Command("docker", "restart", "--time", "10", name).CombinedOutput()
+	if err != nil {
+		t.Fatalf("restart container %s: %v\n%s", name, err, output)
+	}
 }
 
 func (s *containerSet) stopAll() {
@@ -428,6 +438,17 @@ func waitForPostgres(t *testing.T, ctx context.Context, databaseURL string, cont
 		t.Fatalf("PostgreSQL did not become ready: %v\n%s", err, containers.logs(containerName))
 	}
 	return pool
+}
+
+func waitForPostgresPool(t *testing.T, ctx context.Context, pool *pgxpool.Pool, containers *containerSet, containerName string) {
+	t.Helper()
+	if err := eventually(ctx, 100*time.Millisecond, func() (bool, error) {
+		pingCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		return pool.Ping(pingCtx) == nil, nil
+	}); err != nil {
+		t.Fatalf("PostgreSQL pool did not recover after restart: %v\n%s", err, containers.logs(containerName))
+	}
 }
 
 func bootstrapDatabase(t *testing.T, ctx context.Context, repositoryRoot string, pool *pgxpool.Pool) {
@@ -826,9 +847,13 @@ func waitForSettlementAndRetirement(t *testing.T, ctx context.Context, pool *pgx
 			return false, nil
 		}
 		pending, err := client.XPending(ctx, commandStream, consumerGroup).Result()
-		return err == nil && pending.Count == 0, nil
+		if err != nil || pending.Count != 0 {
+			return false, nil
+		}
+		mappings, err := client.HLen(ctx, commandStream+":delivery-index.v1").Result()
+		return err == nil && mappings == 0, nil
 	}); err != nil {
-		t.Fatalf("runtime did not durably settle and XACK+XDEL the command: %v\n%s", err, process.logs())
+		t.Fatalf("runtime did not durably settle and atomically XACK+XDEL+HDEL the command: %v\n%s", err, process.logs())
 	}
 	entries, err := client.XRangeN(ctx, commandStream, "-", "+", 1).Result()
 	if err != nil || len(entries) != 0 {
