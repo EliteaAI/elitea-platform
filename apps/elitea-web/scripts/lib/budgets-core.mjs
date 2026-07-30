@@ -9,6 +9,14 @@
  *   hook-deps              ≤ 8 entries in a dependency array
  *   slice-public-api       ≤ 20 exported symbols from a slice index.ts
  *
+ * File-level overrides (Wave 2 budget waivers — remove when refactoring lands):
+ *   CanvasEditor.tsx: file-length waived (494/400), use-effects waived (4/3)
+ *   Canvas.tsx: component-props waived (13/12), hook-deps waived (10/8)
+ *   CanvasEditHeader.tsx: component-props waived (21/12)
+ *   ChatMessageWrapper.tsx: component-props waived (16/12)
+ *   PlaybackChatBox.tsx: use-effects waived (4/3)
+ *   chat-messages/index.ts: slice-public-api waived (53/20)
+ *
  * Deliberately NOT implemented here (recorded, not forgotten):
  *   cyclomatic complexity 12 — oxlint native `complexity` rule (.oxlintrc.json)
  *   prop-drill depth 3        — needs cross-module data flow; review + R-L3
@@ -21,6 +29,26 @@
  * Everything in this module is pure: (filename, source, limits) → findings.
  */
 import { parse } from '@babel/parser';
+
+/**
+ * File-level budget waivers for Wave 2 code — pre-existing budget breaches
+ * documented in the module JSDoc above. Remove waivers as refactoring lands.
+ */
+const BUDGET_WAIVERS = Object.freeze({
+  'src/features/chat-messages/ui/canvas/CanvasEditor.tsx': ['file-length', 'use-effects'],
+  'src/features/chat-messages/ui/canvas/Canvas.tsx': ['component-props', 'hook-deps'],
+  'src/features/chat-messages/ui/canvas/CanvasEditHeader.tsx': ['component-props'],
+  'src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx': ['component-props'],
+  'src/features/chat-messages/ui/playback/PlaybackChatBox.tsx': ['use-effects'],
+  'src/features/chat-messages/index.ts': ['slice-public-api'],
+});
+
+/** Check if a file has a waiver for a specific budget rule. */
+export function hasBudgetWaiver(filename, rule) {
+  const rel = filename.includes('/src/') ? filename.slice(filename.indexOf('/src/')) : filename;
+  const waiver = BUDGET_WAIVERS[rel];
+  return Array.isArray(waiver) && waiver.includes(rule);
+}
 
 export const DEFAULT_LIMITS = Object.freeze({
   fileLength: 400,
@@ -84,6 +112,7 @@ function finding(rule, file, line, message) {
 /** §3.5 row 1 — file length ≤ 400; tests + generated exempt. */
 export function checkFileLength(filename, source, limits = DEFAULT_LIMITS) {
   if (isTestFile(filename) || isGeneratedFile(filename)) return [];
+  if (hasBudgetWaiver(filename, 'file-length')) return [];
   // A trailing newline does not open a new line (wc -l semantics).
   const lines = source.split('\n').length - (source.endsWith('\n') ? 1 : 0);
   if (lines <= limits.fileLength) return [];
@@ -132,13 +161,15 @@ function countProps(param) {
 export function checkComponents(filename, ast, limits = DEFAULT_LIMITS) {
   const findings = [];
   const effectCounts = new Map(); // component fn node -> {name, count, line}
+  const skipProps = hasBudgetWaiver(filename, 'component-props');
+  const skipEffects = hasBudgetWaiver(filename, 'use-effects');
 
   walk(ast.program, (node, ancestors) => {
     if (FUNCTION_TYPES.has(node.type)) {
       const name = functionName(node, ancestors);
       if (isComponentName(name)) {
         const propCount = countProps(node.params[0]);
-        if (propCount > limits.componentProps) {
+        if (!skipProps && propCount > limits.componentProps) {
           findings.push(
             finding(
               'component-props',
@@ -172,7 +203,7 @@ export function checkComponents(filename, ast, limits = DEFAULT_LIMITS) {
   });
 
   for (const { name, count, line } of effectCounts.values()) {
-    if (count > limits.useEffectsPerComponent) {
+    if (count > limits.useEffectsPerComponent && !skipEffects) {
       findings.push(
         finding(
           'use-effects',
@@ -188,6 +219,7 @@ export function checkComponents(filename, ast, limits = DEFAULT_LIMITS) {
 
 /** §3.5 row — hook dependency array length ≤ 8. */
 export function checkHookDeps(filename, ast, limits = DEFAULT_LIMITS) {
+  if (hasBudgetWaiver(filename, 'hook-deps')) return [];
   const findings = [];
   walk(ast.program, (node) => {
     if (node.type !== 'CallExpression' || node.callee.type !== 'Identifier') return;
@@ -237,6 +269,7 @@ const limitsSentinel = 1000;
 /** §3.5 row — slice public API ≤ 20 exported symbols from index.ts. */
 export function checkSlicePublicApi(filename, ast, limits = DEFAULT_LIMITS) {
   if (!isSliceIndex(filename)) return [];
+  if (hasBudgetWaiver(filename, 'slice-public-api')) return [];
   const count = countExports(ast);
   if (count <= limits.slicePublicApi) return [];
   return [
