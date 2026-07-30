@@ -9,7 +9,9 @@ import { useMemo } from 'react';
 
 import { Box, IconButton, Typography } from '@mui/material';
 
-const IconButtonAny = IconButton as unknown as any;
+const IconButtonAny = IconButton as React.ComponentType<
+  React.ComponentProps<typeof IconButton> & { variant?: string }
+>;
 
 import Tooltip from '@mui/material/Tooltip';
 

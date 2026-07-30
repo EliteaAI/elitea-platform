@@ -246,12 +246,12 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
       currentIndex >= messagesCountNum + lastUserIndex || currentIndex >= chatHistoryRef.current.length - 1;
 
     // Extract message attachments for the toolbar
-    const attachments: import('./PlaybackToolBar').PlaybackToolBarAttachment[] = message?.message_items
-      ? ((message.message_items as unknown as Array<{ item_details?: { name?: string; id?: string | number } }>).map((item) => ({
-          name: item.item_details?.name ?? '',
-          id: item.item_details?.id ?? '',
-        })).filter((a) => a.name.length > 0 && a.id != null) as import('./PlaybackToolBar').PlaybackToolBarAttachment[])
-      : [];
+    const rawItems = (message?.message_items ?? []) as Array<{ item_details?: { name?: string; id?: string | number } }>;
+    const items = rawItems.map((item) => ({
+      name: item.item_details?.name ?? '',
+      id: item.item_details?.id ?? '',
+    }));
+    const attachments: import('./PlaybackToolBar').PlaybackToolBarAttachment[] = items.filter((a) => a.name.length > 0 && a.id != null) as import('./PlaybackToolBar').PlaybackToolBarAttachment[];
 
     return (
       <Box

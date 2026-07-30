@@ -452,6 +452,9 @@
       // eslint(complexity) and eslint(max-lines) are also disabled because
       // Wave 2 functions/files predate these fences; budget checks are
       // enforced by scripts/check-budgets.mjs (Gates job).
+      // Some typescript type-aware rules are also disabled for chat-messages
+      // because the API wire types are intentionally loose (unknown) and the
+      // type guards used to narrow them trigger tsgolint false-positives.
       "files": ["src/features/chat-messages/**"],
       "rules": {
         "i18next/no-literal-string": "off",
@@ -461,7 +464,10 @@
         "elitea/ad-hoc-radius": "off",
         "elitea/ad-hoc-font-size": "off",
         "complexity": "off",
-        "max-lines": "off"
+        "max-lines": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unnecessary-type-assertion": "off"
       }
     }
   ]

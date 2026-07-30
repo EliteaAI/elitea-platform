@@ -10,10 +10,12 @@ import { memo, useEffect, useRef, useState } from 'react';
 
 import { Box, Dialog, DialogContent, IconButton, Typography } from '@mui/material';
 
-const IconButtonAny = IconButton as unknown as any;
-
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName, getImageSource } from '@/entities/attachment/model/selectors';
+
+const IconButtonAny = IconButton as React.ComponentType<
+  React.ComponentProps<typeof IconButton> & { variant?: string }
+>;
 
 export interface ViewImageAttachmentModalProps {
   /** Whether the modal is currently open. */

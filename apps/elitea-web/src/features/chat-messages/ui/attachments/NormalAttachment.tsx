@@ -17,9 +17,11 @@ import Tooltip from '@mui/material/Tooltip';
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName } from '@/entities/attachment/model/selectors';
 
-const IconButtonAny = IconButton as unknown as any;
-
 import type { NormalAttachmentArtifactData } from './types';
+
+const IconButtonAny = IconButton as React.ComponentType<
+  React.ComponentProps<typeof IconButton> & { variant?: string }
+>;
 
 export interface NormalAttachmentProps {
   /** The attachment to render. */
