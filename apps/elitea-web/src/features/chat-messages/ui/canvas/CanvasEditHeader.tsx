@@ -13,52 +13,53 @@ const IconButtonAny = IconButton as React.ComponentType<any>;
 
 import Tooltip from '@mui/material/Tooltip';
 
-export interface CanvasEditHeaderProps {
-  /** Display title for the editor (e.g. "Edit code", "Edit table", "Edit diagram"). */
-  readonly title?: string;
-  /** Called when the user clicks close — fires even if there are no unsaved changes. */
+/** Action callbacks grouped to stay within §3.5 prop budget. */
+export interface CanvasEditHeaderActions {
   readonly onClose?: (() => void) | undefined;
-  /** Called when the user clicks undo. */
   readonly onUndo?: (() => void) | undefined;
-  /** When true, the undo button is disabled. */
   readonly disableUndo?: boolean | undefined;
-  /** Called when the user clicks redo. */
   readonly onRedo?: (() => void) | undefined;
-  /** When true, the redo button is disabled. */
   readonly disableRedo?: boolean | undefined;
-  /** Called when the user clicks copy. */
   readonly onCopy?: (() => void) | undefined;
-  /** Called when the user clicks regenerate (whole-message mode only). */
   readonly onRegenerate?: (() => void) | undefined;
-  /** Called when the user clicks delete (whole-message mode only). */
   readonly onDelete?: (() => void) | undefined;
-  /** When true, show the language selector dropdown. */
-  readonly showLangSelect?: boolean | undefined;
-  /** Called when the language changes. */
-  readonly onChangeLanguage?: ((language: string) => void) | undefined;
-  /** The currently selected language. */
-  readonly language?: string | undefined;
-  /** When true, show regenerate and delete buttons (whole-message canvas, not block-level). */
-  readonly isThisWholeMessage?: boolean | undefined;
-  /** When true, show table-editing buttons (add column, add row, delete selection). */
+}
+
+/** Table-editing actions grouped to stay within §3.5 prop budget. */
+export interface CanvasEditHeaderTable {
   readonly isTableEditing?: boolean | undefined;
-  /** Selection state for table rows/columns. */
   readonly hasSelectedRowsColumns?: {
     readonly hasSelectedRows: boolean;
     readonly hasSelectedColumns: boolean;
   } | undefined;
-  /** Called when the user clicks "add column". */
   readonly onClickAddColumn?: (() => void) | undefined;
-  /** Called when the user clicks "add row". */
   readonly onClickAddRow?: (() => void) | undefined;
-  /** Called when the user clicks "delete selected rows/columns". */
   readonly onDeleteSelectedRowsOrColumns?: (() => void) | undefined;
-  /** Called when table data is imported. */
   readonly onImportTableData?: ((data: Record<string, unknown>) => void) | undefined;
+}
+
+/** Language select config grouped to stay within §3.5 prop budget. */
+export interface CanvasEditHeaderLangSelect {
+  readonly showLangSelect?: boolean | undefined;
+  readonly onChangeLanguage?: ((language: string) => void) | undefined;
+  readonly language?: string | undefined;
+  readonly disableLanguageSelect?: boolean | undefined;
+}
+
+/** @public Props for `CanvasEditHeader`. */
+export interface CanvasEditHeaderProps {
+  /** Display title for the editor. */
+  readonly title?: string;
+  /** Action callbacks (undo, redo, copy, delete, etc.). */
+  readonly actions?: CanvasEditHeaderActions;
+  /** Table-editing actions. */
+  readonly table?: CanvasEditHeaderTable;
+  /** Whether this is a whole-message canvas. */
+  readonly isThisWholeMessage?: boolean | undefined;
+  /** Language selector configuration. */
+  readonly langSelect?: CanvasEditHeaderLangSelect;
   /** When true, all action buttons are disabled. */
   readonly disabledAll?: boolean | undefined;
-  /** When true, the language selector is disabled. */
-  readonly disableLanguageSelect?: boolean | undefined;
 }
 
 /**
@@ -72,27 +73,39 @@ export interface CanvasEditHeaderProps {
  */
 export function CanvasEditHeader({
   title = 'Edit response',
-  onClose,
-  onUndo,
-  disableUndo = false,
-  onRedo,
-  disableRedo = false,
-  onCopy,
-  onRegenerate,
-  onDelete,
-  showLangSelect,
-  onChangeLanguage,
-  language = 'text',
+  actions,
+  table,
   isThisWholeMessage,
-  isTableEditing,
-  hasSelectedRowsColumns,
-  onClickAddColumn,
-  onClickAddRow,
-  onDeleteSelectedRowsOrColumns,
-  onImportTableData,
+  langSelect,
   disabledAll,
-  disableLanguageSelect,
 }: CanvasEditHeaderProps): React.ReactElement {
+  const {
+    onClose,
+    onUndo,
+    disableUndo = false,
+    onRedo,
+    disableRedo = false,
+    onCopy,
+    onRegenerate,
+    onDelete,
+  } = actions ?? {};
+
+  const {
+    isTableEditing,
+    hasSelectedRowsColumns,
+    onClickAddColumn,
+    onClickAddRow,
+    onDeleteSelectedRowsOrColumns,
+    onImportTableData,
+  } = table ?? {};
+
+  const {
+    showLangSelect,
+    onChangeLanguage,
+    language = 'text',
+    disableLanguageSelect,
+  } = langSelect ?? {};
+
   const disableDeleteTableRowsCols = useMemo(
     () =>
       disabledAll ||

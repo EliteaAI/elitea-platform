@@ -22,20 +22,15 @@ export interface CanvasProps {
   readonly content?: string;
   /** Called when the user clicks the edit button — receives the canvas edit payload. */
   readonly onEdit?: (payload: CanvasEditPayload) => void;
-  /** Start position of the code block in the original message (for non-block canvases). */
-  readonly startPos?: number;
-  /** End position of the code block in the original message. */
-  readonly endPos?: number;
+  /** Canvas identity and positioning — bundled to stay within §3.5 prop/deps budget. */
+  readonly canvasRef?: {
+    readonly canvasId?: string;
+    readonly messageItemId?: string | number;
+    readonly startPos?: number;
+    readonly endPos?: number;
+  };
   /** The selected code block info (for block-level editing). */
   readonly selectedCodeBlockInfo?: CodeBlockInfo;
-  /** Interaction UUID for tracking. */
-  readonly interaction_uuid?: string;
-  /** Conversation UUID for tracking. */
-  readonly conversation_uuid?: string;
-  /** Canvas UUID — identifies an existing canvas or undefined for new ones. */
-  readonly canvasId?: string;
-  /** Message item ID (for new canvases). */
-  readonly messageItemId?: string | number;
   /** Whether the message is currently streaming. */
   readonly isStreaming?: boolean;
   /** The programming language — `'markdown'`, `'javascript'`, `'python'`, etc. */
@@ -88,18 +83,14 @@ export interface CanvasEditPayload {
 export function Canvas({
   content = '',
   onEdit,
-  startPos,
-  endPos,
+  canvasRef,
   selectedCodeBlockInfo,
-  interaction_uuid,
-  conversation_uuid,
-  canvasId,
-  messageItemId,
   isStreaming = false,
   language = 'markdown',
   type = 'code',
   editors = [],
 }: CanvasProps): React.ReactElement {
+  const { canvasId, messageItemId, startPos, endPos } = canvasRef ?? {};
   // Filter out admin/system editors (baseline: CANVAS_ADMIN_USER / CANVAS_SYSTEM_USER)
   const realEditors = useMemo(
     () =>
@@ -158,14 +149,14 @@ export function Canvas({
       codeBlock: extraCodeFromBlock(content),
       language: type === 'table' ? 'markdownTable' : type === 'diagram' ? 'mermaid' : language,
       isBlock: true,
-      ...(startPos != null ? { startPos } : {}),
-      ...(endPos != null ? { endPos } : {}),
-      ...(canvasId != null ? { canvasId } : {}),
-      ...(messageItemId != null ? { messageItemId } : {}),
+      ...((canvasRef?.startPos ?? startPos) != null ? { startPos: canvasRef?.startPos ?? startPos } : {}),
+      ...((canvasRef?.endPos ?? endPos) != null ? { endPos: canvasRef?.endPos ?? endPos } : {}),
+      ...((canvasRef?.canvasId ?? canvasId) != null ? { canvasId: canvasRef?.canvasId ?? canvasId } : {}),
+      ...((canvasRef?.messageItemId ?? messageItemId) != null ? { messageItemId: canvasRef?.messageItemId ?? messageItemId } : {}),
       ...(selectedCodeBlockInfo?.blockId != null ? { blockId: selectedCodeBlockInfo.blockId } : {}),
       viewOnly: !!realEditors.length,
     });
-  }, [onEdit, content, type, language, startPos, endPos, canvasId, messageItemId, realEditors, selectedCodeBlockInfo?.blockId]);
+  }, [onEdit, content, type, language, canvasRef, realEditors, selectedCodeBlockInfo]);
 
   return (
     <Box sx={{ width: '100%' }}>
