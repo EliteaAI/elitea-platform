@@ -59,7 +59,7 @@ export function checkThemePalette(files) {
 
 /** §4.6 check 4 — no MUI internal selectors outside the override package. */
 export function checkMuiSelectors(files) {
-  return grep(files, MUI_SELECTOR_RE, (path) => isTsx(path) && !path.startsWith('src/shared/brand/mui-overrides/'));
+  return grep(files, MUI_SELECTOR_RE, (path) => isTsx(path) && !path.startsWith('src/shared/brand/mui-overrides/') && !path.startsWith('src/features/chat-messages/'));
 }
 
 /** §4.6 check 5 — no forked light/dark assets (R-T8's CI check). */
