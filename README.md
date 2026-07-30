@@ -1,26 +1,29 @@
-# elitea-platform
+# Elitea AI
 
-Monorepo for the EliteA AI platform — Go API, React SPA, and Pylon agent runtime.
+Elitea AI platform Enterprise grade business harnessing LLMs for secure and scalable AI applications.
 
 ## Architecture
 
 ```
 elitea-platform/
 ├── services/
-│   ├── elitea-main/       # Go API server (chi/v5, pgx/v5, go-redis/v9)
-│   ├── elitea-scheduler/  # Scheduled job runner (Go, cron + Redis RPC)
-│   └── pylon-indexer/     # Agent runtime (pylon-based, plugin-driven)
+│   ├── elitea-llm-gateway/  # LLM gateway service
+│   ├── elitea-main/         # Go API server (chi/v5, pgx/v5, go-redis/v9)
+│   ├── elitea-scheduler/    # Scheduled job runner (Go, cron + Redis RPC)
+│   ├── elitea-worker-python/# Python worker runtime and SDK
+│   └── pylon-indexer/       # Transitional Pylon runtime (plugin-driven)
 ├── apps/
-│   ├── elitea-ui/         # React SPA (git submodule)
-│   └── admin-ui/          # Admin console SPA (git submodule)
-├── proto/                 # Protobuf contracts (buf v2) → gen/go, gen/python
-├── gen/                   # Generated protobuf stubs (Go + Python)
-├── libs/go/               # Shared Go libraries
+│   ├── elitea-ui/           # React SPA (git submodule)
+│   ├── admin-ui/            # Admin console SPA (git submodule)
+│   └── elitea-web/          # Shared web client packages
+├── proto/                   # Protobuf contracts (buf v2) → gen/go, gen/python
+├── gen/                     # Generated protobuf stubs (Go + Python)
+├── libs/go/                 # Shared Go libraries
 ├── deploy/
-│   ├── docker/            # Containerfiles for UI
-│   ├── docker-compose.yml # Local dev environment
-│   └── helm/              # Kubernetes Helm charts
-└── .github/workflows/     # CI/CD pipelines
+│   ├── docker/              # Containerfiles for UI and helper images
+│   ├── docker-compose.yml   # Local dev environment
+│   └── helm/                # Kubernetes Helm charts
+└── .github/workflows/       # CI/CD pipelines
 ```
 
 ## Prerequisites
@@ -38,21 +41,23 @@ elitea-platform/
 git clone --recurse-submodules https://github.com/EliteaAI/elitea-platform.git
 cd elitea-platform
 
-# Start everything (postgres, redis, elitea-main, elitea-ui, pylon-indexer)
+# Start everything (postgres, redis, traefik, elitea-main, elitea-ui, pylon-indexer)
 task up
 
 # Or manually:
 podman compose -f deploy/docker-compose.yml up --build
 ```
 
+The local compose stack is fronted by Traefik on host port `8080`.
+
 Services will be available at:
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| elitea-main | http://localhost:8080 | Go API |
-| elitea-ui | http://localhost:3000 | React SPA |
-| pylon-indexer | http://localhost:8081 | Agent runtime |
-| postgres | localhost:5432 | PostgreSQL 16 |
+| Gateway | http://localhost:8080 | Traefik routing to API + UI |
+| API | http://localhost:8080/api/ | elitea-main API endpoints |
+| UI | http://localhost:8080/app/ | elitea-ui React SPA |
+| postgres | localhost:5432 | PostgreSQL 18 |
 | redis | localhost:6379 | Redis 7 |
 
 ## Common Tasks
@@ -206,4 +211,4 @@ helm upgrade --install elitea-main deploy/helm/elitea-main/ \
 
 ## License
 
-Proprietary — EliteaAI
+Apache License 2.0
