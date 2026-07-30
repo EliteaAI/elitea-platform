@@ -97,8 +97,8 @@ jobs:
 
       - name: Check out the exact worker-locked SDK source
         env:
-          SDK_REVISION: 48c51a16634a9924f6c5d5313c3bacedb0b5b56b
-          SDK_ARCHIVE_SHA256: 85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
+          SDK_REVISION: ccaa85f1894f34ce25074afcc232e11b406d2af1
+          SDK_ARCHIVE_SHA256: e2dbafca05bfbb9d9b36e5e79e1e29d530dc68436c415dcb5736193a3e538811
         run: |
           git clone --filter=blob:none --no-checkout \
             https://github.com/EliteaAI/elitea-sdk.git \
@@ -115,11 +115,23 @@ jobs:
             "./services/elitea-worker-python[indexing-current,test]"
           python -m pip check
 
+      - name: Verify source-backed SDK projections
+        run: |
+          python scripts/contract/sync_index_types_snapshot.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
+          python scripts/contract/sync_toolkit_schema_snapshot.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
+
       - name: Unit and byte-conformance tests
         env:
           ELITEA_CONFORMANCE_ROOT: ${{ github.workspace }}/testdata/proto/runtime/v1
         run: |
-          python -m pytest services/elitea-worker-python/tests
+          python -m pytest \
+            services/elitea-worker-python/tests \
+            scripts/contract/test_sync_index_types_snapshot.py \
+            scripts/contract/test_sync_toolkit_schema_snapshot.py
           elitea-worker conformance --suite runtime-v1
 
       - name: Compile Python sources

@@ -11,25 +11,25 @@ CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
 
-# The current Pylon Indexer baseline is distribution 0.8.30. The standalone
-# worker admits the exact source revision installed by the current runtime,
-# rather than a floating branch or a later same-version source artifact.
-SDK_SOURCE_REVISION = "48c51a16634a9924f6c5d5313c3bacedb0b5b56b"
-SDK_DISTRIBUTION_VERSION = "0.8.30"
+# The admitted current-runtime SDK is distribution 0.8.53. The standalone
+# worker admits one exact reviewed source artifact rather than a floating
+# branch or an unverified same-version rebuild.
+SDK_SOURCE_REVISION = "ccaa85f1894f34ce25074afcc232e11b406d2af1"
+SDK_DISTRIBUTION_VERSION = "0.8.53"
 SDK_SOURCE_ARCHIVE_SHA256 = (
-    "85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61"
+    "e2dbafca05bfbb9d9b36e5e79e1e29d530dc68436c415dcb5736193a3e538811"
 )
 SDK_PACKAGE_TREE_SHA256 = (
-    "c3e756b2c57cb86f8776a5c3e087ad8aeaa6459096d16d6dd7969a16d553eb87"
+    "6999d5c38ee77aa900b5ca767e96a300936d66216409ce69e22ce89fa41d18d9"
 )
-# SDK 0.8.30 preserves the exact admitted configuration catalog and index-type
-# source from 0.8.26. Keep those independently versioned immutable projections
-# stable instead of forcing unrelated Main snapshot churn.
+# SDK 0.8.53 preserves the byte-identical admitted configuration catalog from
+# 0.8.26, so that independently versioned projection stays stable.
 CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 CONFIGURATION_CATALOG_SHA256 = (
     "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
 )
-INDEX_TYPES_SOURCE_REVISION = CONFIGURATION_CATALOG_REVISION
+# Index types gained the source-backed .mdx entry in this admitted SDK.
+INDEX_TYPES_SOURCE_REVISION = SDK_SOURCE_REVISION
 
 JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})
 MAX_ENVELOPE_BYTES = 64 * 1024

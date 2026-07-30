@@ -38,7 +38,7 @@ func TestPinnedCurrentToolkitSchemaSnapshotMatchesAdmittedSDKProjection(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SDKRevision() != "2cb85480260a92207f3b3d6d3a84149e10de7949" || snapshot.EntryCount() != 51 {
+	if snapshot.SDKRevision() != "ccaa85f1894f34ce25074afcc232e11b406d2af1" || snapshot.EntryCount() != 52 {
 		t.Fatalf("snapshot revision=%q entries=%d", snapshot.SDKRevision(), snapshot.EntryCount())
 	}
 
@@ -70,6 +70,19 @@ func TestPinnedCurrentToolkitSchemaSnapshotMatchesAdmittedSDKProjection(t *testi
 	againTypes := again.Properties["github_configuration"].(map[string]any)["configuration_types"].([]any)
 	if againTypes[0] != "github" {
 		t.Fatalf("snapshot was mutated: %#v", againTypes)
+	}
+
+	aha, found, err := catalog.FindEffectiveToolkitSchema(context.Background(), 7, 11, "aha")
+	if err != nil || !found {
+		t.Fatalf("aha schema found=%t err=%v", found, err)
+	}
+	ahaCredential, ok := aha.Properties["aha_configuration"].(map[string]any)
+	if !ok {
+		t.Fatalf("aha credential annotation=%#v", aha.Properties["aha_configuration"])
+	}
+	ahaTypes, ok := ahaCredential["configuration_types"].([]any)
+	if !ok || len(ahaTypes) != 1 || ahaTypes[0] != "aha" {
+		t.Fatalf("aha configuration types=%#v", ahaCredential["configuration_types"])
 	}
 }
 
