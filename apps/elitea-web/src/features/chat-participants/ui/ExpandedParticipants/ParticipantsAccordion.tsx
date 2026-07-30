@@ -1,0 +1,62 @@
+// @ts-nocheck
+/**
+ * ParticipantsAccordion — accordion-style grouped display of participants.
+ *
+ * Ported from `[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantsAccordion.jsx`.
+ */
+import { memo } from 'react';
+
+import { Accordion, AccordionDetails, AccordionSummary, Typography } from '@mui/material';
+
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+
+import type { ExpandedParticipantsListProps } from './ExpandedParticipantsList';
+
+// ---------------------------------------------------------------------------
+// Props
+// ---------------------------------------------------------------------------
+
+export interface ParticipantsAccordionProps {
+  sections: Array<{ title: string; participants: Record<string, unknown>[] }>;
+}
+
+export type ParticipantsAccordionWithItemProps = ParticipantsAccordionProps & ExpandedParticipantsListProps;
+
+/**
+ * ParticipantsAccordion component — renders participants grouped by type in MUI accordions.
+ */
+const ParticipantsAccordion = memo((props: ParticipantsAccordionProps): React.ReactElement => {
+  const { sections } = props;
+
+  if (!sections?.length) return <Typography variant="body2" sx={{ p: 1, color: 'text.disabled' }}>No participants</Typography>;
+
+  return (
+    <>
+      {sections.map((section, index) => (
+        <Accordion key={`${section.title}-${index}`} defaultExpanded={index === 0}>
+          <AccordionSummary
+            expandIcon={<ExpandMoreIcon />}
+            aria-label={`${section.title} participants`}
+          >
+            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+              {section.title} ({section.participants.length})
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              {section.participants.map((participant, pIndex) => (
+                <Typography key={`${participant.id || pIndex}`} variant="body2" sx={{ px: 1 }}>
+                  {participant.entity_meta?.name || 'Unknown'}
+                </Typography>
+              ))}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
+      ))}
+    </>
+  );
+});
+
+ParticipantsAccordion.displayName = 'ParticipantsAccordion';
+
+export default ParticipantsAccordion;
