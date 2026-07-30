@@ -77,6 +77,7 @@ type Querier interface {
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
+	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
@@ -117,6 +118,10 @@ type Querier interface {
 	// only inside a tenant transaction whose local search_path was derived from an
 	// already authorized positive project identity.
 	LockCurrentConfigurationForMutation(ctx context.Context, arg LockCurrentConfigurationForMutationParams) (LockCurrentConfigurationForMutationRow, error)
+	// The unqualified toolkit table is intentional. These queries execute only
+	// inside an authorized project transaction whose local search_path is the
+	// exact p_<project_id> tenant schema.
+	LockCurrentIndexScheduleToolkitMeta(ctx context.Context, toolkitID int32) ([]byte, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
@@ -143,6 +148,7 @@ type Querier interface {
 	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
 	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap
 	// configuration is never copied into this tenant row: only the current vault

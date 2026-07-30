@@ -935,6 +935,11 @@ func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t
 			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
 		},
 		{
+			name:   "schedule delete",
+			method: indexingapi.SourceOnlyIndexScheduleDeleteMethod,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+		{
 			name:   "search",
 			method: indexingapi.SourceOnlyIndexSearchMethod,
 			path:   "/api/v2/elitea_core/search_options/prompt_lib/7?entities%5B%5D=toolkit",
@@ -961,6 +966,95 @@ func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t
 	}
 	if calls != 0 {
 		t.Fatalf("source-only index routes reached mounted handlers %d times", calls)
+	}
+}
+
+func TestProductionRouterMountsCurrentIndexScheduleCRUDOnlyWhenComposed(
+	t *testing.T,
+) {
+	calls := make(map[string]int)
+	handler := func(name string) http.Handler {
+		return http.HandlerFunc(
+			func(writer http.ResponseWriter, request *http.Request) {
+				calls[name]++
+				if chi.URLParam(request, "projectID") != "7" ||
+					chi.URLParam(request, "toolkitID") != "9" ||
+					chi.URLParam(request, "indexMetaID") != "meta-1" {
+					t.Fatalf(
+						"%s params project=%q toolkit=%q index=%q",
+						name,
+						chi.URLParam(request, "projectID"),
+						chi.URLParam(request, "toolkitID"),
+						chi.URLParam(request, "indexMetaID"),
+					)
+				}
+				writer.WriteHeader(http.StatusNoContent)
+			},
+		)
+	}
+	router := NewRouter(RouterConfig{
+		CurrentIndexScheduleUpdate: handler("update"),
+		CurrentIndexScheduleDelete: handler("delete"),
+	})
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "update",
+			method: http.MethodPatch,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			name:   "delete",
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(
+			response,
+			httptest.NewRequest(test.method, test.path, nil),
+		)
+		if response.Code != http.StatusNoContent || calls[test.name] != 1 {
+			t.Fatalf(
+				"%s status=%d calls=%d body=%s",
+				test.name,
+				response.Code,
+				calls[test.name],
+				response.Body.String(),
+			)
+		}
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{
+			method: http.MethodPatch,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+	} {
+		response := httptest.NewRecorder()
+		uncomposed.ServeHTTP(
+			response,
+			httptest.NewRequest(test.method, test.path, nil),
+		)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf(
+				"uncomposed %s %s status=%d",
+				test.method,
+				test.path,
+				response.Code,
+			)
+		}
 	}
 }
 

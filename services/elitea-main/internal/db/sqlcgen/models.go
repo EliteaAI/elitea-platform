@@ -120,6 +120,18 @@ type AuthCoreUserRole struct {
 	RoleID int32 `db:"role_id" json:"role_id"`
 }
 
+type CentryNotification struct {
+	ID        int32            `db:"id" json:"id"`
+	Uuid      pgtype.UUID      `db:"uuid" json:"uuid"`
+	IsSeen    bool             `db:"is_seen" json:"is_seen"`
+	ProjectID int32            `db:"project_id" json:"project_id"`
+	UserID    int32            `db:"user_id" json:"user_id"`
+	Meta      []byte           `db:"meta" json:"meta"`
+	EventType string           `db:"event_type" json:"event_type"`
+	CreatedAt pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type CentryProject struct {
 	ID             int32    `db:"id" json:"id"`
 	Name           string   `db:"name" json:"name"`

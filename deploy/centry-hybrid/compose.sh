@@ -81,7 +81,11 @@ validate_model() {
     --arg engine "$script_dir/runtime-engine-litellm.yml" \
     '
       .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM
-        == "commands.v1.index.ingest.indexing.shared.2.0"
+      == "commands.v1.index.ingest.indexing.shared.2.0"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED
+      == "true"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID
+        == "elitea-main-pov-1"
       and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
         == "elitea-indexer-worker-v2"
       and any(.services.auth_gateway.volumes[];

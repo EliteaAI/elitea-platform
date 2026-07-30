@@ -1,8 +1,8 @@
 // Package indexschedule owns the current index schedule PATCH contract.
 //
-// It deliberately does not own schedule discovery or execution. During this
-// stage Pylon remains the only scheduler, while Main can persist the exact
-// nested schedule shape consumed by that scheduler.
+// It deliberately does not own schedule discovery or execution. Main persists
+// the exact nested schedule shape consumed by the current contract; the
+// platform scheduling adapter reads that same shape.
 package indexschedule
 
 import (

@@ -402,6 +402,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
 	var currentIndexMetaDelete http.Handler
+	var currentIndexScheduleUpdate http.Handler
+	var currentIndexScheduleDelete http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -432,6 +434,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,
+			ProjectSystemTokenSource:         formGraph,
 			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
 			Logger:                           logger,
 		})
@@ -533,6 +536,42 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				)
 			}
 		}
+		if publicRoutes.IndexScheduleUpdate != nil {
+			currentIndexScheduleUpdate, err =
+				indexingapi.NewCurrentIndexScheduleRoute(
+					publicRoutes.IndexScheduleUpdate,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index schedule update route: %w",
+					err,
+				)
+			}
+		}
+		if publicRoutes.IndexScheduleDelete != nil {
+			currentIndexScheduleDelete, err =
+				indexingapi.NewCurrentIndexScheduleDeleteRoute(
+					publicRoutes.IndexScheduleDelete,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index schedule delete route: %w",
+					err,
+				)
+			}
+		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
@@ -557,6 +596,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
 		CurrentIndexMetaDelete:        currentIndexMetaDelete,
+		CurrentIndexScheduleUpdate:    currentIndexScheduleUpdate,
+		CurrentIndexScheduleDelete:    currentIndexScheduleDelete,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,

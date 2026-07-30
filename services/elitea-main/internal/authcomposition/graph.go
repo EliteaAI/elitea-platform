@@ -40,16 +40,17 @@ type FormGraphDependencies struct {
 // authorization edge. It owns only its dedicated Auth Redis client; the
 // injected PostgreSQL pool remains caller-owned.
 type FormGraph struct {
-	routes          http.Handler
-	browserRoutes   http.Handler
-	mainForwardAuth http.Handler
-	mainKernel      *forwardapp.Kernel
-	patIssuer       *authsvc.LocalIssuer
-	patValidator    *authsvc.LocalValidator
-	proxyResolver   *browserapi.TrustedProxyResolver
-	redis           *redis.Client
-	closeOnce       sync.Once
-	closeErr        error
+	routes           http.Handler
+	browserRoutes    http.Handler
+	mainForwardAuth  http.Handler
+	mainKernel       *forwardapp.Kernel
+	patIssuer        *authsvc.LocalIssuer
+	projectPATIssuer *authsvc.ProjectSystemIssuer
+	patValidator     *authsvc.LocalValidator
+	proxyResolver    *browserapi.TrustedProxyResolver
+	redis            *redis.Client
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 type redisOpener func(context.Context, Config, *materializedFiles) (*redis.Client, error)
@@ -145,6 +146,10 @@ func newFormGraph(
 
 	patValidator := authsvc.NewLocalValidatorBytes(dependencies.PostgreSQL, material.patSigningKey)
 	patIssuer := authsvc.NewLocalIssuerBytes(dependencies.PostgreSQL, material.patSigningKey)
+	projectPATIssuer := authsvc.NewProjectSystemIssuerBytes(
+		dependencies.PostgreSQL,
+		material.patSigningKey,
+	)
 	credentials, err := forwardapp.NewTokenCredentialAuthenticator(patValidator)
 	if err != nil {
 		return nil, composeError("credential authenticator", err)
@@ -230,14 +235,15 @@ func newFormGraph(
 	}
 
 	graph := &FormGraph{
-		routes:          routes,
-		browserRoutes:   formHandler.Routes(),
-		mainForwardAuth: mainHandler,
-		mainKernel:      mainKernel,
-		patIssuer:       patIssuer,
-		patValidator:    patValidator,
-		proxyResolver:   proxyResolver,
-		redis:           redisClient,
+		routes:           routes,
+		browserRoutes:    formHandler.Routes(),
+		mainForwardAuth:  mainHandler,
+		mainKernel:       mainKernel,
+		patIssuer:        patIssuer,
+		projectPATIssuer: projectPATIssuer,
+		patValidator:     patValidator,
+		proxyResolver:    proxyResolver,
+		redis:            redisClient,
 	}
 	committed = true
 	return graph, nil
@@ -321,6 +327,18 @@ func (graph *FormGraph) IssueToken(ctx context.Context, userID int64) (string, e
 		return "", ErrInvalidGraph
 	}
 	return graph.patIssuer.IssueToken(ctx, userID)
+}
+
+// IssueProjectToken selects the already-provisioned project-system PAT used by
+// scheduled work. It never creates an identity or falls back to an admin.
+func (graph *FormGraph) IssueProjectToken(
+	ctx context.Context,
+	projectID int64,
+) (authsvc.ProjectSystemToken, error) {
+	if graph == nil || graph.projectPATIssuer == nil {
+		return authsvc.ProjectSystemToken{}, ErrInvalidGraph
+	}
+	return graph.projectPATIssuer.IssueProjectToken(ctx, projectID)
 }
 
 func (graph *FormGraph) Close() error {

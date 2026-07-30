@@ -167,15 +167,13 @@ func TestRunnerTickPagesAndPreservesDispositionSemantics(t *testing.T) {
 		scheduleAvailabilityStub{available: true},
 		executor,
 		failures,
-		func(TickResult, error) {},
 		func() time.Time { return now },
-		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := runner.Tick(context.Background())
+	result, err := runner.RunDue(context.Background(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,14 +204,12 @@ func TestRunnerTickSkipsUnavailableWithoutScanning(t *testing.T) {
 		scheduleAvailabilityStub{},
 		&scheduleExecutorStub{},
 		&scheduleFailureStub{},
-		func(TickResult, error) {},
 		time.Now,
-		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := runner.Tick(context.Background())
+	result, err := runner.RunDue(context.Background(), time.Now())
 	projectCalls := catalog.projectCallsSnapshot()
 	if err != nil || !result.SkippedUnavailable || len(projectCalls) != 0 {
 		t.Fatalf("Tick() result=%+v error=%v calls=%v", result, err, projectCalls)
@@ -236,27 +232,18 @@ func TestRunnerMarksLastRunAtSuccessfulAdmissionCompletion(t *testing.T) {
 		},
 		markChanged: true,
 	}
-	nowCalls := 0
 	runner, err := newRunner(
 		catalog,
 		scheduleAvailabilityStub{available: true},
 		&scheduleExecutorStub{},
 		&scheduleFailureStub{},
-		func(TickResult, error) {},
-		func() time.Time {
-			nowCalls++
-			if nowCalls == 1 {
-				return scanTime
-			}
-			return completedAt
-		},
-		time.Minute,
+		func() time.Time { return completedAt },
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := runner.Tick(context.Background()); err != nil {
+	if _, err := runner.RunDue(context.Background(), scanTime); err != nil {
 		t.Fatal(err)
 	}
 	if len(catalog.markedAt) != 1 ||
@@ -273,22 +260,20 @@ func TestRunnerTickDoesNotOverlap(t *testing.T) {
 		scheduleAvailabilityStub{available: true},
 		&scheduleExecutorStub{},
 		&scheduleFailureStub{},
-		func(TickResult, error) {},
 		time.Now,
-		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		_, tickErr := runner.Tick(context.Background())
+		_, tickErr := runner.RunDue(context.Background(), time.Now())
 		firstDone <- tickErr
 	}()
 	for !runner.ticking.Load() {
 		time.Sleep(time.Millisecond)
 	}
-	result, err := runner.Tick(context.Background())
+	result, err := runner.RunDue(context.Background(), time.Now())
 	if err != nil || !result.SkippedOverlap {
 		t.Fatalf("overlapping Tick() result=%+v error=%v", result, err)
 	}
@@ -320,55 +305,21 @@ func TestRunnerTickPropagatesCancellationFromCandidateExecution(t *testing.T) {
 		scheduleAvailabilityStub{available: true},
 		executor,
 		&scheduleFailureStub{},
-		func(TickResult, error) {},
 		func() time.Time { return time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC) },
-		time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := runner.Tick(context.Background())
+	result, err := runner.RunDue(
+		context.Background(),
+		time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC),
+	)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Tick() error=%v", err)
 	}
 	if result.Candidates != 1 || len(executor.keys) != 1 {
 		t.Fatalf("Tick() continued after cancellation: result=%+v keys=%d", result, len(executor.keys))
-	}
-}
-
-func TestRunnerRunWaitsBeforeFirstScanAndResetsAfterCompletion(t *testing.T) {
-	block := make(chan struct{})
-	close(block)
-	catalog := &scheduleCatalogStub{blockPage: block}
-	reports := make(chan TickResult, 2)
-	runner, err := newRunner(
-		catalog,
-		scheduleAvailabilityStub{available: true},
-		&scheduleExecutorStub{},
-		&scheduleFailureStub{},
-		func(result TickResult, _ error) { reports <- result },
-		time.Now,
-		15*time.Millisecond,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- runner.Run(ctx) }()
-	time.Sleep(5 * time.Millisecond)
-	if len(catalog.projectCallsSnapshot()) != 0 {
-		t.Fatal("runner scanned before the first interval")
-	}
-	select {
-	case <-reports:
-	case <-time.After(time.Second):
-		t.Fatal("runner did not report its first tick")
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run() error=%v", err)
 	}
 }
 
@@ -383,6 +334,52 @@ func TestStableIdempotencyKeyUsesDueOccurrenceNotScanTime(t *testing.T) {
 	candidate.Schedule.LastRun = "different scan state"
 	if StableIdempotencyKey(candidate, occurrence) != first {
 		t.Fatal("mutable last_run changed the due-occurrence identity")
+	}
+}
+
+func TestStableIdempotencyKeyIncludesExactScheduleRevision(t *testing.T) {
+	occurrence := time.Date(2026, 7, 28, 3, 0, 0, 0, time.UTC)
+	private := true
+	candidate := dueCandidate(7, 9, "docs")
+	candidate.Schedule.Credentials = &Credentials{
+		Private:     &private,
+		EliteaTitle: "github-personal",
+	}
+	first := StableIdempotencyKey(candidate, occurrence)
+	firstRevision := ScheduleRevision(candidate.Schedule)
+
+	edited := candidate
+	otherPrivate := true
+	edited.Schedule.Credentials = &Credentials{
+		Private:     &otherPrivate,
+		EliteaTitle: "github-rotated-reference",
+	}
+	if StableIdempotencyKey(edited, occurrence) == first ||
+		ScheduleRevision(edited.Schedule) == firstRevision {
+		t.Fatal("same-occurrence schedule edit collided with the old admission")
+	}
+
+	edited.Schedule = candidate.Schedule
+	edited.Schedule.LastRun = occurrence.Add(time.Minute).Format(time.RFC3339)
+	if StableIdempotencyKey(edited, occurrence) != first ||
+		ScheduleRevision(edited.Schedule) != firstRevision {
+		t.Fatal("mutable occurrence progress changed the schedule revision")
+	}
+
+	edited.Schedule = candidate.Schedule
+	edited.Schedule.Credentials = nil
+	if StableIdempotencyKey(edited, occurrence) == first {
+		t.Fatal("absent and concrete credential references collided")
+	}
+	edited.Schedule.Credentials = &Credentials{}
+	if ScheduleRevision(edited.Schedule) ==
+		ScheduleRevision(Schedule{
+			Cron:      edited.Schedule.Cron,
+			Enabled:   edited.Schedule.Enabled,
+			CreatedBy: edited.Schedule.CreatedBy,
+			Timezone:  edited.Schedule.Timezone,
+		}) {
+		t.Fatal("credentials object and absent credentials collided")
 	}
 }
 
