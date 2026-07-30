@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from elitea_sdk.runtime.exceptions import BudgetExceededError
 
 from elitea.runtime.v1 import (
     command_pb2,
@@ -19,7 +20,10 @@ from elitea.runtime.v1 import (
     output_pb2,
 )
 
-from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
+from elitea_worker.agents.sdk_adapter import (
+    EliteaSdkIndexingAdapter,
+    SdkBudgetExceeded,
+)
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
 from elitea_worker.execution.errors import InternalFailure, InvalidInput, ResourceExhausted
 from elitea_worker.execution.supervisor import ExecutionSupervisor
@@ -141,6 +145,34 @@ def test_adapter_preserves_current_proxy_embedding_model_on_invocation_copy() ->
         == "embedding-current"
     )
     assert toolkit_config["settings"]["embedding_model"] == "embedding-current"
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["project_budget_exceeded", "member_budget_exceeded"],
+)
+def test_adapter_neutralizes_typed_sdk_budget_error(scope: str) -> None:
+    canary = f"BUDGET_SECRET_CANARY_{scope}"
+
+    class _BudgetBlockedClient:
+        def test_toolkit_tool(self, **kwargs: Any) -> dict[str, Any]:
+            raise BudgetExceededError(canary, scope)
+
+    adapter = object.__new__(EliteaSdkIndexingAdapter)
+    adapter._client = _BudgetBlockedClient()
+
+    with pytest.raises(SdkBudgetExceeded) as caught:
+        adapter.ingest(
+            toolkit_config={"type": "github", "settings": {}},
+            tool_params={},
+            runtime_config={},
+            llm_model=None,
+            llm_config={},
+            mcp_tokens=None,
+        )
+
+    assert str(caught.value) == ""
+    assert canary not in str(caught.value)
 
 
 def test_embedding_binding_is_required_only_by_frozen_toolkit_contract() -> None:

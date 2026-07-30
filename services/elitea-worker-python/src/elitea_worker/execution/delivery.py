@@ -37,7 +37,10 @@ from elitea_worker.agents.client_context import (
     EliteaClientContext,
     IndexExecutionClaim,
 )
-from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
+from elitea_worker.agents.sdk_adapter import (
+    EliteaSdkIndexingAdapter,
+    SdkBudgetExceeded,
+)
 from elitea_worker.constants import (
     INDEX_INGEST_CAPABILITY_ID,
     INDEX_INGEST_CAPABILITY_VERSION,
@@ -1980,6 +1983,12 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             if tool_event is not None:
                 await progress.publish_from_delivery(tool_event)
             callback.raise_if_failed()
+            if isinstance(error, SdkBudgetExceeded):
+                # RuntimeErrorV1 has no budget-specific wire code yet. Preserve
+                # the policy failure as the existing non-retryable,
+                # canonical RESOURCE_EXHAUSTED contract without exposing the
+                # SDK/proxy message or whether a member or project budget won.
+                raise ResourceExhausted() from None
             _emit_index_internal_failure(
                 stage="execute",
                 execution_id=receipt.identity.execution_id,

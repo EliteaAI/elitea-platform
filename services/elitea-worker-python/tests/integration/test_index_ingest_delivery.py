@@ -24,7 +24,10 @@ from elitea.runtime.v1 import (
 
 from elitea_worker.agents.client_context import EliteaClientContext, IndexExecutionClaim
 from elitea_worker.agents import sdk_adapter as sdk_adapter_module
-from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
+from elitea_worker.agents.sdk_adapter import (
+    EliteaSdkIndexingAdapter,
+    SdkBudgetExceeded,
+)
 from elitea_worker.constants import (
     CONFORMANCE_HMAC_KEY,
     CONFORMANCE_HMAC_KEY_ID,
@@ -1614,6 +1617,59 @@ def test_execute_internal_failure_emits_bounded_credential_safe_diagnostic(
         frame["function"] == "_raise_execute_diagnostic"
         for frame in diagnostic["frames"]
     )
+    assert canary not in captured.err
+
+
+def test_sdk_budget_exhaustion_maps_to_safe_non_retryable_resource_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = _case()
+    canary = "BUDGET_SECRET_CANARY"
+
+    class BudgetBlockedSdk:
+        def ingest(self, **kwargs: Any) -> dict[str, Any]:
+            raise SdkBudgetExceeded()
+
+    monkeypatch.setattr(
+        EliteaSdkIndexingAdapter,
+        "from_context",
+        classmethod(lambda cls, context: BudgetBlockedSdk()),
+    )
+
+    async def run() -> None:
+        async def context_factory(
+            claim: IndexExecutionClaim,
+        ) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=Output(),
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert (
+            result.output_frame.runtime_error.code
+            == errors_pb2.RUNTIME_ERROR_CODE_V1_RESOURCE_EXHAUSTED
+        )
+        assert (
+            result.output_frame.runtime_error.safe_message
+            == "The execution input exceeds an approved limit."
+        )
+        assert result.output_frame.runtime_error.retryable is False
+        assert canary.encode() not in result.output_frame.SerializeToString(
+            deterministic=True
+        )
+
+    asyncio.run(run())
+
+    captured = capsys.readouterr()
+    assert "ELITEA_INDEX_INTERNAL_FAILURE" not in captured.err
     assert canary not in captured.err
 
 
