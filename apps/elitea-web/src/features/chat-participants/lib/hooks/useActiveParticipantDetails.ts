@@ -2,92 +2,16 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ChatParticipantType, PUBLIC_PROJECT_ID } from '../../model/constants';
-import type { UseFetchParticipantDetailsResult } from './useFetchParticipantDetails';
 
 import { useSelectedProjectId } from '../../api/useSelectedProjectId';
-import {
-  useGetApplication,
-  useGetPublicApplication,
-  useGetApplicationVersionDetail,
-} from '@/shared/api/generated/applications/applications';
-
-// NOTE: The generated client provides TanStack Query hooks only (no plain query
-// functions).  The destructuring below is intentional — the old app called these
-// as plain functions and the new-app port defers this to a proper data-fetching
-// layer (issue #33, item 4).  Suppressed with @ts-expect-error until a proper
-// query-fn adapter is built.
-
-// @ts-expect-error — generated hooks return UseQueryResult objects, not arrays.
-// The destructuring here mirrors the old app's tuple expectation.
-const [getApplication, getPublicApplication, getApplicationVersion] = [
-  useGetApplication(),
-  useGetPublicApplication(),
-  useGetApplicationVersionDetail(),
-] as any;
+import { useFetchParticipantDetails } from './useFetchParticipantDetails';
 
 // ---------------------------------------------------------------------------
-// useFetchParticipantDetails — full implementation
+// FetchOptions — shared across the detail layer
 // ---------------------------------------------------------------------------
 
 interface FetchOptions {
   forceRefetch?: boolean;
-}
-
-function useFetchParticipantDetailsImpl(): UseFetchParticipantDetailsResult {
-  const [getApplication] = useGetApplication();
-  const [getPublicApplication] = useGetPublicApplication();
-  const [getApplicationVersion] = useGetApplicationVersionDetail();
-
-  const isFetchingApplication = false; // Simplified — real impl tracks fetching state
-  const isFetchingPublicApplication = false;
-  const isFetchingApplicationVersion = false;
-
-  const isFetchingParticipant = isFetchingApplication || isFetchingPublicApplication || isFetchingApplicationVersion;
-
-  const fetchOriginalDetails = useCallback(
-    async (type: ChatParticipantType, id: string, projectId: string, options?: FetchOptions): Promise<Record<string, unknown>> => {
-      if (type === ChatParticipantType.Applications || type === ChatParticipantType.Pipelines) {
-        const getFn = projectId !== PUBLIC_PROJECT_ID ? getApplication : getPublicApplication;
-        const result = await getFn({ projectId, applicationId: id }, { forceRefetch: options?.forceRefetch });
-        return result?.data || {};
-      }
-      // Toolkit detail: hand-written fetcher (openapi gap — no GET for tool/prompt_lib)
-      // Placeholder: falls back to empty object
-      return {};
-    },
-    [getApplication, getPublicApplication],
-  );
-
-  const fetchOriginalVersionDetails = useCallback(
-    async (
-      type: ChatParticipantType,
-      _id: string,
-      versionId: string,
-      projectId: string,
-      _versionName: string,
-    ): Promise<Record<string, unknown>> => {
-      if (!versionId) return {};
-      if (type === ChatParticipantType.Applications || type === ChatParticipantType.Pipelines) {
-        if (projectId === PUBLIC_PROJECT_ID) {
-          // Published agents: use public_application endpoint with version name
-          // @ts-expect-error — useGetPublicApplication is a hook, not a callable function
-          const getFn = useGetPublicApplication;
-          // Fallback: use the application version detail hook
-          return {};
-        }
-        // Private: use application version detail
-        return {};
-      }
-      return {};
-    },
-    [],
-  );
-
-  return {
-    fetchOriginalDetails,
-    fetchOriginalVersionDetails,
-    isFetchingParticipant,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,13 +27,19 @@ export interface UseActiveParticipantDetailsResult {
 /**
  * Hook that fetches and caches detail data for the active participant.
  * Ported from `useActiveParticipantDetails.hooks.js`.
+ *
+ * Delegates all network fetching to `useFetchParticipantDetails`, which
+ * implements the full data-fetching logic:
+ * - Applications/pipelines: generated `useGetApplication`/`useGetPublicApplication`
+ * - Version details: generated `useGetApplicationVersionDetail`
+ * - Toolkits: client-side list lookup (no GET-single endpoint exists)
  */
 export function useActiveParticipantDetails(
   props: { activeParticipant?: Record<string, unknown> | null; skip?: boolean },
 ): UseActiveParticipantDetailsResult {
   const { activeParticipant, skip } = props;
   const projectId = useSelectedProjectId();
-  const { fetchOriginalDetails, fetchOriginalVersionDetails } = useFetchParticipantDetailsImpl();
+  const { fetchOriginalDetails, fetchOriginalVersionDetails } = useFetchParticipantDetails();
 
   const [activeParticipantDetails, setActiveParticipantDetails] = useState<Record<string, unknown>>({});
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
@@ -162,7 +92,7 @@ export function useActiveParticipantDetails(
     if (activeParticipant && !skip) {
       fetchDetails();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- activeParticipant id + project + name + version_id drive re-fetch
   }, [
     activeParticipant?.entity_meta?.id,
     activeParticipant?.entity_meta?.project_id,

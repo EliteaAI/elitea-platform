@@ -26,7 +26,6 @@
 
 import { memo, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import type { SxProps, Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -40,6 +39,8 @@ import { useParticipantEntityIcon } from '../lib/hooks/useParticipantEntityIcon'
 import { isParticipantStillActive } from '@/entities/participant';
 import { useParticipantName } from '../lib/hooks/useParticipantName';
 import { chatParticipantUniqueId } from '@/entities/participant';
+import { styles } from './ExpandedParticipants/participants.styles';
+import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
 
 /**
  * `mcp.helpers.js:7-14`'s `isMcpToolkitType`, duplicated here for the same
@@ -64,88 +65,6 @@ const ENTITY_ORDER: Array<ChatParticipantType | 'mcp'> = [
   ChatParticipantType.Toolkits,
   'mcp',
 ];
-
-// ---------------------------------------------------------------------------
-// ParticipantItem — internal helper for the "users" row
-// ---------------------------------------------------------------------------
-
-/** Minimal row item for user participants in the expanded header. */
-interface ParticipantItemRowProps {
-  readonly participant: TransformedParticipant;
-  readonly isActive: boolean;
-  readonly onClickItem: (participant: TransformedParticipant) => void;
-}
-
-const ParticipantItemRow = memo(
-  ({ participant, isActive, onClickItem }: ParticipantItemRowProps) => {
-    const name = useParticipantName(participant);
-    const iconResult = useParticipantEntityIcon(participant);
-
-    return (
-      <Box
-        component="button"
-        type="button"
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          background: 'transparent',
-          border: 'none',
-          cursor: isActive ? 'default' : 'pointer',
-          padding: '0.25rem 0.5rem',
-          borderRadius: 0.5,
-          opacity: isActive ? 1 : 0.85,
-          '&:hover': {
-            opacity: 1,
-            backgroundColor: 'action.hover',
-          },
-        }}
-        onClick={() => onClickItem(participant)}
-        aria-label={`Select participant: ${name}`}
-        data-testid={`participant-item-${participant.entity_meta?.id ?? ''}`}
-      >
-        {iconResult.url && (
-          <Box
-            component="img"
-            src={iconResult.url}
-            alt={name}
-            sx={{ width: 20, height: 20, borderRadius: 0.5 }}
-          />
-        )}
-        {!iconResult.url && (
-          <Box
-            sx={{
-              width: 20,
-              height: 20,
-              borderRadius: 0.5,
-              backgroundColor: 'action.selected',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.65rem',
-              fontWeight: 600,
-            }}
-          >
-            {(name?.[0] ?? '?').toUpperCase()}
-          </Box>
-        )}
-        <Typography
-          variant="bodySmall"
-          sx={{
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            maxWidth: '12rem',
-          }}
-        >
-          {name}
-        </Typography>
-      </Box>
-    );
-  },
-);
-
-ParticipantItemRow.displayName = 'ParticipantItemRow';
 
 // ---------------------------------------------------------------------------
 // Participants
@@ -462,97 +381,3 @@ export const Participants = memo(
 );
 
 Participants.displayName = 'Participants';
-
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const styles = {
-  mainContainer: (collapsed: boolean): SxProps<Theme> => ({
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    alignItems: collapsed ? 'flex-end' : 'flex-start',
-    width: '100%',
-    height: '100%',
-    gap: '.75rem',
-  }),
-  contentContainer: (collapsed: boolean): SxProps<Theme> => ({
-    height: '100%',
-    position: 'relative',
-    width: collapsed ? '3.25rem' : '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: collapsed ? 'center' : 'flex-start',
-    overflowY: 'auto',
-  }),
-  headerContainer: (collapsed: boolean): SxProps<Theme> => ({
-    display: 'flex',
-    flexDirection: 'row',
-    justifyContent: collapsed ? 'center' : 'space-between',
-    height: '2rem',
-    alignItems: 'center',
-    width: '100%',
-  }),
-  titleText: {
-    display: 'flex',
-    flexDirection: 'row',
-    height: '100%',
-    alignItems: 'center',
-    gap: '1rem',
-  },
-  collapseButton: {
-    marginLeft: '0rem',
-  },
-  participantsContainer: (collapsed: boolean): SxProps<Theme> => ({
-    marginTop: '.5rem',
-    gap: '.5rem',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: collapsed ? 'center' : 'flex-start',
-    maxHeight: `calc(100% - 2.5rem)`,
-    paddingBottom: collapsed ? '1.25rem' : '2rem',
-    paddingTop: collapsed ? '.5rem' : '0rem',
-    width: '100%',
-    overflowY: 'auto',
-    '&::-webkit-scrollbar': {
-      display: 'none',
-    },
-    scrollbarWidth: 'none',
-  }),
-  usersRow: (): SxProps<Theme> => ({
-    display: 'flex',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    width: '100%',
-    height: '2.5rem',
-    background: 'background.participant.default',
-    borderRadius: '.5rem',
-    padding: '.375rem .75rem',
-    '&:hover': {
-      background: 'background.participant.hover',
-    },
-  }),
-  usersDisplay: {
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: '0.25rem',
-    flex: 1,
-    minWidth: 0,
-  },
-  usersOverflow: {
-    marginLeft: '.25rem',
-    color: 'text.primary',
-  },
-  emptyState: {
-    padding: '1rem 0',
-    textAlign: 'center',
-  },
-  contextBudgetWrapper: {
-    width: '100%',
-  },
-};
-
-export default Participants;

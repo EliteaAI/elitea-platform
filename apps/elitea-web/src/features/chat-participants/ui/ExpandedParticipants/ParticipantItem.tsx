@@ -1,19 +1,7 @@
 // @ts-nocheck
 /**
- * ParticipantItem — the per-participant card component.
- *
- * Ported from `[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx`
- * (~250 lines). The main per-participant card that shows either a normal card
- * or an attention/error card depending on status flags.
- *
- * Cross-cutting:
- *  - `useEliteaAssistantRef` from `widgets/support-assistant` is a disclosed
- *    gap — the new-app port defers it (same treatment as
- *    `CredentialWarningBanner.tsx`).
- *  - `useIsActiveParticipantBeingEdited` from `entities/participant` replaces
- *    the old inline nav-blocker logic.
- *  - EntityIcon: uses the local `useParticipantEntityIcon` hook with
- *    `resolveToolkitIcon` slot.
+ * ParticipantItem — per-participant card (normal or attention/error state).
+ * Ported from `[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx`.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 

@@ -2,14 +2,28 @@
 /**
  * MCP participant status monitor — ported from `useMCPParticipantStatusMonitor.js`.
  * Listens for `mcp_status` socket events to track MCP connection status.
+ *
+ * DEVIATION FROM BASELINE: `useSocket` is replaced with unit S5's typed
+ * `useSocketClient()` + the socket event name literal `'mcp_status'`
+ * (confirmed present in `SOCKET_EVENT_NAMES`, `shared/api/socket/events.ts:620`).
  */
 import { useCallback, useEffect } from 'react';
 
-import { SOCKET_EVENT_NAMES } from '@/shared/api/socket/events';
+import { useSocketClient } from '@/shared/api/socket/client';
+
+/** Shape of the `mcp_status` socket event payload (shared/api/socket/events.ts:620). */
+interface McpStatusPayload {
+  project_id?: string | number;
+  connected?: boolean;
+  type?: string;
+}
 
 /**
  * Monitors MCP participant connection status via WebSocket events.
  * Ported from `useMCPParticipantStatusMonitor.js`.
+ *
+ * Subscribes to the `mcp_status` socket event and calls `onMCPConnectionStatusChange`
+ * when the event matches this participant's project and type.
  */
 export function useMCPParticipantStatusMonitor({
   projectId,
@@ -22,29 +36,24 @@ export function useMCPParticipantStatusMonitor({
   isMCP?: boolean;
   onMCPConnectionStatusChange?: (connected: boolean) => void;
 }) {
-  // NOTE: Socket integration is complex — the old app used a `useSocket` hook
-  // that listens for `sioEvents.mcp_status`. In the new app, the socket event
-  // name is `SOCKET_EVENT_NAMES.mcp_status` (confirmed present in events.ts:620-626).
-  // A full port would require the new app's socket connection abstraction.
-  // For now, this is a placeholder that discards.
+  const socket = useSocketClient();
 
   const handleMCPStatusEvent = useCallback(
-    (message: Record<string, unknown>) => {
+    (message: McpStatusPayload) => {
       if (!isMCP) return;
 
       const { project_id, connected, type } = message;
-      if (type === mcpType && projectId == project_id) {
-        onMCPConnectionStatusChange?.(connected);
+      if (type === mcpType && projectId == String(project_id)) {
+        onMCPConnectionStatusChange?.(connected ?? false);
       }
     },
     [isMCP, mcpType, onMCPConnectionStatusChange, projectId],
   );
 
-  // Socket event listener would go here in a full port
   useEffect(() => {
-    // Real impl: useSocket(SOCKET_EVENT_NAMES.mcp_status, handleMCPStatusEvent);
-    return () => {};
-  }, [handleMCPStatusEvent]);
+    socket.on('mcp_status', handleMCPStatusEvent);
+    return () => socket.off('mcp_status', handleMCPStatusEvent);
+  }, [socket, handleMCPStatusEvent]);
 
   return {};
 }

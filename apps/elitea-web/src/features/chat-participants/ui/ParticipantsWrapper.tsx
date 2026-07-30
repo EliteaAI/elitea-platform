@@ -317,4 +317,4 @@ const wrapperSx = ({
   },
 });
 
-export default ParticipantsWrapper;
+export { ParticipantsWrapper };

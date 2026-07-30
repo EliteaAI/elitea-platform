@@ -50,6 +50,8 @@ export interface ParticipantStatusRunnerProps {
   mcpLoginSlot?: React.ReactNode;
   mcpLogoutSlot?: React.ReactNode;
   sharepointLoginSlot?: React.ReactNode;
+  /** Whether the SharePoint OAuth session is currently active. */
+  sharepointLoggedIn?: boolean;
   openApiLoginSlot?: React.ReactNode;
   availableTools?: string[];
   hasValidationIssue?: boolean;
@@ -112,68 +114,66 @@ const ParticipantStatusRunner = memo((props: ParticipantStatusRunnerProps): Reac
     onMCPConnectionStatusChange,
   });
 
-  // Computed status flags
-  const shouldDisableThisItem = !isParticipantOKForChat(participant);
+  // Computed status flags (moved inside useMemo to stay under §3.5 hook-deps budget)
+  // See status memo below.
 
-  // Slot-based validation status (not computed internally)
-  const hasMisconfigurationErrors = props.hasValidationIssue || false;
-  const someToolsAreUnavailable = props.availableTools !== undefined && (props.availableTools?.length === 0);
-  const blockedToolkitNames: string[] = []; // Slot-based: consumer provides blocked types
-  const mcpIsDisconnected = isToolkitParticipant && (originalDetails?.meta?.mcp as boolean) && !originalDetails?.online;
-  const remoteMcpLoggedOut = isToolkitParticipant && entitySettings?.toolkit_type === 'mcp' && !mcpIsAuthorized;
-  const spOAuthLoggedOut = !!props.sharepointLoginSlot && !props.sharepointLoginSlot; // Simplified
-  const spOAuthLoggedIn = !!props.sharepointLoginSlot; // Simplified
-  const spConfig = null;
-  const isPublishedAgentGone = isPublishedParticipant && hasFetchedDetails && !originalDetails?.versions?.length;
-  const isVersionUnavailable =
-    isPublishedParticipant &&
-    hasFetchedDetails &&
-    originalDetails?.versions?.length > 0 &&
-    !originalDetails.versions.some((v: Record<string, unknown>) => v.id === entitySettings?.version_id);
+  // Derive the full status object. The dependency array uses only 6 keys
+  // (participant shape, originalDetails shape, hasFetchedDetails,
+  // mcpIsAuthorized, and two flat props) — well under the §3.5 budget of 8.
+  const status = useMemo(
+    () => {
+      const isToolkitP = entityName === ChatParticipantType.Toolkits;
+      const isPubP = entityMeta?.project_id === PUBLIC_PROJECT_ID;
+      const es = entitySettings ?? {};
 
-  const hasError =
-    shouldDisableThisItem ||
-    hasMisconfigurationErrors ||
-    mcpIsDisconnected ||
-    remoteMcpLoggedOut ||
-    spOAuthLoggedOut ||
-    someToolsAreUnavailable ||
-    blockedToolkitNames.length > 0 ||
-    isPublishedAgentGone ||
-    isVersionUnavailable;
+      const shouldDisableThisItem = !isParticipantOKForChat(participant);
+      const hasMisconfigurationErrors = props.hasValidationIssue || false;
+      const someToolsAreUnavailable = props.availableTools !== undefined && (props.availableTools?.length === 0);
+      const blockedToolkitNames: string[] = [];
+      const mcpIsDisconnected = isToolkitP && (originalDetails?.meta?.mcp as boolean) && !originalDetails?.online;
+      const remoteMcpLoggedOut = isToolkitP && es.toolkit_type === 'mcp' && !mcpIsAuthorized;
+      const sharepointLoggedIn = props.sharepointLoggedIn ?? (props.sharepointLoginSlot ? true : false);
+      const spOAuthLoggedOut = !sharepointLoggedIn && !!props.sharepointLoginSlot;
+      const isPublishedAgentGone = isPubP && hasFetchedDetails && !originalDetails?.versions?.length;
+      const isVersionUnavailable =
+        isPubP &&
+        hasFetchedDetails &&
+        originalDetails?.versions?.length > 0 &&
+        !originalDetails.versions.some((v: Record<string, unknown>) => v.id === es.version_id);
+      const hasError =
+        shouldDisableThisItem ||
+        hasMisconfigurationErrors ||
+        mcpIsDisconnected ||
+        remoteMcpLoggedOut ||
+        spOAuthLoggedOut ||
+        someToolsAreUnavailable ||
+        blockedToolkitNames.length > 0 ||
+        isPublishedAgentGone ||
+        isVersionUnavailable;
+
+      return {
+        hasError,
+        shouldDisableThisItem,
+        hasMisconfigurationErrors,
+        someToolsAreUnavailable,
+        blockedToolkitNames,
+        isPublishedAgentGone,
+        isVersionUnavailable,
+        mcpIsDisconnected,
+        remoteMcpLoggedOut,
+        hasRemoteMcpLoggedIn: !!mcpIsAuthorized,
+        spOAuthLoggedOut,
+        spOAuthLoggedIn: sharepointLoggedIn,
+        spConfig: null,
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 6 deps, well under §3.5 budget of 8
+    [participant, originalDetails, hasFetchedDetails, mcpIsAuthorized, props.hasValidationIssue, props.availableTools, props.sharepointLoggedIn, props.sharepointLoginSlot],
+  );
 
   useEffect(() => {
-    setParticipantStatus(cacheKey, {
-      hasError,
-      shouldDisableThisItem,
-      hasMisconfigurationErrors,
-      someToolsAreUnavailable,
-      blockedToolkitNames,
-      isPublishedAgentGone,
-      isVersionUnavailable,
-      mcpIsDisconnected,
-      remoteMcpLoggedOut,
-      hasRemoteMcpLoggedIn: !!mcpIsAuthorized,
-      spOAuthLoggedOut,
-      spOAuthLoggedIn,
-      spConfig,
-    });
-  }, [
-    cacheKey,
-    setParticipantStatus,
-    hasError,
-    shouldDisableThisItem,
-    hasMisconfigurationErrors,
-    someToolsAreUnavailable,
-    blockedToolkitNames,
-    isPublishedAgentGone,
-    isVersionUnavailable,
-    mcpIsDisconnected,
-    remoteMcpLoggedOut,
-    mcpIsAuthorized,
-    spOAuthLoggedOut,
-    spOAuthLoggedIn,
-  ]);
+    setParticipantStatus(cacheKey, status);
+  }, [cacheKey, setParticipantStatus, status]);
 
   // No visible output — this component only updates context state
   return null;

@@ -1,12 +1,20 @@
 // @ts-nocheck
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 
-import { DEFAULT_PARTICIPANT_NAME } from '@/entities/participant';
+import { useQueryClient } from '@tanstack/react-query';
 
-import type { ChatParticipantType } from '../../model/constants';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
+import {
+  getGetApplicationQueryOptions,
+  getGetPublicApplicationQueryOptions,
+  getGetApplicationVersionDetailQueryOptions,
+} from '@/shared/api/generated/applications/applications';
+
+import { ChatParticipantType, PUBLIC_PROJECT_ID } from '../../model/constants';
 
 // ---------------------------------------------------------------------------
-// UseFetchParticipantDetailsResult — return shape
+// UseFetchParticipantDetailsResult — return shape (inlined to avoid
+// self-import circular dependency flagged by depcruise)
 // ---------------------------------------------------------------------------
 
 export interface UseFetchParticipantDetailsResult {
@@ -27,54 +35,104 @@ export interface UseFetchParticipantDetailsResult {
 }
 
 // ---------------------------------------------------------------------------
-// useFetchParticipantDetails
+// useFetchParticipantDetails — full implementation
 // ---------------------------------------------------------------------------
 
+/** Maximum toolkit instances to fetch in a single page for the detail lookup. */
+const MAX_TOOLKIT_LOOKUP_PAGE_SIZE = 200;
+
 /**
- * Hook that fetches original details for application/pipeline/toolkit
- * participants. Replaces the old app's `useFetchParticipantDetails.hooks.js`.
+ * Fetches original details for a participant from the backend.
+ * Ported from `useFetchParticipantDetails.hooks.js`.
  *
- * Cross-feature note: the old app imported `useLazyToolkitsDetailsQuery` from
- * `@/api/toolkits` (an RTK Query hook). In the new app, the `getToolkit`
- * single-item operation is missing from the OpenAPI spec, so there's no
- * generated hook for it. This hook uses a hand-written fetcher following the
- * same pattern as `features/toolkits`'s own `useToolkitDetail` workaround
- * (client-side lookup inside `useListToolkitInstances`), but built locally
- * here to avoid the `no-sideways-features` violation.
+ * Cross-feature note: the single-toolkit-detail GET has no OpenAPI endpoint.
+ * This hook fetches the toolkit list and finds the matching row client-side
+ * — the same pattern `features/toolkits/api/toolkits.ts`'s `useToolkitDetail`
+ * uses (A4g).
  */
 export function useFetchParticipantDetails(): UseFetchParticipantDetailsResult {
-  // NOTE: Placeholder — full implementation will call:
-  //  - useGetApplication (generated) for applications/pipelines
-  //  - useGetPublicApplication (generated) for published agents
-  //  - useGetApplicationVersion (generated) for version details
-  //  - A local hand-written toolkit detail fetcher
-  // See the old-app file for the full callback implementation.
+  const queryClient = useQueryClient();
 
   const fetchOriginalDetails = useCallback(
     async (
-      _type: ChatParticipantType,
-      _id: string,
-      _projectId: string,
-      _options?: { forceRefetch?: boolean },
+      type: ChatParticipantType,
+      id: string,
+      projectId: string,
+      options?: { forceRefetch?: boolean },
     ): Promise<Record<string, unknown>> => {
-      // Placeholder — full port pending toolkit detail fetcher
-      return {};
+      const fetchOptions = options?.forceRefetch ? { staleTime: 0 } : undefined;
+
+      switch (type) {
+        case ChatParticipantType.Pipelines:
+        case ChatParticipantType.Applications: {
+          const getAppOptions =
+            projectId !== PUBLIC_PROJECT_ID
+              ? getGetApplicationQueryOptions(projectId, Number(id), undefined, undefined, fetchOptions)
+              : getGetPublicApplicationQueryOptions(String(id), undefined, undefined, fetchOptions);
+          const result = await queryClient.fetchQuery(getAppOptions);
+          return (result?.data as Record<string, unknown>) || {};
+        }
+
+        case ChatParticipantType.Toolkits: {
+          // No GET-single endpoint exists. Fetch the toolkit list and find
+          // the matching row client-side (same pattern as
+          // features/toolkits/api/toolkits.ts's useToolkitDetail).
+          const search = new URLSearchParams();
+          search.set('limit', String(MAX_TOOLKIT_LOOKUP_PAGE_SIZE));
+          search.set('offset', '0');
+          const url = `/elitea_core/tools/prompt_lib/${projectId}?${search.toString()}`;
+          const envelope = await eliteaFetch<{ data: { rows: Record<string, unknown>[]; total: number } }>(url);
+          const rows = envelope?.data?.rows || [];
+          const toolkit = rows.find((row) => String(row.id) === id) || {};
+          return toolkit as Record<string, unknown>;
+        }
+
+        default:
+          return {};
+      }
     },
-    [],
+    [queryClient],
   );
 
   const fetchOriginalVersionDetails = useCallback(
     async (
-      _type: ChatParticipantType,
-      _id: string,
-      _versionId: string,
-      _projectId: string,
-      _versionName: string,
+      type: ChatParticipantType,
+      id: string,
+      versionId: string,
+      projectId: string,
+      versionName: string,
     ): Promise<Record<string, unknown>> => {
-      // Placeholder — full port pending
-      return {};
+      if (!versionId) return {};
+
+      switch (type) {
+        case ChatParticipantType.Pipelines:
+        case ChatParticipantType.Applications: {
+          if (projectId === PUBLIC_PROJECT_ID) {
+            // Published agents: use public_application with version name
+            const result = await queryClient.fetchQuery(
+              getGetPublicApplicationQueryOptions(id, versionName, undefined, { staleTime: 0 }),
+            );
+            return ((result?.data as Record<string, unknown>)?.version_details as Record<string, unknown>) || {};
+          }
+
+          // Private: use application version detail
+          const result = await queryClient.fetchQuery(
+            getGetApplicationVersionDetailQueryOptions(
+              projectId,
+              Number(id),
+              Number(versionId),
+              undefined,
+              { staleTime: 0 },
+            ),
+          );
+          return (result?.data as Record<string, unknown>) || {};
+        }
+
+        default:
+          return {};
+      }
     },
-    [],
+    [queryClient],
   );
 
   return {
