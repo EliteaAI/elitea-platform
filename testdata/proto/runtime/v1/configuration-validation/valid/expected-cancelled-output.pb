@@ -1,0 +1,5 @@
+
+"elitea.runtime.execution-output.v1-execution-configuration-validation-valid-v1:1¡
+tenant-conformance-v1project-conformance-v1project-conformance-v1")command-configuration-validation-valid-v1*+execution-configuration-validation-valid-v10"h
+workload-session-conformance-v1"python-reference-conformance-v1* —“‚Ş')Y¹wÚœ$7$ÍÅê€Ÿ`2ŸŒşJšåf*8configuration-validation:configuration-revision-valid-v12+command-configuration-validation-valid-v1:18HP€Ğ•ÿ¼1Z$ ÊÁ Gëúß:V^¸‹"æÅmê|Æ3"åF²÷¹.5ÒÎ`j…
+4command-configuration-validation-valid-v1:settlement8configuration-validation:configuration-revision-valid-v1"+command-configuration-validation-valid-v1:1(2$ ÊÁ Gëúß:V^¸‹"æÅmê|Æ3"åF²÷¹.5ÒÎ:<command-configuration-validation-valid-v1:prepare-settlementª	Execution was cancelled.

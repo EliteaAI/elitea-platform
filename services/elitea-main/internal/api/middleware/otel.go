@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -39,17 +40,68 @@ func init() {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
+// Unwrap preserves optional streaming and deadline interfaces for
+// http.ResponseController (SSE, HTTP/2 flush, and per-write deadlines).
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(code int) {
+	if r.wroteHeader {
+		return
+	}
+	r.wroteHeader = true
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
 
+func (r *statusRecorder) Write(body []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+const unmatchedRoutePattern = "unmatched"
+
+func matchedRoutePattern(r *http.Request) string {
+	routeContext := chi.RouteContext(r.Context())
+	if routeContext == nil {
+		return unmatchedRoutePattern
+	}
+	pattern := routeContext.RoutePattern()
+	if pattern == "" {
+		return unmatchedRoutePattern
+	}
+	return pattern
+}
+
+func normalizedHTTPMethod(method string) string {
+	switch method {
+	case http.MethodConnect,
+		http.MethodDelete,
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodPatch,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodTrace:
+		return method
+	default:
+		return "_OTHER"
+	}
+}
+
 func OtelMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := tracer.Start(r.Context(), r.Method+" "+r.URL.Path)
+		// The raw target may contain user, project, token, and execution IDs. Start
+		// with a bounded name and replace it with the registered chi pattern only
+		// after routing completes.
+		method := normalizedHTTPMethod(r.Method)
+		ctx, span := tracer.Start(r.Context(), method+" request")
 		defer span.End()
 
 		activeRequests.Add(ctx, 1)
@@ -57,19 +109,22 @@ func OtelMiddleware(next http.Handler) http.Handler {
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
+		request := r.WithContext(ctx)
 
-		next.ServeHTTP(rec, r.WithContext(ctx))
+		next.ServeHTTP(rec, request)
 
 		duration := time.Since(start).Seconds()
+		route := matchedRoutePattern(request)
 		attrs := []attribute.KeyValue{
-			attribute.String("http.method", r.Method),
-			attribute.String("http.route", r.URL.Path),
+			attribute.String("http.method", method),
+			attribute.String("http.route", route),
 			attribute.String("http.status_code", strconv.Itoa(rec.status)),
 		}
 
 		requestDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
 		requestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 
+		span.SetName(method + " " + route)
 		span.SetAttributes(attrs...)
 	})
 }

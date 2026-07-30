@@ -2,26 +2,51 @@ package authsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
+	"strconv"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
+var (
+	// ErrTokenRejected identifies a syntactically invalid, expired, revoked, or
+	// otherwise unknown caller credential. It is safe to map to an ordinary
+	// authentication denial without exposing the underlying reason.
+	ErrTokenRejected = auth.ErrCredentialRejected
+	// ErrTokenValidationUnavailable identifies configuration, storage, or data
+	// integrity failures. ForwardAuth must fail closed without misreporting an
+	// infrastructure outage as an ordinary bad credential.
+	ErrTokenValidationUnavailable = auth.ErrCredentialValidationUnavailable
+)
+
+type activePATQueries interface {
+	GetActivePATPrincipalByUUID(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error)
+}
+
 type LocalValidator struct {
-	pool      *pgxpool.Pool
+	queries   activePATQueries
 	secretKey []byte
 }
 
 func NewLocalValidator(pool *pgxpool.Pool, secretKey string) *LocalValidator {
-	return &LocalValidator{
-		pool:      pool,
-		secretKey: []byte(secretKey),
+	return NewLocalValidatorBytes(pool, []byte(secretKey))
+}
+
+// NewLocalValidatorBytes snapshots the exact HS512 key bytes without forcing
+// production composition to create an additional immutable secret string.
+// Existing Python-issued PAT compatibility depends on preserving every byte.
+func NewLocalValidatorBytes(pool *pgxpool.Pool, secretKey []byte) *LocalValidator {
+	validator := &LocalValidator{secretKey: append([]byte(nil), secretKey...)}
+	if pool != nil {
+		validator.queries = sqlcgen.New(pool)
 	}
+	return validator
 }
 
 type tokenClaims struct {
@@ -31,96 +56,49 @@ type tokenClaims struct {
 }
 
 func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (auth.User, error) {
-	// Decode JWT with HS512
+	if v == nil || len(v.secretKey) == 0 {
+		return auth.User{}, fmt.Errorf("%w: token signing key is not configured", ErrTokenValidationUnavailable)
+	}
 	token, err := jwt.ParseWithClaims(tokenStr, &tokenClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		if t.Method.Alg() != jwt.SigningMethodHS512.Alg() {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return v.secretKey, nil
 	})
 	if err != nil {
-		return auth.User{}, fmt.Errorf("authsvc: invalid token: %w", err)
+		return auth.User{}, fmt.Errorf("%w: invalid token: %v", ErrTokenRejected, err)
 	}
 
 	claims, ok := token.Claims.(*tokenClaims)
 	if !ok || claims.UUID == "" {
-		return auth.User{}, fmt.Errorf("authsvc: invalid token claims")
+		return auth.User{}, fmt.Errorf("%w: invalid token claims", ErrTokenRejected)
+	}
+	if v.queries == nil {
+		return auth.User{}, fmt.Errorf("%w: token repository is not configured", ErrTokenValidationUnavailable)
 	}
 
-	// Look up token in DB
-	var tokenID int
-	var userID int
-	var expires *time.Time
-	err = v.pool.QueryRow(ctx,
-		`SELECT id, user_id, expires FROM auth_core__token WHERE uuid = $1`,
-		claims.UUID,
-	).Scan(&tokenID, &userID, &expires)
+	// Expiry and active ownership are validated in one generated query. Roles
+	// and permissions remain authoritative in the RBAC resolver and are not
+	// cached into the credential identity.
+	principal, err := v.queries.GetActivePATPrincipalByUUID(ctx, claims.UUID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return auth.User{}, fmt.Errorf("authsvc: token not found")
+		if contextErr := ctx.Err(); contextErr != nil {
+			return auth.User{}, contextErr
 		}
-		return auth.User{}, fmt.Errorf("authsvc: db lookup failed: %w", err)
-	}
-
-	// Check expiry from DB record
-	if expires != nil && time.Now().After(*expires) {
-		return auth.User{}, fmt.Errorf("authsvc: token expired")
-	}
-
-	// Get user info
-	var email, name string
-	err = v.pool.QueryRow(ctx,
-		`SELECT COALESCE(email, ''), COALESCE(name, '') FROM auth_core__user WHERE id = $1`,
-		userID,
-	).Scan(&email, &name)
-	if err != nil {
-		return auth.User{}, fmt.Errorf("authsvc: user not found: %w", err)
-	}
-
-	// Get roles
-	rows, err := v.pool.Query(ctx, `
-		SELECT r.name FROM auth_core__role r
-		JOIN auth_core__user_role ur ON ur.role_id = r.id
-		WHERE ur.user_id = $1
-	`, userID)
-	var roles []string
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var role string
-			if err := rows.Scan(&role); err != nil {
-				continue
-			}
-			roles = append(roles, role)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.User{}, fmt.Errorf("%w: token not found", ErrTokenRejected)
 		}
+		return auth.User{}, fmt.Errorf("%w: db lookup failed: %w", ErrTokenValidationUnavailable, err)
 	}
-
-	// Get permissions via role → permission mapping
-	permRows, err := v.pool.Query(ctx, `
-		SELECT DISTINCT rp.permission
-		FROM auth_core__role_permission rp
-		JOIN auth_core__user_role ur ON ur.role_id = rp.role_id
-		WHERE ur.user_id = $1
-		ORDER BY rp.permission
-	`, userID)
-	var permissions []string
-	if err == nil {
-		defer permRows.Close()
-		for permRows.Next() {
-			var perm string
-			if err := permRows.Scan(&perm); err != nil {
-				continue
-			}
-			permissions = append(permissions, perm)
-		}
+	if principal.TokenID <= 0 || principal.UserID <= 0 {
+		return auth.User{}, fmt.Errorf("%w: token principal contains invalid identity data", ErrTokenValidationUnavailable)
 	}
 
 	return auth.User{
-		ID:          fmt.Sprintf("%d", userID),
-		Email:       email,
-		Name:        name,
-		AuthType:    "token",
-		Roles:       roles,
-		Permissions: permissions,
+		ID:       strconv.FormatInt(int64(principal.UserID), 10),
+		UserID:   strconv.FormatInt(int64(principal.UserID), 10),
+		TokenID:  strconv.FormatInt(int64(principal.TokenID), 10),
+		Email:    principal.Email,
+		AuthType: "token",
 	}, nil
 }

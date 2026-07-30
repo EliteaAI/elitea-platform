@@ -1,0 +1,356 @@
+package repos
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	maxCurrentModelCatalogRows       = 10_000
+	currentModelCatalogQueryRows     = maxCurrentModelCatalogRows + 1
+	maxCurrentModelCatalogBytes      = 8 * 1024 * 1024
+	currentLLMDefaultMaxOutputTokens = 16_000
+)
+
+var (
+	errInvalidCurrentModelConfiguration = errors.New("current model configuration is invalid")
+	errCurrentModelCatalogTooLarge      = errors.New("current model catalog exceeds the safe row limit")
+)
+
+type currentModelQueries interface {
+	GetCurrentModelCatalogBounds(context.Context, sqlcgen.GetCurrentModelCatalogBoundsParams) (sqlcgen.GetCurrentModelCatalogBoundsRow, error)
+	ListCurrentModelConfigurations(context.Context, sqlcgen.ListCurrentModelConfigurationsParams) ([]sqlcgen.ListCurrentModelConfigurationsRow, error)
+}
+
+type currentModelQueryFactory func(sqlExecutor) (currentModelQueries, error)
+
+// CurrentModelsRepository reads model candidates from one authorized tenant
+// schema. Provider-specific validation and credential expansion remain outside
+// this adapter.
+type CurrentModelsRepository struct {
+	projects projectStore
+	queries  currentModelQueryFactory
+}
+
+func NewCurrentModelsRepository(pool *pgxpool.Pool) (*CurrentModelsRepository, error) {
+	projects, err := newPostgresProjectStore(pool)
+	if err != nil {
+		return nil, err
+	}
+	return newCurrentModelsRepository(projects, newCurrentModelQueries)
+}
+
+func newCurrentModelsRepository(projects projectStore, queries currentModelQueryFactory) (*CurrentModelsRepository, error) {
+	if projects == nil || queries == nil {
+		return nil, errors.New("current model database is required")
+	}
+	return &CurrentModelsRepository{projects: projects, queries: queries}, nil
+}
+
+func newCurrentModelQueries(tx sqlExecutor) (currentModelQueries, error) {
+	executor, ok := tx.(pgxExecutor)
+	if !ok || executor.queryer == nil {
+		return nil, errors.New("current model transaction does not support generated queries")
+	}
+	return sqlcgen.New(executor.queryer), nil
+}
+
+// List returns the ordered candidates consumed by BuildCurrentModelCatalog.
+// sharedOnly is used for the public-project query and is enforced in SQL.
+func (r *CurrentModelsRepository) List(
+	ctx context.Context,
+	projectID int32,
+	section configurationapp.CurrentModelSection,
+	sharedOnly bool,
+) ([]configurationapp.CurrentModelCatalogItem, error) {
+	if err := validateCurrentModelRepositoryRequest(ctx, projectID, section); err != nil {
+		return nil, err
+	}
+
+	rows := []sqlcgen.ListCurrentModelConfigurationsRow{}
+	err := r.projects.WithinProjectTx(ctx, int64(projectID), pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	}, func(tx sqlExecutor) error {
+		queries, err := r.queries(tx)
+		if err != nil {
+			return err
+		}
+		bounds, err := queries.GetCurrentModelCatalogBounds(ctx, sqlcgen.GetCurrentModelCatalogBoundsParams{
+			ProjectID:  projectID,
+			Section:    string(section),
+			SharedOnly: sharedOnly,
+			LimitRows:  currentModelCatalogQueryRows,
+		})
+		if err != nil {
+			return fmt.Errorf("bound current model configurations: %w", err)
+		}
+		if bounds.RowCount > maxCurrentModelCatalogRows ||
+			bounds.ProjectedBytes > maxCurrentModelCatalogBytes ||
+			bounds.RowCount < 0 ||
+			bounds.ProjectedBytes < 0 {
+			return errCurrentModelCatalogTooLarge
+		}
+		rows, err = queries.ListCurrentModelConfigurations(ctx, sqlcgen.ListCurrentModelConfigurationsParams{
+			ProjectID:  projectID,
+			Section:    string(section),
+			SharedOnly: sharedOnly,
+			LimitRows:  currentModelCatalogQueryRows,
+		})
+		if err != nil {
+			return fmt.Errorf("list current model configurations: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) > maxCurrentModelCatalogRows {
+		return nil, errCurrentModelCatalogTooLarge
+	}
+	// This is a defensive invariant check, not the memory bound. The generated
+	// aggregate query above rejects an oversized snapshot before any JSONB row
+	// is transferred into this process, and REPEATABLE READ keeps the checked
+	// and projected snapshots identical.
+	totalBytes := 0
+	for _, row := range rows {
+		rowBytes := len(row.Data) + len(row.EliteaTitle) + len(row.Section)
+		if row.Label != nil {
+			rowBytes += len(*row.Label)
+		}
+		if rowBytes > maxCurrentModelCatalogBytes-totalBytes {
+			return nil, errCurrentModelCatalogTooLarge
+		}
+		totalBytes += rowBytes
+	}
+
+	candidates := make([]currentModelCandidate, 0, len(rows))
+	for _, row := range rows {
+		candidate, err := mapCurrentModelCandidate(row, projectID, section, sharedOnly)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if section == configurationapp.CurrentModelSectionLLM {
+		orderCurrentLLMDuplicates(candidates)
+	}
+
+	items := make([]configurationapp.CurrentModelCatalogItem, len(candidates))
+	for index := range candidates {
+		items[index] = candidates[index].item
+	}
+	return items, nil
+}
+
+type currentModelCandidate struct {
+	id   int32
+	item configurationapp.CurrentModelCatalogItem
+}
+
+func mapCurrentModelCandidate(
+	row sqlcgen.ListCurrentModelConfigurationsRow,
+	projectID int32,
+	section configurationapp.CurrentModelSection,
+	sharedOnly bool,
+) (currentModelCandidate, error) {
+	if row.ID <= 0 || row.ProjectID != projectID || row.Section != string(section) || (sharedOnly && !row.Shared) {
+		return currentModelCandidate{}, errInvalidCurrentModelConfiguration
+	}
+
+	item := configurationapp.CurrentModelCatalogItem{
+		ProjectID: row.ProjectID,
+		Shared:    row.Shared,
+	}
+	if section == configurationapp.CurrentModelSectionVectorStorage {
+		item.Name = row.EliteaTitle
+		return currentModelCandidate{id: row.ID, item: item}, nil
+	}
+	if row.Label == nil {
+		return currentModelCandidate{}, errInvalidCurrentModelConfiguration
+	}
+
+	data, err := decodeCurrentModelData(row.Data)
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	name, err := requiredCurrentModelString(data, "name")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	displayName := *row.Label
+	item.Name = name
+	item.DisplayName = &displayName
+	if section != configurationapp.CurrentModelSectionLLM {
+		return currentModelCandidate{id: row.ID, item: item}, nil
+	}
+
+	item.ContextWindow, err = optionalCurrentModelInt(data, "context_window")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.MaxOutputTokens, err = optionalCurrentModelInt(data, "max_output_tokens")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.SupportsReasoning, err = optionalCurrentModelBool(data, "supports_reasoning")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.SupportsVision, err = optionalCurrentModelBool(data, "supports_vision")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.LowTier, err = optionalCurrentModelBool(data, "low_tier")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.HighTier, err = optionalCurrentModelBoolWithFallback(data, "high_tier", "mid_tier")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	item.OpenAICompatible, err = optionalCurrentModelBool(data, "openai_compatible")
+	if err != nil {
+		return currentModelCandidate{}, err
+	}
+	return currentModelCandidate{id: row.ID, item: item}, nil
+}
+
+func decodeCurrentModelData(raw []byte) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var data map[string]json.RawMessage
+	if err := decoder.Decode(&data); err != nil || data == nil {
+		return nil, errInvalidCurrentModelConfiguration
+	}
+	if err := requireCurrentModelJSONEOF(decoder); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func requireCurrentModelJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errInvalidCurrentModelConfiguration
+	}
+	return nil
+}
+
+func requiredCurrentModelString(data map[string]json.RawMessage, key string) (string, error) {
+	raw, ok := data[key]
+	if !ok || currentModelJSONNull(raw) {
+		return "", errInvalidCurrentModelConfiguration
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", errInvalidCurrentModelConfiguration
+	}
+	return value, nil
+}
+
+func optionalCurrentModelInt(data map[string]json.RawMessage, key string) (*int, error) {
+	raw, ok := data[key]
+	if !ok || currentModelJSONNull(raw) {
+		return nil, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errInvalidCurrentModelConfiguration
+	}
+	number, ok := value.(json.Number)
+	if !ok {
+		return nil, errInvalidCurrentModelConfiguration
+	}
+	parsed, err := strconv.ParseInt(number.String(), 10, strconv.IntSize)
+	if err != nil {
+		return nil, errInvalidCurrentModelConfiguration
+	}
+	result := int(parsed)
+	return &result, nil
+}
+
+func optionalCurrentModelBool(data map[string]json.RawMessage, key string) (*bool, error) {
+	raw, ok := data[key]
+	if !ok || currentModelJSONNull(raw) {
+		return nil, nil
+	}
+	return decodeCurrentModelBool(raw)
+}
+
+func decodeCurrentModelBool(raw json.RawMessage) (*bool, error) {
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, errInvalidCurrentModelConfiguration
+	}
+	return &value, nil
+}
+
+func optionalCurrentModelBoolWithFallback(data map[string]json.RawMessage, key, fallbackKey string) (*bool, error) {
+	if raw, ok := data[key]; ok && !currentModelJSONNull(raw) {
+		return decodeCurrentModelBool(raw)
+	}
+	return optionalCurrentModelBool(data, fallbackKey)
+}
+
+func currentModelJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// The current SQLAlchemy query selects the greatest max_output_tokens for a
+// repeated LLM name. We keep SQL provider-neutral and reproduce that ordering
+// after strict JSON decoding, so malformed values never reach a PostgreSQL cast
+// error that could echo their contents. The pure application seam then keeps
+// the last candidate for each project/name key.
+func orderCurrentLLMDuplicates(candidates []currentModelCandidate) {
+	positionsByName := make(map[string][]int, len(candidates))
+	for index := range candidates {
+		positionsByName[candidates[index].item.Name] = append(positionsByName[candidates[index].item.Name], index)
+	}
+	for _, positions := range positionsByName {
+		if len(positions) < 2 {
+			continue
+		}
+		group := make([]currentModelCandidate, len(positions))
+		for index, position := range positions {
+			group[index] = candidates[position]
+		}
+		sort.SliceStable(group, func(left, right int) bool {
+			leftMax := currentModelEffectiveMaxOutput(group[left].item)
+			rightMax := currentModelEffectiveMaxOutput(group[right].item)
+			if leftMax != rightMax {
+				return leftMax < rightMax
+			}
+			return group[left].id < group[right].id
+		})
+		for index, position := range positions {
+			candidates[position] = group[index]
+		}
+	}
+}
+
+func currentModelEffectiveMaxOutput(item configurationapp.CurrentModelCatalogItem) int {
+	if item.MaxOutputTokens == nil {
+		return currentLLMDefaultMaxOutputTokens
+	}
+	return *item.MaxOutputTokens
+}
+
+func validateCurrentModelRepositoryRequest(ctx context.Context, projectID int32, section configurationapp.CurrentModelSection) error {
+	if ctx == nil || projectID <= 0 || !configurationapp.IsSupportedCurrentModelSection(section) {
+		return configurationapp.ErrInvalidCurrentConfigurationRequest
+	}
+	return ctx.Err()
+}

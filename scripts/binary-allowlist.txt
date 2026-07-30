@@ -5,4 +5,6 @@
 #   docs/assets/logo.png
 #   apps/*/public/**/*.woff2
 #
-# (empty — no committed binary assets today)
+# Cross-language runtime conformance vectors. These are canonical protobuf wire
+# fixtures checked byte-for-byte by the Go and Python implementations.
+testdata/proto/runtime/v1/**/*.pb

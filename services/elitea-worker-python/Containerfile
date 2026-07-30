@@ -1,0 +1,82 @@
+FROM python:3.12.10-slim AS build
+
+ARG ELITEA_SDK_REVISION=48c51a16634a9924f6c5d5313c3bacedb0b5b56b
+ARG ELITEA_SDK_ARCHIVE_SHA256=85e8b2396dc86ea8e7d2098a41e12b228fa1995a0be8ff0143af6d3df49b6d61
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      build-essential \
+      git \
+      libcairo2-dev \
+      libpango1.0-dev \
+      pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY libs/proto ./libs/proto
+COPY services/elitea-worker-python ./services/elitea-worker-python
+RUN git clone \
+      --filter=blob:none \
+      --no-checkout \
+      https://github.com/EliteaAI/elitea-sdk.git \
+      ./elitea-sdk \
+    && git -C ./elitea-sdk checkout --detach "${ELITEA_SDK_REVISION}" \
+    && test "$(git -C ./elitea-sdk archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${ELITEA_SDK_ARCHIVE_SHA256}"
+RUN python -m pip download \
+      --dest /sources \
+      --no-binary=:all: \
+      --no-deps \
+      "FigmaPy==2018.1.0" \
+    && python ./services/elitea-worker-python/scripts/verify_locked_artifacts.py \
+      ./services/elitea-worker-python/elitea-sdk.lock.json \
+      /sources \
+      verified_source_archives \
+    && python -m pip wheel \
+      --wheel-dir /wheels \
+      --no-deps \
+      /sources/FigmaPy-2018.1.0.tar.gz
+RUN python -m pip wheel \
+    --wheel-dir /wheels \
+    --find-links /wheels \
+    --prefer-binary \
+    "elitea-sdk @ file:///build/elitea-sdk" \
+    ./libs/proto \
+    "./services/elitea-worker-python[indexing-current]" \
+    && python ./services/elitea-worker-python/scripts/verify_locked_artifacts.py \
+      ./services/elitea-worker-python/elitea-sdk.lock.json \
+      /wheels \
+      verified_wheels
+
+FROM python:3.12.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AZURE_DEVOPS_CACHE_DIR=/tmp/.azure-devops
+
+RUN apt-get update \
+    && apt-get upgrade --yes \
+    && apt-get install --yes --no-install-recommends \
+      libcairo2 \
+      fonts-dejavu-core \
+      libpango-1.0-0 \
+      libpangocairo-1.0-0 \
+      poppler-utils \
+      tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 elitea \
+    && useradd --system --uid 10001 --gid elitea --home-dir /nonexistent --shell /usr/sbin/nologin elitea
+
+COPY --from=build /wheels /wheels
+COPY testdata/proto/runtime/v1 /opt/elitea/conformance
+RUN python -m pip install \
+    --no-cache-dir \
+    --disable-pip-version-check \
+    --no-index \
+    --find-links /wheels \
+    "elitea-worker-python[indexing-current]==0.1.0" \
+    && python -m pip check \
+    && python -c "from elitea_worker.indexing_runtime_capabilities import require_indexing_runtime_capabilities; print('indexing-runtime-profile=' + require_indexing_runtime_capabilities())" \
+    && rm -rf /wheels
+
+USER 10001:10001
+ENTRYPOINT ["elitea-worker"]

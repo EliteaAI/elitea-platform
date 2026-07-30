@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -9,96 +10,167 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	projects CurrentProjectLister
 }
 
+const (
+	CurrentProjectListPath       = "/api/v2/projects/project/default/1"
+	CurrentProjectListMode       = auth.PermissionModeDefault
+	CurrentProjectListProjectID  = "1"
+	CurrentProjectListPermission = "projects.projects.project.view"
+)
+
 func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+	var projects CurrentProjectLister
+	if pool != nil {
+		projects = sqlcgen.New(pool)
+	}
+	return &Handler{pool: pool, projects: projects}
+}
+
+// CurrentProjectLister is the generated query surface consumed by the one
+// current-compatible project-list route. Keeping this interface at the
+// consumer makes the HTTP contract testable without replacing PostgreSQL in
+// production.
+type CurrentProjectLister interface {
+	ListCurrentUserProjects(context.Context, sqlcgen.ListCurrentUserProjectsParams) ([]sqlcgen.ListCurrentUserProjectsRow, error)
+}
+
+func NewCurrentProjectListHandler(projects CurrentProjectLister) *Handler {
+	return &Handler{projects: projects}
 }
 
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/project/{mode}/{projectID}", h.GetProject)
-	r.Get("/project/{mode}", h.AdminProjectList)
-	r.Post("/project/{mode}", h.AdminProjectCreate)
-	r.Delete("/project/{mode}/{projectID}", h.AdminProjectDelete)
 	r.Get("/groups/prompt_lib", h.GroupList)
 	r.Put("/groups/prompt_lib/{projectID}", h.PutProjectGroups)
 	return r
 }
 
 type Project struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status"`
-	Role        string `json:"role,omitempty"`
-	Suspended   bool   `json:"suspended"`
-}
-
-type ProjectListResponse struct {
-	Items []Project `json:"items"`
-	Total int       `json:"total"`
+	ID             int32           `json:"id"`
+	Name           string          `json:"name"`
+	OwnerID        int32           `json:"owner_id"`
+	Plugins        []string        `json:"plugins"`
+	KeycloakGroups json.RawMessage `json:"keycloak_groups"`
+	CreateSuccess  bool            `json:"create_success"`
+	Suspended      bool            `json:"suspended"`
+	Groups         []Group         `json:"groups"`
 }
 
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
+	publicProjectID, err := parseInt32(chi.URLParam(r, "projectID"))
+	if err != nil || publicProjectID <= 0 {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	h.getCurrentProjects(w, r, publicProjectID)
+}
+
+// GetCurrentProjectList owns only the exact route used by the current UI. The
+// public-project identifier is part of that compatibility contract, not a
+// caller-selected tenant scope.
+func (h *Handler) GetCurrentProjectList(w http.ResponseWriter, r *http.Request) {
+	h.getCurrentProjects(w, r, 1)
+}
+
+func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, publicProjectID int32) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-
-	projectID := chi.URLParam(r, "projectID")
-	projectIDNum, _ := strconv.Atoi(projectID)
-	ctx := r.Context()
-
-	// Return only projects the user has access to
-	rows, err := h.pool.Query(ctx, `
-		SELECT p.id, p.name, COALESCE(p.suspended, false)
-		FROM centry.project p
-		JOIN auth_core__project_user_role pur ON pur.project_id = p.id
-		WHERE pur.user_id = $1
-		ORDER BY p.id`, user.ID)
-	if err != nil {
-		writeJSON(w, http.StatusOK, []Project{{
-			ID:     projectIDNum,
-			Name:   "Project " + projectID,
-			Status: "active",
-			Role:   "owner",
-		}})
+	userID, ok := user.OwningUserID()
+	if !ok || userID > int64(^uint32(0)>>1) {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
-	defer rows.Close()
+	if h.projects == nil {
+		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 
-	var projects []Project
-	for rows.Next() {
-		var id int
-		var name string
-		var suspended bool
-		if err := rows.Scan(&id, &name, &suspended); err != nil {
+	limit, err := optionalInt32(r, "limit")
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	offset, err := optionalInt32(r, "offset")
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var search *string
+	if value := r.URL.Query().Get("search"); value != "" {
+		search = &value
+	}
+	checkPublicRole := r.URL.Query().Get("check_public_role") != ""
+	rows, err := h.projects.ListCurrentUserProjects(r.Context(), sqlcgen.ListCurrentUserProjectsParams{
+		CheckPublicRole: checkPublicRole,
+		PublicProjectID: publicProjectID,
+		UserID:          int32(userID),
+		Search:          search,
+		Offset:          offset,
+		Limit:           limit,
+	})
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	projects := assembleProjects(rows)
+	writeJSON(w, http.StatusOK, projects)
+}
+
+func optionalInt32(r *http.Request, name string) (*int32, error) {
+	values, present := r.URL.Query()[name]
+	if !present {
+		return nil, nil
+	}
+	value, err := parseInt32(values[0])
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func parseInt32(value string) (int32, error) {
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	return int32(parsed), err
+}
+
+func assembleProjects(rows []sqlcgen.ListCurrentUserProjectsRow) []Project {
+	projects := make([]Project, 0)
+	for _, row := range rows {
+		if len(projects) == 0 || projects[len(projects)-1].ID != row.ID {
+			projects = append(projects, Project{
+				ID:             row.ID,
+				Name:           row.Name,
+				OwnerID:        row.OwnerID,
+				Plugins:        row.Plugins,
+				KeycloakGroups: json.RawMessage(row.KeycloakGroups),
+				CreateSuccess:  row.CreateSuccess,
+				Suspended:      row.Suspended,
+				Groups:         make([]Group, 0),
+			})
+		}
+		if row.GroupID == nil || row.GroupName == nil {
 			continue
 		}
-		status := "active"
-		if suspended {
-			status = "suspended"
+		project := &projects[len(projects)-1]
+		if len(project.Groups) != 0 && project.Groups[len(project.Groups)-1].ID == int(*row.GroupID) {
+			continue
 		}
-		projects = append(projects, Project{
-			ID:        id,
-			Name:      name,
-			Status:    status,
-			Role:      "owner",
-			Suspended: suspended,
-		})
+		project.Groups = append(project.Groups, Group{ID: int(*row.GroupID), Name: *row.GroupName})
 	}
-
-	if len(projects) == 0 {
-		projects = []Project{{ID: projectIDNum, Name: "Project " + projectID, Status: "active", Role: "owner"}}
-	}
-
-	writeJSON(w, http.StatusOK, projects)
+	return projects
 }
 
 type Group struct {
@@ -119,9 +191,14 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var g Group
 		if err := rows.Scan(&g.ID, &g.Name); err != nil {
-			continue
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			return
 		}
 		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
 	}
 	if groups == nil {
 		groups = []Group{}
@@ -130,112 +207,24 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PutProjectGroups(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	ctx := r.Context()
-
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
 		return
 	}
-
-	groupNames, _ := body["groups"].([]any)
-	if groupNames == nil {
-		writeJSON(w, http.StatusOK, body)
-		return
-	}
-
-	pid, _ := strconv.Atoi(projectID)
-
-	// Resolve or create groups, collect IDs
-	var groupIDs []int
-	for _, gn := range groupNames {
-		name, ok := gn.(string)
-		if !ok || name == "" {
-			continue
-		}
-		var gid int
-		err := h.pool.QueryRow(ctx,
-			`INSERT INTO centry.project_group (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`, name).Scan(&gid)
-		if err != nil {
-			continue
-		}
-		groupIDs = append(groupIDs, gid)
-	}
-
-	// Delete all existing associations for this project
-	if _, err := h.pool.Exec(ctx, `DELETE FROM centry.project_group_association WHERE project_id = $1`, pid); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to update groups"})
-		return
-	}
-
-	// Insert new associations
-	for _, gid := range groupIDs {
-		if _, err := h.pool.Exec(ctx, `INSERT INTO centry.project_group_association (project_id, group_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, pid, gid); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to update groups"})
-			return
-		}
-	}
-
 	writeJSON(w, http.StatusOK, body)
 }
 
-func (h *Handler) AdminProjectList(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	rows, err := h.pool.Query(ctx, `SELECT id, name, COALESCE(suspended, false) FROM centry.project ORDER BY id`)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
-		return
-	}
-	defer rows.Close()
-
-	var projects []map[string]any
-	for rows.Next() {
-		var id int
-		var name string
-		var suspended bool
-		if err := rows.Scan(&id, &name, &suspended); err != nil {
-			continue
-		}
-		projects = append(projects, map[string]any{"id": id, "name": name, "suspended": suspended})
-	}
-	if projects == nil {
-		projects = []map[string]any{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"rows": projects, "total": len(projects)})
-}
-
-func (h *Handler) AdminProjectCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name              string `json:"name"`
-		ProjectAdminEmail string `json:"project_admin_email"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
-		return
-	}
-
-	var id int
-	err := h.pool.QueryRow(r.Context(),
-		`INSERT INTO centry.project (name) VALUES ($1) RETURNING id`, body.Name).Scan(&id)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": body.Name})
-}
-
-func (h *Handler) AdminProjectDelete(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	if _, err := h.pool.Exec(r.Context(), `DELETE FROM centry.project WHERE id = $1`, projectID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to delete project"})
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+	payload = append(payload, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	if _, err := w.Write(payload); err != nil {
+		return
+	}
 }

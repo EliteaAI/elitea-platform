@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
@@ -88,8 +89,11 @@ func TestReadiness_DBDown(t *testing.T) {
 	if s.Status != "not_ready" {
 		t.Errorf("expected status not_ready, got %q", s.Status)
 	}
-	if s.Checks["db"] != "connection refused" {
-		t.Errorf("expected db error, got %q", s.Checks["db"])
+	if s.Checks["db"] != "unavailable" {
+		t.Errorf("expected sanitized db error, got %q", s.Checks["db"])
+	}
+	if strings.Contains(rec.Body.String(), "connection refused") {
+		t.Fatal("readiness response leaked the dependency error")
 	}
 }
 

@@ -21,28 +21,38 @@ WORKDIR /src
 
 ARG VERSION=dev
 
-# Cache module downloads separately from source.
-COPY services/elitea-main/go.mod services/elitea-main/go.sum ./
+# Preserve the repository-relative module layout because elitea-main replaces
+# the generated protobuf module with ../../libs/proto/gen/go.
+COPY libs/proto/gen/go ./libs/proto/gen/go
+COPY services/elitea-main/go.mod services/elitea-main/go.sum ./services/elitea-main/
+WORKDIR /src/services/elitea-main
 RUN go mod download
 
-COPY services/elitea-main/ .
+COPY services/elitea-main/ ./
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-main ./cmd/elitea-main && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-migrate ./cmd/elitea-migrate && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-auth-validate ./cmd/elitea-auth-validate && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/index-v2-preflight ./cmd/index-v2-preflight && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/cutover-ctl ./cmd/cutover-ctl
 
 # ── Stage 3: vulnerability scan ───────────────────────────────────────────────
 FROM aquasec/trivy:latest AS scanner
-COPY --from=builder /out/elitea-main /elitea-main
-# Fail the build on HIGH/CRITICAL vulnerabilities in the binary.
+COPY --from=builder /out/ /
+# Fail the build on HIGH/CRITICAL vulnerabilities in shipped binaries.
 RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
 
-# ── Stage 4: final runtime image ──────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot AS final
+# ── Stage 4: shared runtime image ─────────────────────────────────────────────
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
-COPY --from=builder /out/elitea-main /elitea-main
-COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist
+COPY --from=builder /out/ /
 
 ENV ADMIN_UI_STATIC_DIR=/data/admin_ui/static/dist
 
@@ -52,3 +62,14 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD ["/elitea-main", "-healthcheck"]
 
 ENTRYPOINT ["/elitea-main"]
+
+# The mixed Centry deployment keeps the current Admin UI and does not require
+# either UI submodule to build the selected Go slices.
+FROM runtime AS hybrid
+
+ENV ADMIN_UI_STATIC_DIR=/nonexistent
+
+# ── Stage 5: standalone final image ───────────────────────────────────────────
+FROM runtime AS final
+
+COPY --from=admin-builder /admin/static/dist /data/admin_ui/static/dist

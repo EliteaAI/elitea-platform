@@ -26,3 +26,9 @@ jobs:
           fetch-depth: 1
       - name: Scan for binary / oversize tracked files
         run: bash scripts/no-binaries-check.sh
+      - name: Validate tracked mixed-deployment launchers
+        run: |
+          bash -n deploy/centry-hybrid/compose.sh
+          bash -n deploy/centry-hybrid/prepare-runtime.sh
+          test -s deploy/centry-hybrid/pov-compose.yml
+          test -s deploy/centry-hybrid/traefik/index-routes.yml

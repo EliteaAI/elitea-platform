@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+import "elitea/runtime/v1/errors.proto";
+import "elitea/runtime/v1/indexing.proto";
+import "elitea/runtime/v1/node_event.proto";
+import "elitea/runtime/v1/toolkit.proto";
+import "elitea/runtime/v1/validation.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+enum ExecutionOutputEventTypeV1 {
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_UNSPECIFIED = 0;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_CONFIGURATION_VALIDATION_RESULT = 1;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR = 2;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT = 3;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT = 4;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT = 5;
+}
+
+message SettlementProposalV1 {
+  string proposal_id = 1;
+  ExecutionOutcomeV1 requested_outcome = 2;
+  string terminal_logical_output_id = 3;
+  string terminal_event_id = 4;
+  uint64 terminal_sequence = 5;
+  DigestV1 terminal_payload_digest = 6;
+  // Deterministic v1 key used by PrepareSettlement and crash recovery.
+  string prepare_idempotency_key = 7;
+  reserved 8 to 15;
+}
+
+// ExecutionOutputFrameV1 is accepted only on the dedicated output gRPC
+// listener. Runtime business output is forbidden on Redis and control gRPC.
+message ExecutionOutputFrameV1 {
+  string output_schema_revision = 1;
+  string stream_id = 2;
+  ExecutionIdentityV1 identity = 3;
+  ExecutionFenceV1 fence = 4;
+  string logical_output_id = 5;
+  string event_id = 6;
+  uint64 sequence = 7;
+  uint64 claim_handoff_watermark = 8;
+  ExecutionOutputEventTypeV1 event_type = 9;
+  int64 occurred_at_unix_millis = 10;
+  DigestV1 payload_digest = 11;
+  bool terminal = 12;
+  SettlementProposalV1 settlement_proposal = 13;
+
+  oneof payload {
+    ConfigurationValidationResultV1 configuration_validation = 20;
+    RuntimeErrorV1 runtime_error = 21;
+    ToolkitAvailableToolsResultV1 toolkit_available_tools = 22;
+    IndexIngestResultV1 index_ingest = 23;
+    // Non-terminal current NodeEvent progress. terminal is false,
+    // settlement_proposal is absent, and payload_digest binds the deterministic
+    // NodeEventV1 bytes. The exact UI JSON is projected by elitea-main and
+    // replayed over SSE; it never traverses Redis.
+    NodeEventV1 node_event = 32;
+  }
+
+  reserved 14 to 19;
+  reserved 24 to 31;
+}
+
+message ExecutionOutputAckV1 {
+  string stream_id = 1;
+  ExecutionIdentityV1 identity = 2;
+  ExecutionFenceV1 fence = 3;
+  uint64 committed_contiguous_sequence = 4;
+  uint64 claim_handoff_watermark = 5;
+  uint32 credit_frames = 6;
+  uint64 credit_bytes = 7;
+  DesiredExecutionStateV1 desired_state = 8;
+  RuntimeErrorV1 rejection = 9;
+  reserved 10 to 15;
+}
+
+service ExecutionOutputService {
+  rpc Publish(stream ExecutionOutputFrameV1) returns (stream ExecutionOutputAckV1);
+}

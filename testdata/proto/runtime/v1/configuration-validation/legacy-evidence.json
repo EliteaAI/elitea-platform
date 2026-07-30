@@ -1,0 +1,123 @@
+{
+  "schema_version": "elitea.configuration-validation.legacy-evidence.v1",
+  "capability_id": "configuration.validate.v1",
+  "source_revisions": {
+    "indexer_worker": {
+      "revision": "d55520115dacc3dac41ee45d85a4d705b149dadf",
+      "repository_method_path": "methods/indexer_configuration_validator.py",
+      "legacy_workspace_method_path": "centry/pylon_indexer/plugins/indexer_worker/methods/indexer_configuration_validator.py",
+      "lines": "35-54"
+    },
+    "elitea_sdk": {
+      "revision": "a78d3654f99d8ff89ca7233f20a66d676e564f79",
+      "model_path": "elitea_sdk/configurations/openapi.py"
+    }
+  },
+  "legacy_call_contract": {
+    "registry": "get_class_configurations()",
+    "validation_call": "configurations[configuration_type].model_validate(settings)",
+    "success": "return {'result': validated.model_dump()}",
+    "validation_error": "return {'error': exception.errors(include_url=False, include_context=False)}",
+    "unsupported_type": "return {'error': 'Not supported configuration type: <configuration_type>'}",
+    "unexpected_error": "return {'error': 'Error validating toolkit type: <configuration_type>'}",
+    "extra_positional_and_keyword_arguments": "ignored",
+    "connection_check": "not called by validation",
+    "configuration_create_integration": "validates a secret-expanded copy, ignores the normalized success payload, and persists the original submitted settings",
+    "configuration_update_integration": "does not call this validator"
+  },
+  "openapi_behavior": {
+    "extra_fields": "allowed by the pinned legacy SDK model",
+    "empty_object": "valid",
+    "auth_type_allowed_values": [
+      "Basic",
+      "Bearer",
+      "Custom"
+    ],
+    "method_allowed_values": [
+      "default",
+      "Basic"
+    ],
+    "delegated_oauth_fields": [
+      "oauth_discovery_endpoint",
+      "configuration_uuid"
+    ],
+    "delegated_oauth_validation": "a non-empty oauth_discovery_endpoint requires client_id and client_secret",
+    "invalid_fixture": {
+      "settings": {
+        "auth_type": "Digest"
+      },
+      "legacy_error_type": "literal_error",
+      "legacy_location": [
+        "auth_type"
+      ]
+    }
+  },
+  "credential_free_profile": {
+    "artifact": "openapi-credential-free-profile.json",
+    "profile_id": "OPENAPI_CREDENTIAL_FREE_V1",
+    "evaluation_order": [
+      "reject api_key or client_secret by field presence even when null or empty",
+      "reject top-level fields outside the eight known non-secret OpenAPI fields",
+      "reject array or object values; allow only bounded finite JSON scalars",
+      "invoke the unchanged pinned OpenApiConfiguration.model_validate(settings) exactly once"
+    ],
+    "intentional_security_difference_codes": [
+      "CONTAINER_VALUE_REJECTED",
+      "SECRET_FIELD_PRESENCE_REJECTED",
+      "UNKNOWN_TOP_LEVEL_FIELD_REJECTED"
+    ]
+  },
+  "legacy_parity_matrix": {
+    "artifact": "openapi-legacy-parity-matrix.json",
+    "case_ids": [
+      "all_known_non_secret_fields",
+      "api_key_null",
+      "api_key_value",
+      "client_secret_null",
+      "container_canary_under_allowed_field",
+      "custom_header_name_x_api_key_is_non_secret_value",
+      "custom_header_string_not_coerced",
+      "custom_mode_without_key_or_header",
+      "delegated_oauth_discovery_without_client",
+      "empty_object",
+      "legacy_unknown_extra",
+      "method_basic_literal",
+      "method_default_literal",
+      "method_lowercase_basic",
+      "nested_x_api_key_legacy_extra_bypass",
+      "null_non_secret_fields",
+      "partial_oauth_client_id",
+      "runtime_configuration_uuid"
+    ],
+    "evidence_policy": "Legacy outcomes are asserted against the pinned SDK model; admitted target cases must match exactly and rejected cases must name an intentional security difference."
+  },
+  "schema_evidence": {
+    "schema_id": "elitea.configuration.openapi",
+    "schema_revision": "a78d3654f99d8ff89ca7233f20a66d676e564f79",
+    "canonicalization": "UTF-8 JSON produced with keys sorted lexicographically, separators ',' and ':', and ensure_ascii=false; no trailing byte",
+    "digest_algorithm": "sha256",
+    "digest": "1c43c41a5304c6f73c68deebd37ba70f8c2266a59dfd4f9d4fa20b819e7ab3f1",
+    "canonical_byte_length": 4480
+  },
+  "catalog_evidence": {
+    "catalog_revision": "a78d3654f99d8ff89ca7233f20a66d676e564f79",
+    "version_policy": "The pinned source revision and digests are authoritative; mutable or inconsistent package version strings are not.",
+    "canonicalization": "UTF-8 JSON produced with keys sorted lexicographically, separators ',' and ':', and ensure_ascii=false; no trailing byte",
+    "digest_algorithm": "sha256",
+    "digest": "4a96e3ab8e3842ebf2645a851aeb12e3e2343f28e7d024c1a2960eb4ec254351"
+  },
+  "target_fixture_binding": {
+    "authoritative_input_manifest": "deterministic binary serialization of elitea.runtime.v1.ExecutionInputBundleV1 in input-bundle.pb",
+    "input_reference_media_type": "application/x-protobuf",
+    "input_reference_digest": "sha256 over exact input-bundle.pb bytes",
+    "result_input_bundle_digest": "the same sha256 over exact input-bundle.pb bytes",
+    "fixture_bundle_json": "test-only canonical locator cross-checked field-for-field against verified input-bundle.pb; never a production manifest or grant"
+  },
+  "intentional_target_security_differences": [
+    "The target returns only valid plus deterministic safe issues; it never returns normalized settings.",
+    "The target maps raw Pydantic errors to registered code, JSON pointer, and safe message fields.",
+    "Unsupported configuration types produce RuntimeErrorV1 rather than a fake validation result.",
+    "The first target fixture profile is credential-free and performs no connection check or network access.",
+    "The target rejects model secret fields, unknown legacy extras, and container values before the unchanged pinned SDK validator."
+  ]
+}
