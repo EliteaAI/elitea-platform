@@ -201,7 +201,20 @@
     // these object literals haven't landed in this worktree yet).
     "src/entities/conversation/lib/hooks/useConversationLifecycle.ts",
     "src/entities/conversation/lib/hooks/useUploadAttachments.ts",
-    "src/entities/conversation/model/chatSessionStore.ts"
+    "src/entities/conversation/model/chatSessionStore.ts",
+    // Wave-2 sub-unit C4 (chat-messages): same "public surface awaiting consumer"
+    // gap. `useEnvironmentSettingByKey` and its result/param types
+    // (`UseEnvironmentSettingByKeyResult`, `useErrorToastDuration`) are exported
+    // for a future chat-domain caller (not yet wired) to consume;
+    // `SubAgentLiveness` from `subAgentGrouping.ts` is the type a Wave-2 message
+    // grouping consumer will construct against. Both files follow the established
+    // pattern — re-exports left off the curated barrel until their consumer lands.
+    "src/shared/lib/hooks/useEnvironmentSettingByKey.ts",
+    "src/features/chat-messages/lib/subAgentGrouping.ts",
+    // `ARTIFACT_PREVIEW_SIZE_LIMIT_BYTES` from `artifactParsers.ts` — exported
+    // for the Wave-2 artifact consumer that constructs preview configurations;
+    // the artifacts feature (Wave-2 unit) is awaiting its page-level wiring.
+    "src/features/artifacts/lib/artifactParsers.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
