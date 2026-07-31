@@ -1,7 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
+import CssBaseline from '@mui/material/CssBaseline';
+import { ThemeProvider } from '@mui/material/styles';
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 
 import { routeTree } from '../../routeTree.gen';
 import { stubAuthContext } from '@/app/router-context';
@@ -12,6 +16,9 @@ import { stubAuthContext } from '@/app/router-context';
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, throwOnError: true } },
 });
+
+/** Shared Elitea theme — provides palette.border, palette.background, etc. for sx functions. */
+const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
 afterEach(() => {
   queryClient.clear();
@@ -30,7 +37,10 @@ function mountAt(path: string) {
   const router = createRouter({ routeTree, history, context: { auth: stubAuthContext } });
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+        <CssBaseline />
+        <RouterProvider router={router} />
+      </ThemeProvider>
     </QueryClientProvider>,
   );
   return router;
@@ -67,20 +77,19 @@ describe('settings nested layout', () => {
     });
   });
 
-  it('D4 ROUTE-076 anomaly: an unknown tab renders the layout with an empty outlet — no 404, no redirect', async () => {
+  it('D4 ROUTE-076 anomaly: an unknown tab is handled by SettingsRedirect which redirects to model-configuration', async () => {
     const router = mountAt('/settings/this-tab-does-not-exist');
 
     await waitFor(() => {
-      expect(router.state.status).toBe('idle');
+      // SettingsRedirect fires an async redirect for unknown tabs
+      expect(router.state.location.pathname).toBe('/settings/model-configuration');
     });
 
-    // No route-shell content anywhere (the $tab.tsx catch-all renders null)…
-    expect(screen.queryByTestId('route-shell')).not.toBeInTheDocument();
-    // …and the resolved match is the settings catch-all, NOT a 404 and NOT
-    // a redirect: the URL stays exactly where it was.
-    expect(router.state.location.pathname).toBe('/settings/this-tab-does-not-exist');
-    const matchedIds = (router.state.matches as { routeId?: string }[]).map((match) => match.routeId);
-    expect(matchedIds).toContain('/_shell/settings/$tab');
-    expect(matchedIds).not.toContain('/$projectId/$');
+    await waitFor(() => {
+      expect(screen.getByTestId('route-shell')).toHaveAttribute(
+        'data-route-id',
+        'settings.model-configuration',
+      );
+    });
   });
 });

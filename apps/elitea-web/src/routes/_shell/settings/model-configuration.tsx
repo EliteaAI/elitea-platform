@@ -18,11 +18,21 @@
 import { createFileRoute } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
+import { RouteShell } from '@/routes/-ui/RouteShell';
 
 import { AIConfiguration } from '@/routes/_shell/settings/ai-configuration';
 
 export const Route = createFileRoute('/_shell/settings/model-configuration')({
   pendingComponent: RoutePending,
   errorComponent: RouteError,
-  component: AIConfiguration,
+  component: ModelConfigurationShell,
 });
+
+function ModelConfigurationShell() {
+  return (
+    <>
+      <RouteShell routeId="settings.model-configuration" fallback="AI Configuration" />
+      <AIConfiguration />
+    </>
+  );
+}
