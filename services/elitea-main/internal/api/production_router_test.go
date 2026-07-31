@@ -20,6 +20,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -1055,6 +1056,108 @@ func TestProductionRouterMountsCurrentIndexScheduleCRUDOnlyWhenComposed(
 				response.Code,
 			)
 		}
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentNotificationEventsGETWhenComposed(
+	t *testing.T,
+) {
+	target := strings.Replace(
+		notificationsapi.CurrentNotificationEventsPath,
+		"{projectID}",
+		"7",
+		1,
+	)
+	calls := 0
+	events := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if chi.URLParam(request, "projectID") != "7" {
+			t.Fatalf("projectID = %q, want 7", chi.URLParam(request, "projectID"))
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentNotificationEvents: events})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, target, http.StatusNoContent},
+		{http.MethodPost, target, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v2/notifications/events/default/7", http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.want {
+			t.Fatalf(
+				"%s %s status=%d want=%d body=%s",
+				test.method,
+				test.path,
+				response.Code,
+				test.want,
+				response.Body.String(),
+			)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("notification events handler calls = %d, want 1", calls)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	response := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, target, nil),
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d want=%d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentNotificationAPIMethodsWhenComposed(t *testing.T) {
+	calls := 0
+	notifications := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if chi.URLParam(request, "projectID") != "7" {
+			t.Fatalf("projectID = %q, want 7", chi.URLParam(request, "projectID"))
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentNotifications: notifications})
+
+	tests := []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodPut, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodDelete, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodGet, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodPut, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodDelete, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodPost, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v2/notifications/notification/default/7/15", http.StatusNotFound},
+	}
+	for _, test := range tests {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.want {
+			t.Fatalf("%s %s status=%d want=%d body=%s", test.method, test.path, response.Code, test.want, response.Body.String())
+		}
+	}
+	if calls != 6 {
+		t.Fatalf("notification API handler calls = %d, want 6", calls)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	response := httptest.NewRecorder()
+	uncomposed.ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", nil,
+	))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d want=%d", response.Code, http.StatusNotFound)
 	}
 }
 

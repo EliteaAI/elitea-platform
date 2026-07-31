@@ -135,6 +135,12 @@ validate_model() {
       and .services["index-v1-cutover-preflight"] != null
     ' "$rendered" >/dev/null
 
+  grep -q 'go-current-notification-events:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/events/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'go-current-notifications:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/notifications/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/notification/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+
   rm -f "$rendered"
   trap - EXIT
 }
@@ -154,6 +160,18 @@ case "$action" in
       --build \
       --wait \
       --wait-timeout "${ELITEA_HYBRID_WAIT_TIMEOUT:-600}"
+    # auth_gateway bind-mounts the route file itself. Editors commonly replace
+    # that file atomically, leaving an already-running container attached to
+    # the previous inode even though the file provider has watch enabled.
+    # Recreate only the gateway so this one-command deploy always activates
+    # the routes from the selected platform checkout.
+    "${compose[@]}" --profile runtime up \
+      -d \
+      --force-recreate \
+      --no-deps \
+      --wait \
+      --wait-timeout "${ELITEA_HYBRID_WAIT_TIMEOUT:-600}" \
+      auth_gateway
     "${compose[@]}" --profile runtime ps
     ;;
   ps)

@@ -18,6 +18,32 @@ http:
         - go-main-forward-auth
       service: elitea-main
 
+    go-current-notification-events:
+      rule: >-
+        PathRegexp(`^/api/v2/notifications/events/prompt_lib/[1-9][0-9]*$`) &&
+        Method(`GET`)
+      priority: 90
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: elitea-main
+
+    go-current-notifications:
+      rule: >-
+        (PathRegexp(`^/api/v2/notifications/notifications/prompt_lib/[1-9][0-9]*$`) && (Method(`GET`) || Method(`PUT`) || Method(`DELETE`))) ||
+        (PathRegexp(`^/api/v2/notifications/notification/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && (Method(`GET`) || Method(`PUT`) || Method(`DELETE`)))
+      priority: 90
+      entryPoints: [websecure]
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - normalize-runtime-public-authority
+        - go-main-forward-auth
+      service: elitea-main
+
     runtime-worker-current-tools-list:
       rule: >-
         Host(`elitea-gateway`) &&
