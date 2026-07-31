@@ -3,6 +3,7 @@
  */
 export { default as ConfigurationCard } from './ConfigurationCard';
 export { default as ConfigurationSection } from './ConfigurationSection';
+export { default as ConfigurationsPanel } from './ConfigurationsPanel';
 export { default as ProjectAIConfiguration } from './ProjectAIConfiguration';
 export { default as CodePreview } from './CodePreview';
 export { default as CodePreviewContent } from './CodePreviewContent';
@@ -10,6 +11,7 @@ export { default as CodePreviewEmpty } from './CodePreviewEmpty';
 export { default as CodePreviewHeader } from './CodePreviewHeader';
 export { default as OpenAITemplate } from './OpenAITemplate';
 export { default as ModelCapabilitiesSection } from './ModelCapabilitiesSection';
+export { default as AddModelButton } from './AddModelButton';
 export { default as FieldWithCopy } from './FieldWithCopy';
 export type { ModelsApiResponse } from './api';
 export { fetchModels } from './api';
@@ -20,6 +22,7 @@ export { removeDuplicateModels } from './modelConfiguration.helpers';
 export { useCodePreview } from './useCodePreview';
 export { useModelConfiguration, createOptions } from './useModelConfiguration';
 export { useConfigurationNavigation } from './useConfigurationNavigation';
+export { useConfigurationsBySection } from './useConfigurationsBySection';
 
 /**
  * AIConfiguration — top-level tab content for the model configuration page.

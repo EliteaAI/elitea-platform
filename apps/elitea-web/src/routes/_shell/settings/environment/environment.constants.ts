@@ -1,8 +1,12 @@
 /**
  * Environment field constants.
+ *
+ * Uses 'environment_settings' to match the old-app convention
+ * (apps/elitea-ui/src/[fsd]/features/settings/lib/constants/environment.constants:2)
+ * so the API section name is preserved for parity.
  */
 
-export const ENVIRONMENT_SECTION = 'environment' as const;
+export const ENVIRONMENT_SECTION = 'environment_settings' as const;
 
 export const ENVIRONMENT_FIELD_ORDER = [
   'llm_server_url',

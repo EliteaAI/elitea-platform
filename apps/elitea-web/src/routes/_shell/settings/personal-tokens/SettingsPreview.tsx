@@ -30,30 +30,30 @@ import { t } from '@/shared/ui/lib/t';
 import { SETTINGS_PREVIEW_LABELS, SETTINGS_PREVIEW_TYPES } from '@/entities/token/model/constants';
 
 export interface SettingsPreviewProps {
+  /** Whether the preview is open. */
+  open: boolean;
   /** The raw token string. */
   token: string;
-  /** Display name of the token. */
-  tokenName: string;
-  /** Selected IDE type — 'vscode' or 'jetbrains'. */
-  selectedIDE: 'vscode' | 'jetbrains';
-  /** Callback when user changes the selected IDE. */
-  onIdeChange: (ide: 'vscode' | 'jetbrains') => void;
+  /** Model configuration: { id, name } from useListModelsQuery. */
+  model?: { id: string | number; name: string } | null;
+  /** Current project ID for IDE settings. */
+  projectId?: string;
   /** Callback when the user closes the panel. */
   onClose: () => void;
 }
 
 /** Generate VSCode settings JSON for the given values. */
-function generateVSCodeSettings(token: string): string {
+function generateVSCodeSettings(token: string, model: SettingsPreviewProps['model'], projectId: string): string {
   return JSON.stringify(
     {
       'eliteacode.providerServerURL': '',
       'eliteacode.LLMServerUrl': '',
-      'eliteacode.modelName': '',
-      'eliteacode.LLMModelName': '',
+      'eliteacode.modelName': model?.name ?? '',
+      'eliteacode.LLMModelName': model?.name ?? '',
       'eliteacode.authToken': token || 'Your_Personal_Token',
       'eliteacode.LLMAuthToken': token || 'Your_Personal_Token',
-      'eliteacode.projectId': '',
-      'eliteacode.integrationUid': '',
+      'eliteacode.projectId': projectId || '',
+      'eliteacode.integrationUid': model?.id ?? '',
       'eliteacode.defaultViewMode': 'split',
       'eliteacode.verifySsl': false,
       'eliteacode.displayType': 'split',
@@ -65,29 +65,31 @@ function generateVSCodeSettings(token: string): string {
 }
 
 /** Generate JetBrains .idea settings XML for the given values. */
-function generateJetBrainsSettings(): string {
+function generateJetBrainsSettings(model: SettingsPreviewProps['model'], projectId: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="EliteASettings">
     <option name="displayType" value="SPLIT" />
-    <option name="integrationName" value="" />
-    <option name="integrationUid" value="" />
+    <option name="integrationName" value="${model?.name ?? ''}" />
+    <option name="integrationUid" value="${model?.id ?? ''}" />
     <option name="llmCustomModelEnabled" value="true" />
-    <option name="llmCustomModelName" value="" />
+    <option name="llmCustomModelName" value="${model?.name ?? ''}" />
     <option name="llmServerUrl" value="" />
-    <option name="projectId" value="" />
+    <option name="projectId" value="${projectId ?? ''}" />
     <option name="provider" value="ELITEA_EYE" />
   </component>
 </project>`;
 }
 
 export const SettingsPreview = memo(function SettingsPreview({
-  token,
-  tokenName,
-  selectedIDE,
-  onIdeChange,
+  open,
   onClose,
+  token,
+  model,
+  projectId,
 }: SettingsPreviewProps) {
+  if (!open) return null;
+
   const theme = useTheme();
   const styles = getStyles();
 
@@ -101,12 +103,14 @@ export const SettingsPreview = memo(function SettingsPreview({
     [],
   );
 
+  const [selectedIDE, setSelectedIDE] = useState<'vscode' | 'jetbrains'>('vscode');
+
   const settingsContent = useMemo(() => {
     if (selectedIDE === 'vscode') {
-      return generateVSCodeSettings(token);
+      return generateVSCodeSettings(token, model, projectId ?? '');
     }
-    return generateJetBrainsSettings();
-  }, [selectedIDE, token]);
+    return generateJetBrainsSettings(model, projectId ?? '');
+  }, [selectedIDE, token, model, projectId]);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -130,9 +134,6 @@ export const SettingsPreview = memo(function SettingsPreview({
   }, [settingsContent, selectedIDE]);
 
   const ideLabel = SETTINGS_PREVIEW_LABELS[selectedIDE] || selectedIDE;
-  const canvasTitle = tokenName
-    ? `${tokenName} • ${t('entities.token.preview.ideSettings', 'IDE Settings')}`
-    : ideLabel;
 
   return (
     <Box sx={styles.root}>
@@ -150,7 +151,7 @@ export const SettingsPreview = memo(function SettingsPreview({
             color="text.secondary"
             sx={styles.title}
           >
-            {canvasTitle}
+            {ideLabel} Settings
           </Typography>
         </Box>
         <Box sx={styles.headerRight}>
@@ -173,7 +174,7 @@ export const SettingsPreview = memo(function SettingsPreview({
                 key={opt.value}
                 selected={opt.value === selectedIDE}
                 onClick={() => {
-                  onIdeChange(opt.value as 'vscode' | 'jetbrains');
+                  setSelectedIDE(opt.value);
                   setAnchorEl(null);
                 }}
               >

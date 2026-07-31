@@ -4,6 +4,10 @@
  *
  * Uses generated `useGetApplicationDefaultIcons` for default icons and handwritten
  * hooks for uploaded icons, upload, and delete.
+ *
+ * Deviations from the baseline:
+ *  - Adds `onIconSelect` callback so the parent can persist the icon selection
+ *    via `updateProjectInfo` mutation (Task 3 fix)
  */
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -26,6 +30,8 @@ import { t } from '@/shared/i18n';
 export interface ProjectIconDialogProps {
   open: boolean;
   onClose: () => void;
+  /** Called when the user selects an icon — passes the icon name (null to reset). */
+  onIconSelect?: (iconName: string | null) => void;
   projectId: string;
   selectedIcon?: { name?: string; url?: string } | null;
   projectName: string;
@@ -34,6 +40,7 @@ export interface ProjectIconDialogProps {
 export function ProjectIconDialog({
   open,
   onClose,
+  onIconSelect,
   projectId,
   selectedIcon,
   projectName,
@@ -55,6 +62,15 @@ export function ProjectIconDialog({
 
   const uploadMutation = useUploadProjectIconMutation(projectId);
   const deleteMutation = useDeleteProjectIconMutation(projectId);
+
+  /* ── icon selection handler ───────────────────────────────────────── */
+  const handleSelectIcon = useCallback(
+    (iconName: string | null) => {
+      onIconSelect?.(iconName);
+      onClose();
+    },
+    [onIconSelect, onClose],
+  );
 
   /* ── handlers ──────────────────────────────────────────────────────── */
 
@@ -90,12 +106,13 @@ export function ProjectIconDialog({
     async (name: string) => {
       try {
         await deleteMutation.mutateAsync(name);
+        onIconSelect?.(selectedIcon?.name ?? null);
         onClose();
       } catch {
         // Error toast handled by mutation.
       }
     },
-    [deleteMutation, onClose],
+    [deleteMutation, onIconSelect, onClose, selectedIcon],
   );
 
   /* ── render ────────────────────────────────────────────────────────── */
@@ -114,7 +131,7 @@ export function ProjectIconDialog({
             </Typography>
             <Box sx={cx.iconGrid}>
               {!selectedIcon?.url && !selectedIcon?.name ? (
-                <ProjectIconItem isSelected>
+                <ProjectIconItem isSelected onClick={() => void handleSelectIcon(null)}>
                   <IconPlaceholder name={projectName} />
                 </ProjectIconItem>
               ) : null}
@@ -123,7 +140,7 @@ export function ProjectIconDialog({
                   <ProjectIconItem
                     key={icon.name}
                     isSelected={selectedIcon?.name === icon.name}
-                    onClick={() => { void onClose(); }}
+                    onClick={() => void handleSelectIcon(icon.name)}
                   >
                     <IconPlaceholder name={icon.name} url={icon.url} />
                   </ProjectIconItem>
@@ -146,7 +163,7 @@ export function ProjectIconDialog({
                 <UserIconItem
                   key={icon.name}
                   isSelected={selectedIcon?.name === icon.name}
-                  onClick={() => { void onClose(); }}
+                  onClick={() => void handleSelectIcon(icon.name)}
                   onDelete={() => { void handleDeleteIcon(icon.name); }}
                 >
                   <IconPlaceholder name={icon.name} url={icon.url} />

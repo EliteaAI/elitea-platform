@@ -42,7 +42,7 @@ function modelCapabilitiesSectionStyles(theme: Theme) {
   return {
     capabilitiesSection: { flexShrink: 0 },
     sectionTitle: {
-      color: '#9ca3af',
+      color: theme.vars.palette.text.secondary,
       fontWeight: 600,
       fontSize: theme.typography.headingMedium.fontSize,
       display: 'flex',
@@ -51,14 +51,16 @@ function modelCapabilitiesSectionStyles(theme: Theme) {
     },
     capabilitiesContainer: { display: 'flex', flexWrap: 'wrap', gap: '0.5rem' },
     capabilityChip: {
-      backgroundColor: '#1976d2',
-      color: '#ffffff',
+      backgroundColor: theme.vars.palette.primary.main,
+      color: theme.vars.palette.common.white,
       fontWeight: 500,
       fontSize: theme.typography.bodySmall.fontSize,
       height: '1.75rem',
       borderRadius: theme.shape.radiusLg,
       border: 'none',
-      '&:hover': { backgroundColor: '#115293' },
+      '&:hover': {
+        backgroundColor: theme.vars.palette.primary.dark,
+      },
     },
   };
 }

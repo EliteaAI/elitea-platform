@@ -6,7 +6,7 @@
  * SecretsContent.jsx`.  This component owns:
  *
  *  - Fetching secrets via `useListSecretsQuery`
- *  - Search filtering
+ *  - Search filtering (client-side, matches old-app pattern)
  *  - Creating new secret rows (button + `?createSecret=1` flag)
  *  - Wiring API mutations to the actions hook
  *  - Error toasts on API failures
@@ -16,6 +16,7 @@
  *  - No tour IDs
  *  - Uses `DrawerPageHeader` from shared UI
  *  - Uses `useSelectedProjectStore` for project ID
+ *  - Pagination state is lifted into SecretsTable (self-contained)
  */
 import { memo, useEffect, useMemo, useState } from 'react';
 
@@ -103,7 +104,7 @@ export const SecretsContent = memo(function SecretsContent({
     }
   }, [shouldCreate, projectId]);
 
-  // Filtered rows
+  // Filtered rows — client-side search filter (matches old-app pattern)
   const filteredRows = useMemo(() => {
     if (!search.trim()) return rows;
     const needle = search.trim().toLowerCase();
@@ -189,6 +190,7 @@ export const SecretsContent = memo(function SecretsContent({
             onCancel: actions.onCancel,
             onShowSecret: actions.onShowSecret,
             onHideSecret: actions.onHideSecret,
+            onCopyVisible: actions.onCopyVisible,
             onCloseAlert: actions.onCloseAlert,
             onConfirmAlert: actions.onConfirmAlert,
           }}
@@ -219,5 +221,6 @@ const getStyles = (): Record<string, SxProps<Theme>> => ({
     flex: 1,
     minHeight: 0,
     padding: '0 1.5rem 1.5rem',
+    overflow: 'auto',
   },
 });

@@ -225,7 +225,7 @@ export function useUpdateConfigurationMutation(
   });
 }
 
-/* ── listModels — GET /configurations/configurations/{project_id}?section=tts ── */
+/* ── listModels — GET /configurations/configurations/{project_id}?section=models ── */
 /* manifest: configurations.listModels */
 
 /**
@@ -238,6 +238,8 @@ export interface ConfigModel {
   readonly project_id: string;
   readonly default?: boolean;
   readonly display_name?: string;
+  readonly id?: string | number;
+  readonly uid?: string;
   [key: string]: unknown;
 }
 
@@ -256,7 +258,7 @@ export async function listModels(
   params: ListModelsParams,
 ): Promise<ConfigModelsListResponse> {
   const qs = new URLSearchParams({
-    section: 'tts',
+    section: 'models',
     include_shared: String(params.include_shared ?? false),
     limit: '100',
     offset: '0',
@@ -276,7 +278,7 @@ export function useListModelsQuery(
   return useQuery({
     queryKey: ['models', params.projectId],
     queryFn: () => listModels(params),
-    enabled: options?.enabled ?? true,
+    enabled: options?.enabled ?? (options?.skip ? !options.skip : true),
     refetchOnMount: true,
     refetchOnWindowFocus: false,
   });

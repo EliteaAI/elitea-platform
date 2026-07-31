@@ -7,6 +7,7 @@
  * Deviations:
  *  - No Redux (no sidebar state)
  *  - No tour IDs
+ *  - Passes search prop to TokensTable for filtering (data is fetched there)
  */
 import { memo } from 'react';
 
@@ -26,7 +27,7 @@ export interface TokensSectionProps {
 }
 
 export const TokensSection = memo(function TokensSection({
-  search: _search,
+  search,
   showPreview = false,
   onPreviewToken,
 }: TokensSectionProps) {
@@ -36,6 +37,7 @@ export const TokensSection = memo(function TokensSection({
     <Box sx={styles.container}>
       <Box sx={styles.tableWrapper}>
         <TokensTable
+          search={search}
           showPreview={showPreview}
           {...(onPreviewToken ? { onPreviewToken } : {})}
         />

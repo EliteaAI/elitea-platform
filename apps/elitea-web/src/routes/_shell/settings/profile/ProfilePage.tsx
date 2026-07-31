@@ -1,21 +1,28 @@
 /**
  * Profile page — replaces the old-app's `pages/UserSettings/UserSettings.jsx`
  * → `Profile.jsx` → `ProfileFormContent.jsx` chain.
+ *
+ * Wire: `handleSubmit` → `PUT /social/author` → toast on success/error.
  */
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 
-import { Form, Formik, type FormikValues } from 'formik';
+import { Form, Formik, type FormikHelpers } from 'formik';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import CircularProgress from '@mui/material/CircularProgress';
+import Snackbar from '@mui/material/Snackbar';
+import Alert from '@mui/material/Alert';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/ui/lib/t';
-
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
-import { useDefaultModel } from './useDefaultModel';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
 
+import { useDefaultModel } from './useDefaultModel';
 import { ProfileFormContent } from './ProfileFormContent';
 import {
   ProfileValidationSchema,
+  deserializeProfileFormData,
   serializeProfileFormData,
   type ProfileFormValues,
 } from './profileUtils';
@@ -31,6 +38,20 @@ interface AuthorData {
   personalization?: Record<string, unknown>;
 }
 
+/** PUT /social/author — update current author profile. */
+async function updateAuthorPayload(payload: {
+  name?: string;
+  description?: string;
+  avatar?: string;
+  personalization?: unknown;
+}): Promise<void> {
+  await eliteaFetch('/social/author', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 const ProfilePage = memo(() => {
   const { data: authorResponse, isLoading, isFetching } = useGetCurrentAuthor();
   const authorData = authorResponse?.data as AuthorData | undefined;
@@ -41,14 +62,36 @@ const ProfilePage = memo(() => {
     [authorData, defaultModel],
   );
 
+  const [isSaving, setIsSaving] = useState(false);
+  const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [showErrorToast, setShowErrorToast] = useState(false);
+
   const handleSubmit = useCallback(
-    async (_values: FormikValues, { resetForm }: { resetForm: () => void }) => {
-      // deserializeProfileFormData(values) — calls PUT /social/author
-      // TODO: wire to updateCurrentAuthor mutation
-      resetForm();
+    async (values: ProfileFormValues, _helpers: FormikHelpers<ProfileFormValues>) => {
+      setIsSaving(true);
+      try {
+        // Build the payload matching AuthorUpdateRequest shape
+        const rawPayload = deserializeProfileFormData(values as Record<string, unknown>);
+        const personalization = (rawPayload as Record<string, unknown>).personalization;
+
+        const payload: Record<string, unknown> = {
+          personalization,
+        };
+
+        await updateAuthorPayload(payload as { name?: string; description?: string; avatar?: string; personalization?: unknown });
+
+        setShowSuccessToast(true);
+      } catch {
+        setShowErrorToast(true);
+      } finally {
+        setIsSaving(false);
+      }
     },
     [],
   );
+
+  const handleCloseSuccessToast = useCallback(() => setShowSuccessToast(false), []);
+  const handleCloseErrorToast = useCallback(() => setShowErrorToast(false), []);
 
   return (
     <Box sx={styles.container}>
@@ -64,17 +107,52 @@ const ProfilePage = memo(() => {
           validationSchema={ProfileValidationSchema}
           onSubmit={handleSubmit}
         >
-          <Form>
-            <ProfileFormContent
-              name={authorData?.name ?? ''}
-              avatar={authorData?.avatar ?? ''}
-              email={authorData?.email ?? ''}
-              isFetching={isFetching || isLoading}
-              modelList={modelList}
-            />
-          </Form>
+          {({ isSubmitting }) => (
+            <Form>
+              <ProfileFormContent
+                name={authorData?.name ?? ''}
+                avatar={authorData?.avatar ?? ''}
+                email={authorData?.email ?? ''}
+                isFetching={isFetching || isLoading}
+                modelList={modelList}
+              />
+              <Box sx={styles.saveBar}>
+                <Button
+                  type="submit"
+                  variant="contained"
+                  color="primary"
+                  disabled={isSubmitting || isSaving}
+                  startIcon={isSaving ? <CircularProgress size={16} /> : null}
+                >
+                  {t('settings.profile.save', 'Save changes')}
+                </Button>
+              </Box>
+            </Form>
+          )}
         </Formik>
       </Box>
+
+      {/* Toast notifications */}
+      <Snackbar
+        open={showSuccessToast}
+        autoHideDuration={3000}
+        onClose={handleCloseSuccessToast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={handleCloseSuccessToast} severity="success" variant="filled">
+          {t('settings.profile.saveSuccess', 'Settings saved successfully')}
+        </Alert>
+      </Snackbar>
+      <Snackbar
+        open={showErrorToast}
+        autoHideDuration={3000}
+        onClose={handleCloseErrorToast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={handleCloseErrorToast} severity="error" variant="filled">
+          {t('settings.profile.saveError', 'Failed to save settings')}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 });
@@ -104,5 +182,12 @@ const styles = {
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
+  },
+  saveBar: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    padding: '1rem 1.5rem',
+    borderTop: '0.0625rem solid',
+    borderColor: 'border.table',
   },
 };

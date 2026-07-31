@@ -1,0 +1,91 @@
+/**
+ * useConfigurationsBySection — fetches configurations for all sections in parallel.
+ * Ported from `apps/elitea-ui/src/hooks/credentials/useMultiSectionConfigurations.js`.
+ */
+import { useMemo } from 'react';
+
+import {
+  useGetConfigurationsListQuery,
+  type ConfigurationItem,
+} from '@/shared/api/configurationsApi';
+import { useSelectedProjectStore } from '@/widgets/app-shell';
+
+/* ── section constants ──────────────────────────────────────────────────── */
+
+const SECTIONS = [
+  'llm',
+  'embedding',
+  'vectorstorage',
+  'image_generation',
+  'asr',
+  'tts',
+  'ai_credentials',
+] as const;
+
+export type Section = (typeof SECTIONS)[number];
+
+/** Map of section-name → flat list of configurations. */
+export type ConfigurationsBySection = Record<Section, ConfigurationItem[]>;
+
+/* ── hook ───────────────────────────────────────────────────────────────── */
+
+/**
+ * Fetch configurations for all sections in parallel.
+ * Returns an object keyed by section name, with each value being the
+ * flat list of configurations (no pagination — `pageSize: 200` covers
+ * the expected scale).
+ */
+export function useConfigurationsBySection(): {
+  data: ConfigurationsBySection | null;
+  isLoading: boolean;
+} {
+  const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
+
+  /* Fire one query per section. Each uses the same `enabled` gate so that
+     nothing hits the server until we know which project to query. */
+  const sectionQueries = useMemo(() => {
+    if (!projectId) return SECTIONS.map((section) => ({ section, enabled: false }));
+    return SECTIONS.map((section) => ({
+      section,
+      enabled: true,
+    }));
+  }, [projectId]);
+
+  const queries = useMemo(() => {
+    return sectionQueries.map(({ section, enabled }) =>
+      useGetConfigurationsListQuery(
+        {
+          projectId,
+          section,
+          includeShared: true,
+          pageSize: 200,
+        },
+        { enabled },
+      ),
+    );
+  }, [projectId, sectionQueries]);
+
+  /* Combine results */
+  const result = useMemo((): { data: ConfigurationsBySection | null; isLoading: boolean } => {
+    const anyFetching = queries.some((q) => q.isFetching);
+
+    const data: ConfigurationsBySection = {} as ConfigurationsBySection;
+    SECTIONS.forEach((section, index) => {
+      const q = queries[index];
+      if (q?.data?.items) {
+        data[section] = q.data.items;
+      } else {
+        data[section] = [];
+      }
+    });
+
+    // If any query is still fetching, return null data so consumers show
+    // loading states rather than partially-loaded sections.
+    return {
+      data: anyFetching ? null : data,
+      isLoading: anyFetching,
+    };
+  }, [queries]);
+
+  return result;
+}

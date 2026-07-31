@@ -6,18 +6,21 @@
  *  - `DrawerPageHeader` with search + "Generate" button
  *  - `TokensSection` for the token table (with optional search filtering)
  *  - Empty state when no tokens exist
+ *  - `SettingsPreview` dialog for IDE settings preview
  *
  * Deviations from the baseline:
- *  - No `Split` layout (SettingsPreview not inline — Wave-2 concern)
+ *  - No `Split` layout (SettingsPreview inline — replaced with dialog)
  *  - No tour IDs
- * - No Redux (no sidebar state)
- *  - No model/configuration data fetching
+ *  - No Redux (no sidebar state)
+ *  - Fetches model configuration via `useListModelsQuery` for IDE settings
  *  - Uses `useNavigate` from TanStack Router for nav to create-personal-token
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogContent from '@mui/material/DialogContent';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
@@ -25,7 +28,9 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useNavigate } from '@tanstack/react-router';
 
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
+import { useListModelsQuery } from '@/shared/api/configurationsApi';
 import { TokensSection } from '@/routes/_shell/settings/personal-tokens/TokensSection';
+import { SettingsPreview } from '@/routes/_shell/settings/personal-tokens/SettingsPreview';
 import { t } from '@/shared/ui/lib/t';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
@@ -36,8 +41,41 @@ export function PersonalTokensPage() {
   const { data: tokens = [], isFetching } = useListTokensQuery({
     enabled: !!projectId,
   });
+  const { data: modelsData } = useListModelsQuery(
+    { projectId, include_shared: true },
+    { skip: !projectId },
+  );
+  const configurations = useMemo(
+    () => modelsData?.items ?? [],
+    [modelsData?.items],
+  );
+
   const [search, setSearch] = useState('');
   const styles = getStyles();
+
+  /* ── model configuration for IDE settings (Warning #11) ────────────── */
+
+  const [modelConfiguration, setModelConfiguration] = useState<{
+    id: string | number;
+    name: string;
+  } | null>(null);
+
+  // Set default model when configurations are loaded
+  if (!modelConfiguration && configurations.length > 0) {
+    const defaultModel =
+      configurations.find((m) => m.default === true) ?? configurations[0];
+    if (defaultModel) {
+      setModelConfiguration({
+        id: defaultModel.id ?? '',
+        name: defaultModel.name,
+      });
+    }
+  }
+
+  // Clear model config if no configurations
+  if (configurations.length === 0) {
+    setModelConfiguration(null);
+  }
 
   /* ── navigation to create page ──────────────────────────────────────── */
 
@@ -45,16 +83,15 @@ export function PersonalTokensPage() {
     void navigate({ to: '/settings/create-personal-token' });
   }, [navigate]);
 
-  /* ── preview callback ───────────────────────────────────────────────── */
+  /* ── preview callback (Blocker #2) ─────────────────────────────────── */
 
-  const onPreviewToken = useCallback(
-    (token: { uuid: string; name: string; token: string }) => {
-      // TODO: Open inline SettingsPreview panel (split layout — Wave-2 concern)
-      // eslint-disable-next-line no-console
-      console.log('Preview token:', token.name);
-    },
-    [],
-  );
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewToken, setPreviewToken] = useState<string | null>(null);
+
+  const handlePreview = useCallback((token: { uuid: string; name: string; token: string }) => {
+    setPreviewToken(token.token);
+    setPreviewOpen(true);
+  }, []);
 
   /* ── empty state ────────────────────────────────────────────────────── */
 
@@ -120,9 +157,27 @@ export function PersonalTokensPage() {
         <TokensSection
           search={search}
           showPreview
-          onPreviewToken={onPreviewToken}
+          onPreviewToken={handlePreview}
         />
       </Box>
+
+      {/* SettingsPreview dialog (Blocker #2) */}
+      <Dialog
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogContent sx={styles.dialogContent}>
+          <SettingsPreview
+            open={previewOpen}
+            onClose={() => setPreviewOpen(false)}
+            token={previewToken ?? ''}
+            model={modelConfiguration}
+            projectId={projectId}
+          />
+        </DialogContent>
+      </Dialog>
     </Paper>
   );
 }
@@ -134,6 +189,7 @@ const getStyles = (): {
   emptyStateContainer: SxProps<Theme>;
   emptyStateDesc: SxProps<Theme>;
   emptyStateButton: SxProps<Theme>;
+  dialogContent: SxProps<Theme>;
 } => ({
   root: {
     display: 'flex',
@@ -172,5 +228,10 @@ const getStyles = (): {
     backgroundColor: 'primary.main',
     color: 'white',
     fontWeight: 600,
+  },
+  dialogContent: {
+    padding: 0,
+    minHeight: '28rem',
+    width: '48rem',
   },
 });

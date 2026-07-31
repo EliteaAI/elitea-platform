@@ -2,6 +2,10 @@
  * ProjectParamsHeader — header bar showing project name, icon, and teammate
  * count, with an edit-icon button that opens the icon selector.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/ProjectParamsHeader.jsx`.
+ *
+ * Deviations from the baseline:
+ *  - Accepts `onIconChange` callback so parent can persist icon via
+ *    `updateProjectInfo` mutation (Task 3 fix)
  */
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -19,11 +23,14 @@ import { ProjectIconDialog } from './ProjectIconDialog';
 export interface ProjectParamsHeaderProps {
   projectId: string;
   projectName: string;
+  /** Called when the user selects an icon — parent persists via updateProjectInfo. */
+  onIconChange?: (iconName: string | null) => void;
 }
 
 export function ProjectParamsHeader({
   projectId,
   projectName,
+  onIconChange,
 }: ProjectParamsHeaderProps) {
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
   const { data: projectInfo } = useProjectInfoQuery(projectId, {
@@ -41,6 +48,14 @@ export function ProjectParamsHeader({
   const handleCloseIconDialog = useCallback(() => {
     setIconDialogOpen(false);
   }, []);
+
+  const handleIconSelect = useCallback(
+    (iconName: string | null) => {
+      onIconChange?.(iconName);
+      handleCloseIconDialog();
+    },
+    [onIconChange, handleCloseIconDialog],
+  );
 
   return (
     <Box sx={sx.root}>
@@ -89,6 +104,7 @@ export function ProjectParamsHeader({
         <ProjectIconDialog
           open={iconDialogOpen}
           onClose={handleCloseIconDialog}
+          onIconSelect={handleIconSelect}
           projectId={projectId}
           selectedIcon={iconMeta ?? null}
           projectName={projectName}

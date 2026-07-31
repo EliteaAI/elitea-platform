@@ -8,6 +8,8 @@ export const tableStyles: Record<string, SxProps<Theme>> = {
     flex: 1,
     height: '100%',
     overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
   },
   actionsContainer: {
     display: 'flex',
@@ -39,5 +41,24 @@ export const tableStyles: Record<string, SxProps<Theme>> = {
     '& .MuiDataGrid-row:hover': {
       backgroundColor: 'action.hover',
     },
+  },
+  /* Pagination footer */
+  pagination: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '1rem',
+    padding: '0.75rem 0',
+  },
+  pageSizeSelector: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.875rem',
+    color: 'text.secondary',
+  },
+  pageInfo: {
+    fontSize: '0.875rem',
+    color: 'text.secondary',
   },
 };

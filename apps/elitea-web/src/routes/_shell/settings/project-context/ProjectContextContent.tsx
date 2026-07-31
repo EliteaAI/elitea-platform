@@ -6,16 +6,23 @@
  * Uses:
  *  - Generated `useGetProjectContext` for context retrieval
  *  - Raw `updateProjectContext` (PUT) via `useMutation` for context updates
+ *  - `useUpdateProjectInfo` mutation for icon persistence
  *  - `GenerateProjectContextButton` for AI-generated drafts
  *  - `EnableToggleCard` (extracted) for the enable/disable toggle
  *  - `ProjectParamsHeader` for the project avatar + info row
  *  - `CodeMirrorEditor` for editing (no markdown extension — not installed)
  *  - `Markdown` for preview mode
  *  - `t()` for all text
+ *
+ * Permissions (spec §9.3): `PERMISSIONS.projectContext.view` gates the
+ * entire page; `PERMISSIONS.projectContext.edit` gates save/discard/generate
+ * buttons. Without `view`, the user sees a "No access" message.
  */
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import Typography from '@mui/material/Typography';
+import Snackbar from '@mui/material/Snackbar';
+import Alert from '@mui/material/Alert';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
@@ -30,6 +37,9 @@ import {
   updateProjectContext,
   useGetProjectContext,
 } from '@/shared/api/generated/applications/applications';
+import {
+  updateProjectInfo,
+} from '@/entities/project/api/projectContextApi';
 import { projectContextStyles } from './ProjectContextContent.styles';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -42,6 +52,10 @@ const MAX_CHARS = 2500;
 export interface ProjectContextContentProps {
   projectId: string;
   projectName: string;
+  /** Whether the user has `view` permission for project context. */
+  canView?: boolean;
+  /** Whether the user has `edit` permission for project context. */
+  canEdit?: boolean;
 }
 
 /* ── component ─────────────────────────────────────────────────────────── */
@@ -49,11 +63,30 @@ export interface ProjectContextContentProps {
 export function ProjectContextContent({
   projectId,
   projectName,
+  canView = true,
+  canEdit = true,
 }: ProjectContextContentProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const [isSaving, setIsSaving] = useState(false);
   const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const [showSaveToast, setShowSaveToast] = useState(false);
+  const [showErrorToast, setShowErrorToast] = useState(false);
+
+  /* ── permissions check ────────────────────────────────────────────── */
+
+  if (!canView) {
+    return (
+      <Box sx={projectContextStyles.root}>
+        <DrawerPage>
+          <BannerMessage
+            message={t('entities.projectContext.content.noAccess', 'You do not have permission to view this setting.')}
+            variant="info"
+          />
+        </DrawerPage>
+      </Box>
+    );
+  }
 
   /* ── project context data ─────────────────────────────────────────── */
 
@@ -75,6 +108,7 @@ export function ProjectContextContent({
     },
   });
 
+
   /* ── local state ──────────────────────────────────────────────────── */
 
   const [content, setContent] = useState('');
@@ -92,10 +126,10 @@ export function ProjectContextContent({
 
   /* ── derived state ──────────────────────────────────────────────── */
 
-  const showReadOnlyBanner = true; // canView && !canEdit (placeholder)
+  const showReadOnlyBanner = !canEdit;
   const showDisabledBanner = enabled === false && Boolean(content.trim());
   const showEditorContent = enabled || Boolean(content.trim());
-  const showEditorControls = enabled && true; // enabled && canEdit
+  const showEditorControls = enabled && canEdit;
 
   /* ── event handlers ─────────────────────────────────────────────── */
 
@@ -138,8 +172,9 @@ export function ProjectContextContent({
       setIsSaving(true);
       await saveMutation.mutateAsync({ content, enabled });
       setIsDirty(false);
+      setShowSaveToast(true);
     } catch {
-      console.error(t('entities.projectContext.content.saveFailed', 'Failed to save Project Context'));
+      setShowErrorToast(true);
     } finally {
       setIsSaving(false);
     }
@@ -162,6 +197,18 @@ export function ProjectContextContent({
       setIsEditorFocused(false);
     }
   }, []);
+
+  const handleIconChange = useCallback(async (iconName: string | null) => {
+    try {
+      await updateProjectInfo(projectId, iconName ? { name: iconName } : null);
+    } catch {
+      // Icon persistence error — not fatal, but worth noting
+      console.error(t('entities.projectContext.content.iconSaveFailed', 'Failed to save icon'));
+    }
+  }, [projectId]);
+
+  const handleCloseSaveToast = useCallback(() => setShowSaveToast(false), []);
+  const handleCloseErrorToast = useCallback(() => setShowErrorToast(false), []);
 
   /* ── loading state ──────────────────────────────────────────────── */
 
@@ -195,7 +242,11 @@ export function ProjectContextContent({
         </Box>
 
         <Box sx={s.body}>
-          <ProjectParamsHeader projectId={projectId} projectName={projectName} />
+          <ProjectParamsHeader
+            projectId={projectId}
+            projectName={projectName}
+            onIconChange={handleIconChange}
+          />
 
           {showReadOnlyBanner && (
             <BannerMessage
@@ -219,7 +270,7 @@ export function ProjectContextContent({
               mode={mode}
               isEditorFocused={isEditorFocused}
               showEditorControls={showEditorControls}
-              canEdit={true}
+              canEdit={canEdit}
               onContentChange={handleContentChange}
               onModeChange={handleModeChange}
               onFocus={() => setIsEditorFocused(true)}
@@ -229,10 +280,20 @@ export function ProjectContextContent({
           )}
 
           <Box sx={s.actions}>
-            <BaseBtn variant="contained" color="primary" disabled={!isDirty || isSaving} onClick={() => void handleSave()}>
+            <BaseBtn
+              variant="contained"
+              color="primary"
+              disabled={!canEdit || !isDirty || isSaving}
+              onClick={() => void handleSave()}
+            >
               {t('entities.projectContext.content.save', 'Save')}
             </BaseBtn>
-            <BaseBtn variant="secondary" color="secondary" disabled={!isDirty} onClick={() => void handleDiscard()}>
+            <BaseBtn
+              variant="secondary"
+              color="secondary"
+              disabled={!canEdit || !isDirty}
+              onClick={() => void handleDiscard()}
+            >
               {t('entities.projectContext.content.discard', 'Discard')}
             </BaseBtn>
           </Box>
@@ -246,6 +307,28 @@ export function ProjectContextContent({
         style={{ display: 'none' }}
         onChange={handleFileUpload}
       />
+
+      {/* Toast notifications */}
+      <Snackbar
+        open={showSaveToast}
+        autoHideDuration={3000}
+        onClose={handleCloseSaveToast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={handleCloseSaveToast} severity="success" variant="filled">
+          {t('entities.projectContext.content.saveSuccess', 'Project Context saved successfully')}
+        </Alert>
+      </Snackbar>
+      <Snackbar
+        open={showErrorToast}
+        autoHideDuration={3000}
+        onClose={handleCloseErrorToast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={handleCloseErrorToast} severity="error" variant="filled">
+          {t('entities.projectContext.content.saveError', 'Failed to save Project Context')}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

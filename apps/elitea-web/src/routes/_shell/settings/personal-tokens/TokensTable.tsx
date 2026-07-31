@@ -13,6 +13,7 @@
  *  - Uses selectors from `entities/token/model/selectors` for masking/sorting
  *  - Delete confirmation uses `DeleteEntityModal` from `shared/ui`
  *  - Uses `OpenEyeIcon` from `shared/ui/icons`
+ *  - Accepts `search` prop for filtering tokens by name
  */
 import { memo, useCallback, useMemo, useState } from 'react';
 
@@ -60,6 +61,8 @@ const COLUMNS: ColumnDef[] = [
 /* ── main table ────────────────────────────────────────────────────────── */
 
 export interface TokensTableProps {
+  /** Search query to filter token names. */
+  search?: string;
   /** Whether the "preview settings" button should appear in actions. */
   showPreview?: boolean;
   /** Callback when a user clicks "Preview settings" on a token. */
@@ -67,6 +70,7 @@ export interface TokensTableProps {
 }
 
 export const TokensTable = memo(function TokensTable({
+  search = '',
   showPreview = false,
   onPreviewToken,
 }: TokensTableProps) {
@@ -96,8 +100,18 @@ export const TokensTable = memo(function TokensTable({
     [sortField],
   );
 
+  /* ── search filtering (Warning #10) ─────────────────────────────────── */
+
+  const filteredTokens = useMemo(() => {
+    const query = search.toLowerCase().trim();
+    if (!query) return tokens;
+    return tokens.filter((t) =>
+      t.name.toLowerCase().includes(query),
+    );
+  }, [tokens, search]);
+
   const sortedTokens = useMemo(() => {
-    const base = sortTokensByName(tokens);
+    const base = sortTokensByName(filteredTokens);
 
     if (sortField === 'expires') {
       return [...base].sort((a, b) => {
@@ -108,7 +122,7 @@ export const TokensTable = memo(function TokensTable({
       });
     }
     return base;
-  }, [tokens, sortField, sortDir]);
+  }, [filteredTokens, sortField, sortDir]);
 
   /* ── render cell ──────────────────────────────────────────────────── */
 

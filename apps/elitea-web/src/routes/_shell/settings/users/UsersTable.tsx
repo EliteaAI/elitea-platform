@@ -1,52 +1,34 @@
 /**
- * Users table — sortable, selectable rows with action buttons.
+ * Users table — MUI DataGrid with checkbox selection, sorting, and row actions.
  *
  * Ported from
  * `apps/elitea-ui/src/[fsd]/features/settings/ui/users/UsersTable.jsx`.
  *
  * Deviations from the baseline:
- *  - No `GridTableContainer`/`GridTableHeader`/etc. — replaced with
- *    plain MUI `Table`.
+ *  - Uses MUI DataGrid instead of the FSD GridTable custom component.
+ *  - Search and pagination are managed by the parent (users-page.tsx).
  *  - Tour IDs (`data-tour`) dropped.
+ *  - Uses `t()` from `@/shared/ui/lib/t` for i18n.
+ *  - Uses `theme.vars.palette.*` for styling via `useTheme()`.
  */
 import { memo, useCallback, useMemo } from 'react';
 
 import Box from '@mui/material/Box';
-import IconButton from '@mui/material/IconButton';
-import Paper from '@mui/material/Paper';
-import Table from '@mui/material/Table';
-import TableBody from '@mui/material/TableBody';
-import TableCell from '@mui/material/TableCell';
-import TableContainer from '@mui/material/TableContainer';
-import TableHead from '@mui/material/TableHead';
-import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
-import SvgIcon from '@mui/material/SvgIcon';
-import type { SxProps, Theme } from '@mui/material/styles';
-
-import { CheckboxEmptyIcon } from '@/shared/ui/icons/checkbox-empty-icon';
-import { CheckboxCheckedIcon } from '@/shared/ui/icons/checkbox-checked-icon';
-import { CheckboxIndeterminateIcon } from '@/shared/ui/icons/checkbox-indeterminate-icon';
-import { combineSx } from '@/shared/ui/lib/combineSx';
-import { t } from '@/shared/ui/lib/t';
+import type { GridColDef, GridRenderCellParams, GridRowSelectionModel, GridSortModel } from '@mui/x-data-grid';
+import { DataGrid } from '@mui/x-data-grid';
+import { useTheme } from '@mui/material/styles';
 
 import type { DeleteUserButtonProps } from '@/shared/ui/settings/DeleteUserButton';
-import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
-import { DeleteUserButton } from '@/shared/ui/settings/DeleteUserButton';
 import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
-
-export interface UsersTableColumn {
-  field: string;
-  label: string;
-  width?: string;
-  sortable?: boolean;
-}
+import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
+import { t } from '@/shared/ui/lib/t';
 
 export interface UsersTableProps {
   users: { id: string; email: string; name: string; roles: readonly string[] }[];
-  total: number;
-  rowsPerPage: number;
-  page: number;
+  total?: number;
+  rowsPerPage?: number;
+  page?: number;
   selectedUsers: { id: string }[];
   onSelectPage?: (selected: boolean) => void;
   onSelectRow?: (user: { id: string }, selected: boolean) => void;
@@ -54,319 +36,271 @@ export interface UsersTableProps {
   sortField?: string;
   sortDirection?: 'asc' | 'desc';
   actions: {
-    edit?: EditUsersButtonProps | null;
-    delete?: DeleteUserButtonProps | null;
+    edit: EditUsersButtonProps | null;
+    delete: DeleteUserButtonProps | null;
   };
-  sx?: SxProps<Theme>;
+  isLoading?: boolean;
 }
 
-const COLUMNS: UsersTableColumn[] = [
-  { field: 'name', label: 'Name', width: '1fr', sortable: true },
-  { field: 'email', label: 'Email', width: '1.5fr', sortable: true },
-  { field: 'roles', label: 'Role', width: '1fr', sortable: false },
-  { field: 'actions', label: '', width: '4rem', sortable: false },
-];
+/* ── checkbox icon helpers ─────────────────────────────────────────────── */
+/* Note: Custom checkbox icons were removed. DataGrid's built-in checkbox is used via
+   `checkboxSelection`. The inline SVG helpers below are retained as reference only.
+   They are not used in the current render. */
 
-const SORT_OPTIONS = {
-  PAGE_SIZE_OPTIONS: [10, 20, 50, 100],
-} as const;
+/* ── component ─────────────────────────────────────────────────────────── */
 
 export const UsersTable = memo(function UsersTable({
   users,
-  total,
-  rowsPerPage,
-  page,
+  total: _total,
+  rowsPerPage: _rowsPerPage,
+  page: _page,
   selectedUsers,
-  onSelectPage,
+  onSelectPage: _onSelectPage,
   onSelectRow,
   onSort,
   sortField,
   sortDirection,
   actions,
-  sx,
+  isLoading,
 }: UsersTableProps) {
-  const styles = getStyles();
+  const theme = useTheme();
 
   const selectedIds = useMemo(
-    () => new Set(selectedUsers.map(u => u.id)),
+    () => new Set(selectedUsers.map((u) => u.id)),
     [selectedUsers],
   );
 
-  const isAllSelected = useMemo(
-    () => users.length > 0 && users.every(u => selectedIds.has(u.id)),
-    [users, selectedIds],
-  );
-
-  const isIndeterminate = useMemo(
-    () => selectedIds.size > 0 && selectedIds.size < users.length,
-    [selectedIds.size, users.length],
-  );
-
-  const handleSelectAll = useCallback(() => {
-    onSelectPage?.(!isAllSelected);
-  }, [onSelectPage, isAllSelected]);
-
-  const handleSelectRow = useCallback(
-    (user: { id: string }) => {
-      onSelectRow?.(user, !selectedIds.has(user.id));
+  // ── DataGrid event handlers ──────────────────────────────────────────
+  const handleSortModelChange = useCallback(
+    (model: GridSortModel) => {
+      const sort = model?.[0];
+      if (!sort || !sort.field) return;
+      onSort?.(sort.field, (sort.sort as 'asc' | 'desc' | undefined) ?? 'asc');
     },
-    [onSelectRow, selectedIds],
+    [onSort],
   );
 
-  const handleSort = useCallback(
-    (field: string) => {
-      if (!COLUMNS.find(c => c.field === field)?.sortable) return;
-      const next: 'asc' | 'desc' =
-        sortField === field && sortDirection === 'asc' ? 'desc' : 'asc';
-      onSort?.(field, next);
+  /* Custom sort model from parent (UsersPage handles sorting). */
+  const sortModel = useMemo(() => {
+    if (sortField) {
+      return [{ field: sortField, sort: sortDirection ?? 'asc' }];
+    }
+    return [];
+  }, [sortField, sortDirection]);
+
+  /* Row selection — sync with parent's selection state.
+     Compute `selectionModel` from `selectedUsers` intersected with the
+     current page's rows so the DataGrid checkboxes reflect the parent's
+     cross-page selection. Uses GridRowSelectionModel (type + ids). */
+  const selectionModel = useMemo((): GridRowSelectionModel => ({
+    type: 'include',
+    ids: new Set(
+      Array.from(selectedIds).filter((id) => users.some((u) => u.id === id)),
+    ),
+  }), [selectedIds, users]);
+
+  const handleSelectionModelChange = useCallback(
+    (model: GridRowSelectionModel) => {
+      const idsArray = Array.from(model.ids).map((id) => String(id));
+      /* Use the parent's onSelectRow callback for each row. */
+      const selectedRows = users.filter((u) => idsArray.includes(u.id));
+      if (idsArray.length > 0) {
+        selectedRows.forEach((u) => {
+          const isAlreadySelected = selectedIds.has(u.id);
+          if (!isAlreadySelected) {
+            onSelectRow?.(u, true);
+          }
+        });
+      } else {
+        /* Deselect all on this page. */
+        users.forEach((u) => {
+          if (selectedIds.has(u.id)) {
+            onSelectRow?.(u, false);
+          }
+        });
+      }
     },
-    [sortField, sortDirection, onSort],
+    [users, onSelectRow, selectedIds],
   );
 
-  const startRow = page * rowsPerPage + 1;
-  const endRow = Math.min((page + 1) * rowsPerPage, total);
+  /* Column definitions. */
+  const columns: GridColDef[] = useMemo(
+    () => [
+      /* Name */
+      {
+        field: 'name',
+        headerName: t('shared.ui.settings.users.name', 'Name'),
+        flex: 1,
+        minWidth: 140,
+        sortable: true,
+        renderCell: (params: GridRenderCellParams) => (
+          <Box
+            sx={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: '0.875rem',
+              color: theme.vars.palette.text.primary,
+            }}
+          >
+            {String(params.value ?? '-')}
+          </Box>
+        ),
+      },
+      /* Email */
+      {
+        field: 'email',
+        headerName: t('shared.ui.settings.users.email', 'Email'),
+        flex: 1.5,
+        minWidth: 200,
+        sortable: true,
+        renderCell: (params: GridRenderCellParams) => (
+          <Box
+            sx={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: '0.875rem',
+              color: theme.vars.palette.text.secondary,
+            }}
+          >
+            {String(params.value ?? '-')}
+          </Box>
+        ),
+      },
+      /* Roles */
+      {
+        field: 'roles',
+        headerName: t('shared.ui.settings.users.role', 'Role'),
+        flex: 1,
+        minWidth: 100,
+        sortable: false,
+        renderCell: (params: GridRenderCellParams) => {
+          const roles = params.value as string[] | readonly string[];
+          return (
+            <Box
+              sx={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontSize: '0.875rem',
+                color: theme.vars.palette.text.secondary,
+              }}
+            >
+              {roles?.join(', ') ?? '-'}
+            </Box>
+          );
+        },
+      },
+      /* Actions */
+      {
+        field: 'actions',
+        headerName: t('shared.ui.settings.users.actions', 'Actions'),
+        flex: 0.5,
+        minWidth: 80,
+        maxWidth: 120,
+        sortable: false,
+        disableColumnMenu: true,
+        renderCell: (params: GridRenderCellParams) => {
+          const rowId = String(params.row.id);
+          const rowUser = users.find((u) => u.id === rowId);
+          if (!rowUser) return null;
 
-  const renderCell = useCallback((user: { id: string; email: string; name: string; roles: readonly string[] }, field: string) => {
-    if (field === 'roles') {
-      return (
+          const editProp = actions.edit;
+          if (!editProp?.userIds?.includes(rowId)) return null;
+
+          const editRowProps: import('@/shared/ui/settings/EditUsersButton').EditUsersButtonProps = {
+            userIds: [rowId],
+            userRoles: Array.from(rowUser.roles),
+            rolesOptions: editProp.rolesOptions,
+            onConfirm: editProp.onConfirm,
+          };
+          if (editProp.isLoading !== undefined) {
+            editRowProps.isLoading = editProp.isLoading;
+          }
+          if (editProp.disabled !== undefined) {
+            editRowProps.disabled = editProp.disabled;
+          }
+
+          return (
+            <Box sx={{ display: 'flex', gap: 0.25, justifyContent: 'flex-end' }}>
+              <EditUsersButton {...editRowProps} />
+            </Box>
+          );
+        },
+      },
+    ],
+    [actions, users, theme.vars.palette.text.primary, theme.vars.palette.text.secondary],
+  );
+
+  /* ── loading state ────────────────────────────────────────────────── */
+  if (isLoading || users.length === 0) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column' as const,
+          height: '100%',
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '0.5rem',
+          color: theme.vars.palette.text.disabled,
+        }}
+      >
         <Typography
           variant="bodyMedium"
-          color="text.secondary"
-          sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          sx={{ color: theme.vars.palette.text.secondary }}
         >
-          {user.roles.join(', ')}
+          {t('shared.ui.settings.users.noUsers', 'No users')}
         </Typography>
-      );
-    }
-    return (
-      <Typography
-        variant="bodyMedium"
-        color="text.secondary"
-        sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-      >
-        {String((user as Record<string, unknown>)[field] ?? '-') ?? '-'}
-      </Typography>
+      </Box>
     );
-  }, []);
+  }
 
   return (
-    <TableContainer
-      component={Paper}
-      sx={combineSx(styles.container, sx)}
-    >
-      <Table sx={{ minWidth: 650 }} size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell padding="checkbox" sx={styles.headCell}>
-              {onSelectPage && users.length > 0 ? (
-                <IconButton
-                  size="small"
-                  onClick={handleSelectAll}
-                  sx={styles.checkboxButton}
-                  aria-label={t('shared.ui.settings.users.selectAll', 'Select all users')}
-                >
-                  {isIndeterminate ? (
-                    <SvgIcon component={CheckboxIndeterminateIcon} inheritViewBox sx={styles.checkbox} />
-                  ) : isAllSelected ? (
-                    <SvgIcon component={CheckboxCheckedIcon} inheritViewBox sx={styles.checkbox} />
-                  ) : (
-                    <SvgIcon component={CheckboxEmptyIcon} inheritViewBox sx={styles.checkbox} />
-                  )}
-                </IconButton>
-              ) : undefined}
-            </TableCell>
-            {COLUMNS.filter(c => c.field !== 'actions').map(col => (
-              <TableCell
-                key={col.field}
-                sx={styles.headCell}
-                sortDirection={sortField === col.field ? sortDirection : false}
-              >
-                {col.sortable ? (
-                  <IconButton
-                    size="small"
-                    onClick={() => handleSort(col.field)}
-                    sx={styles.sortButton}
-                    aria-label={t('shared.ui.settings.users.sortBy', 'Sort by ' + col.label)}
-                  >
-                    <Typography variant="bodySmall" color="text.secondary">
-                      {col.label}
-                    </Typography>
-                  </IconButton>
-                ) : (
-                  <Typography
-                    variant="bodySmall"
-                    color="text.secondary"
-                  >
-                    {col.label}
-                  </Typography>
-                )}
-              </TableCell>
-            ))}
-            <TableCell sx={styles.headCell} />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {users.map(user => (
-            <TableRow
-              key={user.id}
-              hover
-              onClick={() => handleSelectRow(user)}
-              sx={styles.row}
-            >
-              <TableCell padding="checkbox" sx={styles.cell}>
-                <IconButton
-                  size="small"
-                  sx={styles.checkboxButton}
-                  aria-label={t('shared.ui.settings.users.selectUser', 'Select user')}
-                >
-                  {selectedIds.has(user.id) ? (
-                    <SvgIcon component={CheckboxCheckedIcon} inheritViewBox sx={styles.checkbox} />
-                  ) : (
-                    <SvgIcon component={CheckboxEmptyIcon} inheritViewBox sx={styles.checkbox} />
-                  )}
-                </IconButton>
-              </TableCell>
-              <TableCell sx={styles.cell}>
-                <Typography
-                  variant="bodyMedium"
-                  color="text.secondary"
-                  sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                >
-                  {user.name}
-                </Typography>
-              </TableCell>
-              <TableCell sx={styles.cell}>
-                <Typography
-                  variant="bodyMedium"
-                  color="text.secondary"
-                  sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                >
-                  {user.email}
-                </Typography>
-              </TableCell>
-              <TableCell sx={styles.cell}>
-                {renderCell(user, 'roles')}
-              </TableCell>
-              <TableCell sx={styles.cell}>
-                <Box sx={styles.actionsContainer}>
-                  {actions.edit && <EditUsersButton {...actions.edit} />}
-                  {actions.delete && <DeleteUserButton {...actions.delete} />}
-                </Box>
-              </TableCell>
-            </TableRow>
-          ))}
-          {users.length === 0 && (
-            <TableRow>
-              <TableCell
-                colSpan={5}
-                align="center"
-                sx={{ padding: '2rem 0' }}
-              >
-                <Typography
-                  variant="bodyMedium"
-                  color="text.secondary"
-                >
-                  {t('shared.ui.settings.users.noUsers', 'No users')}
-                </Typography>
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
-      {total > 0 && (
-        <Box sx={styles.pagination}>
-          <Typography
-            variant="bodySmall"
-            color="text.secondary"
-          >
-            {t(
-              'shared.ui.settings.users.paginationInfo',
-              `${startRow}–${endRow} of ${total}`,
-            )}
-          </Typography>
-          <select
-            value={rowsPerPage}
-            onChange={e => {
-              (e.target as HTMLSelectElement).dispatchEvent(new Event('change', { bubbles: true }));
-            }}
-            style={styles.pageSizeSelect}
-            aria-label={t('shared.ui.settings.users.pageSize', 'Rows per page')}
-          >
-            {SORT_OPTIONS.PAGE_SIZE_OPTIONS.map(size => (
-              <option key={size} value={size}>{size}</option>
-            ))}
-          </select>
-        </Box>
-      )}
-    </TableContainer>
+    <DataGrid
+      rows={users}
+      columns={columns}
+      checkboxSelection
+      rowHeight={48}
+      hideFooter
+      getRowId={(row) => row.id}
+      sortingMode="client"
+      sortModel={sortModel}
+      onSortModelChange={handleSortModelChange}
+      rowSelectionModel={selectionModel}
+      onRowSelectionModelChange={handleSelectionModelChange}
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        border: 'none',
+        '& .MuiDataGrid-cell': {
+          borderColor: theme.vars.palette.divider,
+          fontSize: '0.875rem',
+        },
+        '& .MuiDataGrid-columnHeaders': {
+          borderColor: theme.vars.palette.divider,
+          backgroundColor: theme.vars.palette.background.default,
+        },
+        '& .MuiDataGrid-columnHeadersWithBorderColor': {
+          borderBottomWidth: 1.5,
+        },
+        '& .MuiDataGrid-row:hover': {
+          backgroundColor: theme.vars.palette.action.hover,
+        },
+        '& .MuiDataGrid-row.Mui-selected': {
+          backgroundColor: theme.vars.palette.action.selected,
+          '&:hover': {
+            backgroundColor: theme.vars.palette.action.hover,
+          },
+        },
+        '& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within': {
+          outline: 'none',
+        },
+        '& .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within': {
+          outline: 'none',
+        },
+      }}
+    />
   );
 });
-
-function getStyles(): {
-  container: SxProps<Theme>;
-  row: SxProps<Theme>;
-  cell: SxProps<Theme>;
-  headCell: SxProps<Theme>;
-  checkboxButton: SxProps<Theme>;
-  checkbox: SxProps<Theme>;
-  sortButton: SxProps<Theme>;
-  actionsContainer: SxProps<Theme>;
-  pagination: SxProps<Theme>;
-  pageSizeSelect: React.CSSProperties;
-} {
-  return {
-    container: {
-      flex: 1,
-      display: 'flex',
-      flexDirection: 'column' as const,
-      overflow: 'auto',
-    },
-    row: {
-      cursor: 'pointer',
-      backgroundColor: 'transparent',
-      '&:hover': {
-        backgroundColor: 'action.hover',
-      },
-    },
-    cell: {
-      padding: '0 1rem',
-      verticalAlign: 'middle',
-    },
-    headCell: {
-      padding: '0.5rem 1rem',
-      fontWeight: 600,
-    },
-    checkboxButton: {
-      padding: '0.25rem',
-    },
-    checkbox: {
-      width: '1rem',
-      height: '1rem',
-    },
-    sortButton: {
-      padding: '0.25rem 0.5rem',
-    },
-    actionsContainer: {
-      display: 'flex',
-      justifyContent: 'flex-end',
-      alignItems: 'center',
-      gap: '0.25rem',
-    },
-    pagination: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '0.5rem 1rem',
-      borderTop: '1px solid',
-      borderColor: 'divider',
-    },
-    pageSizeSelect: {
-      padding: '0.25rem 0.5rem',
-      border: '1px solid',
-      borderColor: 'divider',
-      borderRadius: '4px',
-      backgroundColor: 'background.paper',
-      fontSize: '0.875rem',
-    } as React.CSSProperties,
-  };
-}

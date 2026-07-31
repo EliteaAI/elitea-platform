@@ -9,17 +9,23 @@
  *  - Show/hide password toggle for secret values (`SecretValueCell`)
  *  - Actions row: visibility toggle, copy, edit, delete (via menu)
  *  - Confirmation dialogs for hide / delete
+ *  - Pagination footer with page size selector (5/10/50/100)
  *  - Loading skeleton when data is fetching
  *
  * Deviations from the baseline:
  *  - No tour IDs (`SECRETS_TOUR_TARGET_IDS` → dropped)
  *  - Uses shared `SecretValueCell` + `SecretActionsMenu` components
  *  - Simpler DataGrid integration (no custom `GridTableContainer` wrapper)
+ *  - Client-side pagination replaces the old `usePagination` hook
  */
-import { memo, useEffect, useMemo, useCallback } from 'react';
+import { memo, useEffect, useMemo, useCallback, useState } from 'react';
 
 import Box from '@mui/material/Box';
+import Pagination from '@mui/material/Pagination';
+import Select from '@mui/material/Select';
+import MenuItem from '@mui/material/MenuItem';
 import Skeleton from '@mui/material/Skeleton';
+import Typography from '@mui/material/Typography';
 import type { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { DataGrid, GridRowModes } from '@mui/x-data-grid';
 
@@ -29,6 +35,11 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { SecretActionsMenu } from './SecretActionsMenu';
 import { tableStyles } from './SecretsTable.styles';
 import { t } from '@/shared/ui/lib/t';
+
+/* ── pagination config ────────────────────────────────────────────────── */
+
+const PAGE_SIZE_OPTIONS = [5, 10, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 10;
 
 /* ── props (grouped: 5 objects, ≤ 12) ─────────────────────────────────── */
 
@@ -53,6 +64,7 @@ export interface SecretsTableProps {
     onCancel: (rowId: string) => () => void;
     onShowSecret: (rowId: string) => () => Promise<void>;
     onHideSecret: (rowId: string) => void;
+    onCopyVisible: (rowId: string) => () => Promise<void>;
     onCloseAlert: () => () => void;
     onConfirmAlert: (rowId: string) => () => void;
   };
@@ -119,6 +131,10 @@ export const SecretsTable = memo(function SecretsTable({
 }: SecretsTableProps) {
   const styles = tableStyles;
 
+  /* ── pagination state ─────────────────────────────────────────────── */
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+
   /* ── hooks (must be before any early return) ─────────────────────── */
 
   // Auto-set new rows to edit mode
@@ -142,6 +158,20 @@ export const SecretsTable = memo(function SecretsTable({
     return [...newRows, ...existingRows];
   }, [rows]);
 
+  // Paginate
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return sortedRows.slice(start, start + pageSize);
+  }, [sortedRows, currentPage, pageSize]);
+
+  // Reset page when total pages changes (e.g., rows were deleted)
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(1);
+    }
+  }, [totalPages, currentPage]);
+
   const renderRowCell = useCallback(
     (params: GridRenderCellParams) => (
       <SecretRowComponent
@@ -156,7 +186,7 @@ export const SecretsTable = memo(function SecretsTable({
         actions={actions}
       />
     ),
-    [rowModesModel, validationErrors, isShowSecretMap, onValidationChange, actions],
+    [rowModesModel, validationErrors, isShowSecretMap, onValidationChange, actions, setRows, setRowModesModel],
   );
 
   const columnsWithCell = [
@@ -188,13 +218,51 @@ export const SecretsTable = memo(function SecretsTable({
   return (
     <Box sx={styles.container}>
       <DataGrid
-        rows={sortedRows}
+        rows={paginatedRows}
         columns={columnsWithCell}
         rowHeight={48}
         hideFooter
         getRowId={(row: SecretRow) => row.id}
         sx={styles.dataGrid!}
       />
+
+      {/* Pagination footer */}
+      <Box sx={styles.pagination}>
+        <Box sx={styles.pageSizeSelector}>
+          <label htmlFor={`page-size-select`}>
+            {t('entities.secret.table.pageSize', 'Rows per page')}
+          </label>
+          <Select
+            id="page-size-select"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setCurrentPage(1);
+            }}
+            size="small"
+            sx={{ marginLeft: '0.5rem' }}
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <MenuItem key={size} value={size}>
+                {size}
+              </MenuItem>
+            ))}
+          </Select>
+        </Box>
+        <Pagination
+          count={totalPages}
+          page={currentPage}
+          onChange={(_e, page) => setCurrentPage(page)}
+          color="primary"
+          showFirstButton
+          showLastButton
+        />
+        <Box sx={styles.pageInfo}>
+          <Typography variant="bodySmall" color="text.secondary">
+            {t('entities.secret.table.pageInfo', `Page ${currentPage} of ${totalPages}`)}
+          </Typography>
+        </Box>
+      </Box>
 
       {/* Actions menu for the active row */}
       {menu.anchorRowId && (
@@ -215,7 +283,7 @@ export const SecretsTable = memo(function SecretsTable({
         open={!!dialog.openAlert}
         alertType={dialog.openAlertType}
         rowName={dialog.openAlert ?? ''}
-        onClose={() => { void actions.onCloseAlert()(); }}
+        onClose={() => { actions.onCloseAlert()(); }}
         onConfirm={() => { void actions.onConfirmAlert(dialog.openAlert ?? '')(); }}
       />
     </Box>

@@ -41,6 +41,7 @@ export interface SecretRowProps {
     onCancel: (rowId: string) => () => void;
     onShowSecret: (rowId: string) => () => Promise<void>;
     onHideSecret: (rowId: string) => void;
+    onCopyVisible: (rowId: string) => () => Promise<void>;
   };
 }
 
@@ -111,7 +112,9 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         label={row.secretName}
         value={row.secretValue}
         isVisible={isVisible}
-        onCopy={async () => {}}
+        onCopy={async () => {
+          await actions.onCopyVisible(row.id)();
+        }}
         onToggleVisibility={() => {
           if (isVisible) {
             actions.onHideSecret(row.id);
@@ -121,7 +124,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         }}
       />
     );
-  }, [isEditing, row, params.value, isShowSecretMap, onValidationChange, actions.onHideSecret, actions.onShowSecret]);
+  }, [isEditing, row, params.value, isShowSecretMap, onValidationChange, actions.onHideSecret, actions.onShowSecret, actions.onCopyVisible, isVisible]);
 
   /* ── actions cell ──────────────────────────────────────────────────── */
 
