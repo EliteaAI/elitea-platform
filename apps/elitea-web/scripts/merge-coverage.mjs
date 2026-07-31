@@ -43,6 +43,8 @@ async function main() {
     coverageMap.merge(raw);
   }
 
+  printUncoveredInfo(coverageMap);
+
   await fs.rm(outputDir, { recursive: true, force: true });
   await fs.mkdir(outputDir, { recursive: true });
 
@@ -62,6 +64,73 @@ async function main() {
 
   enforceThresholds(coverageMap);
   console.log('Merged coverage reports generated at', outputDir);
+}
+
+function printUncoveredInfo(coverageMap) {
+  const uncoveredLines = [];
+  const uncoveredFunctions = [];
+
+  for (const file of coverageMap.files()) {
+    const fileCoverage = coverageMap.fileCoverageFor(file);
+    if (!fileCoverage) continue;
+
+    const relativeFile = path.relative(root, file).replace(/\\/g, '/');
+    const lines = fileCoverage.getUncoveredLines();
+    const lineCoverage = fileCoverage.getLineCoverage();
+    const totalLines = Object.keys(lineCoverage || {}).length;
+    if (lines && lines.length > 0) {
+      uncoveredLines.push({
+        file: relativeFile,
+        uncoveredLines: lines,
+        totalLines,
+        missedLines: lines.length,
+      });
+    }
+
+    const funcs = getUncoveredFunctions(fileCoverage);
+    if (funcs.length > 0) {
+      uncoveredFunctions.push({ file: relativeFile, funcs });
+    }
+  }
+
+  if (uncoveredLines.length === 0 && uncoveredFunctions.length === 0) {
+    console.log('No uncovered lines or functions detected in merged coverage.');
+    return;
+  }
+
+  if (uncoveredLines.length > 0) {
+    console.log('Uncovered lines per file:');
+    for (const entry of uncoveredLines) {
+      console.log(`  ${entry.file}: ${entry.uncoveredLines.join(', ')} (${entry.missedLines}/${entry.totalLines} lines uncovered)`);
+    }
+  }
+
+  if (uncoveredFunctions.length > 0) {
+    console.log('Uncovered functions per file:');
+    for (const entry of uncoveredFunctions) {
+      const details = entry.funcs.map((func) => `${func.name} (line ${func.line})`).join(', ');
+      console.log(`  ${entry.file}: ${details}`);
+    }
+  }
+}
+
+function getUncoveredFunctions(fileCoverage) {
+  const uncovered = [];
+  const fnMap = fileCoverage.fnMap || {};
+  const hits = fileCoverage.f || {};
+
+  for (const key of Object.keys(fnMap)) {
+    const fnMeta = fnMap[key];
+    const hitCount = Number(hits[key] || 0);
+    if (hitCount === 0) {
+      uncovered.push({
+        name: fnMeta.name || '<anonymous>',
+        line: fnMeta.decl?.start?.line ?? fnMeta.line ?? 'unknown',
+      });
+    }
+  }
+
+  return uncovered;
 }
 
 async function findCoverageFiles() {
