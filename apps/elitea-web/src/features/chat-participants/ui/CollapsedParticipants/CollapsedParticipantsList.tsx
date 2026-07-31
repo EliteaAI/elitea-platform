@@ -8,6 +8,8 @@ import { memo } from 'react';
 
 import { ListItem, ListItemButton, ListItemText } from '@mui/material';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -26,7 +28,7 @@ const CollapsedParticipantsList = memo((props: CollapsedParticipantsListProps): 
   return (
     <>
       {participants.map((p) => {
-        const name = p.entity_meta?.name || p.meta?.user_name || 'Unknown';
+        const name = p.entity_meta?.name || p.meta?.user_name || t('chat.participants.unknown', 'Unknown');
         return (
           <ListItem key={p.id} disablePadding>
             <ListItemButton onClick={() => onItemClick?.(p)}>

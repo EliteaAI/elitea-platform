@@ -7,6 +7,7 @@
 import { memo, useState } from 'react';
 
 import { Box, ClickAwayListener, Paper, Popper } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 
 import CollapsedParticipantsList from './CollapsedParticipantsList';
 
@@ -28,6 +29,7 @@ export interface CollapsedParticipantsDropdownProps {
  * Clicking the overflow count opens a Popper with the full list.
  */
 const CollapsedParticipantsDropdown = memo((props: CollapsedParticipantsDropdownProps): React.ReactElement | null => {
+  const theme = useTheme();
   const { participants, maxVisible = 5, onItemClick, anchorEl } = props;
   const [showPopover, setShowPopover] = useState(false);
 
@@ -50,13 +52,13 @@ const CollapsedParticipantsDropdown = memo((props: CollapsedParticipantsDropdown
               sx={{
                 width: 28,
                 height: 28,
-                borderRadius: '50%',
+                borderRadius: theme.vars.shape.radiusPill,
                 backgroundColor: 'action.selected',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
-                fontSize: '0.65rem',
+                fontSize: theme.typography.bodySmall.fontSize,
                 fontWeight: 600,
                 color: 'text.primary',
                 '&:hover': { backgroundColor: 'action.hover' },
@@ -72,13 +74,13 @@ const CollapsedParticipantsDropdown = memo((props: CollapsedParticipantsDropdown
             sx={{
               width: 28,
               height: 28,
-              borderRadius: '50%',
+              borderRadius: theme.vars.shape.radiusPill,
               backgroundColor: 'primary.main',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               cursor: 'pointer',
-              fontSize: '0.65rem',
+              fontSize: theme.typography.bodySmall.fontSize,
               fontWeight: 600,
               color: 'primary.contrastText',
             }}
