@@ -39,12 +39,12 @@ defaults:
     working-directory: apps/elitea-web
 
 jobs:
-  quality:
-    name: Quality (typecheck, lint, unit, storybook)
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -53,27 +53,37 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
-      - name: Lint (oxlint + tsgolint + elitea/* + i18next bridge)
+
+  lint:
+    name: Lint (oxlint + tsgolint + elitea/* + i18next bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Lint
         # --deny-warnings: every rule is pinned error today; the flag is a
         # tripwire so a future warn-severity rule can never pass CI silently
         # (package.json is F1's, so the flag rides the CI invocation).
         run: npm run lint -- --deny-warnings
-      - name: Unit tests (coverage self-arms with the first real unit test)
-        # SELF-ARMING §6.6 coverage gate: the --coverage flag switches on as
-        # soon as a real unit test exists in src/ — excluding src/smoke/
-        # (React-19 compatibility probes) and src/test/ (test infra; §6.3
-        # excludes it from the coverage denominator, so its tests cannot move
-        # the number). vitest.config.ts thresholds are untouched
-        # (autoUpdate:false); nothing here weakens them.
-        run: |
-          if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
-               ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
-            echo "real unit tests present — §6.6 coverage thresholds armed"
-            npm run test:unit -- --run --coverage
-          else
-            echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
-            npm run test:unit -- --run
-          fi
+
+  storybook:
+    name: Storybook tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
       - name: Install Playwright browser (Storybook's @storybook/addon-vitest)
         # Real CI gap, found the first time this job ran end-to-end against
         # a populated .storybook/ (draft-PR CI hadn't executed before unit
@@ -98,24 +108,76 @@ jobs:
             echo "storybook project pending (unit S1) — stub per §6.3"
           fi
 
-  gates:
-    name: Gates (budgets, contracts, depcruise, knip, theme, rule self-test)
+  unit-tests:
+    name: Unit tests (sharded)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1/10, 2/10, 3/10, 4/10, 5/10, 6/10, 7/10, 8/10, 9/10, 10/10]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Rule-layer self-test (every §3.4/§6.5 fence proves RED+GREEN)
+      - name: Unit tests (sharded)
+        run: npm run test:unit -- --run --shard=${{ matrix.shard }}
+
+  unit-test-coverage:
+    name: Unit tests (coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Unit tests (coverage)
+        run: |
+          if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
+               ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
+            echo "real unit tests present — §6.6 coverage thresholds armed"
+            npm run test:unit -- --run --coverage
+          else
+            echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
+            npm run test:unit -- --run
+          fi
+
+  gate-self-test:
+    name: Rule-layer self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run rule-layer self-test
         run: node scripts/check-gates-selftest.mjs
-      - name: Gate-script decision-logic coverage (100%, §9.3 unit F2)
-        # Enforces the 100% floor on scripts/lib/** that vitest.config.ts's
-        # scripts project documents. CLI-scoped so the §6.3 src/** thresholds
-        # are not touched.
+
+  gate-script-coverage:
+    name: Gate-script decision-logic coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run gate-script coverage
         run: >
           npx vitest run --config vitest.config.ts --project scripts
           --coverage.enabled=true --coverage.all=false
@@ -124,19 +186,20 @@ jobs:
           --coverage.thresholds.functions=100
           --coverage.thresholds.branches=100
           --coverage.thresholds.statements=100
-      - name: Generated-client mutator coverage (≥90%, §9.3 unit S4)
-        # src/shared/api/generated/** is blanket-excluded from the §6.3
-        # global coverage denominator (generated code is contract-tested,
-        # not line-covered) — but mutator.ts under that same directory is
-        # HAND-WRITTEN infra (unit S4's eliteaFetch adapter over F4's
-        # HttpClient), not orval output, and carries no coverage floor
-        # anywhere else. CLI-scoped `--coverage.exclude` overrides (does not
-        # append to) vitest.config.ts's array for this invocation only, so
-        # mutator.ts is the one file from that directory actually measured
-        # here; `--coverage.include` narrows the denominator to just it so
-        # the rest of generated/** (orval + backfill output) still doesn't
-        # count against these thresholds. Runs only once the file exists,
-        # matching this job's existing pending-unit convention.
+
+  gate-mutator-coverage:
+    name: Generated-client mutator coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run mutator coverage
         run: |
           if [ -f src/shared/api/generated/mutator.ts ]; then
             npx vitest run --config vitest.config.ts --project node \
@@ -151,11 +214,35 @@ jobs:
           else
             echo "mutator.ts pending (unit S4)"
           fi
-      - name: Complexity budgets (§3.5)
+
+  gate-complexity-budgets:
+    name: Complexity budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run complexity budgets
         run: node scripts/check-budgets.mjs
-      - name: Endpoint manifest (R-A5)
-        # Script lands with units S4+W2 (§5.2); the guard fails loudly once
-        # the manifest exists but the checker is missing.
+
+  gate-endpoint-manifest:
+    name: Endpoint manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Validate endpoint manifest
         run: |
           if [ -f scripts/check-endpoint-manifest.mjs ]; then
             node scripts/check-endpoint-manifest.mjs
@@ -164,43 +251,122 @@ jobs:
           else
             echo "endpoint manifest pending (units S4+W2)"
           fi
-      - name: MSW handler hygiene (R-M2)
+
+  gate-msw-handler-hygiene:
+    name: MSW handler hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run MSW handler hygiene
         run: |
           if [ -f scripts/check-handlers.mjs ]; then
             node scripts/check-handlers.mjs
           else
             echo "check-handlers.mjs pending (unit M1); rule logic proven by the self-test (scripts/lib/mock-rules-core.mjs)"
           fi
-      - name: Fixture freshness (R-M4)
+
+  gate-fixture-freshness:
+    name: Fixture freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run fixture freshness
         run: |
           if [ -f scripts/check-fixture-freshness.mjs ]; then
             node scripts/check-fixture-freshness.mjs
           else
             echo "check-fixture-freshness.mjs pending (unit M1); rule logic proven by the self-test"
           fi
-      - name: Layer + cycle gate (R-L1/R-L2/R-L3, dependency-cruiser)
+
+  gate-layer-cycle:
+    name: Layer + cycle gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run dependency cruise
         run: npx depcruise src --config .dependency-cruiser.cjs
-      - name: Dead code gate (R-D1, knip)
+
+  gate-dead-code:
+    name: Dead code gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run knip dead code gate
         run: npx knip --max-issues 0
-      - name: Theme gate (§4.6)
+
+  gate-theme:
+    name: Theme gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run theme gate
         run: npm run theme-gate
-      # [F3] Contract C7b + §9.5 step 9: the removed dev-token keys must be
-      # absent from the BUILT bundle, not just from the runtime config object.
-      # The script never builds (a gate that rebuilds could mask a broken
-      # build), so the bundle is produced here first. It also asserts contract
-      # sentinels are PRESENT, so it cannot pass vacuously on an empty dist/.
-      - name: Build for the bundle-secret scan (C7b)
+
+  gate-bundle-secret:
+    name: Bundle secrets gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Build for bundle-secret scan
         run: npm run build
-      - name: Bundle secrets gate (C7b — no vite_dev_token/dev/bearer in dist)
+      - name: Validate bundle secrets
         run: node scripts/check-bundle-secrets.mjs
-      - name: Contract coverage (§5.1)
-        # Fails on any VIOLATION (Struct/GenericResponse leakage, unjustified
-        # additionalProperties, a malformed x-elitea-passthrough marker) or a
-        # burn-down ratchet regression against the committed
-        # contract-coverage.lock.json. Reads
-        # ../../services/elitea-main/api/openapi/v2.yaml relative to this
-        # working directory, so the on.paths trigger above must include that
-        # tree for a spec-only PR to run this job.
+
+  gate-contract-coverage:
+    name: Contract coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Run contract coverage
         run: node scripts/check-contract-coverage.mjs
 
   build:
@@ -208,7 +374,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -274,12 +440,11 @@ jobs:
   # ── non-blocking on PR, blocking on the release tag (§6.6/§7.6) ──────────
 
   e2e:
-    name: E2E (release gate)
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: E2E
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -295,12 +460,11 @@ jobs:
           npm run e2e
 
   visual:
-    name: Visual regression (release gate)
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Visual regression
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -314,12 +478,11 @@ jobs:
           npx playwright test --grep @visual
 
   mutation-spotcheck:
-    name: Mutation spot-check (release gate, §6.7)
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: Mutation spot-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
