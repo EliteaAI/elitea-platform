@@ -76,15 +76,15 @@ const menuItemSx =
     maxWidth: 'calc(100% - 2rem)',
     height: '2rem',
     background: isActive
-      ? palette.background.userInputBackgroundActive
-      : palette.background.conversation.normal,
+      ? palette.background?.userInputBackgroundActive
+      : palette.background?.conversation?.normal,
     // oxlint-disable-next-line elitea/ad-hoc-radius — ported from baseline
     borderRadius: '0.375rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease-in-out',
     boxSizing: 'border-box',
     '&:hover': {
-      backgroundColor: palette.background.conversation.hover,
+      backgroundColor: palette.background?.conversation?.hover,
     },
   });
 
@@ -94,9 +94,9 @@ const iconWrapperSx =
     display: 'flex',
     alignItems: 'center',
     minWidth: '0.875rem',
-    color: isActive ? palette.text.secondary : palette.icon.fill.stateButtonHover,
+    color: isActive ? palette.text?.secondary : palette.icon?.fill?.stateButtonHover,
     '& svg': {
-      fill: isActive ? palette.text.secondary : palette.icon.fill.stateButtonHover,
+      fill: isActive ? palette.text?.secondary : palette.icon?.fill?.stateButtonHover,
       width: '0.875rem',
       height: '0.875rem',
     },
@@ -111,7 +111,7 @@ const menuItemTextSx =
     fontSize: '0.75rem',
     lineHeight: '1rem',
     letterSpacing: 0,
-    color: isActive ? palette.text.secondary : palette.text.metrics,
+    color: isActive ? palette.text?.secondary : palette.text?.metrics,
   });
 
 /**
@@ -214,8 +214,8 @@ const drawerSx: SxProps<Theme> = ({ palette }) => ({
   width: SETTINGS_LAYOUT.DRAWER_WIDTH,
   minWidth: SETTINGS_LAYOUT.DRAWER_WIDTH,
   maxWidth: SETTINGS_LAYOUT.DRAWER_WIDTH,
-  borderRight: `0.0625rem solid ${palette.border.table}`,
-  backgroundColor: palette.background.tabPanel,
+  borderRight: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
+  backgroundColor: palette.background?.tabPanel,
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
@@ -224,11 +224,11 @@ const drawerSx: SxProps<Theme> = ({ palette }) => ({
 
 const headerSx: SxProps<Theme> = ({ palette }) => ({
   padding: '1rem 1rem 1.1875rem 1.5rem',
-  borderBottom: `0.0625rem solid ${palette.border.table}`,
+  borderBottom: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
 });
 
 const headerTextSx: SxProps<Theme> = ({ palette }) => ({
-  color: palette.text.secondary,
+  color: palette.text?.secondary,
   // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
   fontSize: '1rem',
   fontWeight: 500,
@@ -250,7 +250,7 @@ const sectionGroupSx: SxProps<Theme> = {
 
 const sectionHeaderSx: SxProps<Theme> = ({ palette }) => ({
   display: 'block',
-  color: palette.text.metrics,
+  color: palette.text?.metrics,
   fontFamily: 'Montserrat, sans-serif',
   fontWeight: 500,
   // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
@@ -262,6 +262,6 @@ const sectionHeaderSx: SxProps<Theme> = ({ palette }) => ({
 });
 
 const sectionDividerSx: SxProps<Theme> = ({ palette }) => ({
-  borderColor: palette.border.table,
+  borderColor: palette.border?.table,
   margin: 0,
 });
