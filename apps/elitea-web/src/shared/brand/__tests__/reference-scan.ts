@@ -117,7 +117,7 @@ function classifyMember(node: Record<string, unknown>, file: string): TokenRefer
  * the CONCRETE output strings it produces, which are ordinary string
  * literals in the test file and so ARE caught by this same regex there.
  */
-const CSS_VAR_LITERAL_RE = /--el-palette-[A-Za-z][A-Za-z0-9-]*/g;
+const CSS_VAR_LITERAL_RE = /--el-(palette|shape|spacing)-[A-Za-z][A-Za-z0-9-]*/g;
 
 /**
  * Test/story files are excluded from the LITERAL scan only — component
