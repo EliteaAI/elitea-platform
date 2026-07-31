@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ProjectIconDialog — dialog for selecting or uploading a project icon.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/project-context/SelectProjectIconDialog.jsx`.

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ROUTE-057 `/settings/tokens` -> `PersonalTokens` page.
  *

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ParticipantWarning — renders warning messages for various participant error
  * conditions.

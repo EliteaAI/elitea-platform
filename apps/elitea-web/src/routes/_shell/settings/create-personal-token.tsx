@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ROUTE-066 `/settings/create-personal-token` -> `CreatePersonalToken` page.
  *

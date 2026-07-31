@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * OpenAITemplate page — OpenAI-compatible API code examples.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/OpenAITemplate.jsx`.

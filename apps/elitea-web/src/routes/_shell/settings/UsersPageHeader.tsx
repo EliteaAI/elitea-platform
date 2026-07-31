@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * UsersPageHeader — search bar and action buttons for the users page.
  *

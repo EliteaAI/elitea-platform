@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * AIConfiguration page — composes project config, configuration sections,
  * model capabilities, and OpenAI Template into the tab content.

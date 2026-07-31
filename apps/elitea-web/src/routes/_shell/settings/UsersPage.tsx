@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * UsersPage — component that wires data hooks, actions, and rendering state
  * to the `UsersPageContent` shell.

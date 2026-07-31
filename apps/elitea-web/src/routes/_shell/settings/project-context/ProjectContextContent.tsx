@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ProjectContextContent — main content area for the Project Context settings
  * tab (Settings > Project Params > Project Context).

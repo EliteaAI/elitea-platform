@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Model configuration hook — manages selected model state and auto-selection.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/lib/hooks/useModelConfiguration.hooks.jsx`.

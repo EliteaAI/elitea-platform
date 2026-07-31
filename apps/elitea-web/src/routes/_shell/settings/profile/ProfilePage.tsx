@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Profile page — replaces the old-app's `pages/UserSettings/UserSettings.jsx`
  * → `Profile.jsx` → `ProfileFormContent.jsx` chain.

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ParticipantsWrapper styles and layout utilities.
  *

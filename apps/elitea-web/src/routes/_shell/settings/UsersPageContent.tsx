@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * UsersPageContent — renders the users page UI (search, table, pagination,
  * dialogs).

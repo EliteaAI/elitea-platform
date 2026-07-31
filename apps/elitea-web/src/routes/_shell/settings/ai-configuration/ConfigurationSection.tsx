@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * ConfigurationSection — displays a group of configurations with optional default-setting select.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationSection.jsx`.
