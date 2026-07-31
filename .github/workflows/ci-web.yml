@@ -127,6 +127,8 @@ jobs:
         run: npm ci
       - id: shard
         name: Unit tests (coverage shard)
+        env:
+          VITEST_SKIP_COVERAGE_THRESHOLDS: true
         run: |
           if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
                ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then

@@ -107,7 +107,7 @@ export default defineConfig({
         'src/shared/api/generated/**', // generated: covered by contract tests, not line coverage
         'src/shared/api/sse.ts', //       no consumer at ship (§5.6); REMOVE this line when one lands
         // Deliberately unwired (knip.json's ignoreFiles has the same entry,
-        // same reason): its target library (@mui/x-tree-view) is not a
+        // same reason): its target library (@mui/x-treeview) is not a
         // dependency of this app (spec §2.2/P1, "the file tree is hand-
         // rolled") -- REMOVE this line if that ever changes and something
         // actually wires it into mui-overrides/index.ts.
@@ -121,7 +121,10 @@ export default defineConfig({
         'src/app/main.tsx',
         'src/routeTree.gen.ts',
       ],
-      thresholds: {
+      // Only apply coverage thresholds in non-sharded, merged runs. Sharded
+      // coverage runs set VITEST_SKIP_COVERAGE_THRESHOLDS=true so raw shard
+      // data is collected without failing on config-level per-glob thresholds.
+      thresholds: process.env.VITEST_SKIP_COVERAGE_THRESHOLDS === 'true' ? {} : {
         lines: 85,
         statements: 85,
         functions: 85,
