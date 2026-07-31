@@ -111,10 +111,10 @@ The command performs these bounded steps:
    credentials under ignored `deploy/centry-hybrid/.runtime/`. Complete
    material is reused; a partial directory or certificate expiring within 24
    hours fails closed rather than being silently replaced.
-2. Validates the merged Compose model and requires the exact Go index route,
-   version-2 stream/group, Python worker runtime, external LiteLLM mounts and
-   standalone LiteLLM build. This catches an empty or wrong route file before
-   containers are recreated.
+2. Validates the merged Compose model and requires the exact Go index and
+   notification-event routes, version-2 stream/group, Python worker runtime,
+   external LiteLLM mounts and standalone LiteLLM build. This catches an empty
+   or wrong route file before containers are recreated.
 3. When `ELITEA_HYBRID_UI_DIR` is set, builds that exact EliteaUI checkout and
    replaces Centry's ignored static UI distribution. The selected UI Git
    revision is printed for evidence.
@@ -128,12 +128,17 @@ The command performs these bounded steps:
    successfully.
 7. Starts the mixed platform and waits for healthy services.
 
-The current UI remains unchanged except for its SSE client work. Current
-Pylon remains the catch-all owner. Only the exact authenticated Configurations,
-LiteLLM and index routes in the tracked Traefik files select Go. The independent
-worker still executes the current synchronous SDK indexing logic inside its own
-process; Redis carries bounded signed command references, while content and
-output use their private TLS channels.
+The current UI remains unchanged except for its index and notification SSE
+client work. Current Pylon remains the catch-all owner outside the explicitly
+ported notification list, count, details, read-state, delete, and event routes.
+Only the exact authenticated Configurations, LiteLLM, index, and notification
+routes in the tracked Traefik files select Go. Notification SSE reads committed
+user-scoped rows from the existing `centry.notifications` table and supports
+`Last-Event-ID`; notification CRUD uses that same table, and no second
+notification schema is introduced. The independent worker still executes the current
+synchronous SDK indexing logic inside its own process; Redis carries bounded
+signed command references, while content and output use their private TLS
+channels.
 
 Useful checks:
 

@@ -17,6 +17,8 @@ type Querier interface {
 	AllocateIndexGeneration(ctx context.Context, arg AllocateIndexGenerationParams) (int64, error)
 	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
+	BulkDeleteCurrentNotifications(ctx context.Context, arg BulkDeleteCurrentNotificationsParams) (int64, error)
+	BulkSetCurrentNotificationsSeen(ctx context.Context, arg BulkSetCurrentNotificationsSeenParams) (int64, error)
 	// Claim only the oldest unfinished revision for each configuration. A lower
 	// pending, retrying, processing, or dead revision remains an explicit ordering
 	// barrier. Expired processing rows are reclaimed with a new caller-owned lease
@@ -33,10 +35,13 @@ type Querier interface {
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
+	CountCurrentNotifications(ctx context.Context, arg CountCurrentNotificationsParams) (int64, error)
 	CountCurrentSharedConfigurations(ctx context.Context, arg CountCurrentSharedConfigurationsParams) (int64, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
+	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
+	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	// These unqualified names are intentional. Every query is executed inside a
@@ -62,6 +67,7 @@ type Querier interface {
 	// decoding before applying section-specific response shaping. ID order gives
 	// duplicate candidates a deterministic baseline order.
 	GetCurrentModelCatalogBounds(ctx context.Context, arg GetCurrentModelCatalogBoundsParams) (GetCurrentModelCatalogBoundsRow, error)
+	GetCurrentNotification(ctx context.Context, arg GetCurrentNotificationParams) (GetCurrentNotificationRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.
 	GetCurrentToolkit(ctx context.Context, toolkitID int32) (EliteaTool, error)
@@ -106,6 +112,8 @@ type Querier interface {
 	ListCurrentIndexScheduleProjects(ctx context.Context, arg ListCurrentIndexScheduleProjectsParams) ([]int32, error)
 	ListCurrentIndexScheduleToolkits(ctx context.Context, arg ListCurrentIndexScheduleToolkitsParams) ([]ListCurrentIndexScheduleToolkitsRow, error)
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
+	ListCurrentNotificationEventsAfter(ctx context.Context, arg ListCurrentNotificationEventsAfterParams) ([]ListCurrentNotificationEventsAfterRow, error)
+	ListCurrentNotifications(ctx context.Context, arg ListCurrentNotificationsParams) ([]ListCurrentNotificationsRow, error)
 	ListCurrentProjectAuthors(ctx context.Context, projectID int32) ([]ListCurrentProjectAuthorsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
 	// The unqualified table name is intentional. This query runs only inside an
@@ -131,6 +139,7 @@ type Querier interface {
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
+	MarkCurrentNotificationSeen(ctx context.Context, arg MarkCurrentNotificationSeenParams) (MarkCurrentNotificationSeenRow, error)
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
 	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
