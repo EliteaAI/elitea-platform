@@ -43,7 +43,7 @@ export const ExpiryCell = memo(function ExpiryCell({
     if (status === 'never' || status === 'safe') return theme.vars.palette.status.published;
     if (status === 'warning') return theme.vars.palette.status.onModeration;
     return theme.vars.palette.icon.fill.disabled;
-  }, [status, theme.vars.palette]);
+  }, [status, theme.vars.palette.status.published, theme.vars.palette.status.onModeration, theme.vars.palette.icon.fill.disabled]);
 
   const s = tokenRowStyles.expiry();
 

@@ -2,12 +2,12 @@ import type { EliteaComponents } from '../theme-types';
 
 /**
  * `MuiInputBase` (R-T12). Ported from `EditSecretInputGridTable.tsx`'s
- * `input` style — tightens the input base padding.
+ * `input` style — tightens the input base padding using the theme spacing unit.
  */
 export const MuiInputBase: EliteaComponents['MuiInputBase'] = {
   styleOverrides: {
     root: {
-      padding: 'var(--el-spacing-1, 0.25rem) var(--el-spacing-2, 0.5rem)',
+      padding: 'var(--el-spacing) calc(var(--el-spacing) * 2)',
     },
   },
 };

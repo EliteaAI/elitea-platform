@@ -9,7 +9,7 @@
 import type { TransformedParticipant } from '../model/types';
 
 /** Order in which participant types appear in the expanded list. */
-export const ENTITY_ORDER: Array<string | 'mcp'> = [
+export const ENTITY_ORDER: string[] = [
   'Users',
   'Applications',
   'Pipelines',

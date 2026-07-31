@@ -220,7 +220,7 @@ function renderNormalCard({
             width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
             borderRadius: 'var(--el-shape-radiusMd, 8px)', backgroundColor: isActive ? 'action.selected' : 'background.paper',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 'var(--el-typography-body-small-font-size)', fontWeight: 600, overflow: 'hidden',
+            fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
           }}
         >
           {entityIcon.url ? (
@@ -296,7 +296,7 @@ function renderAttentionCard({
             width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
             borderRadius: 'var(--el-shape-radiusMd, 8px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 'var(--el-typography-body-small-font-size)', fontWeight: 600, overflow: 'hidden',
+            fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
           }}
         >
           {entityIcon.url ? (

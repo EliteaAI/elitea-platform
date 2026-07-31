@@ -339,7 +339,7 @@ const cx = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: (_theme as Theme).typography.headingSmall.fontSize,
+    fontSize: 'var(--el-font-h3, 1rem)',
     fontWeight: 600,
     color: 'text.primary',
   } as React.CSSProperties,

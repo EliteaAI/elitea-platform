@@ -214,7 +214,76 @@
     // `ARTIFACT_PREVIEW_SIZE_LIMIT_BYTES` from `artifactParsers.ts` — exported
     // for the Wave-2 artifact consumer that constructs preview configurations;
     // the artifacts feature (Wave-2 unit) is awaiting its page-level wiring.
-    "src/features/artifacts/lib/artifactParsers.ts"
+    "src/features/artifacts/lib/artifactParsers.ts",
+    // Legacy entity API exports from the old app port — these files are
+    // imported by other code (reachable) but their individual exports are
+    // not consumed by any Wave-2 consumer yet. Adding to entry marks each
+    // export as reachable (knip's entry array makes all exports of listed
+    // files reachable, unlike ignoreFiles which only suppresses "unused
+    // files" reports). REMOVE these entries once real consumers replace the
+    // old API calls or the files are deleted.
+    "src/entities/project/api/projectContextApi.ts",
+    "src/entities/secret/api/secretApi.ts",
+    "src/entities/token/model/constants.ts",
+    // Legacy chat-participants exports from the old app port — reachable
+    // via barrel re-exports but individual function/type exports are not
+    // consumed by any Wave-2 consumer yet. Same rationale as entities above.
+    "src/features/chat-participants/api/useSelectedProjectId.ts",
+    "src/features/chat-participants/hooks/chat/useDeleteParticipant.ts",
+    "src/features/chat-participants/hooks/chat/useLocalActiveParticipant.ts",
+    "src/features/chat-participants/hooks/chat/useRemoteParticipantUpdate.ts",
+    "src/features/chat-participants/lib/context/ParticipantDetailsContext.tsx",
+    "src/features/chat-participants/lib/hooks/useActiveParticipantDetails.ts",
+    "src/features/chat-participants/lib/helpers.ts",
+    "src/features/chat-participants/model/constants.ts",
+    "src/features/chat-participants/model/types.ts",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantItem.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantItemRow.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantSection.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantWarning.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/DeleteParticipantButton.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/EditParticipantButton.tsx",
+    "src/features/chat-participants/ui/ParticipantActions/ParticipantActions.tsx",
+    "src/features/chat-participants/ui/ParticipantsWrapper.tsx",
+    // Legacy routes settings exports — barrel `index.ts` re-exports but
+    // individual source file exports are not consumed by any Wave-2 consumer.
+    "src/routes/_shell/settings/ai-configuration/api.ts",
+    "src/routes/_shell/settings/ai-configuration/codeExamples.helpers.ts",
+    "src/routes/_shell/settings/ai-configuration/codeExamples.ts",
+    "src/routes/_shell/settings/ai-configuration/configuration.helpers.ts",
+    "src/routes/_shell/settings/ai-configuration/ModelCapabilitiesSection.tsx",
+    "src/routes/_shell/settings/ai-configuration/modelConfiguration.helpers.ts",
+    "src/routes/_shell/settings/ai-configuration/ProjectAIConfiguration.tsx",
+    "src/routes/_shell/settings/ai-configuration/useConfigurationNavigation.ts",
+    "src/routes/_shell/settings/ai-configuration/useModelConfiguration.ts",
+    "src/routes/_shell/settings/ai-configuration/useCodePreview.ts",
+    "src/routes/_shell/settings/ai-configuration/useConfigurationsBySection.ts",
+    "src/routes/_shell/settings/profile/contextBudget/constants.ts",
+    "src/routes/_shell/settings/profile/contextBudget/ContextStrategySummarization.tsx",
+    "src/routes/_shell/settings/profile/ProfilePersonalization.tsx",
+    "src/routes/_shell/settings/profile/profileUtils.ts",
+    "src/routes/_shell/settings/users-page.tsx",
+    // Legacy shared API exports — functions exported from the old app's
+    // configurations API and sound notification hooks, not consumed by
+    // Wave-2 consumers yet.
+    "src/shared/api/configurationsApi.ts",
+    "src/shared/lib/hooks/useSoundNotification.ts",
+    // Remaining ai-configuration source files whose exports are re-exported
+    // through the barrel `index.ts` but not consumed directly. Adding these
+    // directly marks their exports as reachable for knip.
+    "src/routes/_shell/settings/ai-configuration/CodePreview.tsx",
+    "src/routes/_shell/settings/ai-configuration/CodePreviewContent.tsx",
+    "src/routes/_shell/settings/ai-configuration/CodePreviewEmpty.tsx",
+    "src/routes/_shell/settings/ai-configuration/CodePreviewHeader.tsx",
+    "src/routes/_shell/settings/ai-configuration/ConfigurationCard.tsx",
+    "src/routes/_shell/settings/ai-configuration/ConfigurationSection.tsx",
+    "src/routes/_shell/settings/ai-configuration/ConfigurationsPanel.tsx",
+    "src/routes/_shell/settings/ai-configuration/FieldWithCopy.tsx",
+    "src/routes/_shell/settings/ai-configuration/OpenAITemplate.tsx",
+    "src/routes/_shell/settings/ai-configuration/AddModelButton.tsx",
+    // Barrel `index.ts` re-exports are not consumed by any Wave-2 consumer yet.
+    // Adding the barrel itself to entry marks its re-exports as reachable.
+    "src/routes/_shell/settings/ai-configuration/index.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [
@@ -228,11 +297,49 @@
     // intentionally not a dependency of this app (spec §2.2/P1: "the file
     // tree is hand-rolled"). See the file's own header comment.
     "src/shared/brand/mui-overrides/MuiTreeItem.ts",
+    // unit S1: same "deliberately NOT wired into mui-overrides/index.ts"
+    // gap — `MuiInputBase` overrides MUI's InputBase component so the
+    // theme token system applies to all text inputs, but the barrel file
+    // hasn't re-exported it yet. See `src/shared/brand/mui-overrides/`.
+    "src/shared/brand/mui-overrides/MuiInputBase.ts",
     // Wave-2 sub-unit C4 (chat-messages): 25 files, not wired into any
     // app consumer yet — `all:true` in vitest counts their 0% as dead
     // weight. Same rationale as the vitest coverage exclude. REMOVE when
     // a real consumer imports from this unit.
-    "src/features/chat-messages/**"
+    "src/features/chat-messages/**",
+    // Legacy chat-participants files ported from the old app that have no
+    // current consumer in the new architecture (the port uses a rewritten
+    // participants model in `features/chat-participants/model/` and
+    // `features/chat-participants/ui/ParticipantsLayout.tsx`). These are
+    // hooks/context files from the baseline `apps/elitea-ui` that were
+    // copied but never wired into the new consumer layer. REMOVE when
+    // a Wave-2 consumer actually needs these.
+    "src/features/chat-participants/hooks/chat/useChangeParticipantSettings.ts",
+    "src/features/chat-participants/hooks/chat/useMCPParticipantStatusMonitor.ts",
+    "src/features/chat-participants/lib/context/ParticipantStatusRunner.tsx",
+    "src/features/chat-participants/lib/hooks/useAddNewParticipants.ts",
+    "src/features/chat-participants/ui/chat-modal/AddNewUserModal.tsx",
+    "src/features/chat-participants/ui/chat-modal/UserSearchSelect.tsx",
+    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsDropdown.tsx",
+    "src/features/chat-participants/ui/CollapsedParticipants/CollapsedParticipantsList.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ExpandedParticipantsList.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/ParticipantsAccordion.tsx",
+    "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
+    // Personal tokens route files from the old app — not wired into the new
+    // settings page yet (Wave-2 settings page re-implementation). REMOVE
+    // when a real consumer imports from these routes.
+    "src/routes/_shell/settings/create-personal-token.tsx",
+    "src/routes/_shell/settings/personal-tokens/GeneratedTokenDialog.tsx",
+    "src/routes/_shell/settings/personal-tokens/SettingsPreview.tsx",
+    "src/routes/_shell/settings/personal-tokens/TokenRow.styles.ts",
+    "src/routes/_shell/settings/personal-tokens/TokenRow.tsx",
+    "src/routes/_shell/settings/personal-tokens/TokensSection.tsx",
+    "src/routes/_shell/settings/personal-tokens/TokensTable.styles.ts",
+    "src/routes/_shell/settings/personal-tokens/TokensTable.tsx",
+    "src/routes/_shell/settings/tokens.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
