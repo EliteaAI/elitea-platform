@@ -96,7 +96,8 @@ export default defineConfig({
       },
     ],
     coverage: {
-      provider: 'v8',
+      provider: 'custom',
+      customProviderModule: './scripts/vitest-coverage-v8-provider.mjs',
       reporter: ['text-summary', 'json-summary', 'lcov', 'html'],
       reportsDirectory: './coverage',
       all: true,
