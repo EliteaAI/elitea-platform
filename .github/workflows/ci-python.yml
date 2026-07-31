@@ -118,15 +118,6 @@ jobs:
             "./services/elitea-worker-python[indexing-current,test]"
           python -m pip check
 
-      - name: Verify source-backed SDK projections
-        run: |
-          python scripts/contract/sync_index_types_snapshot.py \
-            --sdk-root /tmp/elitea-sdk-current \
-            --check
-          python scripts/contract/sync_toolkit_schema_snapshot.py \
-            --sdk-root /tmp/elitea-sdk-current \
-            --check
-
       - name: Unit and byte-conformance tests
         env:
           ELITEA_CONFORMANCE_ROOT: ${{ github.workspace }}/testdata/proto/runtime/v1
@@ -139,6 +130,20 @@ jobs:
 
       - name: Compile Python sources
         run: python -m compileall -q services/elitea-worker-python/src libs/proto/gen/python
+
+      - name: Verify source-backed SDK projections
+        run: |
+          # Schema projection imports the complete current SDK registry. Keep
+          # its build-only dependencies after the runtime tests so they cannot
+          # conceal a missing dependency in the indexing worker profile.
+          python -m pip install --no-cache-dir \
+            "elitea-sdk[all] @ file:///tmp/elitea-sdk-current"
+          python scripts/contract/sync_index_types_snapshot.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
+          python scripts/contract/sync_toolkit_schema_snapshot.py \
+            --sdk-root /tmp/elitea-sdk-current \
+            --check
 
   redis-runtime-worker:
     name: Real Redis Python lifecycle integration
