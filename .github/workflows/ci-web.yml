@@ -140,12 +140,17 @@ jobs:
             echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
             npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }}
           fi
+      - name: Stage coverage shard artifact
+        if: steps.shard.outputs.coverage_ran == 'true'
+        run: |
+          mkdir -p ../coverage-shard-${{ matrix.shardIndex }}
+          cp coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json ../coverage-shard-${{ matrix.shardIndex }}/coverage-final.json
       - name: Upload coverage shard
         if: steps.shard.outputs.coverage_ran == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-shard-${{ matrix.shardIndex }}
-          path: apps/elitea-web/coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json
+          path: coverage-shard-${{ matrix.shardIndex }}/coverage-final.json
           retention-days: 7
 
   coverage-merge:

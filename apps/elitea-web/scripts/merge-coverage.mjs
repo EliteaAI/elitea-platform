@@ -9,6 +9,7 @@ const { createCoverageMap } = coveragePkg;
 
 const root = process.cwd();
 const shardRoot = path.join(root, 'coverage-shards');
+const altShardRoot = path.join(root, '..', 'coverage-shards');
 const outputDir = path.join(root, 'coverage');
 
 const globalThresholds = {
@@ -65,17 +66,20 @@ async function main() {
 
 async function findCoverageFiles() {
   const files = [];
-  const roots = [shardRoot];
+  const roots = [root, shardRoot, altShardRoot];
 
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.startsWith('coverage-shard-')) {
-        roots.push(path.join(root, entry.name));
+  const scanDirs = [root, path.join(root, '..')];
+  for (const scanDir of scanDirs) {
+    try {
+      const entries = await fs.readdir(scanDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.startsWith('coverage-shard-')) {
+          roots.push(path.join(scanDir, entry.name));
+        }
       }
+    } catch (error) {
+      // ignore missing repo root or permission issues
     }
-  } catch (error) {
-    // ignore missing repository root or permission issues
   }
 
   async function walk(dir) {
