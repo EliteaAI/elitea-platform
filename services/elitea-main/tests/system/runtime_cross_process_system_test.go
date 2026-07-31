@@ -39,6 +39,7 @@ const (
 	producerPassword = "system-producer-password-5681"
 	workerPassword   = "system-worker-password-5681"
 	observerPassword = "system-observer-password-5681"
+	authPassword     = "system-auth-password-5681"
 	publicSecret     = "system-public-session-secret-5681"
 	testReclaimIdle  = 60 * time.Second
 
@@ -81,6 +82,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 	controlPort := freePort(t)
 	outputPort := freePort(t)
 	contentPort := freePort(t)
+	authConfigPath := writeRuntimeAuthConfig(t, root, controlRedisPort, publicPort, pki)
 
 	containers := &containerSet{}
 	t.Cleanup(containers.stopAll)
@@ -153,6 +155,7 @@ func TestProductionRuntimeCrossProcessSystem(t *testing.T) {
 		outputPort,
 		contentPort,
 		producerPasswordPath,
+		authConfigPath,
 		pki,
 		signing,
 	)

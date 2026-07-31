@@ -21,9 +21,11 @@ pending deliveries. It then runs two uniquely named indexes:
    reference, create a PostgreSQL claim, settle durably, publish replay events,
    and retire the Redis reference.
 2. With the worker stopped, it admits a second execution, opens public SSE,
-   calls the public Stop route twice, and requires idempotent `204` responses,
-   durable `CANCELLED` state with no worker claim, a replay event, and empty
-   Redis control state.
+   calls the public Stop route twice, and requires idempotent `204` responses
+   plus durable `CANCELLED` state with no worker claim and a replay event. It
+   then restarts the real worker, which must receive only the durable retired
+   decision, invoke no SDK work, create no business claim, and atomically drain
+   the Redis reference and delivery-index mapping.
 
 Both requests inject a random, non-secret content-plane canary. The signed
 Redis reference and public SSE data must not contain it. The test never prints

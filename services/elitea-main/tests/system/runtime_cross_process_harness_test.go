@@ -1,6 +1,7 @@
 package system_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -291,6 +292,7 @@ func prepareTLSRedisConfig(t *testing.T, directory string, pki runtimePKI) {
 		"user producer on >" + producerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +eval +evalsha +xlen +xadd +hget +xrange +hdel +hlen +hset",
 		"user worker on >" + workerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +eval +xreadgroup +xclaim +xautoclaim +hget +xrange +xpending +xack +xdel +hdel",
 		"user observer on >" + observerPassword + " ~" + commandStream + " ~" + commandStream + ":delivery-index.v1 +@connection +xgroup +xrange +xlen +xpending +xinfo +hget +hlen",
+		"user auth on >" + authPassword + " ~runtime-system-auth:* +@all",
 	}, "\n")+"\n"), 0o644)
 	writeFile(t, filepath.Join(directory, "redis.conf"), []byte(strings.Join([]string{
 		"bind 0.0.0.0",
@@ -563,13 +565,14 @@ func waitForRedis(t *testing.T, ctx context.Context, client *redis.Client, conta
 	}
 }
 
-func runtimeMainEnvironment(databaseURL string, legacyRedisPort, controlRedisPort, publicPort, controlPort, outputPort, contentPort int, producerPasswordPath string, pki runtimePKI, signing signingMaterial) []string {
+func runtimeMainEnvironment(databaseURL string, legacyRedisPort, controlRedisPort, publicPort, controlPort, outputPort, contentPort int, producerPasswordPath, authConfigPath string, pki runtimePKI, signing signingMaterial) []string {
 	return []string{
 		"DATABASE_URL=" + databaseURL,
 		"SKIP_MIGRATIONS=1",
 		fmt.Sprintf("REDIS_URL=127.0.0.1:%d", legacyRedisPort),
 		"APPLICATION_SECRET_KEY=" + publicSecret,
 		"AUTH_DEV_MODE=false",
+		"ELITEA_AUTH_CONFIG_FILE=" + authConfigPath,
 		"ELITEA_RUNTIME_ENABLED=true",
 		fmt.Sprintf("ELITEA_HTTP_ADDRESS=127.0.0.1:%d", publicPort),
 		"ELITEA_RUNTIME_COMMAND_STREAM=" + commandStream,
@@ -595,6 +598,62 @@ func runtimeMainEnvironment(databaseURL string, legacyRedisPort, controlRedisPor
 		"ELITEA_RUNTIME_CONTENT_TLS_KEY_FILE=" + pki.contentKeyPath,
 		"ELITEA_RUNTIME_CONTENT_TLS_CLIENT_CA_FILE=" + pki.caPath,
 	}
+}
+
+func writeRuntimeAuthConfig(t *testing.T, root string, controlRedisPort, publicPort int, pki runtimePKI) string {
+	t.Helper()
+	authPasswordPath := filepath.Join(root, "auth-redis.password")
+	attemptKeyPath := filepath.Join(root, "auth-attempt.key")
+	patKeyPath := filepath.Join(root, "auth-pat.key")
+	formUsersPath := filepath.Join(root, "auth-form-users.json")
+	configPath := filepath.Join(root, "auth-form-v1.yaml")
+
+	writeFile(t, authPasswordPath, []byte(authPassword), 0o600)
+	writeFile(t, attemptKeyPath, bytes.Repeat([]byte{0xa7}, 32), 0o600)
+	writeFile(t, patKeyPath, []byte("system-auth-pat-signing-key-5681"), 0o600)
+	writeFile(
+		t,
+		formUsersPath,
+		[]byte(`{"users":[{"login":"system-auth-user","password":"system-auth-form-password-5681","attributes":{"email":"system-auth@example.test"}}]}`),
+		0o600,
+	)
+
+	config := fmt.Sprintf(`schema_version: elitea.auth.form.v1
+public_origin: https://localhost:%d
+trusted_proxy_cidrs:
+  - 127.0.0.1/32
+redirects:
+  direct_access_denied: /access_denied
+  main_access_denied: /app/access_denied
+  default_login: /
+  default_logout: /
+cookie:
+  name: runtime_system_auth
+  same_site: lax
+  lifetime_seconds: 3600
+redis:
+  topology: single_primary_endpoint
+  url: rediss://auth@localhost:%d/0
+  password_file: %q
+  ca_file: %q
+  key_prefix: "runtime-system-auth:"
+  attempt_key_file: %q
+credentials:
+  pat_signing_key_file: %q
+  credential_headers: []
+mappers:
+  contract: elitea.auth_mappers.tracked.v1
+authorization:
+  main_configured_public_rules: []
+identity:
+  initial_global_admins: []
+provider:
+  kind: form
+  form:
+    users_json_file: %q
+`, publicPort, controlRedisPort, authPasswordPath, pki.caPath, attemptKeyPath, patKeyPath, formUsersPath)
+	writeFile(t, configPath, []byte(config), 0o600)
+	return configPath
 }
 
 func writeWorkerConfig(t *testing.T, root, name string, redisPort, controlPort, outputPort, contentPort, platformPort int, redisPasswordPath string, pki runtimePKI, keyringPath, spoolRoot, spoolKeyPath string) string {
