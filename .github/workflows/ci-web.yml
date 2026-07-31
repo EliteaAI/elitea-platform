@@ -132,7 +132,7 @@ jobs:
                ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
             echo "coverage_ran=true" >> $GITHUB_OUTPUT
             echo "real unit tests present — §6.6 coverage thresholds armed"
-            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false
+            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false --coverage.thresholds.lines=0 --coverage.thresholds.statements=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.perFile=false
           else
             echo "coverage_ran=false" >> $GITHUB_OUTPUT
             echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
