@@ -63,6 +63,22 @@ func TestCurrentIndexScheduleNotificationRepositoryAcceptsIdempotentReplay(t *te
 	}
 }
 
+func TestScheduleFailureUUIDMatchesCurrentNotificationUUIDv4Contract(t *testing.T) {
+	first := scheduleFailureUUID("stable-notification-effect")
+	second := scheduleFailureUUID("stable-notification-effect")
+	if first != second {
+		t.Fatalf("notification UUID changed across replay: first=%q second=%q", first, second)
+	}
+	if len(first) != 36 || first[14] != '4' {
+		t.Fatalf("notification UUID is not UUIDv4-shaped: %q", first)
+	}
+	switch first[19] {
+	case '8', '9', 'a', 'b':
+	default:
+		t.Fatalf("notification UUID has an invalid RFC 4122 variant: %q", first)
+	}
+}
+
 func TestCurrentIndexScheduleNotificationRepositoryMapsDependencyFailure(t *testing.T) {
 	for _, test := range []struct {
 		name    string

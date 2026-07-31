@@ -490,6 +490,147 @@ func (q *Queries) GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetR
 	return i, err
 }
 
+const insertCurrentIndexTerminalNotification = `-- name: InsertCurrentIndexTerminalNotification :execrows
+WITH source AS MATERIALIZED (
+    SELECT j.resource_project_id,
+           j.actor_id::integer AS user_id,
+           i.toolkit_id,
+           i.index_name,
+           i.index_meta_id,
+           i.index_generation,
+           i.initiator,
+           CASE
+               WHEN $5::text IN (
+                   'created',
+                   'completed',
+                   'scheduled_reindex',
+                   'failed',
+                   'partly_indexed'
+               )
+                   THEN $5::text
+               WHEN $6::text = 'error'
+                   THEN 'failed'
+               WHEN $6::text = 'partly_indexed'
+                   THEN 'partly_indexed'
+               WHEN i.initiator = 'schedule'
+                   THEN 'scheduled_reindex'
+               WHEN i.index_generation = 1
+                   THEN 'created'
+               ELSE 'completed'
+           END AS terminal_state,
+           CASE
+               WHEN $7::boolean
+                   THEN $8::boolean
+               WHEN i.initiator = 'schedule'
+                   THEN TRUE
+               ELSE i.index_generation > 1
+           END AS reindex
+    FROM elitea_runtime.execution_jobs AS j
+    JOIN elitea_runtime.index_ingest_jobs AS i
+      ON i.execution_id = j.execution_id
+     AND i.generation = j.generation
+     AND i.capability_id = j.capability_id
+    WHERE j.execution_id = $9::text
+      AND j.generation = $10::bigint
+      AND j.capability_id = 'index.ingest.v1'
+      AND i.initiator IN ('user', 'schedule')
+),
+notification AS (
+    SELECT source.resource_project_id, source.user_id, source.toolkit_id, source.index_name, source.index_meta_id, source.index_generation, source.initiator, source.terminal_state, source.reindex,
+           CASE
+               WHEN source.terminal_state = 'failed'
+                   THEN format('Index [%s]() is failed.', source.index_name)
+               WHEN source.reindex
+                   THEN format(
+                       'Index [%s]() is successfully reindexed%s. {"reindexed": %s, "indexed": %s}',
+                       source.index_name,
+                       CASE
+                           WHEN source.initiator = 'schedule'
+                               THEN ' by schedule'
+                           ELSE ''
+                       END,
+                       $4::bigint,
+                       $3::bigint
+                   )
+               ELSE format(
+                   'Index [%s]() is successfully created: {"indexed": %s}',
+                   source.index_name,
+                   $3::bigint
+               )
+           END AS message
+    FROM source
+    WHERE source.terminal_state IN (
+        'created',
+        'completed',
+        'scheduled_reindex',
+        'failed'
+    )
+)
+INSERT INTO centry.notifications (
+    uuid,
+    is_seen,
+    project_id,
+    user_id,
+    meta,
+    event_type
+)
+SELECT $1::text::uuid,
+       FALSE,
+       notification.resource_project_id,
+       notification.user_id,
+       jsonb_build_object(
+           'id', notification.index_meta_id,
+           'index_name', notification.index_name,
+           'state', notification.terminal_state,
+           'error', CASE
+               WHEN notification.terminal_state = 'failed'
+                   THEN $2::text
+               ELSE NULL
+           END,
+           'reindex', notification.reindex,
+           'indexed', $3::bigint,
+           'updated', $4::bigint,
+           'toolkit_id', notification.toolkit_id,
+           'initiator', notification.initiator,
+           'message', notification.message
+       ),
+       'index_data_changed'
+FROM notification
+ON CONFLICT (uuid) DO NOTHING
+`
+
+type InsertCurrentIndexTerminalNotificationParams struct {
+	NotificationUuid string `db:"notification_uuid" json:"notification_uuid"`
+	ErrorMessage     string `db:"error_message" json:"error_message"`
+	Indexed          int64  `db:"indexed" json:"indexed"`
+	Updated          int64  `db:"updated" json:"updated"`
+	TerminalState    string `db:"terminal_state" json:"terminal_state"`
+	CompletionStatus string `db:"completion_status" json:"completion_status"`
+	ReindexPresent   bool   `db:"reindex_present" json:"reindex_present"`
+	Reindex          bool   `db:"reindex" json:"reindex"`
+	ExecutionID      string `db:"execution_id" json:"execution_id"`
+	Generation       int64  `db:"generation" json:"generation"`
+}
+
+func (q *Queries) InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertCurrentIndexTerminalNotification,
+		arg.NotificationUuid,
+		arg.ErrorMessage,
+		arg.Indexed,
+		arg.Updated,
+		arg.TerminalState,
+		arg.CompletionStatus,
+		arg.ReindexPresent,
+		arg.Reindex,
+		arg.ExecutionID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertIndexIngestExecutionJob = `-- name: InsertIndexIngestExecutionJob :one
 INSERT INTO elitea_runtime.execution_jobs (
     execution_id, generation, command_id, tenant_id, resource_project_id,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -49,6 +50,13 @@ func (e pgxExecutor) QueryRow(ctx context.Context, sql string, args ...any) sqlR
 
 func (e pgxExecutor) Query(ctx context.Context, sql string, args ...any) (sqlRows, error) {
 	return e.queryer.Query(ctx, sql, args...)
+}
+
+func (e pgxExecutor) InsertCurrentIndexTerminalNotification(
+	ctx context.Context,
+	arg sqlcgen.InsertCurrentIndexTerminalNotificationParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).InsertCurrentIndexTerminalNotification(ctx, arg)
 }
 
 type sharedStore interface {

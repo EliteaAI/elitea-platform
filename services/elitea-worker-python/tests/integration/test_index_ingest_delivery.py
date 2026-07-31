@@ -1896,7 +1896,14 @@ def test_scheduled_index_keeps_durable_status_and_terminal_without_browser_strea
                 ("thinking_step_update", {"message": "20 files processed"}),
                 (
                     "index_data_status",
-                    {"index_name": "docs", "state": "completed", "toolkit_id": 9},
+                    {
+                        "index_name": "docs",
+                        "state": "scheduled_reindex",
+                        "toolkit_id": 9,
+                        "indexed": 17,
+                        "updated": 4,
+                        "reindex": True,
+                    },
                 ),
                 (
                     "index_data_removed",
@@ -1934,6 +1941,15 @@ def test_scheduled_index_keeps_durable_status_and_terminal_without_browser_strea
         assert terminal == result.output_frame
         assert terminal.terminal
         assert terminal.settlement_proposal.terminal_sequence == 3
+        summary = terminal.index_ingest.result_summary
+        assert (
+            summary.terminal_state
+            == indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX
+        )
+        assert summary.indexed == 17
+        assert summary.updated == 4
+        assert summary.HasField("reindex")
+        assert summary.reindex is True
         assert sdk.calls[0]["runtime_config"]["metadata"]["initiator"] == "schedule"
         for frame in (status, removed):
             current = json.loads(encode_current_node_event_json(frame.node_event))

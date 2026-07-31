@@ -43,6 +43,13 @@ type indexIngestReadQueries interface {
 	GetDurableIndexResultArtifact(context.Context, sqlcgen.GetDurableIndexResultArtifactParams) (sqlcgen.GetDurableIndexResultArtifactRow, error)
 }
 
+type currentIndexTerminalNotificationQueries interface {
+	InsertCurrentIndexTerminalNotification(
+		context.Context,
+		sqlcgen.InsertCurrentIndexTerminalNotificationParams,
+	) (int64, error)
+}
+
 type IndexIngestResultsRepository struct {
 	queries  indexIngestReadQueries
 	projects projectStore
@@ -296,6 +303,14 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 						return indexProjectionError(err)
 					}
 				}
+				if err := persistCurrentIndexTerminalNotification(
+					ctx,
+					tx,
+					existing,
+					projection.Frame.Result.ResultSummary,
+				); err != nil {
+					return indexProjectionError(err)
+				}
 				cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
 				if cursorErr != nil {
 					return fmt.Errorf("load replayed index cursor: %w", cursorErr)
@@ -332,6 +347,14 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 						if err := persistCurrentIndexMetaTerminalIntent(ctx, tx, existing); err != nil {
 							return indexProjectionError(err)
 						}
+					}
+					if err := persistCurrentIndexTerminalNotification(
+						ctx,
+						tx,
+						existing,
+						projection.Frame.Result.ResultSummary,
+					); err != nil {
+						return indexProjectionError(err)
 					}
 					cursor, cursorErr := replayCursor(ctx, tx, record.EventID)
 					if cursorErr != nil {
@@ -397,6 +420,14 @@ func (r *IndexIngestResultsRepository) ProjectIndexIngest(ctx context.Context, p
 			IsError:     isError,
 		}); err != nil {
 			return err
+		}
+		if err := persistCurrentIndexTerminalNotification(
+			ctx,
+			tx,
+			record,
+			projection.Frame.Result.ResultSummary,
+		); err != nil {
+			return indexProjectionError(err)
 		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
 			return err
@@ -519,6 +550,64 @@ RETURNING logical_output_id`,
 		return outputapp.ErrIndexIngestOutputConflict
 	}
 	return nil
+}
+
+func persistCurrentIndexTerminalNotification(
+	ctx context.Context,
+	tx sqlExecutor,
+	record outputRecord,
+	summary outputapp.IndexIngestSummary,
+) error {
+	if ctx == nil || tx == nil {
+		return outputapp.ErrInvalidIndexIngestOutput
+	}
+	if summary == (outputapp.IndexIngestSummary{}) {
+		return nil
+	}
+	if err := summary.Validate(); err != nil ||
+		record.ExecutionID == "" ||
+		record.Generation == 0 ||
+		record.Generation > math.MaxInt64 {
+		return outputapp.ErrInvalidIndexIngestOutput
+	}
+	errorMessage := ""
+	if summary.Status == outputapp.IndexIngestStatusError {
+		errorMessage = summary.Message
+	}
+	notifications, ok := tx.(currentIndexTerminalNotificationQueries)
+	if !ok {
+		return errors.New("current index terminal notification database is unavailable")
+	}
+	rows, err := notifications.InsertCurrentIndexTerminalNotification(
+		ctx,
+		sqlcgen.InsertCurrentIndexTerminalNotificationParams{
+			NotificationUuid: currentIndexTerminalNotificationUUID(
+				record.LogicalOutputID,
+			),
+			ErrorMessage:     errorMessage,
+			Indexed:          int64(summary.Indexed),
+			Updated:          int64(summary.Updated),
+			TerminalState:    string(summary.TerminalState),
+			CompletionStatus: string(summary.Status),
+			ReindexPresent:   summary.ReindexPresent,
+			Reindex:          summary.Reindex,
+			ExecutionID:      record.ExecutionID,
+			Generation:       int64(record.Generation),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("persist current index terminal notification: %w", err)
+	}
+	if rows < 0 || rows > 1 {
+		return errors.New("current index terminal notification returned invalid row count")
+	}
+	return nil
+}
+
+func currentIndexTerminalNotificationUUID(logicalOutputID string) string {
+	return scheduleFailureUUID(
+		"index.ingest.terminal.notification.v1:" + logicalOutputID,
+	)
 }
 
 func indexReplayData(result outputapp.IndexIngestResult) ([]byte, error) {

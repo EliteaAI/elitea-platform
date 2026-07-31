@@ -758,6 +758,19 @@ CREATE TABLE centry.project (
 );
 INSERT INTO centry.project (id, create_success, suspended)
 VALUES (1, TRUE, FALSE);
+CREATE TABLE centry.notifications (
+    id SERIAL PRIMARY KEY,
+    uuid UUID NOT NULL UNIQUE,
+    is_seen BOOLEAN NOT NULL,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    meta JSONB NOT NULL,
+    event_type VARCHAR NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP
+);
+CREATE INDEX ix_centry_notifications_user_id
+    ON centry.notifications (user_id);
 CREATE SCHEMA p_1;
 CREATE TABLE p_1.application_versions (
     id SERIAL PRIMARY KEY,

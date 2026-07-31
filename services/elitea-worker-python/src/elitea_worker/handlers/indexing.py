@@ -106,6 +106,16 @@ class CurrentIndexNodeEventContext:
     display_name: str = "index_data"
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentIndexTerminalStatus:
+    """Bounded terminal values observed from the current SDK callback."""
+
+    state: str
+    indexed: int
+    updated: int
+    reindex: bool | None
+
+
 class CurrentIndexNodeEventCallback(BaseCallbackHandler):
     """Map current SDK index custom callbacks to bounded ``NodeEventV1``.
 
@@ -136,6 +146,7 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         self._terminal_index_status_observed: str | None = None
         self._terminal_index_status_indexed = 0
         self._terminal_index_status_updated = 0
+        self._terminal_index_status_reindex: bool | None = None
         self._fallback_index_status_finalized = False
 
     def on_tool_start(
@@ -383,19 +394,37 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                         indexed
                         if isinstance(indexed, int)
                         and not isinstance(indexed, bool)
-                        and indexed >= 0
+                        and 0 <= indexed < 1 << 64
                         else 0
                     )
                     self._terminal_index_status_updated = (
                         updated
                         if isinstance(updated, int)
                         and not isinstance(updated, bool)
-                        and updated >= 0
+                        and 0 <= updated < 1 << 64
                         else 0
+                    )
+                    reindex = payload.get("reindex")
+                    self._terminal_index_status_reindex = (
+                        reindex if isinstance(reindex, bool) else None
                     )
         except Exception as exc:
             self._record_failure(exc)
             raise
+
+    def terminal_status(self) -> CurrentIndexTerminalStatus | None:
+        """Return the exact safe terminal callback snapshot, if one arrived."""
+
+        with self._tool_lock:
+            state = self._terminal_index_status_observed
+            if state is None:
+                return None
+            return CurrentIndexTerminalStatus(
+                state=state,
+                indexed=self._terminal_index_status_indexed,
+                updated=self._terminal_index_status_updated,
+                reindex=self._terminal_index_status_reindex,
+            )
 
     def _validate_active_tool_run(self, run_id: Any) -> None:
         try:

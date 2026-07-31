@@ -14,6 +14,7 @@ from elitea_worker.handlers.indexing import (
     IndexIngestInputBinding,
     IndexIngestRequest,
     IndexIngestResult,
+    CurrentIndexTerminalStatus,
     ResolvedIndexIngestInput,
 )
 
@@ -26,6 +27,17 @@ _SUMMARY_STATUS = {
     "ok": indexing_pb2.INDEX_INGEST_STATUS_V1_OK,
     "partly_indexed": indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
     "error": indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
+}
+_TERMINAL_STATE = {
+    "created": indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_CREATED,
+    "completed": indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED,
+    "scheduled_reindex": (
+        indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX
+    ),
+    "failed": indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_FAILED,
+    "partly_indexed": (
+        indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED
+    ),
 }
 _CURRENT_INDEX_SUCCESS_COUNTS = re.compile(
     r"\ASuccessfully indexed \d+ documents \((\d+) chunks\)\."
@@ -230,7 +242,10 @@ def bind_result_artifact(
     return message
 
 
-def bind_result_summary(result: IndexIngestResult) -> indexing_pb2.IndexIngestResultV1:
+def bind_result_summary(
+    result: IndexIngestResult,
+    terminal_status: CurrentIndexTerminalStatus | None = None,
+) -> indexing_pb2.IndexIngestResultV1:
     """Project only the reviewed terminal fields from trusted SDK memory.
 
     The current SDK outer object can contain redeemed toolkit configuration,
@@ -278,15 +293,46 @@ def bind_result_summary(result: IndexIngestResult) -> indexing_pb2.IndexIngestRe
             )
         status, message = _normalize_current_sdk_summary(status, message)
 
+    summary = indexing_pb2.IndexIngestSummaryV1(
+        status=status,
+        message=message,
+    )
+    if terminal_status is not None:
+        terminal_state = _TERMINAL_STATE.get(terminal_status.state)
+        if (
+            terminal_state is None
+            or isinstance(terminal_status.indexed, bool)
+            or not isinstance(terminal_status.indexed, int)
+            or not 0 <= terminal_status.indexed < 1 << 64
+            or isinstance(terminal_status.updated, bool)
+            or not isinstance(terminal_status.updated, int)
+            or not 0 <= terminal_status.updated < 1 << 64
+            or (
+                terminal_status.reindex is not None
+                and not isinstance(terminal_status.reindex, bool)
+            )
+        ):
+            raise InternalFailure()
+        summary.terminal_state = terminal_state
+        summary.indexed = terminal_status.indexed
+        summary.updated = terminal_status.updated
+        if terminal_status.reindex is not None:
+            summary.reindex = terminal_status.reindex
+    elif status == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR:
+        summary.terminal_state = (
+            indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_FAILED
+        )
+    elif status == indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED:
+        summary.terminal_state = (
+            indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED
+        )
+
     bound = indexing_pb2.IndexIngestResultV1(
         input_bundle_id=result.input_bundle_id,
         input_bundle_digest=_digest(result.input_bundle_digest),
         toolkit_configuration=_binding(result.toolkit_configuration),
         tool_parameters=_binding(result.tool_parameters),
-        result_summary=indexing_pb2.IndexIngestSummaryV1(
-            status=status,
-            message=message,
-        ),
+        result_summary=summary,
     )
     _copy_optional(bound.llm_model, result.llm_model)
     _copy_optional(bound.llm_configuration, result.llm_configuration)

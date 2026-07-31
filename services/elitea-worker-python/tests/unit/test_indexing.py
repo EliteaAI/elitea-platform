@@ -30,6 +30,7 @@ from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.indexing import (
     CurrentIndexNodeEventCallback,
     CurrentIndexNodeEventContext,
+    CurrentIndexTerminalStatus,
     IndexIngestHandler,
     IndexIngestInputBinding,
     IndexIngestResult,
@@ -1115,6 +1116,33 @@ def test_inline_summary_projects_only_the_nested_allowlist() -> None:
     assert bound.result_summary.message == "Indexed with gaps"
     assert not bound.HasField("result_artifact")
     assert canary.encode() not in encoded
+
+
+def test_inline_summary_carries_only_typed_terminal_notification_fields() -> None:
+    bound = bind_result_summary(
+        _index_result(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "Indexed safely"},
+            }
+        ),
+        CurrentIndexTerminalStatus(
+            state="scheduled_reindex",
+            indexed=17,
+            updated=4,
+            reindex=True,
+        ),
+    )
+
+    summary = bound.result_summary
+    assert (
+        summary.terminal_state
+        == indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX
+    )
+    assert summary.indexed == 17
+    assert summary.updated == 4
+    assert summary.HasField("reindex")
+    assert summary.reindex is True
 
 
 @pytest.mark.parametrize(

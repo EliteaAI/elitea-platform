@@ -77,6 +77,68 @@ func (IndexIngestStatusV1) EnumDescriptor() ([]byte, []int) {
 	return file_elitea_runtime_v1_indexing_proto_rawDescGZIP(), []int{0}
 }
 
+// IndexIngestTerminalStateV1 is the current index_data callback state used by
+// the durable notification projection. It remains distinct from settlement
+// status: partly indexed work settles successfully, while only the current
+// created/completed/scheduled_reindex/failed states create notifications.
+type IndexIngestTerminalStateV1 int32
+
+const (
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED       IndexIngestTerminalStateV1 = 0
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_CREATED           IndexIngestTerminalStateV1 = 1
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED         IndexIngestTerminalStateV1 = 2
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX IndexIngestTerminalStateV1 = 3
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_FAILED            IndexIngestTerminalStateV1 = 4
+	IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED    IndexIngestTerminalStateV1 = 5
+)
+
+// Enum value maps for IndexIngestTerminalStateV1.
+var (
+	IndexIngestTerminalStateV1_name = map[int32]string{
+		0: "INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED",
+		1: "INDEX_INGEST_TERMINAL_STATE_V1_CREATED",
+		2: "INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED",
+		3: "INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX",
+		4: "INDEX_INGEST_TERMINAL_STATE_V1_FAILED",
+		5: "INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED",
+	}
+	IndexIngestTerminalStateV1_value = map[string]int32{
+		"INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED":       0,
+		"INDEX_INGEST_TERMINAL_STATE_V1_CREATED":           1,
+		"INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED":         2,
+		"INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX": 3,
+		"INDEX_INGEST_TERMINAL_STATE_V1_FAILED":            4,
+		"INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED":    5,
+	}
+)
+
+func (x IndexIngestTerminalStateV1) Enum() *IndexIngestTerminalStateV1 {
+	p := new(IndexIngestTerminalStateV1)
+	*p = x
+	return p
+}
+
+func (x IndexIngestTerminalStateV1) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (IndexIngestTerminalStateV1) Descriptor() protoreflect.EnumDescriptor {
+	return file_elitea_runtime_v1_indexing_proto_enumTypes[1].Descriptor()
+}
+
+func (IndexIngestTerminalStateV1) Type() protoreflect.EnumType {
+	return &file_elitea_runtime_v1_indexing_proto_enumTypes[1]
+}
+
+func (x IndexIngestTerminalStateV1) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use IndexIngestTerminalStateV1.Descriptor instead.
+func (IndexIngestTerminalStateV1) EnumDescriptor() ([]byte, []int) {
+	return file_elitea_runtime_v1_indexing_proto_rawDescGZIP(), []int{1}
+}
+
 // IndexIngestCommandV1 is the reference-only command for index.ingest.v1. Toolkit,
 // tool, model and token values are immutable input-bundle entries fetched only
 // after an authorized claim. They are never embedded in Redis.
@@ -352,9 +414,13 @@ func (x *IndexIngestArtifactReferenceV1) GetClassification() string {
 // index_data terminal result. It is carried only on the authenticated output
 // gRPC data plane and is forbidden on Redis and control gRPC.
 type IndexIngestSummaryV1 struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        IndexIngestStatusV1    `protobuf:"varint,1,opt,name=status,proto3,enum=elitea.runtime.v1.IndexIngestStatusV1" json:"status,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	Status        IndexIngestStatusV1        `protobuf:"varint,1,opt,name=status,proto3,enum=elitea.runtime.v1.IndexIngestStatusV1" json:"status,omitempty"`
+	Message       string                     `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	TerminalState IndexIngestTerminalStateV1 `protobuf:"varint,3,opt,name=terminal_state,json=terminalState,proto3,enum=elitea.runtime.v1.IndexIngestTerminalStateV1" json:"terminal_state,omitempty"`
+	Indexed       uint64                     `protobuf:"varint,4,opt,name=indexed,proto3" json:"indexed,omitempty"`
+	Updated       uint64                     `protobuf:"varint,5,opt,name=updated,proto3" json:"updated,omitempty"`
+	Reindex       *bool                      `protobuf:"varint,6,opt,name=reindex,proto3,oneof" json:"reindex,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -401,6 +467,34 @@ func (x *IndexIngestSummaryV1) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *IndexIngestSummaryV1) GetTerminalState() IndexIngestTerminalStateV1 {
+	if x != nil {
+		return x.TerminalState
+	}
+	return IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED
+}
+
+func (x *IndexIngestSummaryV1) GetIndexed() uint64 {
+	if x != nil {
+		return x.Indexed
+	}
+	return 0
+}
+
+func (x *IndexIngestSummaryV1) GetUpdated() uint64 {
+	if x != nil {
+		return x.Updated
+	}
+	return 0
+}
+
+func (x *IndexIngestSummaryV1) GetReindex() bool {
+	if x != nil && x.Reindex != nil {
+		return *x.Reindex
+	}
+	return false
 }
 
 // IndexIngestResultV1 binds one terminal result to the exact immutable inputs
@@ -554,10 +648,16 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\vbyte_length\x18\x04 \x01(\x04R\n" +
 	"byteLength\x123\n" +
 	"\x06digest\x18\x05 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x06digest\x12&\n" +
-	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"v\n" +
+	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"\xab\x02\n" +
 	"\x14IndexIngestSummaryV1\x12>\n" +
 	"\x06status\x18\x01 \x01(\x0e2&.elitea.runtime.v1.IndexIngestStatusV1R\x06status\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessageJ\x04\b\x03\x10\x10\"\xc4\x06\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12T\n" +
+	"\x0eterminal_state\x18\x03 \x01(\x0e2-.elitea.runtime.v1.IndexIngestTerminalStateV1R\rterminalState\x12\x18\n" +
+	"\aindexed\x18\x04 \x01(\x04R\aindexed\x12\x18\n" +
+	"\aupdated\x18\x05 \x01(\x04R\aupdated\x12\x1d\n" +
+	"\areindex\x18\x06 \x01(\bH\x00R\areindex\x88\x01\x01B\n" +
+	"\n" +
+	"\b_reindexJ\x04\b\a\x10\x10\"\xc4\x06\n" +
 	"\x13IndexIngestResultV1\x12&\n" +
 	"\x0finput_bundle_id\x18\x01 \x01(\tR\rinputBundleId\x12K\n" +
 	"\x13input_bundle_digest\x18\x02 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x11inputBundleDigest\x12a\n" +
@@ -575,7 +675,14 @@ const file_elitea_runtime_v1_indexing_proto_rawDesc = "" +
 	"\"INDEX_INGEST_STATUS_V1_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19INDEX_INGEST_STATUS_V1_OK\x10\x01\x12)\n" +
 	"%INDEX_INGEST_STATUS_V1_PARTLY_INDEXED\x10\x02\x12 \n" +
-	"\x1cINDEX_INGEST_STATUS_V1_ERROR\x10\x03BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
+	"\x1cINDEX_INGEST_STATUS_V1_ERROR\x10\x03*\xba\x02\n" +
+	"\x1aIndexIngestTerminalStateV1\x12.\n" +
+	"*INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED\x10\x00\x12*\n" +
+	"&INDEX_INGEST_TERMINAL_STATE_V1_CREATED\x10\x01\x12,\n" +
+	"(INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED\x10\x02\x124\n" +
+	"0INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX\x10\x03\x12)\n" +
+	"%INDEX_INGEST_TERMINAL_STATE_V1_FAILED\x10\x04\x121\n" +
+	"-INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED\x10\x05BSZQgithub.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1b\x06proto3"
 
 var (
 	file_elitea_runtime_v1_indexing_proto_rawDescOnce sync.Once
@@ -589,36 +696,38 @@ func file_elitea_runtime_v1_indexing_proto_rawDescGZIP() []byte {
 	return file_elitea_runtime_v1_indexing_proto_rawDescData
 }
 
-var file_elitea_runtime_v1_indexing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_elitea_runtime_v1_indexing_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_elitea_runtime_v1_indexing_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_elitea_runtime_v1_indexing_proto_goTypes = []any{
 	(IndexIngestStatusV1)(0),               // 0: elitea.runtime.v1.IndexIngestStatusV1
-	(*IndexIngestCommandV1)(nil),           // 1: elitea.runtime.v1.IndexIngestCommandV1
-	(*IndexIngestInputBindingV1)(nil),      // 2: elitea.runtime.v1.IndexIngestInputBindingV1
-	(*IndexIngestArtifactReferenceV1)(nil), // 3: elitea.runtime.v1.IndexIngestArtifactReferenceV1
-	(*IndexIngestSummaryV1)(nil),           // 4: elitea.runtime.v1.IndexIngestSummaryV1
-	(*IndexIngestResultV1)(nil),            // 5: elitea.runtime.v1.IndexIngestResultV1
-	(*DigestV1)(nil),                       // 6: elitea.runtime.v1.DigestV1
+	(IndexIngestTerminalStateV1)(0),        // 1: elitea.runtime.v1.IndexIngestTerminalStateV1
+	(*IndexIngestCommandV1)(nil),           // 2: elitea.runtime.v1.IndexIngestCommandV1
+	(*IndexIngestInputBindingV1)(nil),      // 3: elitea.runtime.v1.IndexIngestInputBindingV1
+	(*IndexIngestArtifactReferenceV1)(nil), // 4: elitea.runtime.v1.IndexIngestArtifactReferenceV1
+	(*IndexIngestSummaryV1)(nil),           // 5: elitea.runtime.v1.IndexIngestSummaryV1
+	(*IndexIngestResultV1)(nil),            // 6: elitea.runtime.v1.IndexIngestResultV1
+	(*DigestV1)(nil),                       // 7: elitea.runtime.v1.DigestV1
 }
 var file_elitea_runtime_v1_indexing_proto_depIdxs = []int32{
-	2,  // 0: elitea.runtime.v1.IndexIngestCommandV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	6,  // 1: elitea.runtime.v1.IndexIngestInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
-	6,  // 2: elitea.runtime.v1.IndexIngestArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
+	3,  // 0: elitea.runtime.v1.IndexIngestCommandV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	7,  // 1: elitea.runtime.v1.IndexIngestInputBindingV1.content_digest:type_name -> elitea.runtime.v1.DigestV1
+	7,  // 2: elitea.runtime.v1.IndexIngestArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
 	0,  // 3: elitea.runtime.v1.IndexIngestSummaryV1.status:type_name -> elitea.runtime.v1.IndexIngestStatusV1
-	6,  // 4: elitea.runtime.v1.IndexIngestResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
-	2,  // 5: elitea.runtime.v1.IndexIngestResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 6: elitea.runtime.v1.IndexIngestResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 7: elitea.runtime.v1.IndexIngestResultV1.llm_model:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 8: elitea.runtime.v1.IndexIngestResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	2,  // 9: elitea.runtime.v1.IndexIngestResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	3,  // 10: elitea.runtime.v1.IndexIngestResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexIngestArtifactReferenceV1
-	4,  // 11: elitea.runtime.v1.IndexIngestResultV1.result_summary:type_name -> elitea.runtime.v1.IndexIngestSummaryV1
-	2,  // 12: elitea.runtime.v1.IndexIngestResultV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	1,  // 4: elitea.runtime.v1.IndexIngestSummaryV1.terminal_state:type_name -> elitea.runtime.v1.IndexIngestTerminalStateV1
+	7,  // 5: elitea.runtime.v1.IndexIngestResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
+	3,  // 6: elitea.runtime.v1.IndexIngestResultV1.toolkit_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	3,  // 7: elitea.runtime.v1.IndexIngestResultV1.tool_parameters:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	3,  // 8: elitea.runtime.v1.IndexIngestResultV1.llm_model:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	3,  // 9: elitea.runtime.v1.IndexIngestResultV1.llm_configuration:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	3,  // 10: elitea.runtime.v1.IndexIngestResultV1.mcp_tokens:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	4,  // 11: elitea.runtime.v1.IndexIngestResultV1.result_artifact:type_name -> elitea.runtime.v1.IndexIngestArtifactReferenceV1
+	5,  // 12: elitea.runtime.v1.IndexIngestResultV1.result_summary:type_name -> elitea.runtime.v1.IndexIngestSummaryV1
+	3,  // 13: elitea.runtime.v1.IndexIngestResultV1.embedding_binding:type_name -> elitea.runtime.v1.IndexIngestInputBindingV1
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_indexing_proto_init() }
@@ -627,12 +736,13 @@ func file_elitea_runtime_v1_indexing_proto_init() {
 		return
 	}
 	file_elitea_runtime_v1_common_proto_init()
+	file_elitea_runtime_v1_indexing_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_elitea_runtime_v1_indexing_proto_rawDesc), len(file_elitea_runtime_v1_indexing_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,

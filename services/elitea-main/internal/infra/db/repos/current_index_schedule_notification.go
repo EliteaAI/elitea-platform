@@ -99,7 +99,10 @@ func (repository *CurrentIndexScheduleNotificationRepository) Persist(
 func scheduleFailureUUID(effectID string) string {
 	digest := sha256.Sum256([]byte(effectID))
 	value := append([]byte(nil), digest[:16]...)
-	value[6] = (value[6] & 0x0f) | 0x50
+	// The current notifications API accepts UUIDv4 values. Keep the identifier
+	// deterministic for outbox replay while setting the version/variant bits to
+	// the same shape produced by the current notifications plugin.
+	value[6] = (value[6] & 0x0f) | 0x40
 	value[8] = (value[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(value)
 	return encoded[0:8] + "-" + encoded[8:12] + "-" +

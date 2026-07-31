@@ -13,10 +13,25 @@ class IndexIngestStatusV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     INDEX_INGEST_STATUS_V1_OK: _ClassVar[IndexIngestStatusV1]
     INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: _ClassVar[IndexIngestStatusV1]
     INDEX_INGEST_STATUS_V1_ERROR: _ClassVar[IndexIngestStatusV1]
+
+class IndexIngestTerminalStateV1(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED: _ClassVar[IndexIngestTerminalStateV1]
+    INDEX_INGEST_TERMINAL_STATE_V1_CREATED: _ClassVar[IndexIngestTerminalStateV1]
+    INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED: _ClassVar[IndexIngestTerminalStateV1]
+    INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX: _ClassVar[IndexIngestTerminalStateV1]
+    INDEX_INGEST_TERMINAL_STATE_V1_FAILED: _ClassVar[IndexIngestTerminalStateV1]
+    INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED: _ClassVar[IndexIngestTerminalStateV1]
 INDEX_INGEST_STATUS_V1_UNSPECIFIED: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_OK: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_PARTLY_INDEXED: IndexIngestStatusV1
 INDEX_INGEST_STATUS_V1_ERROR: IndexIngestStatusV1
+INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED: IndexIngestTerminalStateV1
+INDEX_INGEST_TERMINAL_STATE_V1_CREATED: IndexIngestTerminalStateV1
+INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED: IndexIngestTerminalStateV1
+INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX: IndexIngestTerminalStateV1
+INDEX_INGEST_TERMINAL_STATE_V1_FAILED: IndexIngestTerminalStateV1
+INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED: IndexIngestTerminalStateV1
 
 class IndexIngestCommandV1(_message.Message):
     __slots__ = ("toolkit_configuration_entry_id", "tool_parameters_entry_id", "llm_model_entry_id", "llm_configuration_entry_id", "mcp_tokens_entry_id", "client_stream_id", "client_message_id", "sio_event", "embedding_binding", "initiator")
@@ -69,12 +84,20 @@ class IndexIngestArtifactReferenceV1(_message.Message):
     def __init__(self, artifact_id: _Optional[str] = ..., immutable_version: _Optional[str] = ..., media_type: _Optional[str] = ..., byte_length: _Optional[int] = ..., digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., classification: _Optional[str] = ...) -> None: ...
 
 class IndexIngestSummaryV1(_message.Message):
-    __slots__ = ("status", "message")
+    __slots__ = ("status", "message", "terminal_state", "indexed", "updated", "reindex")
     STATUS_FIELD_NUMBER: _ClassVar[int]
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    TERMINAL_STATE_FIELD_NUMBER: _ClassVar[int]
+    INDEXED_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_FIELD_NUMBER: _ClassVar[int]
+    REINDEX_FIELD_NUMBER: _ClassVar[int]
     status: IndexIngestStatusV1
     message: str
-    def __init__(self, status: _Optional[_Union[IndexIngestStatusV1, str]] = ..., message: _Optional[str] = ...) -> None: ...
+    terminal_state: IndexIngestTerminalStateV1
+    indexed: int
+    updated: int
+    reindex: bool
+    def __init__(self, status: _Optional[_Union[IndexIngestStatusV1, str]] = ..., message: _Optional[str] = ..., terminal_state: _Optional[_Union[IndexIngestTerminalStateV1, str]] = ..., indexed: _Optional[int] = ..., updated: _Optional[int] = ..., reindex: bool = ...) -> None: ...
 
 class IndexIngestResultV1(_message.Message):
     __slots__ = ("input_bundle_id", "input_bundle_digest", "toolkit_configuration", "tool_parameters", "llm_model", "llm_configuration", "mcp_tokens", "result_artifact", "result_summary", "embedding_binding")

@@ -1972,6 +1972,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                     progress,
                     "partly_indexed",
                 )
+            projected = bind_result_summary(result, callback.terminal_status())
             tool_event = callback.finish_tool(
                 success=projected.result_summary.status
                 != indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR

@@ -78,6 +78,7 @@ type Querier interface {
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
+	InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
