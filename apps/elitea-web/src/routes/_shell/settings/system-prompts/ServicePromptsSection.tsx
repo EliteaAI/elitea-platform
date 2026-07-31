@@ -19,13 +19,6 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 
 import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import IconButton from '@mui/material/IconButton';
-import MenuItem from '@mui/material/MenuItem';
-import TextField from '@mui/material/TextField';
-import Tooltip from '@mui/material/Tooltip';
-
-import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
 
 import type { ConfigurationItem } from '@/shared/api/configurationsApi';
 import {
@@ -34,13 +27,36 @@ import {
   useGetConfigurationsListQuery,
   useUpdateConfigurationMutation,
 } from '@/shared/api/configurationsApi';
-import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
-import { ExpandedViewerModal } from '@/shared/ui/ExpandedViewerModal';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/ui/lib/t';
 import { ServicePromptCard } from './ServicePromptCard';
+import { PromptEditorModal } from './PromptEditorModal';
+import type { SxProps, Theme } from '@mui/material/styles';
 import { promptsStyles } from './ServicePrompts.styles';
+
+/* ── modal props interface ───────────────────────────────────────────── */
+
+export interface PromptsModalProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  isBusy: boolean;
+  hasDefault: boolean;
+  hasChanges: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+  onRestore: () => void;
+  mode: 'create' | 'edit' | null;
+  draftKey: string;
+  draftPrompt: string;
+  allowedKeys: string[];
+  usedKeys: Set<string>;
+  onDraftKeyChange: (val: string) => void;
+  onDraftPromptChange: (val: string) => void;
+  styles: Record<string, SxProps<Theme>>;
+  tFn: typeof t;
+}
 
 /* ── types ────────────────────────────────────────────────────────────── */
 
@@ -323,81 +339,25 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
         </Box>
 
         {isOpen && (
-          <ExpandedViewerModal
+          <PromptEditorModal
             open={isOpen}
             onClose={handleDiscard}
             title={modalTitle}
-            header={{
-              customButtons: (
-                <Tooltip
-                  title={hasDefaultPrompt(draftKeyRef.current)
-                    ? t('shared.ui.settings.prompts.restoreTooltip', 'Restore to default')
-                    : t('shared.ui.settings.prompts.noDefaultTooltip', 'No default available')
-                  }
-                  placement="top"
-                >
-                  <Box component="span" sx={promptsStyles.modalRestoreWrapper}>
-                    <IconButton
-                      color="tertiary"
-                      onClick={handleRestoreInModal}
-                      disabled={!hasDefaultPrompt(draftKeyRef.current) || isBusy}
-                      aria-label={t('shared.ui.settings.prompts.restoreInModalAria', 'Restore to default')}
-                    >
-                      <RestoreOutlinedIcon fontSize="small" />
-                    </IconButton>
-                  </Box>
-                </Tooltip>
-              ),
-            }}
-            footer={
-              <Box sx={promptsStyles.modalFooter}>
-                <Button variant="outlined" onClick={handleDiscard} disabled={isBusy}>
-                  {t('shared.ui.settings.prompts.discard', 'Discard')}
-                </Button>
-                <Button
-                  variant="contained"
-                  onClick={() => void handleSave()}
-                  disabled={isBusy || !hasChanges}
-                >
-                  {t('shared.ui.settings.prompts.save', 'Save')}
-                </Button>
-              </Box>
-            }
-            content={
-              <Box sx={promptsStyles.modalBody}>
-                <Box sx={promptsStyles.keyRow}>
-                  <TextField
-                    select
-                    label={t('shared.ui.settings.prompts.keyLabel', 'Key')}
-                    size="small"
-                    value={draftKeyRef.current}
-                    onChange={(e) => { draftKeyRef.current = e.target.value; }}
-                    disabled={modeRef.current === 'edit'}
-                    helperText={
-                      modeRef.current === 'create'
-                        ? t('shared.ui.settings.prompts.keyHelpCreate', 'Select a predefined key')
-                        : t('shared.ui.settings.prompts.keyHelpEdit', 'Key is immutable')
-                    }
-                    fullWidth
-                  >
-                    {allowedKeys.map((key) => (
-                      <MenuItem key={key} value={key} disabled={modeRef.current === 'create' && usedKeysRef.current.has(key)}>
-                        {key}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Box>
-                <Box sx={promptsStyles.editorContainer}>
-                  <CodeMirrorEditor
-                    readOnly={!enabled}
-                    value={draftPromptRef.current}
-                    onChange={(val) => { draftPromptRef.current = val; }}
-                    height="100%"
-                    minHeight="100%"
-                  />
-                </Box>
-              </Box>
-            }
+            isBusy={isBusy}
+            hasDefault={hasDefaultPrompt(draftKeyRef.current)}
+            hasChanges={hasChanges}
+            onDiscard={handleDiscard}
+            onSave={() => void handleSave()}
+            onRestore={handleRestoreInModal}
+            mode={modeRef.current}
+            draftKey={draftKeyRef.current}
+            draftPrompt={draftPromptRef.current}
+            allowedKeys={allowedKeys}
+            usedKeys={usedKeysRef.current}
+            onDraftKeyChange={(val) => { draftKeyRef.current = val; }}
+            onDraftPromptChange={(val) => { draftPromptRef.current = val; }}
+            styles={promptsStyles}
+            tFn={t}
           />
         )}
       </Box>
