@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -121,6 +122,27 @@ func (e *scriptedExecutor) Exec(_ context.Context, sql string, args ...any) (pgc
 		e.execErrors = e.execErrors[1:]
 	}
 	return tag, err
+}
+
+func (e *scriptedExecutor) InsertCurrentIndexTerminalNotification(
+	ctx context.Context,
+	arg sqlcgen.InsertCurrentIndexTerminalNotificationParams,
+) (int64, error) {
+	tag, err := e.Exec(
+		ctx,
+		"sqlc:InsertCurrentIndexTerminalNotification",
+		arg.NotificationUuid,
+		arg.ErrorMessage,
+		arg.Indexed,
+		arg.Updated,
+		arg.TerminalState,
+		arg.CompletionStatus,
+		arg.ReindexPresent,
+		arg.Reindex,
+		arg.ExecutionID,
+		arg.Generation,
+	)
+	return tag.RowsAffected(), err
 }
 
 type scriptedStore struct {

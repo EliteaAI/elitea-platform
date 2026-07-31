@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"mime"
 	"strings"
 	"time"
@@ -120,13 +121,29 @@ const (
 	IndexIngestStatusError         IndexIngestStatus = "error"
 )
 
-// IndexIngestSummary is the exact allowlisted nested result returned by the
-// current BaseIndexerToolkit.index_data implementation. The outer SDK result
-// is intentionally not represented because it can contain redeemed
-// configuration and other worker-local fields.
+type IndexIngestTerminalState string
+
+const (
+	IndexIngestTerminalUnspecified      IndexIngestTerminalState = ""
+	IndexIngestTerminalCreated          IndexIngestTerminalState = "created"
+	IndexIngestTerminalCompleted        IndexIngestTerminalState = "completed"
+	IndexIngestTerminalScheduledReindex IndexIngestTerminalState = "scheduled_reindex"
+	IndexIngestTerminalFailed           IndexIngestTerminalState = "failed"
+	IndexIngestTerminalPartlyIndexed    IndexIngestTerminalState = "partly_indexed"
+)
+
+// IndexIngestSummary is the allowlisted terminal result plus the bounded
+// current index-status callback fields needed for notification parity. The
+// outer SDK result is intentionally not represented because it can contain
+// redeemed configuration and other worker-local fields.
 type IndexIngestSummary struct {
-	Status  IndexIngestStatus
-	Message string
+	Status         IndexIngestStatus
+	Message        string
+	TerminalState  IndexIngestTerminalState
+	Indexed        uint64
+	Updated        uint64
+	ReindexPresent bool
+	Reindex        bool
 }
 
 func (s IndexIngestSummary) Validate() error {
@@ -136,6 +153,32 @@ func (s IndexIngestSummary) Validate() error {
 		return ErrInvalidIndexIngestOutput
 	}
 	if s.Message == "" || len(s.Message) > MaxIndexIngestSummaryMessageBytes || !utf8.ValidString(s.Message) || strings.ContainsRune(s.Message, '\x00') {
+		return ErrInvalidIndexIngestOutput
+	}
+	if s.Indexed > math.MaxInt64 || s.Updated > math.MaxInt64 ||
+		(!s.ReindexPresent && s.Reindex) {
+		return ErrInvalidIndexIngestOutput
+	}
+	switch s.TerminalState {
+	case IndexIngestTerminalUnspecified:
+		if s.Indexed != 0 || s.Updated != 0 || s.ReindexPresent {
+			return ErrInvalidIndexIngestOutput
+		}
+	case IndexIngestTerminalCreated,
+		IndexIngestTerminalCompleted,
+		IndexIngestTerminalScheduledReindex:
+		if s.Status != IndexIngestStatusOK {
+			return ErrInvalidIndexIngestOutput
+		}
+	case IndexIngestTerminalFailed:
+		if s.Status != IndexIngestStatusError {
+			return ErrInvalidIndexIngestOutput
+		}
+	case IndexIngestTerminalPartlyIndexed:
+		if s.Status != IndexIngestStatusPartlyIndexed {
+			return ErrInvalidIndexIngestOutput
+		}
+	default:
 		return ErrInvalidIndexIngestOutput
 	}
 	return nil

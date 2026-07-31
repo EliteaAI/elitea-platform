@@ -67,6 +67,12 @@ func TestCurrentIndexTypesHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 		wantStatus int
 	}{
 		{
+			name:       "project admin",
+			projectID:  "1",
+			userID:     "17",
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:       "project viewer",
 			projectID:  "1",
 			userID:     "11",
@@ -95,6 +101,30 @@ func TestCurrentIndexTypesHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 			projectID:  "1",
 			userID:     "13",
 			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "custom role with exact permission",
+			projectID:  "1",
+			userID:     "18",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "nonmember",
+			projectID:  "1",
+			userID:     "19",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "dual-project member in project one",
+			projectID:  "1",
+			userID:     "20",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "dual-project member in project two",
+			projectID:  "2",
+			userID:     "20",
+			wantStatus: http.StatusOK,
 		},
 		{
 			name:       "suspended principal",
@@ -267,7 +297,11 @@ INSERT INTO public.auth_core__user (id, email, suspended) VALUES
     (13, 'wrong-permission@example.test', FALSE),
     (14, 'suspended@example.test', TRUE),
     (15, 'platform-admin@example.test', FALSE),
-    (16, 'editor-one@example.test', FALSE);
+    (16, 'editor-one@example.test', FALSE),
+    (17, 'admin-one@example.test', FALSE),
+    (18, 'custom-index-types@example.test', FALSE),
+    (19, 'nonmember@example.test', FALSE),
+    (20, 'dual-project@example.test', FALSE);
 
 CREATE TABLE public.auth_core__role (
     id INTEGER PRIMARY KEY,
@@ -307,7 +341,10 @@ INSERT INTO public.auth_core__project_role (id, project_id, name) VALUES
     (101, 1, 'viewer'),
     (102, 1, 'editor'),
     (103, 1, 'restricted'),
+    (104, 1, 'admin'),
+    (105, 1, 'custom_index_types_reader'),
     (201, 2, 'viewer'),
+    (202, 2, 'editor'),
     (301, 3, 'viewer');
 INSERT INTO public.auth_core__project_role_permission (
     project_id, role_id, permission
@@ -315,7 +352,10 @@ INSERT INTO public.auth_core__project_role_permission (
     (1, 101, 'models.applications.index_types.details'),
     (1, 102, 'models.applications.index_types.details'),
     (1, 103, 'models.applications.details'),
+    (1, 104, 'models.applications.index_types.details'),
+    (1, 105, 'models.applications.index_types.details'),
     (2, 201, 'models.applications.index_types.details'),
+    (2, 202, 'models.applications.index_types.details'),
     (3, 301, 'models.applications.index_types.details');
 INSERT INTO public.auth_core__project_user_role (
     project_id, user_id, role_id
@@ -324,7 +364,11 @@ INSERT INTO public.auth_core__project_user_role (
     (1, 13, 103),
     (1, 14, 101),
     (1, 16, 102),
+    (1, 17, 104),
+    (1, 18, 105),
+    (1, 20, 102),
     (2, 12, 201),
+    (2, 20, 202),
     (3, 11, 301);
 
 CREATE SCHEMA p_1;

@@ -60,6 +60,9 @@ _CURRENT_INDEX_CUSTOM_EVENTS = {
         frozenset({"index_name", "toolkit_id", "project_id"}),
     ),
 }
+_CURRENT_INDEX_TERMINAL_STATES = frozenset(
+    {"completed", "failed", "partly_indexed", "scheduled_reindex", "cancelled"}
+)
 
 # SDK callbacks are durable, replayable UI output.  Treat progress text as an
 # untrusted observation, not as a diagnostic channel: some current SDK tools
@@ -67,6 +70,7 @@ _CURRENT_INDEX_CUSTOM_EVENTS = {
 _MAX_SAFE_PROGRESS_MESSAGE_BYTES = 1024
 _SAFE_PROGRESS_FALLBACK = "Indexing progress updated."
 _SAFE_INDEX_ERROR_FALLBACK = "Indexing reported an error."
+_SAFE_INDEX_PARTIAL_FALLBACK = "Indexing completed with skipped content."
 _LOADING_DOCUMENTS_STAGE = "Loading the documents to index."
 _SENSITIVE_PROGRESS_PATTERNS = (
     re.compile(
@@ -96,9 +100,20 @@ class CurrentIndexNodeEventContext:
     project_id: int | str
     user_id: int | str
     toolkit_id: int | str | None
+    index_name: str | None = None
     message_id: str | None = None
     sio_event: str | None = None
     display_name: str = "index_data"
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentIndexTerminalStatus:
+    """Bounded terminal values observed from the current SDK callback."""
+
+    state: str
+    indexed: int
+    updated: int
+    reindex: bool | None
 
 
 class CurrentIndexNodeEventCallback(BaseCallbackHandler):
@@ -128,6 +143,11 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         self._tool_run_id: str | None = None
         self._tool_started_at: str | None = None
         self._tool_finalized = False
+        self._terminal_index_status_observed: str | None = None
+        self._terminal_index_status_indexed = 0
+        self._terminal_index_status_updated = 0
+        self._terminal_index_status_reindex: bool | None = None
+        self._fallback_index_status_finalized = False
 
     def on_tool_start(
         self,
@@ -227,6 +247,72 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
             self._record_failure(exc)
             raise
 
+    def finish_index_status_on_failure(
+        self,
+        *,
+        correct_inconsistent: bool = False,
+    ) -> node_event_pb2.NodeEventV1 | None:
+        """Build one safe failed status when the SDK emitted no terminal status."""
+
+        return self.finish_index_status_for_summary(
+            "failed",
+            correct_inconsistent=correct_inconsistent,
+        )
+
+    def finish_index_status_for_summary(
+        self,
+        state: str,
+        *,
+        correct_inconsistent: bool = False,
+    ) -> node_event_pb2.NodeEventV1 | None:
+        """Build a terminal correction for the reviewed result summary."""
+
+        if state not in {"failed", "partly_indexed"}:
+            raise ValueError("unsupported terminal index correction")
+        try:
+            with self._tool_lock:
+                observed = self._terminal_index_status_observed
+                if self._fallback_index_status_finalized or observed == state:
+                    return None
+                if observed is not None and not correct_inconsistent:
+                    return None
+                self._fallback_index_status_finalized = True
+                indexed = (
+                    self._terminal_index_status_indexed
+                    if state == "partly_indexed"
+                    else 0
+                )
+                updated = (
+                    self._terminal_index_status_updated
+                    if state == "partly_indexed"
+                    else 0
+                )
+            now = datetime.now(tz=timezone.utc).isoformat()
+            payload = {
+                "task_id": self._context.task_id,
+                "index_name": self._context.index_name,
+                "state": state,
+                "error": (
+                    _SAFE_INDEX_ERROR_FALLBACK
+                    if state == "failed"
+                    else _SAFE_INDEX_PARTIAL_FALLBACK
+                ),
+                "indexed": indexed,
+                "updated": updated,
+                "toolkit_id": self._context.toolkit_id,
+                "initiator": self._context.initiator,
+                "project_id": self._context.project_id,
+                "user_id": self._context.user_id,
+            }
+            return self._build_event(
+                "agent_index_data_status",
+                payload,
+                now=now,
+            )
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
+
     def on_custom_event(
         self,
         name: str,
@@ -296,9 +382,49 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                     payload["toolkit_id"] = self._context.toolkit_id
 
             self._emit(event_type, payload, now=now)
+            if (
+                name == "index_data_status"
+                and payload.get("state") in _CURRENT_INDEX_TERMINAL_STATES
+            ):
+                with self._tool_lock:
+                    self._terminal_index_status_observed = payload.get("state")
+                    indexed = payload.get("indexed")
+                    updated = payload.get("updated")
+                    self._terminal_index_status_indexed = (
+                        indexed
+                        if isinstance(indexed, int)
+                        and not isinstance(indexed, bool)
+                        and 0 <= indexed < 1 << 64
+                        else 0
+                    )
+                    self._terminal_index_status_updated = (
+                        updated
+                        if isinstance(updated, int)
+                        and not isinstance(updated, bool)
+                        and 0 <= updated < 1 << 64
+                        else 0
+                    )
+                    reindex = payload.get("reindex")
+                    self._terminal_index_status_reindex = (
+                        reindex if isinstance(reindex, bool) else None
+                    )
         except Exception as exc:
             self._record_failure(exc)
             raise
+
+    def terminal_status(self) -> CurrentIndexTerminalStatus | None:
+        """Return the exact safe terminal callback snapshot, if one arrived."""
+
+        with self._tool_lock:
+            state = self._terminal_index_status_observed
+            if state is None:
+                return None
+            return CurrentIndexTerminalStatus(
+                state=state,
+                indexed=self._terminal_index_status_indexed,
+                updated=self._terminal_index_status_updated,
+                reindex=self._terminal_index_status_reindex,
+            )
 
     def _validate_active_tool_run(self, run_id: Any) -> None:
         try:

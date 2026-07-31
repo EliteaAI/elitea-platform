@@ -280,6 +280,15 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 				); err != nil {
 					return err
 				}
+				if err := persistRuntimeIndexTerminalNotification(
+					ctx,
+					tx,
+					projection.CapabilityID,
+					record,
+					projection.Frame.Failure.SafeMessage,
+				); err != nil {
+					return err
+				}
 				cursor, err := replayCursor(ctx, tx, record.EventID)
 				if err != nil {
 					return fmt.Errorf("load replayed failure cursor: %w", err)
@@ -314,6 +323,15 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 				if sameDurableOutput(existing, record) {
 					if err := persistRuntimeIndexMetaTerminalIntent(
 						ctx, tx, projection.CapabilityID, record,
+					); err != nil {
+						return err
+					}
+					if err := persistRuntimeIndexTerminalNotification(
+						ctx,
+						tx,
+						projection.CapabilityID,
+						record,
+						projection.Frame.Failure.SafeMessage,
 					); err != nil {
 						return err
 					}
@@ -381,6 +399,15 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 		); err != nil {
 			return err
 		}
+		if err := persistRuntimeIndexTerminalNotification(
+			ctx,
+			tx,
+			projection.CapabilityID,
+			record,
+			projection.Frame.Failure.SafeMessage,
+		); err != nil {
+			return err
+		}
 		outcome = outputapp.ProjectionOutcome{Inserted: true, Cursor: cursor, CommittedSequence: record.Sequence}
 		return nil
 	})
@@ -416,6 +443,28 @@ func persistRuntimeIndexMetaTerminalIntent(
 		return nil
 	}
 	return persistCurrentIndexMetaTerminalIntent(ctx, tx, record)
+}
+
+func persistRuntimeIndexTerminalNotification(
+	ctx context.Context,
+	tx sqlExecutor,
+	capabilityID string,
+	record outputRecord,
+	safeMessage string,
+) error {
+	if capabilityID != executiondomain.IndexIngestCapability {
+		return nil
+	}
+	return persistCurrentIndexTerminalNotification(
+		ctx,
+		tx,
+		record,
+		outputapp.IndexIngestSummary{
+			Status:        outputapp.IndexIngestStatusError,
+			Message:       safeMessage,
+			TerminalState: outputapp.IndexIngestTerminalFailed,
+		},
+	)
 }
 
 func validationOutputRecord(frame outputapp.ConfigurationValidationFrame) (outputRecord, int64, error) {

@@ -6,6 +6,8 @@ http:
         (PathRegexp(`^/api/v2/elitea_core/index_cancel/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+/[0-9a-f]{32}$`) && Method(`DELETE`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`GET`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+$`) && Method(`DELETE`)) ||
+        (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+$`) && Method(`PATCH`)) ||
+        (PathRegexp(`^/api/v2/elitea_core/index_schedule/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+$`) && Method(`DELETE`)) ||
         (PathRegexp(`^/api/v2/executions/[1-9][0-9]*/[^/]+/events$`) && Method(`GET`))
       priority: 90
       entryPoints: [websecure]

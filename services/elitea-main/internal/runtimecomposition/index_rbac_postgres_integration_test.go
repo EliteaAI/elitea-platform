@@ -2,6 +2,11 @@ package runtimecomposition
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +33,7 @@ import (
 
 const (
 	indexRBACPeerAddress = "10.0.0.8:43120"
+	indexRBACSessionKey  = "index-rbac-session-secret-for-tests"
 	indexRBACStartBody   = `{"toolkit_config":{"toolkit_id":9},"tool_name":"index_data","tool_params":{"index_name":"docs"}}`
 )
 
@@ -76,6 +82,20 @@ func (spy *indexRBACMetaSpy) List(
 	return []indexmetaapp.Item{}, nil
 }
 
+type indexRBACMetaDeleteSpy struct {
+	calls   int
+	request indexmetaapp.DeleteRequest
+}
+
+func (spy *indexRBACMetaDeleteSpy) Delete(
+	_ context.Context,
+	request indexmetaapp.DeleteRequest,
+) error {
+	spy.calls++
+	spy.request = request
+	return nil
+}
+
 type indexRBACReplaySpy struct {
 	calls int
 }
@@ -121,10 +141,11 @@ func (*indexRBACStreamingRecorder) SetWriteDeadline(time.Time) error { return ni
 func (recorder *indexRBACStreamingRecorder) Flush()                  { recorder.ResponseRecorder.Flush() }
 
 type indexRBACSpies struct {
-	start  *indexRBACStartSpy
-	cancel indexingapi.CurrentIndexCanceller
-	meta   *indexRBACMetaSpy
-	replay *indexRBACReplaySpy
+	start      *indexRBACStartSpy
+	cancel     indexingapi.CurrentIndexCanceller
+	meta       *indexRBACMetaSpy
+	metaDelete *indexRBACMetaDeleteSpy
+	replay     *indexRBACReplaySpy
 }
 
 func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
@@ -133,27 +154,43 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 	prepareIndexRBACFixtures(t, pool)
 
 	type expectation struct {
-		userID    string
-		projectID string
-		start     int
-		cancel    int
-		meta      int
-		events    int
+		name       string
+		authType   string
+		userID     string
+		tokenID    string
+		projectID  string
+		start      int
+		cancel     int
+		meta       int
+		metaDelete int
+		events     int
 	}
 	for _, test := range []expectation{
-		{userID: "1", projectID: "1", start: 403, cancel: 403, meta: 403, events: 403},  // global super-admin
-		{userID: "2", projectID: "1", start: 403, cancel: 403, meta: 403, events: 403},  // platform admin
-		{userID: "3", projectID: "1", start: 200, cancel: 204, meta: 200, events: 200},  // project admin
-		{userID: "4", projectID: "1", start: 200, cancel: 204, meta: 200, events: 200},  // editor
-		{userID: "5", projectID: "1", start: 403, cancel: 403, meta: 200, events: 403},  // viewer
-		{userID: "6", projectID: "1", start: 200, cancel: 403, meta: 403, events: 200},  // custom patch only
-		{userID: "7", projectID: "1", start: 401, cancel: 401, meta: 401, events: 401},  // suspended user
-		{userID: "8", projectID: "1", start: 403, cancel: 403, meta: 403, events: 403},  // wrong project
-		{userID: "9", projectID: "3", start: 403, cancel: 403, meta: 403, events: 403},  // suspended project
-		{userID: "10", projectID: "1", start: 403, cancel: 403, meta: 403, events: 403}, // nonmember
+		{name: "global super-admin", userID: "1", projectID: "1", start: 403, cancel: 403, meta: 403, metaDelete: 403, events: 403},
+		{name: "platform admin", userID: "2", projectID: "1", start: 403, cancel: 403, meta: 403, metaDelete: 403, events: 403},
+		{name: "project admin forwarded user", userID: "3", projectID: "1", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 200},
+		// Browser sessions terminate at the auth gateway for production-runtime
+		// SSE; Main receives the gateway's trusted forwarded user identity.
+		{name: "project admin session", authType: "session", userID: "3", projectID: "1", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 401},
+		{name: "project editor forwarded user", userID: "4", projectID: "1", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 200},
+		{name: "project editor PAT", authType: "token", userID: "4", tokenID: "104", projectID: "1", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 200},
+		// The current permission-consolidation migration grants task.delete to
+		// the default viewer role. Preserve that effective baseline even though
+		// the older route decorator recommends viewer=false.
+		{name: "project viewer", userID: "5", projectID: "1", start: 403, cancel: 204, meta: 200, metaDelete: 403, events: 403},
+		{name: "custom patch only", userID: "6", projectID: "1", start: 200, cancel: 403, meta: 403, metaDelete: 403, events: 200},
+		{name: "custom delete only", userID: "11", projectID: "1", start: 403, cancel: 403, meta: 403, metaDelete: 200, events: 403},
+		{name: "custom metadata reader only", userID: "12", projectID: "1", start: 403, cancel: 403, meta: 200, metaDelete: 403, events: 403},
+		{name: "custom cancel only", userID: "13", projectID: "1", start: 403, cancel: 204, meta: 403, metaDelete: 403, events: 403},
+		{name: "suspended user", userID: "7", projectID: "1", start: 401, cancel: 401, meta: 401, metaDelete: 401, events: 401},
+		{name: "wrong project", userID: "8", projectID: "1", start: 403, cancel: 403, meta: 403, metaDelete: 403, events: 403},
+		{name: "suspended project", userID: "9", projectID: "3", start: 403, cancel: 403, meta: 403, metaDelete: 403, events: 403},
+		{name: "nonmember", userID: "10", projectID: "1", start: 403, cancel: 403, meta: 403, metaDelete: 403, events: 403},
+		{name: "dual-project member project one", userID: "14", projectID: "1", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 200},
+		{name: "dual-project member project two", userID: "14", projectID: "2", start: 200, cancel: 204, meta: 200, metaDelete: 200, events: 200},
 	} {
 		test := test
-		t.Run("user_"+test.userID+"_project_"+test.projectID, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			t.Run("start", func(t *testing.T) {
 				spies, router := newIndexRBACRouter(t, pool, nil)
 				bodyText := indexRBACStartBody
@@ -161,10 +198,13 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 					bodyText = "{"
 				}
 				body := &indexRBACTrackingBody{Reader: strings.NewReader(bodyText)}
-				request := newIndexRBACRequest(
+				request := newIndexRBACPrincipalRequest(
+					t,
 					http.MethodPost,
 					"/api/v2/elitea_core/test_toolkit_tool/prompt_lib/"+test.projectID+"?await_response=false",
+					test.authType,
 					test.userID,
+					test.tokenID,
 					body,
 				)
 				request.Header.Set("Content-Type", "application/json")
@@ -186,11 +226,14 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 				cancel := &indexRBACCancelSpy{}
 				spies, router := newIndexRBACRouter(t, pool, cancel)
 				response := newIndexRBACStreamingRecorder()
-				router.ServeHTTP(response, newIndexRBACRequest(
+				router.ServeHTTP(response, newIndexRBACPrincipalRequest(
+					t,
 					http.MethodDelete,
 					"/api/v2/elitea_core/index_cancel/prompt_lib/"+test.projectID+
 						"/9/docs/11111111111111111111111111111111",
+					test.authType,
 					test.userID,
+					test.tokenID,
 					nil,
 				))
 				if response.Code != test.cancel {
@@ -208,10 +251,13 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 			t.Run("metadata", func(t *testing.T) {
 				spies, router := newIndexRBACRouter(t, pool, nil)
 				response := newIndexRBACStreamingRecorder()
-				router.ServeHTTP(response, newIndexRBACRequest(
+				router.ServeHTTP(response, newIndexRBACPrincipalRequest(
+					t,
 					http.MethodGet,
 					"/api/v2/elitea_core/index_meta/prompt_lib/"+test.projectID+"/9",
+					test.authType,
 					test.userID,
+					test.tokenID,
 					nil,
 				))
 				if response.Code != test.meta {
@@ -226,14 +272,52 @@ func TestIndexRoutesPostgresRBACAndTenantMatrix(t *testing.T) {
 				}
 			})
 
+			t.Run("metadata delete", func(t *testing.T) {
+				spies, router := newIndexRBACRouter(t, pool, nil)
+				response := newIndexRBACStreamingRecorder()
+				router.ServeHTTP(response, newIndexRBACPrincipalRequest(
+					t,
+					http.MethodDelete,
+					"/api/v2/elitea_core/index_meta/prompt_lib/"+test.projectID+"/9/meta-1",
+					test.authType,
+					test.userID,
+					test.tokenID,
+					nil,
+				))
+				if response.Code != test.metaDelete {
+					t.Fatalf("status=%d want=%d body=%s", response.Code, test.metaDelete, response.Body.String())
+				}
+				wantCalls := 0
+				if test.metaDelete == http.StatusOK {
+					wantCalls = 1
+				}
+				if spies.metaDelete.calls != wantCalls {
+					t.Fatalf("metadata delete calls=%d want=%d", spies.metaDelete.calls, wantCalls)
+				}
+				if wantCalls == 1 &&
+					(fmt.Sprint(spies.metaDelete.request.ProjectID) != test.projectID ||
+						fmt.Sprint(spies.metaDelete.request.ActorUserID) != test.userID) {
+					t.Fatalf(
+						"metadata delete identity project=%d actor=%d want project=%s actor=%s",
+						spies.metaDelete.request.ProjectID,
+						spies.metaDelete.request.ActorUserID,
+						test.projectID,
+						test.userID,
+					)
+				}
+			})
+
 			t.Run("events", func(t *testing.T) {
 				spies, router := newIndexRBACRouter(t, pool, nil)
 				executionID := "execution-project-" + test.projectID
 				response := newIndexRBACStreamingRecorder()
-				router.ServeHTTP(response, newIndexRBACRequest(
+				router.ServeHTTP(response, newIndexRBACPrincipalRequest(
+					t,
 					http.MethodGet,
 					"/api/v2/executions/"+test.projectID+"/"+executionID+"/events",
+					test.authType,
 					test.userID,
+					test.tokenID,
 					nil,
 				))
 				if response.Code != test.events {
@@ -347,10 +431,42 @@ func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testin
 			wantState:   "RUNNING",
 		},
 		{
-			name:        "viewer is denied before durable transition",
+			name:        "viewer preserves effective baseline cancel grant",
 			userID:      "5",
 			projectID:   "1",
 			executionID: "44444444444444444444444444444444",
+			wantStatus:  http.StatusNoContent,
+			wantState:   "CANCELLED",
+		},
+		{
+			name:        "wrong-project member cannot transition durable state",
+			userID:      "8",
+			projectID:   "1",
+			executionID: "55555555555555555555555555555555",
+			wantStatus:  http.StatusForbidden,
+			wantState:   "RUNNING",
+		},
+		{
+			name:        "suspended user cannot transition durable state",
+			userID:      "7",
+			projectID:   "1",
+			executionID: "66666666666666666666666666666666",
+			wantStatus:  http.StatusUnauthorized,
+			wantState:   "RUNNING",
+		},
+		{
+			name:        "platform admin without project role cannot transition durable state",
+			userID:      "2",
+			projectID:   "1",
+			executionID: "77777777777777777777777777777777",
+			wantStatus:  http.StatusForbidden,
+			wantState:   "RUNNING",
+		},
+		{
+			name:        "nonmember cannot transition durable state",
+			userID:      "10",
+			projectID:   "1",
+			executionID: "88888888888888888888888888888888",
 			wantStatus:  http.StatusForbidden,
 			wantState:   "RUNNING",
 		},
@@ -383,7 +499,7 @@ func TestIndexStopPostgresBindsDurableTransitionToExactTenantAndTarget(t *testin
 	}
 }
 
-func TestIndexSourceOnlyContractsResolveLegacyRolesButStayUnmounted(t *testing.T) {
+func TestIndexAdditionalContractsResolveLegacyRolesAndKeepScheduleSearchUnmounted(t *testing.T) {
 	t.Setenv("AUTH_DEV_MODE", "false")
 	pool := newIndexRBACPostgresPool(t)
 	prepareIndexRBACFixtures(t, pool)
@@ -434,15 +550,30 @@ func TestIndexSourceOnlyContractsResolveLegacyRolesButStayUnmounted(t *testing.T
 	}
 
 	_, router := newIndexRBACRouter(t, pool, nil)
-	for _, request := range []*http.Request{
-		newIndexRBACRequest(indexingapi.SourceOnlyIndexDeleteMethod, "/api/v2/elitea_core/index_meta/prompt_lib/1/9/meta-1", "3", nil),
-		newIndexRBACRequest(indexingapi.SourceOnlyIndexScheduleMethod, "/api/v2/elitea_core/index_meta/prompt_lib/1/9/meta-1", "3", nil),
-		newIndexRBACRequest(indexingapi.SourceOnlyIndexSearchMethod, "/api/v2/elitea_core/search_options/prompt_lib/1", "5", nil),
+	for _, test := range []struct {
+		request *http.Request
+		want    int
+	}{
+		{
+			request: newIndexRBACRequest(indexingapi.SourceOnlyIndexScheduleMethod, "/api/v2/elitea_core/index_meta/prompt_lib/1/9/meta-1", "3", nil),
+			want:    http.StatusMethodNotAllowed,
+		},
+		{
+			request: newIndexRBACRequest(indexingapi.SourceOnlyIndexSearchMethod, "/api/v2/elitea_core/search_options/prompt_lib/1", "5", nil),
+			want:    http.StatusNotFound,
+		},
 	} {
 		response := newIndexRBACStreamingRecorder()
-		router.ServeHTTP(response, request)
-		if response.Code != http.StatusNotFound {
-			t.Fatalf("%s %s status=%d body=%s", request.Method, request.URL.Path, response.Code, response.Body.String())
+		router.ServeHTTP(response, test.request)
+		if response.Code != test.want {
+			t.Fatalf(
+				"%s %s status=%d want=%d body=%s",
+				test.request.Method,
+				test.request.URL.Path,
+				response.Code,
+				test.want,
+				response.Body.String(),
+			)
 		}
 	}
 }
@@ -457,12 +588,14 @@ func newIndexRBACRouter(
 	authConfig := apimw.AuthConfig{
 		PrincipalValidator:        authsvc.NewPrincipalValidator(pool),
 		ForwardedIdentityVerifier: indexRBACPeerVerifier{},
+		SessionSecret:             indexRBACSessionKey,
 	}
 	start := &indexRBACStartSpy{}
 	if canceller == nil {
 		canceller = &indexRBACCancelSpy{}
 	}
 	meta := &indexRBACMetaSpy{}
+	metaDelete := &indexRBACMetaDeleteSpy{}
 	replay := &indexRBACReplaySpy{}
 
 	startRoute, err := indexingapi.NewCurrentIndexStartRoute(start, authConfig, resolver)
@@ -474,6 +607,14 @@ func newIndexRBACRouter(
 		t.Fatal(err)
 	}
 	metaRoute, err := indexingapi.NewCurrentIndexMetaRoute(meta, authConfig, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaDeleteRoute, err := indexingapi.NewCurrentIndexMetaDeleteRoute(
+		metaDelete,
+		authConfig,
+		resolver,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,15 +637,17 @@ func newIndexRBACRouter(
 	}
 
 	return &indexRBACSpies{
-			start:  start,
-			cancel: canceller,
-			meta:   meta,
-			replay: replay,
+			start:      start,
+			cancel:     canceller,
+			meta:       meta,
+			metaDelete: metaDelete,
+			replay:     replay,
 		}, publicapi.NewRouter(publicapi.RouterConfig{
-			ProductionRuntime:  runtimeRoutes,
-			CurrentIndexStart:  startRoute,
-			CurrentIndexCancel: cancelRoute,
-			CurrentIndexMeta:   metaRoute,
+			ProductionRuntime:      runtimeRoutes,
+			CurrentIndexStart:      startRoute,
+			CurrentIndexCancel:     cancelRoute,
+			CurrentIndexMeta:       metaRoute,
+			CurrentIndexMetaDelete: metaDeleteRoute,
 		})
 }
 
@@ -520,6 +663,56 @@ func newIndexRBACRequest(
 	request.Header.Set("X-Auth-Type", "user")
 	request.Header.Set("X-Auth-ID", userID)
 	return request
+}
+
+func newIndexRBACPrincipalRequest(
+	t *testing.T,
+	method,
+	target,
+	authType,
+	userID,
+	tokenID string,
+	body io.ReadCloser,
+) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(method, target, nil)
+	request.Body = body
+	request.RemoteAddr = indexRBACPeerAddress
+	switch authType {
+	case "", "user":
+		request.Header.Set("X-Auth-Type", "user")
+		request.Header.Set("X-Auth-ID", userID)
+	case "token":
+		request.Header.Set("X-Auth-Type", "token")
+		request.Header.Set("X-Auth-ID", tokenID)
+		request.Header.Set("X-Auth-User-ID", userID)
+	case "session":
+		request.AddCookie(&http.Cookie{
+			Name:  "elitea_session",
+			Value: indexRBACTestSessionCookie(t, userID),
+		})
+	default:
+		t.Fatalf("unsupported test auth type %q", authType)
+	}
+	return request
+}
+
+func indexRBACTestSessionCookie(t *testing.T, userID string) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"uid":   userID,
+		"email": "ignored-session-email@example.test",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(indexRBACSessionKey))
+	if _, err := mac.Write([]byte(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	return encoded + "." + hex.EncodeToString(mac.Sum(nil))
 }
 
 func newIndexRBACPostgresPool(t *testing.T) *pgxpool.Pool {
@@ -605,7 +798,8 @@ INSERT INTO centry.project (id, suspended) VALUES
 CREATE TABLE public.auth_core__user (
     id BIGINT PRIMARY KEY,
     email TEXT,
-    suspended BOOLEAN NOT NULL DEFAULT FALSE
+    suspended BOOLEAN NOT NULL DEFAULT FALSE,
+    last_login TIMESTAMP WITHOUT TIME ZONE
 );
 INSERT INTO public.auth_core__user (id, email, suspended) VALUES
     (1, 'global-super-admin@example.test', FALSE),
@@ -618,7 +812,18 @@ INSERT INTO public.auth_core__user (id, email, suspended) VALUES
     (8, 'wrong-project@example.test', FALSE),
     (9, 'suspended-project@example.test', FALSE),
     (10, 'nonmember@example.test', FALSE),
+    (11, 'custom-delete@example.test', FALSE),
+    (12, 'custom-meta-reader@example.test', FALSE),
+    (13, 'custom-cancel@example.test', FALSE),
     (14, 'cross-tenant@example.test', FALSE);
+
+CREATE TABLE public.auth_core__token (
+    id BIGINT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    expires TIMESTAMP WITHOUT TIME ZONE
+);
+INSERT INTO public.auth_core__token (id, user_id, expires) VALUES
+    (104, 4, (clock_timestamp() AT TIME ZONE 'UTC') + interval '1 hour');
 
 CREATE TABLE public.auth_core__role (
     id BIGINT PRIMARY KEY,
@@ -674,6 +879,8 @@ INSERT INTO public.auth_core__role_permission (id, role_id, permission) VALUES
     (115, 11, 'models.promptlib_shared.search'),
     (120, 12, 'models.applications.index_meta.details'),
     (121, 12, 'models.promptlib_shared.search'),
+    -- Current baseline: 202602261000_permission_consolidation grants this to viewer.
+    (122, 12, 'models.applications.task.delete'),
     (130, 13, 'models.applications.tool.patch'),
     (140, 14, 'models.applications.tool.patch');
 INSERT INTO public.auth_core__user_role (id, user_id, role_id) VALUES
@@ -686,9 +893,15 @@ INSERT INTO public.auth_core__project_role (id, project_id, name) VALUES
     (32, 1, 'viewer'),
     (33, 1, 'custom_index_starter'),
     (34, 2, 'editor'),
-    (35, 3, 'editor');
+    (35, 3, 'editor'),
+    (36, 1, 'custom_index_deleter'),
+    (37, 1, 'custom_index_metadata_reader'),
+    (38, 1, 'custom_index_canceller');
 INSERT INTO public.auth_core__project_role_permission (id, project_id, role_id, permission) VALUES
-    (300, 1, 33, 'models.applications.tool.patch');
+    (300, 1, 33, 'models.applications.tool.patch'),
+    (301, 1, 36, 'models.applications.index_meta.delete'),
+    (302, 1, 37, 'models.applications.index_meta.details'),
+    (303, 1, 38, 'models.applications.task.delete');
 INSERT INTO public.auth_core__project_user_role (id, project_id, user_id, role_id) VALUES
     (400, 1, 3, 30),
     (401, 1, 4, 31),
@@ -698,7 +911,10 @@ INSERT INTO public.auth_core__project_user_role (id, project_id, user_id, role_i
     (405, 2, 8, 34),
     (406, 3, 9, 35),
     (407, 1, 14, 31),
-    (408, 2, 14, 34);
+    (408, 2, 14, 34),
+    (409, 1, 11, 36),
+    (410, 1, 12, 37),
+    (411, 1, 13, 38);
 
 CREATE TABLE elitea_runtime.execution_jobs (
     execution_id TEXT PRIMARY KEY,
@@ -715,7 +931,13 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
     generation BIGINT NOT NULL,
     capability_id TEXT NOT NULL,
     toolkit_id BIGINT NOT NULL,
-    index_name TEXT NOT NULL
+    index_name TEXT NOT NULL,
+    index_meta_initialized_at TIMESTAMPTZ,
+    index_manual_stop_requested_at TIMESTAMPTZ,
+    index_manual_cleanup_status TEXT,
+    index_manual_cleanup_attempt_count INTEGER,
+    index_manual_cleanup_next_attempt_at TIMESTAMPTZ,
+    index_manual_cleanup_last_error_code TEXT
 );
 
 INSERT INTO elitea_runtime.execution_jobs (
@@ -734,7 +956,11 @@ INSERT INTO elitea_runtime.execution_jobs (
     ('11111111111111111111111111111111', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
     ('22222222222222222222222222222222', 1, '2', 2, 2, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
     ('33333333333333333333333333333333', 1, '2', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
-    ('44444444444444444444444444444444', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING');
+    ('44444444444444444444444444444444', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
+    ('55555555555555555555555555555555', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
+    ('66666666666666666666666666666666', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
+    ('77777777777777777777777777777777', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING'),
+    ('88888888888888888888888888888888', 1, '1', 1, 1, 'index.ingest.v1', 'RUNNING', 'RUNNING');
 INSERT INTO elitea_runtime.index_ingest_jobs (
     execution_id,
     generation,
@@ -745,7 +971,11 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     ('11111111111111111111111111111111', 1, 'index.ingest.v1', 9, 'docs'),
     ('22222222222222222222222222222222', 1, 'index.ingest.v1', 9, 'docs'),
     ('33333333333333333333333333333333', 1, 'index.ingest.v1', 9, 'docs'),
-    ('44444444444444444444444444444444', 1, 'index.ingest.v1', 9, 'docs');
+    ('44444444444444444444444444444444', 1, 'index.ingest.v1', 9, 'docs'),
+    ('55555555555555555555555555555555', 1, 'index.ingest.v1', 9, 'docs'),
+    ('66666666666666666666666666666666', 1, 'index.ingest.v1', 9, 'docs'),
+    ('77777777777777777777777777777777', 1, 'index.ingest.v1', 9, 'docs'),
+    ('88888888888888888888888888888888', 1, 'index.ingest.v1', 9, 'docs');
 `); err != nil {
 		t.Fatal(err)
 	}

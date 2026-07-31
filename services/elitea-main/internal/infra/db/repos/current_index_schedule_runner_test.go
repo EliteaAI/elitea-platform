@@ -1,11 +1,88 @@
 package repos
 
 import (
+	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
+
+func TestCurrentIndexScheduleCatalogUsesGeneratedQueryInterfaces(t *testing.T) {
+	t.Parallel()
+
+	shared := &scriptedCurrentIndexScheduleSharedQueries{
+		projectIDs: []int32{2, 7},
+	}
+	projectQueries := &scriptedCurrentIndexScheduleProjectQueries{
+		toolkits: []sqlcgen.ListCurrentIndexScheduleToolkitsRow{{
+			ID:   19,
+			Type: "github",
+			IndexesMeta: []byte(`{"docs":{"schedules":{"11":{
+				"cron":"0 3 * * *","enabled":true,"created_by":11,
+				"timezone":"UTC","last_run":"2026-07-27T03:00:00+00:00"
+			}}}}`),
+		}},
+	}
+	projectStore := &currentScheduleProjectStore{
+		scriptedExecutor: &scriptedExecutor{},
+	}
+	catalog, err := newCurrentIndexScheduleCatalog(
+		shared,
+		projectStore,
+		func(sqlExecutor) (currentIndexScheduleProjectQueries, error) {
+			return projectQueries, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projectIDs, err := catalog.ListProjectPage(context.Background(), 1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(projectIDs, []int64{2, 7}) {
+		t.Fatalf("project IDs=%v", projectIDs)
+	}
+	if !reflect.DeepEqual(
+		shared.params,
+		[]sqlcgen.ListCurrentIndexScheduleProjectsParams{{
+			AfterProjectID: 1,
+			PageLimit:      8,
+		}},
+	) {
+		t.Fatalf("project query params=%+v", shared.params)
+	}
+
+	toolkits, err := catalog.ListToolkitSchedulePage(
+		context.Background(),
+		7,
+		0,
+		8,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectStore.projectID != 7 ||
+		len(toolkits) != 1 ||
+		toolkits[0].ToolkitID != 19 ||
+		len(toolkits[0].Candidates) != 1 ||
+		toolkits[0].Candidates[0].ScheduleUserID != 11 {
+		t.Fatalf("toolkits=%+v project=%d", toolkits, projectStore.projectID)
+	}
+	if !reflect.DeepEqual(
+		projectQueries.listParams,
+		[]sqlcgen.ListCurrentIndexScheduleToolkitsParams{{
+			AfterToolkitID: 0,
+			PageLimit:      8,
+		}},
+	) {
+		t.Fatalf("toolkit query params=%+v", projectQueries.listParams)
+	}
+}
 
 func TestCurrentToolkitScheduleCandidatesAreDeterministicAndPreserveInvalidRows(t *testing.T) {
 	indexesMeta := []byte(`{
@@ -59,6 +136,48 @@ func TestCurrentToolkitScheduleCandidatesAreDeterministicAndPreserveInvalidRows(
 		!*first[2].Schedule.Credentials.Private {
 		t.Fatalf("nested private schedule credentials were not preserved: %+v", first[2])
 	}
+}
+
+type scriptedCurrentIndexScheduleSharedQueries struct {
+	projectIDs []int32
+	err        error
+	params     []sqlcgen.ListCurrentIndexScheduleProjectsParams
+}
+
+func (queries *scriptedCurrentIndexScheduleSharedQueries) ListCurrentIndexScheduleProjects(
+	_ context.Context,
+	params sqlcgen.ListCurrentIndexScheduleProjectsParams,
+) ([]int32, error) {
+	queries.params = append(queries.params, params)
+	return queries.projectIDs, queries.err
+}
+
+type scriptedCurrentIndexScheduleProjectQueries struct {
+	toolkits   []sqlcgen.ListCurrentIndexScheduleToolkitsRow
+	listErr    error
+	listParams []sqlcgen.ListCurrentIndexScheduleToolkitsParams
+}
+
+func (queries *scriptedCurrentIndexScheduleProjectQueries) ListCurrentIndexScheduleToolkits(
+	_ context.Context,
+	params sqlcgen.ListCurrentIndexScheduleToolkitsParams,
+) ([]sqlcgen.ListCurrentIndexScheduleToolkitsRow, error) {
+	queries.listParams = append(queries.listParams, params)
+	return queries.toolkits, queries.listErr
+}
+
+func (*scriptedCurrentIndexScheduleProjectQueries) LockCurrentIndexScheduleToolkitMeta(
+	context.Context,
+	int32,
+) ([]byte, error) {
+	return nil, nil
+}
+
+func (*scriptedCurrentIndexScheduleProjectQueries) UpdateCurrentIndexScheduleToolkitMeta(
+	context.Context,
+	sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams,
+) (int64, error) {
+	return 0, nil
 }
 
 func TestSameCurrentScheduleComparesNullableCredentialsByValue(t *testing.T) {

@@ -27,8 +27,8 @@ import (
 
 const (
 	indexReliabilityOptIn = "ELITEA_INDEX_RELIABILITY_SYSTEM_TEST"
-	indexCommandStream    = "commands.v1.index.ingest.indexing.shared.1.0"
-	indexConsumerGroup    = "elitea-indexer-worker-v1"
+	indexCommandStream    = "commands.v1.index.ingest.indexing.shared.2.0"
+	indexConsumerGroup    = "elitea-indexer-worker-v2"
 	indexWorkerService    = "elitea-indexer-worker"
 	syntheticConsumer     = "reliability-crashed-consumer"
 )
@@ -203,10 +203,20 @@ func TestExistingComposeIndexReliability(t *testing.T) {
 	if stopTerminal.Claims != 0 || !stopTerminal.Retired || stopTerminal.ReplayEvents == 0 {
 		t.Fatalf("no-authority Stop did not durably retire without a worker claim: %+v", stopTerminal)
 	}
+	// Redis retirement remains consumer-owned: the producer credential cannot
+	// XACK/XDEL a command, and no business claim is needed for the worker to
+	// receive the durable retired decision. Restarting the real worker must
+	// drain this tiny reference without invoking the SDK or creating a claim.
+	harness.startWorker(t, ctx)
 	harness.waitForRedisEmpty(t, ctx, stopCanary)
+	stopTerminal = harness.waitForJob(t, ctx, stopExecution, func(snapshot indexJobSnapshot) bool {
+		return snapshot.State == "CANCELLED" &&
+			snapshot.DesiredState == "CANCELLED" &&
+			snapshot.Claims == 0 &&
+			snapshot.Retired
+	}, "cancelled execution drained without business authority")
 	stopSSE := finishIndexSSE(t, stopSSECancel, stopSSEDone)
 	assertSafeIndexSSE(t, stopSSE)
-	harness.startWorker(t, ctx)
 }
 
 func loadIndexReliabilityConfig(t *testing.T) indexReliabilityConfig {

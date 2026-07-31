@@ -48,6 +48,10 @@ class SdkValidationOutcome:
         return not self.errors
 
 
+class SdkBudgetExceeded(Exception):
+    """Data-free marker for an exact SDK budget policy rejection."""
+
+
 @dataclass(frozen=True, slots=True)
 class SdkConfigurationBinding:
     configuration_type: str
@@ -195,6 +199,22 @@ class EliteaSdkToolkitAdapter:
         )
 
 
+def verify_sdk_markdown_runtime(sentinel: str) -> None:
+    """Exercise the shared SDK Markdown parser without leaking SDK ownership."""
+
+    with redirect_stdout(sys.stderr):
+        module = importlib.import_module("elitea_sdk.tools.utils.content_parser")
+    documents = list(
+        module.process_content_by_type(
+            ("# " + sentinel).encode("utf-8"),
+            "elitea-runtime-probe.md",
+        )
+    )
+    observed = "\n".join(document.page_content for document in documents)
+    if not documents or sentinel not in observed:
+        raise RuntimeError("markdown-output-mismatch")
+
+
 class EliteaSdkIndexingAdapter:
     """Pinned adapter for the current ``index_data`` SDK entrypoint.
 
@@ -239,15 +259,20 @@ class EliteaSdkIndexingAdapter:
         )
         # Business-compatibility boundary: exactly the public SDK operation used
         # by the current indexer worker, exactly once per kernel invocation.
-        return self._client.test_toolkit_tool(
-            toolkit_config=invocation_toolkit_config,
-            tool_name="index_data",
-            tool_params=deepcopy(tool_params),
-            runtime_config=runtime_config,
-            llm_model=llm_model,
-            llm_config=deepcopy(llm_config),
-            mcp_tokens=mcp_tokens,
-        )
+        try:
+            return self._client.test_toolkit_tool(
+                toolkit_config=invocation_toolkit_config,
+                tool_name="index_data",
+                tool_params=deepcopy(tool_params),
+                runtime_config=runtime_config,
+                llm_model=llm_model,
+                llm_config=deepcopy(llm_config),
+                mcp_tokens=mcp_tokens,
+            )
+        except Exception as error:
+            if _is_sdk_budget_exceeded(error):
+                raise SdkBudgetExceeded() from None
+            raise
 
 
 class EliteaSdkIndexSearchAdapter:
@@ -327,6 +352,17 @@ def _current_index_tool_name_compatibility(
         migrated.append("list_indexes")
     settings["selected_tools"] = migrated
     return result
+
+
+def _is_sdk_budget_exceeded(error: Exception) -> bool:
+    """Match only the admitted SDK's typed budget exception."""
+
+    try:
+        module = importlib.import_module("elitea_sdk.runtime.exceptions")
+    except ImportError:
+        return False
+    error_type = getattr(module, "BudgetExceededError", None)
+    return isinstance(error_type, type) and isinstance(error, error_type)
 
 
 def _package_tree_digest(root: Path) -> str:

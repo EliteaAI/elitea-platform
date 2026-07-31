@@ -576,7 +576,32 @@ func indexIngestSummaryDomain(summary *runtimev1.IndexIngestSummaryV1) (outputap
 	default:
 		return outputapp.IndexIngestSummary{}, outputapp.ErrInvalidIndexIngestOutput
 	}
-	mapped := outputapp.IndexIngestSummary{Status: status, Message: summary.GetMessage()}
+	var terminalState outputapp.IndexIngestTerminalState
+	switch summary.GetTerminalState() {
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED:
+		terminalState = outputapp.IndexIngestTerminalUnspecified
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_CREATED:
+		terminalState = outputapp.IndexIngestTerminalCreated
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED:
+		terminalState = outputapp.IndexIngestTerminalCompleted
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX:
+		terminalState = outputapp.IndexIngestTerminalScheduledReindex
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_FAILED:
+		terminalState = outputapp.IndexIngestTerminalFailed
+	case runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED:
+		terminalState = outputapp.IndexIngestTerminalPartlyIndexed
+	default:
+		return outputapp.IndexIngestSummary{}, outputapp.ErrInvalidIndexIngestOutput
+	}
+	mapped := outputapp.IndexIngestSummary{
+		Status:         status,
+		Message:        summary.GetMessage(),
+		TerminalState:  terminalState,
+		Indexed:        summary.GetIndexed(),
+		Updated:        summary.GetUpdated(),
+		ReindexPresent: summary.Reindex != nil,
+		Reindex:        summary.GetReindex(),
+	}
 	if err := mapped.Validate(); err != nil {
 		return outputapp.IndexIngestSummary{}, err
 	}

@@ -186,6 +186,114 @@ INSERT INTO elitea_runtime.index_ingest_jobs (
     sqlc.arg(initiator)::text
 );
 
+-- name: InsertCurrentIndexTerminalNotification :execrows
+WITH source AS MATERIALIZED (
+    SELECT j.resource_project_id,
+           j.actor_id::integer AS user_id,
+           i.toolkit_id,
+           i.index_name,
+           i.index_meta_id,
+           i.index_generation,
+           i.initiator,
+           CASE
+               WHEN sqlc.arg(terminal_state)::text IN (
+                   'created',
+                   'completed',
+                   'scheduled_reindex',
+                   'failed',
+                   'partly_indexed'
+               )
+                   THEN sqlc.arg(terminal_state)::text
+               WHEN sqlc.arg(completion_status)::text = 'error'
+                   THEN 'failed'
+               WHEN sqlc.arg(completion_status)::text = 'partly_indexed'
+                   THEN 'partly_indexed'
+               WHEN i.initiator = 'schedule'
+                   THEN 'scheduled_reindex'
+               WHEN i.index_generation = 1
+                   THEN 'created'
+               ELSE 'completed'
+           END AS terminal_state,
+           CASE
+               WHEN sqlc.arg(reindex_present)::boolean
+                   THEN sqlc.arg(reindex)::boolean
+               WHEN i.initiator = 'schedule'
+                   THEN TRUE
+               ELSE i.index_generation > 1
+           END AS reindex
+    FROM elitea_runtime.execution_jobs AS j
+    JOIN elitea_runtime.index_ingest_jobs AS i
+      ON i.execution_id = j.execution_id
+     AND i.generation = j.generation
+     AND i.capability_id = j.capability_id
+    WHERE j.execution_id = sqlc.arg(execution_id)::text
+      AND j.generation = sqlc.arg(generation)::bigint
+      AND j.capability_id = 'index.ingest.v1'
+      AND i.initiator IN ('user', 'schedule')
+),
+notification AS (
+    SELECT source.*,
+           CASE
+               WHEN source.terminal_state = 'failed'
+                   THEN format('Index [%s]() is failed.', source.index_name)
+               WHEN source.reindex
+                   THEN format(
+                       'Index [%s]() is successfully reindexed%s. {"reindexed": %s, "indexed": %s}',
+                       source.index_name,
+                       CASE
+                           WHEN source.initiator = 'schedule'
+                               THEN ' by schedule'
+                           ELSE ''
+                       END,
+                       sqlc.arg(updated)::bigint,
+                       sqlc.arg(indexed)::bigint
+                   )
+               ELSE format(
+                   'Index [%s]() is successfully created: {"indexed": %s}',
+                   source.index_name,
+                   sqlc.arg(indexed)::bigint
+               )
+           END AS message
+    FROM source
+    WHERE source.terminal_state IN (
+        'created',
+        'completed',
+        'scheduled_reindex',
+        'failed'
+    )
+)
+INSERT INTO centry.notifications (
+    uuid,
+    is_seen,
+    project_id,
+    user_id,
+    meta,
+    event_type
+)
+SELECT sqlc.arg(notification_uuid)::text::uuid,
+       FALSE,
+       notification.resource_project_id,
+       notification.user_id,
+       jsonb_build_object(
+           'id', notification.index_meta_id,
+           'index_name', notification.index_name,
+           'state', notification.terminal_state,
+           'error', CASE
+               WHEN notification.terminal_state = 'failed'
+                   THEN sqlc.arg(error_message)::text
+               ELSE NULL
+           END,
+           'reindex', notification.reindex,
+           'indexed', sqlc.arg(indexed)::bigint,
+           'updated', sqlc.arg(updated)::bigint,
+           'toolkit_id', notification.toolkit_id,
+           'initiator', notification.initiator,
+           'message', notification.message
+       ),
+       'index_data_changed'
+FROM notification
+ON CONFLICT (uuid) DO NOTHING;
+
 -- name: MarkIndexMetaInitialized :one
 UPDATE elitea_runtime.index_ingest_jobs AS i
 SET index_meta_initialized_at = COALESCE(

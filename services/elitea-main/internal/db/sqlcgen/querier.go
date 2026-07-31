@@ -13,6 +13,7 @@ import (
 type Querier interface {
 	AcquireAuthProviderAdvisoryLock(ctx context.Context, providerRef string) error
 	AddNewAuthUserToRootGroup(ctx context.Context, userID int32) (int64, error)
+	AdvanceScheduledJobCursor(ctx context.Context, arg AdvanceScheduledJobCursorParams) (int64, error)
 	AllocateIndexGeneration(ctx context.Context, arg AllocateIndexGenerationParams) (int64, error)
 	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
@@ -25,7 +26,10 @@ type Querier interface {
 	ClaimConfigurationLifecycleEvents(ctx context.Context, arg ClaimConfigurationLifecycleEventsParams) ([]ClaimConfigurationLifecycleEventsRow, error)
 	ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error)
 	ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error)
+	ClaimScheduledJobCursor(ctx context.Context, arg ClaimScheduledJobCursorParams) (int64, error)
+	ClaimScheduledOccurrence(ctx context.Context, arg ClaimScheduledOccurrenceParams) (int64, error)
 	CompareAndSwapCurrentConfigurationRenameToolkit(ctx context.Context, arg CompareAndSwapCurrentConfigurationRenameToolkitParams) (int64, error)
+	CompleteScheduledOccurrence(ctx context.Context, arg CompleteScheduledOccurrenceParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
@@ -69,18 +73,24 @@ type Querier interface {
 	GetLatestConfigurationLifecycleRevision(ctx context.Context, arg GetLatestConfigurationLifecycleRevisionParams) (int64, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
 	GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetRuntimeAdmissionByIdempotencyParams) (GetRuntimeAdmissionByIdempotencyRow, error)
+	GetScheduledJobCursorForUpdate(ctx context.Context, jobID string) (GetScheduledJobCursorForUpdateRow, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
+	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
+	InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
+	InsertScheduledJobCursor(ctx context.Context, arg InsertScheduledJobCursorParams) error
+	InsertScheduledOccurrence(ctx context.Context, arg InsertScheduledOccurrenceParams) error
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
 	ListActiveIndexIngestTarget(ctx context.Context, arg ListActiveIndexIngestTargetParams) ([]string, error)
+	ListClaimableScheduledOccurrences(ctx context.Context, arg ListClaimableScheduledOccurrencesParams) ([]ListClaimableScheduledOccurrencesRow, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current
 	// project and, when requested, in the public project with shared_only=true.
@@ -90,6 +100,11 @@ type Querier interface {
 	// current UI contract. The caller caps limit_rows at the 257-row sentinel.
 	ListCurrentConfigurationTypes(ctx context.Context, arg ListCurrentConfigurationTypesParams) ([]string, error)
 	ListCurrentConfigurations(ctx context.Context, arg ListCurrentConfigurationsParams) ([]ListCurrentConfigurationsRow, error)
+	// The unqualified toolkit table is intentional. These queries execute only
+	// inside an authorized project transaction whose local search_path is the
+	// exact p_<project_id> tenant schema.
+	ListCurrentIndexScheduleProjects(ctx context.Context, arg ListCurrentIndexScheduleProjectsParams) ([]int32, error)
+	ListCurrentIndexScheduleToolkits(ctx context.Context, arg ListCurrentIndexScheduleToolkitsParams) ([]ListCurrentIndexScheduleToolkitsRow, error)
 	ListCurrentModelConfigurations(ctx context.Context, arg ListCurrentModelConfigurationsParams) ([]ListCurrentModelConfigurationsRow, error)
 	ListCurrentProjectAuthors(ctx context.Context, projectID int32) ([]ListCurrentProjectAuthorsRow, error)
 	ListCurrentSharedConfigurations(ctx context.Context, arg ListCurrentSharedConfigurationsParams) ([]ListCurrentSharedConfigurationsRow, error)
@@ -109,6 +124,8 @@ type Querier interface {
 	// only inside a tenant transaction whose local search_path was derived from an
 	// already authorized positive project identity.
 	LockCurrentConfigurationForMutation(ctx context.Context, arg LockCurrentConfigurationForMutationParams) (LockCurrentConfigurationForMutationRow, error)
+	LockCurrentIndexScheduleToolkit(ctx context.Context, toolkitID int32) (LockCurrentIndexScheduleToolkitRow, error)
+	LockCurrentIndexScheduleToolkitMeta(ctx context.Context, toolkitID int32) ([]byte, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
@@ -118,6 +135,7 @@ type Querier interface {
 	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
 	ReleaseIndexMetaInitialization(ctx context.Context, arg ReleaseIndexMetaInitializationParams) (int64, error)
+	ReleaseScheduledOccurrenceForRetry(ctx context.Context, arg ReleaseScheduledOccurrenceForRetryParams) (int64, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
@@ -127,11 +145,14 @@ type Querier interface {
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
+	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
 	// intentional: every such statement runs inside an authorized project
 	// transaction whose local search_path is p_<project_id>.
 	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
+	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap
 	// configuration is never copied into this tenant row: only the current vault

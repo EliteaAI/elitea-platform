@@ -1,8 +1,9 @@
 # Confluence indexing parity harness
 
-This directory is test-only. It freezes the current `elitea-sdk==0.8.30`
-Confluence indexing behavior before the standalone worker becomes the production
-owner of the full indexing pipeline. It is current-baseline characterization,
+This directory is test-only. It freezes the current
+`elitea-sdk==0.8.30` Confluence indexing behavior. Its baseline lock is
+independent of the target worker lock so a target SDK upgrade cannot silently
+rewrite the current-product evidence. It is current-baseline characterization,
 not standalone-worker parity closure.
 
 The harness crosses the following real boundaries:
@@ -27,15 +28,15 @@ therefore an explicit skip until that prerequisite exists.
 
 ## Pinned current baseline
 
-The harness accepts only the SDK artifact recorded in
-`services/elitea-worker-python/elitea-sdk.lock.json`:
+The harness accepts only the artifact recorded in
+`current_pylon_sdk_baseline.json`:
 
 ```text
 version: 0.8.30
 revision: 48c51a16634a9924f6c5d5313c3bacedb0b5b56b
 ```
 
-Create a detached SDK worktree without changing the SDK checkout:
+Create a detached baseline SDK worktree without changing the SDK checkout:
 
 ```bash
 git -C ../elitea-sdk worktree add --detach \
@@ -112,35 +113,37 @@ does **not** yet prove the complete admission -> durable bundle persistence ->
 Redis `XADD` -> standalone-worker consumption -> output-streaming path under
 the 62 MiB workload, and it does not close issue #5681 by itself.
 
-## Mandatory CI profile
+## Required full profile
 
-The `Pinned current Confluence indexing characterization` job in
-`.github/workflows/ci-go.yml` does not permit the SDK or binary/PgVector tests
-to silently skip. It:
+This profile is required before claiming Confluence parity, but it is not
+currently mounted as a mandatory repository CI job. A valid execution:
 
 - checks out revision
   `48c51a16634a9924f6c5d5313c3bacedb0b5b56b` and validates its Git archive
-  digest against the worker lock;
+  digest against `current_pylon_sdk_baseline.json`;
 - runs against `pgvector/pgvector:0.8.1-pg18`;
 - installs and verifies Poppler and Tesseract;
 - runs the complete HTTP, model-client, binary-media, ordered-event, and real
   PgVector characterization suite.
 
-`pytesseract==0.3.13` is supplied only through the standalone worker's
-`indexing-current` profile. The job deliberately has no ad hoc OCR install:
-the mandatory import and real Tesseract tests must fail when the production
-worker lock or dependency declaration drifts from the SDK's inherited
-Confluence loader.
+`pytesseract==0.3.13` is supplied through the standalone worker's
+`indexing-current` profile. A future mandatory job must have no ad hoc OCR
+install: import and real Tesseract tests must fail when the declared production
+dependency profile drifts from the current Confluence loader requirements.
 
 ## Baseline transition evidence
 
 The complete HTTP and PgVector golden matrix was rerun when the worker lock
 moved from the provisional SDK 0.8.26 target to the current Pylon Indexer
-baseline above. No covered observable contract drifted. In particular, 0.8.30
-still makes two vision requests for the one image because parent augmentation
-and dependent attachment extraction use different prompts; the newer
-prompt-aware image cache therefore does not combine those calls. SDK 0.8.30 and
-its exact locked revision are the sole parity authority for this harness.
+0.8.30 baseline. No covered observable contract drifted. In particular, 0.8.30
+made two vision requests for the one image because parent augmentation and
+dependent attachment extraction use different prompts.
+
+The worker lock has since moved to 0.8.53. Import/profile verification and
+focused indexing contracts are not a substitute for a separate target run
+against these immutable current goldens. Until that transition run passes,
+0.8.30 remains the current behavioral authority and 0.8.53 remains the
+admitted target artifact, not proven full Confluence parity.
 
 ## Explicit remaining prerequisites
 

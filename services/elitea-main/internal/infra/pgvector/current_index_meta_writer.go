@@ -12,6 +12,8 @@ import (
 	"time"
 
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
+	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -268,6 +270,132 @@ WHERE id = $1`,
 	}
 	committed = true
 	closeContext, closeCancel := context.WithTimeout(context.Background(), currentIndexMetaCloseTimeout)
+	defer closeCancel()
+	if err := connection.Close(closeContext); err != nil {
+		return currentIndexMetaWriteError(closeContext, err)
+	}
+	closed = true
+	return nil
+}
+
+// MaterializeScheduledFailure applies the exact current pre-admission failed
+// metadata shape. The stable occurrence marker is stored only in the history
+// entry and makes retries converge after a partial notification failure.
+func (w *CurrentIndexMetaWriter) MaterializeScheduledFailure(
+	ctx context.Context,
+	target indexmetaapp.ResolvedTarget,
+	effect indexscheduleapp.FailureEffect,
+) error {
+	if w == nil || ctx == nil || w.queryTimeout <= 0 || w.gate == nil ||
+		cap(w.gate) <= 0 || target.SchemaID <= 0 ||
+		int64(target.SchemaID) != effect.ToolkitID ||
+		len(target.ConnectionString) == 0 ||
+		len(target.ConnectionString) > indexmetaapp.MaxCurrentPgvectorDSNBytes ||
+		effect.Validate() != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case w.gate <- struct{}{}:
+		defer func() { <-w.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	dsn, ok := normalizeCurrentPgvectorDSN(target.ConnectionString)
+	if !ok {
+		return ErrCurrentIndexMetaWrite
+	}
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return ErrCurrentIndexMetaWrite
+	}
+	queryContext, cancel := context.WithTimeout(ctx, w.queryTimeout)
+	defer cancel()
+	connection, err := pgx.ConnectConfig(queryContext, config)
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			closeContext, closeCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer closeCancel()
+			_ = connection.Close(closeContext)
+		}
+	}()
+
+	transaction, err := connection.BeginTx(queryContext, pgx.TxOptions{
+		IsoLevel:   pgx.ReadCommitted,
+		AccessMode: pgx.ReadWrite,
+	})
+	if err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			rollbackContext, rollbackCancel := context.WithTimeout(
+				context.Background(),
+				currentIndexMetaCloseTimeout,
+			)
+			defer rollbackCancel()
+			_ = transaction.Rollback(rollbackContext)
+		}
+	}()
+
+	schema := pgx.Identifier{
+		strconv.FormatInt(int64(target.SchemaID), 10),
+	}.Sanitize()
+	if _, err := transaction.Exec(
+		queryContext,
+		`SELECT pg_advisory_xact_lock($1::integer, 0)`,
+		target.SchemaID,
+	); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	existing, err := loadCurrentIndexMetaForUpdate(
+		queryContext,
+		transaction,
+		schema,
+		effect.IndexMetaID,
+	)
+	if err != nil {
+		return err
+	}
+	plan, err := planCurrentScheduledFailure(effect, existing)
+	if err != nil {
+		return err
+	}
+	if !plan.noop {
+		tag, err := transaction.Exec(
+			queryContext,
+			`UPDATE `+schema+`.langchain_pg_embedding
+SET cmetadata = $2::jsonb
+WHERE id = $1`,
+			plan.id,
+			plan.metadata,
+		)
+		if err != nil {
+			return currentIndexMetaWriteError(queryContext, err)
+		}
+		if tag.RowsAffected() != 1 {
+			return indexingapp.ErrCurrentIndexMetaConflict
+		}
+	}
+	if err := transaction.Commit(queryContext); err != nil {
+		return currentIndexMetaWriteError(queryContext, err)
+	}
+	committed = true
+	closeContext, closeCancel := context.WithTimeout(
+		context.Background(),
+		currentIndexMetaCloseTimeout,
+	)
 	defer closeCancel()
 	if err := connection.Close(closeContext); err != nil {
 		return currentIndexMetaWriteError(closeContext, err)
@@ -786,6 +914,46 @@ func planCurrentTerminalIndexMeta(
 		history = append(history, cloneCurrentIndexMetaValue(terminal))
 	}
 	metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
+	if err != nil {
+		return currentIndexMetaWritePlan{}, err
+	}
+	return currentIndexMetaWritePlan{id: stored.id, metadata: metadata}, nil
+}
+
+func planCurrentScheduledFailure(
+	effect indexscheduleapp.FailureEffect,
+	existing []currentStoredIndexMeta,
+) (currentIndexMetaWritePlan, error) {
+	if effect.Validate() != nil || len(existing) > 1 {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	// The current implementation only warns if the exact metadata row no
+	// longer exists. Preserve that non-fatal outcome.
+	if len(existing) == 0 {
+		return currentIndexMetaWritePlan{noop: true}, nil
+	}
+	stored := existing[0]
+	history, ok := decodeCurrentIndexMetaHistory(stored.metadata["history"])
+	if !ok {
+		return currentIndexMetaWritePlan{},
+			indexingapp.ErrCurrentIndexMetaConflict
+	}
+	for _, entry := range history {
+		object, ok := entry.(map[string]any)
+		if ok && object["schedule_effect_id"] == effect.EffectID {
+			return currentIndexMetaWritePlan{noop: true}, nil
+		}
+	}
+	failed := cloneCurrentIndexMetaObject(stored.metadata)
+	delete(failed, "history")
+	failed["state"] = "failed"
+	failed["updated_on"] = currentIndexMetaUnixSeconds(effect.OccurredAt)
+	failed["error"] = effect.SafeReason
+	historyEntry := cloneCurrentIndexMetaObject(failed)
+	historyEntry["schedule_effect_id"] = effect.EffectID
+	history = append(history, historyEntry)
+	metadata, err := encodeCurrentIndexMetaWithHistory(failed, history)
 	if err != nil {
 		return currentIndexMetaWritePlan{}, err
 	}

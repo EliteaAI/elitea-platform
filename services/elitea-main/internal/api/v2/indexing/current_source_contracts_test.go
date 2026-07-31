@@ -42,6 +42,16 @@ func TestSourceOnlyIndexContractsPreserveLegacyRBAC(t *testing.T) {
 			want:       "models.applications.index_meta.edit",
 		},
 		{
+			name:       "schedule delete",
+			method:     handler.SourceOnlyIndexScheduleDeleteMethod,
+			path:       handler.SourceOnlyIndexScheduleDeletePath,
+			mode:       handler.SourceOnlyIndexScheduleDeleteMode,
+			permission: handler.SourceOnlyIndexScheduleDeletePermission,
+			wantMethod: http.MethodDelete,
+			wantPath:   "/api/v2/elitea_core/index_schedule/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}",
+			want:       "models.applications.index_meta.edit",
+		},
+		{
 			name:       "search",
 			method:     handler.SourceOnlyIndexSearchMethod,
 			path:       handler.SourceOnlyIndexSearchPath,

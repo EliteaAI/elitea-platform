@@ -21,8 +21,8 @@ func TestPinnedCurrentIndexTypesSnapshotMatchesCurrentWorkerSDKProjection(
 		t.Fatal(err)
 	}
 	if snapshot.SDKRevision() !=
-		"a78d3654f99d8ff89ca7233f20a66d676e564f79" ||
-		snapshot.EntryCount() != 65 {
+		"ccaa85f1894f34ce25074afcc232e11b406d2af1" ||
+		snapshot.EntryCount() != 66 {
 		t.Fatalf(
 			"revision=%q entries=%d",
 			snapshot.SDKRevision(),
@@ -30,7 +30,7 @@ func TestPinnedCurrentIndexTypesSnapshotMatchesCurrentWorkerSDKProjection(
 		)
 	}
 	wantDigest, ok := parseCurrentSDKConfigurationDigest(
-		"sha256:f872b2f235c72836e85724cd0d49bcb030a567bf378ba6a0efe1e5768751e244",
+		"sha256:6a2b8162d64f8164a8e00824142e8a8514a9da0c4944773a8ccce05370c00ccc",
 	)
 	if !ok || snapshot.Digest() != wantDigest {
 		t.Fatalf("digest=%x", snapshot.Digest())
@@ -40,11 +40,12 @@ func TestPinnedCurrentIndexTypesSnapshotMatchesCurrentWorkerSDKProjection(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.DocumentTypes) != 18 ||
+	if len(result.DocumentTypes) != 19 ||
 		len(result.ImageTypes) != 5 ||
 		len(result.CodeTypes) != 42 ||
 		result.DocumentTypes[".docx"] !=
 			"application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+		result.DocumentTypes[".mdx"] != "text/markdown" ||
 		result.ImageTypes[".png"] != "image/png" ||
 		result.CodeTypes[".go"] != "text/plain" {
 		t.Fatalf("unexpected snapshot projection=%+v", result)

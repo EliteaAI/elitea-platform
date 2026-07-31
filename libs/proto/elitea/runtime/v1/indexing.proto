@@ -59,13 +59,30 @@ enum IndexIngestStatusV1 {
   INDEX_INGEST_STATUS_V1_ERROR = 3;
 }
 
+// IndexIngestTerminalStateV1 is the current index_data callback state used by
+// the durable notification projection. It remains distinct from settlement
+// status: partly indexed work settles successfully, while only the current
+// created/completed/scheduled_reindex/failed states create notifications.
+enum IndexIngestTerminalStateV1 {
+  INDEX_INGEST_TERMINAL_STATE_V1_UNSPECIFIED = 0;
+  INDEX_INGEST_TERMINAL_STATE_V1_CREATED = 1;
+  INDEX_INGEST_TERMINAL_STATE_V1_COMPLETED = 2;
+  INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX = 3;
+  INDEX_INGEST_TERMINAL_STATE_V1_FAILED = 4;
+  INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED = 5;
+}
+
 // IndexIngestSummaryV1 is the bounded, typed inline form of the current
 // index_data terminal result. It is carried only on the authenticated output
 // gRPC data plane and is forbidden on Redis and control gRPC.
 message IndexIngestSummaryV1 {
   IndexIngestStatusV1 status = 1;
   string message = 2;
-  reserved 3 to 15;
+  IndexIngestTerminalStateV1 terminal_state = 3;
+  uint64 indexed = 4;
+  uint64 updated = 5;
+  optional bool reindex = 6;
+  reserved 7 to 15;
 }
 
 // IndexIngestResultV1 binds one terminal result to the exact immutable inputs

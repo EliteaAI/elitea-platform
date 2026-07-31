@@ -224,8 +224,13 @@ func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary
 	frame, _ := testIndexIngestProjection(t)
 	frame.Result.ResultArtifact = outputapp.IndexArtifactReference{}
 	frame.Result.ResultSummary = outputapp.IndexIngestSummary{
-		Status:  outputapp.IndexIngestStatusOK,
-		Message: "No new documents to index.",
+		Status:         outputapp.IndexIngestStatusOK,
+		Message:        "No new documents to index.",
+		TerminalState:  outputapp.IndexIngestTerminalCompleted,
+		Indexed:        7,
+		Updated:        3,
+		ReindexPresent: true,
+		Reindex:        true,
 	}
 	frame.EncodedResult = []byte("deterministic-inline-index-summary")
 	frame.PayloadDigest = runtimedomain.SHA256(frame.EncodedResult)
@@ -246,7 +251,10 @@ func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary
 			{values: []any{frame.LogicalOutputID}},
 			{values: []any{int64(42)}},
 		},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("INSERT 0 1"),
+			pgconn.NewCommandTag("UPDATE 1"),
+		},
 	}
 	repository := newTestIndexResultsRepository(t, &indexIngestReadQueriesStub{}, executor)
 	outcome, err := repository.ProjectIndexIngest(context.Background(), outputapp.IndexIngestProjection{Frame: frame})
@@ -255,6 +263,16 @@ func TestIndexIngestResultsRepositoryPersistsAndReplaysExactCurrentInlineSummary
 	}
 	if !outcome.Inserted || outcome.Cursor != 42 || len(executor.rowCalls) != 7 {
 		t.Fatalf("unexpected inline projection: outcome=%+v row_calls=%d", outcome, len(executor.rowCalls))
+	}
+	if len(executor.execCalls) != 2 ||
+		executor.execCalls[0].sql != "sqlc:InsertCurrentIndexTerminalNotification" ||
+		executor.execCalls[0].args[2] != int64(7) ||
+		executor.execCalls[0].args[3] != int64(3) ||
+		executor.execCalls[0].args[4] != "completed" ||
+		executor.execCalls[0].args[5] != "ok" ||
+		executor.execCalls[0].args[6] != true ||
+		executor.execCalls[0].args[7] != true {
+		t.Fatalf("current terminal notification lost typed outcome: %+v", executor.execCalls)
 	}
 	projectionCall := executor.rowCalls[5]
 	if !strings.Contains(projectionCall.sql, "completion_status, completion_message") || strings.Contains(projectionCall.sql, "index_result_artifacts") || projectionCall.args[5] != "ok" || projectionCall.args[6] != frame.Result.ResultSummary.Message {
@@ -271,8 +289,9 @@ func TestIndexIngestResultsRepositoryConvergesFailedSummaryIntentAndReplay(t *te
 	frame, _ := testIndexIngestProjection(t)
 	frame.Result.ResultArtifact = outputapp.IndexArtifactReference{}
 	frame.Result.ResultSummary = outputapp.IndexIngestSummary{
-		Status:  outputapp.IndexIngestStatusError,
-		Message: "Indexing failed before completion.",
+		Status:        outputapp.IndexIngestStatusError,
+		Message:       "Indexing failed before completion.",
+		TerminalState: outputapp.IndexIngestTerminalFailed,
 	}
 	frame.Settlement.Outcome = executionapp.SettlementFailed
 	frame.EncodedResult = []byte("deterministic-safe-index-failure")
@@ -296,6 +315,7 @@ func TestIndexIngestResultsRepositoryConvergesFailedSummaryIntentAndReplay(t *te
 		},
 		execTags: []pgconn.CommandTag{
 			pgconn.NewCommandTag("UPDATE 1"),
+			pgconn.NewCommandTag("INSERT 0 1"),
 			pgconn.NewCommandTag("UPDATE 1"),
 		},
 	}
@@ -307,9 +327,12 @@ func TestIndexIngestResultsRepositoryConvergesFailedSummaryIntentAndReplay(t *te
 	if err != nil || !inserted.Inserted || inserted.Cursor != 43 {
 		t.Fatalf("project failed index summary: outcome=%+v err=%v", inserted, err)
 	}
-	if len(executor.execCalls) != 2 ||
+	if len(executor.execCalls) != 3 ||
 		executor.execCalls[0].args[2] != "failed" ||
-		executor.execCalls[0].args[3] != frame.OccurredAt {
+		executor.execCalls[0].args[3] != frame.OccurredAt ||
+		executor.execCalls[1].sql != "sqlc:InsertCurrentIndexTerminalNotification" ||
+		executor.execCalls[1].args[1] != frame.Result.ResultSummary.Message ||
+		executor.execCalls[1].args[4] != "failed" {
 		t.Fatalf("failed PgVector terminal intent did not converge: calls=%+v", executor.execCalls)
 	}
 	replayBytes, ok := executor.rowCalls[6].args[5].([]byte)
@@ -329,7 +352,10 @@ func TestIndexIngestResultsRepositoryConvergesFailedSummaryIntentAndReplay(t *te
 			{values: outputRecordScanValues(record)},
 			{values: []any{int64(43)}},
 		},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 0")},
+		execTags: []pgconn.CommandTag{
+			pgconn.NewCommandTag("UPDATE 0"),
+			pgconn.NewCommandTag("INSERT 0 0"),
+		},
 	}
 	replayed, err := newTestIndexResultsRepository(
 		t,
@@ -337,7 +363,7 @@ func TestIndexIngestResultsRepositoryConvergesFailedSummaryIntentAndReplay(t *te
 		replayExecutor,
 	).ProjectIndexIngest(context.Background(), outputapp.IndexIngestProjection{Frame: frame})
 	if err != nil || replayed.Inserted || replayed.Cursor != inserted.Cursor ||
-		len(replayExecutor.execCalls) != 1 {
+		len(replayExecutor.execCalls) != 2 {
 		t.Fatalf(
 			"idempotent failed replay did not reconverge terminal intent: outcome=%+v calls=%d err=%v",
 			replayed,

@@ -10,22 +10,25 @@ import (
 	"testing"
 
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestCurrentIndexSchedulePatchRepositoryLocksAndMutatesOnlyTargetSchedule(t *testing.T) {
 	t.Parallel()
 
-	executor := &scriptedExecutor{
+	queries := &scriptedCurrentIndexSchedulePatchQueries{
 		rowResults: []scriptedRow{{values: []any{
 			[]byte(`{"pgvector_configuration":{"private":true},"untouched":17}`),
 			[]byte(`{"root":"keep","large_id":9007199254740993,"indexes_meta":{"docs":{"title":"Docs","schedules":{"5":{"enabled":false}}},"wiki":{"marker":"keep"}}}`),
 		}}},
-		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+		updateRows: []int64{1},
 	}
-	projects := &currentScheduleProjectStore{scriptedExecutor: executor}
-	repository, err := newCurrentIndexSchedulePatchRepository(projects)
+	projects := &currentScheduleProjectStore{scriptedExecutor: &scriptedExecutor{}}
+	repository, err := newCurrentIndexSchedulePatchRepository(
+		projects,
+		fixedCurrentIndexSchedulePatchQueries(queries),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,17 +56,15 @@ func TestCurrentIndexSchedulePatchRepositoryLocksAndMutatesOnlyTargetSchedule(t 
 	if result.EffectiveUserID != 11 {
 		t.Fatalf("effective user=%d", result.EffectiveUserID)
 	}
-	if len(executor.rowCalls) != 1 ||
-		!strings.Contains(executor.rowCalls[0].sql, "FOR UPDATE") ||
-		!reflect.DeepEqual(executor.rowCalls[0].args, []any{int32(19)}) {
-		t.Fatalf("lock query=%+v", executor.rowCalls)
+	if !reflect.DeepEqual(queries.lockToolkitIDs, []int32{19}) {
+		t.Fatalf("lock toolkit IDs=%+v", queries.lockToolkitIDs)
 	}
-	if len(executor.execCalls) != 1 ||
-		!reflect.DeepEqual(executor.execCalls[0].args[1:], []any{int32(19)}) {
-		t.Fatalf("update=%+v", executor.execCalls)
+	if len(queries.updateParams) != 1 ||
+		queries.updateParams[0].ToolkitID != 19 {
+		t.Fatalf("update=%+v", queries.updateParams)
 	}
 
-	persisted, err := decodeCurrentScheduleObject(executor.execCalls[0].args[0].([]byte))
+	persisted, err := decodeCurrentScheduleObject(queries.updateParams[0].Meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,15 +143,18 @@ func TestCurrentIndexSchedulePatchRepositoryPreservesTeamAndCredentialRules(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			executor := &scriptedExecutor{
+			queries := &scriptedCurrentIndexSchedulePatchQueries{
 				rowResults: []scriptedRow{{values: []any{
 					settings,
 					[]byte(`{"indexes_meta":{"docs":{"schedules":{}}}}`),
 				}}},
-				execTags: []pgconn.CommandTag{pgconn.NewCommandTag("UPDATE 1")},
+				updateRows: []int64{1},
 			}
 			repository, err := newCurrentIndexSchedulePatchRepository(
-				&currentScheduleProjectStore{scriptedExecutor: executor},
+				&currentScheduleProjectStore{
+					scriptedExecutor: &scriptedExecutor{},
+				},
+				fixedCurrentIndexSchedulePatchQueries(queries),
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -164,14 +168,14 @@ func TestCurrentIndexSchedulePatchRepositoryPreservesTeamAndCredentialRules(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(executor.execCalls) != 1 {
-				t.Fatalf("updates=%d", len(executor.execCalls))
+			if len(queries.updateParams) != 1 {
+				t.Fatalf("updates=%d", len(queries.updateParams))
 			}
 			if result.EffectiveUserID != test.wantUser {
 				t.Fatalf("effective user=%d want=%d", result.EffectiveUserID, test.wantUser)
 			}
 			persisted, err := decodeCurrentScheduleObject(
-				executor.execCalls[0].args[0].([]byte),
+				queries.updateParams[0].Meta,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -226,9 +230,14 @@ func TestCurrentIndexSchedulePatchRepositoryBoundsAndRedactsFailures(t *testing.
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			executor := &scriptedExecutor{rowResults: []scriptedRow{test.row}}
+			queries := &scriptedCurrentIndexSchedulePatchQueries{
+				rowResults: []scriptedRow{test.row},
+			}
 			repository, err := newCurrentIndexSchedulePatchRepository(
-				&currentScheduleProjectStore{scriptedExecutor: executor},
+				&currentScheduleProjectStore{
+					scriptedExecutor: &scriptedExecutor{},
+				},
+				fixedCurrentIndexSchedulePatchQueries(queries),
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -266,6 +275,72 @@ func (store *currentScheduleProjectStore) WithinProjectTx(
 	store.projectID = projectID
 	store.options = options
 	return fn(store.scriptedExecutor)
+}
+
+type scriptedCurrentIndexSchedulePatchQueries struct {
+	rowResults     []scriptedRow
+	updateRows     []int64
+	updateErrors   []error
+	lockToolkitIDs []int32
+	updateParams   []sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams
+}
+
+func (queries *scriptedCurrentIndexSchedulePatchQueries) LockCurrentIndexScheduleToolkit(
+	_ context.Context,
+	toolkitID int32,
+) (sqlcgen.LockCurrentIndexScheduleToolkitRow, error) {
+	queries.lockToolkitIDs = append(queries.lockToolkitIDs, toolkitID)
+	if len(queries.rowResults) == 0 {
+		return sqlcgen.LockCurrentIndexScheduleToolkitRow{},
+			errors.New("unexpected lock query")
+	}
+	result := queries.rowResults[0]
+	queries.rowResults = queries.rowResults[1:]
+	if result.err != nil {
+		return sqlcgen.LockCurrentIndexScheduleToolkitRow{}, result.err
+	}
+	if len(result.values) != 2 {
+		return sqlcgen.LockCurrentIndexScheduleToolkitRow{},
+			errors.New("invalid scripted lock result")
+	}
+	settings, settingsOK := result.values[0].([]byte)
+	meta, metaOK := result.values[1].([]byte)
+	if !settingsOK || !metaOK {
+		return sqlcgen.LockCurrentIndexScheduleToolkitRow{},
+			errors.New("invalid scripted lock types")
+	}
+	return sqlcgen.LockCurrentIndexScheduleToolkitRow{
+		Settings: settings,
+		Meta:     meta,
+	}, nil
+}
+
+func (queries *scriptedCurrentIndexSchedulePatchQueries) UpdateCurrentIndexScheduleToolkitMeta(
+	_ context.Context,
+	params sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams,
+) (int64, error) {
+	queries.updateParams = append(queries.updateParams, params)
+	if len(queries.updateErrors) > 0 {
+		err := queries.updateErrors[0]
+		queries.updateErrors = queries.updateErrors[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
+	if len(queries.updateRows) == 0 {
+		return 0, errors.New("unexpected schedule update")
+	}
+	updated := queries.updateRows[0]
+	queries.updateRows = queries.updateRows[1:]
+	return updated, nil
+}
+
+func fixedCurrentIndexSchedulePatchQueries(
+	queries currentIndexSchedulePatchQueries,
+) currentIndexSchedulePatchQueryFactory {
+	return func(sqlExecutor) (currentIndexSchedulePatchQueries, error) {
+		return queries, nil
+	}
 }
 
 func boolPointer(value bool) *bool {

@@ -119,6 +119,20 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			cfg.CurrentIndexMetaDelete,
 		)
 	}
+	if cfg.CurrentIndexScheduleUpdate != nil {
+		r.Method(
+			indexingapi.SourceOnlyIndexScheduleMethod,
+			indexingapi.SourceOnlyIndexSchedulePath,
+			cfg.CurrentIndexScheduleUpdate,
+		)
+	}
+	if cfg.CurrentIndexScheduleDelete != nil {
+		r.Method(
+			indexingapi.SourceOnlyIndexScheduleDeleteMethod,
+			indexingapi.SourceOnlyIndexScheduleDeletePath,
+			cfg.CurrentIndexScheduleDelete,
+		)
+	}
 	if cfg.CurrentModelCatalog != nil {
 		r.Method(http.MethodGet, configurationapi.CurrentModelCatalogPath, cfg.CurrentModelCatalog)
 	}

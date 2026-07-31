@@ -5,12 +5,11 @@ import pytest
 
 @pytest.mark.skip(
     reason=(
-        "standalone-worker Confluence target is not injectable through production "
-        "wiring: index.ingest.v1 requires a claimed execution, protected input "
-        "content, workload identity, and an initialized EliteAClient, while no "
-        "production Go/worker seam can bind this harness's Confluence and LiteLLM "
-        "HTTP endpoints; do not replace that missing cross-process boundary with "
-        "a mocked adapter"
+        "the production index.ingest.v1 and #5681 cross-process seams exist, but "
+        "this deterministic baseline harness has no reusable deployment fixture "
+        "that binds its Confluence and LiteLLM endpoints through claimed execution, "
+        "protected content and workload identity; do not replace that missing "
+        "target comparison with a mocked adapter"
     )
 )
 def test_standalone_worker_matches_current_confluence_goldens() -> None:

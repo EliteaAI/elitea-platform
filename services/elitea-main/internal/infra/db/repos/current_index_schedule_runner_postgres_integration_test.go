@@ -79,6 +79,26 @@ func TestCurrentIndexScheduleCatalogPostgresKeysetAndDeleteWins(t *testing.T) {
 		t.Fatalf("stale MarkLastRun() updated=%v error=%v", updated, err)
 	}
 
+	edited := secondToolkits[0].Candidates[0]
+	if _, err := pool.Exec(ctx, `
+UPDATE p_1.elitea_tools
+SET meta = jsonb_set(
+    meta,
+    '{indexes_meta,wiki,schedules,-1,cron}',
+    '"15 5 * * *"'::jsonb
+)
+WHERE id = 3`); err != nil {
+		t.Fatalf("edit live schedule: %v", err)
+	}
+	updated, err = catalog.MarkLastRun(ctx, edited, markedAt)
+	if err != nil || updated {
+		t.Fatalf("edited MarkLastRun() updated=%v error=%v", updated, err)
+	}
+	liveEdited := readRunnerSchedule(t, pool, "p_1", 3, "wiki", "-1")
+	if liveEdited.Cron != "15 5 * * *" {
+		t.Fatalf("last_run CAS overwrote a live edit: %+v", liveEdited)
+	}
+
 	deleteRunnerSchedule(t, pool, "p_1", 1, candidate.IndexMetaID, "12")
 	refreshed := firstToolkits[0].Candidates[1]
 	updated, err = catalog.MarkLastRun(ctx, refreshed, markedAt)

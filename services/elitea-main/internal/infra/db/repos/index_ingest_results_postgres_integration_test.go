@@ -3,6 +3,7 @@ package repos
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -180,8 +181,13 @@ func TestPostgresServiceBackedInlineIndexSummary(t *testing.T) {
 	}
 	fence := claimPostgresIndexExecution(t, pool, expected)
 	summary := outputapp.IndexIngestSummary{
-		Status:  outputapp.IndexIngestStatusOK,
-		Message: "No new documents to index.",
+		Status:         outputapp.IndexIngestStatusOK,
+		Message:        "No new documents to index.",
+		TerminalState:  outputapp.IndexIngestTerminalCreated,
+		Indexed:        17,
+		Updated:        0,
+		ReindexPresent: true,
+		Reindex:        false,
 	}
 	frame := postgresInlineIndexOutputFrame(t, expected, fence, summary)
 	service := newPostgresIndexOutputService(t, pool, results)
@@ -223,6 +229,45 @@ WHERE execution_id = $1 AND generation = 1 AND event_type = 'index.ingest.comple
 		t.Fatalf("durable replay differs from current nested SDK result: got=%s want=%s", replayBytes, wantReplay)
 	}
 	assertPostgresCount(t, ctx, pool, 0, `SELECT count(*) FROM elitea_runtime.index_result_artifacts`)
+	var notificationProjectID, notificationUserID int32
+	var notificationMeta []byte
+	if err := pool.QueryRow(ctx, `
+SELECT project_id, user_id, meta
+FROM centry.notifications
+WHERE uuid = $1::text::uuid`,
+		currentIndexTerminalNotificationUUID(frame.LogicalOutputID),
+	).Scan(
+		&notificationProjectID,
+		&notificationUserID,
+		&notificationMeta,
+	); err != nil {
+		t.Fatalf("load current terminal notification: %v", err)
+	}
+	var notification map[string]any
+	if err := json.Unmarshal(notificationMeta, &notification); err != nil {
+		t.Fatal(err)
+	}
+	if notificationProjectID != 1 ||
+		notificationUserID != 7 ||
+		notification["state"] != "created" ||
+		notification["initiator"] != "user" ||
+		notification["indexed"] != float64(17) ||
+		notification["reindex"] != false ||
+		notification["message"] !=
+			`Index [inline]() is successfully created: {"indexed": 17}` {
+		t.Fatalf(
+			"current terminal notification changed: project=%d user=%d meta=%s",
+			notificationProjectID,
+			notificationUserID,
+			notificationMeta,
+		)
+	}
+	assertPostgresCount(t, ctx, pool, 1, `
+SELECT count(*)
+FROM centry.notifications
+WHERE uuid = $1::text::uuid`,
+		currentIndexTerminalNotificationUUID(frame.LogicalOutputID),
+	)
 
 	settlements, err := NewSettlementsRepository(pool)
 	if err != nil {

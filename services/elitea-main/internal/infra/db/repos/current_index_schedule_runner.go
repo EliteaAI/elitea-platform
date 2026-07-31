@@ -11,6 +11,7 @@ import (
 	"time"
 
 	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,33 +21,75 @@ const (
 	maxCurrentIndexScheduleCandidatesPerToolkit = 16_384
 )
 
+type currentIndexScheduleSharedQueries interface {
+	ListCurrentIndexScheduleProjects(
+		context.Context,
+		sqlcgen.ListCurrentIndexScheduleProjectsParams,
+	) ([]int32, error)
+}
+
+type currentIndexScheduleProjectQueries interface {
+	ListCurrentIndexScheduleToolkits(
+		context.Context,
+		sqlcgen.ListCurrentIndexScheduleToolkitsParams,
+	) ([]sqlcgen.ListCurrentIndexScheduleToolkitsRow, error)
+	LockCurrentIndexScheduleToolkitMeta(context.Context, int32) ([]byte, error)
+	UpdateCurrentIndexScheduleToolkitMeta(
+		context.Context,
+		sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams,
+	) (int64, error)
+}
+
+type currentIndexScheduleProjectQueryFactory func(
+	sqlExecutor,
+) (currentIndexScheduleProjectQueries, error)
+
 type CurrentIndexScheduleCatalog struct {
-	shared   sharedStore
+	shared   currentIndexScheduleSharedQueries
 	projects projectStore
+	queries  currentIndexScheduleProjectQueryFactory
 }
 
 func NewCurrentIndexScheduleCatalog(
 	pool *pgxpool.Pool,
 ) (*CurrentIndexScheduleCatalog, error) {
-	shared, err := newPostgresSharedStore(pool)
-	if err != nil {
-		return nil, err
+	if pool == nil {
+		return nil, errors.New("current index schedule database is required")
 	}
 	projects, err := newPostgresProjectStore(pool)
 	if err != nil {
 		return nil, err
 	}
-	return newCurrentIndexScheduleCatalog(shared, projects)
+	return newCurrentIndexScheduleCatalog(
+		sqlcgen.New(pool),
+		projects,
+		newCurrentIndexScheduleProjectQueries,
+	)
 }
 
 func newCurrentIndexScheduleCatalog(
-	shared sharedStore,
+	shared currentIndexScheduleSharedQueries,
 	projects projectStore,
+	queries currentIndexScheduleProjectQueryFactory,
 ) (*CurrentIndexScheduleCatalog, error) {
-	if shared == nil || projects == nil {
+	if shared == nil || projects == nil || queries == nil {
 		return nil, errors.New("current index schedule catalog database is required")
 	}
-	return &CurrentIndexScheduleCatalog{shared: shared, projects: projects}, nil
+	return &CurrentIndexScheduleCatalog{
+		shared: shared, projects: projects, queries: queries,
+	}, nil
+}
+
+func newCurrentIndexScheduleProjectQueries(
+	tx sqlExecutor,
+) (currentIndexScheduleProjectQueries, error) {
+	executor, ok := tx.(pgxExecutor)
+	if !ok || executor.queryer == nil {
+		return nil, errors.New(
+			"current index schedule transaction does not support generated queries",
+		)
+	}
+	return sqlcgen.New(executor.queryer), nil
 }
 
 func (catalog *CurrentIndexScheduleCatalog) ListProjectPage(
@@ -62,37 +105,27 @@ func (catalog *CurrentIndexScheduleCatalog) ListProjectPage(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	rows, err := catalog.shared.Query(ctx, `
-SELECT project.id::integer
-FROM centry.project AS project
-WHERE project.create_success IS TRUE
-  AND project.id > $1::integer
-ORDER BY project.id
-LIMIT $2::integer`,
-		afterProjectID,
-		limit,
+	projectIDs, err := catalog.shared.ListCurrentIndexScheduleProjects(
+		ctx,
+		sqlcgen.ListCurrentIndexScheduleProjectsParams{
+			AfterProjectID: int32(afterProjectID),
+			PageLimit:      int32(limit),
+		},
 	)
 	if err != nil {
 		return nil, scheduleCatalogDependency(ctx, "list projects", err)
 	}
-	defer rows.Close()
 
 	result := make([]int64, 0, limit)
 	previous := afterProjectID
-	for rows.Next() {
-		var projectID int64
-		if err := rows.Scan(&projectID); err != nil {
-			return nil, scheduleCatalogDependency(ctx, "scan project", err)
-		}
+	for _, storedProjectID := range projectIDs {
+		projectID := int64(storedProjectID)
 		if projectID <= previous || projectID > math.MaxInt32 ||
 			len(result) >= limit {
 			return nil, indexscheduleapp.ErrScheduleDependency
 		}
 		result = append(result, projectID)
 		previous = projectID
-	}
-	if err := rows.Err(); err != nil {
-		return nil, scheduleCatalogDependency(ctx, "iterate projects", err)
 	}
 	return result, nil
 }
@@ -119,44 +152,37 @@ func (catalog *CurrentIndexScheduleCatalog) ListToolkitSchedulePage(
 		projectID,
 		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly},
 		func(tx sqlExecutor) error {
-			rows, err := tx.Query(ctx, `
-SELECT toolkit.id,
-       toolkit.type,
-       toolkit.meta -> 'indexes_meta'
-FROM elitea_tools AS toolkit
-WHERE toolkit.id > $1::integer
-  AND jsonb_typeof(toolkit.meta -> 'indexes_meta') = 'object'
-ORDER BY toolkit.id
-LIMIT $2::integer`,
-				afterToolkitID,
-				limit,
+			queries, err := catalog.queries(tx)
+			if err != nil {
+				return scheduleCatalogDependency(ctx, "prepare toolkit query", err)
+			}
+			rows, err := queries.ListCurrentIndexScheduleToolkits(
+				ctx,
+				sqlcgen.ListCurrentIndexScheduleToolkitsParams{
+					AfterToolkitID: int32(afterToolkitID),
+					PageLimit:      int32(limit),
+				},
 			)
 			if err != nil {
 				return scheduleCatalogDependency(ctx, "list toolkits", err)
 			}
-			defer rows.Close()
 
 			previous := afterToolkitID
-			for rows.Next() {
-				var toolkitID int64
-				var toolkitType string
-				var indexesMetaRaw []byte
-				if err := rows.Scan(&toolkitID, &toolkitType, &indexesMetaRaw); err != nil {
-					return scheduleCatalogDependency(ctx, "scan toolkit", err)
-				}
+			for _, row := range rows {
+				toolkitID := int64(row.ID)
 				if toolkitID <= previous || toolkitID > math.MaxInt32 ||
-					toolkitType == "" ||
-					len(toolkitType) > indexscheduleapp.MaxCredentialTitleBytes ||
-					len(indexesMetaRaw) == 0 ||
-					len(indexesMetaRaw) > maxCurrentIndexScheduleMetadataBytes ||
+					row.Type == "" ||
+					len(row.Type) > indexscheduleapp.MaxCredentialTitleBytes ||
+					len(row.IndexesMeta) == 0 ||
+					len(row.IndexesMeta) > maxCurrentIndexScheduleMetadataBytes ||
 					len(result) >= limit {
 					return indexscheduleapp.ErrScheduleDependency
 				}
 				candidates, err := currentToolkitScheduleCandidates(
 					projectID,
 					toolkitID,
-					toolkitType,
-					indexesMetaRaw,
+					row.Type,
+					row.IndexesMeta,
 				)
 				if err != nil {
 					return err
@@ -167,9 +193,6 @@ LIMIT $2::integer`,
 					Candidates: candidates,
 				})
 				previous = toolkitID
-			}
-			if err := rows.Err(); err != nil {
-				return scheduleCatalogDependency(ctx, "iterate toolkits", err)
 			}
 			return nil
 		},
@@ -203,14 +226,14 @@ func (catalog *CurrentIndexScheduleCatalog) MarkLastRun(
 		candidate.ProjectID,
 		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite},
 		func(tx sqlExecutor) error {
-			var metaRaw []byte
-			err := tx.QueryRow(ctx, `
-SELECT toolkit.meta
-FROM elitea_tools AS toolkit
-WHERE toolkit.id = $1::integer
-FOR UPDATE`,
-				candidate.ToolkitID,
-			).Scan(&metaRaw)
+			queries, err := catalog.queries(tx)
+			if err != nil {
+				return scheduleCatalogDependency(ctx, "prepare toolkit query", err)
+			}
+			metaRaw, err := queries.LockCurrentIndexScheduleToolkitMeta(
+				ctx,
+				int32(candidate.ToolkitID),
+			)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
@@ -262,18 +285,17 @@ FOR UPDATE`,
 				len(encoded) > maxCurrentIndexScheduleMetadataBytes {
 				return indexscheduleapp.ErrScheduleResultTooLarge
 			}
-			tag, err := tx.Exec(ctx, `
-UPDATE elitea_tools
-SET meta = $1::jsonb,
-    updated_at = clock_timestamp()
-WHERE id = $2::integer`,
-				encoded,
-				candidate.ToolkitID,
+			updatedRows, err := queries.UpdateCurrentIndexScheduleToolkitMeta(
+				ctx,
+				sqlcgen.UpdateCurrentIndexScheduleToolkitMetaParams{
+					Meta:      encoded,
+					ToolkitID: int32(candidate.ToolkitID),
+				},
 			)
 			if err != nil {
 				return scheduleCatalogDependency(ctx, "update last_run", err)
 			}
-			if tag.RowsAffected() != 1 {
+			if updatedRows != 1 {
 				return indexscheduleapp.ErrScheduleDependency
 			}
 			updated = true

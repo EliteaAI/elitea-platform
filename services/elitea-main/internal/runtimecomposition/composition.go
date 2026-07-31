@@ -11,7 +11,9 @@ import (
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
+	schedulingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/scheduling"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
@@ -69,6 +71,7 @@ type Dependencies struct {
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 	ActorTokenIssuer                 storage.ActorTokenIssuer
 	ProjectTokenValidator            storage.ProjectTokenValidator
+	ProjectSystemTokenSource         ProjectSystemTokenSource
 	PermissionResolver               auth.PermissionResolver
 	Logger                           *slog.Logger
 }
@@ -89,6 +92,12 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if config.IndexIngestDispatchEnabled &&
 		(dependencies.ActorTokenIssuer == nil || dependencies.ProjectTokenValidator == nil) {
 		return nil, errors.New("runtime index ingest actor-token bridge is required")
+	}
+	if config.IndexSchedulingEnabled &&
+		dependencies.ProjectSystemTokenSource == nil {
+		return nil, errors.New(
+			"runtime index scheduling project-system token source is required",
+		)
 	}
 	if config.IndexIngestDispatchEnabled &&
 		(dependencies.CurrentConfigurations == nil || dependencies.CurrentEmbeddingRuntime == nil) {
@@ -619,11 +628,27 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	var indexStart indexingapi.StartUseCase
 	var currentIndex *currentIndexRuntime
 	if config.IndexIngestDispatchEnabled {
-		runtimeToken, err := storage.NewEliteaClientTokenService(
-			contentRepository,
-			dependencies.ActorTokenIssuer,
-			dependencies.ProjectTokenValidator,
-		)
+		var projectSystemTokens storage.ProjectSystemTokenIssuer
+		if config.IndexSchedulingEnabled {
+			projectSystemTokens = currentProjectSystemTokenAdapter{
+				source: dependencies.ProjectSystemTokenSource,
+			}
+		}
+		var runtimeToken *storage.EliteaClientTokenService
+		if projectSystemTokens != nil {
+			runtimeToken, err = storage.NewEliteaClientTokenServiceWithSchedules(
+				contentRepository,
+				dependencies.ActorTokenIssuer,
+				projectSystemTokens,
+				dependencies.ProjectTokenValidator,
+			)
+		} else {
+			runtimeToken, err = storage.NewEliteaClientTokenService(
+				contentRepository,
+				dependencies.ActorTokenIssuer,
+				dependencies.ProjectTokenValidator,
+			)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
 		}
@@ -657,13 +682,175 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, err
 		}
 		indexStart = currentIndex.start
-		publisherRoot, err = newPublisherSet(
+		indexPublishers := []publisherRunner{
 			publisherRoot,
 			currentIndex.initializer,
-		)
+		}
+		if config.IndexSchedulingEnabled {
+			catalog, catalogErr := repos.NewCurrentIndexScheduleCatalog(
+				dependencies.AdmissionPool,
+			)
+			if catalogErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index schedule catalog: %w",
+					catalogErr,
+				)
+			}
+			systemIdentity, identityErr :=
+				storage.NewProjectSystemIdentityService(
+					projectSystemTokens,
+					dependencies.ProjectTokenValidator,
+				)
+			if identityErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index schedule identity: %w",
+					identityErr,
+				)
+			}
+			inspector, inspectorErr := newCurrentIndexScheduleInspector(
+				currentIndex.exact,
+			)
+			if inspectorErr != nil {
+				return nil, inspectorErr
+			}
+			executor, executorErr := indexscheduleapp.NewCurrentExecutor(
+				currentIndex.toolkits,
+				currentIndex.settings,
+				systemIdentity,
+				inspector,
+				currentIndex.inputs,
+				currentIndex.start,
+			)
+			if executorErr != nil {
+				return nil, executorErr
+			}
+			notifications, notificationErr :=
+				repos.NewCurrentIndexScheduleNotificationRepository(
+					dependencies.ControlPool,
+				)
+			if notificationErr != nil {
+				return nil, notificationErr
+			}
+			failures, failureErr := newCurrentIndexScheduleFailureRecorder(
+				currentIndex.toolkits,
+				currentIndex.settings,
+				currentIndexMetaWriter,
+				notifications,
+			)
+			if failureErr != nil {
+				return nil, failureErr
+			}
+			indexRunner, runnerErr := indexscheduleapp.NewRunner(
+				catalog,
+				currentIndexSchedulingAvailability{},
+				executor,
+				failures,
+			)
+			if runnerErr != nil {
+				return nil, runnerErr
+			}
+			indexDueWork, dueWorkErr := newCurrentIndexScheduleDueWork(
+				indexRunner,
+			)
+			if dueWorkErr != nil {
+				return nil, dueWorkErr
+			}
+			patchRepository, patchErr :=
+				repos.NewCurrentIndexSchedulePatchRepository(
+					dependencies.AdmissionPool,
+				)
+			if patchErr != nil {
+				return nil, patchErr
+			}
+			scheduleUpdate, updateErr := indexscheduleapp.NewService(
+				patchRepository,
+			)
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			deleteRepository, deleteErr :=
+				repos.NewCurrentIndexScheduleDeleteRepository(
+					dependencies.AdmissionPool,
+				)
+			if deleteErr != nil {
+				return nil, deleteErr
+			}
+			scheduleDelete, deleteErr := indexscheduleapp.NewDeleteService(
+				deleteRepository,
+			)
+			if deleteErr != nil {
+				return nil, deleteErr
+			}
+			currentIndex.scheduleUpdate = scheduleUpdate
+			currentIndex.scheduleDelete = scheduleDelete
+			currentIndex.scheduleAction = indexDueWork
+			schedule, scheduleErr := schedulingapp.ParseCron(
+				currentIndexScheduleCadence,
+			)
+			if scheduleErr != nil {
+				return nil, fmt.Errorf(
+					"parse current index schedule cadence: %w",
+					scheduleErr,
+				)
+			}
+			// One scan observes all projects and may cover the same due index
+			// occurrence as an older scan. Claiming scan occurrences in
+			// parallel only makes the product runner's overlap guard release
+			// them for retry. Claim one at a time, with a bounded catch-up
+			// budget; PostgreSQL occurrence leases and stable per-index
+			// idempotency remain the cross-replica correctness boundary.
+			schedulerConfig := schedulingapp.Config{
+				InstanceID:      config.SchedulerInstanceID,
+				LeaseDuration:   currentIndexScheduleLeaseDuration,
+				MaxParallel:     1,
+				PageSize:        1,
+				MaxPagesPerTick: 4,
+			}
+			registry, registryErr := schedulingapp.NewRegistry(
+				schedulerConfig.LeaseDuration,
+				schedulingapp.Job{
+					ID:       currentIndexScheduleCapability,
+					Revision: currentIndexScheduleRevision,
+					Mode:     schedulingapp.ModeDurableAdmission,
+					Schedule: schedule,
+					Timeout:  currentIndexScheduleHandlerTimeout,
+					Handler:  indexDueWork,
+				},
+			)
+			if registryErr != nil {
+				return nil, fmt.Errorf(
+					"register current index scheduled admission: %w",
+					registryErr,
+				)
+			}
+			occurrences, occurrenceErr :=
+				repos.NewScheduleOccurrenceRepository(
+					dependencies.AdmissionPool,
+				)
+			if occurrenceErr != nil {
+				return nil, fmt.Errorf(
+					"construct scheduled occurrence repository: %w",
+					occurrenceErr,
+				)
+			}
+			scheduler, schedulerErr := schedulingapp.NewRunner(
+				occurrences,
+				registry,
+				schedulerConfig,
+				dependencies.Logger,
+			)
+			if schedulerErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index scheduler: %w",
+					schedulerErr,
+				)
+			}
+			indexPublishers = append(indexPublishers, scheduler)
+		}
+		publisherRoot, err = newPublisherSet(indexPublishers...)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"compose index metadata initialization reconciler: %w",
+				"compose current index lifecycle: %w",
 				err,
 			)
 		}
@@ -728,6 +915,10 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		publicRoutes.IndexCancel = currentIndex.cancel
 		publicRoutes.IndexMeta = currentIndex.indexMeta
 		publicRoutes.IndexMetaDelete = currentIndex.indexDelete
+		if config.IndexSchedulingEnabled {
+			publicRoutes.IndexScheduleUpdate = currentIndex.scheduleUpdate
+			publicRoutes.IndexScheduleDelete = currentIndex.scheduleDelete
+		}
 	}
 
 	closeRedis = false
