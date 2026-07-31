@@ -109,12 +109,13 @@ jobs:
           fi
 
   unit-tests:
-    name: Unit tests (sharded)
+    name: Unit tests (sharded + coverage)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1/10, 2/10, 3/10, 4/10, 5/10, 6/10, 7/10, 8/10, 9/10, 10/10]
+        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shardCount: [10]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -124,31 +125,52 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Unit tests (sharded)
-        run: npm run test:unit -- --run --shard=${{ matrix.shard }}
-
-  unit-test-coverage:
-    name: Unit tests (coverage)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: apps/elitea-web/package-lock.json
-      - name: Install (locked)
-        run: npm ci
-      - name: Unit tests (coverage)
+      - id: shard
+        name: Unit tests (coverage shard)
         run: |
           if find src \( -name '*.test.*' -o -name '*.spec.*' \) \
                ! -path 'src/smoke/*' ! -path 'src/test/*' | grep -q .; then
+            echo "coverage_ran=true" >> $GITHUB_OUTPUT
             echo "real unit tests present — §6.6 coverage thresholds armed"
-            npm run test:unit -- --run --coverage
+            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }} --coverage --coverage.reporter=json --coverage.reportsDirectory=coverage-shards/shard-${{ matrix.shardIndex }} --coverage.clean=false
           else
+            echo "coverage_ran=false" >> $GITHUB_OUTPUT
             echo "no real unit tests yet — running without coverage (arms automatically when F3+ land)"
-            npm run test:unit -- --run
+            npm run test:unit -- --run --shard=${{ matrix.shardIndex }}/${{ matrix.shardCount }}
           fi
+      - name: Upload coverage shard
+        if: steps.shard.outputs.coverage_ran == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shardIndex }}
+          path: coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json
+          retention-days: 7
+
+  coverage-merge:
+    name: Coverage merge
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Download coverage shards
+        uses: actions/download-artifact@v4
+        with:
+          path: coverage-shards
+      - name: Merge coverage
+        run: node scripts/merge-coverage.mjs
+      - name: Upload merged coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: elitea-web-coverage
+          path: coverage/
+          retention-days: 7
 
   gate-self-test:
     name: Rule-layer self-test
