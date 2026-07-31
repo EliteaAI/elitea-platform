@@ -27,15 +27,27 @@ func TestScheduleOccurrenceRepositoryPostgresTakeover(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	const jobID = "scheduler.postgres.takeover.v1"
-	if _, err := pool.Exec(ctx, `
-DELETE FROM elitea_runtime.scheduled_occurrences WHERE job_id = $1;
-DELETE FROM elitea_runtime.scheduled_job_cursors WHERE job_id = $1`, jobID); err != nil {
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM elitea_runtime.scheduled_occurrences WHERE job_id = $1`,
+		jobID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM elitea_runtime.scheduled_job_cursors WHERE job_id = $1`,
+		jobID,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `
-DELETE FROM elitea_runtime.scheduled_occurrences WHERE job_id = $1;
-DELETE FROM elitea_runtime.scheduled_job_cursors WHERE job_id = $1`, jobID)
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM elitea_runtime.scheduled_occurrences WHERE job_id = $1`,
+			jobID,
+		)
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM elitea_runtime.scheduled_job_cursors WHERE job_id = $1`,
+			jobID,
+		)
 	})
 
 	now, err := first.Now(ctx)
