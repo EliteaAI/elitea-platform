@@ -27,14 +27,8 @@ import {
 } from '@/shared/api/configurationsApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { t } from '@/shared/ui/lib/t';
+import type { PromptConfig } from './ServicePrompts.types';
 import { ServicePromptsBody } from './ServicePromptsBody';
-
-export interface PromptConfig {
-  id: number;
-  key: string;
-  label: string;
-  prompt: string;
-}
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 

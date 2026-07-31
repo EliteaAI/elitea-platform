@@ -5,7 +5,7 @@
  */
 import Box from '@mui/material/Box';
 
-import type { PromptConfig } from './ServicePromptsSection';
+import type { PromptConfig } from './ServicePrompts.types';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/ui/lib/t';
 import { ServicePromptCard } from './ServicePromptCard';

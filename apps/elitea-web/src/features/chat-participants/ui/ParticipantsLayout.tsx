@@ -16,7 +16,7 @@ import { chatParticipantUniqueId } from '@/entities/participant';
 import { styles } from './ExpandedParticipants/participants.styles';
 import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
 import ParticipantSection from './ExpandedParticipants/ParticipantSection';
-import type { ParticipantsProps } from './Participants';
+import type { ParticipantsProps } from './Participants.types';
 
 export function ParticipantsLayout({
   showTitle, collapseIcon, collapsed, onCollapsed,
