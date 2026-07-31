@@ -1,9 +1,21 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
 import { render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { routeTree } from '../../routeTree.gen';
 import { stubAuthContext } from '@/app/router-context';
+
+/**
+ * Shared QueryClient so tests don't re-create it each run.
+ */
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false, throwOnError: true } },
+});
+
+afterEach(() => {
+  queryClient.clear();
+});
 
 /**
  * ROUTE-051..066 nested layout (spec §9.3 R1 RED/GREEN (e)) + D4's
@@ -16,7 +28,11 @@ import { stubAuthContext } from '@/app/router-context';
 function mountAt(path: string) {
   const history = createMemoryHistory({ initialEntries: [path] });
   const router = createRouter({ routeTree, history, context: { auth: stubAuthContext } });
-  render(<RouterProvider router={router} />);
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
   return router;
 }
 
