@@ -1117,6 +1117,52 @@ def test_inline_summary_projects_only_the_nested_allowlist() -> None:
     assert canary.encode() not in encoded
 
 
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_message"),
+    [
+        (
+            "Successfully indexed 20 documents (0 chunks).\n"
+            "Skipped items (21 total):\n"
+            "  - Documents with errors (20): first, second\n"
+            "  - Runtime skipped (errors) (1): test_case.md",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
+            INDEX_INGEST_FAILURE_SAFE_MESSAGE,
+        ),
+        (
+            "Successfully indexed 8 documents (12 chunks). "
+            "\nSkipped items (2 total):"
+            "\n  - Documents with errors (2): first, second",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
+            None,
+        ),
+        (
+            "Successfully indexed 61 documents (0 chunks).\n"
+            "Skipped items (5 total):\n"
+            "  - Files with empty content (2): one, two\n"
+            "  - Files with unsupported extension (3): a, b, c",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_OK,
+            None,
+        ),
+    ],
+)
+def test_inline_summary_corrects_generic_parser_failures(
+    message: str,
+    expected_status: int,
+    expected_message: str | None,
+) -> None:
+    bound = bind_result_summary(
+        _index_result(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": message},
+            }
+        )
+    )
+
+    assert bound.result_summary.status == expected_status
+    assert bound.result_summary.message == (expected_message or message)
+
+
 def test_outer_sdk_failure_becomes_fixed_safe_error_summary() -> None:
     canary = "raw endpoint and credential-adjacent detail"
     bound = bind_result_summary(

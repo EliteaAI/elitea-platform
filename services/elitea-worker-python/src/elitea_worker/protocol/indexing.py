@@ -27,6 +27,14 @@ _SUMMARY_STATUS = {
     "partly_indexed": indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
     "error": indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
 }
+_CURRENT_INDEX_SUCCESS_COUNTS = re.compile(
+    r"\ASuccessfully indexed \d+ documents \((\d+) chunks\)\."
+)
+_CURRENT_INDEX_ERROR_SKIP_MARKERS = (
+    "\n  - Files with read errors (",
+    "\n  - Documents with errors (",
+    "\n  - Runtime skipped (errors) (",
+)
 _EMBEDDING_BINDING_SCHEMA = "elitea.index.embedding-binding.v2"
 _MAX_EMBEDDING_IDENTITY_BYTES = 1024
 _CANONICAL_UUID = re.compile(
@@ -268,6 +276,7 @@ def bind_result_summary(result: IndexIngestResult) -> indexing_pb2.IndexIngestRe
             raise ResourceExhausted(
                 "The index-ingest result exceeds the approved output limit."
             )
+        status, message = _normalize_current_sdk_summary(status, message)
 
     bound = indexing_pb2.IndexIngestResultV1(
         input_bundle_id=result.input_bundle_id,
@@ -284,6 +293,35 @@ def bind_result_summary(result: IndexIngestResult) -> indexing_pb2.IndexIngestRe
     _copy_optional(bound.mcp_tokens, result.mcp_tokens)
     _copy_optional(bound.embedding_binding, result.embedding_binding)
     return bound
+
+
+def _normalize_current_sdk_summary(status: int, message: str) -> tuple[int, str]:
+    """Correct a pinned-SDK success that contains parser/runtime failures.
+
+    SDK 0.8.53 exposes its structured indexing statistics only through a
+    deterministic terminal message. In particular, document parser failures
+    are counted as skipped items and can otherwise be returned as ``ok`` even
+    when zero chunks were produced. Keep this compatibility parser generic:
+    the same Markdown/content path is shared by multiple toolkit families.
+    """
+
+    if (
+        status != indexing_pb2.INDEX_INGEST_STATUS_V1_OK
+        or not any(marker in message for marker in _CURRENT_INDEX_ERROR_SKIP_MARKERS)
+    ):
+        return status, message
+    match = _CURRENT_INDEX_SUCCESS_COUNTS.match(message)
+    if match is None:
+        return (
+            indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
+            INDEX_INGEST_FAILURE_SAFE_MESSAGE,
+        )
+    if int(match.group(1)) > 0:
+        return indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED, message
+    return (
+        indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
+        INDEX_INGEST_FAILURE_SAFE_MESSAGE,
+    )
 
 
 def _matches(entry_id: str, value: ResolvedIndexIngestInput | None) -> bool:

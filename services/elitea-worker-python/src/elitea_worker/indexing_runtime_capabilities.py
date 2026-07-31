@@ -14,11 +14,13 @@ from ctypes.util import find_library
 from pathlib import Path
 from typing import Any
 
+from elitea_worker.agents.sdk_adapter import verify_sdk_markdown_runtime
 from elitea_worker.execution.errors import DependencyUnavailable
 
 
 _PROFILE_SCHEMA = "elitea.indexing-runtime-capability-profile.v1"
 _OCR_PROBE_TEXT = "ELITEA OCR 5681"
+_MARKDOWN_PROBE_TEXT = "ELITEA MARKDOWN INDEXING RUNTIME"
 
 
 def require_indexing_runtime_capabilities(
@@ -30,6 +32,7 @@ def require_indexing_runtime_capabilities(
     find_shared_library: Callable[[str], str | None] = find_library,
     package_tree_digest: Callable[[Path], str] | None = None,
     ocr_probe: Callable[[], None] | None = None,
+    markdown_probe: Callable[[], None] | None = None,
 ) -> str:
     """Verify the complete image-local indexing profile before opening Redis.
 
@@ -147,6 +150,10 @@ def require_indexing_runtime_capabilities(
             (ocr_probe or _verify_ocr_runtime)()
         except Exception as exc:
             failures.append(f"ocr-runtime:{type(exc).__name__}")
+        try:
+            (markdown_probe or _verify_markdown_runtime)()
+        except Exception as exc:
+            failures.append(f"markdown-runtime:{type(exc).__name__}")
 
         if failures:
             raise RuntimeError(",".join(failures))
@@ -219,6 +226,12 @@ def _verify_ocr_runtime() -> None:
     )
     if observed != _OCR_PROBE_TEXT:
         raise RuntimeError("ocr-output-mismatch")
+
+
+def _verify_markdown_runtime() -> None:
+    """Exercise the shared SDK Markdown parser used by indexing families."""
+
+    verify_sdk_markdown_runtime(_MARKDOWN_PROBE_TEXT)
 
 
 __all__ = ["require_indexing_runtime_capabilities"]

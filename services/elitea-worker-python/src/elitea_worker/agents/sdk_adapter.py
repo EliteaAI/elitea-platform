@@ -199,6 +199,22 @@ class EliteaSdkToolkitAdapter:
         )
 
 
+def verify_sdk_markdown_runtime(sentinel: str) -> None:
+    """Exercise the shared SDK Markdown parser without leaking SDK ownership."""
+
+    with redirect_stdout(sys.stderr):
+        module = importlib.import_module("elitea_sdk.tools.utils.content_parser")
+    documents = list(
+        module.process_content_by_type(
+            ("# " + sentinel).encode("utf-8"),
+            "elitea-runtime-probe.md",
+        )
+    )
+    observed = "\n".join(document.page_content for document in documents)
+    if not documents or sentinel not in observed:
+        raise RuntimeError("markdown-output-mismatch")
+
+
 class EliteaSdkIndexingAdapter:
     """Pinned adapter for the current ``index_data`` SDK entrypoint.
 

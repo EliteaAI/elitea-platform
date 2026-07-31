@@ -743,6 +743,95 @@ def test_index_delivery_preserves_sdk_partial_and_all_failed_status_once(
     asyncio.run(run())
 
 
+def test_index_delivery_corrects_zero_output_parser_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        case = _case()
+        sdk = RecordingSdk(
+            {
+                "success": True,
+                "result": {
+                    "status": "ok",
+                    "message": (
+                        "Successfully indexed 20 documents (0 chunks).\n"
+                        "Skipped items (21 total):\n"
+                        "  - Documents with errors (20): first, second\n"
+                        "  - Runtime skipped (errors) (1): test_case.md"
+                    ),
+                },
+            },
+            custom_events=[
+                (
+                    "index_data_status",
+                    {
+                        "index_name": "docs",
+                        "state": "completed",
+                        "error": None,
+                        "indexed": 20,
+                        "updated": 0,
+                        "toolkit_id": 9,
+                    },
+                )
+            ],
+            emit_tool_lifecycle=True,
+        )
+        monkeypatch.setattr(
+            EliteaSdkIndexingAdapter,
+            "from_context",
+            classmethod(lambda cls, context: sdk),
+        )
+
+        async def context_factory(claim: IndexExecutionClaim) -> EliteaClientContext:
+            return EliteaClientContext(42, "https://elitea.internal", "actor-pat")
+
+        output = Output()
+        result = await _processor(
+            case,
+            control=Control(case),
+            input_client=InputClient(case.values, []),
+            output=output,
+            acker=Acker(),
+            context_factory=context_factory,
+        ).process(case.delivery)
+
+        assert result.output_frame is not None
+        assert [frame.node_event.type for frame in output.frames[:-1]] == [
+            "agent_tool_start",
+            "agent_index_data_status",
+            "agent_index_data_status",
+            "agent_tool_error",
+        ]
+        statuses = [
+            json.loads(encode_current_node_event_json(frame.node_event))[
+                "response_metadata"
+            ]
+            for frame in output.frames
+            if frame.HasField("node_event")
+            and frame.node_event.type == "agent_index_data_status"
+        ]
+        assert [status["state"] for status in statuses] == [
+            "completed",
+            "failed",
+        ]
+        assert statuses[-1]["indexed"] == 0
+        assert statuses[-1]["error"] == "Indexing reported an error."
+        assert (
+            result.output_frame.index_ingest.result_summary.status
+            == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
+        )
+        assert (
+            result.output_frame.index_ingest.result_summary.message
+            == INDEX_INGEST_FAILURE_SAFE_MESSAGE
+        )
+        assert (
+            result.output_frame.settlement_proposal.requested_outcome
+            == common_pb2.EXECUTION_OUTCOME_V1_FAILED
+        )
+
+    asyncio.run(run())
+
+
 def test_embedding_admission_record_preserves_sdk_proxy_input_and_never_enters_redis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -70,6 +70,7 @@ _CURRENT_INDEX_TERMINAL_STATES = frozenset(
 _MAX_SAFE_PROGRESS_MESSAGE_BYTES = 1024
 _SAFE_PROGRESS_FALLBACK = "Indexing progress updated."
 _SAFE_INDEX_ERROR_FALLBACK = "Indexing reported an error."
+_SAFE_INDEX_PARTIAL_FALLBACK = "Indexing completed with skipped content."
 _LOADING_DOCUMENTS_STAGE = "Loading the documents to index."
 _SENSITIVE_PROGRESS_PATTERNS = (
     re.compile(
@@ -132,7 +133,9 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
         self._tool_run_id: str | None = None
         self._tool_started_at: str | None = None
         self._tool_finalized = False
-        self._terminal_index_status_observed = False
+        self._terminal_index_status_observed: str | None = None
+        self._terminal_index_status_indexed = 0
+        self._terminal_index_status_updated = 0
         self._fallback_index_status_finalized = False
 
     def on_tool_start(
@@ -233,25 +236,58 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
             self._record_failure(exc)
             raise
 
-    def finish_index_status_on_failure(self) -> node_event_pb2.NodeEventV1 | None:
+    def finish_index_status_on_failure(
+        self,
+        *,
+        correct_inconsistent: bool = False,
+    ) -> node_event_pb2.NodeEventV1 | None:
         """Build one safe failed status when the SDK emitted no terminal status."""
 
+        return self.finish_index_status_for_summary(
+            "failed",
+            correct_inconsistent=correct_inconsistent,
+        )
+
+    def finish_index_status_for_summary(
+        self,
+        state: str,
+        *,
+        correct_inconsistent: bool = False,
+    ) -> node_event_pb2.NodeEventV1 | None:
+        """Build a terminal correction for the reviewed result summary."""
+
+        if state not in {"failed", "partly_indexed"}:
+            raise ValueError("unsupported terminal index correction")
         try:
             with self._tool_lock:
-                if (
-                    self._terminal_index_status_observed
-                    or self._fallback_index_status_finalized
-                ):
+                observed = self._terminal_index_status_observed
+                if self._fallback_index_status_finalized or observed == state:
+                    return None
+                if observed is not None and not correct_inconsistent:
                     return None
                 self._fallback_index_status_finalized = True
+                indexed = (
+                    self._terminal_index_status_indexed
+                    if state == "partly_indexed"
+                    else 0
+                )
+                updated = (
+                    self._terminal_index_status_updated
+                    if state == "partly_indexed"
+                    else 0
+                )
             now = datetime.now(tz=timezone.utc).isoformat()
             payload = {
                 "task_id": self._context.task_id,
                 "index_name": self._context.index_name,
-                "state": "failed",
-                "error": _SAFE_INDEX_ERROR_FALLBACK,
-                "indexed": 0,
-                "updated": 0,
+                "state": state,
+                "error": (
+                    _SAFE_INDEX_ERROR_FALLBACK
+                    if state == "failed"
+                    else _SAFE_INDEX_PARTIAL_FALLBACK
+                ),
+                "indexed": indexed,
+                "updated": updated,
                 "toolkit_id": self._context.toolkit_id,
                 "initiator": self._context.initiator,
                 "project_id": self._context.project_id,
@@ -340,7 +376,23 @@ class CurrentIndexNodeEventCallback(BaseCallbackHandler):
                 and payload.get("state") in _CURRENT_INDEX_TERMINAL_STATES
             ):
                 with self._tool_lock:
-                    self._terminal_index_status_observed = True
+                    self._terminal_index_status_observed = payload.get("state")
+                    indexed = payload.get("indexed")
+                    updated = payload.get("updated")
+                    self._terminal_index_status_indexed = (
+                        indexed
+                        if isinstance(indexed, int)
+                        and not isinstance(indexed, bool)
+                        and indexed >= 0
+                        else 0
+                    )
+                    self._terminal_index_status_updated = (
+                        updated
+                        if isinstance(updated, int)
+                        and not isinstance(updated, bool)
+                        and updated >= 0
+                        else 0
+                    )
         except Exception as exc:
             self._record_failure(exc)
             raise

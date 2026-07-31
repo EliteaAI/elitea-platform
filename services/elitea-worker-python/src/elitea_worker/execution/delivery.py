@@ -1958,7 +1958,20 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
                 projected.result_summary.status
                 == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
             ):
-                await _publish_missing_index_failure_status(callback, progress)
+                await _publish_index_summary_correction(
+                    callback,
+                    progress,
+                    "failed",
+                )
+            elif (
+                projected.result_summary.status
+                == indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED
+            ):
+                await _publish_index_summary_correction(
+                    callback,
+                    progress,
+                    "partly_indexed",
+                )
             tool_event = callback.finish_tool(
                 success=projected.result_summary.status
                 != indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
@@ -2031,6 +2044,20 @@ async def _publish_missing_index_failure_status(
     progress: _IndexProgressOutput,
 ) -> None:
     event = callback.finish_index_status_on_failure()
+    if event is not None:
+        await progress.publish_from_delivery(event)
+    callback.raise_if_failed()
+
+
+async def _publish_index_summary_correction(
+    callback: CurrentIndexNodeEventCallback,
+    progress: _IndexProgressOutput,
+    state: str,
+) -> None:
+    event = callback.finish_index_status_for_summary(
+        state,
+        correct_inconsistent=True,
+    )
     if event is not None:
         await progress.publish_from_delivery(event)
     callback.raise_if_failed()

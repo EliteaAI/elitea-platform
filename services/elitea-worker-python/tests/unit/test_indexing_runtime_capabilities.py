@@ -45,6 +45,7 @@ def _passing_check(**overrides) -> str:
             _LOCK_PATH.read_bytes()
         )["installed_package_tree"]["sha256"],
         "ocr_probe": lambda: None,
+        "markdown_probe": lambda: None,
     }
     parameters.update(overrides)
     return require_indexing_runtime_capabilities(**parameters)
@@ -187,6 +188,14 @@ def test_required_sdk_indexing_tool_failure_fails_closed_without_error_text() ->
             },
             "ocr-runtime:RuntimeError",
         ),
+        (
+            {
+                "markdown_probe": lambda: (_ for _ in ()).throw(
+                    RuntimeError("probe failed")
+                )
+            },
+            "markdown-runtime:RuntimeError",
+        ),
     ],
 )
 def test_missing_capability_fails_with_safe_public_error(
@@ -224,6 +233,24 @@ def test_profile_admits_exact_langchain_ocr_wrapper_and_artifact() -> None:
             "33a67638bb9d77fdcac094a3589d4b34"
         ),
     }
+
+
+def test_profile_admits_shared_markdown_parser_and_verified_artifacts() -> None:
+    profile = _profile()
+
+    assert "unstructured==0.16.23" in profile["python_requirements"]
+    assert "unstructured-client==0.39.1" in profile["python_requirements"]
+    assert profile["verified_distributions"]["unstructured"] == "0.16.23"
+    assert profile["verified_distributions"]["unstructured-client"] == "0.39.1"
+    assert "unstructured" in profile["required_imports"]
+    assert profile["verified_wheels"]["unstructured"]["sha256"] == (
+        "edc87b84acdc52e7476d09b38fcc2428"
+        "42214750ba413096598a326af5550c28"
+    )
+    assert profile["verified_wheels"]["unstructured-client"]["sha256"] == (
+        "b0a179bcbbeae1f155712fd646012d2b"
+        "3d426778c06eb9a3f5971563ad6fa8fa"
+    )
 
 
 def test_serve_verifies_profile_before_deployment(monkeypatch) -> None:
