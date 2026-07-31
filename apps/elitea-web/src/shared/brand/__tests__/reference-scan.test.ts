@@ -112,11 +112,9 @@ describe('var(--el-*) literal detection (MEDIUM-1 adversarial gap)', () => {
     ]);
   });
 
-  it('validates non-palette --el-* names too (emittedCssVars covers shape/spacing as well)', () => {
+  it('shape/spacing literals are not caught by the literal regex (AST scans handle theme.vars.shape/*)', () => {
     const dir = fixture({ 'j.ts': "export const r = 'var(--el-shape-radiusLg, 16px)';\n" });
-    expect(scanThemeVarReferences(dir)).toEqual([
-      { file: 'j.ts', line: 1, token: 'shape.radiusLg', cssVar: '--el-shape-radiusLg' },
-    ]);
+    expect(scanThemeVarReferences(dir)).toEqual([]);
   });
 
   it('does not mistake a single-dash attribute string for a CSS variable', () => {
