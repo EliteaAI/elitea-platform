@@ -50,26 +50,6 @@ export default memo(function ConfigurationsPanel({
   const ttsConfigs = (configurationsBySection['tts'] ?? []) as Record<string, unknown>[];
   const aiCredentialsConfigs = (configurationsBySection['ai_credentials'] ?? []) as Record<string, unknown>[];
 
-  const modelOptions = useMemo(() => buildOptions(llmConfigs), [llmConfigs]);
-  const lowTierOptions = useMemo(() => buildOptions(llmConfigs.filter((c) => (c.data as Record<string, unknown>)?.low_tier)), [llmConfigs]);
-  const highTierOptions = useMemo(() => buildOptions(llmConfigs.filter((c) => (c.data as Record<string, unknown>)?.high_tier)), [llmConfigs]);
-  const embeddingOptions = useMemo(() => buildOptions(embeddingConfigs), [embeddingConfigs]);
-  const vectorStorageOptions = useMemo(() => buildOptions(vectorStorageConfigs), [vectorStorageConfigs]);
-  const imageOptions = useMemo(() => buildOptions(imageConfigs), [imageConfigs]);
-  const asrOptions = useMemo(() => buildOptions(asrConfigs), [asrConfigs]);
-  const ttsOptions = useMemo(() => buildOptions(ttsConfigs), [ttsConfigs]);
-
-  const handleDefaultChange = useCallback(
-    (section: string) => (value: string) => {
-      // In a full implementation this would call an API mutation to set
-      // the project's default model for this section. For now it's a
-      // placeholder — the select is wired but doesn't persist.
-      void value;
-      void section;
-    },
-    [],
-  );
-
   /* Default-setting labels with optional info tooltips (porting old-app pattern) */
   const renderInfoLabel = useCallback(
     (labelText: string) => {
@@ -86,6 +66,30 @@ export default memo(function ConfigurationsPanel({
       );
     },
     [styles],
+  );
+
+  /* Compute select options directly — the config arrays come from a prop that
+     may change reference every render, so useMemo would be useless (dep always changes).
+     The child <ConfigurationSection> components are memoized, so unstable arrays here
+     do not cause unnecessary re-renders downstream. */
+  const modelOptions = buildOptions(llmConfigs);
+  const lowTierOptions = buildOptions(llmConfigs.filter((c) => (c.data as Record<string, unknown>)?.low_tier));
+  const highTierOptions = buildOptions(llmConfigs.filter((c) => (c.data as Record<string, unknown>)?.high_tier));
+  const embeddingOptions = buildOptions(embeddingConfigs);
+  const vectorStorageOptions = buildOptions(vectorStorageConfigs);
+  const imageOptions = buildOptions(imageConfigs);
+  const asrOptions = buildOptions(asrConfigs);
+  const ttsOptions = buildOptions(ttsConfigs);
+
+  const handleDefaultChange = useCallback(
+    (section: string) => (value: string) => {
+      // In a full implementation this would call an API mutation to set
+      // the project's default model for this section. For now it's a
+      // placeholder — the select is wired but doesn't persist.
+      void value;
+      void section;
+    },
+    [],
   );
 
   /* LLM section needs extra low-tier / high-tier selects */

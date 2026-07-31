@@ -88,8 +88,6 @@ export const SettingsPreview = memo(function SettingsPreview({
   model,
   projectId,
 }: SettingsPreviewProps) {
-  if (!open) return null;
-
   const theme = useTheme();
   const styles = getStyles();
 
@@ -132,6 +130,8 @@ export const SettingsPreview = memo(function SettingsPreview({
     document.body.removeChild(element);
     URL.revokeObjectURL(element.href);
   }, [settingsContent, selectedIDE]);
+
+  if (!open) return null;
 
   const ideLabel = SETTINGS_PREVIEW_LABELS[selectedIDE] || selectedIDE;
 

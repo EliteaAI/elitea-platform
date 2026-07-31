@@ -20,7 +20,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import * as z from 'zod';
 
 import Box from '@mui/material/Box';
@@ -35,11 +35,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { GeneratedTokenDialog } from '@/routes/_shell/settings/personal-tokens/GeneratedTokenDialog';
 import { t } from '@/shared/ui/lib/t';
-import { TOKEN_NAME_PATTERN, MAX_TOKEN_NAME_LENGTH } from '@/entities/token/model/constants';
-import {
-  TOKEN_EXPIRATION_OPTIONS,
-  DEFAULT_TOKEN_EXPIRATION_VALUE,
-} from '@/entities/token/model/constants';
+import { TOKEN_NAME_PATTERN, MAX_TOKEN_NAME_LENGTH, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
 import { useCreateTokenMutation, useListTokensQuery } from '@/entities/token/api/tokenApi';
 
 /* ── zod validation schema ─────────────────────────────────────────────── */
@@ -108,9 +104,11 @@ export function CreatePersonalTokenPage() {
     }
   }, [createMutation]);
 
-  const hasChanged = useMemo(() => {
-    return name !== '' || measure !== 'days' || watch('expiration') !== DEFAULT_TOKEN_EXPIRATION_VALUE;
-  }, [name, measure, watch('expiration')]);
+  const expirationValue = useWatch({ name: 'expiration' }) as number | null;
+  const hasChanged = useMemo(
+    () => name !== '' || measure !== 'days' || expirationValue !== DEFAULT_TOKEN_EXPIRATION_VALUE,
+    [name, measure, expirationValue],
+  );
 
   const onCancel = useCallback(() => {
     void navigate({ to: '/settings/tokens' });

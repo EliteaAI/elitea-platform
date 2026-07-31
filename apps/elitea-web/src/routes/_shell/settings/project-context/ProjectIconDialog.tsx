@@ -75,7 +75,7 @@ export function ProjectIconDialog({
   /* ── handlers ──────────────────────────────────────────────────────── */
 
   const handleFileSelect = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
+    (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file) return;
       setIsUploading(true);
@@ -164,7 +164,7 @@ export function ProjectIconDialog({
                   key={icon.name}
                   isSelected={selectedIcon?.name === icon.name}
                   onClick={() => void handleSelectIcon(icon.name)}
-                  onDelete={() => { void handleDeleteIcon(icon.name); }}
+                  onDelete={() => { handleDeleteIcon(icon.name).catch(() => {}); }}
                 >
                   <IconPlaceholder name={icon.name} url={icon.url} />
                 </UserIconItem>

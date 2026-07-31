@@ -204,18 +204,19 @@ export function useSecretsActions(): SecretsActionsResult {
 
       if (row.isNew) {
         if (row.name && row.secretValue) {
-          await mutations.createSecret(row.name, row.secretValue);
+          mutations.createSecret(row.name, row.secretValue);
         }
         setRows((prev) => prev.filter((r) => r.id !== rowId));
       } else {
         if (row.name && row.secretValue) {
-          await mutations.updateSecret(row.name, row.name, row.secretValue);
+          mutations.updateSecret(row.name, row.name, row.secretValue);
         }
         setRowModesModel((prev) => ({
           ...prev,
           [rowId]: { mode: GridRowModes.View, ignoreModifications: true },
         }));
       }
+      return Promise.resolve();
     },
     [],
   );
@@ -337,12 +338,13 @@ export function useSecretsActions(): SecretsActionsResult {
       if (!mutations) return;
 
       if (openAlertType === 'delete') {
-        await mutations.deleteSecret(row.name);
+        mutations.deleteSecret(row.name);
       } else if (openAlertType === 'hide') {
-        await mutations.hideSecret(row.name);
+        mutations.hideSecret(row.name);
       }
       setOpenAlert(null);
       setOpenAlertType('');
+      return Promise.resolve();
     },
     [openAlertType],
   );

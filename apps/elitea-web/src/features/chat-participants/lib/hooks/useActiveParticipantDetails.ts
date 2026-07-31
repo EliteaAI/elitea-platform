@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { useCallback, useEffect, useState } from 'react';
 
-import { ChatParticipantType, PUBLIC_PROJECT_ID } from '../../model/constants';
+import { ChatParticipantType } from '../../model/constants';
 
 import { useSelectedProjectId } from '../../api/useSelectedProjectId';
 import { useFetchParticipantDetails } from './useFetchParticipantDetails';
@@ -90,7 +90,7 @@ export function useActiveParticipantDetails(
 
   useEffect(() => {
     if (activeParticipant && !skip) {
-      fetchDetails();
+      fetchDetails().catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- activeParticipant id + project + name + version_id drive re-fetch
   }, [

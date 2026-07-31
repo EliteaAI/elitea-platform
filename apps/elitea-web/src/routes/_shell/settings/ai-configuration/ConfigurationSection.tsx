@@ -135,7 +135,7 @@ export default memo(function ConfigurationSection({
             .filter((s): s is NonNullable<typeof s> => Boolean(s))
             .map((setting) => (
               <SingleSelect
-                key={setting.key ?? String(setting.label ?? 'additional')}
+                key={setting.key ?? String(setting.label as string ?? 'additional')}
                 label={typeof setting.label === 'string' ? setting.label : ''}
                 value={setting.value ?? ''}
                 onChange={setting.onChange ?? (() => {})}

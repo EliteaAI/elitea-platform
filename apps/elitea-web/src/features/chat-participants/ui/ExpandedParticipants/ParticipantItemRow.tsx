@@ -6,7 +6,6 @@ import Typography from '@mui/material/Typography';
 
 import { useParticipantEntityIcon } from '../../lib/hooks/useParticipantEntityIcon';
 import { useParticipantName } from '../../lib/hooks/useParticipantName';
-import { chatParticipantUniqueId } from '@/entities/participant';
 
 import type { TransformedParticipant } from '../../model/types';
 

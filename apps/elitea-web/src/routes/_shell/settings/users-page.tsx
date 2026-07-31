@@ -233,7 +233,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
   );
 
   // ── callback: delete ─────────────────────────────────────────────────
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(() => {
     const ids = selectedUsers.map((u) => parseInt(u.id, 10));
     deleteUserMutation.deleteUserIds(ids);
   }, [selectedUsers, deleteUserMutation]);

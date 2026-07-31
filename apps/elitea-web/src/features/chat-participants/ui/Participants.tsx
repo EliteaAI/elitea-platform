@@ -36,9 +36,7 @@ import Typography from '@mui/material/Typography';
 import { ChatParticipantType } from '../model/constants';
 import type { TransformedParticipant } from '../model/types';
 import { useParticipantEntityIcon } from '../lib/hooks/useParticipantEntityIcon';
-import { isParticipantStillActive } from '@/entities/participant';
-import { useParticipantName } from '../lib/hooks/useParticipantName';
-import { chatParticipantUniqueId } from '@/entities/participant';
+import { isParticipantStillActive, chatParticipantUniqueId } from '@/entities/participant';
 import { styles } from './ExpandedParticipants/participants.styles';
 import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
 

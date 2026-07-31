@@ -67,8 +67,8 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     onDelete,
     onEdit,
     editingToolkit,
-    disableTooltip,
-    isAttachment,
+    _disableTooltip,
+    _isAttachment,
     hasMisconfigurationErrors,
     someToolsAreUnavailable,
     blockedToolkitNames,
@@ -78,14 +78,14 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     remoteMcpLoggedOut,
     hasRemoteMcpLoggedIn,
     spOAuthLoggedOut,
-    spOAuthLoggedIn,
+    _spOAuthLoggedIn,
     spConfig,
     shouldDisableThisItem,
     resolveToolkitIcon,
   } = props;
 
   const nameRef = useRef<HTMLSpanElement>(null);
-  const [nameIsOverflow, setNameIsOverflow] = useState(false);
+  const [_nameIsOverflow, setNameIsOverflow] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
 
   const entityIcon = useParticipantEntityIcon(participant, { resolveToolkitIcon });
@@ -94,11 +94,11 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
   const entityMeta = participant.entity_meta as Record<string, unknown> | undefined;
   const entityName = participant.entity_name as ChatParticipantType | undefined;
   const entitySettings = participant.entity_settings as Record<string, unknown> | undefined;
-  const meta = participant.meta as Record<string, unknown> | undefined;
+  const _meta = participant.meta as Record<string, unknown> | undefined;
 
   // Pipeline detection (agent_type on entity_settings or top-level)
   const agentType = entitySettings?.agent_type as string | undefined;
-  const isPipelineParticipant = agentType === 'pipeline' || participant.agent_type === 'pipeline';
+  const _isPipelineParticipant = agentType === 'pipeline' || participant.agent_type === 'pipeline';
 
   // Skipped container agent (issue #5680)
   const isSkippedContainer = useMemo(

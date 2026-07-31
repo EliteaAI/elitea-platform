@@ -26,6 +26,7 @@ export function useLocalActiveParticipant() {
 
   const getLocalActiveParticipantMap = useCallback((): ProjectParticipantMap => {
     try {
+      // eslint-disable-next-line no-restricted-globals
       const stored = localStorage.getItem('ACTIVE_CONVERSATION_PARTICIPANT') || '{}';
       return JSON.parse(stored);
     } catch {
@@ -53,6 +54,7 @@ export function useLocalActiveParticipant() {
       const key = 'ACTIVE_CONVERSATION_PARTICIPANT';
 
       if (foundItem) {
+        // eslint-disable-next-line no-restricted-globals
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -63,6 +65,7 @@ export function useLocalActiveParticipant() {
           }),
         );
       } else {
+        // eslint-disable-next-line no-restricted-globals
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -80,6 +83,7 @@ export function useLocalActiveParticipant() {
       const map = getLocalActiveParticipantMap();
       const list = map[projectId] || [];
       const leftList = list.filter((item) => item.cid !== conversationId);
+      // eslint-disable-next-line no-restricted-globals
       localStorage.setItem(
         'ACTIVE_CONVERSATION_PARTICIPANT',
         JSON.stringify({

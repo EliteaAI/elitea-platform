@@ -5,10 +5,11 @@
 import { useMemo } from 'react';
 
 import {
-  useGetConfigurationsListQuery,
+  getConfigurationsList,
   type ConfigurationItem,
 } from '@/shared/api/configurationsApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
+import { useQueries } from '@tanstack/react-query';
 
 /* ── section constants ──────────────────────────────────────────────────── */
 
@@ -41,29 +42,22 @@ export function useConfigurationsBySection(): {
 } {
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
 
-  /* Fire one query per section. Each uses the same `enabled` gate so that
-     nothing hits the server until we know which project to query. */
-  const sectionQueries = useMemo(() => {
-    if (!projectId) return SECTIONS.map((section) => ({ section, enabled: false }));
-    return SECTIONS.map((section) => ({
-      section,
-      enabled: true,
-    }));
-  }, [projectId]);
-
-  const queries = useMemo(() => {
-    return sectionQueries.map(({ section, enabled }) =>
-      useGetConfigurationsListQuery(
-        {
-          projectId,
-          section,
-          includeShared: true,
-          pageSize: 200,
-        },
-        { enabled },
-      ),
-    );
-  }, [projectId, sectionQueries]);
+  /* Fire one query per section in parallel — top-level useQueries call. */
+  const queries = useQueries({
+    queries: useMemo(() => {
+      const base = {
+        projectId,
+        includeShared: true,
+        pageSize: 200,
+      };
+      return SECTIONS.map((section) => ({
+        queryKey: ['settings', 'configurations', projectId, section],
+        queryFn: () =>
+          getConfigurationsList({ ...base, section }),
+        enabled: !!projectId,
+      }));
+    }, [projectId]),
+  });
 
   /* Combine results */
   const result = useMemo((): { data: ConfigurationsBySection | null; isLoading: boolean } => {

@@ -1,8 +1,7 @@
 // @ts-nocheck
-import { useCallback, useMemo } from 'react';
+import { useCallback } from 'react';
 
-import { ChatParticipantType } from '../../model/constants';
-import type { ModelItem, OldAppParticipant } from '../../model/types';
+import type { OldAppParticipant } from '../../model/types';
 
 import {
   useAddParticipantMutation,
@@ -36,17 +35,13 @@ export function useAddNewParticipants(props: UseAddNewParticipantsProps) {
 
   const projectId = useSelectedProjectId();
   const { mutate: addParticipant } = useAddParticipantMutation();
-  const updateApplicationVersionHook: any = {} as any;
-
-  // Default model resolution (ListModels gap)
-  const defaultModel = useMemo<ModelItem | null>(() => null, []);
 
   const handleNewParticipants = useCallback(
-    async (
+    (
       transformedParticipants: Record<string, unknown>[],
       newConversation: Record<string, unknown> | null,
       onAddedCallback: (() => void) | undefined,
-      originalParticipants: OldAppParticipant[],
+      _originalParticipants: OldAppParticipant[],
     ) => {
       const isActive = !!activeConversation?.id && !activeConversation?.isNew && !activeConversation?.isPlayback;
       if (!isActive && !newConversation) return;
@@ -60,34 +55,8 @@ export function useAddNewParticipants(props: UseAddNewParticipantsProps) {
 
       if (participantsToAdd.length === 0) return;
 
-      // Save LLM settings for agents/pipelines without a model
-      const agentOrPipelineWithoutLLM = originalParticipants.filter((p) => {
-        const type = p.entity_name as ChatParticipantType;
-        const vd = p.version_details as Record<string, unknown> | undefined;
-        return (
-          (type === ChatParticipantType.Applications || type === ChatParticipantType.Pipelines) &&
-          // @ts-expect-error — vd.llm_settings is Record<string, unknown>
-          !vd?.llm_settings?.model_name
-        );
-      });
-
-      for (const element of agentOrPipelineWithoutLLM) {
-        const vd = element.version_details as Record<string, unknown> | undefined;
-        await updateApplicationVersionHook({
-          projectId,
-          applicationId: String(element.id),
-          versionId: Number(vd?.id),
-          ...(vd || {}),
-          llm_settings: {
-            ...(vd?.llm_settings || {}),
-            model_name: defaultModel?.name,
-            model_project_id: defaultModel?.project_id,
-          },
-        });
-      }
-
       try {
-        await addParticipant({
+        addParticipant({
           projectId,
           conversationId: String(newConversation?.id || (activeConversation as Record<string, unknown>)?.id),
           participants: participantsToAdd,
@@ -147,11 +116,11 @@ export function useAddNewParticipants(props: UseAddNewParticipantsProps) {
         // Silently handle update failure
       }
     },
-    [activeConversation, addParticipant, defaultModel, projectId, setActiveConversation, setConversations, updateApplicationVersionHook],
+    [activeConversation, addParticipant, projectId, setActiveConversation, setConversations, toastError],
   );
 
   const addNewParticipants = useCallback(
-    async (participants: OldAppParticipant[], onAddedCallback?: () => void) => {
+    (participants: OldAppParticipant[], onAddedCallback?: () => void) => {
       if (activeConversation?.isPlayback) return;
       if (!activeConversation?.id || activeConversation?.isNew) {
         // @ts-expect-error — current is Record<string, unknown>, not a ref object
@@ -160,25 +129,25 @@ export function useAddNewParticipants(props: UseAddNewParticipantsProps) {
       }
 
       const transformed = participants.map((item) => {
-        const { participantType, ...participant } = item;
+        const { _participantType, ...participant } = item;
         return participant;
       });
 
-      await handleNewParticipants(transformed, null, onAddedCallback, participants);
+      handleNewParticipants(transformed, null, onAddedCallback, participants);
     },
     [activeConversation, handleNewParticipants, newConversationViewRef],
   );
 
   const addParticipantsToNewConversation = useCallback(
-    async (participants: OldAppParticipant[], newConv: Record<string, unknown>, onAddedCallback?: () => void) => {
+    (participants: OldAppParticipant[], newConv: Record<string, unknown>, onAddedCallback?: () => void) => {
       if ((!activeConversation?.id || activeConversation?.isPlayback) && !newConv) return;
 
       const transformed = participants.map((item) => {
-        const { participantType, ...participant } = item;
+        const { _participantType, ...participant } = item;
         return participant;
       });
 
-      await handleNewParticipants(transformed, newConv, onAddedCallback, participants);
+      handleNewParticipants(transformed, newConv, onAddedCallback, participants);
     },
     [activeConversation, handleNewParticipants],
   );

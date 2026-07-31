@@ -63,7 +63,7 @@ export function buildFieldDefinition(
   // Check schema for override types
   let resolvedType = type;
   if (fieldSchema?.type) {
-    const schemaType = String(fieldSchema.type);
+    const schemaType = (fieldSchema.type as string) ?? '';
     if (schemaType === 'integer' || schemaType === 'number') {
       resolvedType = schemaType as EnvironmentFieldDefinition['type'];
     } else if (schemaType === 'boolean') {

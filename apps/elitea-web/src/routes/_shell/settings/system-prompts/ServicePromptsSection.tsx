@@ -92,12 +92,16 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
     const items: ConfigurationItem[] = configsData?.items ?? [];
     return items
       .filter((item) => item.section === 'service_prompts')
-      .map((item) => ({
-        id: item.id,
-        key: String(item.data?.key ?? item.elitea_title ?? ''),
-        label: item.label ?? deriveLabelFromKey(String(item.data?.key ?? item.elitea_title ?? '')),
-        prompt: String(item.data?.prompt ?? ''),
-      }))
+      .map((item) => {
+        const key = (item.data?.key as string | undefined) ?? item.elitea_title ?? '';
+        const prompt = (item.data?.prompt as string | undefined) ?? '';
+        return {
+          id: item.id,
+          key: String(key),
+          label: item.label ?? deriveLabelFromKey(String(key)),
+          prompt: String(prompt),
+        };
+      })
       .sort((a, b) => a.key.localeCompare(b.key));
   }, [configsData?.items]);
   const allowedKeys = useMemo(() => {

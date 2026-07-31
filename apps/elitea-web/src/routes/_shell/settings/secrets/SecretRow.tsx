@@ -84,7 +84,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
       );
     }
     return valueViewCell(params);
-  }, [isEditing, row, params.value, setRows, setRowModesModel, onValidationChange, params]);
+  }, [isEditing, row, setRows, setRowModesModel, onValidationChange, params]);
 
   /* ── value cell ────────────────────────────────────────────────────── */
 
@@ -124,7 +124,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         }}
       />
     );
-  }, [isEditing, row, params.value, isShowSecretMap, onValidationChange, actions.onHideSecret, actions.onShowSecret, actions.onCopyVisible, isVisible]);
+  }, [isEditing, row, params.value, onValidationChange, actions, isVisible, setRows, setRowModesModel]);
 
   /* ── actions cell ──────────────────────────────────────────────────── */
 

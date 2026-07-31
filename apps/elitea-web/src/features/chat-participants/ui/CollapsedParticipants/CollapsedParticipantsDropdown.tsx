@@ -6,7 +6,7 @@
  */
 import { memo, useState } from 'react';
 
-import { Box, ClickAwayListener, Paper, Popper, Typography } from '@mui/material';
+import { Box, ClickAwayListener, Paper, Popper } from '@mui/material';
 
 import CollapsedParticipantsList from './CollapsedParticipantsList';
 

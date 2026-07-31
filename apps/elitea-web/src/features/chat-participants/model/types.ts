@@ -1,8 +1,6 @@
 // @ts-nocheck
 import { ChatParticipantType } from './constants';
 
-import type { Participant } from '@/entities/participant';
-
 // ---------------------------------------------------------------------------
 // Helper types for `transformParticipant` output
 // ---------------------------------------------------------------------------

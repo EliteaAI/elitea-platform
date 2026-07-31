@@ -50,7 +50,7 @@ const ExpandedParticipantsList = memo((props: ExpandedParticipantsListProps): Re
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
       {participants.map((participant, index) => (
         <ParticipantItem
-          key={`${participant.id || index}-${participant.entity_meta?.id}`}
+          key={`${(participant.id as string) || index}-${participant.entity_meta?.id}`}
           participant={participant}
           collapsed={collapsed}
           disabledEdit={disabledEdit}

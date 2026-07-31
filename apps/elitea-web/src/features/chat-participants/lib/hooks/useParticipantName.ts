@@ -2,7 +2,6 @@
 import { useMemo } from 'react';
 
 import { participantDisplayName } from '@/entities/participant';
-import { DEFAULT_PARTICIPANT_NAME } from '@/entities/participant';
 
 /**
  * Hook that resolves the display name for a chat participant.

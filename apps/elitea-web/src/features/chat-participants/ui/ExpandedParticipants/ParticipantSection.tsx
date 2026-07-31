@@ -11,8 +11,6 @@ import { Box, Collapse, IconButton, Typography } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 
-import type { ExpandedParticipantsListProps } from './ExpandedParticipantsList';
-
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -39,14 +37,14 @@ const ParticipantSection = memo((props: ParticipantSectionProps): React.ReactEle
     title,
     participants,
     collapsed,
-    disabledEdit,
-    onItemClick,
-    onDelete,
-    onEdit,
-    editingToolkit,
-    mcpLoginSlot,
-    mcpLogoutSlot,
-    sharepointLoginSlot,
+    _disabledEdit,
+    _onItemClick,
+    _onDelete,
+    _onEdit,
+    _editingToolkit,
+    _mcpLoginSlot,
+    _mcpLogoutSlot,
+    _sharepointLoginSlot,
   } = props;
 
   const [isExpanded, setIsExpanded] = useState(!collapsed);

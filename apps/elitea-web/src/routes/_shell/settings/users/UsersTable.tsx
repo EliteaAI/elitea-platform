@@ -202,7 +202,7 @@ export const UsersTable = memo(function UsersTable({
         sortable: false,
         disableColumnMenu: true,
         renderCell: (params: GridRenderCellParams) => {
-          const rowId = String(params.row.id);
+          const rowId = String((params.row as { id: string }).id);
           const rowUser = users.find((u) => u.id === rowId);
           if (!rowUser) return null;
 
@@ -264,7 +264,7 @@ export const UsersTable = memo(function UsersTable({
       checkboxSelection
       rowHeight={48}
       hideFooter
-      getRowId={(row) => row.id}
+      getRowId={(row: { id: string }) => row.id}
       sortingMode="client"
       sortModel={sortModel}
       onSortModelChange={handleSortModelChange}

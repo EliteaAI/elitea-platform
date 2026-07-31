@@ -77,35 +77,35 @@ const extractField = (
 ): string | undefined => {
   for (const key of keys) {
     const value = cfg[key];
-    if (value !== undefined && value !== null && String(value).trim().length > 0) {
-      return String(value);
+    if (value !== undefined && value !== null && String(value as string).trim().length > 0) {
+      return String(value as string);
     }
   }
   const data = getCfgData(cfg);
   if (data) {
     for (const key of keys) {
       const value = data[key];
-      if (value !== undefined && value !== null && String(value).trim().length > 0) {
-        return String(value);
+      if (value !== undefined && value !== null && String(value as string).trim().length > 0) {
+        return String(value as string);
       }
     }
   }
   const settings = cfg.settings as Record<string, unknown> | undefined;
   if (settings) {
     const val = settings.title;
-    if (val !== undefined && String(val).trim().length > 0) return String(val);
+    if (val !== undefined && String(val as string).trim().length > 0) return String(val as string);
   }
   const config = cfg.config as Record<string, unknown> | undefined;
   if (config) {
     const val = config.name;
-    if (val !== undefined && String(val).trim().length > 0) return String(val);
+    if (val !== undefined && String(val as string).trim().length > 0) return String(val as string);
   }
   const metadata = cfg.metadata as Record<string, unknown> | undefined;
   if (metadata) {
     const title = metadata.title;
-    if (title !== undefined && String(title).trim().length > 0) return String(title);
+    if (title !== undefined && String(title as string).trim().length > 0) return String(title as string);
     const name = metadata.name;
-    if (name !== undefined && String(name).trim().length > 0) return String(name);
+    if (name !== undefined && String(name as string).trim().length > 0) return String(name as string);
   }
   return undefined;
 };
@@ -224,7 +224,7 @@ export const createConfigurationOptions = (
   return (
     configurations
       ?.map((config) => ({
-        value: `${(config.name as string) ?? ''}<<>>${config.project_id}`,
+        value: `${(config.name as string) ?? ''}<<>>${(config.project_id as string) ?? ''}`,
         label: (config.display_name as string | undefined) || (config.name as string) || '',
         icon: iconRenderer ? iconRenderer(config.project_id as string) : undefined,
       })) || []

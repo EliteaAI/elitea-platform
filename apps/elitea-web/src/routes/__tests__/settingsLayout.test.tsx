@@ -63,7 +63,7 @@ describe('settings nested layout', () => {
     // …and the resolved match is the settings catch-all, NOT a 404 and NOT
     // a redirect: the URL stays exactly where it was.
     expect(router.state.location.pathname).toBe('/settings/this-tab-does-not-exist');
-    const matchedIds = router.state.matches.map((match) => match.routeId);
+    const matchedIds = (router.state.matches as { routeId?: string }[]).map((match) => match.routeId);
     expect(matchedIds).toContain('/_shell/settings/$tab');
     expect(matchedIds).not.toContain('/$projectId/$');
   });

@@ -31,14 +31,14 @@ export function useDeleteParticipant({
   const { mutate: deleteParticipant, isError, error } = useDeleteParticipantMutation();
 
   const onDeleteParticipant = useCallback(
-    async (participantToDelete: Record<string, unknown>) => {
+    (participantToDelete: Record<string, unknown>) => {
       if (!activeConversation?.id) return;
       const id = String(participantToDelete.id);
 
       try {
-        await deleteParticipant({
+        deleteParticipant({
           projectId,
-          conversationId: String(activeConversation.id),
+          conversationId: String(activeConversation?.id as string),
           id,
         });
 
@@ -64,7 +64,7 @@ export function useDeleteParticipant({
   );
 
   const onRemoteDeleteParticipant = useCallback(
-    async (conversationId: string, participantId: string) => {
+    (conversationId: string, participantId: string) => {
       if (conversationId === activeConversation?.id) {
         setActiveConversation((prev: Record<string, unknown>) => ({
           ...prev,

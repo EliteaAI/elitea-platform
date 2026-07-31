@@ -69,7 +69,7 @@ function secretsQueryKey(projectId: string): string[] {
 /* ── secretsList — GET /secrets/{mode}/{projectID} ─────────────────────── */
 /* manifest: secrets.list */
 
-export async function listSecrets(projectId: string | number): Promise<Secret[]> {
+export function listSecrets(projectId: string | number): Promise<Secret[]> {
   return fetchJson<readonly unknown[]>(secretsBasePath(projectId))
     .then((wire) => normaliseSecrets(wire as ReadonlyArray<unknown>));
 }

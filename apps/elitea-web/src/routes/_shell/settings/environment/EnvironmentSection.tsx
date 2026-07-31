@@ -133,13 +133,17 @@ export const EnvironmentSection = memo(function EnvironmentSection() {
 
       let isDifferent = false;
       if (field.type === 'integer') {
-        isDifferent = parseInt(String(savedValue), 10) !== parseInt(rawValue, 10);
+        const sv = savedValue as string;
+        isDifferent = parseInt(String(sv), 10) !== parseInt(rawValue, 10);
       } else if (field.type === 'number') {
-        isDifferent = parseFloat(String(savedValue)) !== parseFloat(rawValue);
+        const sv = savedValue as string;
+        isDifferent = parseFloat(String(sv)) !== parseFloat(rawValue);
       } else if (field.type === 'boolean') {
-        isDifferent = String(savedValue) !== rawValue;
+        const sv = savedValue as string;
+        isDifferent = String(sv) !== rawValue;
       } else {
-        isDifferent = String(savedValue) !== rawValue;
+        const sv = savedValue as string;
+        isDifferent = String(sv) !== rawValue;
       }
       if (!isDifferent) return;
 

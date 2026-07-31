@@ -129,10 +129,10 @@ export const ActionsCell = memo(function ActionsCell({
     setDeleteModalOpen(true);
   }, []);
 
-  const handleDeleteConfirm = useCallback(async () => {
+  const handleDeleteConfirm = useCallback(() => {
     setIsDeleting(true);
     try {
-      await onDelete(token.uuid);
+      onDelete(token.uuid);
     } finally {
       setIsDeleting(false);
       setDeleteModalOpen(false);

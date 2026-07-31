@@ -169,9 +169,9 @@ const configurationsToOptions = (
   configurations: Array<Record<string, unknown>>,
 ): Record<string, ConfigOption[]> => {
   return (configurations || []).reduce((accumulator: Record<string, ConfigOption[]>, model) => {
-    const modelName = (model?.name as string) || `Model ${model?.id || 'Unknown'}`;
+    const modelName = (model?.name as string) || `Model ${(model?.id as string) ?? 'Unknown'}`;
     const modelId = (model?.id as string) || (model?.name as string) || 'unknown';
-    const groupName = `Project ${model?.project_id || 'Default'}`;
+    const groupName = `Project ${(model?.project_id as string) ?? 'Default'}`;
     const groupId = (model?.project_id as string) || 'default';
 
     if (!accumulator[groupName]) {

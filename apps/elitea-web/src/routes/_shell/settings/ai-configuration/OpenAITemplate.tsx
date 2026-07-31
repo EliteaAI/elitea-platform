@@ -2,7 +2,7 @@
  * OpenAITemplate page — OpenAI-compatible API code examples.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/OpenAITemplate.jsx`.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -28,24 +28,21 @@ export default function OpenAITemplate() {
   const { data: configSections } = useConfigurationsBySection();
   const llmConfigs = configSections?.['llm'] ?? [];
 
-  /* Convert ConfigurationItem[] → ModelInfo-compatible array */
-  const models = useMemo((): readonly Record<string, unknown>[] => {
-    return llmConfigs.map((cfg) => ({
-      id: cfg.id,
-      name: cfg.elitea_title || cfg.label || cfg.type || '',
-      display_name: cfg.elitea_title || cfg.label || '',
-      type: cfg.type || '',
-      label: cfg.label || cfg.elitea_title || cfg.type || '',
-      project_id: cfg.project_id || '',
-      default: false,
-      integration_name: (cfg.data as Record<string, unknown>)?.integration_name as string | undefined,
-    }));
-  }, [llmConfigs]);
+  /* Convert ConfigurationItem[] → ModelInfo-compatible array — computed directly
+     because llmConfigs comes from a hook that may return a new reference each render. */
+  const models = llmConfigs.map((cfg) => ({
+    id: cfg.id,
+    name: cfg.elitea_title || cfg.label || cfg.type || '',
+    display_name: cfg.elitea_title || cfg.label || '',
+    type: cfg.type || '',
+    label: cfg.label || cfg.elitea_title || cfg.type || '',
+    project_id: cfg.project_id || '',
+    default: false,
+    integration_name: (cfg.data as Record<string, unknown>)?.integration_name as string | undefined,
+  }));
 
   /* Remove duplicates — old app pattern */
-  const uniqueConfigurations = useMemo(() => {
-    return removeDuplicateModels(models as Array<Record<string, unknown>>);
-  }, [models]);
+  const uniqueConfigurations = removeDuplicateModels(models as Array<Record<string, unknown>>);
 
   /* Model state management */
   const { model, selectedModelFromConfigurations, onChangeModel } = useModelConfiguration({
@@ -93,7 +90,7 @@ export default function OpenAITemplate() {
         <Box sx={styles.buttons}>
           {hasModelSelected && (
             <Tooltip title={t('ai-configuration.openaiTemplate.copyTooltip', 'Copy to clipboard')} placement="top">
-              <IconButton color="secondary" onClick={handleCopyClick}>
+              <IconButton color="secondary" onClick={() => void handleCopyClick()}>
                 <ContentCopyIcon sx={styles.actionIcon} />
               </IconButton>
             </Tooltip>

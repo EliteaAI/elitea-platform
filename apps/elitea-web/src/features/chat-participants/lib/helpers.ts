@@ -92,8 +92,7 @@ export function transformParticipant(
                 // @ts-expect-error — spread of potentially non-object
                 ...((participant.entity_settings as Record<string, any>)?.icon_meta ||
                 (participant.meta as Record<string, any>)?.icon_meta ||
-                (participant.icon_meta as Record<string, any>) ||
-                {}),
+                (participant.icon_meta as Record<string, any>)),
               }
             : {},
         toolkit_type: participant.type as string | undefined,

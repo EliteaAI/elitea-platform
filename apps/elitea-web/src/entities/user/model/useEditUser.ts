@@ -13,8 +13,7 @@ import { useCallback } from 'react';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { userDelete, userUpdate } from '@/shared/api/generated/admin/admin';
-import { getUserListQueryKey } from '@/shared/api/generated/admin/admin';
+import { userDelete, userUpdate, getUserListQueryKey } from '@/shared/api/generated/admin/admin';
 
 export interface UseEditUserOptions {
   projectId: string | null;

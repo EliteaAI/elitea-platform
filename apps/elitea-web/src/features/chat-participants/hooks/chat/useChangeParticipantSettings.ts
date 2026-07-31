@@ -31,10 +31,10 @@ export function useChangeParticipantSettings({
   toastError: (msg: string) => void;
 }) {
   const projectId = useSelectedProjectId();
-  const { mutate, isError, error } = useUpdateParticipantSettingsMutation();
+  const { mutate } = useUpdateParticipantSettingsMutation();
 
   const onChangeParticipantSettings = useCallback(
-    async (editedParticipant: Record<string, unknown>, hasBeenChanged: boolean) => {
+    (editedParticipant: Record<string, unknown>, hasBeenChanged: boolean) => {
       if (!hasBeenChanged) return;
       if (!activeConversation?.id || activeConversation?.isNew) return;
 
@@ -63,7 +63,7 @@ export function useChangeParticipantSettings({
       mutate(
         {
           projectId,
-          conversationId: String(activeConversation.id),
+          conversationId: String(activeConversation?.id as string),
           participantId: id,
           settings: entitySettings,
         },

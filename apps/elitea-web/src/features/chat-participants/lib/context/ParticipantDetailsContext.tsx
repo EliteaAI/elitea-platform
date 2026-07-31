@@ -56,20 +56,22 @@ export function ParticipantDetailsProvider({
   // Fetch details for all non-user participants on mount
   useEffect(() => {
     for (const p of participants) {
-      const entityMeta = p.entity_meta as Record<string, unknown> | undefined;
+      const entityMeta = (p.entity_meta as Record<string, unknown>) ?? {};
       const entityName = p.entity_name as ChatParticipantType | undefined;
       if (!entityMeta?.id || !entityMeta?.project_id) continue;
       if (entityName === ChatParticipantType.Users) continue;
 
-      const key = getCacheKey(String(entityName), String(entityMeta.id), String(entityMeta.project_id));
+      const key = getCacheKey(String(entityName), String(entityMeta.id as string), String(entityMeta.project_id as string));
       if (fetchingRef.current.has(key)) continue;
 
       fetchingRef.current.add(key);
 
-      fetchOriginalDetails(entityName, String(entityMeta.id), String(entityMeta.project_id)).then((data) => {
-        setDetailsMap((prev) => ({ ...prev, [key]: data }));
-        setCompletedKeys((prev) => ({ ...prev, [key]: true }));
-      });
+      fetchOriginalDetails(entityName, String(entityMeta.id as string), String(entityMeta.project_id as string))
+        .then((data) => {
+          setDetailsMap((prev) => ({ ...prev, [key]: data }));
+          setCompletedKeys((prev) => ({ ...prev, [key]: true }));
+        })
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [participants, fetchOriginalDetails]);
@@ -93,7 +95,7 @@ export function ParticipantDetailsProvider({
       const key = getCacheKey(String(type), id, String(projectId));
       setDetailsMap((prev) => ({
         ...prev,
-        [key]: typeof updater === 'function' ? updater(prev[key] || {}) : { ...(prev[key] || {}), ...updater },
+        [key]: typeof updater === 'function' ? updater(prev[key] || {}) : { ...(prev[key]), ...updater },
       }));
     },
     [],
@@ -110,7 +112,7 @@ export function ParticipantDetailsProvider({
     [fetchOriginalDetails],
   );
 
-  const setParticipantStatus = useCallback((key: string, status: ParticipantStatusFlags) => {
+  const _setParticipantStatus = useCallback((key: string, status: ParticipantStatusFlags) => {
     setStatusMap((prev) => ({ ...prev, [key]: status }));
   }, []);
 
@@ -134,7 +136,7 @@ export function ParticipantDetailsProvider({
     [getDetails, hasFetched, updateDetails, refetchDetails, getParticipantStatus, hasParticipantError],
   );
 
-  const nonUserParticipants = useMemo(
+  const _nonUserParticipants = useMemo(
     () =>
       participants.filter(
         (p) =>

@@ -43,7 +43,7 @@ export default memo(function CodePreviewHeader({
 
   const modelOptions = useMemo((): SingleSelectOption[] => {
     return models.map((model) => ({
-      value: `${model.name}<<>>${model.project_id}`,
+      value: `${(model.name as string) ?? ''}<<>>${(model.project_id as string) ?? ''}`,
       label: (model.display_name as string) || (model.name as string) || '',
     }));
   }, [models]);
@@ -66,7 +66,7 @@ export default memo(function CodePreviewHeader({
       <Box sx={styles.controlsContainer}>
         <SingleSelect
           label={t('ai-configuration.codePreview.model', 'Model:')}
-          value={`${selectedModel?.name}<<>>${selectedModel?.project_id}`}
+          value={`${(selectedModel?.name as string) ?? ''}<<>>${(selectedModel?.project_id as string) ?? ''}`}
           onChange={onHandleChangeModel}
           options={modelOptions}
           disabled={false}

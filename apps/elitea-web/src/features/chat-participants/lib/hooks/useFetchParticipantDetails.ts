@@ -17,6 +17,11 @@ import { ChatParticipantType, PUBLIC_PROJECT_ID } from '../../model/constants';
 // self-import circular dependency flagged by depcruise)
 // ---------------------------------------------------------------------------
 
+/** Type-level assertion that a value is never (i.e. all enum cases handled). */
+function assertNever(value: never, message?: string): never {
+  throw new Error(message ?? `Unhandled type: ${String(value)}`);
+}
+
 export interface UseFetchParticipantDetailsResult {
   fetchOriginalDetails: (
     type: ChatParticipantType,
@@ -87,8 +92,16 @@ export function useFetchParticipantDetails(): UseFetchParticipantDetailsResult {
           return toolkit as Record<string, unknown>;
         }
 
-        default:
-          return {};
+        // Cases below are enum values that exist but are not valid chat participants.
+        // They are included only to satisfy the switch-exhaustiveness checker;
+        // assertNever will throw if any reach this point at runtime.
+        case ChatParticipantType.Attachments:
+        case ChatParticipantType.Dummy:
+        case ChatParticipantType.MCP:
+        case ChatParticipantType.Models:
+        case ChatParticipantType.Tools:
+        case ChatParticipantType.Users:
+          return assertNever(type);
       }
     },
     [queryClient],
@@ -128,8 +141,16 @@ export function useFetchParticipantDetails(): UseFetchParticipantDetailsResult {
           return (result?.data as Record<string, unknown>) || {};
         }
 
-        default:
-          return {};
+        // Cases below are enum values that exist but are not valid for version details lookups.
+        // Included only to satisfy the switch-exhaustiveness checker.
+        case ChatParticipantType.Attachments:
+        case ChatParticipantType.Dummy:
+        case ChatParticipantType.MCP:
+        case ChatParticipantType.Models:
+        case ChatParticipantType.Toolkits:
+        case ChatParticipantType.Tools:
+        case ChatParticipantType.Users:
+          return assertNever(type);
       }
     },
     [queryClient],

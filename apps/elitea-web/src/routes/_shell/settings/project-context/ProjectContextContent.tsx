@@ -66,39 +66,18 @@ export function ProjectContextContent({
   canView = true,
   canEdit = true,
 }: ProjectContextContentProps) {
+  /* ── hooks (must come before any early return) ───────────────────── */
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
-  const [isSaving, setIsSaving] = useState(false);
-  const [isEditorFocused, setIsEditorFocused] = useState(false);
-  const [showSaveToast, setShowSaveToast] = useState(false);
-  const [showErrorToast, setShowErrorToast] = useState(false);
 
-  /* ── permissions check ────────────────────────────────────────────── */
-
-  if (!canView) {
-    return (
-      <Box sx={projectContextStyles.root}>
-        <DrawerPage>
-          <BannerMessage
-            message={t('entities.projectContext.content.noAccess', 'You do not have permission to view this setting.')}
-            variant="info"
-          />
-        </DrawerPage>
-      </Box>
-    );
-  }
-
-  /* ── project context data ─────────────────────────────────────────── */
+  /* ── project context query ──────────────────────────────────────── */
 
   const { data: ctxResponse, isLoading } = useGetProjectContext(projectId, {
-    query: { enabled: !!projectId },
+    query: { enabled: !!projectId && canView },
   });
 
-  const serverData = ctxResponse?.data;
-  const isProjectContext =
-    serverData && typeof serverData === 'object' && 'content' in serverData;
-
-  /* ── update mutation ──────────────────────────────────────────────── */
+  /* ── mutations ──────────────────────────────────────────────────── */
 
   const saveMutation = useMutation({
     mutationFn: ({ content, enabled }: { content: string; enabled: boolean }) =>
@@ -108,13 +87,22 @@ export function ProjectContextContent({
     },
   });
 
+  /* ── local state ────────────────────────────────────────────────── */
 
-  /* ── local state ──────────────────────────────────────────────────── */
-
+  const [isSaving, setIsSaving] = useState(false);
+  const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const [showSaveToast, setShowSaveToast] = useState(false);
+  const [showErrorToast, setShowErrorToast] = useState(false);
   const [content, setContent] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   const [isDirty, setIsDirty] = useState(false);
+
+  /* ── server data ────────────────────────────────────────────────── */
+
+  const serverData = ctxResponse?.data;
+  const isProjectContext =
+    serverData && typeof serverData === 'object' && 'content' in serverData;
 
   useEffect(() => {
     if (isProjectContext && serverData !== undefined) {
@@ -123,13 +111,6 @@ export function ProjectContextContent({
       setIsDirty(false);
     }
   }, [isProjectContext, serverData]);
-
-  /* ── derived state ──────────────────────────────────────────────── */
-
-  const showReadOnlyBanner = !canEdit;
-  const showDisabledBanner = enabled === false && Boolean(content.trim());
-  const showEditorContent = enabled || Boolean(content.trim());
-  const showEditorControls = enabled && canEdit;
 
   /* ── event handlers ─────────────────────────────────────────────── */
 
@@ -155,7 +136,8 @@ export function ProjectContextContent({
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = (ev.target?.result as string).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const result = (ev.target?.result as string) ?? '';
+      const text = String(result).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       if (text.length > MAX_CHARS) {
         console.warn(t('entities.projectContext.content.fileTooLarge', 'File content exceeds 2500 characters'));
         return;
@@ -210,6 +192,28 @@ export function ProjectContextContent({
   const handleCloseSaveToast = useCallback(() => setShowSaveToast(false), []);
   const handleCloseErrorToast = useCallback(() => setShowErrorToast(false), []);
 
+  /* ── permissions early return ───────────────────────────────────── */
+
+  if (!canView) {
+    return (
+      <Box sx={projectContextStyles.root}>
+        <DrawerPage>
+          <BannerMessage
+            message={t('entities.projectContext.content.noAccess', 'You do not have permission to view this setting.')}
+            variant="info"
+          />
+        </DrawerPage>
+      </Box>
+    );
+  }
+
+  /* ── derived state ──────────────────────────────────────────────── */
+
+  const showReadOnlyBanner = !canEdit;
+  const showDisabledBanner = enabled === false && Boolean(content.trim());
+  const showEditorContent = enabled || Boolean(content.trim());
+  const showEditorControls = enabled && canEdit;
+
   /* ── loading state ──────────────────────────────────────────────── */
 
   const s = projectContextStyles;
@@ -245,7 +249,7 @@ export function ProjectContextContent({
           <ProjectParamsHeader
             projectId={projectId}
             projectName={projectName}
-            onIconChange={handleIconChange}
+            onIconChange={(iconName: string | null) => void handleIconChange(iconName)}
           />
 
           {showReadOnlyBanner && (

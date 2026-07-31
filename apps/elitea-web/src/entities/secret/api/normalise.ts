@@ -11,8 +11,8 @@ export function normaliseSecrets(wire: ReadonlyArray<unknown>): Secret[] {
   return wire.map((item) => {
     const obj = item as Record<string, unknown>;
     return {
-      name: String(obj.name ?? ''),
-      secretName: String(obj.secret_name ?? obj.name ?? ''),
+      name: String((obj.name as string) ?? ''),
+      secretName: String((obj.secret_name as string) ?? (obj.name as string) ?? ''),
       isDefault: Boolean(obj.is_default),
     };
   });

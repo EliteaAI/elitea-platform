@@ -90,7 +90,7 @@ export function GenerateProjectContextModal({
     }
   }, [description, generateDraft]);
 
-  const handleApprove = useCallback(async () => {
+  const handleApprove = useCallback(() => {
     const generated = draft.project_background || '';
 
     if (hasExistingContent && applyMode === APPLY_MODE.APPEND) {

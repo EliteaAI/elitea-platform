@@ -89,11 +89,11 @@ const ParticipantStatusRunner = memo((props: ParticipantStatusRunnerProps): Reac
   const entityName = participant.entity_name as ChatParticipantType | undefined;
   const entitySettings = participant.entity_settings as Record<string, unknown> | undefined;
 
-  const isToolkitParticipant = entityName === ChatParticipantType.Toolkits;
-  const isPublishedParticipant = entityMeta?.project_id === PUBLIC_PROJECT_ID;
+  const _isToolkitParticipant = entityName === ChatParticipantType.Toolkits;
+  const _isPublishedParticipant = entityMeta?.project_id === PUBLIC_PROJECT_ID;
 
   // MCP status monitoring via WebSocket
-  const mcpServerUrl = (entitySettings?.mcp_server_url as string) || (originalDetails?.settings?.url as string) || '';
+  const _mcpServerUrl = (entitySettings?.mcp_server_url as string) || (originalDetails?.settings?.url as string) || '';
 
   const onMCPConnectionStatusChange = useCallback(
     (connected: boolean) => {

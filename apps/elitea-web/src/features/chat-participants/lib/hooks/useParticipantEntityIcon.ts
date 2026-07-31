@@ -1,12 +1,10 @@
 // @ts-nocheck
-import { createElement, useMemo } from 'react';
+import { useMemo } from 'react';
 
-import { useTheme } from '@emotion/react';
+import { useTheme } from '@mui/material/styles';
 
 import { ChatParticipantType } from '../../model/constants';
 import type { ParticipantIconMeta } from '../../model/types';
-
-import { DEFAULT_PARTICIPANT_NAME } from '@/entities/participant';
 
 /**
  * Hook that resolves the icon for a chat participant.
@@ -79,7 +77,7 @@ export function useParticipantEntityIcon(
     if (resolveToolkitIcon) {
       const resolved = resolveToolkitIcon(toolkitType, theme, isMCP);
       return {
-        ...(participant.entity_settings as Record<string, unknown>)?.icon_meta || {},
+        ...(participant.entity_settings as Record<string, unknown>)?.icon_meta,
         ...resolved,
         entityType: isMCP ? 'mcp' : type,
       };
@@ -87,7 +85,7 @@ export function useParticipantEntityIcon(
 
     // No slot: fall back to generic entity icon with the toolkit type
     return {
-      ...(participant.entity_settings as Record<string, unknown>)?.icon_meta || {},
+      ...(participant.entity_settings as Record<string, unknown>)?.icon_meta,
       entityType: isMCP ? 'mcp' : type,
     };
   }, [participant, resolveToolkitIcon, theme]);

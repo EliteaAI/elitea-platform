@@ -82,7 +82,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
             },
           } as Record<string, unknown>)
         : undefined,
-    [field.key, field.label, field.maximum, field.minimum, field.type, numeric],
+    [field.label, field.maximum, field.minimum, field.type, numeric],
   );
 
   return (

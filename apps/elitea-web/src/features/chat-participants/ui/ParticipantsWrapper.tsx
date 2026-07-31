@@ -28,7 +28,7 @@ import React, { useCallback, useEffect, memo, useMemo, useState } from 'react';
 import Grid from '@mui/material/Grid';
 
 import { ParticipantDetailsProvider } from '../lib/context/ParticipantDetailsContext';
-import { useTheme } from '@emotion/react';
+import { useTheme } from '@mui/material/styles';
 
 import Participants, { type ParticipantsProps } from './Participants';
 import { chatParticipantUniqueId } from '@/entities/participant';
@@ -170,7 +170,7 @@ export interface ParticipantsWrapperProps {
  */
 export const ParticipantsWrapper = memo(
   ({
-    hidden = false,
+    _hidden = false,
     collapsed = false,
     panelWidth = 320,
     activeConversation,

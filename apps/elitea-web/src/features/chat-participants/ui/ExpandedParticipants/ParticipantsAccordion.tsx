@@ -45,7 +45,7 @@ const ParticipantsAccordion = memo((props: ParticipantsAccordionProps): React.Re
           <AccordionDetails>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
               {section.participants.map((participant, pIndex) => (
-                <Typography key={`${participant.id || pIndex}`} variant="body2" sx={{ px: 1 }}>
+                <Typography key={`${(participant.id as string) || pIndex}`} variant="body2" sx={{ px: 1 }}>
                   {participant.entity_meta?.name || 'Unknown'}
                 </Typography>
               ))}
