@@ -145,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-shard-${{ matrix.shardIndex }}
-          path: coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json
+          path: apps/elitea-web/coverage-shards/shard-${{ matrix.shardIndex }}/coverage-final.json
           retention-days: 7
 
   coverage-merge:
@@ -164,7 +164,7 @@ jobs:
       - name: Download coverage shards
         uses: actions/download-artifact@v4
         with:
-          path: coverage-shards
+          path: apps/elitea-web/coverage-shards
       - name: Merge coverage
         run: node scripts/merge-coverage.mjs
       - name: Upload merged coverage
