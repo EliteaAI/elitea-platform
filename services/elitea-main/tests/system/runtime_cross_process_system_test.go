@@ -1,14 +1,9 @@
 package system_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -414,74 +409,6 @@ func assertNoClaim(t *testing.T, ctx context.Context, pool *pgxpool.Pool, execut
 	}
 	if claimCount != 0 || state != "DISPATCHED" {
 		t.Fatalf("wrong-key worker crossed the signature boundary: claims=%d state=%s", claimCount, state)
-	}
-}
-
-func assertAuthorizedSSE(t *testing.T, publicBaseURL, executionID, settingsMarker string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, publicBaseURL+"/api/v2/executions/1/"+url.PathEscape(executionID)+"/events", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.AddCookie(&http.Cookie{Name: "elitea_session", Value: sessionCookie(t, publicSecret)})
-	response, err := (&http.Client{}).Do(request)
-	if err != nil {
-		t.Fatalf("open authorized SSE: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
-		t.Fatalf("unexpected SSE response status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
-	}
-
-	var eventType, data string
-	scanner := bufio.NewScanner(response.Body)
-	scanner.Buffer(make([]byte, 1024), 128*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(line, "event: "):
-			eventType = strings.TrimPrefix(line, "event: ")
-		case strings.HasPrefix(line, "data: "):
-			data = strings.TrimPrefix(line, "data: ")
-		case line == "" && eventType != "" && data != "":
-			if eventType != "configuration.validation.completed" || strings.Contains(data, settingsMarker) {
-				t.Fatalf("unsafe or unexpected SSE event type=%q data=%s", eventType, data)
-			}
-			var result struct {
-				ConfigurationRevisionID string `json:"configuration_revision_id"`
-				Valid                   bool   `json:"valid"`
-				Issues                  []any  `json:"issues"`
-			}
-			if err := json.Unmarshal([]byte(data), &result); err != nil || result.ConfigurationRevisionID != revisionID || !result.Valid || len(result.Issues) != 0 {
-				t.Fatalf("unexpected durable SSE projection: data=%s err=%v", data, err)
-			}
-			return
-		}
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("read authorized SSE: %v", err)
-	}
-	t.Fatal("authorized SSE closed without the durable terminal event")
-}
-
-func assertForwardedIdentityCannotReadSSE(t *testing.T, publicBaseURL, executionID string) {
-	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, publicBaseURL+"/api/v2/executions/1/"+url.PathEscape(executionID)+"/events", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("X-Auth-Type", "spoofed-forward-auth")
-	request.Header.Set("X-Auth-Id", "1")
-	request.Header.Set("X-Auth-Reference", "attacker@example.test")
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
-	if err != nil {
-		t.Fatalf("exercise forwarded-identity rejection: %v", err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("forwarded public headers reached protected runtime SSE: status=%d", response.StatusCode)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -918,16 +917,6 @@ func waitForSettlementAndRetirement(t *testing.T, ctx context.Context, pool *pgx
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("Redis retained output or settings after settlement: entries=%v err=%v", entries, err)
 	}
-}
-
-func sessionCookie(t *testing.T, secret string) string {
-	t.Helper()
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"uid":1,"email":"system@example.test"}`))
-	mac := hmac.New(sha256.New, []byte(secret))
-	if _, err := mac.Write([]byte(payload)); err != nil {
-		t.Fatal(err)
-	}
-	return payload + "." + hex.EncodeToString(mac.Sum(nil))
 }
 
 func eventually(ctx context.Context, interval time.Duration, check func() (bool, error)) error {

@@ -27,8 +27,8 @@ const (
 )
 
 var (
-	errRedisFaultProxyFrameTooLarge = errors.New("Redis fault-proxy RESP frame exceeds its test bound")
-	errRedisFaultProxyMalformed     = errors.New("Redis fault-proxy RESP frame is malformed")
+	errRedisFaultProxyFrameTooLarge = errors.New("redis fault-proxy RESP frame exceeds its test bound")
+	errRedisFaultProxyMalformed     = errors.New("redis fault-proxy RESP frame is malformed")
 )
 
 // redisRetirementResponseDropProxy is a harness-only TLS/RESP2 fault injector.
