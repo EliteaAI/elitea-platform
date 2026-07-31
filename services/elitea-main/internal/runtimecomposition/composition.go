@@ -793,9 +793,18 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 					scheduleErr,
 				)
 			}
+			// One scan observes all projects and may cover the same due index
+			// occurrence as an older scan. Claiming scan occurrences in
+			// parallel only makes the product runner's overlap guard release
+			// them for retry. Claim one at a time, with a bounded catch-up
+			// budget; PostgreSQL occurrence leases and stable per-index
+			// idempotency remain the cross-replica correctness boundary.
 			schedulerConfig := schedulingapp.Config{
-				InstanceID:    config.SchedulerInstanceID,
-				LeaseDuration: currentIndexScheduleLeaseDuration,
+				InstanceID:      config.SchedulerInstanceID,
+				LeaseDuration:   currentIndexScheduleLeaseDuration,
+				MaxParallel:     1,
+				PageSize:        1,
+				MaxPagesPerTick: 4,
 			}
 			registry, registryErr := schedulingapp.NewRegistry(
 				schedulerConfig.LeaseDuration,
