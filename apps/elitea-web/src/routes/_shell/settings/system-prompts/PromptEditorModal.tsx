@@ -13,51 +13,33 @@ import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
 
 import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { ExpandedViewerModal } from '@/shared/ui/ExpandedViewerModal';
+import { t } from '@/shared/ui/lib/t';
 
-import type { PromptsModalProps } from './ServicePromptsSection';
+import type { PromptsModalConfig } from './ServicePromptsSection';
 
-export const PromptEditorModal = ({
-  open,
-  onClose,
-  title,
-  isBusy,
-  hasDefault,
-  hasChanges,
-  onDiscard,
-  onSave,
-  onRestore,
-  mode,
-  draftKey,
-  draftPrompt,
-  allowedKeys,
-  usedKeys,
-  onDraftKeyChange,
-  onDraftPromptChange,
-  styles,
-  tFn,
-}: PromptsModalProps): React.ReactElement | null => {
-  if (!open) return null;
+export const PromptEditorModal = ({ config }: { config: PromptsModalConfig }): React.ReactElement | null => {
+  if (!config.open) return null;
 
   return (
     <ExpandedViewerModal
-      open={open}
-      onClose={onClose}
-      title={title}
+      open={config.open}
+      onClose={config.onClose}
+      title={config.title}
       header={{
         customButtons: (
           <Tooltip
-            title={hasDefault
-              ? tFn('shared.ui.settings.prompts.restoreTooltip', 'Restore to default')
-              : tFn('shared.ui.settings.prompts.noDefaultTooltip', 'No default available')
+            title={config.hasDefault
+              ? t('shared.ui.settings.prompts.restoreTooltip', 'Restore to default')
+              : t('shared.ui.settings.prompts.noDefaultTooltip', 'No default available')
             }
             placement="top"
           >
-            <Box component="span" sx={styles.modalRestoreWrapper}>
+            <Box component="span" sx={config.styles.modalRestoreWrapper}>
               <IconButton
                 color="tertiary"
-                onClick={onRestore}
-                disabled={!hasDefault || isBusy}
-                aria-label={tFn('shared.ui.settings.prompts.restoreInModalAria', 'Restore to default')}
+                onClick={config.onRestore}
+                disabled={!config.hasDefault || config.isBusy}
+                aria-label={t('shared.ui.settings.prompts.restoreInModalAria', 'Restore to default')}
               >
                 <RestoreOutlinedIcon fontSize="small" />
               </IconButton>
@@ -66,48 +48,48 @@ export const PromptEditorModal = ({
         ),
       }}
       footer={
-        <Box sx={styles.modalFooter}>
-          <Button variant="outlined" onClick={onDiscard} disabled={isBusy}>
-            {tFn('shared.ui.settings.prompts.discard', 'Discard')}
+        <Box sx={config.styles.modalFooter}>
+          <Button variant="outlined" onClick={config.onDiscard} disabled={config.isBusy}>
+            {t('shared.ui.settings.prompts.discard', 'Discard')}
           </Button>
           <Button
             variant="contained"
-            onClick={onSave}
-            disabled={isBusy || !hasChanges}
+            onClick={config.onSave}
+            disabled={config.isBusy || !config.hasChanges}
           >
-            {tFn('shared.ui.settings.prompts.save', 'Save')}
+            {t('shared.ui.settings.prompts.save', 'Save')}
           </Button>
         </Box>
       }
       content={
-        <Box sx={styles.modalBody}>
-          <Box sx={styles.keyRow}>
+        <Box sx={config.styles.modalBody}>
+          <Box sx={config.styles.keyRow}>
             <TextField
               select
-              label={tFn('shared.ui.settings.prompts.keyLabel', 'Key')}
+              label={t('shared.ui.settings.prompts.keyLabel', 'Key')}
               size="small"
-              value={draftKey}
-              onChange={(e) => { onDraftKeyChange(e.target.value); }}
-              disabled={mode === 'edit'}
+              value={config.draftKey}
+              onChange={(e) => { config.onDraftKeyChange(e.target.value); }}
+              disabled={config.mode === 'edit'}
               helperText={
-                mode === 'create'
-                  ? tFn('shared.ui.settings.prompts.keyHelpCreate', 'Select a predefined key')
-                  : tFn('shared.ui.settings.prompts.keyHelpEdit', 'Key is immutable')
+                config.mode === 'create'
+                  ? t('shared.ui.settings.prompts.keyHelpCreate', 'Select a predefined key')
+                  : t('shared.ui.settings.prompts.keyHelpEdit', 'Key is immutable')
               }
               fullWidth
             >
-              {allowedKeys.map((key) => (
-                <MenuItem key={key} value={key} disabled={mode === 'create' && usedKeys.has(key)}>
+              {config.allowedKeys.map((key) => (
+                <MenuItem key={key} value={key} disabled={config.mode === 'create' && config.usedKeys.has(key)}>
                   {key}
                 </MenuItem>
               ))}
             </TextField>
           </Box>
-          <Box sx={styles.editorContainer}>
+          <Box sx={config.styles.editorContainer}>
             <CodeMirrorEditor
               readOnly
-              value={draftPrompt}
-              onChange={onDraftPromptChange}
+              value={config.draftPrompt}
+              onChange={config.onDraftPromptChange}
               height="100%"
               minHeight="100%"
             />

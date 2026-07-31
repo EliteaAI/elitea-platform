@@ -32,12 +32,11 @@ import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/ui/lib/t';
 import { ServicePromptCard } from './ServicePromptCard';
 import { PromptEditorModal } from './PromptEditorModal';
-import type { SxProps, Theme } from '@mui/material/styles';
 import { promptsStyles } from './ServicePrompts.styles';
 
-/* ── modal props interface ───────────────────────────────────────────── */
+/* ── modal config interface ──────────────────────────────────────────── */
 
-export interface PromptsModalProps {
+export interface PromptsModalConfig {
   open: boolean;
   onClose: () => void;
   title: string;
@@ -54,8 +53,7 @@ export interface PromptsModalProps {
   usedKeys: Set<string>;
   onDraftKeyChange: (val: string) => void;
   onDraftPromptChange: (val: string) => void;
-  styles: Record<string, SxProps<Theme>>;
-  tFn: typeof t;
+  styles: Record<string, import('@mui/material').SxProps<import('@mui/material').Theme>>;
 }
 
 /* ── types ────────────────────────────────────────────────────────────── */
@@ -339,26 +337,25 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
         </Box>
 
         {isOpen && (
-          <PromptEditorModal
-            open={isOpen}
-            onClose={handleDiscard}
-            title={modalTitle}
-            isBusy={isBusy}
-            hasDefault={hasDefaultPrompt(draftKeyRef.current)}
-            hasChanges={hasChanges}
-            onDiscard={handleDiscard}
-            onSave={() => void handleSave()}
-            onRestore={handleRestoreInModal}
-            mode={modeRef.current}
-            draftKey={draftKeyRef.current}
-            draftPrompt={draftPromptRef.current}
-            allowedKeys={allowedKeys}
-            usedKeys={usedKeysRef.current}
-            onDraftKeyChange={(val) => { draftKeyRef.current = val; }}
-            onDraftPromptChange={(val) => { draftPromptRef.current = val; }}
-            styles={promptsStyles}
-            tFn={t}
-          />
+          <PromptEditorModal config={{
+            open: isOpen,
+            onClose: handleDiscard,
+            title: modalTitle,
+            isBusy,
+            hasDefault: hasDefaultPrompt(draftKeyRef.current),
+            hasChanges,
+            onDiscard: handleDiscard,
+            onSave: () => void handleSave(),
+            onRestore: handleRestoreInModal,
+            mode: modeRef.current,
+            draftKey: draftKeyRef.current,
+            draftPrompt: draftPromptRef.current,
+            allowedKeys,
+            usedKeys: usedKeysRef.current,
+            onDraftKeyChange: (val) => { draftKeyRef.current = val; },
+            onDraftPromptChange: (val) => { draftPromptRef.current = val; },
+            styles: promptsStyles,
+          }} />
         )}
       </Box>
     </>

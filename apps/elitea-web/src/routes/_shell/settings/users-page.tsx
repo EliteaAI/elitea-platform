@@ -11,6 +11,7 @@
  *  - Uses `useTheme()` + `theme.vars.palette.*` for styling.
  *  - Uses `t()` from `@/shared/ui/lib/t` for i18n.
  *  - Debounced search via custom hook.
+ *  - Actions/mutations extracted to `useUsersActions` to keep ≤ 400 lines.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -23,7 +24,6 @@ import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 
 import { useRoleList, useUserList } from '@/shared/api/generated/admin/admin';
-import { useBatchEditUsers, useDeleteUsers, useEditUser } from '@/entities/user/model/useEditUser';
 import type { UserRecord } from '@/shared/api/generated/model';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
 import type { DeleteUserButtonProps } from '@/shared/ui/settings/DeleteUserButton';
@@ -33,6 +33,8 @@ import { DeleteUserButton } from '@/shared/ui/settings/DeleteUserButton';
 import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import { t } from '@/shared/ui/lib/t';
 import { UsersTable } from './users/UsersTable';
+import { useUsersActions } from './useUsersActions';
+import { usersPageStyles } from './UsersPage.styles';
 
 const ROWS_PER_PAGE_DEFAULT = 20;
 
@@ -48,10 +50,9 @@ function useDebounce<T>(value: T, delayMs: number): { value: T; isDebounce: bool
   const [isDebounce, setIsDebounce] = useState(true);
 
   useEffect(() => {
-    setIsDebounce(false);
     const timer = setTimeout(() => {
       setDebounced(value);
-      setIsDebounce(true);
+      setIsDebounce(false);
     }, delayMs);
     return () => clearTimeout(timer);
   }, [value, delayMs]);
@@ -91,7 +92,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
     { query: { enabled: !!projectId } },
   );
 
-  // ── raw data extraction ──────────────────────────────────────────────
+  // ── raw data ─────────────────────────────────────────────────────────
   const rawUsers = useMemo(() => {
     const resp = userListQuery.data;
     if (!resp) return [] as UserRecord[];
@@ -111,7 +112,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
     [rawRoles],
   );
 
-  // ── client-side filter ───────────────────────────────────────────────
+  // ── filter ───────────────────────────────────────────────────────────
   const filteredUsers = useMemo(() => {
     if (!debouncedSearch) return rawUsers;
     const query = debouncedSearch.toLowerCase();
@@ -123,7 +124,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
     );
   }, [debouncedSearch, rawUsers]);
 
-  // ── client-side sort ─────────────────────────────────────────────────
+  // ── sort ─────────────────────────────────────────────────────────────
   const sortedUsers = useMemo(() => {
     const sorted = [...filteredUsers];
     sorted.sort((a, b) => {
@@ -135,17 +136,18 @@ export function UsersPage({ projectId }: UsersPageProps) {
     return sorted;
   }, [filteredUsers, sortField, sortDirection]);
 
-  // ── client-side pagination slice ─────────────────────────────────────
+  // ── paginate ─────────────────────────────────────────────────────────
   const pagedUsers = useMemo(
     () => sortedUsers.slice(page * pageSize, page * pageSize + pageSize),
     [sortedUsers, page, pageSize],
   );
 
-  // ── mutation hooks ───────────────────────────────────────────────────
-  const deleteUserMutation = useDeleteUsers({
-    userIds: selectedUsers.map((u) => u.id),
+  // ── actions ──────────────────────────────────────────────────────────
+  const actionsResult = useUsersActions({
     projectId,
-    onSuccess: () => {
+    selectedUsers,
+    rolesOptions,
+    onDeleteSuccess: () => {
       setSelectedUsers([]);
       setToastType('success');
       setToastMessage(
@@ -155,60 +157,34 @@ export function UsersPage({ projectId }: UsersPageProps) {
       );
       void userListQuery.refetch?.();
     },
-    onError: () => {
-      setToastType('error');
-      setToastMessage(t('shared.ui.settings.users.deleteFailed', 'Failed to delete users'));
-    },
-  });
-
-  const editHook = useEditUser({
-    projectId,
-    onSuccess: () => {
+    onInviteSuccess: () => {
+      setInviteOpen(false);
       setToastType('success');
-      setToastMessage(t('shared.ui.settings.users.userEdited', 'The user has been edited successfully'));
+      setToastMessage(t('shared.ui.settings.users.userInvited', 'The user has been invited'));
       void userListQuery.refetch?.();
     },
-    onError: () => {
-      setToastType('error');
-      setToastMessage(t('shared.ui.settings.users.editFailed', 'Failed to edit user'));
-    },
+    t,
   });
 
-  const batchEditHook = useBatchEditUsers({
-    userIds: selectedUsers.map((u) => u.id),
-    projectId,
-    onSuccess: () => {
-      setSelectedUsers([]);
-      setToastType('success');
-      setToastMessage(t('shared.ui.settings.users.usersEdited', 'The users have been edited successfully'));
-      void userListQuery.refetch?.();
-    },
-    onError: () => {
-      setToastType('error');
-      setToastMessage(t('shared.ui.settings.users.editFailed', 'Failed to edit users'));
-    },
-  });
+  const { handleInviteConfirm, singleAction, batchAction, actions } = actionsResult;
 
-  // ── callback: search ─────────────────────────────────────────────────
+  // ── callbacks ────────────────────────────────────────────────────────
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchText(e.target.value);
     setPage(0);
   }, []);
 
-  // ── callback: page size ──────────────────────────────────────────────
   const handlePageSizeChange = useCallback((size: number) => {
     setPageSize(size);
     setPage(0);
     setSelectedUsers([]);
   }, []);
 
-  // ── callback: sort ───────────────────────────────────────────────────
   const handleSort = useCallback((field: string, direction: 'asc' | 'desc') => {
     setSortField(field);
     setSortDirection(direction);
   }, []);
 
-  // ── callback: selection ──────────────────────────────────────────────
   const handleSelectPage = useCallback(
     (selected: boolean) => {
       if (selected) {
@@ -225,36 +201,11 @@ export function UsersPage({ projectId }: UsersPageProps) {
       const fullUser = rawUsers.find((u) => u.id === user.id);
       if (!fullUser) return;
       setSelectedUsers((prev) => {
-        if (selected) return [...prev, fullUser];
+        if (selected) return [...prev, fullUser as UserRecord];
         return prev.filter((u) => u.id !== user.id);
       });
     },
     [rawUsers],
-  );
-
-  // ── callback: delete ─────────────────────────────────────────────────
-  const handleDelete = useCallback(() => {
-    const ids = selectedUsers.map((u) => parseInt(u.id, 10));
-    deleteUserMutation.deleteUserIds(ids);
-  }, [selectedUsers, deleteUserMutation]);
-
-  // ── callback: batch role save ────────────────────────────────────────
-  const handleBatchRoleSave = useCallback(
-    (roles: string[]) => {
-      batchEditHook.saveUsers(roles);
-    },
-    [batchEditHook],
-  );
-
-  // ── callback: invite ─────────────────────────────────────────────────
-  const handleInviteConfirm = useCallback(
-    (_data: { emails: string[]; roles: string[] }) => {
-      setInviteOpen(false);
-      setToastType('success');
-      setToastMessage(t('shared.ui.settings.users.userInvited', 'The user has been invited'));
-      void userListQuery.refetch?.();
-    },
-    [userListQuery],
   );
 
   // ── toast auto-clear ─────────────────────────────────────────────────
@@ -264,69 +215,19 @@ export function UsersPage({ projectId }: UsersPageProps) {
     return () => clearTimeout(timer);
   }, [toastMessage]);
 
-  // ── action configs for single/batch ──────────────────────────────────
-  const singleAction = useMemo(() => {
-    if (selectedUsers.length !== 1) return null;
-    const user = selectedUsers[0]!;
-    const editProps: Record<string, unknown> = {
-      userIds: [user.id],
-      userRoles: Array.from(user.roles),
-      rolesOptions,
-      onConfirm: (roles: string[]) => {
-        editHook.saveUser(user.id, roles);
-      },
-    };
-    if (editHook.isLoading !== undefined) editProps.isLoading = editHook.isLoading;
-    const deleteProps: Record<string, unknown> = {
-      userIds: [user.id],
-      onConfirm: () => {
-        setSelectedUsers([]);
-        const ids = [parseInt(user.id, 10)];
-        deleteUserMutation.deleteUserIds(ids);
-      },
-    };
-
-    return {
-      edit: editProps as unknown as EditUsersButtonProps,
-      delete: deleteProps as unknown as DeleteUserButtonProps,
-    } as { edit: EditUsersButtonProps; delete: DeleteUserButtonProps };
-  }, [selectedUsers, rolesOptions, editHook, deleteUserMutation]);
-
-  const batchAction = useMemo(() => {
-    if (selectedUsers.length < 2) return null;
-    const editProps: Record<string, unknown> = {
-      userIds: selectedUsers.map((u) => u.id),
-      rolesOptions,
-      onConfirm: handleBatchRoleSave,
-    };
-    if (batchEditHook.isLoading !== undefined) editProps.isLoading = batchEditHook.isLoading;
-    const deleteProps: Record<string, unknown> = {
-      userIds: selectedUsers.map((u) => u.id),
-      onConfirm: () => { void handleDelete(); },
-    };
-
-    return {
-      edit: editProps as unknown as EditUsersButtonProps,
-      delete: deleteProps as unknown as DeleteUserButtonProps,
-    } as { edit: EditUsersButtonProps; delete: DeleteUserButtonProps };
-  }, [selectedUsers, rolesOptions, batchEditHook, handleBatchRoleSave, handleDelete]);
-
-  const actions = batchAction ?? singleAction;
-
   const startRow = page * pageSize + 1;
   const endRow = Math.min(startRow + pageSize - 1, filteredUsers.length);
-
   const inputBg = theme.vars.palette.background.paper;
 
   return (
-    <Box sx={styles.container}>
+    <Box sx={usersPageStyles.container}>
       {/* Header bar */}
-      <Box sx={styles.header}>
-        <Typography variant="h5" sx={styles.title}>
+      <Box sx={usersPageStyles.header}>
+        <Typography variant="h5" sx={usersPageStyles.title}>
           {t('shared.ui.settings.users.title', 'Users')}
         </Typography>
 
-        <Box sx={styles.toolbar}>
+        <Box sx={usersPageStyles.toolbar}>
           {/* Search */}
           <TextField
             size="small"
@@ -355,20 +256,20 @@ export function UsersPage({ projectId }: UsersPageProps) {
               {actions.edit && (
                 <EditUsersButton
                   {...actions.edit}
-                  sx={styles.actionButton}
+                  sx={usersPageStyles.actionButton}
                 />
               )}
               {actions.delete && (
                 <DeleteUserButton
                   {...actions.delete}
-                  sx={styles.actionButton}
+                  sx={usersPageStyles.actionButton}
                 />
               )}
             </>
           )}
 
           {/* Invite button */}
-          <Box sx={styles.actionButton}>
+          <Box sx={usersPageStyles.actionButton}>
             <IconButton
               color="primary"
               onClick={() => setInviteOpen(true)}
@@ -416,7 +317,7 @@ export function UsersPage({ projectId }: UsersPageProps) {
       )}
 
       {/* Table + pagination */}
-      <Box sx={styles.tableContainer}>
+      <Box sx={usersPageStyles.tableContainer}>
         <UsersTable
           users={pagedUsers}
           total={filteredUsers.length}
@@ -435,21 +336,21 @@ export function UsersPage({ projectId }: UsersPageProps) {
 
       {/* Pagination info */}
       {filteredUsers.length > 0 && (
-        <Box sx={styles.pagination}>
+        <Box sx={usersPageStyles.pagination}>
           <Typography
             variant="bodySmall"
             color="text.secondary"
           >
             {t('shared.ui.settings.users.paginationInfo', `Showing ${startRow}–${endRow} of ${filteredUsers.length}`)}
           </Typography>
-          <Box sx={styles.pageSizeSelectContainer}>
+          <Box sx={usersPageStyles.pageSizeSelectContainer}>
             <Typography variant="bodySmall" sx={{ mr: 1 }}>
               {t('shared.ui.settings.users.rowsPerPage', 'Rows per page:')}
             </Typography>
             <select
               value={pageSize}
               onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-              style={styles.pageSizeSelect}
+              style={usersPageStyles.pageSizeSelect}
               aria-label={t('shared.ui.settings.users.pageSize', 'Rows per page')}
             >
               {[10, 20, 50, 100].map((size) => (
@@ -493,74 +394,5 @@ export function UsersPage({ projectId }: UsersPageProps) {
     </Box>
   );
 }
-
-/* ── styles ────────────────────────────────────────────────────────────── */
-
-const styles = {
-  container: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    overflow: 'hidden',
-    gap: '0.75rem',
-  },
-  header: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '0.5rem 0',
-    gap: '1rem',
-    flexWrap: 'wrap' as const,
-  },
-  title: {
-    fontWeight: 600,
-    margin: 0,
-  },
-  toolbar: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    alignItems: 'center',
-    gap: '0.75rem',
-    flexWrap: 'wrap' as const,
-  },
-  batchActions: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    alignItems: 'center',
-    gap: '0.25rem',
-  },
-  actionButton: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    alignItems: 'center',
-  },
-  tableContainer: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    overflow: 'hidden',
-    minHeight: 0,
-  },
-  pagination: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '0.5rem 1rem',
-  },
-  pageSizeSelectContainer: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    alignItems: 'center',
-  },
-  pageSizeSelect: {
-    padding: '0.25rem 0.5rem',
-    border: '1px solid',
-    borderColor: 'divider',
-    borderRadius: '4px',
-    backgroundColor: 'background.paper',
-    fontSize: '0.875rem',
-  } as React.CSSProperties,
-} as const;
 
 export default UsersPage;

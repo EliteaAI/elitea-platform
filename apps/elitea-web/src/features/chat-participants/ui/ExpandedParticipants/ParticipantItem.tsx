@@ -62,7 +62,7 @@ export interface ParticipantItemProps {
  */
 const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement | null => {
   const theme = useTheme();
-  const s = styles(theme);
+  const s = participantItemStyles(theme);
   const {
     participant,
     disabledEdit,
@@ -369,70 +369,8 @@ function hasParticipantErrors(props: {
 
 
 // ---------------------------------------------------------------------------
-// Styles
+// Styles (extracted to keep component ≤ 400 lines)
 // ---------------------------------------------------------------------------
-
-const styles = (theme: ReturnType<typeof useTheme>) => ({
-  normalItemWrapper: { display: 'flex', flexDirection: 'column', width: '100%' },
-  contentWrapper: (collapsed: boolean, isActive: boolean | undefined) => ({
-    cursor: 'pointer',
-    padding: collapsed ? '0 0' : '0.5rem 0.75rem',
-    borderRadius: theme.vars.shape.radiusMd,
-    gap: '0.5rem',
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: collapsed ? 'center' : 'flex-start',
-    width: '100%',
-    height: '2.5rem',
-    boxSizing: 'border-box',
-    background: isActive ? 'background.participant.active' : 'background.participant.default',
-    border: isActive ? '0.0625rem solid' : 'none',
-    borderColor: 'split.hover',
-    '&:hover': { background: 'background.participant.hover' },
-  }),
-  nameWrapper: {
-    flex: 1,
-    maxWidth: 'calc(100% - 2.125rem)',
-    display: 'flex',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '.5rem',
-  },
-  nameContent: {
-    flex: 1,
-    minWidth: '50%',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    display: 'inline-flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  attentionWrapper: (isActive: boolean | undefined) => ({
-    boxSizing: 'border-box',
-    display: 'flex',
-    flexDirection: 'column',
-    padding: '.5rem 1rem',
-    borderWidth: '.0625rem',
-    borderStyle: 'solid',
-    borderColor: 'border.attention',
-    borderRadius: theme.vars.shape.radiusMd,
-    backgroundColor: 'background.attention',
-    width: '100%',
-    gap: '.5rem',
-    cursor: isActive ? 'pointer' : 'default',
-  }),
-  attentionHeader: { display: 'flex', flexDirection: 'row', gap: '.75rem', height: '1.75rem', alignItems: 'center' },
-  attentionNameBox: { flex: 1, maxWidth: 'calc(100% - 2.125rem)', display: 'flex', flexDirection: 'row', justifyContent: 'flex-start', alignItems: 'center' },
-  attentionDisplayName: { flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  attentionEditingText: { maxWidth: '50%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  attentionMessageRow: { display: 'flex', flexDirection: 'row', gap: '0.9rem' },
-  attentionIcon: { paddingLeft: '0.25rem', width: '1rem', height: '1rem', '& svg': { fill: 'icon.fill.attention' } },
-  attentionMessage: { wordBreak: 'break-word' },
-  infoMessageRow: { display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '.375rem', padding: '0 .75rem .25rem' },
-  infoIcon: { display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: '1rem', height: '1rem', '& svg, & path': { fill: 'icon.fill.secondary' } },
-});
+import { participantItemStyles } from './ParticipantItem.styles';
 
 export default ParticipantItem;
