@@ -63,7 +63,7 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
         showMode={AccordionConstants.AccordionShowMode.LeftMode}
         defaultExpanded
         title={t('settings.general', 'General')}
-        slotSx={{ accordion: { background: 'transparent !important' } }}
+        slotSx={{ accordion: { background: 'transparent' } }}
         content={
           <Box sx={styles.accordionContent}>
             <Box sx={styles.section}>
@@ -81,7 +81,7 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
         showMode={AccordionConstants.AccordionShowMode.LeftMode}
         defaultExpanded
         title={t('settings.personality', 'Default Personality Management')}
-        slotSx={{ accordion: { background: 'transparent !important' } }}
+        slotSx={{ accordion: { background: 'transparent' } }}
         content={
           <Box sx={styles.accordionContent}>
             <Box sx={styles.section}>

@@ -23,6 +23,101 @@ export interface UseModelConfigurationResult {
   onChangeModel: (model: ModelInfo) => void;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: build model state from a ModelInfo (complexity ≤ 4)
+// ---------------------------------------------------------------------------
+
+function buildModelState(modelInfo: ModelInfo): ModelState {
+  return {
+    configuration_uid: modelInfo.project_id || 'default',
+    model_name: modelInfo.name || modelInfo.id,
+    configuration_name: `Project ${modelInfo.project_id || 'Default'}`,
+    integration_name: modelInfo.integration_name || modelInfo.type || 'OpenAI',
+    ...modelInfo,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find default or first config (complexity ≤ 3)
+function findDefaultOrFirst(models: readonly ModelInfo[]): ModelInfo | null {
+  const found = models?.find((c) => c.default);
+  return found || models?.[0] || null;
+}
+
+/**
+ * Check if a model matches a name.
+ */
+function matchesModelName(model: ModelInfo, name: string): boolean {
+  return model.name === name || model.id === name;
+}
+
+// Helper: find model by name + project (complexity ≤ 3)
+function findModelByNameAndProject(
+  models: readonly ModelInfo[],
+  name: string,
+  projectId: string,
+): ModelInfo | undefined {
+  return models.find((c) => matchesModelName(c, name) && c.project_id === projectId);
+}
+
+// Helper: find model by name only (complexity ≤ 2)
+function findModelByName(models: readonly ModelInfo[], name: string): ModelInfo | undefined {
+  return models.find((c) => matchesModelName(c, name));
+}
+
+// Helper: find model by uid (complexity ≤ 2)
+function findModelByUid(models: readonly ModelInfo[], uid: string): ModelInfo | undefined {
+  return models.find((c) => c.id === uid || c.name === uid);
+}
+
+/**
+ * Find a model from unique configurations, trying multiple lookup strategies.
+ */
+function findSelectedModel(
+  uniqueConfigurations: readonly ModelInfo[],
+  modelName: string,
+  configurationUid: string,
+  projectId: string,
+): ModelInfo | null {
+  if (!modelName) return findDefaultOrFirst(uniqueConfigurations);
+
+  let foundModel = findModelByNameAndProject(uniqueConfigurations, modelName, projectId);
+  if (!foundModel) foundModel = findModelByName(uniqueConfigurations, modelName);
+  if (!foundModel && configurationUid) foundModel = findModelByUid(uniqueConfigurations, configurationUid);
+
+  if (!foundModel) return null;
+  if (!foundModel.name) return { ...foundModel, model_name: foundModel.name || foundModel.id };
+  return foundModel;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find default model (complexity ≤ 6)
+// ---------------------------------------------------------------------------
+
+function findDefaultModel(
+  uniqueConfigurations: readonly ModelInfo[],
+  projectId: string,
+): ModelInfo | null {
+  const defaultModelFromProject = uniqueConfigurations.find(
+    (m) => m.default && m.project_id === projectId,
+  );
+
+  if (defaultModelFromProject) {
+    return defaultModelFromProject;
+  }
+
+  return (
+    uniqueConfigurations.find((m) => m.project_id === projectId) ||
+    uniqueConfigurations.find((m) => m.default) ||
+    uniqueConfigurations[0] ||
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
+// useModelConfiguration
+// ---------------------------------------------------------------------------
+
 export function useModelConfiguration({
   projectId,
   configurations,
@@ -59,101 +154,37 @@ export function useModelConfiguration({
   }, [configurations]);
 
   // Find the selected model from configurations
-  const selectedModelFromConfigurations = useMemo(() => {
-    if (!model.model_name) {
-      return uniqueConfigurations?.find((c) => c.default) || uniqueConfigurations?.[0] || null;
-    }
-
-    let foundModel = uniqueConfigurations.find(
-      (c) =>
-        (c.name === model.model_name || c.id === model.model_name) &&
-        c.project_id === model.project_id,
-    );
-
-    if (!foundModel && model.model_name) {
-      foundModel = uniqueConfigurations.find(
-        (c) => c.name === model.model_name || c.id === model.model_name,
-      );
-    }
-
-    if (!foundModel && model.configuration_uid) {
-      foundModel = uniqueConfigurations.find(
-        (c) => c.id === model.configuration_uid || c.name === model.configuration_uid,
-      );
-    }
-
-    if (foundModel && !foundModel.name) {
-      return {
-        ...foundModel,
-        model_name: foundModel.name || foundModel.id,
-      };
-    }
-
-    return foundModel || null;
-  }, [model.model_name, model.configuration_uid, model.project_id, uniqueConfigurations]);
+  const selectedModelFromConfigurations = useMemo(
+    () => findSelectedModel(
+      uniqueConfigurations,
+      model.model_name,
+      model.configuration_uid,
+      model.project_id,
+    ),
+    [model.model_name, model.configuration_uid, model.project_id, uniqueConfigurations],
+  );
 
   // Set initial default model
   useEffect(() => {
     if (!selectedModelFromConfigurations) return;
-
     if (!model.model_name) {
-      setModel({
-        configuration_uid: selectedModelFromConfigurations?.project_id || 'default',
-        model_name: selectedModelFromConfigurations?.name || selectedModelFromConfigurations.id,
-        configuration_name: `Project ${selectedModelFromConfigurations?.project_id || 'Default'}`,
-        integration_name:
-          selectedModelFromConfigurations?.integration_name ||
-          selectedModelFromConfigurations?.type ||
-          'OpenAI',
-        ...selectedModelFromConfigurations,
-      });
+      setModel(buildModelState(selectedModelFromConfigurations));
     }
   }, [model.model_name, selectedModelFromConfigurations]);
 
   // Auto-select default model on initial load
   useEffect(() => {
     if (!uniqueConfigurations || uniqueConfigurations.length === 0 || !projectId) return;
+    if (model.model_name || model.configuration_uid || model.integration_name) return;
 
-    const hasAnyModelData = model.model_name || model.configuration_uid || model.integration_name;
-    if (hasAnyModelData) return;
-
-    let defaultModel: ModelInfo | null = null;
-
-    const defaultModelFromProject = uniqueConfigurations.find(
-      (m) => m.default === true && m.project_id === projectId,
-    );
-
-    if (defaultModelFromProject) {
-      defaultModel = defaultModelFromProject;
-    } else {
-      defaultModel =
-        uniqueConfigurations.find((m) => m.project_id === projectId) ||
-        uniqueConfigurations.find((m) => m.default === true) ||
-        uniqueConfigurations[0] ||
-        null;
-    }
-
+    const defaultModel = findDefaultModel(uniqueConfigurations, projectId);
     if (defaultModel) {
-      setModel({
-        configuration_uid: defaultModel.project_id || 'default',
-        model_name: defaultModel.name || defaultModel.id,
-        configuration_name: `Project ${defaultModel.project_id || 'Default'}`,
-        integration_name: defaultModel.integration_name || defaultModel.type || 'OpenAI',
-        ...defaultModel,
-      });
+      setModel(buildModelState(defaultModel));
     }
   }, [uniqueConfigurations, projectId, model.model_name, model.configuration_uid, model.integration_name]);
 
   const onChangeModel = useCallback((selectedModel: ModelInfo) => {
-    const updatedModel: ModelState = {
-      configuration_uid: selectedModel.project_id || 'default',
-      model_name: selectedModel.name || selectedModel.id,
-      configuration_name: `Project ${selectedModel.project_id || 'Default'}`,
-      integration_name: selectedModel.integration_name || selectedModel.type || 'OpenAI',
-      ...selectedModel,
-    };
-
-    setModel(updatedModel);
+    setModel(buildModelState(selectedModel));
   }, []);
 
   return {

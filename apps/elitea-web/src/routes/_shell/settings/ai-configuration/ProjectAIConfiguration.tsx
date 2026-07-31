@@ -3,6 +3,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ProjectAIConfiguration.jsx`.
  */
 import { memo } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 
@@ -17,7 +18,8 @@ interface ProjectAIConfigurationProps {
 }
 
 export default memo(function ProjectAIConfiguration({ userApiUrl, projectId, modelProjectId }: ProjectAIConfigurationProps) {
-  const styles = projectAIConfigurationStyles();
+  const theme = useTheme();
+  const styles = projectAIConfigurationStyles(theme);
 
   const baseUrl = userApiUrl ? `${userApiUrl.replace('/api/v2', '')}/llm/v1` : t('ai-configuration.projectConfig.notConfigured', 'Not configured');
 
@@ -39,13 +41,14 @@ export default memo(function ProjectAIConfiguration({ userApiUrl, projectId, mod
   );
 });
 
-function projectAIConfigurationStyles() {
+function projectAIConfigurationStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     projectConfigSection: {
       flexShrink: 0,
       padding: '1rem 1.5rem',
-      backgroundColor: '#1a1b26',
-      borderBottom: '1px solid #292e42',
+      backgroundColor: t.vars.palette.background.eliteaDefault,
+      borderBottom: `1px solid ${t.vars.palette.border.lines}`,
       gap: '0.25rem',
       width: '100%',
     },

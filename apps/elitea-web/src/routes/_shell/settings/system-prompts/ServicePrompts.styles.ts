@@ -20,7 +20,7 @@ export const promptsStyles: Record<string, SxProps<Theme>> = {
   card: ({ palette, breakpoints }) => ({
     border: `0.0625rem solid ${palette.border.table}`,
     backgroundColor: palette.background.secondary,
-    borderRadius: '0.75rem',
+    borderRadius: 'var(--el-shape-radiusMd, 8px)',
     flex: '0 0 calc((100% - 1.5rem) / 3)',
     maxWidth: 'calc((100% - 1.5rem) / 3)',
     [breakpoints.down('lg')]: {

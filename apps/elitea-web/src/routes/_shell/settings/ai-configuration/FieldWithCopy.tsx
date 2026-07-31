@@ -7,6 +7,7 @@ import { memo, useCallback } from 'react';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
+import { useTheme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
@@ -18,6 +19,7 @@ export interface FieldWithCopyProps {
 }
 
 export default memo(function FieldWithCopy({ label, value }: FieldWithCopyProps) {
+  const theme = useTheme();
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(value);
@@ -52,7 +54,7 @@ export default memo(function FieldWithCopy({ label, value }: FieldWithCopyProps)
           size="small"
           onClick={() => void handleCopy()}
         >
-          <ContentCopyIcon fontSize="small" sx={{ fontSize: '0.875rem' }} />
+          <ContentCopyIcon fontSize="small" sx={{ fontSize: theme.typography.headingMedium.fontSize }} />
         </IconButton>
       </Tooltip>
     </Box>

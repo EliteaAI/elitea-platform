@@ -58,7 +58,7 @@ export function ProfileContextManagement({
       showMode={AccordionConstants.AccordionShowMode.LeftMode}
       defaultExpanded
       slotSx={{
-        accordion: { background: 'transparent !important' },
+        accordion: { background: 'transparent' },
         details: { paddingTop: '0rem' },
       }}
       items={[

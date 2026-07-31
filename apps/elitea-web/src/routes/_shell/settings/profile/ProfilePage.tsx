@@ -58,7 +58,7 @@ const ProfilePage = memo(() => {
   const { modelList, defaultModel } = useDefaultModel();
 
   const initialValues = useMemo<ProfileFormValues>(
-    () => serializeProfileFormData(authorData, defaultModel) as ProfileFormValues,
+    () => serializeProfileFormData(authorData, defaultModel),
     [authorData, defaultModel],
   );
 
@@ -71,14 +71,14 @@ const ProfilePage = memo(() => {
       setIsSaving(true);
       try {
         // Build the payload matching AuthorUpdateRequest shape
-        const rawPayload = deserializeProfileFormData(values as Record<string, unknown>);
-        const personalization = (rawPayload as Record<string, unknown>).personalization;
+        const rawPayload = deserializeProfileFormData(values);
+        const personalization = rawPayload.personalization;
 
         const payload: Record<string, unknown> = {
           personalization,
         };
 
-        await updateAuthorPayload(payload as { name?: string; description?: string; avatar?: string; personalization?: unknown });
+        await updateAuthorPayload(payload);
 
         setShowSuccessToast(true);
       } catch {

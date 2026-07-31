@@ -5,17 +5,17 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 export const tokensTableStyles = (theme: Theme): Record<string, SxProps<Theme>> => ({
   container: {
-    borderRadius: 0,
+    borderRadius: 'var(--el-shape-radiusSm, 0px)',
     border: 'none',
     boxShadow: 'none',
   },
   headerCell: {
     fontWeight: 600,
-    fontSize: '0.8125rem',
+    fontSize: theme.typography.headingSmall.fontSize,
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
     color: 'text.secondary',
-    borderBottom: () => `0.0625rem solid ${theme.palette.border.table}`,
+    borderBottom: () => `0.0625rem solid ${theme.vars.palette.border.table}`,
   },
   nameCell: {
     wordBreak: 'break-word',
@@ -26,7 +26,7 @@ export const tokensTableStyles = (theme: Theme): Record<string, SxProps<Theme>> 
   skeleton: {
     height: 40,
     marginBottom: '0.5rem',
-    borderRadius: 4,
-    backgroundColor: theme.palette.action.disabledBackground,
+    borderRadius: 'var(--el-shape-radiusSm, 32px)',
+    backgroundColor: theme.vars.palette.action.disabledBackground,
   },
 });

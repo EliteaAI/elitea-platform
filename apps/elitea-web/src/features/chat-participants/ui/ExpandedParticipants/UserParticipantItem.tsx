@@ -8,6 +8,8 @@ import { memo } from 'react';
 
 import { Box, Typography } from '@mui/material';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -25,7 +27,7 @@ export interface UserParticipantItemProps {
 const UserParticipantItem = memo((props: UserParticipantItemProps): React.ReactElement => {
   const { participant, isActive, onClick } = props;
 
-  const displayName = participant.entity_meta?.name || participant.meta?.user_name || 'User';
+  const displayName = participant.entity_meta?.name || participant.meta?.user_name || t('chat-participants.common.user', 'User');
 
   return (
     <Box
@@ -35,7 +37,7 @@ const UserParticipantItem = memo((props: UserParticipantItemProps): React.ReactE
         alignItems: 'center',
         gap: 1,
         p: 1,
-        borderRadius: 1,
+        borderRadius: 'var(--el-shape-radiusSm, 4px)',
         cursor: 'pointer',
         background: isActive ? 'action.selected' : 'transparent',
         border: isActive ? '1px solid' : 'none',

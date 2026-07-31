@@ -63,7 +63,7 @@ export const styles = {
     width: '100%',
     height: '2.5rem',
     background: 'background.participant.default',
-    borderRadius: '.5rem',
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
     padding: '.375rem .75rem',
     '&:hover': {
       background: 'background.participant.hover',

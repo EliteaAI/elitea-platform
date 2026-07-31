@@ -71,7 +71,7 @@ function secretsQueryKey(projectId: string): string[] {
 
 export function listSecrets(projectId: string | number): Promise<Secret[]> {
   return fetchJson<readonly unknown[]>(secretsBasePath(projectId))
-    .then((wire) => normaliseSecrets(wire as ReadonlyArray<unknown>));
+    .then((wire) => normaliseSecrets(wire));
 }
 
 export function useListSecretsQuery(projectId: string, options: { enabled?: boolean } = {}): UseQueryResult<Secret[], Error> {

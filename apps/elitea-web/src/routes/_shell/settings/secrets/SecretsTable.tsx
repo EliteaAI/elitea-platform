@@ -284,7 +284,7 @@ export const SecretsTable = memo(function SecretsTable({
         alertType={dialog.openAlertType}
         rowName={dialog.openAlert ?? ''}
         onClose={() => { actions.onCloseAlert()(); }}
-        onConfirm={() => { void actions.onConfirmAlert(dialog.openAlert ?? '')(); }}
+        onConfirm={() => { actions.onConfirmAlert(dialog.openAlert ?? '')(); }}
       />
     </Box>
   );

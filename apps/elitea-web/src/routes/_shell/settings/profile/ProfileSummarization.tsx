@@ -41,7 +41,7 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
   const contextErrors = useMemo(
     () => ({
       ...(errors.summary_llm_settings && {
-        summary_llm_settings: errors.summary_llm_settings as Record<string, string>,
+        summary_llm_settings: errors.summary_llm_settings,
       }),
     }),
     [errors],
@@ -54,11 +54,11 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
     ) => {
       const target = _event.target as HTMLInputElement;
       if (target.type === 'checkbox') {
-        void setFieldValue(field, (target as HTMLInputElement).checked);
+        void setFieldValue(field, target.checked);
         return;
       }
       const setValue = (f: string, v: unknown) => void setFieldValue(f, v);
-      handleConvertToNumberChange((target as HTMLInputElement).value, field, setValue);
+      handleConvertToNumberChange(target.value, field, setValue);
     },
     [setFieldValue],
   );
@@ -83,7 +83,7 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
     <BasicAccordion
       showMode={AccordionConstants.AccordionShowMode.LeftMode}
       defaultExpanded
-      slotSx={{ accordion: { background: 'transparent !important' } }}
+      slotSx={{ accordion: { background: 'transparent' } }}
       items={[
         {
           title: 'Default Summarization',
@@ -92,8 +92,8 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
               <ContextStrategySummarization
                 formData={contextFormData}
                 errors={contextErrors}
-                handleInputChange={(e, f) => void handleInputChange(e, f)}
-                handleSummaryLLMInputChange={(e, f, n) => void handleSummaryLLMInputChange(e, f, n)}
+                handleInputChange={(e, f) => handleInputChange(e, f)}
+                handleSummaryLLMInputChange={(e, f, n) => handleSummaryLLMInputChange(e, f, n)}
                 isEnabled={values.context_enabled}
               />
             </Box>

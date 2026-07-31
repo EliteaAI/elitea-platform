@@ -3,6 +3,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/OpenAITemplate.jsx`.
  */
 import { useCallback, useState } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -22,7 +23,8 @@ import { useModelConfiguration } from '@/routes/_shell/settings/ai-configuration
 import type { ModelInfo } from '@/entities/credential/model/types';
 
 export default function OpenAITemplate() {
-  const styles = getStyles();
+  const theme = useTheme();
+  const styles = getStyles(theme);
 
   /* Fetch all sections; we only need the LLM models for code preview */
   const { data: configSections } = useConfigurationsBySection();
@@ -38,11 +40,11 @@ export default function OpenAITemplate() {
     label: cfg.label || cfg.elitea_title || cfg.type || '',
     project_id: cfg.project_id || '',
     default: false,
-    integration_name: (cfg.data as Record<string, unknown>)?.integration_name as string | undefined,
+    integration_name: cfg.data?.integration_name as string | undefined,
   }));
 
   /* Remove duplicates — old app pattern */
-  const uniqueConfigurations = removeDuplicateModels(models as Array<Record<string, unknown>>);
+  const uniqueConfigurations = removeDuplicateModels(models);
 
   /* Model state management */
   const { model, selectedModelFromConfigurations, onChangeModel } = useModelConfiguration({
@@ -129,7 +131,7 @@ export default function OpenAITemplate() {
           severity="success"
           variant="filled"
           onClose={() => setCopySuccess(false)}
-          sx={{ fontSize: '0.875rem' }}
+          sx={{ fontSize: theme.typography.headingSmall.fontSize }}
         >
           {t('ai-configuration.openaiTemplate.copied', 'Code copied to clipboard')}
         </Alert>
@@ -138,7 +140,8 @@ export default function OpenAITemplate() {
   );
 }
 
-function getStyles() {
+function getStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     container: {
       height: '100%',
@@ -169,8 +172,8 @@ function getStyles() {
       alignItems: 'center',
     },
     actionIcon: {
-      fontSize: '0.875rem',
-      fill: '#757575',
+      fontSize: (theme as Theme).typography.headingSmall.fontSize,
+      fill: t.vars.palette.icon.fill.disabled,
     },
   };
 }

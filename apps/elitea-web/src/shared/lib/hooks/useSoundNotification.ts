@@ -27,10 +27,10 @@ function loadSoundConfig(): SoundConfig {
     if (typeof parsed === 'object' && parsed !== null) {
       const p = parsed as Record<string, unknown>;
       return {
-        enabled: typeof p.enabled === 'boolean' ? (p.enabled as boolean) : DEFAULT_CONFIG.enabled,
+        enabled: typeof p.enabled === 'boolean' ? p.enabled : DEFAULT_CONFIG.enabled,
         volume:
           typeof p.volume === 'number'
-            ? Math.max(0, Math.min(1, p.volume as number))
+            ? Math.max(0, Math.min(1, p.volume))
             : DEFAULT_CONFIG.volume,
       };
     }
@@ -90,10 +90,10 @@ function playSequence(tones: ToneDef[]): void {
       if (typeof parsed === 'object' && parsed !== null) {
         const p = parsed as Record<string, unknown>;
         config = {
-          enabled: typeof p.enabled === 'boolean' ? (p.enabled as boolean) : DEFAULT_CONFIG.enabled,
+          enabled: typeof p.enabled === 'boolean' ? p.enabled : DEFAULT_CONFIG.enabled,
           volume:
             typeof p.volume === 'number'
-              ? Math.max(0, Math.min(1, p.volume as number))
+              ? Math.max(0, Math.min(1, p.volume))
               : DEFAULT_CONFIG.volume,
         };
       }

@@ -78,8 +78,8 @@ export const EditSecretInputGridTable = memo(function EditSecretInputGridTable({
           // Shift+Enter: insert newline (textarea only)
           e.preventDefault();
           const target = e.currentTarget as HTMLTextAreaElement;
-          const start = target.selectionStart!;
-          const end = target.selectionEnd!;
+          const start = target.selectionStart;
+          const end = target.selectionEnd;
           const newValue = inputValue.slice(0, start) + '\n' + inputValue.slice(end);
           setInputValue(newValue);
           onChange(id, field, newValue);
@@ -127,8 +127,6 @@ export const EditSecretInputGridTable = memo(function EditSecretInputGridTable({
 
 const styles: Record<string, SxProps<Theme>> = {
   input: {
-    '& .MuiInputBase-root': {
-      padding: '4px 8px',
-    },
+    // Padding handled by MuiInputBase override (mui-overrides/MuiInputBase.ts).
   },
 };

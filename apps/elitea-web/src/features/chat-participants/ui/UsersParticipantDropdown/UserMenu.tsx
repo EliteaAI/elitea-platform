@@ -10,6 +10,8 @@ import { ListItemButton, ListItemIcon, ListItemText } from '@mui/material';
 
 import PersonIcon from '@mui/icons-material/Person';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -26,7 +28,7 @@ export interface UserMenuProps {
 const UserMenu = memo((props: UserMenuProps): React.ReactElement => {
   const { participant, onSelect, onClose } = props;
 
-  const name = participant.entity_meta?.name || participant.meta?.user_name || 'User';
+  const name = participant.entity_meta?.name || participant.meta?.user_name || t('chat-participants.common.user', 'User');
 
   return (
     <ListItemButton

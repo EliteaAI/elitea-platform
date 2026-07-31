@@ -18,8 +18,6 @@
  */
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 
-import Box from '@mui/material/Box';
-
 import type { ConfigurationItem } from '@/shared/api/configurationsApi';
 import {
   useCreateConfigurationMutation,
@@ -28,37 +26,10 @@ import {
   useUpdateConfigurationMutation,
 } from '@/shared/api/configurationsApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
-import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/ui/lib/t';
-import { ServicePromptCard } from './ServicePromptCard';
-import { PromptEditorModal } from './PromptEditorModal';
-import { promptsStyles } from './ServicePrompts.styles';
+import { ServicePromptsBody } from './ServicePromptsBody';
 
-/* ── modal config interface ──────────────────────────────────────────── */
-
-export interface PromptsModalConfig {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  isBusy: boolean;
-  hasDefault: boolean;
-  hasChanges: boolean;
-  onDiscard: () => void;
-  onSave: () => void;
-  onRestore: () => void;
-  mode: 'create' | 'edit' | null;
-  draftKey: string;
-  draftPrompt: string;
-  allowedKeys: string[];
-  usedKeys: Set<string>;
-  onDraftKeyChange: (val: string) => void;
-  onDraftPromptChange: (val: string) => void;
-  styles: Record<string, import('@mui/material').SxProps<import('@mui/material').Theme>>;
-}
-
-/* ── types ────────────────────────────────────────────────────────────── */
-
-interface PromptConfig {
+export interface PromptConfig {
   id: number;
   key: string;
   label: string;
@@ -120,7 +91,7 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
   }, [configsData?.items]);
   const allowedKeys = useMemo(() => {
     const raw = availableTypes?.find((item) => item.type === 'service_prompt')?.config_schema;
-    const schema = (raw ?? {}) as Record<string, unknown>;
+    const schema = raw ?? {};
     const data = (schema?.properties as Record<string, unknown>)?.data as Record<string, unknown>;
     const props = (data?.properties as Record<string, unknown>) ?? {};
     const keys = (props?.key as { enum?: unknown[] })?.enum;
@@ -138,7 +109,7 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
   );
   const defaultPromptsByKey = useMemo(() => {
     const raw = availableTypes?.find((item) => item.type === 'service_prompt')?.config_schema;
-    const schema = (raw ?? {}) as Record<string, unknown>;
+    const schema = raw ?? {};
     const data = (schema?.properties as Record<string, unknown>)?.data as Record<string, unknown>;
     const props = (data?.properties as Record<string, unknown>) ?? {};
     const defaults = (props?.prompt as { default_by_key?: unknown })?.default_by_key;
@@ -219,43 +190,58 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
   );
 
   /* ── save (ref-based deps → ≤ 8) ───────────────────────────────────── */
+
+  /* ── build create body helper ──────────────────────────────────────── */
+  const buildCreateBody = useCallback(
+    (key: string, promptText: string) => ({
+      elitea_title: key,
+      label: deriveLabelFromKey(key),
+      type: 'service_prompt',
+      shared: true,
+      data: { key, prompt: promptText },
+    }),
+    [],
+  );
+
+  const buildEditBody = useCallback(
+    (config: PromptConfig, key: string, promptText: string) => ({
+      label: config.label ?? deriveLabelFromKey(key),
+      shared: true,
+      data: { key, prompt: promptText },
+    }),
+    [],
+  );
+
   const handleSave = useCallback(async () => {
     if (!enabled) return;
 
-    const key = String(draftKeyRef.current || '').trim();
     const promptText = String(draftPromptRef.current || '').trim();
     if (!promptText) return;
 
     const keyValidation = validateKey(draftKeyRef.current);
     if (!keyValidation.ok) return;
 
+    const key = keyValidation.key ?? String(draftKeyRef.current || '').trim();
+
     try {
       if (modeRef.current === 'edit' && selectedConfig) {
         await updateMutation.mutateAsync({
           configId: String(selectedConfig.id),
-          body: {
-            label: selectedConfig.label ?? deriveLabelFromKey(keyValidation.key ?? key),
-            shared: true,
-            data: { key: keyValidation.key ?? key, prompt: promptText },
-          },
+          body: buildEditBody(selectedConfig, key, promptText),
         });
       } else {
         const createKeyValidation = validateKey(draftKeyRef.current, { disallowUsed: true });
         if (!createKeyValidation.ok) return;
 
-        await createMutation.mutateAsync({
-          elitea_title: createKeyValidation.key ?? draftKeyRef.current,
-          label: deriveLabelFromKey(createKeyValidation.key ?? draftKeyRef.current),
-          type: 'service_prompt',
-          shared: true,
-          data: { key: createKeyValidation.key ?? draftKeyRef.current, prompt: promptText },
-        });
+        await createMutation.mutateAsync(
+          buildCreateBody(createKeyValidation.key ?? draftKeyRef.current, promptText),
+        );
       }
       handleDiscard();
     } catch {
       // TODO: show toast error
     }
-  }, [enabled, selectedConfig, validateKey, createMutation, updateMutation, handleDiscard]);
+  }, [enabled, selectedConfig, validateKey, createMutation, updateMutation, handleDiscard, buildEditBody, buildCreateBody]);
 
   /* ── restore ───────────────────────────────────────────────────────── */
   const handleRestoreToDefault = useCallback(
@@ -308,56 +294,29 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
     : (selectedConfig?.label ?? draftKeyRef.current ?? t('shared.ui.settings.prompts.editPromptTitle', 'Edit Service Prompt'));
 
   return (
-    <>
-      <DrawerPageHeader
-        title={t('shared.ui.settings.prompts.title', 'Service Prompts')}
-        showAddButton
-        slotProps={{
-          addButton: {
-            onAdd: handleOpenCreate,
-            disabled: !hasAvailableKeys || isBusy,
-            tooltip: createTooltip,
-          },
-        }}
-      />
-      <Box sx={promptsStyles.wrapper}>
-        <Box sx={promptsStyles.cards}>
-          {prompts.map((item) => (
-            <ServicePromptCard
-              key={item.id}
-              item={item}
-              hasDefault={hasDefaultPrompt(item.key)}
-              isBusy={isBusy}
-              onEdit={(config) => void handleOpenEdit(config)}
-              onRestore={() => {
-                void handleRestoreToDefault(prompts.find(p => p.key === item.key) as PromptConfig);
-              }}
-            />
-          ))}
-        </Box>
-
-        {isOpen && (
-          <PromptEditorModal config={{
-            open: isOpen,
-            onClose: handleDiscard,
-            title: modalTitle,
-            isBusy,
-            hasDefault: hasDefaultPrompt(draftKeyRef.current),
-            hasChanges,
-            onDiscard: handleDiscard,
-            onSave: () => void handleSave(),
-            onRestore: handleRestoreInModal,
-            mode: modeRef.current,
-            draftKey: draftKeyRef.current,
-            draftPrompt: draftPromptRef.current,
-            allowedKeys,
-            usedKeys: usedKeysRef.current,
-            onDraftKeyChange: (val) => { draftKeyRef.current = val; },
-            onDraftPromptChange: (val) => { draftPromptRef.current = val; },
-            styles: promptsStyles,
-          }} />
-        )}
-      </Box>
-    </>
+    <ServicePromptsBody
+      createTooltip={createTooltip}
+      modalTitle={modalTitle}
+      handleOpenCreate={handleOpenCreate}
+      handleOpenEdit={handleOpenEdit}
+      handleDiscard={handleDiscard}
+      handleSave={handleSave}
+      handleRestoreToDefault={handleRestoreToDefault}
+      hasDefaultPrompt={hasDefaultPrompt}
+      prompts={prompts}
+      isBusy={isBusy}
+      hasAvailableKeys={hasAvailableKeys}
+      isOpen={isOpen}
+      allowedKeys={allowedKeys}
+      usedKeysRef={usedKeysRef}
+      hasDefault={hasDefaultPrompt(draftKeyRef.current)}
+      hasChanges={hasChanges}
+      onRestoreInModal={handleRestoreInModal}
+      modeRef={modeRef}
+      draftKeyRef={draftKeyRef}
+      draftPromptRef={draftPromptRef}
+      onDraftKeyChange={(val) => { draftKeyRef.current = val; }}
+      onDraftPromptChange={(val) => { draftPromptRef.current = val; }}
+    />
   );
 });

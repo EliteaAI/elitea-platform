@@ -53,7 +53,7 @@ export const ExpiryCell = memo(function ExpiryCell({
         sx={{
           width: 16,
           height: 16,
-          borderRadius: '50%',
+          borderRadius: 'var(--el-shape-radiusPill, 9999px)',
           backgroundColor: statusColor,
           flexShrink: 0,
         }}
@@ -176,7 +176,7 @@ export const ActionsCell = memo(function ActionsCell({
         open={deleteModalOpen}
         tokenName={token.name}
         onClose={() => setDeleteModalOpen(false)}
-        onConfirm={() => void handleDeleteConfirm()}
+        onConfirm={() => handleDeleteConfirm()}
         isLoading={isDeleting}
       />
     </>

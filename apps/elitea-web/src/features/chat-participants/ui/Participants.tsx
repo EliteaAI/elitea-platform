@@ -25,20 +25,11 @@
  */
 
 import { memo, useCallback, useMemo } from 'react';
-import type { ReactNode } from 'react';
-
-import Box from '@mui/material/Box';
-import IconButton from '@mui/material/IconButton';
-import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
-import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
-import Typography from '@mui/material/Typography';
 
 import { ChatParticipantType } from '../model/constants';
 import type { TransformedParticipant } from '../model/types';
-import { useParticipantEntityIcon } from '../lib/hooks/useParticipantEntityIcon';
-import { isParticipantStillActive, chatParticipantUniqueId } from '@/entities/participant';
-import { styles } from './ExpandedParticipants/participants.styles';
-import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
+import { isParticipantStillActive } from '@/entities/participant';
+import { ParticipantsLayout } from './ParticipantsLayout';
 
 /**
  * `mcp.helpers.js:7-14`'s `isMcpToolkitType`, duplicated here for the same
@@ -48,8 +39,6 @@ import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
 function isMcpToolkitType(type: string): boolean {
   return type === 'mcp' || type.startsWith('mcp_');
 }
-
-import ParticipantSection from './ExpandedParticipants/ParticipantSection';
 
 // ---------------------------------------------------------------------------
 // Type-level groupings
@@ -63,6 +52,20 @@ const ENTITY_ORDER: Array<ChatParticipantType | 'mcp'> = [
   ChatParticipantType.Toolkits,
   'mcp',
 ];
+
+// ---------------------------------------------------------------------------
+// Helper: derive display type name (complexity ≤ 5)
+// ---------------------------------------------------------------------------
+
+/** Maps a ChatParticipantType value to its display section name. */
+function deriveEntityTypeName(type: string): string {
+  if (type === 'mcp') return 'MCP';
+  if (type === ChatParticipantType.Applications) return 'Agent';
+  if (type === ChatParticipantType.Pipelines) return 'Pipeline';
+  if (type === ChatParticipantType.Toolkits) return 'Toolkit';
+  if (type === ChatParticipantType.Users) return 'Users';
+  return String(type);
+}
 
 // ---------------------------------------------------------------------------
 // Participants
@@ -150,7 +153,7 @@ export const Participants = memo(
     onUpdateParticipant,
     editingToolkit,
     resolveToolkitIcon,
-    isMcpVisible = false,
+    _isMcpVisible = false,
     renderContextBudget,
     maxVisibleUsers = 5,
   }: ParticipantsProps) => {
@@ -167,9 +170,9 @@ export const Participants = memo(
       const groups: Record<string, TransformedParticipant[]> = {};
 
       for (const p of participants) {
-        const entityName = p.entity_name as ChatParticipantType;
-        const entitySettings = (p.entity_settings ?? {}) as Record<string, unknown>;
-        const meta = (p.meta ?? {}) as Record<string, unknown>;
+        const entityName = p.entity_name;
+        const entitySettings = p.entity_settings ?? {};
+        const meta = p.meta ?? {};
 
         let key: string = entityName;
 
@@ -184,21 +187,21 @@ export const Participants = memo(
         // MCP toolkits are a subtype of toolkits (toolkit_type matches "mcp")
         if (
           entityName === ChatParticipantType.Toolkits &&
-          (isMcpToolkitType(entitySettings.toolkit_type as string | undefined) ||
+          (isMcpToolkitType(entitySettings.toolkit_type) ||
             meta.mcp === true)
         ) {
           key = 'mcp';
         }
 
         // Filter out MCP toolkits when MCP visibility is off
-        if (key === 'mcp' && !isMcpVisible) continue;
+        if (key === 'mcp' && !_isMcpVisible) continue;
 
         if (!groups[key]) groups[key] = [];
         groups[key].push(p);
       }
 
       return groups;
-    }, [participants, isMcpVisible]);
+    }, [participants, _isMcpVisible]);
 
     // -----------------------------------------------------------------------
     // Users section — extract and limit
@@ -236,19 +239,7 @@ export const Participants = memo(
         const group = groupedByType[key];
         if (!group || group.length === 0) continue;
 
-        // "mcp" key maps to the 'mcp' constant
-        const entityType =
-          key === 'mcp'
-            ? 'MCP'
-            : type === ChatParticipantType.Applications
-              ? 'Agent'
-              : type === ChatParticipantType.Pipelines
-                ? 'Pipeline'
-                : type === ChatParticipantType.Toolkits
-                  ? 'Toolkit'
-                  : type === ChatParticipantType.Users
-                    ? 'Users'
-                    : String(type);
+        const entityType = deriveEntityTypeName(type);
 
         result.push({ key, type, participants: group, entityType });
       }
@@ -272,108 +263,28 @@ export const Participants = memo(
     // -----------------------------------------------------------------------
 
     return (
-      <Box
-        sx={styles.mainContainer(collapsed)}
-        data-testid="participants-container"
-      >
-        {/* Content area */}
-        <Box sx={styles.contentContainer(collapsed)}>
-          {/* Header */}
-          <Box sx={styles.headerContainer(collapsed)}>
-            {showTitle && (
-              <Typography
-                variant="subtitle"
-                sx={styles.titleText}
-              >
-                Participants
-              </Typography>
-            )}
-            {onCollapsed && (
-              <IconButton
-                sx={styles.collapseButton}
-                size="small"
-                onClick={onCollapsed}
-                aria-label={collapsed ? 'Expand participants' : 'Collapse participants'}
-              >
-                {collapseIcon}
-              </IconButton>
-            )}
-          </Box>
-
-          {/* Participants sections */}
-          <Box sx={styles.participantsContainer(collapsed)}>
-            {/* Users row (always at top when visible) */}
-            {visibleCount > 0 && !collapsed && (
-              <Box
-                sx={styles.usersRow}
-                data-testid="users-section"
-              >
-                <Box sx={styles.usersDisplay}>
-                  {usersToDisplay.map((p) => (
-                    <ParticipantItemRow
-                      key={chatParticipantUniqueId(p)}
-                      participant={p}
-                      isActive={activeParticipantId === chatParticipantUniqueId(p)}
-                      onClickItem={handleSelectParticipant}
-                    />
-                  ))}
-                  {hasOverflow && (
-                    <Typography
-                      variant="bodySmall"
-                      sx={styles.usersOverflow}
-                    >
-                      +{visibleCount - maxVisibleUsers}
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-            )}
-
-            {/* Type sections */}
-            {sections.map(({ key, participants: group, entityType }) => (
-              <ParticipantSection
-                key={key}
-                disabledEdit={disabledEdit}
-                disabledAdd={disabledAdd}
-                participants={group}
-                collapsed={collapsed}
-                activeParticipantId={activeParticipantId}
-                onSelectParticipant={handleSelectParticipant}
-                onDeleteParticipant={onDeleteParticipant}
-                onEditParticipant={onEditParticipant}
-                onUpdateParticipant={onUpdateParticipant}
-                entityType={entityType}
-                editingToolkit={editingToolkit}
-                resolveToolkitIcon={resolveToolkitIcon}
-              />
-            ))}
-
-            {/* Empty state when no sections and not collapsed */}
-            {sections.length === 0 && visibleCount === 0 && !collapsed && (
-              <Typography
-                variant="bodySmall"
-                color="text.secondary"
-                sx={styles.emptyState}
-              >
-                No participants
-              </Typography>
-            )}
-          </Box>
-        </Box>
-
-        {/* Context budget slot */}
-        {renderContextBudget && (
-          <Box sx={styles.contextBudgetWrapper}>
-            {renderContextBudget({
-              conversationId: undefined,
-              contextStrategy: undefined,
-              setActiveConversation: undefined,
-              conversationInstructions: undefined,
-              persona: undefined,
-            })}
-          </Box>
-        )}
-      </Box>
+      <ParticipantsLayout
+        showTitle={showTitle}
+        collapseIcon={collapseIcon}
+        collapsed={collapsed}
+        onCollapsed={onCollapsed}
+        usersToDisplay={usersToDisplay}
+        hasOverflow={hasOverflow}
+        visibleCount={visibleCount}
+        maxVisibleUsers={maxVisibleUsers}
+        sections={sections}
+        activeParticipantId={activeParticipantId}
+        disabledEdit={disabledEdit}
+        disabledAdd={disabledAdd}
+        onSelectParticipant={handleSelectParticipant}
+        onDeleteParticipant={onDeleteParticipant}
+        onEditParticipant={onEditParticipant}
+        onUpdateParticipant={onUpdateParticipant}
+        editingToolkit={editingToolkit}
+        resolveToolkitIcon={resolveToolkitIcon}
+        _isMcpVisible={_isMcpVisible}
+        renderContextBudget={renderContextBudget}
+      />
     );
   },
 );

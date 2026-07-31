@@ -14,6 +14,8 @@ import { Autocomplete, Box, TextField, Typography } from '@mui/material';
 import { useFilteredEntityItems } from '@/entities/participant';
 import { useSelectedProjectId } from '@/shared/config';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ export interface UserSearchSelectProps {
  * Uses the entity hook for filtered candidate browsing.
  */
 const UserSearchSelect = memo((props: UserSearchSelectProps): React.ReactElement => {
-  const { value, onChange, placeholder = 'Search users...', disabled, types } = props;
+  const { value, onChange, placeholder = t('chat-participants.search.placeholder', 'Search users...'), disabled, types } = props;
 
   const projectId = useSelectedProjectId();
   const [inputValue, setInputValue] = useState('');
@@ -59,7 +61,7 @@ const UserSearchSelect = memo((props: UserSearchSelectProps): React.ReactElement
       inputValue={inputValue}
       onInputChange={(_e, newInputValue) => setInputValue(newInputValue)}
       options={candidates}
-      getOptionLabel={(option) => option.entity_meta?.name || option.meta?.user_name || 'Unknown'}
+      getOptionLabel={(option) => option.entity_meta?.name || option.meta?.user_name || t('chat-participants.common.unknown', 'Unknown')}
       isOptionEqualToValue={(option, value) => option.id === value.id}
       loading={isLoading}
       disabled={disabled}
@@ -73,7 +75,7 @@ const UserSearchSelect = memo((props: UserSearchSelectProps): React.ReactElement
             ...params.InputProps,
             endAdornment: (
               <>
-                {isLoading ? <Box sx={{ mr: 1 }}><Typography variant="body2">Loading...</Typography></Box> : null}
+                {isLoading ? <Box sx={{ mr: 1 }}><Typography variant="body2">{t('chat-participants.modal.loading', 'Loading...')}</Typography></Box> : null}
                 {params.InputProps.endAdornment}
               </>
             ),
@@ -84,7 +86,7 @@ const UserSearchSelect = memo((props: UserSearchSelectProps): React.ReactElement
         const { key, ...optionProps } = props as React.HTMLProps<HTMLLIElement>;
         return (
           <li key={key ?? option.id} {...optionProps}>
-            <Typography variant="body2">{option.entity_meta?.name || option.meta?.user_name || 'Unknown'}</Typography>
+            <Typography variant="body2">{option.entity_meta?.name || option.meta?.user_name || t('chat-participants.common.unknown', 'Unknown')}</Typography>
           </li>
         );
       }}

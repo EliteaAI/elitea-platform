@@ -65,7 +65,7 @@ export function buildFieldDefinition(
   if (fieldSchema?.type) {
     const schemaType = (fieldSchema.type as string) ?? '';
     if (schemaType === 'integer' || schemaType === 'number') {
-      resolvedType = schemaType as EnvironmentFieldDefinition['type'];
+      resolvedType = schemaType;
     } else if (schemaType === 'boolean') {
       resolvedType = 'boolean';
     } else {
@@ -88,28 +88,35 @@ export function isNumericType(type: string): boolean {
   return type === 'integer' || type === 'number';
 }
 
+// ---------------------------------------------------------------------------
+// Helper: validate integer (complexity ≤ 5)
+// ---------------------------------------------------------------------------
+
+function validateInteger(value: string, field: EnvironmentFieldDefinition): string | null {
+  const num = parseInt(value, 10);
+  if (isNaN(num)) return 'Value must be an integer';
+  if (field.minimum !== undefined && num < field.minimum) return `Value must be >= ${field.minimum}`;
+  if (field.maximum !== undefined && num > field.maximum) return `Value must be <= ${field.maximum}`;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: validate number (complexity ≤ 5)
+// ---------------------------------------------------------------------------
+
+function validateNumber(value: string, field: EnvironmentFieldDefinition): string | null {
+  const num = parseFloat(value);
+  if (isNaN(num)) return 'Value must be a number';
+  if (field.minimum !== undefined && num < field.minimum) return `Value must be >= ${field.minimum}`;
+  if (field.maximum !== undefined && num > field.maximum) return `Value must be <= ${field.maximum}`;
+  return null;
+}
+
 export function validateFieldValue(
   value: string,
   field: EnvironmentFieldDefinition,
 ): string | null {
-  if (field.type === 'integer') {
-    const num = parseInt(value, 10);
-    if (isNaN(num)) return 'Value must be an integer';
-    if (field.minimum !== undefined && num < field.minimum) {
-      return `Value must be >= ${field.minimum}`;
-    }
-    if (field.maximum !== undefined && num > field.maximum) {
-      return `Value must be <= ${field.maximum}`;
-    }
-  } else if (field.type === 'number') {
-    const num = parseFloat(value);
-    if (isNaN(num)) return 'Value must be a number';
-    if (field.minimum !== undefined && num < field.minimum) {
-      return `Value must be >= ${field.minimum}`;
-    }
-    if (field.maximum !== undefined && num > field.maximum) {
-      return `Value must be <= ${field.maximum}`;
-    }
-  }
+  if (field.type === 'integer') return validateInteger(value, field);
+  if (field.type === 'number') return validateNumber(value, field);
   return null;
 }

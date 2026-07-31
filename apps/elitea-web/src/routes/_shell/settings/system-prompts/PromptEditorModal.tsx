@@ -15,7 +15,7 @@ import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { ExpandedViewerModal } from '@/shared/ui/ExpandedViewerModal';
 import { t } from '@/shared/ui/lib/t';
 
-import type { PromptsModalConfig } from './ServicePromptsSection';
+import type { PromptsModalConfig } from './PromptsModalConfig';
 
 export const PromptEditorModal = ({ config }: { config: PromptsModalConfig }): React.ReactElement | null => {
   if (!config.open) return null;

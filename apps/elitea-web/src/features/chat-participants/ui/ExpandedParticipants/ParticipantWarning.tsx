@@ -14,6 +14,8 @@ import { memo, type ReactNode } from 'react';
 
 import { Typography } from '@mui/material';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -35,10 +37,122 @@ export interface ParticipantWarningProps {
   type?: string;
   originalDetails?: Record<string, unknown>;
   entityMeta?: Record<string, unknown>;
-  spConfig?: unknown | null;
+  spConfig?: unknown;
   mcpLoginSlot?: ReactNode;
   sharepointLoginSlot?: ReactNode;
 }
+
+// ---------------------------------------------------------------------------
+// Warning text resolvers — each handles one condition (complexity ≤ 3)
+// ---------------------------------------------------------------------------
+
+function resolveSkippedContainer(): ReactNode {
+  return t(
+    'chat-participants.warning.skippedContainer',
+    'This container agent is not active as an orchestrator and cannot run tools in adhoc chat.',
+  );
+}
+
+function resolvePublishedAgentGone(): ReactNode {
+  return t(
+    'chat-participants.warning.publishedAgentGone',
+    'This published agent has been removed.',
+  );
+}
+
+function resolveVersionUnavailable(): ReactNode {
+  return t(
+    'chat-participants.warning.versionUnavailable',
+    'The selected version is no longer available.',
+  );
+}
+
+function resolveMcpDisconnected(
+  mcpLoginSlot: ReactNode | undefined,
+  remoteMcpLoggedOut: boolean,
+): ReactNode {
+  if (remoteMcpLoggedOut && mcpLoginSlot) {
+    return (
+      <>
+        {t('chat-participants.warning.mcpDisconnected', 'MCP server disconnected. ')}
+        <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
+          {t('chat-participants.warning.reconnect', 'Reconnect')}
+        </Typography>{' '}
+        {t('chat-participants.warning.restoreConnection', 'to restore connection.')}
+      </>
+    );
+  }
+  return t('chat-participants.warning.mcpDisconnected', 'MCP server is currently disconnected.');
+}
+
+function resolveRemoteMcpExpired(mcpLoginSlot: ReactNode | undefined): ReactNode {
+  if (mcpLoginSlot) {
+    return (
+      <>
+        {t('chat-participants.warning.remoteMcpExpired', 'Remote MCP session expired. ')}
+        <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
+          {t('chat-participants.warning.login', 'Login')}
+        </Typography>{' '}
+        {t('chat-participants.warning.reconnect', 'to reconnect.')}
+      </>
+    );
+  }
+  return t('chat-participants.warning.remoteMcpExpired', 'Remote MCP session expired.');
+}
+
+function resolveSpOAuthExpired(sharepointLoginSlot: ReactNode | undefined): ReactNode {
+  if (sharepointLoginSlot) {
+    return (
+      <>
+        {t('chat-participants.warning.sharepointExpired', 'SharePoint OAuth session expired. ')}
+        <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
+          {t('chat-participants.warning.login', 'Login')}
+        </Typography>{' '}
+        {t('chat-participants.warning.reconnect', 'to reconnect.')}
+      </>
+    );
+  }
+  return t('chat-participants.warning.sharepointExpired', 'SharePoint OAuth session expired.');
+}
+
+function resolveConfigIssues(handleEditClick: (() => void) | undefined): ReactNode {
+  if (handleEditClick) {
+    return (
+      <>
+        {t('chat-participants.warning.configIssues', 'This participant has configuration issues. ')}
+        <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={handleEditClick}>
+          {t('chat-participants.warning.fixConfiguration', 'Fix configuration')}
+        </Typography>
+      </>
+    );
+  }
+  return t('chat-participants.warning.configIssues', 'This participant has configuration issues.');
+}
+
+function resolveToolsUnavailable(): ReactNode {
+  return t(
+    'chat-participants.warning.toolsUnavailable',
+    'Some tools available in this toolkit\'s schema are not available on your organization\'s instance.',
+  );
+}
+
+function resolveBlockedToolkitNames(blockedToolkitNames: string[]): ReactNode {
+  return t(
+    'chat-participants.warning.blockedToolkitTypes',
+    'The following toolkit types are blocked by your organization\'s guardrails: ',
+  ).concat(blockedToolkitNames.join(', '), '.');
+}
+
+function resolveCannotBeAdded(): ReactNode {
+  return t(
+    'chat-participants.warning.cannotBeAdded',
+    'This participant cannot be added to the chat.',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// getWarningText — orchestrator (complexity ≤ 8)
+// ---------------------------------------------------------------------------
 
 /**
  * Computes the warning text for a participant based on its error conditions.
@@ -46,118 +160,60 @@ export interface ParticipantWarningProps {
  */
 function getWarningText(props: ParticipantWarningProps): ReactNode {
   const {
+    isSkippedContainer,
     isPublishedAgentGone,
     isVersionUnavailable,
-    hasMisconfigurationErrors,
-    shouldDisableThisItem,
     mcpIsDisconnected,
-    someToolsAreUnavailable,
-    blockedToolkitNames,
+    isToolkitParticipant,
     remoteMcpLoggedOut,
     spOAuthLoggedOut,
-    isSkippedContainer,
-    handleEditClick,
-    isToolkitParticipant,
     spConfig,
+    hasMisconfigurationErrors,
+    someToolsAreUnavailable,
+    blockedToolkitNames,
+    shouldDisableThisItem,
+    handleEditClick,
+    mcpLoginSlot,
+    sharepointLoginSlot,
   } = props;
 
-  // Skipped container info — informational, not an error
-  if (isSkippedContainer) {
-    return 'This container agent is not active as an orchestrator and cannot run tools in adhoc chat.';
+  if (isSkippedContainer) return resolveSkippedContainer();
+  if (isPublishedAgentGone) return resolvePublishedAgentGone();
+  if (isVersionUnavailable) return resolveVersionUnavailable();
+
+  // MCP checks — extract combined condition to avoid && in if
+  if (checkMcpDisconnected(mcpIsDisconnected, isToolkitParticipant)) {
+    return resolveMcpDisconnected(mcpLoginSlot, remoteMcpLoggedOut);
+  }
+  if (checkRemoteMcpLoggedOut(remoteMcpLoggedOut, isToolkitParticipant)) {
+    return resolveRemoteMcpExpired(mcpLoginSlot);
+  }
+  if (checkSpOAuthExpired(spOAuthLoggedOut, spConfig)) {
+    return resolveSpOAuthExpired(sharepointLoginSlot);
   }
 
-  // Published agent gone
-  if (isPublishedAgentGone) {
-    return 'This published agent has been removed.';
-  }
-
-  // Version unavailable
-  if (isVersionUnavailable) {
-    return 'The selected version is no longer available.';
-  }
-
-  // MCP disconnected
-  if (mcpIsDisconnected && isToolkitParticipant) {
-    const mcpLoginSlot = (props as ParticipantWarningProps).mcpLoginSlot;
-    if (remoteMcpLoggedOut && mcpLoginSlot) {
-      return (
-        <>
-          MCP server disconnected.{' '}
-          <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
-            Reconnect
-          </Typography>{' '}
-          to restore connection.
-        </>
-      );
-    }
-    return 'MCP server is currently disconnected.';
-  }
-
-  // Remote MCP logged out
-  if (remoteMcpLoggedOut && isToolkitParticipant) {
-    const mcpLoginSlot = (props as ParticipantWarningProps).mcpLoginSlot;
-    if (mcpLoginSlot) {
-      return (
-        <>
-          Remote MCP session expired.{' '}
-          <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
-            Login
-          </Typography>{' '}
-          to reconnect.
-        </>
-      );
-    }
-    return 'Remote MCP session expired.';
-  }
-
-  // SharePoint OAuth logged out
-  if (spOAuthLoggedOut && spConfig) {
-    const sharepointLoginSlot = (props as ParticipantWarningProps).sharepointLoginSlot;
-    if (sharepointLoginSlot) {
-      return (
-        <>
-          SharePoint OAuth session expired.{' '}
-          <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
-            Login
-          </Typography>{' '}
-          to reconnect.
-        </>
-      );
-    }
-    return 'SharePoint OAuth session expired.';
-  }
-
-  // Misconfiguration errors
-  if (hasMisconfigurationErrors) {
-    if (handleEditClick) {
-      return (
-        <>
-          This participant has configuration issues.{' '}
-          <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={handleEditClick}>
-            Fix configuration
-          </Typography>
-        </>
-      );
-    }
-    return 'This participant has configuration issues.';
-  }
-
-  // Tools unavailable
-  if (someToolsAreUnavailable) {
-    return 'Some tools available in this toolkit\'s schema are not available on your organization\'s instance.';
-  }
-
-  // Blocked toolkit types
-  if (blockedToolkitNames && blockedToolkitNames.length > 0) {
-    return `The following toolkit types are blocked by your organization's guardrails: ${blockedToolkitNames.join(', ')}.`;
-  }
-
-  // Should disable
-  if (shouldDisableThisItem) {
-    return 'This participant cannot be added to the chat.';
-  }
+  if (hasMisconfigurationErrors) return resolveConfigIssues(handleEditClick);
+  if (someToolsAreUnavailable) return resolveToolsUnavailable();
+  if (blockedToolkitNames?.length) return resolveBlockedToolkitNames(blockedToolkitNames);
+  if (shouldDisableThisItem) return resolveCannotBeAdded();
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: combine boolean flags (complexity ≤ 2)
+// ---------------------------------------------------------------------------
+
+function checkMcpDisconnected(mcpIsDisconnected: boolean | undefined, isToolkitParticipant: boolean | undefined): boolean {
+  return mcpIsDisconnected && isToolkitParticipant;
+}
+
+function checkRemoteMcpLoggedOut(remoteMcpLoggedOut: boolean | undefined, isToolkitParticipant: boolean | undefined): boolean {
+  return remoteMcpLoggedOut && isToolkitParticipant;
+}
+
+function checkSpOAuthExpired(spOAuthLoggedOut: boolean | undefined, spConfig: unknown): boolean {
+  return spOAuthLoggedOut && spConfig;
 }
 
 /**

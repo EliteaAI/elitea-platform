@@ -95,7 +95,7 @@ export interface ParticipantStatusFlags {
   hasRemoteMcpLoggedIn: boolean;
   spOAuthLoggedOut: boolean;
   spOAuthLoggedIn: boolean;
-  spConfig: unknown | null;
+  spConfig: unknown;
 }
 
 export interface ParticipantDetailsContextValue {

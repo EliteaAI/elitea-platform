@@ -170,7 +170,7 @@ export function GenerateProjectContextModal({
         <BaseBtn
           variant="contained"
           color="primary"
-          onClick={() => void handleApprove()}
+          onClick={() => handleApprove()}
           disabled={!isDraftValid}
         >
           {t('entities.projectContext.generateModal.apply', 'Apply')}

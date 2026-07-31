@@ -17,7 +17,7 @@ import { t } from '@/shared/i18n';
 export interface UserIconItemProps {
   isSelected: boolean;
   onClick?: () => void;
-  onDelete?: () => void;
+  onDelete?: () => void | Promise<void>;
   children: ReactNode;
 }
 
@@ -36,7 +36,7 @@ export function UserIconItem({
   );
 
   const handleConfirm = useCallback(() => {
-    onDelete?.();
+    void onDelete?.();
   }, [onDelete]);
 
   const handleClose = useCallback(() => {

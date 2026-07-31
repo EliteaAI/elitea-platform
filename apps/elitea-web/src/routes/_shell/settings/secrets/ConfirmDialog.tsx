@@ -3,6 +3,8 @@
  *
  * Receives all dialog state from the parent via props to avoid extra hooks.
  */
+import { useTheme } from '@mui/material/styles';
+
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
@@ -25,6 +27,7 @@ export function ConfirmDialog({
   onClose,
   onConfirm,
 }: ConfirmDialogProps) {
+  const theme = useTheme();
   if (!open || !alertType) return null;
 
   return (
@@ -43,16 +46,20 @@ export function ConfirmDialog({
     >
       <Box
         onClick={onClose}
-        sx={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)' }}
+        sx={{
+          position: 'absolute',
+          inset: 0,
+          backgroundColor: theme.vars.palette.background.interactiveTourPrompt.backdrop,
+        }}
       />
       <Box
         sx={{
           position: 'relative',
           backgroundColor: 'background.paper',
-          borderRadius: 2,
+          borderRadius: 'var(--el-shape-radiusMd, 8px)',
           padding: '1.5rem',
           minWidth: '20rem',
-          boxShadow: '0 4px 24px rgba(0,0,0,0.15)',
+          boxShadow: `0 4px 24px ${theme.vars.palette.boxShadow.default}`,
         }}
       >
         <Typography variant="headingSmall" sx={{ marginBottom: '1rem' }}>

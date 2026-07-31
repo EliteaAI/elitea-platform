@@ -38,7 +38,7 @@ export function useDeleteParticipant({
       try {
         deleteParticipant({
           projectId,
-          conversationId: String(activeConversation?.id as string),
+          conversationId: String((activeConversation?.id as string) ?? ''),
           id,
         });
 

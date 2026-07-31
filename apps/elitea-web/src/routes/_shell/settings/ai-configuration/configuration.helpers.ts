@@ -53,11 +53,49 @@ export const CONFIGURATION_TYPE_GROUPS = {
 } as const;
 
 const ICON_TYPE_KEYS_ARRAY: readonly { key: string; values: readonly string[] }[] = Object.entries(ICON_TYPE_KEYS)
-  .map(([key, values]) => ({ key, values }) as { key: string; values: readonly string[] })
+  .map(([key, values]) => ({ key, values }))
   .sort((a, b) => b.values.length - a.values.length);
 
+const THIRD_PARTY_HOSTING_KEYWORDS = [
+  'azure',
+  'bedrock',
+  'vertex',
+  'vertexai',
+  'dial',
+  'ai_dial',
+  'ollama',
+  'hugging',
+  'model-router',
+  'postgres',
+];
+
+const OPENAI_GROUP_TYPES = CONFIGURATION_TYPE_GROUPS.OpenAI.types;
+const ANTHROPIC_GROUP_TYPES = CONFIGURATION_TYPE_GROUPS.Anthropic.types;
+const OTHER_GROUP_LABEL = CONFIGURATION_TYPE_GROUPS.OtherLLMProviders.label;
+
+/**
+ * Checks if a key/label string matches any keyword in a group's type list.
+ */
+function matchesGroupTypes(
+  text: string,
+  types: readonly string[],
+): boolean {
+  return types.some(
+    (t) => t.toLowerCase() === text || text.includes(t.toLowerCase()),
+  );
+}
+
+/**
+ * Checks if a key/label indicates third-party hosting.
+ */
+function isThirdPartyHosted(configKey: string, labelKey: string): boolean {
+  return THIRD_PARTY_HOSTING_KEYWORDS.some(
+    (kw) => configKey.includes(kw) || labelKey.includes(kw),
+  );
+}
+
 export const getIconTypeKey = (name: string | undefined, type: string | undefined, label: string | undefined): string => {
-  const iconKey = ((name || type || '') as string).toLowerCase();
+  const iconKey = (name || type || '').toLowerCase();
 
   for (const { key, values } of ICON_TYPE_KEYS_ARRAY) {
     if (values.includes(iconKey)) return key;
@@ -71,41 +109,39 @@ const getCfgData = (cfg: Record<string, unknown>): Record<string, unknown> | und
   return cfg.data as Record<string, unknown> | undefined;
 };
 
+/**
+ * Checks if a value is a non-empty string.
+ */
+function isNonEmptyString(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return value.trim().length > 0;
+}
+
+/**
+ * Extracts a non-empty string field from a config object, trying multiple key names.
+ */
 const extractField = (
   cfg: Record<string, unknown>,
-  ...keys: Array<keyof Record<string, unknown> | keyof (Record<string, unknown> & { data?: Record<string, unknown> } & { settings?: Record<string, unknown> } & { config?: Record<string, unknown> } & { metadata?: Record<string, unknown> })>
+  ...keys: Array<keyof (Record<string, unknown> & { data?: Record<string, unknown> } & { settings?: Record<string, unknown> } & { config?: Record<string, unknown> } & { metadata?: Record<string, unknown> })>
 ): string | undefined => {
-  for (const key of keys) {
-    const value = cfg[key];
-    if (value !== undefined && value !== null && String(value as string).trim().length > 0) {
-      return String(value as string);
-    }
-  }
+  // Check top-level + data.* keys
+  const sources: Record<string, unknown>[] = [cfg];
   const data = getCfgData(cfg);
-  if (data) {
+  if (data) sources.push(data);
+  for (const source of sources) {
     for (const key of keys) {
-      const value = data[key];
-      if (value !== undefined && value !== null && String(value as string).trim().length > 0) {
-        return String(value as string);
-      }
+      if (isNonEmptyString(source[key])) return String(source[key]);
     }
   }
-  const settings = cfg.settings as Record<string, unknown> | undefined;
-  if (settings) {
-    const val = settings.title;
-    if (val !== undefined && String(val as string).trim().length > 0) return String(val as string);
-  }
-  const config = cfg.config as Record<string, unknown> | undefined;
-  if (config) {
-    const val = config.name;
-    if (val !== undefined && String(val as string).trim().length > 0) return String(val as string);
-  }
+  // Check dedicated nested locations
+  if ((cfg.settings as Record<string, unknown> | undefined)?.title) return String((cfg.settings as Record<string, unknown>).title);
+  if ((cfg.config as Record<string, unknown> | undefined)?.name) return String((cfg.config as Record<string, unknown>).name);
   const metadata = cfg.metadata as Record<string, unknown> | undefined;
   if (metadata) {
-    const title = metadata.title;
-    if (title !== undefined && String(title as string).trim().length > 0) return String(title as string);
-    const name = metadata.name;
-    if (name !== undefined && String(name as string).trim().length > 0) return String(name as string);
+    const titleVal = metadata.title;
+    if (isNonEmptyString(titleVal)) return String(titleVal);
+    const nameVal = metadata.name;
+    if (isNonEmptyString(nameVal)) return String(nameVal);
   }
   return undefined;
 };
@@ -113,7 +149,7 @@ const extractField = (
 export const getConfigurationDisplayName = (configuration: Record<string, unknown>): string => {
   const rawName =
     (configuration.label as string | undefined) ||
-    extractField(configuration, 'name', 'model', 'model_name' as never, 'title', 'elitea_title' as never, 'name' as never) ||
+    extractField(configuration, 'name', 'model', 'model_name', 'title', 'elitea_title', 'name') ||
     (configuration.name as string | undefined) ||
     (configuration.elitea_title as string | undefined);
 
@@ -150,59 +186,28 @@ export const getConfigurationGroup = (
   type: string | undefined,
   label: string | undefined,
 ): string => {
-  const configKey = ((name || type || '') as string).toLowerCase();
-  const labelKey = ((label || '') as string).toLowerCase();
+  const configKey = (name || type || '').toLowerCase();
+  const labelKey = (label || '').toLowerCase();
 
-  const thirdPartyHostingKeywords = [
-    'azure',
-    'bedrock',
-    'vertex',
-    'vertexai',
-    'dial',
-    'ai_dial',
-    'ollama',
-    'hugging',
-    'model-router',
-    'postgres',
-  ];
-
-  const isThirdPartyHosted = thirdPartyHostingKeywords.some(
-    (keyword) => configKey.includes(keyword) || labelKey.includes(keyword),
-  );
-
-  if (isThirdPartyHosted) {
-    return CONFIGURATION_TYPE_GROUPS.OtherLLMProviders.label;
+  if (isThirdPartyHosted(configKey, labelKey)) {
+    return OTHER_GROUP_LABEL;
   }
 
-  if (
-    CONFIGURATION_TYPE_GROUPS.OpenAI.types.some(
-      (typeStr) => typeStr.toLowerCase() === configKey || configKey.includes(typeStr.toLowerCase()),
-    )
-  ) {
+  if (matchesGroupTypes(configKey, OPENAI_GROUP_TYPES)) {
     return CONFIGURATION_TYPE_GROUPS.OpenAI.label;
   }
-  if (
-    labelKey &&
-    CONFIGURATION_TYPE_GROUPS.OpenAI.types.some((typeStr) => labelKey.includes(typeStr.toLowerCase()))
-  ) {
+  if (labelKey && matchesGroupTypes(labelKey, OPENAI_GROUP_TYPES)) {
     return CONFIGURATION_TYPE_GROUPS.OpenAI.label;
   }
 
-  if (
-    CONFIGURATION_TYPE_GROUPS.Anthropic.types.some(
-      (typeStr) => typeStr.toLowerCase() === configKey || configKey.includes(typeStr.toLowerCase()),
-    )
-  ) {
+  if (matchesGroupTypes(configKey, ANTHROPIC_GROUP_TYPES)) {
     return CONFIGURATION_TYPE_GROUPS.Anthropic.label;
   }
-  if (
-    labelKey &&
-    CONFIGURATION_TYPE_GROUPS.Anthropic.types.some((typeStr) => labelKey.includes(typeStr.toLowerCase()))
-  ) {
+  if (labelKey && matchesGroupTypes(labelKey, ANTHROPIC_GROUP_TYPES)) {
     return CONFIGURATION_TYPE_GROUPS.Anthropic.label;
   }
 
-  return CONFIGURATION_TYPE_GROUPS.OtherLLMProviders.label;
+  return OTHER_GROUP_LABEL;
 };
 
 export const sortConfigurationsByDisplayName = (
@@ -224,7 +229,7 @@ export const createConfigurationOptions = (
   return (
     configurations
       ?.map((config) => ({
-        value: `${(config.name as string) ?? ''}<<>>${(config.project_id as string) ?? ''}`,
+        value: `${String((config.name as string) ?? '')}<<>>${String((config.project_id as string) ?? '')}`,
         label: (config.display_name as string | undefined) || (config.name as string) || '',
         icon: iconRenderer ? iconRenderer(config.project_id as string) : undefined,
       })) || []

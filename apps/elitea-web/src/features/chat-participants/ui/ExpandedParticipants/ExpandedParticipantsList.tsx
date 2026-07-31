@@ -8,6 +8,8 @@ import { memo } from 'react';
 
 import { Box } from '@mui/material';
 
+import { t } from '@/shared/ui/lib/t';
+
 import ParticipantItem from './ParticipantItem';
 
 // ---------------------------------------------------------------------------
@@ -44,13 +46,13 @@ const ExpandedParticipantsList = memo((props: ExpandedParticipantsListProps): Re
     sharepointLoginSlot,
   } = props;
 
-  if (!participants?.length) return <Box sx={{ p: 1, textAlign: 'center', color: 'text.disabled' }}>No participants</Box>;
+  if (!participants?.length) return <Box sx={{ p: 1, textAlign: 'center', color: 'text.disabled' }}>{t('chat-participants.expanded.noParticipants', 'No participants')}</Box>;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
       {participants.map((participant, index) => (
         <ParticipantItem
-          key={`${(participant.id as string) || index}-${participant.entity_meta?.id}`}
+          key={`${String((participant.id as string) ?? index)}-${participant.entity_meta?.id ?? ''}`}
           participant={participant}
           collapsed={collapsed}
           disabledEdit={disabledEdit}

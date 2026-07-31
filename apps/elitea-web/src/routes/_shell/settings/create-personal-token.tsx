@@ -254,18 +254,18 @@ const getStyles = (): {
   measureField: SxProps<Theme>;
   valueField: SxProps<Theme>;
   loadingIndicator: SxProps<Theme>;
-  input: React.CSSProperties;
-  select: React.CSSProperties;
-  numberInput: React.CSSProperties;
+  input: SxProps<Theme>;
+  select: SxProps<Theme>;
+  numberInput: SxProps<Theme>;
   helperText: SxProps<Theme>;
 } => {
-  const baseInput: React.CSSProperties = {
+  const baseInput: SxProps<Theme> = {
     width: '100%',
     border: 'none',
     borderBottom: '1px solid',
-    borderBottomColor: 'rgba(0,0,0,0.12)',
+    borderBottomColor: (theme as Theme).vars.palette.border.lines,
     padding: '0.5rem 0',
-    fontSize: '1rem',
+    fontSize: ({ typography }) => typography.headingMedium.fontSize,
     outline: 'none',
     background: 'transparent',
   };
@@ -333,7 +333,7 @@ const getStyles = (): {
     },
     helperText: {
       marginTop: '0.25rem',
-      fontSize: '0.75rem',
+      fontSize: ({ typography }) => typography.bodySmall.fontSize,
     },
   };
 };

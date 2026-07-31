@@ -3,6 +3,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/OpenAITemplate/CodePreviewHeader.jsx`.
  */
 import { memo, useCallback, useMemo } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -32,7 +33,8 @@ export default memo(function CodePreviewHeader({
   onClose,
   showCloseButton = false,
 }: CodePreviewHeaderProps) {
-  const styles = codePreviewHeaderStyles();
+  const theme = useTheme();
+  const styles = codePreviewHeaderStyles(theme);
 
   const languageOptions = useMemo((): SingleSelectOption[] => {
     return Object.keys(CODE_EXAMPLE_LABELS).map((key) => ({
@@ -88,7 +90,8 @@ export default memo(function CodePreviewHeader({
   );
 });
 
-function codePreviewHeaderStyles() {
+function codePreviewHeaderStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     headerContainer: {
       display: 'flex',
@@ -96,7 +99,7 @@ function codePreviewHeaderStyles() {
       justifyContent: 'space-between',
       gap: '1.5rem',
       padding: '0.5rem 0.75rem',
-      borderBottom: '1px solid #292e42',
+      borderBottom: `1px solid ${t.vars.palette.border.lines}`,
       minHeight: '3rem',
       flexShrink: 0,
     },

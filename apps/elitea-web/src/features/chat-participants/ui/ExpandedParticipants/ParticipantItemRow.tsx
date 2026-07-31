@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { memo } from 'react';
 
+import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
@@ -22,6 +23,7 @@ export interface ParticipantItemRowProps {
 
 const ParticipantItemRow = memo(
   ({ participant, isActive, onClickItem }: ParticipantItemRowProps) => {
+    const theme = useTheme();
     const name = useParticipantName(participant);
     const iconResult = useParticipantEntityIcon(participant);
 
@@ -37,7 +39,7 @@ const ParticipantItemRow = memo(
           border: 'none',
           cursor: isActive ? 'default' : 'pointer',
           padding: '0.25rem 0.5rem',
-          borderRadius: 0.5,
+          borderRadius: 'var(--el-shape-radiusSm, 4px)',
           opacity: isActive ? 1 : 0.85,
           '&:hover': {
             opacity: 1,
@@ -53,7 +55,7 @@ const ParticipantItemRow = memo(
             component="img"
             src={iconResult.url}
             alt={name}
-            sx={{ width: 20, height: 20, borderRadius: 0.5 }}
+            sx={{ width: 20, height: 20, borderRadius: 'var(--el-shape-radiusSm, 4px)' }}
           />
         )}
         {!iconResult.url && (
@@ -61,12 +63,12 @@ const ParticipantItemRow = memo(
             sx={{
               width: 20,
               height: 20,
-              borderRadius: 0.5,
+              borderRadius: 'var(--el-shape-radiusSm, 4px)',
               backgroundColor: 'action.selected',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: '0.65rem',
+              fontSize: theme.typography.labelTiny.fontSize,
               fontWeight: 600,
             }}
           >

@@ -101,7 +101,7 @@ export const EditUserRolesDialog = ({
             onChange={handleChange}
             renderValue={selected => {
               const labels = rolesOptions
-                .filter(o => (selected as string[]).includes(o.value))
+                .filter(o => selected.includes(o.value))
                 .map(o => o.label);
               return labels.length > 0 ? labels.join(', ') : '';
             }}

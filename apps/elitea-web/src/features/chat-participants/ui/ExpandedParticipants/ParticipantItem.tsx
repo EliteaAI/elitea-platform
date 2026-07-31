@@ -52,7 +52,7 @@ export interface ParticipantItemProps {
   hasRemoteMcpLoggedIn?: boolean;
   spOAuthLoggedOut?: boolean;
   spOAuthLoggedIn?: boolean;
-  spConfig?: unknown | null;
+  spConfig?: unknown;
   shouldDisableThisItem?: boolean;
 }
 
@@ -69,7 +69,6 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     collapsed,
     isActive,
     onClickItem,
-    onDelete,
     onEdit,
     editingToolkit,
     _disableTooltip,
@@ -81,7 +80,6 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     isVersionUnavailable,
     mcpIsDisconnected,
     remoteMcpLoggedOut,
-    hasRemoteMcpLoggedIn,
     spOAuthLoggedOut,
     _spOAuthLoggedIn,
     spConfig,
@@ -220,7 +218,7 @@ function renderNormalCard({
         <Box
           sx={{
             width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
-            borderRadius: 'var(--el-radius-md)', backgroundColor: isActive ? 'action.selected' : 'background.paper',
+            borderRadius: 'var(--el-shape-radiusMd, 8px)', backgroundColor: isActive ? 'action.selected' : 'background.paper',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 'var(--el-typography-body-small-font-size)', fontWeight: 600, overflow: 'hidden',
           }}
@@ -242,7 +240,7 @@ function renderNormalCard({
                   color={isBeingEdited ? 'primary.main' : 'text.primary'}
                   sx={{ flexShrink: 0, maxWidth: '50%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                 >
-                  {isBeingEdited ? 'Editing...' : versionName}
+                  {isBeingEdited ? t('chat-participants.participant.editing', 'Editing...') : versionName}
                 </Typography>
               )}
             </Typography>
@@ -251,7 +249,7 @@ function renderNormalCard({
 
         {!collapsed && !isBeingEdited && (
           <ParticipantActions
-            participant={{} as Record<string, unknown>}
+            participant={{}}
             onEdit={() => {}} onDelete={() => {}}
             disabledEdit showButtons={isHovering}
             showEditButton={false} hasRemoteMcpLoggedIn
@@ -273,7 +271,7 @@ interface AttentionCardProps {
   mcpIsDisconnected: boolean | undefined; someToolsAreUnavailable: boolean | undefined;
   blockedToolkitNames: string[] | undefined; isVersionUnavailable: boolean | undefined;
   isPublishedAgentGone: boolean | undefined; remoteMcpLoggedOut: boolean | undefined;
-  spOAuthLoggedOut: boolean | undefined; spConfig: unknown | null | undefined;
+  spOAuthLoggedOut: boolean | undefined; spConfig: unknown;
   handleEditClick: (e: React.MouseEvent) => void; isToolkitParticipant: boolean;
 }
 
@@ -296,7 +294,7 @@ function renderAttentionCard({
         <Box
           sx={{
             width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
-            borderRadius: 'var(--el-radius-md)',
+            borderRadius: 'var(--el-shape-radiusMd, 8px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 'var(--el-typography-body-small-font-size)', fontWeight: 600, overflow: 'hidden',
           }}
@@ -314,7 +312,7 @@ function renderAttentionCard({
             </Typography>
             {isBeingEdited && (
               <Typography variant="bodyMedium" color="primary.main" sx={s.attentionEditingText}>
-                {entityMeta?.project_id === 'public' ? 'Viewing...' : 'Editing...'}
+                {entityMeta?.project_id === 'public' ? t('chat-participants.participant.viewing', 'Viewing...') : t('chat-participants.participant.editing', 'Editing...')}
               </Typography>
             )}
           </Box>

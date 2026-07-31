@@ -54,7 +54,7 @@ function cardStyles(): Record<string, SxProps<Theme>> {
       alignItems: 'center',
       justifyContent: 'space-between',
       padding: '1rem 1.5rem',
-      borderRadius: '0.75rem',
+      borderRadius: 'var(--el-shape-radiusMd, 8px)',
       backgroundColor: palette.background.userInputBackground,
       gap: '1rem',
     }),

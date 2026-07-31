@@ -42,10 +42,141 @@ export const getModelCapabilities = (
   const caps = foundOption.capabilities as Record<string, boolean> | undefined;
 
   return Object.entries(caps || {})
-    .filter(([, value]) => value === true)
+    .filter(([, value]) => value)
     .map(([key]) => capabilityMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()));
 };
 
+type ConfigOption = {
+  label: string;
+  value: string;
+  group: string;
+  group_name: string;
+  capabilities?: Record<string, boolean> | undefined;
+  originalModel?: Record<string, unknown>;
+};
+
+// ---------------------------------------------------------------------------
+// extractConfigName — extracted from buildConfigurationData
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the first non-empty string value from the given keys,
+ * falling back to the top-level keys on the config object.
+ */
+function firstNonEmpty(config: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const val = config[key] as string | undefined;
+    if (val) return val;
+  }
+  return '';
+}
+
+/**
+ * Extracts a human-readable name from a configuration object,
+ * checking multiple possible field names in priority order.
+ */
+const extractConfigName = (config: Record<string, unknown>): string => {
+  const d = config.data as Record<string, unknown> | undefined;
+  const cfgSettings = config.settings as Record<string, unknown> | undefined;
+  const cfgConfig = config.config as Record<string, unknown> | undefined;
+  const pick = (obj: Record<string, unknown> | undefined, key: string): string | undefined =>
+    obj?.[key] as string | undefined;
+  const keys = ['name', 'model', 'model_name', 'title', 'label', 'elitea_title', 'type'];
+  const top = firstNonEmpty(d ?? config, keys);
+  return top
+    || pick(cfgSettings, 'title')
+    || pick(cfgConfig, 'name')
+    || '';
+};
+
+// ---------------------------------------------------------------------------
+// extractCapabilities — extracted from buildConfigurationData
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the capability key list from a model's configuration options.
+ */
+const extractCapabilities = (
+  model: Record<string, unknown>,
+  configOptions: Record<string, ConfigOption[]>,
+): string[] => {
+  const groupedOptions = Object.values(configOptions).filter((g) => g.length > 0);
+  const foundGroup = groupedOptions.find(
+    (g) => g[0]?.group === model.configuration_uid,
+  );
+  const foundOption: Record<string, unknown> =
+    foundGroup?.find((item) => item.value === model.model_name) || {};
+
+  const caps = foundOption.capabilities as Record<string, boolean> | undefined;
+  return Object.entries(caps || {})
+    .filter(([, value]) => value)
+    .map(([key]) => key);
+};
+
+// ---------------------------------------------------------------------------
+// mapConfigToList — extracted from buildConfigurationData
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a section's configurations to a flat list of summary objects.
+ */
+const mapConfigToList = (
+  section: Array<Record<string, unknown>> | undefined,
+): Array<{
+  id: unknown;
+  name: string;
+  type: unknown;
+  shared: boolean;
+  project_id: unknown;
+}> => {
+  return (section || []).map((config) => ({
+    id: config.id,
+    name: extractConfigName(config),
+    type: config.type,
+    shared: config.shared === true,
+    project_id: config.project_id,
+  }));
+};
+
+// ---------------------------------------------------------------------------
+// configurationsToOptions — convert raw configs to grouped options
+// ---------------------------------------------------------------------------
+
+/**
+ * Converts a flat list of configurations into a record grouped by
+ * configuration_uid, suitable for extractCapabilities.
+ */
+const configurationsToOptions = (
+  configs: Array<Record<string, unknown>>,
+): Record<string, ConfigOption[]> => {
+  const grouped: Record<string, ConfigOption[]> = {};
+  for (const cfg of configs) {
+    const uid = cfg.configuration_uid as string | undefined;
+    if (!uid) continue;
+    const option: ConfigOption = {
+      label: (cfg.display_name as string | undefined) ||
+        (cfg.elitea_title as string) ||
+        (cfg.name as string) ||
+        (cfg.label as string) ||
+        '',
+      value: cfg.configuration_uid as string,
+      group: cfg.configuration_uid as string,
+      group_name: cfg.configuration_name as string || '',
+      originalModel: cfg,
+    };
+    if (!grouped[uid]) grouped[uid] = [];
+    grouped[uid].push(option);
+  }
+  return grouped;
+};
+
+// ---------------------------------------------------------------------------
+// buildConfigurationData — orchestrator (complexity ≤ 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a data object for display from model and configuration data.
+ */
 export const buildConfigurationData = ({
   userApiUrl,
   projectId,
@@ -63,33 +194,8 @@ export const buildConfigurationData = ({
 
   if (uniqueConfigurations && model.model_name && model.configuration_uid) {
     const configOptions = configurationsToOptions(uniqueConfigurations);
-    const groupedOptions = Object.values(configOptions).filter((group) => group.length > 0);
-    const foundGroup = groupedOptions.find(
-      (groupedOption) => groupedOption[0]?.group === model.configuration_uid,
-    );
-    const foundOption: Record<string, unknown> = foundGroup?.find((item) => item.value === model.model_name) || {};
-
-    const foundCaps = foundOption.capabilities as Record<string, boolean> | undefined;
-
-    capabilitiesList = Object.entries(foundCaps || {})
-      .filter(([, value]) => value === true)
-      .map(([key]) => key);
+    capabilitiesList = extractCapabilities(model, configOptions);
   }
-
-  const extractConfigName = (config: Record<string, unknown>): string => {
-    const d = config.data as Record<string, unknown> | undefined;
-    return (d?.name as string) ||
-    (d?.model as string) ||
-    (d?.model_name as string) ||
-    (config.title as string) ||
-    ((config.settings as Record<string, unknown>)?.title as string) ||
-    ((config.config as Record<string, unknown>)?.name as string) ||
-    (config.label as string) ||
-    (config.elitea_title as string) ||
-    (config.name as string) ||
-    (config.type as string) ||
-    '';
-  };
 
   return {
     project_configuration: {
@@ -104,98 +210,12 @@ export const buildConfigurationData = ({
     },
     model_capabilities: capabilitiesList,
     available_configurations: {
-      llm_models:
-        (configurationsBySections.llm || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
-      embedding_models:
-        (configurationsBySections.embedding || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
-      vector_storages:
-        (configurationsBySections.vectorstorage || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
-      ai_credentials:
-        (configurationsBySections.ai_credentials || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
-      image_generation_models:
-        (configurationsBySections.image_generation || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
-      asr_models:
-        (configurationsBySections.asr || []).map((config) => ({
-          id: config.id,
-          name: extractConfigName(config),
-          type: config.type,
-          shared: config.shared === true,
-          project_id: config.project_id,
-        })) || [],
+      llm_models: mapConfigToList(configurationsBySections.llm),
+      embedding_models: mapConfigToList(configurationsBySections.embedding),
+      vector_storages: mapConfigToList(configurationsBySections.vectorstorage),
+      ai_credentials: mapConfigToList(configurationsBySections.ai_credentials),
+      image_generation_models: mapConfigToList(configurationsBySections.image_generation),
+      asr_models: mapConfigToList(configurationsBySections.asr),
     },
   };
-};
-
-type ConfigOption = {
-  label: string;
-  value: string;
-  group: string;
-  group_name: string;
-  capabilities?: Record<string, boolean> | undefined;
-  originalModel?: Record<string, unknown>;
-};
-
-const configurationsToOptions = (
-  configurations: Array<Record<string, unknown>>,
-): Record<string, ConfigOption[]> => {
-  return (configurations || []).reduce((accumulator: Record<string, ConfigOption[]>, model) => {
-    const modelName = (model?.name as string) || `Model ${(model?.id as string) ?? 'Unknown'}`;
-    const modelId = (model?.id as string) || (model?.name as string) || 'unknown';
-    const groupName = `Project ${(model?.project_id as string) ?? 'Default'}`;
-    const groupId = (model?.project_id as string) || 'default';
-
-    if (!accumulator[groupName]) {
-      accumulator[groupName] = [];
-    }
-
-    const existingModel = accumulator[groupName].find(
-      (existingItem) =>
-        existingItem.value === modelId ||
-        existingItem.label === modelName ||
-        (existingItem.originalModel?.id === model?.id && existingItem.originalModel?.name === model?.name),
-    );
-
-    if (!existingModel) {
-      accumulator[groupName].push({
-        label: modelName,
-        value: modelId,
-        group: groupId,
-        group_name: groupName,
-        capabilities: model?.capabilities as Record<string, boolean> | undefined,
-        originalModel: model,
-      });
-    }
-
-    return accumulator;
-  }, {} as Record<string, ConfigOption[]>);
 };

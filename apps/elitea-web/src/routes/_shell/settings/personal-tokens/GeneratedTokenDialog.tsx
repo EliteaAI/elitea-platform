@@ -20,6 +20,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import IconButton from '@mui/material/IconButton';
+import { useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
@@ -43,6 +44,7 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
   name,
   onClose,
 }: GeneratedTokenDialogProps) {
+  const theme = useTheme();
   const [copyLabel, setCopyLabel] = useState(
     () => t('entities.token.generated.copy', 'Copy'),
   );
@@ -87,7 +89,7 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
             onClick={onClose}
             sx={styles.closeButton}
           >
-            <span style={{ fontSize: '1rem' }}>{t('common.close', '✕')}</span>
+            <span style={{ fontSize: theme.typography.headingMedium.fontSize }}>{t('common.close', '✕')}</span>
           </IconButton>
         </Box>
 
@@ -160,16 +162,16 @@ const getStyles = (): {
   },
   dialogContent: ({ palette }) => ({
     width: '31.25rem',
-    borderTopLeftRadius: '0.5rem',
-    borderTopRightRadius: '0.5rem',
+    borderTopLeftRadius: 'var(--el-shape-radiusSm, 4px)',
+    borderTopRightRadius: 'var(--el-shape-radiusSm, 4px)',
     background: palette.background.secondary,
     padding: '1rem 1.5rem 0',
     overflowX: 'hidden',
   }),
   dialogActions: ({ palette }) => ({
     width: '31.25rem',
-    borderBottomLeftRadius: '0.5rem',
-    borderBottomRightRadius: '0.5rem',
+    borderBottomLeftRadius: 'var(--el-shape-radiusSm, 4px)',
+    borderBottomRightRadius: 'var(--el-shape-radiusSm, 4px)',
     background: palette.background.secondary,
     padding: '0 1.5rem 1rem',
     justifyContent: 'flex-end',
@@ -180,9 +182,9 @@ const getStyles = (): {
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  title: ({ palette }) => ({
+  title: ({ palette, typography }) => ({
     fontFamily: 'Montserrat',
-    fontSize: '0.875rem',
+    fontSize: typography.headingSmall.fontSize,
     fontWeight: 600,
     lineHeight: '1.5rem',
     color: palette.text.secondary,
@@ -198,7 +200,7 @@ const getStyles = (): {
     padding: '0.5rem 0.75rem',
     borderColor: palette.border.attention,
     backgroundColor: palette.background.attention,
-    borderRadius: 4,
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
   }),
   warningIcon: ({ palette }) => ({
     width: '1rem',

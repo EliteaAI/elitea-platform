@@ -34,7 +34,7 @@ function containerSx(isSelected: boolean): SxProps<Theme> {
     justifyContent: 'center',
     height: '3.5rem',
     width: '3.5rem',
-    borderRadius: '0.5rem',
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
     border: `${isSelected ? 1 : 0}px solid ${palette.primary.main}`,
     background: isSelected
       ? palette.background.icon?.default ?? palette.background.secondary

@@ -27,20 +27,72 @@ interface SocialAuthorData {
   default_summarization?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: serialize personalization (complexity ≤ 3)
+// ---------------------------------------------------------------------------
+
+function serializePersonalization(p: Record<string, unknown>): Record<string, string> {
+  return {
+    persona: (p.persona || 'generic') as string,
+    default_instructions: (p.default_instructions || '') as string,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: serialize context management (complexity ≤ 5)
+// ---------------------------------------------------------------------------
+
+function serializeContextManagement(cm: Record<string, unknown>): Record<string, unknown> {
+  return {
+    context_enabled: cm.enabled ?? DEFAULT_CONTEXT_STRATEGY.ENABLED,
+    max_context_tokens: cm.max_context_tokens ?? DEFAULT_CONTEXT_STRATEGY.MAX_CONTEXT_TOKENS,
+    preserve_recent_messages: cm.preserve_recent_messages ?? DEFAULT_CONTEXT_STRATEGY.PRESERVE_RECENT_MESSAGES,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: serialize summarization (complexity ≤ 6)
+// ---------------------------------------------------------------------------
+
+function serializeSummarization(
+  s: Record<string, unknown>,
+  defaultModel: { name: string; project_id: string; default?: boolean; display_name?: string } | null,
+): Record<string, unknown> {
+  return {
+    enable_summarization: s.enable_summarization ?? DEFAULT_CONTEXT_STRATEGY.ENABLE_SUMMARIZATION,
+    summary_llm_settings: {
+      instructions: s.summary_instructions || '',
+      model_name: s.summary_model_name || defaultModel?.name || '',
+      model_project_id: s.summary_model_project_id ?? defaultModel?.project_id ?? null,
+      max_tokens: ((s.target_summary_tokens ?? 4096) as number),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: serialize no-author-data case (complexity ≤ 3)
+// ---------------------------------------------------------------------------
+
+function serializeEmptyProfile(
+  defaultModel: { name: string; project_id: string; default?: boolean; display_name?: string } | null,
+): typeof PROFILE_INITIAL_VALUES {
+  return {
+    ...PROFILE_INITIAL_VALUES,
+    persona: '',
+    summary_llm_settings: {
+      ...PROFILE_INITIAL_VALUES.summary_llm_settings,
+      model_name: defaultModel?.name || '',
+      model_project_id: defaultModel?.project_id ?? null,
+    },
+  };
+}
+
 export function serializeProfileFormData(
   authorData: SocialAuthorData | undefined,
   defaultModel: { name: string; project_id: string; default?: boolean; display_name?: string } | null,
 ) {
   if (!authorData) {
-    return {
-      ...PROFILE_INITIAL_VALUES,
-      persona: '',
-      summary_llm_settings: {
-        ...PROFILE_INITIAL_VALUES.summary_llm_settings,
-        model_name: defaultModel?.name || '',
-        model_project_id: defaultModel?.project_id ?? null,
-      },
-    };
+    return serializeEmptyProfile(defaultModel);
   }
 
   const p = authorData.personalization || {};
@@ -48,18 +100,9 @@ export function serializeProfileFormData(
   const s = authorData.default_summarization || {};
 
   return {
-    persona: ((p.persona as string) || 'generic') as string,
-    default_instructions: ((p.default_instructions as string) || '') as string,
-    context_enabled: (cm.enabled ?? DEFAULT_CONTEXT_STRATEGY.ENABLED) as boolean,
-    max_context_tokens: (cm.max_context_tokens ?? DEFAULT_CONTEXT_STRATEGY.MAX_CONTEXT_TOKENS) as number,
-    preserve_recent_messages: (cm.preserve_recent_messages ?? DEFAULT_CONTEXT_STRATEGY.PRESERVE_RECENT_MESSAGES) as number,
-    enable_summarization: (s.enable_summarization ?? DEFAULT_CONTEXT_STRATEGY.ENABLE_SUMMARIZATION) as boolean,
-    summary_llm_settings: {
-      instructions: ((s.summary_instructions as string) || '') as string,
-      model_name: ((s.summary_model_name as string) || defaultModel?.name || '') as string,
-      model_project_id: ((s.summary_model_project_id as string) ?? defaultModel?.project_id ?? null) as string | null,
-      max_tokens: ((s.target_summary_tokens as number) ?? 4096) as number,
-    },
+    ...serializePersonalization(p),
+    ...serializeContextManagement(cm),
+    ...serializeSummarization(s, defaultModel),
   };
 }
 

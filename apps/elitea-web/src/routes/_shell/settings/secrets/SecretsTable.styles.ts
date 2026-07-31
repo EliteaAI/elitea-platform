@@ -29,18 +29,6 @@ export const tableStyles: Record<string, SxProps<Theme>> = {
   },
   dataGrid: {
     border: 'none',
-    '& .MuiDataGrid-cell': {
-      borderBottom: '0.0625rem solid',
-      borderColor: 'divider',
-    },
-    '& .MuiDataGrid-columnHeaders': {
-      backgroundColor: 'background.paper',
-      borderBottom: '0.0625rem solid',
-      borderColor: 'divider',
-    },
-    '& .MuiDataGrid-row:hover': {
-      backgroundColor: 'action.hover',
-    },
   },
   /* Pagination footer */
   pagination: {
@@ -54,11 +42,11 @@ export const tableStyles: Record<string, SxProps<Theme>> = {
     display: 'flex',
     alignItems: 'center',
     gap: '0.5rem',
-    fontSize: '0.875rem',
+    fontSize: ({ typography }) => typography.headingMedium.fontSize,
     color: 'text.secondary',
   },
   pageInfo: {
-    fontSize: '0.875rem',
+    fontSize: ({ typography }) => typography.headingMedium.fontSize,
     color: 'text.secondary',
   },
 };

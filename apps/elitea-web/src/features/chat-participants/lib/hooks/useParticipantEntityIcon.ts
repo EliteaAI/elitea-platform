@@ -34,6 +34,70 @@ export interface ParticipantEntityIconResult extends ParticipantIconMeta {
   readonly entityType?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: extract non-toolkit icon (complexity ≤ 3)
+// ---------------------------------------------------------------------------
+
+function resolveNonToolkitIcon(
+  participant: Record<string, unknown>,
+  type: ChatParticipantType,
+): ParticipantEntityIconResult {
+  const iconMeta =
+    participant.entity_settings?.icon_meta ||
+    participant.icon_meta ||
+    participant.version_details?.icon_meta;
+
+  if (iconMeta && typeof iconMeta === 'object') {
+    return {
+      ...iconMeta,
+      entityType: type,
+    };
+  }
+  return { entityType: type };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: resolve toolkit icon with slot (complexity ≤ 2)
+// ---------------------------------------------------------------------------
+
+function resolveToolkitWithSlot(
+  participant: Record<string, unknown>,
+  toolkitType: string,
+  theme: unknown,
+  isMCP: boolean | undefined,
+  resolveToolkitIcon: UseParticipantEntityIconOptions['resolveToolkitIcon'],
+): ParticipantEntityIconResult {
+  const resolved = resolveToolkitIcon(toolkitType, theme, isMCP);
+  const iconMeta = participant.entity_settings?.icon_meta;
+  const base = (typeof iconMeta === 'object' && iconMeta !== null)
+    ? { ...iconMeta }
+    : {};
+  return {
+    ...base,
+    ...resolved,
+    entityType: isMCP ? 'mcp' : (participant.entity_name as ChatParticipantType),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: resolve toolkit icon without slot (complexity ≤ 1)
+// ---------------------------------------------------------------------------
+
+function resolveToolkitWithoutSlot(
+  participant: Record<string, unknown>,
+  isMCP: boolean | undefined,
+  type: ChatParticipantType,
+): ParticipantEntityIconResult {
+  const iconMeta = participant.entity_settings?.icon_meta;
+  const base = (typeof iconMeta === 'object' && iconMeta !== null)
+    ? { ...iconMeta }
+    : {};
+  return {
+    ...base,
+    entityType: isMCP ? 'mcp' : type,
+  };
+}
+
 export function useParticipantEntityIcon(
   participant: Record<string, unknown> | undefined,
   options: UseParticipantEntityIconOptions = {},
@@ -51,43 +115,23 @@ export function useParticipantEntityIcon(
 
     const type = participant.entity_name as ChatParticipantType;
     const participantType = participant.participantType as ChatParticipantType | undefined;
+    const isToolkit = type === ChatParticipantType.Toolkits || participantType === ChatParticipantType.Toolkits;
 
-    // Non-toolkit participants: return their existing icon_meta if present
-    if (type !== ChatParticipantType.Toolkits && participantType !== ChatParticipantType.Toolkits) {
-      const iconMeta =
-        (participant.entity_settings as Record<string, unknown>)?.icon_meta ||
-        (participant.icon_meta as Record<string, unknown>) ||
-        (participant.version_details as Record<string, unknown>)?.icon_meta;
-      if (iconMeta && typeof iconMeta === 'object') {
-        return {
-          ...(iconMeta as Record<string, unknown>),
-          entityType: type,
-        };
-      }
-      return { entityType: type };
+    if (!isToolkit) {
+      return resolveNonToolkitIcon(participant, type);
     }
 
-    // Toolkit participants: resolve via slot or fall back to generic entity icon
     const toolkitType =
-      (participant.entity_settings as Record<string, unknown>)?.toolkit_type ||
-      (participant.type as string) ||
+      participant.entity_settings?.toolkit_type ||
+      participant.type ||
       '';
-    const isMCP = (participant.meta as Record<string, unknown>)?.mcp as boolean | undefined;
+    const isMCP = participant.meta?.mcp as boolean | undefined;
 
     if (resolveToolkitIcon) {
-      const resolved = resolveToolkitIcon(toolkitType, theme, isMCP);
-      return {
-        ...(participant.entity_settings as Record<string, unknown>)?.icon_meta,
-        ...resolved,
-        entityType: isMCP ? 'mcp' : type,
-      };
+      return resolveToolkitWithSlot(participant, toolkitType, theme, isMCP, resolveToolkitIcon);
     }
 
-    // No slot: fall back to generic entity icon with the toolkit type
-    return {
-      ...(participant.entity_settings as Record<string, unknown>)?.icon_meta,
-      entityType: isMCP ? 'mcp' : type,
-    };
+    return resolveToolkitWithoutSlot(participant, isMCP, type);
   }, [participant, resolveToolkitIcon, theme]);
 
   return entityIcon;

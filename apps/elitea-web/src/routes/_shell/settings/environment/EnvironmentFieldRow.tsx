@@ -80,7 +80,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
               ...(field.maximum !== undefined ? { max: field.maximum } : {}),
               step: field.type === 'integer' ? 1 : 'any',
             },
-          } as Record<string, unknown>)
+          })
         : undefined,
     [field.label, field.maximum, field.minimum, field.type, numeric],
   );
@@ -118,7 +118,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
           fullWidth
           variant="standard"
           type={numeric ? 'number' : 'text'}
-          slotProps={slotProps as Record<string, unknown>}
+          slotProps={slotProps}
           sx={styles.textField}
         />
         <Tooltip
@@ -164,11 +164,11 @@ const styles: Record<string, SxProps<Theme>> = {
     color: 'text.secondary',
     fontWeight: 500,
   },
-  tooltipIcon: {
-    fontSize: '0.75rem',
+  tooltipIcon: ({ typography }) => ({
+    fontSize: typography.bodySmall.fontSize,
     opacity: 0.5,
     cursor: 'help',
-  },
+  }),
   inputContainer: {
     display: 'flex',
     alignItems: 'center',

@@ -40,7 +40,7 @@ function buildFields(
   availableTypes: AvailableConfigurationType[] | undefined,
 ): EnvironmentFieldDefinition[] {
   const raw = availableTypes?.find((item) => item.type === ENVIRONMENT_SECTION)?.config_schema;
-  const schema = (raw ?? {}) as Record<string, unknown>;
+  const schema = raw ?? {};
   const props = (schema?.properties as Record<string, unknown>)?.data as Record<string, unknown>;
   if (!props) return [];
   return ENVIRONMENT_FIELD_ORDER.map((key) => {
@@ -48,6 +48,20 @@ function buildFields(
     const defaults = ENVIRONMENT_FIELD_DEFAULTS[key];
     return buildFieldDefinition(key, fieldSchema, (defaults ?? {}) as Record<string, { minimum?: number; maximum?: number }>);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Helper: compare saved vs draft values (complexity ≤ 4)
+// ---------------------------------------------------------------------------
+
+function valuesDiffer(fieldType: string, savedValue: unknown, draftValue: string): boolean {
+  if (fieldType === 'integer') {
+    return parseInt(String(savedValue), 10) !== parseInt(draftValue, 10);
+  }
+  if (fieldType === 'number') {
+    return parseFloat(String(savedValue)) !== parseFloat(draftValue);
+  }
+  return String(savedValue) !== draftValue;
 }
 
 /* ── component ────────────────────────────────────────────────────────── */
@@ -122,30 +136,12 @@ export const EnvironmentSection = memo(function EnvironmentSection() {
       const rawValue = String(draftValues[fieldKey] || '').trim();
 
       const validationError = validateFieldValue(rawValue, field);
-      if (validationError) {
-        return; // TODO: show toast
-      }
+      if (validationError) return;
 
       const savedValue = currentConfig?.data?.[fieldKey];
-
-      // Check if value actually changed
       if (savedValue === undefined) return;
 
-      let isDifferent = false;
-      if (field.type === 'integer') {
-        const sv = savedValue as string;
-        isDifferent = parseInt(String(sv), 10) !== parseInt(rawValue, 10);
-      } else if (field.type === 'number') {
-        const sv = savedValue as string;
-        isDifferent = parseFloat(String(sv)) !== parseFloat(rawValue);
-      } else if (field.type === 'boolean') {
-        const sv = savedValue as string;
-        isDifferent = String(sv) !== rawValue;
-      } else {
-        const sv = savedValue as string;
-        isDifferent = String(sv) !== rawValue;
-      }
-      if (!isDifferent) return;
+      if (!valuesDiffer(field.type, savedValue, rawValue)) return;
 
       try {
         if (currentConfig?.id) {

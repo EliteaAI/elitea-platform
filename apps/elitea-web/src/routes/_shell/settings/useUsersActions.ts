@@ -24,9 +24,9 @@ export interface UseUsersActionsResult {
   handleDelete: () => void;
   handleBatchRoleSave: (roles: string[]) => void;
   handleInviteConfirm: (data: { emails: string[]; roles: string[] }) => void;
-  singleAction: { edit: EditUsersButtonProps; delete: DeleteUserButtonProps } | null;
-  batchAction: { edit: EditUsersButtonProps; delete: DeleteUserButtonProps } | null;
-  actions: { edit: EditUsersButtonProps | null; delete: DeleteUserButtonProps | null } | null;
+  singleAction: { edit: EditUsersButtonProps; delete: Record<string, unknown> } | null;
+  batchAction: { edit: EditUsersButtonProps; delete: Record<string, unknown> } | null;
+  actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> } | null;
 }
 
 export function useUsersActions({
@@ -101,7 +101,7 @@ export function useUsersActions({
     return {
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
-    } as { edit: EditUsersButtonProps; delete: DeleteUserButtonProps };
+    };
   }, [selectedUsers, rolesOptions, editHook, deleteUserMutation, onDeleteSuccess]);
 
   const batchAction = useMemo(() => {
@@ -114,13 +114,13 @@ export function useUsersActions({
     if (batchEditHook.isLoading !== undefined) editProps.isLoading = batchEditHook.isLoading;
     const deleteProps: Record<string, unknown> = {
       userIds: selectedUsers.map((u) => u.id),
-      onConfirm: () => { void handleDelete(); },
+      onConfirm: () => { handleDelete(); },
     };
 
     return {
       edit: editProps as unknown as EditUsersButtonProps,
       delete: deleteProps as unknown as DeleteUserButtonProps,
-    } as { edit: EditUsersButtonProps; delete: DeleteUserButtonProps };
+    };
   }, [selectedUsers, rolesOptions, batchEditHook, handleBatchRoleSave, handleDelete]);
 
   const actions = batchAction ?? singleAction;

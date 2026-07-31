@@ -61,7 +61,7 @@ export function ParticipantDetailsProvider({
       if (!entityMeta?.id || !entityMeta?.project_id) continue;
       if (entityName === ChatParticipantType.Users) continue;
 
-      const key = getCacheKey(String(entityName), String(entityMeta.id as string), String(entityMeta.project_id as string));
+      const key = getCacheKey(String(entityName), String((entityMeta.id as string) ?? ''), String((entityMeta.project_id as string) ?? ''));
       if (fetchingRef.current.has(key)) continue;
 
       fetchingRef.current.add(key);

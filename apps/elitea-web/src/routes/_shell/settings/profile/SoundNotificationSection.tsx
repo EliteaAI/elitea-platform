@@ -14,7 +14,7 @@ export function SoundNotificationSection() {
       showMode="left"
       slotSx={{
         accordion: {
-          background: 'transparent !important',
+          background: 'transparent',
           paddingTop: '0rem',
         },
       }}

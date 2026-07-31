@@ -215,7 +215,7 @@ const getStyles = (): Record<string, SxProps<Theme>> => ({
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
-    borderRadius: 0,
+    borderRadius: 'var(--el-shape-radiusSm, 0px)',
   },
   content: {
     flex: 1,

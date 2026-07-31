@@ -20,18 +20,12 @@
  */
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
-import Typography from '@mui/material/Typography';
-import Snackbar from '@mui/material/Snackbar';
-import Alert from '@mui/material/Alert';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { BannerMessage } from '@/shared/ui/BannerMessage';
-import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { DrawerPage } from '@/routes/_shell/settings/DrawerPage';
-import { ProjectParamsHeader } from './ProjectParamsHeader';
-import { EnableToggleCard } from './EnableToggleCard';
-import { EditorSection } from './EditorSection';
+import { ProjectContextBody, ProjectContextToasts } from './ProjectContextBody';
 import { t } from '@/shared/i18n';
 import {
   updateProjectContext,
@@ -46,6 +40,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 /* ── constants ─────────────────────────────────────────────────────────── */
 
 const MAX_CHARS = 2500;
+
+/* ── helper: derive show conditions ───────────────────────────────────── */
+
+interface ProjectContextShowFlags {
+  readonly showReadOnlyBanner: boolean;
+  readonly showDisabledBanner: boolean;
+  readonly showEditorContent: boolean;
+  readonly showEditorControls: boolean;
+}
+
+function deriveShowFlags(canEdit: boolean, enabled: boolean, content: string): ProjectContextShowFlags {
+  return {
+    showReadOnlyBanner: !canEdit,
+    showDisabledBanner: !enabled && Boolean(content.trim()),
+    showEditorContent: enabled || Boolean(content.trim()),
+    showEditorControls: enabled && canEdit,
+  };
+}
 
 /* ── props ─────────────────────────────────────────────────────────────── */
 
@@ -85,7 +97,7 @@ export function ProjectContextContent({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [`/elitea_core/project_context/prompt_lib/${projectId}/project-context`] });
     },
-  });
+  } as { mutateAsync: (args: { content: string; enabled: boolean }) => Promise<unknown> });
 
   /* ── local state ────────────────────────────────────────────────── */
 
@@ -175,7 +187,7 @@ export function ProjectContextContent({
   }, []);
 
   const handleEditorBlur = useCallback((e: React.FocusEvent) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
       setIsEditorFocused(false);
     }
   }, []);
@@ -189,8 +201,8 @@ export function ProjectContextContent({
     }
   }, [projectId]);
 
-  const handleCloseSaveToast = useCallback(() => setShowSaveToast(false), []);
   const handleCloseErrorToast = useCallback(() => setShowErrorToast(false), []);
+  const handleCloseSaveToast = useCallback(() => setShowSaveToast(false), []);
 
   /* ── permissions early return ───────────────────────────────────── */
 
@@ -209,10 +221,8 @@ export function ProjectContextContent({
 
   /* ── derived state ──────────────────────────────────────────────── */
 
-  const showReadOnlyBanner = !canEdit;
-  const showDisabledBanner = enabled === false && Boolean(content.trim());
-  const showEditorContent = enabled || Boolean(content.trim());
-  const showEditorControls = enabled && canEdit;
+  const showFlags = deriveShowFlags(canEdit, enabled, content);
+  const { showReadOnlyBanner, showDisabledBanner, showEditorContent, showEditorControls } = showFlags;
 
   /* ── loading state ──────────────────────────────────────────────── */
 
@@ -226,84 +236,32 @@ export function ProjectContextContent({
     );
   }
 
-  /* ── render ─────────────────────────────────────────────────────── */
-
   return (
-    <Box sx={s.root}>
-      <DrawerPage>
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem',
-            padding: '1rem 1.5rem',
-            borderBottom: '1px solid #292e42',
-          }}
-        >
-          <Typography variant="headingSmall" color="text.secondary">
-            {t('entities.projectContext.content.title', 'Project Context')}
-          </Typography>
-        </Box>
-
-        <Box sx={s.body}>
-          <ProjectParamsHeader
-            projectId={projectId}
-            projectName={projectName}
-            onIconChange={(iconName: string | null) => void handleIconChange(iconName)}
-          />
-
-          {showReadOnlyBanner && (
-            <BannerMessage
-              message={t('entities.projectContext.content.readOnlyBanner', "You don't have permission to edit this setting.")}
-              variant="info"
-            />
-          )}
-
-          <EnableToggleCard enabled={enabled} onToggle={handleToggle} />
-
-          {showDisabledBanner && (
-            <BannerMessage
-              message={t('entities.projectContext.content.disabledBanner', 'Project Context is turned off. The project background is not applied to AI responses or workflows.')}
-              variant="info"
-            />
-          )}
-
-          {showEditorContent && (
-            <EditorSection
-              content={content}
-              mode={mode}
-              isEditorFocused={isEditorFocused}
-              showEditorControls={showEditorControls}
-              canEdit={canEdit}
-              onContentChange={handleContentChange}
-              onModeChange={handleModeChange}
-              onFocus={() => setIsEditorFocused(true)}
-              onBlur={handleEditorBlur}
-              onAIGenerated={handleAIGenerated}
-            />
-          )}
-
-          <Box sx={s.actions}>
-            <BaseBtn
-              variant="contained"
-              color="primary"
-              disabled={!canEdit || !isDirty || isSaving}
-              onClick={() => void handleSave()}
-            >
-              {t('entities.projectContext.content.save', 'Save')}
-            </BaseBtn>
-            <BaseBtn
-              variant="secondary"
-              color="secondary"
-              disabled={!canEdit || !isDirty}
-              onClick={() => void handleDiscard()}
-            >
-              {t('entities.projectContext.content.discard', 'Discard')}
-            </BaseBtn>
-          </Box>
-        </Box>
-      </DrawerPage>
-
+    <>
+      <ProjectContextBody
+        projectId={projectId}
+        projectName={projectName}
+        enabled={enabled}
+        showReadOnlyBanner={showReadOnlyBanner}
+        showDisabledBanner={showDisabledBanner}
+        showEditorContent={showEditorContent}
+        content={content}
+        mode={mode}
+        isEditorFocused={isEditorFocused}
+        showEditorControls={showEditorControls}
+        canEdit={canEdit}
+        isDirty={isDirty}
+        isSaving={isSaving}
+        handleToggle={handleToggle}
+        handleContentChange={handleContentChange}
+        handleModeChange={handleModeChange}
+        handleEditorBlur={handleEditorBlur}
+        handleAIGenerated={handleAIGenerated}
+        handleIconChange={handleIconChange}
+        handleSave={handleSave}
+        handleDiscard={handleDiscard}
+        onFocus={() => setIsEditorFocused(true)}
+      />
       <input
         ref={fileInputRef}
         type="file"
@@ -311,28 +269,12 @@ export function ProjectContextContent({
         style={{ display: 'none' }}
         onChange={handleFileUpload}
       />
-
-      {/* Toast notifications */}
-      <Snackbar
-        open={showSaveToast}
-        autoHideDuration={3000}
-        onClose={handleCloseSaveToast}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert onClose={handleCloseSaveToast} severity="success" variant="filled">
-          {t('entities.projectContext.content.saveSuccess', 'Project Context saved successfully')}
-        </Alert>
-      </Snackbar>
-      <Snackbar
-        open={showErrorToast}
-        autoHideDuration={3000}
-        onClose={handleCloseErrorToast}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert onClose={handleCloseErrorToast} severity="error" variant="filled">
-          {t('entities.projectContext.content.saveError', 'Failed to save Project Context')}
-        </Alert>
-      </Snackbar>
-    </Box>
+      <ProjectContextToasts
+        showSaveToast={showSaveToast}
+        showErrorToast={showErrorToast}
+        onCloseSave={handleCloseSaveToast}
+        onCloseError={handleCloseErrorToast}
+      />
+    </>
   );
 }

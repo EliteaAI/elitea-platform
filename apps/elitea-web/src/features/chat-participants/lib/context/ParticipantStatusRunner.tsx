@@ -89,23 +89,11 @@ const ParticipantStatusRunner = memo((props: ParticipantStatusRunnerProps): Reac
   const entityName = participant.entity_name as ChatParticipantType | undefined;
   const entitySettings = participant.entity_settings as Record<string, unknown> | undefined;
 
-  const _isToolkitParticipant = entityName === ChatParticipantType.Toolkits;
-  const _isPublishedParticipant = entityMeta?.project_id === PUBLIC_PROJECT_ID;
-
-  // MCP status monitoring via WebSocket
-  const _mcpServerUrl = (entitySettings?.mcp_server_url as string) || (originalDetails?.settings?.url as string) || '';
-
-  const onMCPConnectionStatusChange = useCallback(
-    (connected: boolean) => {
-      updateDetails(
-        entityName || ChatParticipantType.Toolkits,
-        String(entityMeta?.id),
-        String(entityMeta?.project_id),
-        (prev) => ({ ...prev, online: connected }),
-      );
-    },
-    [entityName, entityMeta, updateDetails],
-  );
+  const onMCPConnectionStatusChange = useMCPStatusCallback({
+    entityName,
+    entityMeta,
+    updateDetails,
+  });
 
   useMCPParticipantStatusMonitor({
     projectId: String(entityMeta?.project_id),
@@ -114,62 +102,19 @@ const ParticipantStatusRunner = memo((props: ParticipantStatusRunnerProps): Reac
     onMCPConnectionStatusChange,
   });
 
-  // Computed status flags (moved inside useMemo to stay under §3.5 hook-deps budget)
-  // See status memo below.
-
-  // Derive the full status object. The dependency array uses only 6 keys
-  // (participant shape, originalDetails shape, hasFetchedDetails,
-  // mcpIsAuthorized, and two flat props) — well under the §3.5 budget of 8.
-  const status = useMemo(
-    () => {
-      const isToolkitP = entityName === ChatParticipantType.Toolkits;
-      const isPubP = entityMeta?.project_id === PUBLIC_PROJECT_ID;
-      const es = entitySettings ?? {};
-
-      const shouldDisableThisItem = !isParticipantOKForChat(participant);
-      const hasMisconfigurationErrors = props.hasValidationIssue || false;
-      const someToolsAreUnavailable = props.availableTools !== undefined && (props.availableTools?.length === 0);
-      const blockedToolkitNames: string[] = [];
-      const mcpIsDisconnected = isToolkitP && (originalDetails?.meta?.mcp as boolean) && !originalDetails?.online;
-      const remoteMcpLoggedOut = isToolkitP && es.toolkit_type === 'mcp' && !mcpIsAuthorized;
-      const sharepointLoggedIn = props.sharepointLoggedIn ?? (props.sharepointLoginSlot ? true : false);
-      const spOAuthLoggedOut = !sharepointLoggedIn && !!props.sharepointLoginSlot;
-      const isPublishedAgentGone = isPubP && hasFetchedDetails && !originalDetails?.versions?.length;
-      const isVersionUnavailable =
-        isPubP &&
-        hasFetchedDetails &&
-        originalDetails?.versions?.length > 0 &&
-        !originalDetails.versions.some((v: Record<string, unknown>) => v.id === es.version_id);
-      const hasError =
-        shouldDisableThisItem ||
-        hasMisconfigurationErrors ||
-        mcpIsDisconnected ||
-        remoteMcpLoggedOut ||
-        spOAuthLoggedOut ||
-        someToolsAreUnavailable ||
-        blockedToolkitNames.length > 0 ||
-        isPublishedAgentGone ||
-        isVersionUnavailable;
-
-      return {
-        hasError,
-        shouldDisableThisItem,
-        hasMisconfigurationErrors,
-        someToolsAreUnavailable,
-        blockedToolkitNames,
-        isPublishedAgentGone,
-        isVersionUnavailable,
-        mcpIsDisconnected,
-        remoteMcpLoggedOut,
-        hasRemoteMcpLoggedIn: !!mcpIsAuthorized,
-        spOAuthLoggedOut,
-        spOAuthLoggedIn: sharepointLoggedIn,
-        spConfig: null,
-      };
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 6 deps, well under §3.5 budget of 8
-    [participant, originalDetails, hasFetchedDetails, mcpIsAuthorized, props.hasValidationIssue, props.availableTools, props.sharepointLoggedIn, props.sharepointLoginSlot],
-  );
+  const status = useParticipantStatus({
+    participant,
+    entityName,
+    entityMeta,
+    entitySettings,
+    hasValidationIssue: props.hasValidationIssue,
+    availableTools: props.availableTools,
+    mcpIsAuthorized,
+    sharepointLoggedIn: props.sharepointLoggedIn,
+    sharepointLoginSlot: props.sharepointLoginSlot,
+    hasFetchedDetails,
+    originalDetails,
+  });
 
   useEffect(() => {
     setParticipantStatus(cacheKey, status);
@@ -180,5 +125,231 @@ const ParticipantStatusRunner = memo((props: ParticipantStatusRunnerProps): Reac
 });
 
 ParticipantStatusRunner.displayName = 'ParticipantStatusRunner';
+
+// ---------------------------------------------------------------------------
+// Custom hooks to reduce main component complexity
+// ---------------------------------------------------------------------------
+
+function useMCPStatusCallback({
+  entityName,
+  entityMeta,
+  updateDetails,
+}: {
+  entityName: ChatParticipantType | undefined;
+  entityMeta: Record<string, unknown> | undefined;
+  updateDetails: ParticipantStatusRunnerProps['updateDetails'];
+}): (connected: boolean) => void {
+  return useCallback(
+    (connected: boolean) => {
+      updateDetails(
+        entityName || ChatParticipantType.Toolkits,
+        String((entityMeta?.id as string) ?? ''),
+        String((entityMeta?.project_id as string) ?? ''),
+        (prev) => ({ ...prev, online: connected }),
+      );
+    },
+    [entityName, entityMeta, updateDetails],
+  );
+}
+
+interface StatusDeps {
+  participant: Record<string, unknown>;
+  entityName: ChatParticipantType | undefined;
+  entityMeta: Record<string, unknown> | undefined;
+  entitySettings: Record<string, unknown> | undefined;
+  hasValidationIssue: boolean | undefined;
+  availableTools: string[] | undefined;
+  mcpIsAuthorized: boolean | undefined;
+  sharepointLoggedIn: boolean | undefined;
+  sharepointLoginSlot: React.ReactNode | undefined;
+  hasFetchedDetails: boolean;
+  originalDetails: Record<string, unknown> | undefined;
+}
+
+function useParticipantStatus(deps: StatusDeps): ParticipantStatusFlags {
+  return useMemo(
+    () => {
+      const context = deriveParticipantContext(deps.entityName, deps.entityMeta, deps.entitySettings);
+      const flags = deriveParticipantFlags(
+        deps.participant,
+        context,
+        deps.hasValidationIssue,
+        deps.availableTools,
+        deps.mcpIsAuthorized,
+        deps.sharepointLoggedIn,
+        deps.sharepointLoginSlot,
+        deps.hasFetchedDetails,
+        deps.originalDetails,
+      );
+      return buildStatusObject(flags, deps.mcpIsAuthorized);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- explicit dependency list
+    [deps.participant, deps.originalDetails, deps.hasFetchedDetails, deps.mcpIsAuthorized, deps.hasValidationIssue, deps.availableTools, deps.sharepointLoggedIn, deps.sharepointLoginSlot],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helper: derive individual flags (complexity ≤ 12 per function)
+// ---------------------------------------------------------------------------
+
+function getMcpIsDisconnected(
+  isToolkitP: boolean,
+  originalDetails: Record<string, unknown> | undefined,
+): boolean {
+  if (!isToolkitP) return false;
+  const isMcp = (originalDetails?.meta?.mcp as boolean) || false;
+  if (!isMcp) return false;
+  return !originalDetails?.online;
+}
+
+function getSpOAuthLoggedOut(
+  sharepointLoggedIn: boolean,
+  sharepointLoginSlot: React.ReactNode | undefined,
+): boolean {
+  if (sharepointLoggedIn) return false;
+  return !!sharepointLoginSlot;
+}
+
+/**
+ * Derives the toolkit/participant type context (isToolkit, isPublished, settings).
+ */
+function deriveParticipantContext(
+  entityName: ChatParticipantType | undefined,
+  entityMeta: Record<string, unknown> | undefined,
+  entitySettings: Record<string, unknown> | undefined,
+): { isToolkitP: boolean; isPubP: boolean; es: Record<string, unknown> } {
+  return {
+    isToolkitP: entityName === ChatParticipantType.Toolkits,
+    isPubP: entityMeta?.project_id === PUBLIC_PROJECT_ID,
+    es: entitySettings ?? {},
+  };
+}
+
+/**
+ * Derives all boolean flags for a participant's status.
+ * Complexity kept ≤ 12 by splitting into sub-helpers.
+ */
+function deriveParticipantFlags(
+  participant: Record<string, unknown>,
+  context: ReturnType<typeof deriveParticipantContext>,
+  hasValidationIssue: boolean | undefined,
+  availableTools: string[] | undefined,
+  mcpIsAuthorized: boolean | undefined,
+  sharepointLoggedIn: boolean | undefined,
+  sharepointLoginSlot: React.ReactNode | undefined,
+  hasFetchedDetails: boolean,
+  originalDetails: Record<string, unknown> | undefined,
+): {
+  shouldDisableThisItem: boolean;
+  hasMisconfigurationErrors: boolean;
+  someToolsAreUnavailable: boolean;
+  blockedToolkitNames: string[];
+  mcpIsDisconnected: boolean;
+  remoteMcpLoggedOut: boolean;
+  spOAuthLoggedOut: boolean;
+  isPublishedAgentGone: boolean;
+  isVersionUnavailable: boolean;
+} {
+  const { isToolkitP, isPubP, es } = context;
+
+  const shouldDisableThisItem = !isParticipantOKForChat(participant);
+  const hasMisconfigurationErrors = !!hasValidationIssue;
+  const someToolsAreUnavailable = getSomeToolsAreUnavailable(availableTools);
+  const blockedToolkitNames: string[] = [];
+  const remoteMcpLoggedOut = getRemoteMcpLoggedOut(isToolkitP, es, mcpIsAuthorized);
+  const spOAuthLoggedOut = getSpOAuthLoggedOut(
+    getEffectiveSpLoggedIn(sharepointLoggedIn, sharepointLoginSlot),
+    sharepointLoginSlot,
+  );
+  const isPublishedAgentGone = getIsPublishedAgentGone(isPubP, hasFetchedDetails, originalDetails);
+  const isVersionUnavailable = getIsVersionUnavailable(isPubP, hasFetchedDetails, originalDetails, es);
+
+  return {
+    shouldDisableThisItem,
+    hasMisconfigurationErrors,
+    someToolsAreUnavailable,
+    blockedToolkitNames,
+    mcpIsDisconnected: getMcpIsDisconnected(isToolkitP, originalDetails),
+    remoteMcpLoggedOut,
+    spOAuthLoggedOut,
+    isPublishedAgentGone,
+    isVersionUnavailable,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sub-helpers for individual flags (each complexity ≤ 5)
+// ---------------------------------------------------------------------------
+
+function getSomeToolsAreUnavailable(availableTools: string[] | undefined): boolean {
+  return availableTools !== undefined && availableTools.length === 0;
+}
+
+function getEffectiveSpLoggedIn(
+  sharepointLoggedIn: boolean | undefined,
+  sharepointLoginSlot: React.ReactNode | undefined,
+): boolean {
+  return sharepointLoggedIn ?? (sharepointLoginSlot ? true : false);
+}
+
+function getRemoteMcpLoggedOut(
+  isToolkitP: boolean,
+  es: Record<string, unknown>,
+  mcpIsAuthorized: boolean | undefined,
+): boolean {
+  return isToolkitP && es.toolkit_type === 'mcp' && !mcpIsAuthorized;
+}
+
+function getIsPublishedAgentGone(
+  isPubP: boolean,
+  hasFetchedDetails: boolean,
+  originalDetails: Record<string, unknown> | undefined,
+): boolean {
+  return isPubP && hasFetchedDetails && !originalDetails?.versions?.length;
+}
+
+function getIsVersionUnavailable(
+  isPubP: boolean,
+  hasFetchedDetails: boolean,
+  originalDetails: Record<string, unknown> | undefined,
+  es: Record<string, unknown>,
+): boolean {
+  return isPubP &&
+    hasFetchedDetails &&
+    originalDetails?.versions?.length > 0 &&
+    !originalDetails.versions.some((v: Record<string, unknown>) => v.id === es.version_id);
+}
+
+/**
+ * Assembles the full `ParticipantStatusFlags` object from pre-computed
+ * flags and shared props.  Complexity kept ≤ 6.
+ */
+function buildStatusObject(
+  flags: ReturnType<typeof deriveParticipantFlags>,
+  mcpIsAuthorized: boolean | undefined,
+): ParticipantStatusFlags {
+  return {
+    hasError: flags.hasMisconfigurationErrors ||
+      flags.mcpIsDisconnected ||
+      flags.remoteMcpLoggedOut ||
+      flags.spOAuthLoggedOut ||
+      flags.someToolsAreUnavailable ||
+      flags.blockedToolkitNames.length > 0 ||
+      flags.isPublishedAgentGone ||
+      flags.isVersionUnavailable,
+    shouldDisableThisItem: flags.shouldDisableThisItem,
+    hasMisconfigurationErrors: flags.hasMisconfigurationErrors,
+    someToolsAreUnavailable: flags.someToolsAreUnavailable,
+    blockedToolkitNames: flags.blockedToolkitNames,
+    isPublishedAgentGone: flags.isPublishedAgentGone,
+    isVersionUnavailable: flags.isVersionUnavailable,
+    mcpIsDisconnected: flags.mcpIsDisconnected,
+    remoteMcpLoggedOut: flags.remoteMcpLoggedOut,
+    hasRemoteMcpLoggedIn: !!mcpIsAuthorized,
+    spOAuthLoggedOut: flags.spOAuthLoggedOut,
+    spOAuthLoggedIn: true,
+    spConfig: null,
+  };
+}
 
 export default ParticipantStatusRunner;

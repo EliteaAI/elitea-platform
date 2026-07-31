@@ -23,16 +23,16 @@
  *    slot injection (see `ParticipantDetailsProvider`'s doc comment).
  */
 
-import React, { useCallback, useEffect, memo, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, memo, useMemo } from 'react';
 
 import Grid from '@mui/material/Grid';
-
-import { ParticipantDetailsProvider } from '../lib/context/ParticipantDetailsContext';
 import { useTheme } from '@mui/material/styles';
 
-import Participants, { type ParticipantsProps } from './Participants';
+import { ParticipantDetailsProvider } from '../lib/context/ParticipantDetailsContext';
+import { Participants, type ParticipantsProps } from './Participants';
 import { chatParticipantUniqueId } from '@/entities/participant';
 import { MIN_LARGE_WINDOW_WIDTH } from '@/shared/lib/layout';
+import { derivePaddingLeft, deriveWrapperStyleParams, useWrapperGridSizes, wrapperSx } from './ParticipantsWrapper.styles';
 
 /**
  * Inlined local duplicate of `useIsSmallWindow` — the pipelines and
@@ -188,64 +188,30 @@ export const ParticipantsWrapper = memo(
   }: ParticipantsWrapperProps) => {
     const theme = useTheme();
     const { isSmallWindow } = useIsSmallWindow();
-
-    // -----------------------------------------------------------------------
-    // Derived state
-    // -----------------------------------------------------------------------
-
-    const participants = useMemo(
-      () => activeConversation?.participants ?? [],
-      [activeConversation],
+    const derived = useParticipantsDerived(activeConversation, activeParticipant);
+    const responsive = useResponsiveSizes(collapsed, isSmallWindow, panelWidth);
+    const contextSlot = useContextBudgetSlot(
+      renderContextBudget,
+      derived._conversationId,
+      derived.contextStrategy,
+      derived.conversationInstructions,
+      derived.persona,
     );
-
-    const isPlayback = !!activeConversation?.isPlayback;
-    const isActive = !activeConversation?.isNew && !activeConversation?.isPlayback;
-
-    // Conversation ID: only show context budget for existing (non-new, non-playback) conversations
-    const conversationId = isActive ? activeConversation?.id : undefined;
-
-    // Active participant unique ID for highlighting
-    const activeParticipantId = activeParticipant
-      ? chatParticipantUniqueId(activeParticipant)
-      : undefined;
-
-    // Context strategy and instructions for the slot
-    const contextStrategy = (activeConversation?.meta?.context_strategy ??
-      activeConversation?.context_strategy) as
-      | Record<string, unknown>
-      | undefined;
-    const conversationInstructions =
-      (activeConversation?.instructions ??
-        activeConversation?.meta?.instructions) as string | undefined;
-    const persona =
-      activeConversation?.meta?.persona ?? activeConversation?.persona;
-
-    // -----------------------------------------------------------------------
-    // Responsive sizing
-    // -----------------------------------------------------------------------
-
-    const xsSize = 12;
-    const lgSize = collapsed ? 0.5 : 3;
 
     return (
       <Grid
-        size={{ xs: xsSize, lg: lgSize }}
-        sx={wrapperSx({
-          theme,
-          collapsed,
-          panelWidth,
-          isSmallWindow,
-        })}
+        size={{ xs: responsive.xsSize, lg: responsive.lgSize }}
+        sx={wrapperSx(theme, responsive.styleParams, responsive.paddingLeft)}
         data-testid="participants-wrapper"
       >
-        <ParticipantDetailsProvider participants={participants}>
+        <ParticipantDetailsProvider participants={derived.participants}>
           <Participants
-            participants={participants}
+            participants={derived.participants}
             collapsed={collapsed}
             onCollapsed={onCollapsed}
-            disabledEdit={isPlayback}
-            disabledAdd={isPlayback}
-            activeParticipantId={activeParticipantId}
+            disabledEdit={derived.isPlayback}
+            disabledAdd={derived.isPlayback}
+            activeParticipantId={derived.activeParticipantId}
             onSelectParticipant={onSelectParticipant}
             onDeleteParticipant={onDeleteParticipant}
             onEditParticipant={onEditParticipant}
@@ -253,19 +219,7 @@ export const ParticipantsWrapper = memo(
             editingToolkit={editingToolkit}
             resolveToolkitIcon={resolveToolkitIcon}
             isMcpVisible={isMcpVisible}
-            renderContextBudget={
-              renderContextBudget
-                ? (slotProps) =>
-                    renderContextBudget({
-                      conversationId: slotProps.conversationId ?? conversationId,
-                      contextStrategy: slotProps.contextStrategy ?? contextStrategy,
-                      setActiveConversation: slotProps.setActiveConversation,
-                      conversationInstructions:
-                        slotProps.conversationInstructions ?? conversationInstructions,
-                      persona: slotProps.persona ?? persona,
-                    })
-                : undefined
-            }
+            renderContextBudget={contextSlot}
             maxVisibleUsers={maxVisibleUsers}
           />
         </ParticipantDetailsProvider>
@@ -274,47 +228,68 @@ export const ParticipantsWrapper = memo(
   },
 );
 
-ParticipantsWrapper.displayName = 'ParticipantsWrapper';
+/* ── custom hooks ──────────────────────────────────────────────────────── */
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-interface WrapperSxParams {
-  readonly theme: unknown;
-  readonly collapsed: boolean;
-  readonly panelWidth: number;
-  readonly isSmallWindow: boolean;
+function useParticipantsDerived(
+  activeConversation: ParticipantsWrapperProps['activeConversation'],
+  activeParticipant: ParticipantsWrapperProps['activeParticipant'],
+) {
+  return {
+    participants: useMemo(() => activeConversation?.participants ?? [], [activeConversation]),
+    isPlayback: useMemo(() => !!activeConversation?.isPlayback, [activeConversation]),
+    isActive: useMemo(() => !activeConversation?.isNew && !activeConversation?.isPlayback, [activeConversation]),
+    _conversationId: useMemo(
+      () => {
+        const isActive = !activeConversation?.isNew && !activeConversation?.isPlayback;
+        return isActive ? activeConversation?.id : undefined;
+      },
+      [activeConversation],
+    ),
+    activeParticipantId: useMemo(
+      () => activeParticipant ? chatParticipantUniqueId(activeParticipant) : undefined,
+      [activeParticipant],
+    ),
+    contextStrategy: useMemo(
+      () => (activeConversation?.meta?.context_strategy ?? activeConversation?.context_strategy) as Record<string, unknown> | undefined,
+      [activeConversation],
+    ),
+    conversationInstructions: useMemo(
+      () => (activeConversation?.instructions ?? activeConversation?.meta?.instructions) as string | undefined,
+      [activeConversation],
+    ),
+    persona: useMemo(
+      () => activeConversation?.meta?.persona ?? activeConversation?.persona,
+      [activeConversation],
+    ),
+  };
 }
 
-/**
- * Responsive sizing styles for the wrapper Grid cell.
- * Matches the old-app breakpoint logic: full-width on small screens,
- * fixed-width on large screens with collapsed sub-mode.
- */
-const wrapperSx = ({
-  theme,
-  collapsed,
-  panelWidth,
-  isSmallWindow,
-}: WrapperSxParams): React.CSSProperties => ({
-  height: isSmallWindow ? 'auto' : '100%',
-  boxSizing: 'border-box',
-  marginBottom: isSmallWindow ? '1rem' : 0,
-  paddingRight: '1rem',
-  paddingLeft: {
-    lg: collapsed ? '1.25rem' : '1.5rem',
-  },
-  maxWidth: isSmallWindow
-    ? '100% !important'
-    : `${panelWidth}px !important`,
-  minWidth: isSmallWindow
-    ? '100% !important'
-    : `${panelWidth}px !important`,
-  [theme.breakpoints.down('lg')]: {
-    maxWidth: '100% !important',
-    minWidth: '100% !important',
-  },
-});
+function useResponsiveSizes(collapsed: boolean, isSmallWindow: boolean, panelWidth: number) {
+  const { xsSize, lgSize } = useWrapperGridSizes(collapsed);
+  const styleParams = deriveWrapperStyleParams(isSmallWindow, panelWidth);
+  const paddingLeft = derivePaddingLeft(collapsed);
+  return { xsSize, lgSize, styleParams, paddingLeft };
+}
+
+function useContextBudgetSlot(
+  renderContextBudget: ParticipantsWrapperProps['renderContextBudget'],
+  _conversationId: string | number | undefined,
+  contextStrategy: Record<string, unknown> | undefined,
+  conversationInstructions: string | undefined,
+  persona: unknown,
+) {
+  return renderContextBudget
+    ? (slotProps: Parameters<Parameters<typeof ParticipantsWrapper>[0]['renderContextBudget']>[0]) =>
+        renderContextBudget({
+          conversationId: slotProps.conversationId ?? _conversationId,
+          contextStrategy: slotProps.contextStrategy ?? contextStrategy,
+          setActiveConversation: slotProps.setActiveConversation,
+          conversationInstructions: slotProps.conversationInstructions ?? conversationInstructions,
+          persona: slotProps.persona ?? persona,
+        })
+    : undefined;
+}
+
+ParticipantsWrapper.displayName = 'ParticipantsWrapper';
 
 export { ParticipantsWrapper };

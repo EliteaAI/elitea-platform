@@ -9,6 +9,7 @@
  * this component renders its own sub-tabs to match the old layout.
  */
 import { memo, useState } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import Tab from '@mui/material/Tab';
@@ -23,6 +24,8 @@ import { useConfigurationsBySection } from './useConfigurationsBySection';
 export const AIConfiguration = memo(function AIConfiguration() {
   const [activeTab, setActiveTab] = useState(0);
   const { data: configurationsBySection, isLoading } = useConfigurationsBySection();
+  const theme = useTheme();
+  const styles = getStyles(theme);
 
   const tabs = [
     { label: t('ai-configuration.tabs.configurations', 'Configurations') },
@@ -32,8 +35,6 @@ export const AIConfiguration = memo(function AIConfiguration() {
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setActiveTab(newValue);
   };
-
-  const styles = getStyles();
 
   return (
     <Box sx={styles.pageWrapper}>
@@ -72,7 +73,8 @@ export const AIConfiguration = memo(function AIConfiguration() {
   );
 });
 
-function getStyles() {
+function getStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     pageWrapper: {
       display: 'flex',
@@ -82,25 +84,23 @@ function getStyles() {
       overflow: 'hidden',
     },
     tabBar: {
-      backgroundColor: '#1a1b26',
-      borderBottom: '1px solid #292e42',
+      backgroundColor: t.vars.palette.background.eliteaDefault,
+      borderBottom: `1px solid ${t.vars.palette.border.lines}`,
       flexShrink: 0,
-      '& .MuiTabs-flexContainer': {
-        justifyContent: 'stretch',
-      },
     },
-    tab: {
+    tab: ({ typography }: { typography: Record<string, unknown> & { headingSmall: { fontSize: number } } }) => ({
       textTransform: 'none',
       fontWeight: 500,
-      fontSize: '0.875rem',
-      color: '#9ca3af',
+      fontSize: typography.headingSmall.fontSize,
+      color: t.vars.palette.text.secondary,
       minHeight: '2.5rem',
+      flexGrow: 1,
       '&.Mui-selected': {
-        color: '#e5e7eb',
+        color: t.vars.palette.text.default,
         fontWeight: 600,
-        borderBottom: '2px solid #3b82f6',
+        borderBottom: `2px solid ${t.vars.palette.primary.main}`,
       },
-    },
+    }),
     tabPanel: {
       flex: 1,
       overflow: 'hidden',
@@ -113,7 +113,7 @@ function getStyles() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      color: '#9ca3af',
+      color: t.vars.palette.text.secondary,
     },
   };
 }

@@ -23,6 +23,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
+import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { useNavigate } from '@tanstack/react-router';
@@ -51,7 +52,8 @@ export function PersonalTokensPage() {
   );
 
   const [search, setSearch] = useState('');
-  const styles = getStyles();
+  const theme = useTheme();
+  const styles = getStyles(theme);
 
   /* ── model configuration for IDE settings (Warning #11) ────────────── */
 
@@ -182,7 +184,7 @@ export function PersonalTokensPage() {
   );
 }
 
-const getStyles = (): {
+const getStyles = (theme: Theme): {
   root: SxProps<Theme>;
   content: SxProps<Theme>;
   loadingContainer: SxProps<Theme>;
@@ -196,7 +198,7 @@ const getStyles = (): {
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
-    borderRadius: 0,
+    borderRadius: 'var(--el-shape-radiusSm, 0px)',
   },
   content: {
     flex: 1,
@@ -223,10 +225,10 @@ const getStyles = (): {
   },
   emptyStateButton: {
     padding: '0.5rem 1.5rem',
-    borderRadius: 4,
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
     cursor: 'pointer',
     backgroundColor: 'primary.main',
-    color: 'white',
+    color: theme.vars.palette.common.white,
     fontWeight: 600,
   },
   dialogContent: {

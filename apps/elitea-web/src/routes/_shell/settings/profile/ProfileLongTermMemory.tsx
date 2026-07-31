@@ -13,7 +13,7 @@ export function ProfileLongTermMemory() {
       showMode={AccordionConstants.AccordionShowMode.LeftMode}
       slotSx={{
         accordion: {
-          background: 'transparent !important',
+          background: 'transparent',
           opacity: 0.5,
         },
       }}

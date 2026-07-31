@@ -17,6 +17,8 @@ import { IconButton, Tooltip } from '@mui/material';
 
 import EditIcon from '@mui/icons-material/Edit';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -49,10 +51,10 @@ const EditParticipantButton = memo((props: EditParticipantButtonProps): React.Re
 
   if (!canEdit || disabled) return null;
 
-  const displayName = participant.entity_meta?.name || 'Participant';
+  const displayName = participant.entity_meta?.name || t('chat-participants.common.participant', 'Participant');
 
   return (
-    <Tooltip title={`Edit ${displayName}`}>
+    <Tooltip title={`${t('chat-participants.tooltip.edit', 'Edit')} ${displayName}`}>
       <IconButton
         size="small"
         onClick={(e) => {

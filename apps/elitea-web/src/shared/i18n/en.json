@@ -511,7 +511,6 @@
   "entities.secret.error.deleteFailed": "Failed to delete secret",
   "entities.secret.error.hideFailed": "Failed to hide secret",
 
-  /* ── entities.projectContext (settings: project-context, unit A9-6) ───── */
   "entities.projectContext.enableToggleCard.title": "Project Context",
   "entities.projectContext.enableToggleCard.description": "Project-specific background information that the AI uses to generate more accurate and relevant responses, tailored to your workflows, data, and goals.",
   "entities.projectContext.content.title": "Project Context",

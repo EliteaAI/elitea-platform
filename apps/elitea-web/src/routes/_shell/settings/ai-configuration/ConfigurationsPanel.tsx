@@ -5,6 +5,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationsPanel.jsx`.
  */
 import { memo, useCallback, useMemo } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -27,10 +28,13 @@ interface ConfigurationsPanelProps {
 /* ── hook helper: build select options from a flat config list ──────────── */
 
 function buildOptions(configs: readonly Record<string, unknown>[]): Array<{ value: string; label: string }> {
-  return (configs ?? []).map((cfg) => ({
-    value: `${(cfg.elitea_title as string || cfg.label as string || cfg.type as string) as string}<<>>${cfg.project_id as string}`,
-    label: cfg.elitea_title as string || cfg.label as string || cfg.type as string || '',
-  }));
+  return (configs ?? []).map((cfg) => {
+    const name = (cfg.elitea_title as string) || (cfg.label as string) || (cfg.type as string) || '';
+    return {
+      value: `${String(name)}<<>>${String((cfg.project_id as string) ?? '')}`,
+      label: String(name),
+    };
+  });
 }
 
 /* ── component ──────────────────────────────────────────────────────────── */
@@ -39,16 +43,17 @@ export default memo(function ConfigurationsPanel({
   configurationsBySection,
   isLoading,
 }: ConfigurationsPanelProps) {
-  const styles = getStyles();
+  const theme = useTheme();
+  const styles = getStyles(theme);
 
   /* Extract sections safely (TS doesn't know the key types) */
-  const llmConfigs = (configurationsBySection['llm'] ?? []) as Record<string, unknown>[];
-  const embeddingConfigs = (configurationsBySection['embedding'] ?? []) as Record<string, unknown>[];
-  const vectorStorageConfigs = (configurationsBySection['vectorstorage'] ?? []) as Record<string, unknown>[];
-  const imageConfigs = (configurationsBySection['image_generation'] ?? []) as Record<string, unknown>[];
-  const asrConfigs = (configurationsBySection['asr'] ?? []) as Record<string, unknown>[];
-  const ttsConfigs = (configurationsBySection['tts'] ?? []) as Record<string, unknown>[];
-  const aiCredentialsConfigs = (configurationsBySection['ai_credentials'] ?? []) as Record<string, unknown>[];
+  const llmConfigs = configurationsBySection['llm'] ?? [];
+  const embeddingConfigs = configurationsBySection['embedding'] ?? [];
+  const vectorStorageConfigs = configurationsBySection['vectorstorage'] ?? [];
+  const imageConfigs = configurationsBySection['image_generation'] ?? [];
+  const asrConfigs = configurationsBySection['asr'] ?? [];
+  const ttsConfigs = configurationsBySection['tts'] ?? [];
+  const aiCredentialsConfigs = configurationsBySection['ai_credentials'] ?? [];
 
   /* Default-setting labels with optional info tooltips (porting old-app pattern) */
   const renderInfoLabel = useCallback(
@@ -209,7 +214,8 @@ export default memo(function ConfigurationsPanel({
   );
 });
 
-function getStyles() {
+function getStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     panel: {
       flex: 1,
@@ -223,8 +229,8 @@ function getStyles() {
       alignItems: 'center',
       position: 'sticky',
       top: 0,
-      backgroundColor: '#1a1b26',
-      borderBottom: '1px solid #292e42',
+      backgroundColor: t.vars.palette.background.eliteaDefault,
+      borderBottom: `1px solid ${t.vars.palette.border.lines}`,
       zIndex: 1,
       width: '100%',
       height: '3.8125rem',
@@ -233,14 +239,13 @@ function getStyles() {
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
-      background: '#1a1b26',
+      background: t.vars.palette.background.eliteaDefault,
       width: '100%',
       padding: '1rem 1.5rem',
     },
     sectionTitle: {
-      color: '#9ca3af',
+      color: t.vars.palette.text.secondary,
       fontWeight: 600,
-      fontSize: '1rem',
       display: 'flex',
       alignItems: 'center',
       gap: '0.5rem',

@@ -15,6 +15,41 @@ interface FetchOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: fetch version details (complexity ≤ 4)
+// ---------------------------------------------------------------------------
+
+async function fetchAndMergeVersionDetails(
+  versionId: string | undefined,
+  details: Record<string, unknown>,
+  fetchOriginalVersionDetails: (
+    type: ChatParticipantType,
+    id: string,
+    versionId: string,
+    projectId: string,
+    versionName: string,
+  ) => Promise<Record<string, unknown>>,
+  entityName: ChatParticipantType,
+  entityMeta: Record<string, unknown> | undefined,
+  entityProjectId: string,
+): Promise<Record<string, unknown>> {
+  if (!versionId) return details.version_details || {};
+  if ((details.version_details as Record<string, unknown>)?.id === versionId) return details.version_details || {};
+
+  const versions = (details.versions as Record<string, unknown>[]) || [];
+  const versionExists = versions.some((v) => v.id === versionId);
+  if (!versionExists) return details.version_details || {};
+
+  const versionName = versions.find((v) => v.id === versionId)?.name || '';
+  return fetchOriginalVersionDetails(
+    entityName,
+    String(entityMeta?.id),
+    versionId,
+    entityProjectId,
+    versionName,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // useActiveParticipantDetails — full implementation
 // ---------------------------------------------------------------------------
 
@@ -57,29 +92,18 @@ export function useActiveParticipantDetails(
 
         const details = await fetchOriginalDetails(entityName, String(entityMeta?.id), entityProjectId, options);
 
-        let versionDetails: Record<string, unknown> | null = null;
-        const versionId = entitySettings?.version_id as string | undefined;
-        const needsVersionFetch =
-          versionId && (details.version_details as Record<string, unknown>)?.id !== versionId;
-
-        if (needsVersionFetch) {
-          const versions = (details.versions as Record<string, unknown>[]) || [];
-          const versionExists = versions.some((v) => v.id === versionId);
-          if (versionExists) {
-            const versionName = versions.find((v) => v.id === versionId)?.name || '';
-            versionDetails = await fetchOriginalVersionDetails(
-              entityName,
-              String(entityMeta?.id),
-              versionId,
-              entityProjectId,
-              versionName,
-            );
-          }
-        }
+        const versionDetails = await fetchAndMergeVersionDetails(
+          entitySettings?.version_id as string | undefined,
+          details,
+          fetchOriginalVersionDetails,
+          entityName,
+          entityMeta,
+          entityProjectId,
+        );
 
         setActiveParticipantDetails({
           ...details,
-          version_details: versionDetails || (details.version_details as Record<string, unknown>) || {},
+          version_details: versionDetails,
         });
       } finally {
         setIsLoadingDetails(false);

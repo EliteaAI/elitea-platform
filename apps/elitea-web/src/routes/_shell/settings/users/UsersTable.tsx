@@ -19,7 +19,6 @@ import type { GridColDef, GridRenderCellParams, GridRowSelectionModel, GridSortM
 import { DataGrid } from '@mui/x-data-grid';
 import { useTheme } from '@mui/material/styles';
 
-import type { DeleteUserButtonProps } from '@/shared/ui/settings/DeleteUserButton';
 import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
 import { t } from '@/shared/ui/lib/t';
@@ -37,7 +36,7 @@ export interface UsersTableProps {
   sortDirection?: 'asc' | 'desc';
   actions: {
     edit: EditUsersButtonProps | null;
-    delete: DeleteUserButtonProps | null;
+    delete: Record<string, unknown>;
   };
   isLoading?: boolean;
 }
@@ -139,7 +138,7 @@ export const UsersTable = memo(function UsersTable({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              fontSize: '0.875rem',
+              fontSize: theme.typography.headingSmall.fontSize,
               color: theme.vars.palette.text.primary,
             }}
           >
@@ -160,7 +159,7 @@ export const UsersTable = memo(function UsersTable({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              fontSize: '0.875rem',
+              fontSize: theme.typography.headingSmall.fontSize,
               color: theme.vars.palette.text.secondary,
             }}
           >
@@ -183,7 +182,7 @@ export const UsersTable = memo(function UsersTable({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                fontSize: '0.875rem',
+                fontSize: theme.typography.headingSmall.fontSize,
                 color: theme.vars.palette.text.secondary,
               }}
             >
@@ -230,7 +229,7 @@ export const UsersTable = memo(function UsersTable({
         },
       },
     ],
-    [actions, users, theme.vars.palette.text.primary, theme.vars.palette.text.secondary],
+    [actions, users, theme.vars.palette.text.primary, theme.vars.palette.text.secondary, theme.typography.headingSmall.fontSize],
   );
 
   /* ── loading state ────────────────────────────────────────────────── */
@@ -274,32 +273,6 @@ export const UsersTable = memo(function UsersTable({
         flex: 1,
         minHeight: 0,
         border: 'none',
-        '& .MuiDataGrid-cell': {
-          borderColor: theme.vars.palette.divider,
-          fontSize: '0.875rem',
-        },
-        '& .MuiDataGrid-columnHeaders': {
-          borderColor: theme.vars.palette.divider,
-          backgroundColor: theme.vars.palette.background.default,
-        },
-        '& .MuiDataGrid-columnHeadersWithBorderColor': {
-          borderBottomWidth: 1.5,
-        },
-        '& .MuiDataGrid-row:hover': {
-          backgroundColor: theme.vars.palette.action.hover,
-        },
-        '& .MuiDataGrid-row.Mui-selected': {
-          backgroundColor: theme.vars.palette.action.selected,
-          '&:hover': {
-            backgroundColor: theme.vars.palette.action.hover,
-          },
-        },
-        '& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within': {
-          outline: 'none',
-        },
-        '& .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within': {
-          outline: 'none',
-        },
       }}
     />
   );

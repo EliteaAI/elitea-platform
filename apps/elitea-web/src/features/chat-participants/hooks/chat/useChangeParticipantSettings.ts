@@ -33,15 +33,13 @@ export function useChangeParticipantSettings({
   const projectId = useSelectedProjectId();
   const { mutate } = useUpdateParticipantSettingsMutation();
 
-  const onChangeParticipantSettings = useCallback(
-    (editedParticipant: Record<string, unknown>, hasBeenChanged: boolean) => {
-      if (!hasBeenChanged) return;
-      if (!activeConversation?.id || activeConversation?.isNew) return;
-
-      const id = String(editedParticipant.id);
-      const entitySettings = (editedParticipant.entity_settings as Record<string, unknown>) || {};
-
-      // Update local state optimistically
+  const updateSettings = useCallback(
+    (
+      id: string,
+      editedParticipant: Record<string, unknown>,
+      entitySettings: Record<string, unknown>,
+      conversationId: string,
+    ) => {
       setActiveConversation((prev: Record<string, unknown>) => ({
         ...prev,
         participants: prev.participants?.map((p: Record<string, unknown>) =>
@@ -49,21 +47,27 @@ export function useChangeParticipantSettings({
         ),
       }));
       setConversations((prev: Record<string, unknown>[]) =>
-        prev.map((conv) =>
-          !conv.isPlayback && String(conv.id) === String(activeConversation?.id)
+        prev.map((conv) => {
+          const convId = String((conv as Record<string, unknown> & { id?: unknown }).id);
+          return convId === conversationId
             ? { ...conv, participants: conv.participants?.map((p: Record<string, unknown>) => (String(p.id) === id ? editedParticipant : p)) }
-            : conv,
-        ),
+            : conv;
+        }),
       );
-      if (activeParticipant?.id === id || String(activeParticipant?.id) === id) {
-        setActiveParticipant(editedParticipant);
-      }
+    },
+    [setActiveConversation, setConversations],
+  );
 
-      // Send the mutation to the backend
+  const performMutation = useCallback(
+    (
+      id: string,
+      entitySettings: Record<string, unknown>,
+      conversationId: string,
+    ) => {
       mutate(
         {
           projectId,
-          conversationId: String(activeConversation?.id as string),
+          conversationId,
           participantId: id,
           settings: entitySettings,
         },
@@ -74,10 +78,43 @@ export function useChangeParticipantSettings({
         },
       );
     },
-    [projectId, activeConversation, activeParticipant, setActiveConversation, setConversations, setActiveParticipant, mutate, toastError],
+    [projectId, mutate, toastError],
   );
 
-  return { onChangeParticipantSettings };
+  const buildPayload = useCallback(
+    (editedParticipant: Record<string, unknown>) => {
+      const id = String(editedParticipant.id);
+      const entitySettings = (editedParticipant.entity_settings as Record<string, unknown>) || {};
+      const conversationId = String((activeConversation?.id as string) ?? '');
+      return { id, entitySettings, conversationId };
+    },
+    [activeConversation],
+  );
+
+  const syncActiveParticipant = useCallback(
+    (id: string, editedParticipant: Record<string, unknown>) => {
+      if (activeParticipant?.id === id || String(activeParticipant?.id) === id) {
+        setActiveParticipant(editedParticipant);
+      }
+    },
+    [activeParticipant, setActiveParticipant],
+  );
+
+  const handleUpdate = useCallback(
+    (editedParticipant: Record<string, unknown>, hasBeenChanged: boolean) => {
+      if (!hasBeenChanged) return;
+      if (!activeConversation?.id || activeConversation?.isNew) return;
+
+      const { id, entitySettings, conversationId } = buildPayload(editedParticipant);
+
+      updateSettings(id, editedParticipant, entitySettings, conversationId);
+      syncActiveParticipant(id, editedParticipant);
+      performMutation(id, entitySettings, conversationId);
+    },
+    [activeConversation, buildPayload, updateSettings, syncActiveParticipant, performMutation],
+  );
+
+  return { onChangeParticipantSettings: handleUpdate };
 }
 
 export default function useChangeParticipantSettingsHook(props: Parameters<typeof useChangeParticipantSettings>[0]) {

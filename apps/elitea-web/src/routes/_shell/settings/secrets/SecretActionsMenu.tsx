@@ -100,17 +100,14 @@ export const SecretActionsMenu = memo(function SecretActionsMenu({
 
 const styles: Record<string, SxProps<Theme>> = {
   paper: {
-    '& .MuiList-root': {
-      minWidth: '12.5rem',
-      padding: '0.5rem 0',
-    },
+    // List root minWidth and padding handled by MuiList override (mui-overrides/MuiList.ts).
   },
   menuItem: {
     minHeight: '2.5rem',
     padding: '0.5rem 0.5rem 0.5rem 1.25rem',
   },
-  menuIcon: {
-    fontSize: '1rem',
+  menuIcon: ({ typography }) => ({
+    fontSize: typography.headingMedium.fontSize,
     marginRight: '0.75rem',
-  },
+  }),
 };

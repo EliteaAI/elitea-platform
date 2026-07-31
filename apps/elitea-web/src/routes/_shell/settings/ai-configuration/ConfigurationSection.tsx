@@ -3,6 +3,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationSection.jsx`.
  */
 import { memo, useMemo } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -41,8 +42,8 @@ function getGroupLabel(
   type: string | undefined,
   label: string | undefined,
 ): string {
-  const configKey = ((name || type || '') as string).toLowerCase();
-  const labelKey = ((label || '') as string).toLowerCase();
+  const configKey = (name || type || '').toLowerCase();
+  const labelKey = (label || '').toLowerCase();
 
   const thirdPartyKeywords = ['azure', 'bedrock', 'vertex', 'vertexai', 'dial', 'ai_dial', 'ollama', 'hugging', 'model-router', 'postgres'];
 
@@ -71,6 +72,60 @@ function sortByName(a: Record<string, unknown>, b: Record<string, unknown>): num
   return nameA.localeCompare(nameB);
 }
 
+/**
+ * Groups configurations by provider label and sorts each group.
+ */
+function groupConfigurationsByProvider(
+  configurations: Record<string, unknown>[],
+  sortFn: (a: Record<string, unknown>, b: Record<string, unknown>) => number,
+): Record<string, Record<string, unknown>[]> | null {
+  const groups: Record<string, Record<string, unknown>[]> = {};
+  for (const config of configurations) {
+    const groupLabel = getGroupLabel(
+      config.name as string | undefined,
+      config.type as string | undefined,
+      config.label as string | undefined,
+    );
+    if (!groups[groupLabel]) groups[groupLabel] = [];
+    groups[groupLabel].push(config);
+  }
+  for (const groupLabel of Object.keys(groups)) {
+    groups[groupLabel].sort(sortFn);
+  }
+  return groups;
+}
+
+/**
+ * Renders ConfigurationCards for the given array of configurations.
+ * Extracted to keep ConfigurationSection below the complexity budget.
+ */
+function ConfigCards({
+  configurations,
+  defaultSettingValue,
+  styles,
+}: {
+  configurations: readonly Record<string, unknown>[];
+  defaultSettingValue: string;
+  styles: ReturnType<typeof getStyles>;
+}) {
+  return (
+    <Box sx={styles.configurationsContainer}>
+      {configurations.map((configuration, index) => {
+        const cfg = configuration;
+        const d = cfg.data as Record<string, unknown> | undefined;
+        return (
+          <ConfigurationCard
+            key={`${(cfg.id as string) || (cfg.name as string)}-${index}`}
+            configuration={configuration}
+            canEdit={true}
+            isDefault={defaultSettingValue === `${(d?.name as string) ?? ''}<<>>${(cfg.project_id as string) ?? ''}`}
+          />
+        );
+      })}
+    </Box>
+  );
+}
+
 export default memo(function ConfigurationSection({
   title,
   configurations,
@@ -83,22 +138,12 @@ export default memo(function ConfigurationSection({
   additionalDefaultSettings = [],
   groupTheModelsByProvider = false,
 }: ConfigurationSectionProps) {
-  const styles = getStyles();
+  const theme = useTheme();
+  const styles = getStyles(theme);
 
   const groupedConfigurations = useMemo(() => {
     if (!groupTheModelsByProvider || !configurations?.length) return null;
-    const groups: Record<string, Record<string, unknown>[]> = {};
-    for (const config of configurations) {
-      const c = config as Record<string, unknown>;
-      const groupLabel = getGroupLabel(c.name as string | undefined, c.type as string | undefined, c.label as string | undefined);
-      if (!groups[groupLabel]) groups[groupLabel] = [];
-      groups[groupLabel].push(config);
-    }
-    for (const groupLabel of Object.keys(groups)) {
-      const gc = groups[groupLabel];
-      if (gc) gc.sort(sortByName);
-    }
-    return groups;
+    return groupConfigurationsByProvider(configurations, sortByName);
   }, [configurations, groupTheModelsByProvider]);
 
   const sortedConfigurations = useMemo(() => {
@@ -118,32 +163,52 @@ export default memo(function ConfigurationSection({
   if (!configurations || configurations.length === 0) return null;
 
   return (
+    <ConfigurationSectionBody
+      title={title}
+      styles={styles}
+      hasDefaultSetting={hasDefaultSetting}
+      defaultSettingValue={defaultSettingValue}
+      defaultSettingLabel={defaultSettingLabel}
+      defaultSettingOptions={defaultSettingOptions}
+      onChangeDefaultSetting={onChangeDefaultSetting}
+      additionalDefaultSettings={additionalDefaultSettings}
+      groupTheModelsByProvider={groupTheModelsByProvider}
+      groupedConfigurations={groupedConfigurations}
+      sortedConfigurations={sortedConfigurations}
+    />
+  );
+});
+
+function ConfigurationSectionBody({
+  title, styles, hasDefaultSetting, defaultSettingValue,
+  defaultSettingLabel, defaultSettingOptions, onChangeDefaultSetting,
+  additionalDefaultSettings, groupTheModelsByProvider,
+  groupedConfigurations, sortedConfigurations,
+}: {
+  title: string;
+  styles: ReturnType<typeof getStyles>;
+  hasDefaultSetting?: boolean;
+  defaultSettingValue: string;
+  defaultSettingLabel?: React.ReactNode;
+  defaultSettingOptions?: Array<{ value: string; label: string }>;
+  onChangeDefaultSetting?: (value: string) => void;
+  additionalDefaultSettings?: AdditionalDefaultSetting[];
+  groupTheModelsByProvider?: boolean;
+  groupedConfigurations?: Record<string, Record<string, unknown>[]> | null;
+  sortedConfigurations?: readonly Record<string, unknown>[];
+}) {
+  return (
     <Box sx={styles.container}>
       <Typography variant="headingSmall" sx={styles.title}>{title}</Typography>
 
       {hasDefaultSetting && (
-        <Box sx={styles.defaultSettingsContainer}>
-          <SingleSelect
-            label={typeof defaultSettingLabel === 'string' ? defaultSettingLabel : ''}
-            value={defaultSettingValue}
-            onChange={onChangeDefaultSetting || (() => {})}
-            options={defaultSettingOptions}
-            disabled={false}
-          />
-
-          {additionalDefaultSettings
-            .filter((s): s is NonNullable<typeof s> => Boolean(s))
-            .map((setting) => (
-              <SingleSelect
-                key={setting.key ?? String(setting.label as string ?? 'additional')}
-                label={typeof setting.label === 'string' ? setting.label : ''}
-                value={setting.value ?? ''}
-                onChange={setting.onChange ?? (() => {})}
-                options={setting.options ?? []}
-                disabled={false}
-              />
-            ))}
-        </Box>
+        <DefaultSettingsSelects
+          defaultSettingValue={defaultSettingValue}
+          defaultSettingLabel={defaultSettingLabel}
+          defaultSettingOptions={defaultSettingOptions}
+          onChangeDefaultSetting={onChangeDefaultSetting}
+          additionalDefaultSettings={additionalDefaultSettings}
+        />
       )}
 
       {groupTheModelsByProvider && groupedConfigurations ? (
@@ -153,44 +218,62 @@ export default memo(function ConfigurationSection({
           return (
             <Box key={groupLabel} sx={styles.groupContainer}>
               <Typography variant="subtitle" color="text.primary">{groupLabel}</Typography>
-              <Box sx={styles.configurationsContainer}>
-                {groupConfigs.map((configuration, index) => {
-                  const cfg = configuration as Record<string, unknown>;
-                  const d = cfg.data as Record<string, unknown> | undefined;
-                  return (
-                    <ConfigurationCard
-                      key={`${(cfg.id as string) || (cfg.name as string)}-${index}`}
-                      configuration={configuration}
-                      canEdit={true}
-                      isDefault={defaultSettingValue === `${(d?.name as string) ?? ''}<<>>${(cfg.project_id as string) ?? ''}`}
-                    />
-                  );
-                })}
-              </Box>
+              <ConfigCards
+                configurations={groupConfigs}
+                defaultSettingValue={defaultSettingValue}
+                styles={styles}
+              />
             </Box>
           );
         })
       ) : (
-        <Box sx={styles.configurationsContainer}>
-          {sortedConfigurations.map((configuration, index) => {
-            const cfg = configuration as Record<string, unknown>;
-            const d = cfg.data as Record<string, unknown> | undefined;
-            return (
-              <ConfigurationCard
-                key={`${(cfg.id as string) || (cfg.name as string)}-${index}`}
-                configuration={configuration}
-                canEdit={true}
-                isDefault={defaultSettingValue === `${(d?.name as string) ?? ''}<<>>${(cfg.project_id as string) ?? ''}`}
-              />
-            );
-          })}
-        </Box>
+        <ConfigCards
+          configurations={sortedConfigurations ?? []}
+          defaultSettingValue={defaultSettingValue}
+          styles={styles}
+        />
       )}
     </Box>
   );
-});
+}
 
-function getStyles() {
+function DefaultSettingsSelects({
+  defaultSettingValue, defaultSettingLabel, defaultSettingOptions,
+  onChangeDefaultSetting, additionalDefaultSettings,
+}: {
+  defaultSettingValue: string;
+  defaultSettingLabel?: React.ReactNode;
+  defaultSettingOptions?: Array<{ value: string; label: string }>;
+  onChangeDefaultSetting?: (value: string) => void;
+  additionalDefaultSettings?: AdditionalDefaultSetting[];
+}) {
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', flexWrap: 'nowrap', alignItems: 'stretch', justifyContent: 'flex-start', gap: '1.5rem' }}>
+      <SingleSelect
+        label={typeof defaultSettingLabel === 'string' ? defaultSettingLabel : ''}
+        value={defaultSettingValue}
+        onChange={onChangeDefaultSetting || (() => {})}
+        options={defaultSettingOptions ?? []}
+        disabled={false}
+      />
+      {additionalDefaultSettings
+        ?.filter((s): s is NonNullable<typeof s> => Boolean(s))
+        .map((setting) => (
+          <SingleSelect
+            key={setting.key ?? String(setting.label as string ?? 'additional')}
+            label={typeof setting.label === 'string' ? setting.label : ''}
+            value={setting.value ?? ''}
+            onChange={setting.onChange ?? (() => {})}
+            options={setting.options ?? []}
+            disabled={false}
+          />
+        ))}
+    </Box>
+  );
+}
+
+function getStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     container: {
       padding: '1rem 1.5rem',
@@ -200,7 +283,7 @@ function getStyles() {
       width: '100%',
     },
     title: {
-      color: '#9ca3af',
+      color: t.vars.palette.text.secondary,
     },
     defaultSettingsContainer: {
       display: 'flex',
@@ -222,7 +305,7 @@ function getStyles() {
       flexDirection: 'column',
       paddingTop: '.5rem',
       paddingBottom: '1rem',
-      borderBottom: '1px solid #292e42',
+      borderBottom: `1px solid ${t.vars.palette.border.lines}`,
     },
   };
 }

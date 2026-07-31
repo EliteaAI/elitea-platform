@@ -14,11 +14,12 @@ import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
 import CircularProgress from '@mui/material/CircularProgress';
 import { useCallback, useRef, useState } from 'react';
+import { useTheme } from '@mui/material/styles';
+import type { Theme } from '@mui/material/styles';
 
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 
 import type { DefaultIcon } from '@/shared/api/generated/model/defaultIcon.zod';
-import type { UploadedIcon } from '@/entities/project/model/projectContextTypes';
 import { useDeleteProjectIconMutation, useProjectIconsQuery, useUploadProjectIconMutation } from '@/entities/project/api/projectContextApi';
 import { useGetApplicationDefaultIcons } from '@/shared/api/generated/applications/applications';
 
@@ -37,6 +38,32 @@ export interface ProjectIconDialogProps {
   projectName: string;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: upload a single file (complexity ≤ 4)
+// ---------------------------------------------------------------------------
+
+interface UploadFileParams {
+  file: File;
+  uploadMutation: { mutateAsync: (args: { file: File; width: number; height: number }) => Promise<void> };
+  onClose: () => void;
+  fileInputRef: React.RefObject<HTMLInputElement>;
+}
+
+function uploadFile({ file, uploadMutation, onClose, fileInputRef: _fileInputRef }: UploadFileParams): Promise<void> {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const image = new Image();
+    image.onload = async () => {
+      const w = image.width > 64 ? 64 : image.width;
+      const h = image.height > 64 ? 64 : image.height;
+      await uploadMutation.mutateAsync({ file, width: w, height: h });
+      onClose();
+    };
+    image.src = (e.target?.result as string) ?? '';
+  };
+  reader.readAsDataURL(file);
+}
+
 export function ProjectIconDialog({
   open,
   onClose,
@@ -45,6 +72,8 @@ export function ProjectIconDialog({
   selectedIcon,
   projectName,
 }: ProjectIconDialogProps) {
+  const _theme = useTheme();
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -58,7 +87,7 @@ export function ProjectIconDialog({
     useProjectIconsQuery(projectId, {
       enabled: open && !!projectId,
     });
-  const uploadedIcons = (iconsResponse?.rows as UploadedIcon[] | undefined) ?? [];
+  const uploadedIcons = iconsResponse?.rows ?? [];
 
   const uploadMutation = useUploadProjectIconMutation(projectId);
   const deleteMutation = useDeleteProjectIconMutation(projectId);
@@ -79,27 +108,17 @@ export function ProjectIconDialog({
       const file = event.target.files?.[0];
       if (!file) return;
       setIsUploading(true);
-      try {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const image = new Image();
-          image.onload = async () => {
-            const w = image.width > 64 ? 64 : image.width;
-            const h = image.height > 64 ? 64 : image.height;
-            await uploadMutation.mutateAsync({ file, width: w, height: h });
-            onClose();
-          };
-          image.src = (e.target?.result as string) ?? '';
-        };
-        reader.readAsDataURL(file);
-      } catch {
-        // Error toast handled by mutation.
-      } finally {
+      void uploadFile({
+        file,
+        uploadMutation,
+        onClose,
+        fileInputRef,
+      }).finally(() => {
         setIsUploading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
-      }
+      });
     },
-    [uploadMutation, onClose],
+    [uploadMutation, onClose, fileInputRef],
   );
 
   const handleDeleteIcon = useCallback(
@@ -123,104 +142,165 @@ export function ProjectIconDialog({
       onClose={onClose}
       title={t('entities.projectContext.projectIconDialog.title', 'Choose an icon')}
       content={
-        <Box sx={cx.content}>
-          {/* Default icons */}
-          <Box>
-            <Typography variant="labelSmall" color="text.tertiary" sx={cx.sectionLabel}>
-              {t('entities.projectContext.projectIconDialog.defaultSection', 'Default')}
-            </Typography>
-            <Box sx={cx.iconGrid}>
-              {!selectedIcon?.url && !selectedIcon?.name ? (
-                <ProjectIconItem isSelected onClick={() => void handleSelectIcon(null)}>
-                  <IconPlaceholder name={projectName} />
-                </ProjectIconItem>
-              ) : null}
-              {!loadingDefault &&
-                defaultIcons.map((icon) => (
-                  <ProjectIconItem
-                    key={icon.name}
-                    isSelected={selectedIcon?.name === icon.name}
-                    onClick={() => void handleSelectIcon(icon.name)}
-                  >
-                    <IconPlaceholder name={icon.name} url={icon.url} />
-                  </ProjectIconItem>
-                ))}
-            </Box>
-          </Box>
-
-          {/* Uploaded icons */}
-          <Box>
-            <Typography variant="labelSmall" color="text.tertiary" sx={cx.sectionLabel}>
-              {t('entities.projectContext.projectIconDialog.uploadedSection', 'Uploaded')}
-            </Typography>
-            <Box sx={cx.iconGrid}>
-              {loadingIcons && (
-                <Box sx={cx.loader}>
-                  <CircularProgress size={24} />
-                </Box>
-              )}
-              {uploadedIcons.map((icon) => (
-                <UserIconItem
-                  key={icon.name}
-                  isSelected={selectedIcon?.name === icon.name}
-                  onClick={() => void handleSelectIcon(icon.name)}
-                  onDelete={() => { handleDeleteIcon(icon.name).catch(() => {}); }}
-                >
-                  <IconPlaceholder name={icon.name} url={icon.url} />
-                </UserIconItem>
-              ))}
-              {!loadingIcons && uploadedIcons.length === 0 && (
-                <Typography variant="bodySmall" color="text.tertiary">
-                  {t('entities.projectContext.projectIconDialog.noUploaded', 'No uploaded icons yet')}
-                </Typography>
-              )}
-            </Box>
-          </Box>
-
+        <>
+          <DefaultIconsSection
+            projectName={projectName}
+            selectedIcon={selectedIcon}
+            defaultIcons={defaultIcons}
+            loadingDefault={loadingDefault}
+            onSelectIcon={handleSelectIcon}
+          />
+          <UploadedIconsSection
+            uploadedIcons={uploadedIcons}
+            loadingIcons={loadingIcons}
+            selectedIcon={selectedIcon}
+            onSelectIcon={handleSelectIcon}
+            onDeleteIcon={handleDeleteIcon}
+          />
           <input
             ref={fileInputRef}
             type="file"
             accept=".jpg,.jpeg,.png,.tiff,.webp,.gif,.bmp,.ico"
             style={{ display: 'none' }}
-            onChange={(e) => { void handleFileSelect(e); }}
+            onChange={(e) => { handleFileSelect(e); }}
           />
-        </Box>
+        </>
       }
       actions={{
         node: (
-          <Box>
-            <IconButton
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploading}
-              size="small"
-            >
-              {isUploading ? (
-                <CircularProgress size={16} />
-              ) : (
-                <ArrowUpwardIcon />
-              )}
-            </IconButton>
-          </Box>
+          <UploadIconButton
+            fileInputRef={fileInputRef}
+            isUploading={isUploading}
+          />
         ),
       }}
     />
   );
 }
 
-function IconPlaceholder({ name, url }: { name: string; url?: string }) {
+/* ── sub-components ────────────────────────────────────────────────────── */
+
+function DefaultIconsSection({
+  projectName,
+  selectedIcon,
+  defaultIcons,
+  loadingDefault,
+  onSelectIcon,
+}: {
+  projectName: string;
+  selectedIcon?: { name?: string; url?: string } | null;
+  defaultIcons: DefaultIcon[];
+  loadingDefault: boolean;
+  onSelectIcon: (name: string | null) => void;
+}) {
+  return (
+    <Box>
+      <Typography variant="labelSmall" color="text.tertiary" sx={cx.sectionLabel}>
+        {t('entities.projectContext.projectIconDialog.defaultSection', 'Default')}
+      </Typography>
+      <Box sx={cx.iconGrid}>
+        {!selectedIcon?.url && !selectedIcon?.name ? (
+          <ProjectIconItem isSelected onClick={() => onSelectIcon(null)}>
+          <IconPlaceholder name={projectName} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+          </ProjectIconItem>
+        ) : null}
+        {!loadingDefault &&
+          defaultIcons.map((icon) => (
+            <ProjectIconItem
+              key={icon.name}
+              isSelected={selectedIcon?.name === icon.name}
+              onClick={() => onSelectIcon(icon.name)}
+            >
+              <IconPlaceholder name={icon.name} url={icon.url} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+            </ProjectIconItem>
+          ))}
+      </Box>
+    </Box>
+  );
+}
+
+function UploadedIconsSection({
+  uploadedIcons,
+  loadingIcons,
+  selectedIcon,
+  onSelectIcon,
+  onDeleteIcon,
+}: {
+  uploadedIcons: Array<{ name: string; url?: string }>;
+  loadingIcons: boolean;
+  selectedIcon?: { name?: string; url?: string } | null;
+  onSelectIcon: (name: string | null) => void;
+  onDeleteIcon: (name: string) => Promise<void>;
+}) {
+  return (
+    <Box>
+      <Typography variant="labelSmall" color="text.tertiary" sx={cx.sectionLabel}>
+        {t('entities.projectContext.projectIconDialog.uploadedSection', 'Uploaded')}
+      </Typography>
+      <Box sx={cx.iconGrid}>
+        {loadingIcons && (
+          <Box sx={cx.loader}>
+            <CircularProgress size={24} />
+          </Box>
+        )}
+        {uploadedIcons.map((icon) => (
+          <UserIconItem
+            key={icon.name}
+            isSelected={selectedIcon?.name === icon.name}
+            onClick={() => onSelectIcon(icon.name)}
+            onDelete={() => { void onDeleteIcon(icon.name); }}
+          >
+            <IconPlaceholder name={icon.name} url={icon.url} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+          </UserIconItem>
+        ))}
+        {!loadingIcons && uploadedIcons.length === 0 && (
+          <Typography variant="bodySmall" color="text.tertiary">
+            {t('entities.projectContext.projectIconDialog.noUploaded', 'No uploaded icons yet')}
+          </Typography>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+function UploadIconButton({
+  fileInputRef,
+  isUploading,
+}: {
+  fileInputRef: React.RefObject<HTMLInputElement>;
+  isUploading: boolean;
+}) {
+  return (
+    <Box>
+      <IconButton
+        onClick={() => fileInputRef.current?.click()}
+        disabled={isUploading}
+        size="small"
+      >
+        {isUploading ? (
+          <CircularProgress size={16} />
+        ) : (
+          <ArrowUpwardIcon />
+        )}
+      </IconButton>
+    </Box>
+  );
+}
+
+function IconPlaceholder({ name, url, fontSize }: { name: string; url?: string; fontSize: number }) {
   if (url) {
     return (
       <Box
         component="img"
         src={url}
         alt={name}
-        sx={cx.iconImage}
+        sx={{ ...cx.iconImage }}
       />
     );
   }
   const initial = name ? name.charAt(0).toUpperCase() : '?';
   return (
-    <Box sx={cx.fallbackIcon}>
+    <Box sx={{ ...cx.fallbackIcon, fontSize }}>
       {initial}
     </Box>
   );
@@ -248,17 +328,17 @@ const cx = {
   iconImage: {
     width: '2.25rem',
     height: '2.25rem',
-    borderRadius: '50%',
+    borderRadius: 'var(--el-shape-radiusPill, 9999px)',
     objectFit: 'cover',
   } as React.CSSProperties,
   fallbackIcon: {
     width: '2.25rem',
     height: '2.25rem',
-    borderRadius: '50%',
+    borderRadius: 'var(--el-shape-radiusPill, 9999px)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: '1rem',
+    fontSize: (_theme as Theme).typography.headingSmall.fontSize,
     fontWeight: 600,
     color: 'text.primary',
   } as React.CSSProperties,

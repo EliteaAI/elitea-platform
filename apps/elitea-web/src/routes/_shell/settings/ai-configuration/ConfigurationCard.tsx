@@ -3,6 +3,7 @@
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/ai-configuration/Configuration/ConfigurationCard.jsx`.
  */
 import { memo, useCallback, useMemo } from 'react';
+import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -79,7 +80,8 @@ export interface ConfigurationCardProps {
 
 export default memo(
   ({ configuration, canEdit, isDefault, onClick }: ConfigurationCardProps) => {
-    const styles = getStyles();
+    const theme = useTheme();
+    const styles = getStyles(theme);
     const configData = (configuration.data ?? {}) as Record<string, unknown>;
     const isShared = configuration.shared === true;
 
@@ -149,7 +151,8 @@ export default memo(
   },
 );
 
-function getStyles() {
+function getStyles(theme: ReturnType<typeof useTheme>) {
+  const t = theme as Theme;
   return {
     cardContainer: (disabled: boolean) => ({
       boxSizing: 'border-box',
@@ -161,15 +164,15 @@ function getStyles() {
       flex: '0 0 calc((100% - 1.5rem) / 3)',
       maxWidth: 'calc((100% - 1.5rem) / 3)',
       minWidth: '20rem',
-      background: 'linear-gradient(135deg, #1a1b26 0%, #292e42 100%)',
+      background: `linear-gradient(135deg, ${t.vars.palette.background.eliteaDefault} 0%, ${t.vars.palette.border.lines} 100%)`,
       border: '1px solid transparent',
-      borderRadius: '0.75rem',
+      borderRadius: 'var(--el-shape-radiusMd, 8px)',
       padding: '0.5rem',
       cursor: disabled ? 'default' : 'pointer',
       transition: 'all 0.2s ease-in-out',
       '&:hover': !disabled ? {
-        border: '1px solid #414868',
-        backgroundColor: '#1a1b26',
+        border: `1px solid ${t.vars.palette.scrollbar.thumb}`,
+        backgroundColor: t.vars.palette.background.eliteaDefault,
       } : {},
       '@media (max-width: 1200px)': {
         flex: '0 0 calc((100% - 1.5rem) / 2)',
@@ -224,7 +227,7 @@ function getStyles() {
       display: 'inline-flex',
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: '1.25rem',
+      borderRadius: 'var(--el-shape-radiusLg, 16px)',
       padding: '0.125rem 0.5rem',
     },
   };

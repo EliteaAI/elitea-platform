@@ -10,6 +10,8 @@ import { IconButton, Tooltip } from '@mui/material';
 
 import DeleteIcon from '@mui/icons-material/Delete';
 
+import { t } from '@/shared/ui/lib/t';
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -28,10 +30,10 @@ const DeleteParticipantButton = memo((props: DeleteParticipantButtonProps): Reac
 
   if (!onDelete) return null;
 
-  const displayName = participant.entity_meta?.name || participant.entity_meta?.model_name || 'Participant';
+  const displayName = participant.entity_meta?.name || participant.entity_meta?.model_name || t('chat-participants.common.participant', 'Participant');
 
   return (
-    <Tooltip title={`Delete ${displayName}`}>
+    <Tooltip title={`${t('chat-participants.tooltip.delete', 'Delete')} ${displayName}`}>
       <span>
         <IconButton
           size="small"

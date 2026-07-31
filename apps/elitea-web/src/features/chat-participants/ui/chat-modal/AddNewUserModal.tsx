@@ -19,9 +19,12 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import CheckCircleRounded from '@mui/icons-material/CheckCircleRounded';
 
 import { useParticipants } from '@/entities/participant';
 import { useSelectedProjectId } from '@/shared/config';
+
+import { t } from '@/shared/ui/lib/t';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -77,13 +80,13 @@ const AddNewUserModal = memo((props: AddNewUserModalProps): React.ReactElement =
   }, [selectedUsers, onAddUsers, onClose]);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth sx={{ '& .MuiDialog-paper': { minWidth: 400 } }}>
-      <DialogTitle>Add Participants</DialogTitle>
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>{t('chat-participants.modal.title', 'Add Participants')}</DialogTitle>
       <DialogContent>
         <Box sx={{ mb: 2 }}>
           <TextField
             fullWidth
-            placeholder="Search participants..."
+            placeholder={t('chat-participants.modal.search', 'Search participants...')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             size="small"
@@ -91,12 +94,12 @@ const AddNewUserModal = memo((props: AddNewUserModalProps): React.ReactElement =
           />
         </Box>
         <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
-          {isLoading && <Typography variant="body2" color="text.disabled">Loading...</Typography>}
+          {isLoading && <Typography variant="body2" color="text.disabled">{t('chat-participants.modal.loading', 'Loading...')}</Typography>}
           {!isLoading && candidates.length === 0 && (
-            <Typography variant="body2" color="text.disabled">No participants found</Typography>
+            <Typography variant="body2" color="text.disabled">{t('chat-participants.modal.noResults', 'No participants found')}</Typography>
           )}
           {candidates.map((candidate) => {
-            const name = candidate.entity_meta?.name || 'Unknown';
+            const name = candidate.entity_meta?.name || t('chat-participants.common.unknown', 'Unknown');
             const isSelected = selectedUsers.some((u) => u.id === candidate.id);
             return (
               <Box
@@ -107,37 +110,38 @@ const AddNewUserModal = memo((props: AddNewUserModalProps): React.ReactElement =
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   p: 1,
-                  borderRadius: 1,
+                  borderRadius: 'var(--el-shape-radiusSm, 4px)',
                   cursor: 'pointer',
                   backgroundColor: isSelected ? 'action.selected' : 'transparent',
                   '&:hover': { backgroundColor: 'action.hover' },
                 }}
               >
                 <Typography variant="body2">{name}</Typography>
-                {isSelected && <Typography variant="body2" color="primary">✓</Typography>}
+                {isSelected && <CheckCircleRounded sx={{ color: 'primary.main' }} />}
               </Box>
             );
           })}
         </Box>
         {selectedUsers.length > 0 && (
-          <Box sx={{ mt: 2, p: 1, backgroundColor: 'action.selected', borderRadius: 1 }}>
-            <Typography variant="body2" sx={{ mb: 0.5 }}>Selected ({selectedUsers.length}):</Typography>
+          <Box sx={{ mt: 2, p: 1, backgroundColor: 'action.selected', borderRadius: 'var(--el-shape-radiusSm, 4px)' }}>
+            {/* eslint-disable-next-line i18next/no-literal-string -- placeholder for i18n interpolation */}
+            <Typography variant="body2" sx={{ mb: 0.5 }}>{`${t('chat-participants.modal.selected', 'Selected ({count}):').replace('{count}', '')} ${selectedUsers.length}`}</Typography>
             {selectedUsers.map((u) => (
               <Typography key={u.id} variant="bodySmall" color="text.secondary">
-                • {u.entity_meta?.name || 'Unknown'}
+                • {u.entity_meta?.name || t('chat-participants.common.unknown', 'Unknown')}
               </Typography>
             ))}
           </Box>
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
+        <Button onClick={onClose}>{t('chat-participants.modal.cancel', 'Cancel')}</Button>
         <Button
           onClick={handleAddSelected}
           disabled={selectedUsers.length === 0}
           variant="contained"
         >
-          Add Selected
+          {t('chat-participants.modal.addSelected', 'Add Selected')}
         </Button>
       </DialogActions>
     </Dialog>

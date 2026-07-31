@@ -144,14 +144,14 @@ export const SettingsPreview = memo(function SettingsPreview({
             onClick={onClose}
             aria-label={t('entities.token.preview.close', 'Close preview')}
           >
-            <span style={{ fontSize: '0.875rem' }}>{t('common.close', '✕')}</span>
+            <span style={{ fontSize: theme.typography.headingSmall.fontSize }}>{t('common.close', '✕')}</span>
           </IconButton>
           <Typography
             variant="headingSmall"
             color="text.secondary"
             sx={styles.title}
           >
-            {ideLabel} Settings
+            {`${ideLabel} ${t('entities.token.preview.settingsLabel', 'Settings')}`}
           </Typography>
         </Box>
         <Box sx={styles.headerRight}>
@@ -215,7 +215,7 @@ export const SettingsPreview = memo(function SettingsPreview({
           style={{
             margin: 0,
             padding: '1rem',
-            fontSize: '0.8125rem',
+            fontSize: theme.typography.headingSmall.fontSize,
             fontFamily: 'monospace',
             overflow: 'auto',
             height: '100%',
@@ -242,7 +242,7 @@ const getStyles = (): {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    borderRadius: '0.5rem',
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
     overflow: 'hidden',
     minHeight: 0,
     minWidth: '18.75rem',

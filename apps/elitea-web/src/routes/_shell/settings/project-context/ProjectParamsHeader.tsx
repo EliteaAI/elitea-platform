@@ -11,6 +11,7 @@ import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
+import { useTheme } from '@mui/material/styles';
 import { useCallback, useState } from 'react';
 
 import EditIcon from '@mui/icons-material/Edit';
@@ -121,6 +122,19 @@ function ProjectAvatar({
   projectName: string;
   iconUrl: string | null;
 }) {
+  const theme = useTheme();
+  const avatarSx: SxProps<Theme> = {
+    width: '3.5rem',
+    height: '3.5rem',
+    borderRadius: 'var(--el-shape-radiusPill, 9999px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: theme.typography.headingSmall.fontSize,
+    fontWeight: 600,
+    color: 'text.primary',
+    backgroundColor: 'action.selected',
+  };
   if (iconUrl) {
     return (
       <Box
@@ -138,19 +152,6 @@ function ProjectAvatar({
     </Box>
   );
 }
-
-const avatarSx: SxProps<Theme> = {
-  width: '3.5rem',
-  height: '3.5rem',
-  borderRadius: '50%',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: '1.5rem',
-  fontWeight: 600,
-  color: 'text.primary',
-  backgroundColor: 'action.selected',
-};
 
 const styles = (): Record<string, SxProps<Theme>> => ({
   root: {
@@ -179,9 +180,9 @@ const styles = (): Record<string, SxProps<Theme>> => ({
       backgroundColor: palette.background.dataGrid.main,
     },
   }),
-  editIcon: {
-    fontSize: '0.75rem',
-  },
+  editIcon: ({ typography }) => ({
+    fontSize: typography.labelSmall.fontSize,
+  }),
   infoContainer: {
     display: 'flex',
     flexDirection: 'column',
@@ -204,18 +205,18 @@ const styles = (): Record<string, SxProps<Theme>> => ({
     alignItems: 'center',
     gap: '0.375rem',
   },
-  metaLabel: () => ({
+  metaLabel: ({ typography }) => ({
     fontFamily: 'Montserrat, sans-serif',
     fontWeight: 400,
-    fontSize: '0.875rem',
+    fontSize: typography.headingSmall.fontSize,
     lineHeight: '1.5rem',
     color: 'text.primary',
     marginRight: '0.5rem',
   }),
-  metaValue: () => ({
+  metaValue: ({ typography }) => ({
     fontFamily: 'Montserrat, sans-serif',
     fontWeight: 400,
-    fontSize: '0.875rem',
+    fontSize: typography.headingSmall.fontSize,
     lineHeight: '1.5rem',
     color: 'text.secondary',
   }),

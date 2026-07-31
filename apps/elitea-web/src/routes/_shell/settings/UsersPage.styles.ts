@@ -64,8 +64,7 @@ export const usersPageStyles = {
     padding: '0.25rem 0.5rem',
     border: '1px solid',
     borderColor: 'divider',
-    borderRadius: '4px',
+    borderRadius: 'var(--el-shape-radiusSm, 4px)',
     backgroundColor: 'background.paper',
-    fontSize: '0.875rem',
   } as CSSProperties,
 } as const;
