@@ -29,7 +29,8 @@ import Grid from '@mui/material/Grid';
 import { useTheme } from '@mui/material/styles';
 
 import { ParticipantDetailsProvider } from '../lib/context/ParticipantDetailsContext';
-import { Participants, type ParticipantsProps } from './Participants';
+import { Participants } from './Participants';
+import type { ParticipantsProps } from './Participants.types';
 import { chatParticipantUniqueId } from '@/entities/participant';
 import { MIN_LARGE_WINDOW_WIDTH } from '@/shared/lib/layout';
 import { derivePaddingLeft, deriveWrapperStyleParams, useWrapperGridSizes, wrapperSx } from './ParticipantsWrapper.styles';
