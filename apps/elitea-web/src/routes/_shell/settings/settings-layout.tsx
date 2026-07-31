@@ -115,7 +115,7 @@ const styles: Record<string, SxProps<Theme>> = {
     flexShrink: 0,
     height: '100%',
     backgroundColor: palette.background.secondary,
-    borderRight: `0.0625rem solid ${palette.border.table}`,
+    borderRight: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
     boxSizing: 'border-box',
   }),
   mainContent: ({ palette }) => ({
