@@ -163,8 +163,6 @@ jobs:
         run: npm ci
       - name: Download coverage shards
         uses: actions/download-artifact@v4
-        with:
-          path: apps/elitea-web/coverage-shards
       - name: Merge coverage
         run: node scripts/merge-coverage.mjs
       - name: Upload merged coverage
