@@ -32,3 +32,12 @@ fake-artifact.bin
 
 # Agent-loop working state (task tracker, learnings, run history) — local only
 .ralph/
+
+# Qwen Code memory and session state (local only)
+.qwen/
+
+# node_modules everywhere (including root-level)
+node_modules/
+
+# Vitest cache (can end up in node_modules/.vite/)
+node_modules/.vite/
