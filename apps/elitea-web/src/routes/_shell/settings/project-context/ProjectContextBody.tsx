@@ -3,6 +3,8 @@
  * for the project context settings page.
  *
  * Extracted from `ProjectContextContent.tsx` to keep that file under 400 lines.
+ *
+ * Prop budget (≤ 12 §3.5) maintained via grouped interfaces.
  */
 import Box from '@mui/material/Box';
 import Snackbar from '@mui/material/Snackbar';
@@ -19,54 +21,65 @@ import { ProjectParamsHeader } from './ProjectParamsHeader';
 import { EnableToggleCard } from './EnableToggleCard';
 import { EditorSection } from './EditorSection';
 
-export interface ProjectContextBodyProps {
+// ---------------------------------------------------------------------------
+// Grouped prop interfaces (§3.5 component-props budget)
+// ---------------------------------------------------------------------------
+
+interface ProjectInfo {
   projectId: string;
   projectName: string;
+}
+
+interface PageState {
   enabled: boolean;
   showReadOnlyBanner: boolean;
   showDisabledBanner: boolean;
   showEditorContent: boolean;
   content: string;
   mode: 'edit' | 'preview';
+}
+
+interface EditorState {
   isEditorFocused: boolean;
   showEditorControls: boolean;
   canEdit: boolean;
   isDirty: boolean;
   isSaving: boolean;
+}
+
+interface ContentActions {
   handleToggle: (checked: boolean) => void;
   handleContentChange: (val: string) => void;
   handleModeChange: (_e: React.SyntheticEvent, newValue: 'edit' | 'preview') => void;
-  handleEditorBlur: (e: React.FocusEvent) => void;
   handleAIGenerated: (content: string) => void;
-  handleIconChange: (iconName: string | null) => Promise<void>;
-  handleSave: () => Promise<void>;
-  handleDiscard: () => void;
+}
+
+interface EditorActions {
+  handleEditorBlur: (e: React.FocusEvent) => void;
   onFocus: () => void;
 }
 
+interface SaveActions {
+  handleIconChange: (iconName: string | null) => Promise<void>;
+  handleSave: () => Promise<void>;
+  handleDiscard: () => void;
+}
+
+export interface ProjectContextBodyProps {
+  project: ProjectInfo;
+  pageState: PageState;
+  editorState: EditorState;
+  contentActions: ContentActions;
+  editorActions: EditorActions;
+  saveActions: SaveActions;
+}
+
+// ---------------------------------------------------------------------------
+// Component (6 grouped props)
+// ---------------------------------------------------------------------------
+
 export function ProjectContextBody({
-  projectId,
-  projectName,
-  enabled,
-  showReadOnlyBanner,
-  showDisabledBanner,
-  showEditorContent,
-  content,
-  mode,
-  isEditorFocused,
-  showEditorControls,
-  canEdit,
-  isDirty,
-  isSaving,
-  handleToggle,
-  handleContentChange,
-  handleModeChange,
-  handleEditorBlur,
-  handleAIGenerated,
-  handleIconChange,
-  handleSave,
-  handleDiscard,
-  onFocus,
+  project, pageState, editorState, contentActions, editorActions, saveActions,
 }: ProjectContextBodyProps) {
   const theme = useTheme();
   const s = projectContextStyles;
@@ -89,39 +102,39 @@ export function ProjectContextBody({
 
         <Box sx={s.body}>
           <ProjectParamsHeader
-            projectId={projectId}
-            projectName={projectName}
-            onIconChange={(iconName: string | null) => void handleIconChange(iconName)}
+            projectId={project.projectId}
+            projectName={project.projectName}
+            onIconChange={(iconName: string | null) => void saveActions.handleIconChange(iconName)}
           />
 
-          {showReadOnlyBanner && (
+          {pageState.showReadOnlyBanner && (
             <BannerMessage
               message={t('entities.projectContext.content.readOnlyBanner', "You don't have permission to edit this setting.")}
               variant="info"
             />
           )}
 
-          <EnableToggleCard enabled={enabled} onToggle={handleToggle} />
+          <EnableToggleCard enabled={pageState.enabled} onToggle={contentActions.handleToggle} />
 
-          {showDisabledBanner && (
+          {pageState.showDisabledBanner && (
             <BannerMessage
               message={t('entities.projectContext.content.disabledBanner', 'Project Context is turned off. The project background is not applied to AI responses or workflows.')}
               variant="info"
             />
           )}
 
-          {showEditorContent && (
+          {pageState.showEditorContent && (
             <EditorSection
-              content={content}
-              mode={mode}
-              isEditorFocused={isEditorFocused}
-              showEditorControls={showEditorControls}
-              canEdit={canEdit}
-              onContentChange={handleContentChange}
-              onModeChange={handleModeChange}
-              onFocus={onFocus}
-              onBlur={handleEditorBlur}
-              onAIGenerated={handleAIGenerated}
+              content={pageState.content}
+              mode={pageState.mode}
+              isEditorFocused={editorState.isEditorFocused}
+              showEditorControls={editorState.showEditorControls}
+              canEdit={editorState.canEdit}
+              onContentChange={contentActions.handleContentChange}
+              onModeChange={contentActions.handleModeChange}
+              onFocus={editorActions.onFocus}
+              onBlur={editorActions.handleEditorBlur}
+              onAIGenerated={contentActions.handleAIGenerated}
             />
           )}
 
@@ -129,16 +142,16 @@ export function ProjectContextBody({
             <BaseBtn
               variant="contained"
               color="primary"
-              disabled={!canEdit || !isDirty || isSaving}
-              onClick={() => void handleSave()}
+              disabled={!editorState.canEdit || !editorState.isDirty || editorState.isSaving}
+              onClick={() => void saveActions.handleSave()}
             >
               {t('entities.projectContext.content.save', 'Save')}
             </BaseBtn>
             <BaseBtn
               variant="secondary"
               color="secondary"
-              disabled={!canEdit || !isDirty}
-              onClick={() => handleDiscard()}
+              disabled={!editorState.canEdit || !editorState.isDirty}
+              onClick={() => saveActions.handleDiscard()}
             >
               {t('entities.projectContext.content.discard', 'Discard')}
             </BaseBtn>

@@ -240,28 +240,12 @@ export function ProjectContextContent({
   return (
     <>
       <ProjectContextBody
-        projectId={projectId}
-        projectName={projectName}
-        enabled={enabled}
-        showReadOnlyBanner={showReadOnlyBanner}
-        showDisabledBanner={showDisabledBanner}
-        showEditorContent={showEditorContent}
-        content={content}
-        mode={mode}
-        isEditorFocused={isEditorFocused}
-        showEditorControls={showEditorControls}
-        canEdit={canEdit}
-        isDirty={isDirty}
-        isSaving={isSaving}
-        handleToggle={handleToggle}
-        handleContentChange={handleContentChange}
-        handleModeChange={handleModeChange}
-        handleEditorBlur={handleEditorBlur}
-        handleAIGenerated={handleAIGenerated}
-        handleIconChange={handleIconChange}
-        handleSave={handleSave}
-        handleDiscard={handleDiscard}
-        onFocus={() => setIsEditorFocused(true)}
+        project={{ projectId, projectName }}
+        pageState={{ enabled, showReadOnlyBanner, showDisabledBanner, showEditorContent, content, mode }}
+        editorState={{ isEditorFocused, showEditorControls, canEdit, isDirty, isSaving }}
+        contentActions={{ handleToggle, handleContentChange, handleModeChange, handleAIGenerated }}
+        editorActions={{ handleEditorBlur, onFocus: () => setIsEditorFocused(true) }}
+        saveActions={{ handleIconChange, handleSave, handleDiscard }}
       />
       <input
         ref={fileInputRef}

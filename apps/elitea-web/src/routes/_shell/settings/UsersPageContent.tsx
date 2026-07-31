@@ -4,6 +4,8 @@
  * dialogs).
  *
  * Extracted from `users-page.tsx` to keep that file under 400 lines.
+ *
+ * Prop budget (≤ 12 §3.5) maintained via grouped interfaces.
  */
 import { memo } from 'react';
 
@@ -19,188 +21,159 @@ import { UsersPageHeader } from './UsersPageHeader';
 import { t } from '@/shared/ui/lib/t';
 import { usersPageStyles } from './UsersPage.styles';
 
-interface UsersPageContentProps {
+// ---------------------------------------------------------------------------
+// Grouped prop interfaces (§3.5 component-props budget)
+// ---------------------------------------------------------------------------
+
+interface PageData {
   users: UserRecord[];
   total: number;
-  rowsPerPage: number;
-  page: number;
   filteredUsers: UserRecord[];
   selectedUsers: UserRecord[];
+}
+
+interface PaginationState {
+  rowsPerPage: number;
+  page: number;
   pageSize: number;
-  sortField: string;
-  sortDirection: 'asc' | 'desc';
-  searchText: string;
-  toastMessage: string;
-  toastType: 'success' | 'error';
-  inviteOpen: boolean;
-  actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
-  singleAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
-  batchAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
-  rolesOptions: Array<{ label: string; value: string }>;
-  isLoading?: boolean;
+}
+
+interface TableActions {
   onSearchChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onPageSizeChange: (size: number) => void;
   onSort: (field: string, direction: 'asc' | 'desc') => void;
   onSelectPage: (selected: boolean) => void;
   onSelectRow: (user: { id: string }, selected: boolean) => void;
+}
+
+interface SortingState {
+  sortField: string;
+  sortDirection: 'asc' | 'desc';
+}
+
+interface SearchState {
+  searchText: string;
+}
+
+interface ToastState {
+  toastMessage: string;
+  toastType: 'success' | 'error';
+}
+
+interface DialogActions {
+  inviteOpen: boolean;
+  actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
+  singleAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
+  batchAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
+  rolesOptions: Array<{ label: string; value: string }>;
   onInviteConfirm: (roles: Set<string>) => void;
   onSetInviteOpen: (open: boolean) => void;
 }
 
+export interface UsersPageContentProps {
+  data: PageData;
+  pagination: PaginationState;
+  tableActions: TableActions;
+  sorting: SortingState;
+  search: SearchState;
+  toast: ToastState;
+  dialogs: DialogActions;
+  isLoading?: boolean;
+}
+
 export const UsersPageContent = memo(function UsersPageContent({
-  users,
-  total,
-  rowsPerPage,
-  page,
-  filteredUsers,
-  selectedUsers,
-  pageSize,
-  sortField,
-  sortDirection,
-  searchText,
-  toastMessage,
-  toastType,
-  inviteOpen,
-  actions,
-  singleAction,
-  batchAction,
-  rolesOptions,
-  isLoading,
-  onSearchChange,
-  onPageSizeChange,
-  onSort,
-  onSelectPage,
-  onSelectRow,
-  onInviteConfirm,
-  onSetInviteOpen,
+  data, pagination, tableActions, sorting, search, toast, dialogs, isLoading,
 }: UsersPageContentProps) {
-  const startRow = page * rowsPerPage + 1;
-  const endRow = Math.min(startRow + rowsPerPage - 1, filteredUsers.length);
+  const startRow = pagination.page * pagination.rowsPerPage + 1;
+  const endRow = Math.min(startRow + pagination.rowsPerPage - 1, data.filteredUsers.length);
 
   return (
     <UsersPageBody
-      usersPageStyles={usersPageStyles}
+      styles={usersPageStyles}
+      data={data}
+      pagination={pagination}
+      tableActions={tableActions}
+      sorting={sorting}
+      search={search}
+      toast={toast}
+      dialogs={dialogs}
+      isLoading={isLoading}
       startRow={startRow}
       endRow={endRow}
-      users={users}
-      total={total}
-      rowsPerPage={rowsPerPage}
-      page={page}
-      filteredUsers={filteredUsers}
-      selectedUsers={selectedUsers}
-      pageSize={pageSize}
-      sortField={sortField}
-      sortDirection={sortDirection}
-      searchText={searchText}
-      toastMessage={toastMessage}
-      toastType={toastType}
-      actions={actions}
-      singleAction={singleAction}
-      batchAction={batchAction}
-      rolesOptions={rolesOptions}
-      isLoading={isLoading}
-      onSearchChange={onSearchChange}
-      onPageSizeChange={onPageSizeChange}
-      onSort={onSort}
-      onSelectPage={onSelectPage}
-      onSelectRow={onSelectRow}
-      onInviteConfirm={onInviteConfirm}
-      onSetInviteOpen={onSetInviteOpen}
-      inviteOpen={inviteOpen}
     />
   );
 });
 
 /* ── sub-component: render body ───────────────────────────────────────── */
 
-function UsersPageBody({
-  usersPageStyles, startRow, endRow, users, total,
-  rowsPerPage, page, filteredUsers, selectedUsers, pageSize,
-  sortField, sortDirection, searchText, toastMessage, toastType,
-  actions, singleAction, batchAction, rolesOptions, isLoading,
-  onSearchChange, onPageSizeChange, onSort, onSelectPage, onSelectRow,
-  onInviteConfirm, onSetInviteOpen, inviteOpen,
-}: {
-  usersPageStyles: typeof import('./UsersPage.styles').usersPageStyles;
+interface UsersPageBodyProps {
+  styles: typeof import('./UsersPage.styles').usersPageStyles;
+  data: PageData;
+  pagination: PaginationState;
+  tableActions: TableActions;
+  sorting: SortingState;
+  search: SearchState;
+  toast: ToastState;
+  dialogs: DialogActions;
+  isLoading?: boolean;
   startRow: number;
   endRow: number;
-  users: UserRecord[];
-  total: number;
-  rowsPerPage: number;
-  page: number;
-  filteredUsers: UserRecord[];
-  selectedUsers: UserRecord[];
-  pageSize: number;
-  sortField: string;
-  sortDirection: 'asc' | 'desc';
-  searchText: string;
-  toastMessage: string;
-  toastType: 'success' | 'error';
-  actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
-  singleAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
-  batchAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
-  rolesOptions: Array<{ label: string; value: string }>;
-  isLoading?: boolean;
-  onSearchChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onPageSizeChange: (size: number) => void;
-  onSort: (field: string, direction: 'asc' | 'desc') => void;
-  onSelectPage: (selected: boolean) => void;
-  onSelectRow: (user: { id: string }, selected: boolean) => void;
-  onInviteConfirm: (roles: Set<string>) => void;
-  onSetInviteOpen: (open: boolean) => void;
-  inviteOpen: boolean;
-}) {
+}
+
+function UsersPageBody({
+  styles, data, pagination, tableActions, sorting, search, toast, dialogs,
+  isLoading, startRow, endRow,
+}: UsersPageBodyProps) {
   return (
-    <Box sx={usersPageStyles.container}>
+    <Box sx={styles.container}>
       <UsersPageHeader
-        usersPageStyles={usersPageStyles}
-        searchText={searchText}
-        onSearchChange={onSearchChange}
-        actions={actions}
-        selectedUsers={selectedUsers}
-        onSetInviteOpen={onSetInviteOpen}
+        usersPageStyles={styles}
+        searchText={search.searchText}
+        onSearchChange={tableActions.onSearchChange}
+        actions={dialogs.actions}
+        selectedUsers={data.selectedUsers}
+        onSetInviteOpen={dialogs.onSetInviteOpen}
       />
-      <UsersPageToast message={toastMessage} toastType={toastType} />
+      <UsersPageToast message={toast.toastMessage} toastType={toast.toastType} />
       <UsersPageTable
-        usersPageStyles={usersPageStyles}
-        users={users}
-        total={total}
-        rowsPerPage={rowsPerPage}
-        page={page}
-        selectedUsers={selectedUsers}
-        onSelectPage={onSelectPage}
-        onSelectRow={onSelectRow}
-        onSort={onSort}
-        sortField={sortField}
-        sortDirection={sortDirection}
-        actions={actions}
+        usersPageStyles={styles}
+        users={data.users}
+        total={data.total}
+        rowsPerPage={pagination.rowsPerPage}
+        page={pagination.page}
+        selectedUsers={data.selectedUsers}
+        onSelectPage={tableActions.onSelectPage}
+        onSelectRow={tableActions.onSelectRow}
+        onSort={tableActions.onSort}
+        sort={{ field: sorting.sortField, direction: sorting.sortDirection }}
+        actions={dialogs.actions}
         isLoading={isLoading}
       />
-      {filteredUsers.length > 0 && (
+      {data.filteredUsers.length > 0 && (
         <UsersPagePagination
-          usersPageStyles={usersPageStyles}
+          usersPageStyles={styles}
           startRow={startRow}
           endRow={endRow}
-          filteredUsersCount={filteredUsers.length}
-          pageSize={pageSize}
-          onPageSizeChange={onPageSizeChange}
+          filteredUsersCount={data.filteredUsers.length}
+          pageSize={pagination.pageSize}
+          onPageSizeChange={tableActions.onPageSizeChange}
         />
       )}
       <UsersPageDialogs
-        singleAction={singleAction}
-        batchAction={batchAction}
-        rolesOptions={rolesOptions}
-        selectedUsers={selectedUsers}
+        singleAction={dialogs.singleAction}
+        batchAction={dialogs.batchAction}
+        rolesOptions={dialogs.rolesOptions}
+        selectedUsers={data.selectedUsers}
         onConfirm={(roles) => {
-          if (singleAction?.edit) {
-            singleAction.edit.onConfirm(roles);
-          } else if (batchAction?.edit) {
-            batchAction.edit.onConfirm(roles);
+          if (dialogs.singleAction?.edit) {
+            dialogs.singleAction.edit.onConfirm(roles);
+          } else if (dialogs.batchAction?.edit) {
+            dialogs.batchAction.edit.onConfirm(roles);
           }
         }}
-        onSetInviteOpen={onSetInviteOpen}
-        onInviteConfirm={onInviteConfirm}
-        inviteOpen={inviteOpen}
+        onSetInviteOpen={dialogs.onSetInviteOpen}
+        onInviteConfirm={dialogs.onInviteConfirm}
+        inviteOpen={dialogs.inviteOpen}
       />
     </Box>
   );
@@ -229,8 +202,10 @@ function UsersPageToast({ message, toastType }: { message: string; toastType: 's
 
 function UsersPageTable({
   usersPageStyles, users, total, rowsPerPage, page, selectedUsers,
-  onSelectPage, onSelectRow, onSort, sortField, sortDirection,
-  actions, isLoading,
+  onSelectPage, onSelectRow, onSort,
+  sort,
+  actions,
+  isLoading,
 }: {
   usersPageStyles: typeof import('./UsersPage.styles').usersPageStyles;
   users: UserRecord[];
@@ -241,8 +216,7 @@ function UsersPageTable({
   onSelectPage: (selected: boolean) => void;
   onSelectRow: (user: { id: string }, selected: boolean) => void;
   onSort: (field: string, direction: 'asc' | 'desc') => void;
-  sortField: string;
-  sortDirection: 'asc' | 'desc';
+  sort: { field: string; direction: 'asc' | 'desc' };
   actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
   isLoading?: boolean;
 }) {
@@ -257,8 +231,8 @@ function UsersPageTable({
         onSelectPage={onSelectPage}
         onSelectRow={onSelectRow}
         onSort={onSort}
-        sortField={sortField}
-        sortDirection={sortDirection}
+        sortField={sort.field}
+        sortDirection={sort.direction}
         actions={actions}
         isLoading={isLoading}
       />
@@ -304,8 +278,8 @@ function UsersPageDialogs({
   singleAction, batchAction, rolesOptions, selectedUsers,
   onConfirm, onSetInviteOpen, onInviteConfirm, inviteOpen,
 }: {
-  singleAction: UsersPageContentProps['singleAction'];
-  batchAction: UsersPageContentProps['batchAction'];
+  singleAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
+  batchAction: { edit?: { userIds?: Set<string>; userRoles?: Set<string>; onConfirm: (roles: Set<string>) => void; isLoading?: boolean; disabled?: boolean; rolesOptions?: Array<{ label: string; value: string }> } };
   rolesOptions: Array<{ label: string; value: string }>;
   selectedUsers: UserRecord[];
   onConfirm: (roles: Set<string>) => void;

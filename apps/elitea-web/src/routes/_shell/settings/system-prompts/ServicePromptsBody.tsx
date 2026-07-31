@@ -2,6 +2,8 @@
  * ServicePromptsBody — renders the prompt cards grid and editor modal.
  *
  * Extracted from `ServicePromptsSection.tsx` to keep that file under 400 lines.
+ *
+ * Prop budget (≤ 12 §3.5) maintained via grouped interfaces.
  */
 import Box from '@mui/material/Box';
 
@@ -12,54 +14,61 @@ import { ServicePromptCard } from './ServicePromptCard';
 import { PromptEditorModal } from './PromptEditorModal';
 import { promptsStyles } from './ServicePrompts.styles';
 
-interface ServicePromptsBodyProps {
+// ---------------------------------------------------------------------------
+// Grouped prop interfaces (§3.5 component-props budget)
+// ---------------------------------------------------------------------------
+
+interface HeaderInfo {
   createTooltip: string;
   modalTitle: string;
-  handleOpenCreate: () => void;
-  handleOpenEdit: (config: PromptConfig) => void;
-  handleDiscard: () => void;
-  handleSave: () => Promise<void>;
-  handleRestoreToDefault: (config: PromptConfig) => Promise<void>;
-  hasDefaultPrompt: (key: string) => boolean;
+}
+
+interface PromptData {
   prompts: PromptConfig[];
-  isBusy: boolean;
-  hasAvailableKeys: boolean;
+  hasDefaultPrompt: (key: string) => boolean;
+}
+
+interface EditorState {
   isOpen: boolean;
   allowedKeys: string[];
   usedKeysRef: React.RefObject<Set<string>>;
-  hasDefault: boolean;
-  hasChanges: boolean;
-  onRestoreInModal: () => void;
   modeRef: React.RefObject<'create' | 'edit' | null>;
   draftKeyRef: React.RefObject<string>;
   draftPromptRef: React.RefObject<string>;
   onDraftKeyChange: (val: string) => void;
   onDraftPromptChange: (val: string) => void;
+  onRestoreInModal: () => void;
 }
 
+interface PromptActions {
+  handleOpenCreate: () => void;
+  handleOpenEdit: (config: PromptConfig) => void;
+  handleDiscard: () => void;
+  handleSave: () => Promise<void>;
+  handleRestoreToDefault: (config: PromptConfig) => Promise<void>;
+}
+
+interface EditorFlags {
+  isBusy: boolean;
+  hasAvailableKeys: boolean;
+  hasDefault: boolean;
+  hasChanges: boolean;
+}
+
+interface ServicePromptsBodyProps {
+  header: HeaderInfo;
+  promptData: PromptData;
+  editor: EditorState;
+  actions: PromptActions;
+  flags: EditorFlags;
+}
+
+// ---------------------------------------------------------------------------
+// Component (5 grouped props)
+// ---------------------------------------------------------------------------
+
 export function ServicePromptsBody({
-  createTooltip,
-  modalTitle,
-  handleOpenCreate,
-  handleOpenEdit,
-  handleDiscard,
-  handleSave,
-  handleRestoreToDefault,
-  hasDefaultPrompt,
-  prompts,
-  isBusy,
-  hasAvailableKeys,
-  isOpen,
-  allowedKeys,
-  usedKeysRef,
-  hasDefault,
-  hasChanges,
-  onRestoreInModal,
-  modeRef,
-  draftKeyRef,
-  draftPromptRef,
-  onDraftKeyChange,
-  onDraftPromptChange,
+  header, promptData, editor, actions, flags,
 }: ServicePromptsBodyProps) {
   return (
     <>
@@ -68,46 +77,48 @@ export function ServicePromptsBody({
         showAddButton
         slotProps={{
           addButton: {
-            onAdd: handleOpenCreate,
-            disabled: !hasAvailableKeys || isBusy,
-            tooltip: createTooltip,
+            onAdd: actions.handleOpenCreate,
+            disabled: !flags.hasAvailableKeys || flags.isBusy,
+            tooltip: header.createTooltip,
           },
         }}
       />
       <Box sx={promptsStyles.wrapper}>
         <Box sx={promptsStyles.cards}>
-          {prompts.map((item) => (
+          {promptData.prompts.map((item) => (
             <ServicePromptCard
               key={item.id}
               item={item}
-              hasDefault={hasDefaultPrompt(item.key)}
-              isBusy={isBusy}
-              onEdit={(config) => handleOpenEdit(config)}
+              hasDefault={promptData.hasDefaultPrompt(item.key)}
+              isBusy={flags.isBusy}
+              onEdit={(config) => actions.handleOpenEdit(config)}
               onRestore={() => {
-                void handleRestoreToDefault(prompts.find(p => p.key === item.key) as PromptConfig);
+                void actions.handleRestoreToDefault(
+                  promptData.prompts.find(p => p.key === item.key) as PromptConfig,
+                );
               }}
             />
           ))}
         </Box>
 
-        {isOpen && (
+        {editor.isOpen && (
           <PromptEditorModal config={{
-            open: isOpen,
-            onClose: handleDiscard,
-            title: modalTitle,
-            isBusy,
-            hasDefault,
-            hasChanges,
-            onDiscard: handleDiscard,
-            onSave: () => void handleSave(),
-            onRestore: onRestoreInModal,
-            mode: modeRef.current,
-            draftKey: draftKeyRef.current,
-            draftPrompt: draftPromptRef.current,
-            allowedKeys,
-            usedKeys: usedKeysRef.current,
-            onDraftKeyChange,
-            onDraftPromptChange,
+            open: editor.isOpen,
+            onClose: actions.handleDiscard,
+            title: header.modalTitle,
+            isBusy: flags.isBusy,
+            hasDefault: flags.hasDefault,
+            hasChanges: flags.hasChanges,
+            onDiscard: actions.handleDiscard,
+            onSave: () => void actions.handleSave(),
+            onRestore: editor.onRestoreInModal,
+            mode: editor.modeRef.current,
+            draftKey: editor.draftKeyRef.current,
+            draftPrompt: editor.draftPromptRef.current,
+            allowedKeys: editor.allowedKeys,
+            usedKeys: editor.usedKeysRef.current,
+            onDraftKeyChange: editor.onDraftKeyChange,
+            onDraftPromptChange: editor.onDraftPromptChange,
             styles: promptsStyles,
           }} />
         )}

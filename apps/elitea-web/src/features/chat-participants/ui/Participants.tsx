@@ -199,25 +199,17 @@ export const Participants = memo(
 
     return (
       <ParticipantsLayout
-        showTitle={showTitle}
-        collapseIcon={collapseIcon}
-        collapsed={collapsed}
-        onCollapsed={onCollapsed}
-        usersToDisplay={usersToDisplay}
-        hasOverflow={hasOverflow}
-        visibleCount={visibleCount}
-        maxVisibleUsers={maxVisibleUsers}
-        sections={sections}
-        activeParticipantId={activeParticipantId}
-        disabledEdit={disabledEdit}
-        disabledAdd={disabledAdd}
-        onSelectParticipant={handleSelectParticipant}
-        onDeleteParticipant={onDeleteParticipant}
-        onEditParticipant={onEditParticipant}
-        onUpdateParticipant={onUpdateParticipant}
-        editingToolkit={editingToolkit}
-        resolveToolkitIcon={resolveToolkitIcon}
-        _isMcpVisible={_isMcpVisible}
+        header={{ showTitle, collapseIcon, collapsed, onCollapsed }}
+        users={{ usersToDisplay, hasOverflow, visibleCount, maxVisibleUsers }}
+        sections={{ sections, activeParticipantId, disabledEdit, disabledAdd }}
+        actions={{
+          onSelectParticipant: handleSelectParticipant,
+          onDeleteParticipant,
+          onEditParticipant,
+          onUpdateParticipant,
+          editingToolkit,
+          resolveToolkitIcon,
+        }}
         renderContextBudget={renderContextBudget}
       />
     );

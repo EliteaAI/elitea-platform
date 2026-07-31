@@ -4,6 +4,8 @@
  * and context-budget slot.
  *
  * Extracted from `Participants.tsx` to keep that file under 400 lines.
+ *
+ * Prop budget (≤ 12 §3.5) is maintained by grouping related props into objects.
  */
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -18,44 +20,65 @@ import ParticipantItemRow from './ExpandedParticipants/ParticipantItemRow';
 import ParticipantSection from './ExpandedParticipants/ParticipantSection';
 import type { ParticipantsProps } from './Participants.types';
 
-export function ParticipantsLayout({
-  showTitle, collapseIcon, collapsed, onCollapsed,
-  renderContextBudget,
-  usersToDisplay, hasOverflow, visibleCount, maxVisibleUsers,
-  sections, activeParticipantId, disabledEdit, disabledAdd,
-  onSelectParticipant, onDeleteParticipant, onEditParticipant, onUpdateParticipant,
-  editingToolkit, resolveToolkitIcon,
-}: {
+// ---------------------------------------------------------------------------
+// Grouped prop interfaces (§3.5 component-props budget)
+// ---------------------------------------------------------------------------
+
+interface HeaderState {
   showTitle: boolean;
   collapseIcon: React.ReactNode;
   collapsed: boolean;
   onCollapsed?: () => void;
+}
+
+interface UserDisplay {
   usersToDisplay: TransformedParticipant[];
   hasOverflow: boolean;
   visibleCount: number;
   maxVisibleUsers: number;
+}
+
+interface SectionConfig {
   sections: Array<{ key: string; type: string; participants: TransformedParticipant[]; entityType: string }>;
   activeParticipantId?: string;
   disabledEdit?: boolean;
   disabledAdd?: boolean;
+}
+
+interface ParticipantActions {
   onSelectParticipant?: (p: TransformedParticipant) => void;
   onDeleteParticipant?: (p: TransformedParticipant) => void;
   onEditParticipant?: (p: TransformedParticipant) => void;
   onUpdateParticipant?: (p: TransformedParticipant) => void;
   editingToolkit?: string;
   resolveToolkitIcon?: ParticipantsProps['resolveToolkitIcon'];
+}
+
+export interface ParticipantsLayoutProps {
+  header: HeaderState;
+  users: UserDisplay;
+  sections: SectionConfig;
+  actions: ParticipantActions;
   renderContextBudget?: ParticipantsProps['renderContextBudget'];
-}) {
+}
+
+// ---------------------------------------------------------------------------
+// Component (≤ 12 props via grouping)
+// ---------------------------------------------------------------------------
+
+export function ParticipantsLayout({
+  header, users, sections, actions, renderContextBudget,
+}: ParticipantsLayoutProps) {
   return (
     <Box
-      sx={styles.mainContainer(collapsed)}
+      sx={styles.mainContainer(header.collapsed)}
       data-testid="participants-container"
     >
       {/* Content area */}
-      <Box sx={styles.contentContainer(collapsed)}>
+      <Box sx={styles.contentContainer(header.collapsed)}>
         {/* Header */}
-        <Box sx={styles.headerContainer(collapsed)}>
-          {showTitle && (
+        <Box sx={styles.headerContainer(header.collapsed)}>
+          {header.showTitle && (
             <Typography
               variant="subtitle"
               sx={styles.titleText}
@@ -63,41 +86,41 @@ export function ParticipantsLayout({
               {t('chat-participants.participants.title', 'Participants')}
             </Typography>
           )}
-          {onCollapsed && (
+          {header.onCollapsed && (
             <IconButton
               sx={styles.collapseButton}
               size="small"
-              onClick={onCollapsed}
-              aria-label={collapsed ? t('chat-participants.expand', 'Expand participants') : t('chat-participants.collapse', 'Collapse participants')}
+              onClick={header.onCollapsed}
+              aria-label={header.collapsed ? t('chat-participants.expand', 'Expand participants') : t('chat-participants.collapse', 'Collapse participants')}
             >
-              {collapseIcon}
+              {header.collapseIcon}
             </IconButton>
           )}
         </Box>
 
         {/* Participants sections */}
-        <Box sx={styles.participantsContainer(collapsed)}>
+        <Box sx={styles.participantsContainer(header.collapsed)}>
           {/* Users row (always at top when visible) */}
-          {visibleCount > 0 && !collapsed && (
+          {users.visibleCount > 0 && !header.collapsed && (
             <Box
               sx={styles.usersRow}
               data-testid="users-section"
             >
               <Box sx={styles.usersDisplay}>
-                {usersToDisplay.map((p) => (
+                {users.usersToDisplay.map((p) => (
                   <ParticipantItemRow
                     key={chatParticipantUniqueId(p)}
                     participant={p as unknown as ParticipantItemRowProps['participant']}
-                    isActive={activeParticipantId === chatParticipantUniqueId(p)}
-                    onClickItem={onSelectParticipant!}
+                    isActive={sections.activeParticipantId === chatParticipantUniqueId(p)}
+                    onClickItem={actions.onSelectParticipant!}
                   />
                 ))}
-                {hasOverflow && (
+                {users.hasOverflow && (
                   <Typography
                     variant="bodySmall"
                     sx={styles.usersOverflow}
                   >
-                    +{visibleCount - maxVisibleUsers}
+                    +{users.visibleCount - users.maxVisibleUsers}
                   </Typography>
                 )}
               </Box>
@@ -105,27 +128,27 @@ export function ParticipantsLayout({
           )}
 
           {/* Type sections */}
-          {sections.map(({ key, participants: group, entityType }) => (
+          {sections.sections.map(({ key, participants: group, entityType }) => (
             <ParticipantSection
               key={key}
-              disabledEdit={disabledEdit}
-              disabledAdd={disabledAdd}
+              disabledEdit={sections.disabledEdit}
+              disabledAdd={sections.disabledAdd}
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               participants={group as unknown as any}
-              collapsed={collapsed}
-              activeParticipantId={activeParticipantId}
-              onSelectParticipant={onSelectParticipant!}
-              onDeleteParticipant={onDeleteParticipant!}
-              onEditParticipant={onEditParticipant!}
-              onUpdateParticipant={onUpdateParticipant!}
+              collapsed={header.collapsed}
+              activeParticipantId={sections.activeParticipantId}
+              onSelectParticipant={actions.onSelectParticipant!}
+              onDeleteParticipant={actions.onDeleteParticipant!}
+              onEditParticipant={actions.onEditParticipant!}
+              onUpdateParticipant={actions.onUpdateParticipant!}
               entityType={entityType}
-              editingToolkit={editingToolkit}
-              resolveToolkitIcon={resolveToolkitIcon}
+              editingToolkit={actions.editingToolkit}
+              resolveToolkitIcon={actions.resolveToolkitIcon}
             />
           ))}
 
           {/* Empty state when no sections and not collapsed */}
-          {sections.length === 0 && visibleCount === 0 && !collapsed && (
+          {sections.sections.length === 0 && users.visibleCount === 0 && !header.collapsed && (
             <Typography
               variant="bodySmall"
               color="text.secondary"

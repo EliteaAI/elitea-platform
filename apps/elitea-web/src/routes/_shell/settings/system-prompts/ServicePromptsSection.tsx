@@ -289,28 +289,21 @@ export const ServicePromptsSection = memo(function ServicePromptsSection() {
 
   return (
     <ServicePromptsBody
-      createTooltip={createTooltip}
-      modalTitle={modalTitle}
-      handleOpenCreate={handleOpenCreate}
-      handleOpenEdit={handleOpenEdit}
-      handleDiscard={handleDiscard}
-      handleSave={handleSave}
-      handleRestoreToDefault={handleRestoreToDefault}
-      hasDefaultPrompt={hasDefaultPrompt}
-      prompts={prompts}
-      isBusy={isBusy}
-      hasAvailableKeys={hasAvailableKeys}
-      isOpen={isOpen}
-      allowedKeys={allowedKeys}
-      usedKeysRef={usedKeysRef}
-      hasDefault={hasDefaultPrompt(draftKeyRef.current)}
-      hasChanges={hasChanges}
-      onRestoreInModal={handleRestoreInModal}
-      modeRef={modeRef}
-      draftKeyRef={draftKeyRef}
-      draftPromptRef={draftPromptRef}
-      onDraftKeyChange={(val) => { draftKeyRef.current = val; }}
-      onDraftPromptChange={(val) => { draftPromptRef.current = val; }}
+      header={{ createTooltip, modalTitle }}
+      promptData={{ prompts, hasDefaultPrompt }}
+      editor={{
+        isOpen,
+        allowedKeys,
+        usedKeysRef,
+        modeRef,
+        draftKeyRef,
+        draftPromptRef,
+        onDraftKeyChange: (val) => { draftKeyRef.current = val; },
+        onDraftPromptChange: (val) => { draftPromptRef.current = val; },
+        onRestoreInModal: handleRestoreInModal,
+      }}
+      actions={{ handleOpenCreate, handleOpenEdit, handleDiscard, handleSave, handleRestoreToDefault }}
+      flags={{ isBusy, hasAvailableKeys, hasDefault: hasDefaultPrompt(draftKeyRef.current), hasChanges }}
     />
   );
 });
