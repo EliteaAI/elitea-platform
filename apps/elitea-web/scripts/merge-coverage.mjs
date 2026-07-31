@@ -65,6 +65,18 @@ async function main() {
 
 async function findCoverageFiles() {
   const files = [];
+  const roots = [shardRoot];
+
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.startsWith('coverage-shard-')) {
+        roots.push(path.join(root, entry.name));
+      }
+    }
+  } catch (error) {
+    // ignore missing repository root or permission issues
+  }
 
   async function walk(dir) {
     let entries;
@@ -84,7 +96,14 @@ async function findCoverageFiles() {
     }
   }
 
-  await walk(shardRoot);
+  for (const scanRoot of roots) {
+    await walk(scanRoot);
+  }
+
+  if (files.length === 0) {
+    console.log('No coverage shard artifacts found in:', roots.join(', '));
+  }
+
   return files;
 }
 
