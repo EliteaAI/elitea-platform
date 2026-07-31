@@ -245,24 +245,9 @@
     "src/features/chat-participants/ui/ParticipantActions/EditParticipantButton.tsx",
     "src/features/chat-participants/ui/ParticipantActions/ParticipantActions.tsx",
     "src/features/chat-participants/ui/ParticipantsWrapper.tsx",
-    // Legacy routes settings exports — barrel `index.ts` re-exports but
-    // individual source file exports are not consumed by any Wave-2 consumer.
-    "src/routes/_shell/settings/ai-configuration/api.ts",
-    "src/routes/_shell/settings/ai-configuration/codeExamples.helpers.ts",
-    "src/routes/_shell/settings/ai-configuration/codeExamples.ts",
-    "src/routes/_shell/settings/ai-configuration/configuration.helpers.ts",
-    "src/routes/_shell/settings/ai-configuration/ModelCapabilitiesSection.tsx",
-    "src/routes/_shell/settings/ai-configuration/modelConfiguration.helpers.ts",
-    "src/routes/_shell/settings/ai-configuration/ProjectAIConfiguration.tsx",
-    "src/routes/_shell/settings/ai-configuration/useConfigurationNavigation.ts",
-    "src/routes/_shell/settings/ai-configuration/useModelConfiguration.ts",
-    "src/routes/_shell/settings/ai-configuration/useCodePreview.ts",
-    "src/routes/_shell/settings/ai-configuration/useConfigurationsBySection.ts",
-    "src/routes/_shell/settings/profile/contextBudget/constants.ts",
-    "src/routes/_shell/settings/profile/contextBudget/ContextStrategySummarization.tsx",
-    "src/routes/_shell/settings/profile/ProfilePersonalization.tsx",
-    "src/routes/_shell/settings/profile/profileUtils.ts",
-    "src/routes/_shell/settings/users-page.tsx",
+    // Barrel `index.ts` re-exports are not consumed by any Wave-2 consumer yet.
+    // Adding the barrel itself to entry marks its re-exports as reachable.
+    "src/routes/_shell/settings/ai-configuration/index.ts",
     // Legacy shared API exports — functions exported from the old app's
     // configurations API and sound notification hooks, not consumed by
     // Wave-2 consumers yet.

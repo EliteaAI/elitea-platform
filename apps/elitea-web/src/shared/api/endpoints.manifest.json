@@ -1062,7 +1062,8 @@
             "responseSchema": "ConfigurationPageWire",
             "fixture": null,
             "usedBy": [
-                "features/credentials"
+                "features/credentials",
+                "features/settings"
             ]
         },
         {
