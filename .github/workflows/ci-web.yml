@@ -169,8 +169,12 @@ jobs:
       - name: Download coverage shards
         uses: actions/download-artifact@v4
       - name: Merge coverage (no validation — thresholds checked in coverage-validation)
-        run: node scripts/merge-coverage.mjs --no-validate
+        id: merge
+        run: |
+          node scripts/merge-coverage.mjs --no-validate
+          echo "merged=$?" >> $GITHUB_OUTPUT
       - name: Upload merged coverage
+        if: steps.merge.outputs.merged == '0'
         uses: actions/upload-artifact@v7
         with:
           name: elitea-web-coverage
@@ -181,6 +185,7 @@ jobs:
     name: Coverage validation
     runs-on: ubuntu-latest
     needs: [coverage-merge]
+    if: always() && needs.coverage-merge.result == 'success'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -217,7 +222,6 @@ jobs:
   gate-script-coverage:
     name: Gate-script decision-logic coverage
     runs-on: ubuntu-latest
-    needs: [coverage-merge]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -227,11 +231,6 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Download merged coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: elitea-web-coverage
-          path: coverage/
       - name: Check gate-script coverage thresholds
         # Scripts are NOT under src/ so they won't be in the main unit-tests
         # shard artifacts — run a focused scripts coverage run then read back
@@ -285,6 +284,7 @@ jobs:
     name: Generated-client mutator coverage
     runs-on: ubuntu-latest
     needs: [coverage-merge]
+    if: always() && needs.coverage-merge.result == 'success'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
