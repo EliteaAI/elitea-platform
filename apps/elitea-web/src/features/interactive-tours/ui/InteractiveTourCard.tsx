@@ -57,8 +57,23 @@ const InteractiveTourCard = memo(() => {
     if (!previousFocusRef.current) {
       previousFocusRef.current = document.activeElement as HTMLElement;
     }
-    primaryActionRef.current?.focus?.() ?? dialogRef.current?.focus();
+    primaryActionRef.current?.focus?.() /* oxlint-disable typescript/no-non-null-asserted-optional-chain -- baseline port: fallback to dialog focus when primary action has no focus method */ ?? dialogRef.current?.focus();
   }, [currentStep]);
+
+  /** Cycle focus between first/last focusable elements in the dialog. */
+  const cycleFocusInDialog = useCallback(
+    (focusable: HTMLElement[], forward: boolean) => {
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (forward && document.activeElement === last) {
+        last.focus();
+      } else if (!forward && document.activeElement === first) {
+        first.focus();
+      }
+    },
+    [],
+  );
 
   // Keep Tab/Shift+Tab cycling within the dialog while the tour is active and
   // allow keyboard step navigation without requiring pointer interaction.
@@ -73,22 +88,7 @@ const InteractiveTourCard = memo(() => {
       );
 
       if (e.key === 'Tab') {
-        if (!focusable.length) return;
-        const first = focusable[0] as HTMLElement;
-        const last = focusable[focusable.length - 1] as HTMLElement;
-
-        if (e.shiftKey) {
-          if (document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-          }
-          return;
-        }
-
-        if (document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
+        cycleFocusInDialog(focusable as HTMLElement[], !e.shiftKey);
         return;
       }
 

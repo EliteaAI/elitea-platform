@@ -66,6 +66,23 @@ async function main() {
   console.log('Merged coverage reports generated at', outputDir);
 }
 
+function printUncoveredLines(uncoveredLines) {
+  if (uncoveredLines.length === 0) return;
+  console.log('Uncovered lines per file:');
+  for (const entry of uncoveredLines) {
+    console.log(`  ${entry.file}: ${entry.uncoveredLines.join(', ')} (${entry.missedLines}/${entry.totalLines} lines uncovered)`);
+  }
+}
+
+function printUncoveredFunctions(uncoveredFunctions) {
+  if (uncoveredFunctions.length === 0) return;
+  console.log('Uncovered functions per file:');
+  for (const entry of uncoveredFunctions) {
+    const details = entry.funcs.map((func) => `${func.name} (line ${func.line})`).join(', ');
+    console.log(`  ${entry.file}: ${details}`);
+  }
+}
+
 function printUncoveredInfo(coverageMap) {
   const uncoveredLines = [];
   const uncoveredFunctions = [];
@@ -98,20 +115,8 @@ function printUncoveredInfo(coverageMap) {
     return;
   }
 
-  if (uncoveredLines.length > 0) {
-    console.log('Uncovered lines per file:');
-    for (const entry of uncoveredLines) {
-      console.log(`  ${entry.file}: ${entry.uncoveredLines.join(', ')} (${entry.missedLines}/${entry.totalLines} lines uncovered)`);
-    }
-  }
-
-  if (uncoveredFunctions.length > 0) {
-    console.log('Uncovered functions per file:');
-    for (const entry of uncoveredFunctions) {
-      const details = entry.funcs.map((func) => `${func.name} (line ${func.line})`).join(', ');
-      console.log(`  ${entry.file}: ${details}`);
-    }
-  }
+  printUncoveredLines(uncoveredLines);
+  printUncoveredFunctions(uncoveredFunctions);
 }
 
 function getUncoveredFunctions(fileCoverage) {
@@ -146,7 +151,7 @@ async function findCoverageFiles() {
           roots.push(path.join(scanDir, entry.name));
         }
       }
-    } catch (error) {
+    } catch {
       // ignore missing repo root or permission issues
     }
   }
@@ -155,7 +160,7 @@ async function findCoverageFiles() {
     let entries;
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch (error) {
+    } catch {
       return;
     }
 

@@ -70,10 +70,10 @@ function cardSx(_scheme: ColorScheme): SxProps<Theme> {
       content: '""',
       position: 'absolute',
       inset: '0',
-      borderRadius: 'inherit',
+      borderRadius: 'inherit', /* oxlint-disable elitea/ad-hoc-radius -- 'inherit' is CSS keyword, not ad-hoc */
       padding: '0.0625rem',
       background: (t: Theme) => t.vars.palette.border?.cardsOutlinesGradient ?? 'transparent',
-      mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+      mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)', /* oxlint-disable elitea/no-raw-color -- #fff is transparent mask color */
       maskComposite: 'exclude',
       WebkitMaskComposite: 'xor',
       pointerEvents: 'none',
@@ -111,20 +111,53 @@ const headerTextSx: SxProps<Theme> = {
 };
 
 function iconWrapperSx(scheme: ColorScheme): SxProps<Theme> {
-  const tokens = (theme: Theme) => theme.vars.palette.background?.resourceCard?.[scheme];
-  return {
-    background: (t: Theme) => tokens(t)?.icon ?? 'transparent',
-    color: (t: Theme) => tokens(t)?.iconColor ?? 'currentColor',
-    '&::before': {
-      background: (t: Theme) => tokens(t)?.iconBorderGradient ?? 'transparent',
-    },
-  };
+  switch (scheme) {
+    case 'blue':
+      return {
+        background: (t: Theme) => t.vars.palette.background.resourceCard.blue.icon ?? 'transparent',
+        color: (t: Theme) => t.vars.palette.background.resourceCard.blue.iconColor ?? 'currentColor',
+        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.blue.iconBorderGradient ?? 'transparent' },
+      };
+    case 'orange':
+      return {
+        background: (t: Theme) => t.vars.palette.background.resourceCard.orange.icon ?? 'transparent',
+        color: (t: Theme) => t.vars.palette.background.resourceCard.orange.iconColor ?? 'currentColor',
+        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.orange.iconBorderGradient ?? 'transparent' },
+      };
+    case 'purple':
+      return {
+        background: (t: Theme) => t.vars.palette.background.resourceCard.purple.icon ?? 'transparent',
+        color: (t: Theme) => t.vars.palette.background.resourceCard.purple.iconColor ?? 'currentColor',
+        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.purple.iconBorderGradient ?? 'transparent' },
+      };
+    case 'green':
+      return {
+        background: (t: Theme) => t.vars.palette.background.resourceCard.green.icon ?? 'transparent',
+        color: (t: Theme) => t.vars.palette.background.resourceCard.green.iconColor ?? 'currentColor',
+        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.green.iconBorderGradient ?? 'transparent' },
+      };
+    default:
+      return {
+        background: (t: Theme) => t.vars.palette.background.resourceCard.pink.icon ?? 'transparent',
+        color: (t: Theme) => t.vars.palette.background.resourceCard.pink.iconColor ?? 'currentColor',
+        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.pink.iconBorderGradient ?? 'transparent' },
+      };
+  }
 }
 
 function dividerSx(scheme: ColorScheme): SxProps<Theme> {
-  return {
-    borderColor: (t: Theme) => t.vars.palette.background?.resourceCard?.[scheme]?.divider ?? t.vars.palette.border?.lines ?? t.palette.divider,
-  };
+  switch (scheme) {
+    case 'blue':
+      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.blue.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
+    case 'orange':
+      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.orange.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
+    case 'purple':
+      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.purple.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
+    case 'green':
+      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.green.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
+    default:
+      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.pink.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
+  }
 }
 
 const bodySx: SxProps<Theme> = {

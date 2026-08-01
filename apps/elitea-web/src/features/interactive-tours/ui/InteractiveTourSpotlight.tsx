@@ -66,9 +66,9 @@ const spotlightSx =
       borderRadius: 'inherit',
       padding: `${BORDER_WIDTH_PX}px`,
       background: (palette.background?.interactiveTourPrompt?.borderGradient as string | undefined) ?? undefined,
-      WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+      WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)', /* oxlint-disable elitea/no-raw-color -- #fff is transparent mask color, not a visible UI color */
       WebkitMaskComposite: 'xor',
-      mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
+      mask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)', /* oxlint-disable elitea/no-raw-color -- #fff is transparent mask color, not a visible UI color */
       maskComposite: 'exclude',
     },
   });
