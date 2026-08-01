@@ -8,7 +8,3 @@
 # Cross-language runtime conformance vectors. These are canonical protobuf wire
 # fixtures checked byte-for-byte by the Go and Python implementations.
 testdata/proto/runtime/v1/**/*.pb
-
-# Wave-2 onboarding tour screenshots — legitimate UI asset images for interactive tours.
-apps/elitea-web/src/assets/onboarding/tips/*.png
-apps/elitea-web/src/assets/onboarding/welcome/chat-welcome.png

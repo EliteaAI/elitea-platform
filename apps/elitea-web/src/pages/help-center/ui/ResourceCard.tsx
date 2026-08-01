@@ -111,53 +111,20 @@ const headerTextSx: SxProps<Theme> = {
 };
 
 function iconWrapperSx(scheme: ColorScheme): SxProps<Theme> {
-  switch (scheme) {
-    case 'blue':
-      return {
-        background: (t: Theme) => t.vars.palette.background.resourceCard.blue.icon ?? 'transparent',
-        color: (t: Theme) => t.vars.palette.background.resourceCard.blue.iconColor ?? 'currentColor',
-        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.blue.iconBorderGradient ?? 'transparent' },
-      };
-    case 'orange':
-      return {
-        background: (t: Theme) => t.vars.palette.background.resourceCard.orange.icon ?? 'transparent',
-        color: (t: Theme) => t.vars.palette.background.resourceCard.orange.iconColor ?? 'currentColor',
-        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.orange.iconBorderGradient ?? 'transparent' },
-      };
-    case 'purple':
-      return {
-        background: (t: Theme) => t.vars.palette.background.resourceCard.purple.icon ?? 'transparent',
-        color: (t: Theme) => t.vars.palette.background.resourceCard.purple.iconColor ?? 'currentColor',
-        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.purple.iconBorderGradient ?? 'transparent' },
-      };
-    case 'green':
-      return {
-        background: (t: Theme) => t.vars.palette.background.resourceCard.green.icon ?? 'transparent',
-        color: (t: Theme) => t.vars.palette.background.resourceCard.green.iconColor ?? 'currentColor',
-        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.green.iconBorderGradient ?? 'transparent' },
-      };
-    default:
-      return {
-        background: (t: Theme) => t.vars.palette.background.resourceCard.pink.icon ?? 'transparent',
-        color: (t: Theme) => t.vars.palette.background.resourceCard.pink.iconColor ?? 'currentColor',
-        '&::before': { background: (t: Theme) => t.vars.palette.background.resourceCard.pink.iconBorderGradient ?? 'transparent' },
-      };
-  }
+  const tokens = (theme: Theme) => theme.vars.palette.background?.resourceCard?.[scheme];
+  return {
+    background: (t: Theme) => tokens(t)?.icon ?? 'transparent',
+    color: (t: Theme) => tokens(t)?.iconColor ?? 'currentColor',
+    '&::before': {
+      background: (t: Theme) => tokens(t)?.iconBorderGradient ?? 'transparent',
+    },
+  };
 }
 
 function dividerSx(scheme: ColorScheme): SxProps<Theme> {
-  switch (scheme) {
-    case 'blue':
-      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.blue.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
-    case 'orange':
-      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.orange.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
-    case 'purple':
-      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.purple.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
-    case 'green':
-      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.green.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
-    default:
-      return { borderColor: (t: Theme) => t.vars.palette.background.resourceCard.pink.divider ?? t.vars.palette.border?.lines ?? t.palette.divider };
-  }
+  return {
+    borderColor: (t: Theme) => t.vars.palette.background?.resourceCard?.[scheme]?.divider ?? t.vars.palette.border?.lines ?? t.palette.divider,
+  };
 }
 
 const bodySx: SxProps<Theme> = {

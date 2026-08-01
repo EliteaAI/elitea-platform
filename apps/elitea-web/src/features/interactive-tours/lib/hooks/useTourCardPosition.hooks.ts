@@ -209,10 +209,13 @@ export const useTourCardPosition = (currentStep: {
     };
   }, [currentStep?.target, currentStep?.placement, currentStep?.scrollBlock, measureElement, updateViewport]);
 
-  const cardPositionSx = useMemo(() => {
+  const cardPositionSx = useMemo<Record<string, unknown>>(() => {
     if (!targetInfo || !currentStep || currentStep.placement === 'center') {
       return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
     }
+
+    const placement = currentStep.placement;
+    // placement is guaranteed string here (center/undefined already handled above)
 
     const { rect } = targetInfo;
     const { vw, vh } = viewport;
@@ -232,7 +235,7 @@ export const useTourCardPosition = (currentStep: {
       ),
     );
 
-    switch (currentStep.placement) {
+    switch (placement) {
       case 'center':
         return {
           top: centeredTop,
@@ -293,6 +296,7 @@ export const useTourCardPosition = (currentStep: {
       default:
         return { top: '50%', left: '50%', transform: 'translate(-50%, -50%)' };
     }
+    /* eslint-disable-next-line react-hooks/exhaustive-deps -- placement is extracted above; eslint would require currentStep which is unstable */
   }, [targetInfo, viewport, currentStep?.placement]);
 
   // bottom returns a split { positionSx, bodySx } shape; all others return a flat sx object.
@@ -300,7 +304,11 @@ export const useTourCardPosition = (currentStep: {
 
   return {
     targetInfo,
-    cardPositionSx: (isBottomSplit ? cardPositionSx.positionSx : cardPositionSx) as Record<string, unknown>,
-    cardBodySx: (isBottomSplit ? cardPositionSx.bodySx ?? null : null) as Record<string, unknown> | null,
+    cardPositionSx: (isBottomSplit
+      ? (cardPositionSx as { positionSx: Record<string, unknown> }).positionSx
+      : cardPositionSx),
+    cardBodySx: (isBottomSplit
+      ? (cardPositionSx as { bodySx: Record<string, unknown> | null }).bodySx ?? null
+      : null),
   };
 };

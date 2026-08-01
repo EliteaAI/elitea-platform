@@ -7,7 +7,7 @@
  *  - Uses relative imports within `features/interactive-tours/`.
  */
 
-import { useCallback, useMemo, useReducer } from 'react';
+import { useCallback, useReducer, useMemo } from 'react';
 
 import type { TourStep } from '../types';
 
@@ -31,6 +31,10 @@ import {
   USERS_TOUR_ID,
 } from '../constants';
 import { initialState, lsCompletedKey, lsPromptKey, tourReducer } from '../helpers';
+import { createStorage } from '@/shared/lib/storage';
+
+/** §5.4: tour state must go through the namespaced storage so logout clears it. */
+const storage = createStorage('local');
 
 // ─── Tour step loaders (lazy) ─────────────────────────────────────────────────
 const TOUR_LOADERS: Record<string, () => Promise<TourStep[]>> = {
@@ -86,26 +90,25 @@ export interface TourControllerState {
  * `startTour` or provide their own controller.
  */
 export const useInteractiveTourController = (): TourControllerState => {
-  // Redux dispatch replaced with a no-op — sidebar-collapse and other
-  // settings-side-effects are wired at the app-composition layer.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op placeholder
-  const dispatchRedux = { dispatch: () => {} };
   const [state, dispatch] = useReducer(tourReducer, initialState);
 
-  const proposeTour = useCallback((id: string) => {
-    const seen = localStorage.getItem(lsPromptKey(id)) === 'true';
-    const completed = localStorage.getItem(lsCompletedKey(id)) === 'true';
+  const proposeTour = useCallback(
+    (id: string) => {
+      const seen = storage.get(lsPromptKey(id)) === 'true';
+      const completed = storage.get(lsCompletedKey(id)) === 'true';
 
-    if (!seen && !completed) {
-      dispatch({ type: 'PROPOSE', tourId: id });
-    }
-  }, []);
+      if (!seen && !completed) {
+        dispatch({ type: 'PROPOSE', tourId: id });
+      }
+    },
+    [],
+  );
 
   const startTour = useCallback(
     async (id: string) => {
       // Mark the prompt as seen immediately so that any re-run of proposeTour
       // (e.g. triggered by a context update) cannot snap the phase back to 'prompt'.
-      localStorage.setItem(lsPromptKey(id), 'true');
+      storage.set(lsPromptKey(id), 'true');
 
       // NOTE: sidebar-collapse side effect from the legacy app is omitted here;
       // it would require access to the Redux settings slice, which this
@@ -123,7 +126,7 @@ export const useInteractiveTourController = (): TourControllerState => {
 
       dispatch({ type: 'START', tourId: id, steps: activeSteps });
     },
-    [dispatchRedux],
+    [dispatch],
   );
 
   const next = useCallback(() => dispatch({ type: 'NEXT' }), []);
@@ -131,13 +134,13 @@ export const useInteractiveTourController = (): TourControllerState => {
   const skip = useCallback(() => dispatch({ type: 'SKIP' }), []);
 
   const dismissPrompt = useCallback(() => {
-    localStorage.setItem(lsPromptKey(state.tourId!), 'true');
+    storage.set(lsPromptKey(state.tourId!), 'true');
     dispatch({ type: 'DISMISS_PROMPT' });
   }, [state.tourId]);
 
   const closeComplete = useCallback(() => {
     if (state.tourId) {
-      localStorage.setItem(lsCompletedKey(state.tourId), 'true');
+      storage.set(lsCompletedKey(state.tourId), 'true');
     }
 
     dispatch({ type: 'CLOSE_COMPLETE' });

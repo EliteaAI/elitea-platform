@@ -111,19 +111,3 @@ export { parseYamlToMermaid } from './lib/helpers/parseYamlToMermaid.helpers';
  * still 19/20 against the shared ≤20 budget.
  */
 export { useApplicationsStore } from './model/applicationsStore';
-
-/**
- * Wave-2 unit A13 (agents-hub) prerequisite: export the category-query hooks
- * so `pages/agents-hub/` can import them directly without cross-slice imports.
- * Still 21/20 against the shared ≤20 budget — one over, justified by A13's
- * documented cross-slice requirement (agents-hub lives in pages/, not in a
- * different feature slice).
- */
-export {
-  useGetAgentCategoriesQuery,
-  useLazyGetAgentCategoriesQuery,
-} from './api/agentCategories';
-export type {
-  UseAgentCategoriesQueryArgs,
-  UseLazyGetAgentCategoriesQueryResult,
-} from './api/agentCategories';

@@ -62,6 +62,7 @@ const spotlightSx =
       content: '""',
       position: 'absolute',
       inset: 0,
+      // oxlint-disable-next-line elitea/ad-hoc-radius -- 'inherit' is a CSS keyword (not ad-hoc), required so the mask overlay matches the spotlight's token radius
       borderRadius: 'inherit',
       padding: `${BORDER_WIDTH_PX}px`,
       background: (palette.background?.interactiveTourPrompt?.borderGradient as string | undefined) ?? undefined,

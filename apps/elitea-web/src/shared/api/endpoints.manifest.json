@@ -445,9 +445,7 @@
             "source": "generated",
             "responseSchema": "PublicApplicationList",
             "fixture": null,
-            "usedBy": [
-                "pages/agents-hub"
-            ]
+            "usedBy": []
         },
         {
             "id": "applications.publishApplication",
