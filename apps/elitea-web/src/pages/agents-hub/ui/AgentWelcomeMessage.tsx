@@ -1,3 +1,4 @@
+/* oxlint-disable i18next/no-literal-string -- Wave-2 prototype: UI copy not yet wired through i18n shim (unit S8). REMOVER: S8. */
 /**
  * Agent Welcome Message — displays the agent's welcome text.
  *

@@ -1,3 +1,4 @@
+/* oxlint-disable i18next/no-literal-string, elitea/ad-hoc-font-size -- Wave-2 prototype: UI copy not yet through i18n shim (S8), ad-hoc font-size from ported baseline. REMOVER: S8 + token pass. */
 /**
  * Agent Card — displays a single agent in the hub grid.
  *

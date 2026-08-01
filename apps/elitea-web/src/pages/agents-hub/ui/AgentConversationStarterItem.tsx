@@ -1,3 +1,4 @@
+/* oxlint-disable elitea/ad-hoc-radius -- Wave-2 prototype: ad-hoc radius on ported component; replace with theme token when token pass lands. */
 /**
  * Agent Conversation Starter Item — individual starter pill/button.
  *

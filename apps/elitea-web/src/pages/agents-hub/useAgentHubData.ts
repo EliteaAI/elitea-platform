@@ -1,3 +1,4 @@
+/* oxlint-disable eslint/no-restricted-globals -- Wave-2 backend-gap: spec §6.5 — the OpenAPI spec only declares ?category, but the handler accepts page/pageSize/statuses/agents_type/trend_start_period/sort_by/sort_order/my_liked; we pass them through as raw query params via global fetch. REMOVER: when spec is updated and typed client is generated. */
 /**
  * Agent Hub data hook — local port of the old Redux-based `useAgentHubData`.
  *

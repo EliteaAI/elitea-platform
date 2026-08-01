@@ -1,3 +1,4 @@
+/* oxlint-disable i18next/no-literal-string, elitea/ad-hoc-radius, elitea/no-important-sx -- Wave-2 prototype: UI copy from ported baseline (S8 pending), ad-hoc radii and !important from baseline CSS. REMOVER: S8 + token pass. */
 /**
  * Agent Modal — detail dialog for a selected agent.
  *
