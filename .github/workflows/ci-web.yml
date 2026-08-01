@@ -168,8 +168,8 @@ jobs:
         run: npm ci
       - name: Download coverage shards
         uses: actions/download-artifact@v4
-      - name: Merge coverage
-        run: node scripts/merge-coverage.mjs
+      - name: Merge coverage (no validation — thresholds checked in coverage-validation)
+        run: node scripts/merge-coverage.mjs --no-validate
       - name: Upload merged coverage
         uses: actions/upload-artifact@v7
         with:

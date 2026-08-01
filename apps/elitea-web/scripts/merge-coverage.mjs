@@ -12,6 +12,10 @@ const shardRoot = path.join(root, 'coverage-shards');
 const altShardRoot = path.join(root, '..', 'coverage-shards');
 const outputDir = path.join(root, 'coverage');
 
+// CLI flags — coverage-merge CI job uses --no-validate to skip threshold checks.
+const args = process.argv.slice(2);
+const skipValidation = args.includes('--no-validate');
+
 const globalThresholds = {
   lines: 85,
   statements: 85,
@@ -62,7 +66,7 @@ async function main() {
     report.execute(context);
   }
 
-  enforceThresholds(coverageMap);
+  enforceThresholds(coverageMap, skipValidation);
   console.log('Merged coverage reports generated at', outputDir);
 }
 
@@ -185,7 +189,11 @@ async function findCoverageFiles() {
   return files;
 }
 
-function enforceThresholds(coverageMap) {
+function enforceThresholds(coverageMap, skipValidation) {
+  if (skipValidation) {
+    console.log('Coverage threshold validation skipped (--no-validate).');
+    return;
+  }
   const summary = getSummary(coverageMap.getCoverageSummary());
   const failures = [];
 
