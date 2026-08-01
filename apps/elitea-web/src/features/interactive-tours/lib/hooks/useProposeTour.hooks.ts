@@ -8,15 +8,20 @@
 
 import { createStorage } from '@/shared/lib/storage';
 
+/** §5.4: tour state must go through the namespaced storage so logout clears it. */
+let storage: ReturnType<typeof createStorage> | undefined;
+const getStorage = (): ReturnType<typeof createStorage> => {
+  storage ??= createStorage('local');
+  return storage;
+};
+
 /**
  * Persist a "pending tour" flag in namespaced storage under the key
  * `interactive-tour:<tourId>:pending`. Consumers that read this flag
  * should use `useProposePendingTour` to trigger the tour on mount.
  */
-const storage = createStorage('local');
-
 export const markTourPending = (tourId: string | null | undefined): void => {
   if (!tourId) return;
 
-  storage.set(`interactive-tour:${tourId}:pending`, 'true');
+  getStorage().set(`interactive-tour:${tourId}:pending`, 'true');
 };

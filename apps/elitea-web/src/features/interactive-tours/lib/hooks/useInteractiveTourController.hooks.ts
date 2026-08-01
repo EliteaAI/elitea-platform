@@ -34,7 +34,11 @@ import { initialState, lsCompletedKey, lsPromptKey, tourReducer } from '../helpe
 import { createStorage } from '@/shared/lib/storage';
 
 /** §5.4: tour state must go through the namespaced storage so logout clears it. */
-const storage = createStorage('local');
+let storage: ReturnType<typeof createStorage> | undefined;
+const getStorage = (): ReturnType<typeof createStorage> => {
+  storage ??= createStorage('local');
+  return storage;
+};
 
 // ─── Tour step loaders (lazy) ─────────────────────────────────────────────────
 const TOUR_LOADERS: Record<string, () => Promise<TourStep[]>> = {
@@ -94,8 +98,9 @@ export const useInteractiveTourController = (): TourControllerState => {
 
   const proposeTour = useCallback(
     (id: string) => {
-      const seen = storage.get(lsPromptKey(id)) === 'true';
-      const completed = storage.get(lsCompletedKey(id)) === 'true';
+      const s = getStorage();
+      const seen = s.get(lsPromptKey(id)) === 'true';
+      const completed = s.get(lsCompletedKey(id)) === 'true';
 
       if (!seen && !completed) {
         dispatch({ type: 'PROPOSE', tourId: id });
@@ -108,7 +113,7 @@ export const useInteractiveTourController = (): TourControllerState => {
     async (id: string) => {
       // Mark the prompt as seen immediately so that any re-run of proposeTour
       // (e.g. triggered by a context update) cannot snap the phase back to 'prompt'.
-      storage.set(lsPromptKey(id), 'true');
+      getStorage().set(lsPromptKey(id), 'true');
 
       // NOTE: sidebar-collapse side effect from the legacy app is omitted here;
       // it would require access to the Redux settings slice, which this
@@ -134,13 +139,13 @@ export const useInteractiveTourController = (): TourControllerState => {
   const skip = useCallback(() => dispatch({ type: 'SKIP' }), []);
 
   const dismissPrompt = useCallback(() => {
-    storage.set(lsPromptKey(state.tourId!), 'true');
+    getStorage().set(lsPromptKey(state.tourId!), 'true');
     dispatch({ type: 'DISMISS_PROMPT' });
   }, [state.tourId]);
 
   const closeComplete = useCallback(() => {
     if (state.tourId) {
-      storage.set(lsCompletedKey(state.tourId), 'true');
+      getStorage().set(lsCompletedKey(state.tourId), 'true');
     }
 
     dispatch({ type: 'CLOSE_COMPLETE' });
