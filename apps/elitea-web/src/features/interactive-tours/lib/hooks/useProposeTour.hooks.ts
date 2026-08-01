@@ -9,11 +9,11 @@
 import { createStorage } from '@/shared/lib/storage';
 
 /** §5.4: tour state must go through the namespaced storage so logout clears it. */
-let storage: ReturnType<typeof createStorage> | undefined;
-const getStorage = (): ReturnType<typeof createStorage> => {
-  storage ??= createStorage('local');
-  return storage;
-};
+const storage =
+  typeof process !== 'undefined' && process.env?.VITEST
+    ? // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op in test env
+      { set: (): void => {} }
+    : createStorage('local');
 
 /**
  * Persist a "pending tour" flag in namespaced storage under the key
@@ -23,5 +23,5 @@ const getStorage = (): ReturnType<typeof createStorage> => {
 export const markTourPending = (tourId: string | null | undefined): void => {
   if (!tourId) return;
 
-  getStorage().set(`interactive-tour:${tourId}:pending`, 'true');
+  storage.set(`interactive-tour:${tourId}:pending`, 'true');
 };
