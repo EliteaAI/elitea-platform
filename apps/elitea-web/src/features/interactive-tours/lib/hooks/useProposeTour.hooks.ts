@@ -9,7 +9,12 @@
 import { createStorage } from '@/shared/lib/storage';
 
 /** §5.4: tour state must go through the namespaced storage so logout clears it. */
-const storage = createStorage('local');
+let storage: ReturnType<typeof createStorage>;
+try {
+  storage = createStorage('local');
+} catch {
+  storage = ({ set: (): void => {} } as unknown) as ReturnType<typeof createStorage>;
+}
 
 /**
  * Persist a "pending tour" flag in namespaced storage under the key

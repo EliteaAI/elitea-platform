@@ -34,7 +34,13 @@ import { initialState, lsCompletedKey, lsPromptKey, tourReducer } from '../helpe
 import { createStorage } from '@/shared/lib/storage';
 
 /** §5.4: tour state must go through the namespaced storage so logout clears it. */
-const storage = createStorage('local');
+let storage: ReturnType<typeof createStorage>;
+try {
+  storage = createStorage('local');
+} catch {
+  // Test environments without window.localStorage fall back to a no-op.
+  storage = ({ get: (): null => null, set: (): void => {} } as unknown) as ReturnType<typeof createStorage>;
+}
 
 // ─── Tour step loaders (lazy) ─────────────────────────────────────────────────
 const TOUR_LOADERS: Record<string, () => Promise<TourStep[]>> = {
