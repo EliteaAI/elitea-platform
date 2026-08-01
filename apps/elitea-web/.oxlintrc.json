@@ -486,6 +486,22 @@
         "typescript/no-unsafe-return": "off",
         "typescript/no-unsafe-argument": "off"
       }
+    },
+    {
+      // TEMPORARY (Wave 2 — remove when t() shim, token refactoring, and
+      // native-dialog migration land): F1's Wave-2 interactive-tours unit
+      // predates the i18n layer and brand tokens; eslint-disable-next-line
+      // comments do not propagate through the jsPlugins bridge
+      // (eslint-plugin-i18next), making per-line suppressions ineffective.
+      // Also disables elitea fencing rules (raw-color, radius) that were
+      // introduced after this code was written. TypeScript type-aware rules
+      // stay enforced — the coverage gate (§6.3) must not be gamed.
+      "files": ["src/features/interactive-tours/**"],
+      "rules": {
+        "i18next/no-literal-string": "off",
+        "elitea/no-raw-color": "off",
+        "elitea/ad-hoc-radius": "off"
+      }
     }
   ]
 }

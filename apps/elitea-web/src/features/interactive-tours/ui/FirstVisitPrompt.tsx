@@ -56,6 +56,7 @@ const FirstVisitPrompt = memo((props: FirstVisitPromptProps) => {
     <InteractiveTourBackdrop>
       <Unstable_TrapFocus open>
         <TourCard
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- custom component; native <dialog> not viable
           role="dialog"
           aria-modal="true"
           aria-labelledby={TITLE_ID}

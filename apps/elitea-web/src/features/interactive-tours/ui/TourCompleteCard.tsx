@@ -64,6 +64,7 @@ const TourCompleteCard = memo(() => {
     <InteractiveTourBackdrop>
       <Unstable_TrapFocus open>
         <TourCard
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- custom component; native <dialog> not viable
           role="dialog"
           aria-modal="true"
           aria-labelledby={TITLE_ID}
@@ -150,7 +151,7 @@ const tourCompleteCardStyles = (): Record<string, SxProps<Theme>> => ({
     borderRadius: '0.5rem',
     padding: '1rem 0',
     justifyContent: 'center',
-    ...((typography?.labelMedium as Record<string, unknown> | undefined) ?? {}),
+    ...((typography?.labelMedium as Record<string, unknown> | undefined) || {}),
   }),
   footer: {
     display: 'flex',
