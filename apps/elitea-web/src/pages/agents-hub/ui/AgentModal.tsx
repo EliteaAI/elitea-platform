@@ -63,7 +63,7 @@ const AgentModal = memo(({ open, onClose, agent }: AgentModalProps) => {
     <Dialog
       open={open}
       onClose={onClose}
-      PaperProps={{ sx: styles.paper }}
+      slotProps={{ paper: { sx: styles.paper } }}
     >
       <Box sx={styles.mainPanel}>
         <DialogTitle sx={styles.dialogTitle}>
