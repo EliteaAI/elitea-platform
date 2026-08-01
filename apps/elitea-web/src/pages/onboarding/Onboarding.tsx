@@ -43,6 +43,7 @@ import { Box, IconButton, LinearProgress, Typography } from '@mui/material';
 import { FIRST_ELITEA_TOUR_ID, markTourPending } from '@/features/interactive-tours';
 import { OnboardingTour, Welcome, WorkspaceIsReady } from '@/features/onboarding';
 import { LogoIcon } from '@/shared/ui/icons/logo-icon';
+import { createStorage } from '@/shared/lib/storage';
 
 /** Placeholder user — the real user model will come from the auth provider. */
 const MOCK_USER = {
@@ -53,6 +54,7 @@ const MOCK_USER = {
 } as const;
 
 const ONBOARDING_STORAGE_KEY = 'onboarding_state';
+const sessionStore = createStorage('session');
 
 const Onboarding = memo(() => {
   // Disclosed, not silently dropped: useTrackEvent is unavailable in the new
@@ -62,7 +64,7 @@ const Onboarding = memo(() => {
   const [thePrivateProjectIsReady, setThePrivateProjectIsReady] = useState(false);
 
   // Check if user has clicked "Get Started" button before
-  const hasClickedGetStarted = sessionStorage.getItem(ONBOARDING_STORAGE_KEY) === 'true';
+  const hasClickedGetStarted = sessionStore.get(ONBOARDING_STORAGE_KEY) === 'true';
   const [showTour, setShowTour] = useState(hasClickedGetStarted || !!MOCK_USER.personal_project_id);
   const [progress, setProgress] = useState(5);
 
@@ -87,7 +89,7 @@ const Onboarding = memo(() => {
       onClearIntervals();
       setShowTour(true);
       setThePrivateProjectIsReady(true);
-      sessionStorage.removeItem(ONBOARDING_STORAGE_KEY);
+      sessionStore.remove(ONBOARDING_STORAGE_KEY);
     },
     [onClearIntervals],
   );
@@ -95,7 +97,7 @@ const Onboarding = memo(() => {
   const handleShowTour = useCallback(() => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_click_get_started')
     // is called by the old page here — analytics gap.
-    sessionStorage.setItem(ONBOARDING_STORAGE_KEY, 'true');
+    sessionStore.set(ONBOARDING_STORAGE_KEY, 'true');
 
     if (!MOCK_USER.personal_project_id) {
       progressIntervalIdRef.current = setInterval(() => {
@@ -114,7 +116,7 @@ const Onboarding = memo(() => {
   const handleJumpIn = () => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_jump_in') is
     // called by the old page here — analytics gap.
-    sessionStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    sessionStore.remove(ONBOARDING_STORAGE_KEY);
     window.location.href = '/chat';
     onClearIntervals();
   };

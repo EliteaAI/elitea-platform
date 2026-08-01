@@ -151,7 +151,7 @@ const tourCompleteCardStyles = (): Record<string, SxProps<Theme>> => ({
     borderRadius: '0.5rem',
     padding: '1rem 0',
     justifyContent: 'center',
-    ...((typography?.labelMedium as Record<string, unknown> | undefined) || {}),
+    ...(typography?.labelMedium as Record<string, unknown>),
   }),
   footer: {
     display: 'flex',

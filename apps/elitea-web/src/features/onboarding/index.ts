@@ -1,7 +1,14 @@
 /**
- * Barrel export for the onboarding feature.
- * Port of `apps/elitea-ui/src/[fsd]/features/onboarding/ui/index.js` (Wave-2 unit A13).
+ * Curated public API for the onboarding feature — Wave-2 unit A13.
+ * R-L4: index.ts re-exports named symbols; no barrel `export *`.
  */
 
-export * from './ui';
-export * from './lib';
+export {
+  OnboardingTour,
+  tourDialogSlotProps,
+  Welcome,
+  WorkspaceIsReady,
+  TourContent,
+  onboardingTips,
+} from './ui';
+export type { OnboardingTip } from './lib';

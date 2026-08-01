@@ -57,7 +57,13 @@ const InteractiveTourCard = memo(() => {
     if (!previousFocusRef.current) {
       previousFocusRef.current = document.activeElement as HTMLElement;
     }
-    primaryActionRef.current?.focus?.() /* oxlint-disable typescript/no-non-null-asserted-optional-chain -- baseline port: fallback to dialog focus when primary action has no focus method */ ?? dialogRef.current?.focus();
+    // baseline port: primary action is preferred focus target; fallback to dialog
+    const canFocus = primaryActionRef.current != null && typeof primaryActionRef.current.focus === 'function';
+    if (canFocus && primaryActionRef.current) {
+      primaryActionRef.current.focus();
+    } else {
+      dialogRef.current?.focus();
+    }
   }, [currentStep]);
 
   /** Cycle focus between first/last focusable elements in the dialog. */
@@ -113,7 +119,7 @@ const InteractiveTourCard = memo(() => {
         next();
       }
     },
-    [back, isFirstStep, next],
+    [back, cycleFocusInDialog, isFirstStep, next],
   );
 
   if (phase !== 'running' || !currentStep) return null;
@@ -127,6 +133,7 @@ const InteractiveTourCard = memo(() => {
 
       <TourCard
         ref={dialogRef}
+        // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- custom component; native <dialog> not viable
         role="dialog"
         aria-modal="true"
         aria-label={currentStep.title || 'Interactive tour'}
