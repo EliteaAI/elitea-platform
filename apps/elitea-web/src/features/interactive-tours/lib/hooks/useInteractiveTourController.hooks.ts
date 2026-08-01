@@ -35,7 +35,7 @@ import { createStorage } from '@/shared/lib/storage';
 
 /** §5.4: tour state must go through the namespaced storage so logout clears it. */
 const storage =
-  typeof process !== 'undefined' && process.env?.VITEST
+  typeof import.meta !== 'undefined' && import.meta.env?.VITEST
     ? // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op in test env
       { get: (): null => null, set: (): void => {} }
     : createStorage('local');
