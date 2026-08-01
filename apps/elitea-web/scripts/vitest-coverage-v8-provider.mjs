@@ -14,6 +14,105 @@ function parserOptionsFor(filename) {
   return undefined;
 }
 
+/**
+ * Extracted predicate helpers so ignoreNode stays under the complexity budget.
+ * Each function checks one Vite/SSR artefact node pattern.
+ */
+function isViteSSRImportVar(node) {
+  return (
+    node.type === 'VariableDeclarator'
+    && node.id.type === 'Identifier'
+    && node.id.name.startsWith('__vite_ssr_import_')
+  );
+}
+
+function isViteSSRExportsAssign(node) {
+  return (
+    node.type === 'ExpressionStatement'
+    && node.expression.type === 'AssignmentExpression'
+    && node.expression.left.type === 'MemberExpression'
+    && node.expression.left.object.type === 'Identifier'
+    && node.expression.left.object.name === '__vite_ssr_exports__'
+  );
+}
+
+function isViteSSRDefaultExport(node) {
+  return (
+    node.type === 'VariableDeclarator'
+    && node.id.type === 'Identifier'
+    && node.id.name === '__vite_ssr_export_default__'
+  );
+}
+
+function isViteCjsImportEsModule(node) {
+  return (
+    node.type === 'ConditionalExpression'
+    && node.test.type === 'MemberExpression'
+    && node.test.object.type === 'Identifier'
+    && node.test.object.name.startsWith('__vite__cjsImport')
+    && node.test.property.type === 'Identifier'
+    && node.test.property.name === '__esModule'
+  );
+}
+
+function isVitestConditionalInSSR(node) {
+  return (
+    node.type === 'IfStatement'
+    && node.test.type === 'MemberExpression'
+    && node.test.property.type === 'Identifier'
+    && node.test.property.name === 'vitest'
+  );
+}
+
+function isImportMetaEnvAssign(node) {
+  return (
+    node.type === 'ExpressionStatement'
+    && node.expression.type === 'AssignmentExpression'
+    && node.expression.left.type === 'MemberExpression'
+    && node.expression.left.object.type === 'MetaProperty'
+    && node.expression.left.object.meta.name === 'import'
+    && node.expression.left.object.property.name === 'meta'
+    && node.expression.left.property.type === 'Identifier'
+    && node.expression.left.property.name === 'env'
+  );
+}
+
+function isImportMetaStatement(node) {
+  return (
+    node.type === 'ExpressionStatement'
+    && node.expression.type === 'AssignmentExpression'
+    && node.expression.left.type === 'MemberExpression'
+    && node.expression.left.object.type === 'MetaProperty'
+    && node.expression.left.object.meta.name === 'import'
+    && node.expression.left.object.property.name === 'meta'
+  );
+}
+
+function isTsDecorateCall(node) {
+  return (
+    node.type === 'ExpressionStatement'
+    && node.expression.type === 'CallExpression'
+    && node.expression.callee.type === 'Identifier'
+    && node.expression.callee.name === '_ts_decorate'
+  );
+}
+
+function ignoreNode(node, type) {
+  if (type === 'statement') {
+    if (node.type === 'VariableDeclarator' && isViteSSRImportVar(node)) return true;
+    if (isViteSSRExportsAssign(node)) return true;
+    if (node.type === 'VariableDeclarator' && isViteSSRDefaultExport(node)) return true;
+    if (isImportMetaEnvAssign(node)) return true;
+    if (isImportMetaStatement(node)) return true;
+  }
+  if ((type === 'branch' || type === 'statement')) {
+    if (isVitestConditionalInSSR(node)) return 'ignore-this-and-nested-nodes';
+  }
+  if (type === 'branch' && isViteCjsImportEsModule(node)) return true;
+  if (type === 'statement' && isTsDecorateCall(node)) return 'ignore-this-and-nested-nodes';
+  return false;
+}
+
 class V8CoverageProviderWithTsxSupport extends V8CoverageProvider {
   async remapCoverage(filename, wrapperLength, result, functions) {
     let ast;
@@ -33,37 +132,7 @@ class V8CoverageProviderWithTsxSupport extends V8CoverageProvider {
       },
       ignoreClassMethods: this.options.ignoreClassMethods,
       wrapperLength,
-      ignoreNode: (node, type) => {
-        if (type === 'statement' && node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.id.name.startsWith('__vite_ssr_import_')) {
-          return true;
-        }
-        if (type === 'statement' && node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression' && node.expression.left.type === 'MemberExpression' && node.expression.left.object.type === 'Identifier' && node.expression.left.object.name === '__vite_ssr_exports__') {
-          return true;
-        }
-        if (type === 'statement' && node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.id.name === '__vite_ssr_export_default__') {
-          return true;
-        }
-        if (type === 'branch' && node.type === 'ConditionalExpression' && node.test.type === 'MemberExpression' && node.test.object.type === 'Identifier' && node.test.object.name.startsWith('__vite__cjsImport') && node.test.property.type === 'Identifier' && node.test.property.name === '__esModule') {
-          return true;
-        }
-        if ((type === 'branch' || type === 'statement') && node.type === 'IfStatement' && node.test.type === 'MemberExpression' && node.test.property.type === 'Identifier' && node.test.property.name === 'vitest') {
-          if (node.test.object.type === 'Identifier' && node.test.object.name === '__vite_ssr_import_meta__') {
-            return 'ignore-this-and-nested-nodes';
-          }
-          if (node.test.object.type === 'MetaProperty' && node.test.object.meta.name === 'import' && node.test.object.property.name === 'meta') {
-            return 'ignore-this-and-nested-nodes';
-          }
-        }
-        if (type === 'statement' && node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression' && node.expression.left.type === 'MemberExpression' && node.expression.left.object.type === 'MetaProperty' && node.expression.left.object.meta.name === 'import' && node.expression.left.object.property.name === 'meta' && node.expression.left.property.type === 'Identifier' && node.expression.left.property.name === 'env') {
-          return true;
-        }
-        if (type === 'statement' && node.type === 'ExpressionStatement' && node.expression.type === 'AssignmentExpression' && node.expression.left.type === 'MemberExpression' && node.expression.left.object.type === 'Identifier' && node.expression.left.object.name === '__vite_ssr_import_meta__') {
-          return true;
-        }
-        if (type === 'statement' && node.type === 'ExpressionStatement' && node.expression.type === 'CallExpression' && node.expression.callee.type === 'Identifier' && node.expression.callee.name === '_ts_decorate') {
-          return 'ignore-this-and-nested-nodes';
-        }
-      },
+      ignoreNode,
     });
   }
 }
@@ -71,7 +140,7 @@ class V8CoverageProviderWithTsxSupport extends V8CoverageProvider {
 const mod = {
   async getProvider() {
     return new V8CoverageProviderWithTsxSupport();
-  }
+  },
 };
 
 export default mod;
