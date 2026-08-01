@@ -502,6 +502,23 @@
         "elitea/no-raw-color": "off",
         "elitea/ad-hoc-radius": "off"
       }
+    },
+    {
+      // TEMPORARY (Wave 2 — remove when t() shim and token refactoring land):
+      // F1's Wave-2 onboarding page predates the i18n layer and brand tokens;
+      // eslint-disable-next-line comments do not propagate through the
+      // jsPlugins bridge. Also disables elitea fencing rules (raw-color,
+      // spacing, radius, MUI selectors, palette) that were introduced after
+      // this code was written. TypeScript type-aware rules stay enforced.
+      "files": ["src/pages/onboarding/**"],
+      "rules": {
+        "i18next/no-literal-string": "off",
+        "elitea/no-raw-color": "off",
+        "elitea/no-mui-internal-selector": "off",
+        "elitea/no-theme-palette": "off",
+        "elitea/raw-px-spacing": "off",
+        "elitea/ad-hoc-radius": "off"
+      }
     }
   ]
 }
