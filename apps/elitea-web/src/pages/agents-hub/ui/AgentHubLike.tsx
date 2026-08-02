@@ -16,7 +16,7 @@ import Typography from '@mui/material/Typography';
 
 import { HeartIcon } from '@/shared/ui/icons/heart-icon';
 import { HeartActiveIcon } from '@/shared/ui/icons/heart-active-icon';
-import { useCardLike } from '@/entities/application';
+import { useCardLike } from '@/entities/application/model/useCardLike';
 
 import type { ApplicationData } from '../types';
 

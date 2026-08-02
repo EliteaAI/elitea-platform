@@ -12,7 +12,10 @@ import * as entity from './index';
  * this slice ahead of its Wave-2 consumers.
  */
 const PUBLIC_SURFACE = [
-  'applicationSelectors',
+  'applicationDisplayName',
+  'isForkedApplication',
+  'isOwnedApplication',
+  'isPipelineApplication',
   'normaliseApplication',
   'normaliseApplicationCreatedResponse',
   'normaliseApplicationDetail',
@@ -20,7 +23,7 @@ const PUBLIC_SURFACE = [
   'normaliseApplicationUpdatedResponse',
   'normaliseApplicationVersionDetail',
   'normaliseApplications',
-  'useCardLike',
+  'sortApplicationsByRecency',
 ] as const;
 
 describe('entities/application public surface', () => {
