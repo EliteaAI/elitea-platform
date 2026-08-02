@@ -20,7 +20,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { SystemStyleObject } from '@mui/system';
 import Typography from '@mui/material/Typography';
 
-import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours/lib/constants';
+import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours';
 
 import { RESOURCE_CARD_CONFIGS } from './lib/ResourceCardConfig';
 import ResourceCard from './ui/ResourceCard';
