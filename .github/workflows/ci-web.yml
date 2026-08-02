@@ -207,6 +207,13 @@ jobs:
         with:
           name: elitea-web-coverage
           path: apps/elitea-web/coverage/
+      - name: Debug coverage download
+        # Verify the downloaded coverage files exist before running merge
+        working-directory: apps/elitea-web
+        run: |
+          echo "=== Coverage download contents ==="
+          ls -la coverage/ 2>/dev/null || echo "coverage/ not found"
+          find coverage/ -type f 2>/dev/null | head -20
       - name: Validate coverage thresholds
         # merge-coverage.mjs enforces thresholds by default (exits non-zero on failure).
         # working-directory ensures the script runs from apps/elitea-web/ where
@@ -314,20 +321,30 @@ jobs:
       - name: Install (locked)
         run: npm ci
       - name: Download merged coverage
-        # Path is workspace-root-relative (download-artifact resolves relative
-        # to workspace root, NOT working-directory). Check step uses
-        # working-directory: apps/elitea-web so ./coverage/ resolves correctly.
+        # This job has NO job-level working-directory, so checkout goes to
+        # workspace root. download-artifact path is workspace-root-relative.
         uses: actions/download-artifact@v4
         with:
           name: elitea-web-coverage
           path: apps/elitea-web/coverage/
       - name: Check mutator coverage thresholds
+        # working-directory makes the cwd apps/elitea-web/ where
+        # ./coverage/ resolves to apps/elitea-web/coverage/
         working-directory: apps/elitea-web
         # mutator.ts is generated code — coverage is enforced via the merged
         # shard artifact, not a separate vitest run. Reads the JSON directly.
         run: |
           node -e '
-            const data = require("./coverage/coverage-final.json");
+            const fs = require("fs");
+            const path = require("path");
+            const coveragePath = path.join(process.cwd(), "coverage", "coverage-final.json");
+            if (!fs.existsSync(coveragePath)) {
+              console.error("Coverage file not found at: " + coveragePath);
+              console.error("Files in cwd: " + fs.readdirSync(process.cwd()));
+              console.error("Files in coverage dir: " + (fs.existsSync(path.join(process.cwd(), "coverage")) ? fs.readdirSync(path.join(process.cwd(), "coverage")) : "N/A"));
+              process.exit(1);
+            }
+            const data = require(coveragePath);
             let lines = 0, functions = 0, branches = 0, statements = 0;
             for (const [file, f] of Object.entries(data)) {
               if (!file.includes("src/shared/api/generated/mutator.ts") && !file.includes("mutator.test.ts")) continue;
