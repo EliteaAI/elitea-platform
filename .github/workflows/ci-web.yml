@@ -173,6 +173,12 @@ jobs:
         run: |
           node scripts/merge-coverage.mjs --no-validate
           echo "merged=$?" >> $GITHUB_OUTPUT
+      - name: Debug coverage output
+        run: |
+          echo "=== Coverage dir contents ==="
+          ls -la coverage/ || echo "coverage/ not found"
+          echo "=== Coverage dir file count ==="
+          find coverage/ -type f 2>/dev/null | wc -l || echo "0"
       - name: Upload merged coverage
         if: steps.merge.outputs.merged == '0'
         uses: actions/upload-artifact@v7
