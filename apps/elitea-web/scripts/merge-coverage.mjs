@@ -66,6 +66,20 @@ async function main() {
     console.log(`  Writing ${reportDef.type} report to ${reportDef.options?.file ?? 'context.dir'}...`);
     await report.execute(context);
   }
+  // Also emit coverage-final.json for downstream gate checks that require
+  // the istanbul-lib-coverage map format (gate-mutator-coverage etc.).
+  const finalJsonPath = path.join(outputDir, 'coverage-final.json');
+  const finalData = {};
+  for (const [file, cov] of Object.entries(coverageMap.data)) {
+    finalData[file] = {
+      path: cov.path,
+      s: cov.s || {},
+      b: cov.b || {},
+      f: cov.f || {},
+    };
+  }
+  await fs.writeFile(finalJsonPath, JSON.stringify(finalData, null, 2), 'utf8');
+  console.log(`  Writing coverage-final.json to ${finalJsonPath}...`);
   // Verify report files were actually written
   const files = await fs.readdir(outputDir);
   console.log(`  Report files in ${outputDir}: ${files.join(', ')}`);

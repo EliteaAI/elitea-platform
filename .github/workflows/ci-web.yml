@@ -345,23 +345,33 @@ jobs:
               process.exit(1);
             }
             const data = require(coveragePath);
-            let lines = 0, functions = 0, branches = 0, statements = 0;
+            // istanbul map format: s/b/f are objects {id: hits}, not arrays
+            let coveredStmts = 0, totalStmts = 0;
+            let coveredFns = 0, totalFns = 0;
+            let coveredBranches = 0, totalBranches = 0;
             for (const [file, f] of Object.entries(data)) {
               if (!file.includes("src/shared/api/generated/mutator.ts") && !file.includes("mutator.test.ts")) continue;
-              const s = f.s || [];
-              const b = f.b || [];
-              const fn = f.f || [];
-              lines += s.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
-              branches += b.reduce((a, row) => a + row.reduce((a2, v) => a2 + (v > 0 ? 1 : 0), 0), 0);
-              functions += fn.reduce((a, v) => a + (v > 0 ? 1 : 0), 0);
-              statements += s.length;
+              // s/b/f can be arrays (vitest V8) or objects {id: hits} (istanbul map)
+              if (Array.isArray(f.s)) {
+                totalStmts += f.s.length; coveredStmts += f.s.filter(v => v > 0).length;
+                totalFns += f.f.length; coveredFns += f.f.filter(v => v > 0).length;
+                totalBranches += f.b.reduce((a, row) => a + row.length, 0);
+                coveredBranches += f.b.reduce((a, row) => a + row.filter(v => v > 0).length, 0);
+              } else {
+                totalStmts += Object.keys(f.s || {}).length;
+                coveredStmts += Object.values(f.s || {}).filter(v => v > 0).length;
+                totalFns += Object.keys(f.f || {}).length;
+                coveredFns += Object.values(f.f || {}).filter(v => v > 0).length;
+                totalBranches += Object.keys(f.b || {}).length;
+                coveredBranches += Object.values(f.b || {}).filter(v => v > 0).length;
+              }
             }
-            if (statements === 0) { console.log("mutator.ts not in coverage (excluded per config) — skipping"); process.exit(0); }
+            if (totalStmts === 0) { console.log("mutator.ts not in coverage (excluded per config) — skipping"); process.exit(0); }
             function pct(covered, total) { return total ? Math.round(covered / total * 100) : 100; }
-            const lp = pct(lines, statements);
-            const fp = pct(functions, statements);
-            const bp = pct(branches, statements);
-            const sp = pct(statements, statements);
+            const lp = pct(coveredStmts, totalStmts);
+            const fp = pct(coveredFns, totalFns);
+            const bp = pct(coveredBranches, totalBranches);
+            const sp = pct(totalStmts, totalStmts);
             console.log("Mutator coverage — lines: " + lp + "% functions: " + fp + "% branches: " + bp + "% statements: " + sp + "%");
             let fail = false;
             if (lp < 90) { console.error("Lines below 90% threshold (" + lp + "%)"); fail = true; }
