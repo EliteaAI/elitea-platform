@@ -4,16 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Elitea — Maintenance</title>
-    <style>
-      /* Skeleton-only system font stack; no external font origins (§3.7). */
-      body {
-        margin: 0;
-        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      }
-    </style>
+    <link rel="icon" type="image/svg+xml" href="https://avatars.githubusercontent.com/u/147170315?s=100" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
+    <script>
+      // Auto-reload: poll every 60s and reload if page is older than 120s
+      (function () {
+        const start = Date.now();
+        const interval = setInterval(() => {
+          if (Date.now() - start > 120_000) {
+            clearInterval(interval);
+            window.location.reload();
+          }
+        }, 60_000);
+      })();
+    </script>
   </body>
 </html>
