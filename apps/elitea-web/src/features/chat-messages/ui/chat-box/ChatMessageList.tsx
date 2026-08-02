@@ -34,11 +34,11 @@ export interface ChatMessageListProps {
   /** Whether auto-speak mode is active. */
   readonly autoSpeak?: boolean;
   /** Currently speaking message ID. */
-  readonly speakingMessageId?: string;
+  readonly speakingMessageId?: string | undefined;
   /** TTS speaking segments. */
-  readonly speakingSegments?: readonly unknown[];
+  readonly speakingSegments?: readonly unknown[] | undefined;
   /** TTS spoken range. */
-  readonly spokenRange?: { readonly start: number; readonly end: number };
+  readonly spokenRange?: { readonly start: number; readonly end: number } | undefined;
 }
 
 /**
