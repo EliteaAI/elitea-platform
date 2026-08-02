@@ -101,6 +101,15 @@ export type { AgentEditorProps } from './ui/AgentEditor';
 export { parseYamlToMermaid } from './lib/helpers/parseYamlToMermaid.helpers';
 
 /**
+ * Unit C6 additions: `useAgentCreation`/`useEditAgent`/`useAgentEditorUrlSync`
+ * — all fully ported, intra-slice-only today, needed cross-feature by C6's
+ * `deps`-composition root. Bundled into one `agentEditorHooks` object export
+ * (the established convention, matching `chatInputCompositionHooks`/`voiceHooks`
+ * precedent) to consume exactly the 1 remaining free slot (19/20 → 20/20).
+ */
+export { agentEditorHooks } from './model/agentEditorHooks';
+
+/**
  * Unit C1 addition (`processes/chat/model`): `useApplicationsStore`, per
  * this Wave-2 run's own cross-cluster guidance — `processes/chat/model/
  * useRefetchAgentVersionDetailsOnClose.ts` reuses this store's
@@ -108,6 +117,6 @@ export { parseYamlToMermaid } from './lib/helpers/parseYamlToMermaid.helpers';
  * re-deriving a chat-scoped duplicate (a duplicate store instance would be
  * silently broken: two independent zustand singletons never see each
  * other's writes). Purely additive — no existing export above changed;
- * still 19/20 against the shared ≤20 budget.
+ * still 20/20 against the shared ≤20 budget.
  */
 export { useApplicationsStore } from './model/applicationsStore';

@@ -73,27 +73,17 @@ export type { ToolkitsControlsProps } from './ui/toolkits-tab-bar/ToolkitsContro
  * yet.
  */
 export { ToolkitEditor } from './ui/ToolkitEditor';
-export type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps, ToolkitEditorShellProps } from './ui/ToolkitEditor';
+export type { ToolkitEditorDeps, ToolkitEditorParticipant, ToolkitEditorProps } from './ui/ToolkitEditor';
 export { DeleteToolkitButton } from './ui/DeleteToolkitButton';
 export { ExportToolkitButton } from './ui/ExportToolkitButton';
 
 /**
- * The remaining 4 slots (18/20 -> 20/20, at the §3.5 ceiling — re-check
- * before adding more) — this unit's (A4g) OWN `pages/toolkits/
- * CreateToolkit.tsx`/`EditToolkit.tsx` (ROUTE-027/028/030 and their
- * `/mcps/**` siblings) are the real, landed callers that need each of these
- * four as a cross-slice entry point (R-L3: a slice is entered through its
- * index.ts only, `pages/` is not exempt). No prop-shape TYPE is exported
- * alongside any of the four: every real call site in `pages/toolkits/**`
- * either (a) passes an inline object literal TypeScript checks structurally
- * against the component's own prop type with no import needed (same
- * "caller assembling the deps object... without needing a separate import"
- * precedent this file's own `ToolkitsList` block above already established),
- * or (b) derives the one shared shape it DOES need to name
- * (`ToolkitFormEditDetail`) via `ComponentProps<typeof ToolkitForm>` instead
- * of a fifth type export — see `pages/toolkits/lib/toolkitFormTypes.ts`'s
- * own doc comment.
+ * Unit C6 additions (`useEditToolkit`/`useToolkitCreation`): fully ported,
+ * intra-slice-only today, needed cross-feature by C6's `deps`-composition
+ * root. Bundled into one `toolkitEditorHooks` object export (the established
+ * convention) to consume exactly the 1 remaining free slot (19/20 → 20/20).
  */
+export { toolkitEditorHooks } from './model/toolkitEditorHooks';
 export { ToolkitForm } from './ui/form/ToolkitForm/ToolkitForm';
 export { ToolkitTypeSelector } from './ui/ToolkitTypeSelector';
 export { CreateToolkitToolTabBar } from './ui/CreateToolkitToolTabBar';
