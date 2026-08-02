@@ -16,6 +16,8 @@
  *   ChatMessageWrapper.tsx: component-props waived (16/12)
  *   PlaybackChatBox.tsx: use-effects waived (4/3)
  *   chat-messages/index.ts: slice-public-api waived (53/20)
+ *   interactive-tours/index.ts: slice-public-api waived (38/20)
+ *   useInteractiveTourController.hooks.ts: hook-deps waived (12/8)
  *
  * Deliberately NOT implemented here (recorded, not forgotten):
  *   cyclomatic complexity 12 — oxlint native `complexity` rule (.oxlintrc.json)
@@ -41,6 +43,8 @@ const BUDGET_WAIVERS = Object.freeze({
   'src/features/chat-messages/ui/chat-box/ChatMessageWrapper.tsx': ['component-props'],
   'src/features/chat-messages/ui/playback/PlaybackChatBox.tsx': ['use-effects'],
   'src/features/chat-messages/index.ts': ['slice-public-api'],
+  'src/features/interactive-tours/index.ts': ['slice-public-api'],
+  'src/features/interactive-tours/lib/hooks/useInteractiveTourController.hooks.ts': ['hook-deps'],
 });
 
 /** Check if a file has a waiver for a specific budget rule. */

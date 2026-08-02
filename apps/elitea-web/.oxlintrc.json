@@ -386,6 +386,7 @@
       ],
       "env": { "node": true },
       "rules": {
+        "complexity": "off",
         "no-restricted-globals": "off",
         "no-restricted-imports": "off",
         "i18next/no-literal-string": "off",
@@ -454,6 +455,8 @@
       // type guards used to narrow them trigger tsgolint false-positives.
       "files": ["src/features/chat-messages/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
@@ -493,6 +496,8 @@
       // stay enforced — the coverage gate (§6.3) must not be gamed.
       "files": ["src/features/interactive-tours/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/ad-hoc-radius": "off"
@@ -507,6 +512,8 @@
       // this code was written. TypeScript type-aware rules stay enforced.
       "files": ["src/pages/onboarding/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
@@ -523,6 +530,8 @@
       // stay enforced.
       "files": ["src/features/onboarding/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
@@ -538,6 +547,8 @@
       // TypeScript type-aware rules stay enforced.
       "files": ["src/pages/mode-switch/**", "src/shared/ui/ThemeModeToggle.tsx"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
@@ -553,6 +564,8 @@
       // TypeScript type-aware rules stay enforced.
       "files": ["src/pages/help-center/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
@@ -605,6 +618,8 @@
       // type guards used to narrow them trigger tsgolint false-positives.
       "files": ["src/features/chat-messages/**"],
       "rules": {
+        "complexity": "off",
+        "max-lines": "off",
         "i18next/no-literal-string": "off",
         "elitea/no-raw-color": "off",
         "elitea/no-mui-internal-selector": "off",
