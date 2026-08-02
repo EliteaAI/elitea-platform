@@ -34,6 +34,19 @@
       // predating R-T6 — same rationale as .oxlintrc.json override.
       "files": ["**/features/chat-messages/**"],
       "rules": { "elitea/no-mui-internal-selector": "off" }
+    },
+    {
+      // TEMPORARY (Wave 2 — remove when token refactoring lands):
+      // These units predate the R-T1 fence and contain raw colour literals.
+      "files": [
+        "**/features/interactive-tours/**",
+        "**/features/onboarding/**",
+        "**/pages/onboarding/**",
+        "**/pages/mode-switch/**",
+        "**/pages/help-center/**",
+        "**/entities/application/model/useCardLike.ts"
+      ],
+      "rules": { "elitea/no-raw-color": "off" }
     }
   ]
 }

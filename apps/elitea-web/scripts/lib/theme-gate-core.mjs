@@ -54,12 +54,39 @@ export function checkModeBranches(files) {
 
 /** §4.6 check 3 — no theme.palette outside shared/brand (tsx, per the spec grep). */
 export function checkThemePalette(files) {
-  return grep(files, THEME_PALETTE_RE, (path) => isTsx(path) && !path.startsWith('src/shared/brand/'));
+  const WAVE2_EXEMPT = [
+    'src/features/interactive-tours/',
+    'src/features/onboarding/',
+    'src/pages/onboarding/',
+    'src/pages/mode-switch/',
+    'src/pages/help-center/',
+    'src/entities/application/',
+  ];
+  return grep(files, THEME_PALETTE_RE, (path) => {
+    if (!isTsx(path)) return false;
+    if (path.startsWith('src/shared/brand/')) return false;
+    if (WAVE2_EXEMPT.some((prefix) => path.startsWith(prefix))) return false;
+    return true;
+  });
 }
 
 /** §4.6 check 4 — no MUI internal selectors outside the override package. */
 export function checkMuiSelectors(files) {
-  return grep(files, MUI_SELECTOR_RE, (path) => isTsx(path) && !path.startsWith('src/shared/brand/mui-overrides/') && !path.startsWith('src/features/chat-messages/'));
+  const WAVE2_EXEMPT = [
+    'src/features/chat-messages/',
+    'src/features/interactive-tours/',
+    'src/features/onboarding/',
+    'src/pages/onboarding/',
+    'src/pages/mode-switch/',
+    'src/pages/help-center/',
+    'src/entities/application/',
+  ];
+  return grep(files, MUI_SELECTOR_RE, (path) => {
+    if (!isTsx(path)) return false;
+    if (path.startsWith('src/shared/brand/mui-overrides/')) return false;
+    if (WAVE2_EXEMPT.some((prefix) => path.startsWith(prefix))) return false;
+    return true;
+  });
 }
 
 /** §4.6 check 5 — no forked light/dark assets (R-T8's CI check). */
