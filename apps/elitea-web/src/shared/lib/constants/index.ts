@@ -8,3 +8,17 @@ export const AccordionConstants = {
     LeftMode: 'left',
   },
 } as const;
+
+/** LLM model settings defaults from `[fsd]/shared/lib/constants/llmSettings.constants.js`. */
+export const REASONING_EFFORT_VALUES = {
+  Low: 'low',
+  Medium: 'medium',
+  High: 'high',
+} as const;
+
+export const DEFAULT_MAX_TOKENS = -1;
+export const DEFAULT_MAX_TOKENS_CUSTOM = 4096;
+export const DEFAULT_TEMPERATURE = 0.6;
+export const DEFAULT_REASONING_EFFORT = REASONING_EFFORT_VALUES.Medium;
+export const REASONING_MIN_TOKENS = 4096;
+export const DEFAULT_STEPS_LIMIT = 25;

@@ -35,8 +35,14 @@ interface NavBlockerState {
   readonly isStreaming: boolean;
   readonly streamingType: StreamingType;
   readonly warningMessage: string;
+  readonly isEditingAgent: boolean;
+  readonly isEditingPipeline: boolean;
+  readonly isEditingToolkit: boolean;
   readonly setBlockNav: (blocked: boolean, message?: string) => void;
   readonly setStreamingBlockNav: (streaming: boolean, type: StreamingType) => void;
+  readonly setEditingAgent: (editing: boolean) => void;
+  readonly setEditingPipeline: (editing: boolean) => void;
+  readonly setEditingToolkit: (editing: boolean) => void;
 }
 
 const DEFAULT_WARNING = 'You have unsaved changes. Are you sure you want to leave this page?';
@@ -49,8 +55,14 @@ export function createNavBlockerStore(): NavBlockerStore {
     isStreaming: false,
     streamingType: 'prompt',
     warningMessage: DEFAULT_WARNING,
+    isEditingAgent: false,
+    isEditingPipeline: false,
+    isEditingToolkit: false,
     setBlockNav: (blocked, message) => set({ isBlockNav: blocked, warningMessage: message ?? DEFAULT_WARNING }),
     setStreamingBlockNav: (streaming, type) => set({ isStreaming: streaming, streamingType: type }),
+    setEditingAgent: (editing) => set({ isEditingAgent: editing }),
+    setEditingPipeline: (editing) => set({ isEditingPipeline: editing }),
+    setEditingToolkit: (editing) => set({ isEditingToolkit: editing }),
   }));
 }
 
