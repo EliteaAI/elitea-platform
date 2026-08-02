@@ -170,6 +170,78 @@ func TestConfigIndexIngestDispatchFailsClosed(t *testing.T) {
 	}
 }
 
+func TestConfigIndexSchedulingIsExplicitAndRequiresDurableIndexAdmission(
+	t *testing.T,
+) {
+	baseline, err := ConfigFromEnv(mapLookup(validEnvironment()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.IndexSchedulingEnabled {
+		t.Fatal("index scheduling unexpectedly enabled")
+	}
+
+	withoutIndex := validEnvironment()
+	withoutIndex["ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED"] = "true"
+	if _, err := ConfigFromEnv(mapLookup(withoutIndex)); err == nil ||
+		!strings.Contains(err.Error(), "requires index ingest dispatch") {
+		t.Fatalf("schedule without durable admission error=%v", err)
+	}
+
+	enabled := validEnvironment()
+	enabled["ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED"] = "true"
+	enabled["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] =
+		"commands.v1.index.ingest.indexing.shared.2.0"
+	enabled["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] =
+		"elitea-indexer-worker-v2"
+	enabled["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+	enabled["ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED"] = "true"
+	enabled["ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID"] = "elitea-main-pov-1"
+	config, err := ConfigFromEnv(mapLookup(enabled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.IndexSchedulingEnabled ||
+		config.SchedulerInstanceID != "elitea-main-pov-1" {
+		t.Fatalf("index scheduling was not enabled: %+v", config)
+	}
+
+	enabled["ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED"] = "TRUE"
+	if _, err := ConfigFromEnv(mapLookup(enabled)); err == nil ||
+		!strings.Contains(
+			err.Error(),
+			"ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED must be true or false",
+		) {
+		t.Fatalf("non-canonical scheduling switch error=%v", err)
+	}
+}
+
+func TestConfigIndexSchedulingRequiresCanonicalUniqueInstanceID(t *testing.T) {
+	for _, instanceID := range []string{"", "Elitea-Main-1", "-main", "main/1"} {
+		t.Run(instanceID, func(t *testing.T) {
+			environment := validEnvironment()
+			environment["ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED"] = "true"
+			environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] =
+				"commands.v1.index.ingest.indexing.shared.2.0"
+			environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] =
+				"elitea-indexer-worker-v2"
+			environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+			environment["ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED"] = "true"
+			environment["ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID"] = instanceID
+			if _, err := ConfigFromEnv(mapLookup(environment)); err == nil {
+				t.Fatalf("invalid scheduler instance ID %q accepted", instanceID)
+			}
+		})
+	}
+
+	disabled := validEnvironment()
+	disabled["ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID"] = "elitea-main-1"
+	if _, err := ConfigFromEnv(mapLookup(disabled)); err == nil ||
+		!strings.Contains(err.Error(), "requires explicit index scheduling") {
+		t.Fatalf("disabled scheduler instance error=%v", err)
+	}
+}
+
 func TestIndexIngestProductionRedisEntryBoundIsStrictlyBelow64KiB(t *testing.T) {
 	if productionIndexRedisEntrySize >= 64*1024 {
 		t.Fatalf("index ingest Redis entry bound=%d, must be below 64 KiB", productionIndexRedisEntrySize)

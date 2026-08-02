@@ -20,6 +20,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -935,6 +936,11 @@ func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t
 			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
 		},
 		{
+			name:   "schedule delete",
+			method: indexingapi.SourceOnlyIndexScheduleDeleteMethod,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+		{
 			name:   "search",
 			method: indexingapi.SourceOnlyIndexSearchMethod,
 			path:   "/api/v2/elitea_core/search_options/prompt_lib/7?entities%5B%5D=toolkit",
@@ -961,6 +967,197 @@ func TestProductionRouterKeepsUncomposedIndexDeleteScheduleAndSearchSourceOnly(t
 	}
 	if calls != 0 {
 		t.Fatalf("source-only index routes reached mounted handlers %d times", calls)
+	}
+}
+
+func TestProductionRouterMountsCurrentIndexScheduleCRUDOnlyWhenComposed(
+	t *testing.T,
+) {
+	calls := make(map[string]int)
+	handler := func(name string) http.Handler {
+		return http.HandlerFunc(
+			func(writer http.ResponseWriter, request *http.Request) {
+				calls[name]++
+				if chi.URLParam(request, "projectID") != "7" ||
+					chi.URLParam(request, "toolkitID") != "9" ||
+					chi.URLParam(request, "indexMetaID") != "meta-1" {
+					t.Fatalf(
+						"%s params project=%q toolkit=%q index=%q",
+						name,
+						chi.URLParam(request, "projectID"),
+						chi.URLParam(request, "toolkitID"),
+						chi.URLParam(request, "indexMetaID"),
+					)
+				}
+				writer.WriteHeader(http.StatusNoContent)
+			},
+		)
+	}
+	router := NewRouter(RouterConfig{
+		CurrentIndexScheduleUpdate: handler("update"),
+		CurrentIndexScheduleDelete: handler("delete"),
+	})
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "update",
+			method: http.MethodPatch,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			name:   "delete",
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(
+			response,
+			httptest.NewRequest(test.method, test.path, nil),
+		)
+		if response.Code != http.StatusNoContent || calls[test.name] != 1 {
+			t.Fatalf(
+				"%s status=%d calls=%d body=%s",
+				test.name,
+				response.Code,
+				calls[test.name],
+				response.Body.String(),
+			)
+		}
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	for _, test := range []struct {
+		method string
+		path   string
+	}{
+		{
+			method: http.MethodPatch,
+			path:   "/api/v2/elitea_core/index_meta/prompt_lib/7/9/meta-1",
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/api/v2/elitea_core/index_schedule/prompt_lib/7/9/meta-1",
+		},
+	} {
+		response := httptest.NewRecorder()
+		uncomposed.ServeHTTP(
+			response,
+			httptest.NewRequest(test.method, test.path, nil),
+		)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf(
+				"uncomposed %s %s status=%d",
+				test.method,
+				test.path,
+				response.Code,
+			)
+		}
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentNotificationEventsGETWhenComposed(
+	t *testing.T,
+) {
+	target := strings.Replace(
+		notificationsapi.CurrentNotificationEventsPath,
+		"{projectID}",
+		"7",
+		1,
+	)
+	calls := 0
+	events := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if chi.URLParam(request, "projectID") != "7" {
+			t.Fatalf("projectID = %q, want 7", chi.URLParam(request, "projectID"))
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentNotificationEvents: events})
+
+	for _, test := range []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, target, http.StatusNoContent},
+		{http.MethodPost, target, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v2/notifications/events/default/7", http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.want {
+			t.Fatalf(
+				"%s %s status=%d want=%d body=%s",
+				test.method,
+				test.path,
+				response.Code,
+				test.want,
+				response.Body.String(),
+			)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("notification events handler calls = %d, want 1", calls)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	response := httptest.NewRecorder()
+	uncomposed.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodGet, target, nil),
+	)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d want=%d", response.Code, http.StatusNotFound)
+	}
+}
+
+func TestProductionRouterMountsOnlyCurrentNotificationAPIMethodsWhenComposed(t *testing.T) {
+	calls := 0
+	notifications := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		if chi.URLParam(request, "projectID") != "7" {
+			t.Fatalf("projectID = %q, want 7", chi.URLParam(request, "projectID"))
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	router := NewRouter(RouterConfig{CurrentNotifications: notifications})
+
+	tests := []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodPut, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodDelete, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusNoContent},
+		{http.MethodGet, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodPut, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodDelete, "/api/v2/notifications/notification/prompt_lib/7/15", http.StatusNoContent},
+		{http.MethodPost, "/api/v2/notifications/notifications/prompt_lib/7", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v2/notifications/notification/default/7/15", http.StatusNotFound},
+	}
+	for _, test := range tests {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.want {
+			t.Fatalf("%s %s status=%d want=%d body=%s", test.method, test.path, response.Code, test.want, response.Body.String())
+		}
+	}
+	if calls != 6 {
+		t.Fatalf("notification API handler calls = %d, want 6", calls)
+	}
+
+	uncomposed := NewRouter(RouterConfig{})
+	response := httptest.NewRecorder()
+	uncomposed.ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet, "/api/v2/notifications/notifications/prompt_lib/7", nil,
+	))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("uncomposed status=%d want=%d", response.Code, http.StatusNotFound)
 	}
 }
 

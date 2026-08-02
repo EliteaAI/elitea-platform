@@ -55,9 +55,14 @@ func TestOutputServerMapsOnlyBoundedCurrentIndexSummary(t *testing.T) {
 	frame := validIndexWireFrame(t)
 	payload := frame.GetIndexIngest()
 	payload.ResultArtifact = nil
+	reindex := true
 	payload.ResultSummary = &runtimev1.IndexIngestSummaryV1{
-		Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
-		Message: "Successfully indexed 3 documents (7 chunks). Failed to index 1 chunks.",
+		Status:        runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
+		Message:       "Successfully indexed 3 documents (7 chunks). Failed to index 1 chunks.",
+		TerminalState: runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_PARTLY_INDEXED,
+		Indexed:       3,
+		Updated:       1,
+		Reindex:       &reindex,
 	}
 	rebindFramePayload(t, frame, payload)
 	indexes := &indexIngestorStub{}
@@ -71,7 +76,14 @@ func TestOutputServerMapsOnlyBoundedCurrentIndexSummary(t *testing.T) {
 		t.Fatalf("typed inline summary was not accepted: acks=%v frames=%d", stream.acks, len(indexes.frames))
 	}
 	result := indexes.frames[0].Result
-	if result.ResultArtifact != (outputapp.IndexArtifactReference{}) || result.ResultSummary.Status != outputapp.IndexIngestStatusPartlyIndexed || result.ResultSummary.Message != payload.ResultSummary.Message {
+	if result.ResultArtifact != (outputapp.IndexArtifactReference{}) ||
+		result.ResultSummary.Status != outputapp.IndexIngestStatusPartlyIndexed ||
+		result.ResultSummary.Message != payload.ResultSummary.Message ||
+		result.ResultSummary.TerminalState != outputapp.IndexIngestTerminalPartlyIndexed ||
+		result.ResultSummary.Indexed != 3 ||
+		result.ResultSummary.Updated != 1 ||
+		!result.ResultSummary.ReindexPresent ||
+		!result.ResultSummary.Reindex {
 		t.Fatalf("inline summary mapping changed the current result: %+v", result)
 	}
 	if len(indexes.frames[0].EncodedResult) == 0 || len(indexes.frames[0].EncodedResult) >= 64*1024 {
@@ -84,8 +96,9 @@ func TestOutputServerMapsIndexErrorSummaryToFailedSettlement(t *testing.T) {
 	payload := frame.GetIndexIngest()
 	payload.ResultArtifact = nil
 	payload.ResultSummary = &runtimev1.IndexIngestSummaryV1{
-		Status:  runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR,
-		Message: "Indexing failed before completion.",
+		Status:        runtimev1.IndexIngestStatusV1_INDEX_INGEST_STATUS_V1_ERROR,
+		Message:       "Indexing failed before completion.",
+		TerminalState: runtimev1.IndexIngestTerminalStateV1_INDEX_INGEST_TERMINAL_STATE_V1_FAILED,
 	}
 	frame.GetSettlementProposal().RequestedOutcome =
 		runtimev1.ExecutionOutcomeV1_EXECUTION_OUTCOME_V1_FAILED

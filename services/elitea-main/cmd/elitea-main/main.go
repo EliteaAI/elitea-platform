@@ -21,6 +21,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -91,6 +92,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionAuth *api.ProductionAuthRoutes
 	var currentProjectList *v2projects.CurrentProjectListRoute
 	var currentSocialAuthors *socialapi.CurrentAuthorsRoute
+	var currentNotifications *notificationsapi.CurrentNotificationAPIRoute
+	var currentNotificationEvents *notificationsapi.CurrentNotificationEventsRoute
 	var formGraph *authcomposition.FormGraph
 	var authReadiness health.Checker
 	var principalValidator apimw.PrincipalValidator
@@ -156,6 +159,39 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Social authors route: %w", err)
+		}
+		notificationRepository, repositoryErr := dbrepos.NewCurrentNotificationRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current notification repository: %w", repositoryErr)
+		}
+		currentNotifications, err = notificationsapi.NewCurrentNotificationAPIRoute(
+			notificationRepository,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current notification API route: %w", err)
+		}
+		notificationEventsRepository, repositoryErr :=
+			dbrepos.NewCurrentNotificationEventRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose current notification events repository: %w", repositoryErr)
+		}
+		currentNotificationEvents, err = notificationsapi.NewCurrentNotificationEventsRoute(
+			notificationEventsRepository,
+			apimw.AuthConfig{
+				Validator:                 formGraph,
+				PrincipalValidator:        principalValidator,
+				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			},
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if err != nil {
+			return fmt.Errorf("compose current notification events route: %w", err)
 		}
 		authReadiness = formGraph
 		logger.Info("production Form authentication enabled")
@@ -402,6 +438,8 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
 	var currentIndexMetaDelete http.Handler
+	var currentIndexScheduleUpdate http.Handler
+	var currentIndexScheduleDelete http.Handler
 	if runtimeConfig.Enabled {
 		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
 		if openErr != nil {
@@ -432,6 +470,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,
+			ProjectSystemTokenSource:         formGraph,
 			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
 			Logger:                           logger,
 		})
@@ -533,6 +572,42 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				)
 			}
 		}
+		if publicRoutes.IndexScheduleUpdate != nil {
+			currentIndexScheduleUpdate, err =
+				indexingapi.NewCurrentIndexScheduleRoute(
+					publicRoutes.IndexScheduleUpdate,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index schedule update route: %w",
+					err,
+				)
+			}
+		}
+		if publicRoutes.IndexScheduleDelete != nil {
+			currentIndexScheduleDelete, err =
+				indexingapi.NewCurrentIndexScheduleDeleteRoute(
+					publicRoutes.IndexScheduleDelete,
+					apimw.AuthConfig{
+						Validator:                 formGraph,
+						PrincipalValidator:        principalValidator,
+						ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					},
+					legacyrbac.NewPostgresResolver(pool),
+				)
+			if err != nil {
+				return fmt.Errorf(
+					"compose current index schedule delete route: %w",
+					err,
+				)
+			}
+		}
 		slog.Info("production runtime enabled", "control_addr", runtimeConfig.ControlAddress, "output_addr", runtimeConfig.OutputAddress, "content_addr", runtimeConfig.ContentAddress)
 	}
 
@@ -557,6 +632,10 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
 		CurrentIndexMetaDelete:        currentIndexMetaDelete,
+		CurrentIndexScheduleUpdate:    currentIndexScheduleUpdate,
+		CurrentIndexScheduleDelete:    currentIndexScheduleDelete,
+		CurrentNotifications:          currentNotifications,
+		CurrentNotificationEvents:     currentNotificationEvents,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,

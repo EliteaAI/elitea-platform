@@ -30,6 +30,10 @@ type PublicRoutes struct {
 	// is exposed only with the coordinated Go index owner and receives
 	// production authentication and project RBAC at the Main composition edge.
 	IndexMetaDelete indexingapi.CurrentIndexMetaDeleter
+	// IndexScheduleUpdate/Delete preserve the current UI contracts and are
+	// exposed only when the distributed Go schedule owner is enabled.
+	IndexScheduleUpdate indexingapi.CurrentIndexScheduleUpdater
+	IndexScheduleDelete indexingapi.CurrentIndexScheduleDeleter
 }
 
 // Phase one uses durable PostgreSQL replay without a notification sidecar.

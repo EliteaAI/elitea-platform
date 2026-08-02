@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 
-LOCK_RELATIVE = Path("services/elitea-worker-python/elitea-sdk.lock.json")
+BASELINE_LOCK = Path(__file__).with_name("current_pylon_sdk_baseline.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,14 +58,17 @@ def load_current_sdk(platform_root: Path) -> CurrentSDK:
     if not configured:
         pytest.skip(
             "current SDK source unavailable: set ELITEA_CURRENT_SDK_ROOT to "
-            "the exact revision in services/elitea-worker-python/elitea-sdk.lock.json"
+            "the exact revision in current_pylon_sdk_baseline.json"
         )
     sdk_root = Path(configured).resolve()
     if not (sdk_root / "elitea_sdk").is_dir():
         pytest.skip(
             f"current SDK source unavailable: {sdk_root}/elitea_sdk does not exist"
         )
-    lock = json.loads((platform_root / LOCK_RELATIVE).read_text())
+    _ = platform_root
+    lock = json.loads(BASELINE_LOCK.read_text())
+    if lock.get("schema_version") != "elitea.current-pylon-sdk-baseline.v1":
+        pytest.fail("current Pylon SDK baseline lock has an unsupported schema")
     expected_revision = lock["source"]["revision"]
     expected_version = lock["distribution_version"]
     revision = subprocess.run(

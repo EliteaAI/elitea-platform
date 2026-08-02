@@ -15,8 +15,9 @@ import (
 const (
 	currentScheduleProjectPageSize = 128
 	currentScheduleToolkitPageSize = 128
-	currentScheduleTickInterval    = time.Minute
 	currentScheduleKeyPrefix       = "index-schedule-v1:"
+	currentScheduleActionID        = "index.schedule.scan.v1"
+	currentScheduleRevisionPrefix  = "index-schedule-definition-v1:"
 )
 
 type Candidate struct {
@@ -84,20 +85,15 @@ type TickResult struct {
 	DependencyErrors   int
 }
 
-type ReportFunc func(TickResult, error)
-
-// Runner owns one wait-after-completion timer and scans sequentially. This
-// preserves the current non-overlapping scheduler while keeping each query
-// result bounded by keyset pages.
+// Runner is the indexing adapter behind the platform scheduler. It owns only
+// bounded product-aware discovery and durable index admission; cadence and
+// distributed occurrence ownership belong to the generic scheduling kernel.
 type Runner struct {
 	catalog      Catalog
 	availability Availability
 	executor     Executor
 	failures     FailureRecorder
-	report       ReportFunc
 	now          func() time.Time
-	interval     time.Duration
-	running      atomic.Bool
 	ticking      atomic.Bool
 }
 
@@ -106,16 +102,13 @@ func NewRunner(
 	availability Availability,
 	executor Executor,
 	failures FailureRecorder,
-	report ReportFunc,
 ) (*Runner, error) {
 	return newRunner(
 		catalog,
 		availability,
 		executor,
 		failures,
-		report,
 		time.Now,
-		currentScheduleTickInterval,
 	)
 }
 
@@ -124,53 +117,25 @@ func newRunner(
 	availability Availability,
 	executor Executor,
 	failures FailureRecorder,
-	report ReportFunc,
 	now func() time.Time,
-	interval time.Duration,
 ) (*Runner, error) {
 	if catalog == nil || availability == nil || executor == nil ||
-		failures == nil || report == nil || now == nil || interval <= 0 {
+		failures == nil || now == nil {
 		return nil, errors.New("index schedule runner dependencies are required")
 	}
 	return &Runner{
 		catalog: catalog, availability: availability, executor: executor,
-		failures: failures, report: report, now: now, interval: interval,
+		failures: failures, now: now,
 	}, nil
 }
 
-func (runner *Runner) Run(ctx context.Context) error {
-	if runner == nil || ctx == nil {
-		return ErrInvalidRequest
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if !runner.running.CompareAndSwap(false, true) {
-		return ErrScheduleAlreadyRun
-	}
-	defer runner.running.Store(false)
-
-	timer := time.NewTimer(runner.interval)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			result, err := runner.Tick(ctx)
-			runner.report(result, err)
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			timer.Reset(runner.interval)
-		}
-	}
-}
-
-func (runner *Runner) Tick(ctx context.Context) (TickResult, error) {
+func (runner *Runner) RunDue(ctx context.Context, scanTime time.Time) (
+	result TickResult,
+	err error,
+) {
 	if runner == nil || runner.catalog == nil || runner.availability == nil ||
-		runner.executor == nil || runner.failures == nil || runner.now == nil ||
-		ctx == nil {
+		runner.executor == nil || runner.failures == nil ||
+		runner.now == nil || ctx == nil || scanTime.IsZero() {
 		return TickResult{}, ErrInvalidRequest
 	}
 	if err := ctx.Err(); err != nil {
@@ -189,8 +154,7 @@ func (runner *Runner) Tick(ctx context.Context) (TickResult, error) {
 		return TickResult{SkippedUnavailable: true}, nil
 	}
 
-	result := TickResult{}
-	scanTime := runner.now().UTC()
+	scanTime = scanTime.UTC()
 	var projectCursor int64
 	for {
 		projects, err := runner.catalog.ListProjectPage(
@@ -323,7 +287,7 @@ func (runner *Runner) executeCandidate(
 			ctx,
 			candidate,
 			outcome.SafeReason,
-			scanTime,
+			occurrence,
 		); err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
 				return contextErr
@@ -370,20 +334,60 @@ func (runner *Runner) executeCandidate(
 }
 
 func StableIdempotencyKey(candidate Candidate, occurrence time.Time) string {
+	revision := ScheduleRevision(candidate.Schedule)
 	hash := sha256.New()
 	for _, value := range []string{
+		currentScheduleActionID,
 		strconv.FormatInt(candidate.ProjectID, 10),
 		strconv.FormatInt(candidate.ToolkitID, 10),
 		candidate.IndexMetaID,
 		strconv.FormatInt(candidate.ScheduleUserID, 10),
+		revision,
 		occurrence.UTC().Format(time.RFC3339Nano),
 	} {
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
-		_, _ = hash.Write(length[:])
-		_, _ = hash.Write([]byte(value))
+		writeScheduleHashValue(hash, value)
 	}
 	return currentScheduleKeyPrefix + hex.EncodeToString(hash.Sum(nil))
+}
+
+// ScheduleRevision fingerprints only the reference-only schedule semantics.
+// LastRun is deliberately excluded because it is mutable occurrence progress.
+// Credential secret values are never stored in this object; EliteaTitle is the
+// stable Configurations reference and nullable Private remains significant.
+func ScheduleRevision(schedule Schedule) string {
+	privateState := "credentials-absent"
+	credentialTitle := ""
+	if schedule.Credentials != nil {
+		privateState = "private-null"
+		credentialTitle = schedule.Credentials.EliteaTitle
+		if schedule.Credentials.Private != nil {
+			privateState = strconv.FormatBool(*schedule.Credentials.Private)
+		}
+	}
+	hash := sha256.New()
+	for _, value := range []string{
+		currentScheduleActionID,
+		schedule.Cron,
+		strconv.FormatBool(schedule.Enabled),
+		strconv.FormatInt(schedule.CreatedBy, 10),
+		schedule.Timezone,
+		privateState,
+		credentialTitle,
+	} {
+		writeScheduleHashValue(hash, value)
+	}
+	return currentScheduleRevisionPrefix + hex.EncodeToString(hash.Sum(nil))
+}
+
+type scheduleHashWriter interface {
+	Write([]byte) (int, error)
+}
+
+func writeScheduleHashValue(hash scheduleHashWriter, value string) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = hash.Write(length[:])
+	_, _ = hash.Write([]byte(value))
 }
 
 func validCandidate(candidate Candidate) bool {
@@ -455,5 +459,3 @@ func dependencyError(ctx context.Context, cause error) error {
 	}
 	return errors.Join(ErrScheduleDependency, cause)
 }
-
-var _ interface{ Run(context.Context) error } = (*Runner)(nil)

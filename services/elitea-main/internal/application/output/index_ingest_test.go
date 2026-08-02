@@ -164,6 +164,26 @@ func TestIndexIngestSummaryAcceptsOnlyCurrentBoundedTerminalShape(t *testing.T) 
 		{Status: IndexIngestStatusOK, Message: strings.Repeat("x", MaxIndexIngestSummaryMessageBytes+1)},
 		{Status: IndexIngestStatusOK, Message: string([]byte{0xff})},
 		{Status: IndexIngestStatusOK, Message: "safe prefix\x00hidden suffix"},
+		{
+			Status:        IndexIngestStatusOK,
+			Message:       valid.Message,
+			TerminalState: IndexIngestTerminalFailed,
+		},
+		{
+			Status:        IndexIngestStatusError,
+			Message:       "failed",
+			TerminalState: IndexIngestTerminalCreated,
+		},
+		{
+			Status:  IndexIngestStatusOK,
+			Message: valid.Message,
+			Indexed: 1,
+		},
+		{
+			Status:  IndexIngestStatusOK,
+			Message: valid.Message,
+			Reindex: true,
+		},
 	}
 	for _, summary := range invalid {
 		if err := summary.Validate(); !errors.Is(err, ErrInvalidIndexIngestOutput) {

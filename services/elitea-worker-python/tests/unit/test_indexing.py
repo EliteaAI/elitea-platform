@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from elitea_sdk.runtime.exceptions import BudgetExceededError
 
 from elitea.runtime.v1 import (
     command_pb2,
@@ -19,13 +20,17 @@ from elitea.runtime.v1 import (
     output_pb2,
 )
 
-from elitea_worker.agents.sdk_adapter import EliteaSdkIndexingAdapter
+from elitea_worker.agents.sdk_adapter import (
+    EliteaSdkIndexingAdapter,
+    SdkBudgetExceeded,
+)
 from elitea_worker.constants import MAX_WORKER_COMMAND_BYTES
 from elitea_worker.execution.errors import InternalFailure, InvalidInput, ResourceExhausted
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.indexing import (
     CurrentIndexNodeEventCallback,
     CurrentIndexNodeEventContext,
+    CurrentIndexTerminalStatus,
     IndexIngestHandler,
     IndexIngestInputBinding,
     IndexIngestResult,
@@ -141,6 +146,34 @@ def test_adapter_preserves_current_proxy_embedding_model_on_invocation_copy() ->
         == "embedding-current"
     )
     assert toolkit_config["settings"]["embedding_model"] == "embedding-current"
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["project_budget_exceeded", "member_budget_exceeded"],
+)
+def test_adapter_neutralizes_typed_sdk_budget_error(scope: str) -> None:
+    canary = f"BUDGET_SECRET_CANARY_{scope}"
+
+    class _BudgetBlockedClient:
+        def test_toolkit_tool(self, **kwargs: Any) -> dict[str, Any]:
+            raise BudgetExceededError(canary, scope)
+
+    adapter = object.__new__(EliteaSdkIndexingAdapter)
+    adapter._client = _BudgetBlockedClient()
+
+    with pytest.raises(SdkBudgetExceeded) as caught:
+        adapter.ingest(
+            toolkit_config={"type": "github", "settings": {}},
+            tool_params={},
+            runtime_config={},
+            llm_model=None,
+            llm_config={},
+            mcp_tokens=None,
+        )
+
+    assert str(caught.value) == ""
+    assert canary not in str(caught.value)
 
 
 def test_embedding_binding_is_required_only_by_frozen_toolkit_contract() -> None:
@@ -615,6 +648,68 @@ def test_current_index_tool_error_omits_exception_detail() -> None:
     assert canary not in json.dumps(current)
 
 
+def test_current_index_failure_status_is_safe_and_emitted_once() -> None:
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            index_name="knowledge",
+            message_id="message-1",
+            sio_event="chat_predict",
+        ),
+        lambda event: None,
+    )
+
+    event = callback.finish_index_status_on_failure()
+
+    assert event is not None
+    assert callback.finish_index_status_on_failure() is None
+    current = json.loads(encode_current_node_event_json(event))
+    assert current["type"] == "agent_index_data_status"
+    assert current["response_metadata"] == {
+        "task_id": "execution-1",
+        "index_name": "knowledge",
+        "state": "failed",
+        "error": "Indexing reported an error.",
+        "indexed": 0,
+        "updated": 0,
+        "toolkit_id": 9,
+        "initiator": "user",
+        "project_id": 42,
+        "user_id": 7,
+    }
+    assert len(encode_current_node_event_json(event)) < 1024
+
+
+def test_current_index_terminal_status_suppresses_failure_fallback() -> None:
+    events = []
+    callback = CurrentIndexNodeEventCallback(
+        CurrentIndexNodeEventContext(
+            stream_id="conversation-1",
+            task_id="execution-1",
+            initiator="user",
+            project_id=42,
+            user_id=7,
+            toolkit_id=9,
+            index_name="knowledge",
+        ),
+        events.append,
+    )
+
+    callback.on_custom_event(
+        "index_data_status",
+        {"index_name": "knowledge", "state": "partly_indexed"},
+        run_id=UUID("00000000-0000-0000-0000-000000000001"),
+    )
+
+    assert callback.finish_index_status_on_failure() is None
+    assert len(events) == 1
+
+
 def test_current_index_callback_filters_only_scheduled_transient_events() -> None:
     def emitted_types(initiator: str) -> tuple[list[str], list[dict[str, Any]]]:
         events = []
@@ -1021,6 +1116,79 @@ def test_inline_summary_projects_only_the_nested_allowlist() -> None:
     assert bound.result_summary.message == "Indexed with gaps"
     assert not bound.HasField("result_artifact")
     assert canary.encode() not in encoded
+
+
+def test_inline_summary_carries_only_typed_terminal_notification_fields() -> None:
+    bound = bind_result_summary(
+        _index_result(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": "Indexed safely"},
+            }
+        ),
+        CurrentIndexTerminalStatus(
+            state="scheduled_reindex",
+            indexed=17,
+            updated=4,
+            reindex=True,
+        ),
+    )
+
+    summary = bound.result_summary
+    assert (
+        summary.terminal_state
+        == indexing_pb2.INDEX_INGEST_TERMINAL_STATE_V1_SCHEDULED_REINDEX
+    )
+    assert summary.indexed == 17
+    assert summary.updated == 4
+    assert summary.HasField("reindex")
+    assert summary.reindex is True
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_status", "expected_message"),
+    [
+        (
+            "Successfully indexed 20 documents (0 chunks).\n"
+            "Skipped items (21 total):\n"
+            "  - Documents with errors (20): first, second\n"
+            "  - Runtime skipped (errors) (1): test_case.md",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR,
+            INDEX_INGEST_FAILURE_SAFE_MESSAGE,
+        ),
+        (
+            "Successfully indexed 8 documents (12 chunks). "
+            "\nSkipped items (2 total):"
+            "\n  - Documents with errors (2): first, second",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_PARTLY_INDEXED,
+            None,
+        ),
+        (
+            "Successfully indexed 61 documents (0 chunks).\n"
+            "Skipped items (5 total):\n"
+            "  - Files with empty content (2): one, two\n"
+            "  - Files with unsupported extension (3): a, b, c",
+            indexing_pb2.INDEX_INGEST_STATUS_V1_OK,
+            None,
+        ),
+    ],
+)
+def test_inline_summary_corrects_generic_parser_failures(
+    message: str,
+    expected_status: int,
+    expected_message: str | None,
+) -> None:
+    bound = bind_result_summary(
+        _index_result(
+            {
+                "success": True,
+                "result": {"status": "ok", "message": message},
+            }
+        )
+    )
+
+    assert bound.result_summary.status == expected_status
+    assert bound.result_summary.message == (expected_message or message)
 
 
 def test_outer_sdk_failure_becomes_fixed_safe_error_summary() -> None:

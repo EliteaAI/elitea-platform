@@ -8,6 +8,7 @@ import (
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
+	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,13 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
 					return err
 				}
+				if err := persistCurrentIndexRetirementNotification(
+					ctx,
+					tx,
+					candidate,
+				); err != nil {
+					return err
+				}
 				if err := r.activity.projectTerminal(
 					ctx,
 					tx,
@@ -65,6 +73,13 @@ func (r *CommandOutboxRepository) RetireNoAuthorityIndexIngest(ctx context.Conte
 			}
 			if retired {
 				if err := persistCurrentIndexMetaRetirementIntent(ctx, tx, candidate); err != nil {
+					return err
+				}
+				if err := persistCurrentIndexRetirementNotification(
+					ctx,
+					tx,
+					candidate,
+				); err != nil {
 					return err
 				}
 				if err := r.activity.projectTerminal(
@@ -144,6 +159,33 @@ WHERE o.outbox_id = $1
 		return fmt.Errorf("persist current index metadata retirement intent: %w", err)
 	}
 	return nil
+}
+
+func persistCurrentIndexRetirementNotification(
+	ctx context.Context,
+	tx sqlExecutor,
+	candidate noAuthorityRetirementCandidate,
+) error {
+	if candidate.DesiredState == string(runtimedomain.DesiredCancelled) {
+		return nil
+	}
+	if candidate.Generation <= 0 {
+		return errors.New("index retirement generation is invalid")
+	}
+	return persistCurrentIndexTerminalNotification(
+		ctx,
+		tx,
+		outputRecord{
+			ExecutionID:     candidate.ExecutionID,
+			Generation:      uint64(candidate.Generation),
+			LogicalOutputID: "index-ingest:" + candidate.ExecutionID,
+		},
+		outputapp.IndexIngestSummary{
+			Status:        outputapp.IndexIngestStatusError,
+			Message:       "The execution deadline was exceeded before worker authority was granted.",
+			TerminalState: outputapp.IndexIngestTerminalFailed,
+		},
+	)
 }
 
 func selectCancelledNoAuthorityIndexIngest(ctx context.Context, tx sqlExecutor, expectedStream string, limit int) ([]noAuthorityRetirementCandidate, error) {

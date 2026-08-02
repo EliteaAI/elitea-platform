@@ -55,6 +55,40 @@ export ELITEA_INDEXER_WORKER_IMAGE="${ELITEA_INDEXER_WORKER_IMAGE:-$ELITEA_WORKE
 
 "$script_dir/prepare-runtime.sh" "$centry_dir" "$runtime_root"
 
+deploy_ui() {
+  local ui_input="${ELITEA_HYBRID_UI_DIR:-}"
+  if [[ -z "$ui_input" ]]; then
+    return
+  fi
+  if [[ ! -f "$ui_input/package.json" ]]; then
+    echo "EliteaUI checkout does not contain package.json: $ui_input" >&2
+    exit 2
+  fi
+
+  local ui_dir
+  ui_dir="$(cd "$ui_input" && pwd -P)"
+  local ui_target="$centry_dir/pylon_main/plugins/elitea_core/static/ui/dist"
+  local ui_stage
+  ui_stage="$(mktemp -d "$runtime_root/.elitea-ui-dist.XXXXXX")"
+  trap 'rm -rf "$ui_stage"' RETURN
+
+  (
+    cd "$ui_dir"
+    VITE_SERVER_URL="${ELITEA_HYBRID_UI_SERVER_URL:-/api/v2}" npm run build
+  )
+  cp -R "$ui_dir/dist/." "$ui_stage/"
+  rm -rf "$ui_target"
+  mkdir -p "$(dirname "$ui_target")"
+  mv "$ui_stage" "$ui_target"
+  trap - RETURN
+
+  local ui_revision="unknown"
+  if git -C "$ui_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+    ui_revision="$(git -C "$ui_dir" rev-parse --short=12 HEAD)"
+  fi
+  echo "deployed EliteaUI revision $ui_revision from $ui_dir"
+}
+
 compose=(
   docker compose
   --project-directory "$centry_dir"
@@ -81,7 +115,11 @@ validate_model() {
     --arg engine "$script_dir/runtime-engine-litellm.yml" \
     '
       .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM
-        == "commands.v1.index.ingest.indexing.shared.2.0"
+      == "commands.v1.index.ingest.indexing.shared.2.0"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED
+      == "true"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID
+        == "elitea-main-pov-1"
       and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
         == "elitea-indexer-worker-v2"
       and any(.services.auth_gateway.volumes[];
@@ -97,6 +135,12 @@ validate_model() {
       and .services["index-v1-cutover-preflight"] != null
     ' "$rendered" >/dev/null
 
+  grep -q 'go-current-notification-events:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/events/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'go-current-notifications:' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/notifications/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/notifications/notification/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+
   rm -f "$rendered"
   trap - EXIT
 }
@@ -110,11 +154,24 @@ case "$action" in
     ;;
   up)
     validate_model
+    deploy_ui
     "${compose[@]}" --profile runtime up \
       -d \
       --build \
       --wait \
       --wait-timeout "${ELITEA_HYBRID_WAIT_TIMEOUT:-600}"
+    # auth_gateway bind-mounts the route file itself. Editors commonly replace
+    # that file atomically, leaving an already-running container attached to
+    # the previous inode even though the file provider has watch enabled.
+    # Recreate only the gateway so this one-command deploy always activates
+    # the routes from the selected platform checkout.
+    "${compose[@]}" --profile runtime up \
+      -d \
+      --force-recreate \
+      --no-deps \
+      --wait \
+      --wait-timeout "${ELITEA_HYBRID_WAIT_TIMEOUT:-600}" \
+      auth_gateway
     "${compose[@]}" --profile runtime ps
     ;;
   ps)

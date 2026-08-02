@@ -127,6 +127,10 @@ type RouterConfig struct {
 	CurrentIndexCancel            http.Handler
 	CurrentIndexMeta              http.Handler
 	CurrentIndexMetaDelete        http.Handler
+	CurrentIndexScheduleUpdate    http.Handler
+	CurrentIndexScheduleDelete    http.Handler
+	CurrentNotifications          http.Handler
+	CurrentNotificationEvents     http.Handler
 	CurrentModelCatalog           http.Handler
 	CurrentModelDefault           http.Handler
 	CurrentLLMFacade              http.Handler

@@ -13,6 +13,7 @@ import (
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
 	indextypesapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indextypes"
+	notificationsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/notifications"
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
@@ -117,6 +118,35 @@ func NewRouter(cfg RouterConfig) chi.Router {
 			indexingapi.SourceOnlyIndexDeleteMethod,
 			indexingapi.CurrentIndexMetaDeletePath,
 			cfg.CurrentIndexMetaDelete,
+		)
+	}
+	if cfg.CurrentIndexScheduleUpdate != nil {
+		r.Method(
+			indexingapi.SourceOnlyIndexScheduleMethod,
+			indexingapi.SourceOnlyIndexSchedulePath,
+			cfg.CurrentIndexScheduleUpdate,
+		)
+	}
+	if cfg.CurrentIndexScheduleDelete != nil {
+		r.Method(
+			indexingapi.SourceOnlyIndexScheduleDeleteMethod,
+			indexingapi.SourceOnlyIndexScheduleDeletePath,
+			cfg.CurrentIndexScheduleDelete,
+		)
+	}
+	if cfg.CurrentNotifications != nil {
+		r.Method(http.MethodGet, notificationsapi.CurrentNotificationsPath, cfg.CurrentNotifications)
+		r.Method(http.MethodPut, notificationsapi.CurrentNotificationsPath, cfg.CurrentNotifications)
+		r.Method(http.MethodDelete, notificationsapi.CurrentNotificationsPath, cfg.CurrentNotifications)
+		r.Method(http.MethodGet, notificationsapi.CurrentNotificationPath, cfg.CurrentNotifications)
+		r.Method(http.MethodPut, notificationsapi.CurrentNotificationPath, cfg.CurrentNotifications)
+		r.Method(http.MethodDelete, notificationsapi.CurrentNotificationPath, cfg.CurrentNotifications)
+	}
+	if cfg.CurrentNotificationEvents != nil {
+		r.Method(
+			http.MethodGet,
+			notificationsapi.CurrentNotificationEventsPath,
+			cfg.CurrentNotificationEvents,
 		)
 	}
 	if cfg.CurrentModelCatalog != nil {

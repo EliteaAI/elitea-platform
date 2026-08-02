@@ -34,6 +34,8 @@ type Config struct {
 	StreamMaxEntries int64
 
 	IndexIngestDispatchEnabled  bool
+	IndexSchedulingEnabled      bool
+	SchedulerInstanceID         string
 	IndexIngestCommandStream    string
 	IndexIngestConsumerGroup    string
 	IndexIngestStreamMaxEntries int64
@@ -122,6 +124,32 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 		}
 	default:
 		return Config{}, errors.New("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED must be true or false")
+	}
+	indexSchedulingEnabled, _ := lookup("ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED")
+	switch indexSchedulingEnabled {
+	case "", "false":
+		if value, ok := lookup("ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID"); ok &&
+			value != "" {
+			return Config{}, errors.New(
+				"runtime scheduler instance ID requires explicit index scheduling",
+			)
+		}
+	case "true":
+		if !config.IndexIngestDispatchEnabled {
+			return Config{}, errors.New(
+				"runtime index scheduling requires index ingest dispatch",
+			)
+		}
+		config.IndexSchedulingEnabled = true
+		if config.SchedulerInstanceID, err = required(
+			"ELITEA_RUNTIME_SCHEDULER_INSTANCE_ID",
+		); err != nil {
+			return Config{}, err
+		}
+	default:
+		return Config{}, errors.New(
+			"ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED must be true or false",
+		)
 	}
 	if config.RedisURL, err = required("ELITEA_RUNTIME_REDIS_URL"); err != nil {
 		return Config{}, err
@@ -220,6 +248,18 @@ func (c Config) Validate() error {
 	} else if c.IndexIngestCommandStream != "" || c.IndexIngestConsumerGroup != "" || c.IndexIngestStreamMaxEntries != 0 {
 		return errors.New("runtime index ingest dispatch settings require explicit enablement")
 	}
+	if c.IndexSchedulingEnabled {
+		if !c.IndexIngestDispatchEnabled {
+			return errors.New("runtime index scheduling requires index ingest dispatch")
+		}
+		if !validSchedulerInstanceID(c.SchedulerInstanceID) {
+			return errors.New("runtime scheduler instance ID is invalid")
+		}
+	} else if c.SchedulerInstanceID != "" {
+		return errors.New(
+			"runtime scheduler instance ID requires explicit index scheduling",
+		)
+	}
 	if c.RedisPoolSize <= 0 || c.RedisPoolSize > maxRedisPoolSize {
 		return errors.New("runtime Redis pool size is invalid")
 	}
@@ -249,6 +289,28 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validSchedulerInstanceID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for position := range len(value) {
+		character := value[position]
+		alphaNumeric := (character >= 'a' && character <= 'z') ||
+			(character >= '0' && character <= '9')
+		if position == 0 {
+			if !alphaNumeric {
+				return false
+			}
+			continue
+		}
+		if !alphaNumeric && character != '.' &&
+			character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRedisURL(raw string) error {

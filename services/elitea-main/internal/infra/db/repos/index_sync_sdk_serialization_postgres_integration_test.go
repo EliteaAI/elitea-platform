@@ -31,7 +31,7 @@ const (
 	indexSDKSerializationGateEnv       = "ELITEA_INDEX_SDK_SERIALIZATION_GATE"
 	indexSDKSerializationContainerEnv  = "ELITEA_INDEX_SDK_CONTAINER"
 	indexSDKSerializationContainer     = "centry-elitea-indexer-worker-1"
-	indexSDKSerializationExpectedSHA   = "c3e756b2c57cb86f8776a5c3e087ad8aeaa6459096d16d6dd7969a16d553eb87"
+	indexSDKSerializationExpectedSHA   = "6999d5c38ee77aa900b5ca767e96a300936d66216409ce69e22ce89fa41d18d9"
 	indexSDKSerializationFirstTaskID   = "11111111111111111111111111111111"
 	indexSDKSerializationSecondTaskID  = "22222222222222222222222222222222"
 	indexSDKSerializationEventPrefix   = "ELITEA_SDK_SERIALIZATION_GATE "

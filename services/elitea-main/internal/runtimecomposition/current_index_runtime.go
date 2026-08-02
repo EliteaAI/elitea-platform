@@ -13,6 +13,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
+	indexscheduleapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexschedule"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
@@ -26,12 +27,19 @@ const (
 )
 
 type currentIndexRuntime struct {
-	start        *indexingapp.StartService
-	cancel       *indexingapp.CurrentIndexCancellationService
-	initializer  *indexingapp.DurableIndexMetaInitializer
-	materializer *storage.CurrentConfigurationsMaterializer
-	indexMeta    *indexmetaapp.Service
-	indexDelete  *indexmetaapp.DeleteService
+	start          *indexingapp.StartService
+	cancel         *indexingapp.CurrentIndexCancellationService
+	initializer    *indexingapp.DurableIndexMetaInitializer
+	materializer   *storage.CurrentConfigurationsMaterializer
+	indexMeta      *indexmetaapp.Service
+	indexDelete    *indexmetaapp.DeleteService
+	toolkits       indexingapp.CurrentToolkitReader
+	settings       indexingapp.CurrentToolkitSettingsValidator
+	inputs         *indexingapp.CurrentAuthoritativeInputResolver
+	exact          *indexmetaapp.ExactService
+	scheduleUpdate *indexscheduleapp.Service
+	scheduleDelete *indexscheduleapp.DeleteService
+	scheduleAction *currentIndexScheduleDueWork
 }
 
 // durableIndexMetaFrozenToolkitClaimer preserves temporary materialization
@@ -216,11 +224,20 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, err
 	}
+	indexMetaReader := pgvector.NewCurrentIndexMetaReader()
 	indexMeta, err := indexmetaapp.NewService(
 		toolkits,
 		settings,
 		indexMetaTimeouts,
-		pgvector.NewCurrentIndexMetaReader(),
+		indexMetaReader,
+	)
+	if err != nil {
+		return nil, err
+	}
+	exact, err := indexmetaapp.NewExactService(
+		toolkits,
+		settings,
+		indexMetaReader,
 	)
 	if err != nil {
 		return nil, err
@@ -242,6 +259,10 @@ func newCurrentIndexRuntime(
 		materializer: materializer,
 		indexMeta:    indexMeta,
 		indexDelete:  indexDelete,
+		toolkits:     toolkits,
+		settings:     settings,
+		inputs:       inputs,
+		exact:        exact,
 	}, nil
 }
 

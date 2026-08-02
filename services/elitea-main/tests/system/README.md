@@ -21,9 +21,11 @@ pending deliveries. It then runs two uniquely named indexes:
    reference, create a PostgreSQL claim, settle durably, publish replay events,
    and retire the Redis reference.
 2. With the worker stopped, it admits a second execution, opens public SSE,
-   calls the public Stop route twice, and requires idempotent `204` responses,
-   durable `CANCELLED` state with no worker claim, a replay event, and empty
-   Redis control state.
+   calls the public Stop route twice, and requires idempotent `204` responses
+   plus durable `CANCELLED` state with no worker claim and a replay event. It
+   then restarts the real worker, which must receive only the durable retired
+   decision, invoke no SDK work, create no business claim, and atomically drain
+   the Redis reference and delivery-index mapping.
 
 Both requests inject a random, non-secret content-plane canary. The signed
 Redis reference and public SSE data must not contain it. The test never prints
@@ -105,14 +107,37 @@ go test ./services/elitea-main/tests/system \
 
 `TestProductionRuntimeCrossProcessSystem` starts real PostgreSQL 16 and two
 Redis 7 containers, then independently starts the production `elitea-main`
-binary and four `elitea-worker serve` processes. Three workers independently
-prove fail-closed command-signature, durable workload-identity binding, and
-mTLS trust-root enforcement: each leaves the command unclaimed and
-unacknowledged. The authorized worker then reclaims the same pending reference
-and completes the public submit, Redis reference delivery, mTLS gRPC claim,
-HTTP/2 content fetch, SDK business handler, mTLS gRPC output/settlement, atomic
-stable-delivery-bound `XACK` + `XDEL` + delivery-index `HDEL`, and authorized
-SSE replay.
+binary and four `elitea-worker serve` processes. It uses a private, typed
+application admission seam because the public runtime routes remain
+deliberately unmounted until their current-product RBAC and audit contract is
+ported. Public route/UI evidence remains a separate deployment gate.
+
+Three workers independently prove fail-closed command-signature, durable
+workload-identity binding, and mTLS trust-root enforcement: each leaves the
+command unclaimed and unacknowledged. The authorized worker then reclaims the
+same pending reference and completes Redis reference delivery, mTLS gRPC
+claim, HTTP/2 content fetch, the configuration-validation business handler,
+mTLS gRPC output/settlement, and atomic stable-delivery-bound `XACK` + `XDEL`
++ delivery-index `HDEL`.
+
+The harness adds two test-only, bounded fault proxies; production transport is
+unchanged:
+
+1. The output proxy preserves the worker's mTLS identity and workload-session
+   metadata, receives Main's first positive committed ACK, withholds it from
+   the worker, and holds reconnects until the harness restarts Main,
+   PostgreSQL, and the worker.
+2. The Redis proxy forwards the atomic retirement `EVAL`, receives the exact
+   successful `{1,1,1}` response, and closes the worker connection before
+   returning that response.
+
+Before an authorized claim, the same real pending delivery is also preserved
+through Redis AOF recovery, PostgreSQL restart, and Main restart. After the
+committed-ACK fault, the restarted worker reclaims the aged PEL entry and
+replays its encrypted spool. The final assertions require one claim, one inbox
+record, one business result, one settlement, one replay event with a valid
+monotonic cursor, and empty Redis stream, PEL, delivery-index mapping, and
+worker spool. Thus retry cannot create a second durable business output.
 
 Against the same TLS/ACL broker, the test also verifies that worker credentials
 cannot `XADD`, `HSET`, or `PUBLISH`, while producer credentials cannot
@@ -138,12 +163,21 @@ it when a sibling `elitea-sdk` checkout exists but has advanced beyond the
 worker's pinned revision; the worker intentionally fails closed on a package-
 tree digest mismatch.
 
-This is system/end-to-end evidence for the small credential-free configuration
-validation slice. It is not a load, soak, penetration, failover, certificate
-rotation, or production-scale issue #5681 test. The current input-content
-profile is intentionally capped at 256 KiB; large file/image streaming needs
-its artifact path before that broader scenario can be claimed closed by a
-system test.
+This is restart and ACK-loss evidence for the small credential-free
+configuration-validation slice. It is not a public-route/UI, load, soak,
+penetration, multi-node failover, certificate-rotation, or production-scale
+issue #5681 test. The current input-content profile is intentionally capped at
+256 KiB; large file/image streaming needs its artifact path before that
+broader scenario can be claimed closed by a system test.
+
+The configuration-validation handler has no provider/source/PgVector effect,
+so this topology cannot honestly prove that an indexing SDK side effect is
+invoked only once. The production-scale issue #5681 gate separately requires
+its source/model fixture receipt to remain byte-for-byte unchanged across a
+post-terminal worker restart. A crash after the SDK/PgVector side effect but
+before Main durably commits terminal output is still an ambiguous at-least-once
+window; it requires an SDK-owned idempotency key or a durable worker effect
+receipt before the platform may claim exactly-once indexing effects.
 
 ## Index embedding binding Go-to-Python gate
 
