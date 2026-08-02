@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package elitea.runtime.v1;
 
+import "elitea/runtime/v1/agent.proto";
 import "elitea/runtime/v1/indexing.proto";
 import "elitea/runtime/v1/input.proto";
 import "elitea/runtime/v1/toolkit.proto";
@@ -18,6 +19,8 @@ enum WorkerCommandTypeV1 {
   WORKER_COMMAND_TYPE_V1_CONFIGURATION_VALIDATE = 5;
   WORKER_COMMAND_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS = 6;
   WORKER_COMMAND_TYPE_V1_INDEX_INGEST = 7;
+  WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION = 8;
+  WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC = 9;
 }
 
 // WorkerCommandV1 is the immutable, reference-only command body allowed on a
@@ -56,9 +59,10 @@ message WorkerCommandV1 {
     ConfigurationValidationCommandV1 configuration_validation = 32;
     ToolkitAvailableToolsCommandV1 toolkit_available_tools = 33;
     IndexIngestCommandV1 index_ingest = 34;
+    AgentExecutionCommandV1 agent_execution = 35;
   }
 
   reserved 15, 26 to 31;
   reserved "grant_template_id";
-  reserved 35 to 63;
+  reserved 36 to 63;
 }

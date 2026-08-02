@@ -30,6 +30,7 @@ from elitea_worker.constants import (
     SDK_PACKAGE_TREE_SHA256,
 )
 from elitea_worker.execution.errors import DependencyUnavailable, UnsupportedCapability
+from elitea_worker.handlers.agent import AgentExecutionPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,18 +276,14 @@ class EliteaSdkIndexingAdapter:
             raise
 
 
-class EliteaSdkIndexSearchAdapter:
-    """Pinned adapter for the current index retrieval tool entrypoints.
+class EliteaSdkAgentAdapter:
+    """Initial synchronous SDK seam for the two current agent constructors.
 
-    ``search_index``, ``stepback_search_index`` and ``list_indexes`` are all
-    current toolkit tools, not Main-owned vector-store algorithms.  This seam
-    keeps their filters, full-text/extended search, reranking, model behavior,
-    result shapes and current exceptions in the admitted SDK.
+    The first kernel deliberately accepts only a new, non-resume invocation.
+    Checkpoint/HITL, callbacks, MCP pause, image resolution, durable children and
+    result projection remain admission gates before these capabilities can be
+    advertised or wired into production delivery.
     """
-
-    _OPERATIONS = frozenset(
-        {"search_index", "stepback_search_index", "list_indexes"}
-    )
 
     def __init__(self, client: Any) -> None:
         client_type = _indexing_client_type()
@@ -297,7 +294,7 @@ class EliteaSdkIndexSearchAdapter:
         self._client = client
 
     @classmethod
-    def from_context(cls, context: EliteaClientContext) -> "EliteaSdkIndexSearchAdapter":
+    def from_context(cls, context: EliteaClientContext) -> EliteaSdkAgentAdapter:
         client_type = _indexing_client_type()
         client = client_type(
             project_id=context.project_id,
@@ -306,32 +303,117 @@ class EliteaSdkIndexSearchAdapter:
         )
         return cls(client)
 
-    def execute(
-        self,
-        *,
-        operation: str,
-        toolkit_config: dict[str, Any],
-        tool_params: dict[str, Any],
-        runtime_config: dict[str, Any],
-        llm_model: str | None,
-        llm_config: dict[str, Any],
-        mcp_tokens: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        if operation not in self._OPERATIONS:
-            raise ValueError("unsupported index search operation")
-        # This mirrors indexer_test_toolkit.py: the current runtime passes the
-        # runtime config through and makes invocation-only copies of persisted
-        # toolkit/tool/LLM values. Do not validate, normalize, retry, cache or
-        # reformat the SDK result here.
-        return self._client.test_toolkit_tool(
-            toolkit_config=deepcopy(toolkit_config),
-            tool_name=operation,
-            tool_params=deepcopy(tool_params),
-            runtime_config=runtime_config,
-            llm_model=llm_model,
-            llm_config=deepcopy(llm_config),
-            mcp_tokens=mcp_tokens,
+    def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
+        _require_initial_agent_kernel(payload)
+        application = payload.application
+        version_details = deepcopy(application.get("version_details") or {})
+        llm_kwargs = _llm_kwargs(payload.llm)
+        executor = self._client.application(
+            application_id=application.get("id"),
+            application_version_id=application.get("version_id"),
+            application_variables=deepcopy(application.get("variables")),
+            version_details=version_details or None,
+            mcp_tokens=deepcopy(payload.mcp_tokens),
+            conversation_id=payload.conversation_id,
+            ignored_mcp_servers=list(payload.ignored_mcp_servers),
+            user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+            exception_handling_enabled=bool(payload.exception_handling_enabled),
+            context_settings=deepcopy(payload.context_settings),
+            auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+            openai_compatible=bool(llm_kwargs.get("openai_compatible", False)),
         )
+        return _invoke_initial_agent(executor, payload, version_details.get("meta"))
+
+    def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
+        _require_initial_agent_kernel(payload)
+        llm_kwargs = _llm_kwargs(payload.llm)
+        llm = self._client.get_llm(
+            model_name=llm_kwargs.get("model"),
+            model_config={
+                "model_project_id": llm_kwargs.get("model_project_id"),
+                "max_tokens": llm_kwargs.get("max_tokens"),
+                "reasoning_effort": llm_kwargs.get("reasoning_effort"),
+                "temperature": llm_kwargs.get("temperature"),
+                "streaming": llm_kwargs.get("stream", True),
+                "openai_compatible": llm_kwargs.get("openai_compatible", False),
+            },
+        )
+        executor = self._client.predict_agent(
+            llm=llm,
+            instructions=payload.application.get(
+                "instructions", "You are a helpful assistant."
+            ),
+            tools=deepcopy(payload.tools),
+            chat_history=deepcopy(payload.chat_history),
+            debug_mode=True if payload.debug_mode is None else payload.debug_mode,
+            mcp_tokens=deepcopy(payload.mcp_tokens),
+            conversation_id=payload.conversation_id,
+            ignored_mcp_servers=list(payload.ignored_mcp_servers),
+            persona=payload.persona,
+            lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
+            internal_tools=list(payload.internal_tools),
+            exception_handling_enabled=bool(payload.exception_handling_enabled),
+            context_settings=deepcopy(payload.context_settings),
+            step_limit=payload.steps_limit,
+            auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+            user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+        )
+        return _invoke_initial_agent(executor, payload, None)
+
+
+def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
+    """Keep partial behavior unreachable instead of silently drifting."""
+
+    if (
+        payload.thread_id
+        or payload.checkpoint_id
+        or payload.should_continue
+        or payload.hitl_resume
+        or payload.hitl_decisions
+        or payload.is_regenerate
+        or payload.invoked_skills
+        or payload.applied_skills
+        or payload.attached_skills
+        or payload.input_attachments
+        or payload.parallel_reconcile is not None
+        or payload.parallel_terminal_errors
+    ):
+        raise UnsupportedCapability(
+            "This agent execution requires a parity path that is not admitted yet."
+        )
+
+
+def _llm_kwargs(value: dict[str, Any]) -> dict[str, Any]:
+    kwargs = value.get("kwargs")
+    if not isinstance(kwargs, dict):
+        raise UnsupportedCapability("The agent model settings are malformed.")
+    # Authentication and origin come exclusively from EliteaClientContext.
+    return {
+        key: deepcopy(item)
+        for key, item in kwargs.items()
+        if key not in {"api_key", "api_extra_headers", "base_url", "deployment"}
+    }
+
+
+def _invoke_initial_agent(
+    executor: Any,
+    payload: AgentExecutionPayload,
+    application_meta: Any,
+) -> dict[str, Any]:
+    from langchain_core.messages import HumanMessage
+
+    messages = deepcopy(payload.chat_history)
+    messages.append(HumanMessage(content=deepcopy(payload.user_input)))
+    configurable: dict[str, Any] = {}
+    invoke_config: dict[str, Any] = {"configurable": configurable}
+    if isinstance(application_meta, dict):
+        step_limit = application_meta.get("step_limit")
+        if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:
+            invoke_config["recursion_limit"] = step_limit
+    result = executor.invoke({"messages": messages}, invoke_config)
+    if not isinstance(result, dict):
+        raise TypeError("the SDK agent invocation returned a non-object result")
+    return result
 
 
 def _current_index_tool_name_compatibility(

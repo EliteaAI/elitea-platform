@@ -48,3 +48,13 @@ def test_capability_document_is_deterministic_and_pinned() -> None:
 def test_serve_manifest_cannot_advertise_public_conformance_signature() -> None:
     with pytest.raises(ValueError, match="production signature"):
         capability_message(startup_mode="serve")
+
+
+def test_partial_agent_kernel_is_not_advertised_as_a_runtime_capability() -> None:
+    capability_ids = {
+        capability.capability_id
+        for capability in capability_message().capabilities
+    }
+
+    assert "agent.execute.application.v1" not in capability_ids
+    assert "agent.execute.adhoc.v1" not in capability_ids
