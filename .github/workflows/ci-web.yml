@@ -184,7 +184,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: elitea-web-coverage
-          path: coverage/
+          path: apps/elitea-web/coverage/
           retention-days: 7
 
   coverage-validation:
@@ -205,9 +205,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: elitea-web-coverage
-          path: coverage/
+          path: apps/elitea-web/coverage/
       - name: Validate coverage thresholds
         # merge-coverage.mjs enforces thresholds by default (exits non-zero on failure)
+        working-directory: apps/elitea-web
         run: node scripts/merge-coverage.mjs
 
   gate-self-test:
@@ -228,6 +229,7 @@ jobs:
   gate-script-coverage:
     name: Gate-script decision-logic coverage
     runs-on: ubuntu-latest
+    working-directory: apps/elitea-web
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -304,8 +306,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: elitea-web-coverage
-          path: coverage/
+          path: apps/elitea-web/coverage/
       - name: Check mutator coverage thresholds
+        working-directory: apps/elitea-web
         # mutator.ts is generated code — coverage is enforced via the merged
         # shard artifact, not a separate vitest run. Reads the JSON directly.
         run: |
