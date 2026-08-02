@@ -23,7 +23,7 @@ import { TutorialsIcon } from '@/shared/ui/icons/tutorials-icon';
 import { VideoIcon } from '@/shared/ui/icons/video-icon';
 
 // Tour target ids — ported from interactive-tours constants (already built).
-import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours/lib/constants';
+import { RESOURCES_TOUR_TARGET_IDS } from '@/features/interactive-tours';
 
 /** Default resource card configurations consumed by the HelpCenterPage. */
 export const RESOURCE_CARD_CONFIGS: ReadonlyArray<ResourceCardConfig> = [
