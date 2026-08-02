@@ -63,8 +63,12 @@ async function main() {
 
   for (const reportDef of reportsToRender) {
     const report = reports.create(reportDef.type, reportDef.options || {});
-    report.execute(context);
+    console.log(`  Writing ${reportDef.type} report to ${reportDef.options?.file ?? 'context.dir'}...`);
+    await report.execute(context);
   }
+  // Verify report files were actually written
+  const files = await fs.readdir(outputDir);
+  console.log(`  Report files in ${outputDir}: ${files.join(', ')}`);
 
   enforceThresholds(coverageMap, skipValidation);
   console.log('Merged coverage reports generated at', outputDir);
