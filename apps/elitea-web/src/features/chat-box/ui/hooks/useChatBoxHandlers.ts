@@ -16,6 +16,8 @@
  * isolation.
  */
 
+import { conversationApi } from '@/entities/conversation';
+
 /* ------------------------------------------------------------------ */
 /*  Shared shapes                                                       */
 /* ------------------------------------------------------------------ */
@@ -35,8 +37,11 @@ export interface HitlInterruptAction {
 /** Result returned by the send handler when the conversation needs creating. */
 export interface SendResult {
   readonly success: boolean;
+  /** A new conversation object (from backend) — only present when one was created. */
   readonly createdConversation?: Record<string, unknown>;
+  /** Updated message list — only present when the backend returns it. */
   readonly updatedMessages?: readonly unknown[];
+  /** Extra event payload the backend attached to the response. */
   readonly updatedEventPayload?: Record<string, unknown>;
 }
 
@@ -71,16 +76,32 @@ export interface ChatBoxHandlerDeps {
     conversationUuid?: string;
     attachmentList?: unknown[];
   }) => Record<string, unknown>;
-  /** Regenerate an existing AI answer. */
+  /** Trigger the regenerate RTK Query mutation. */
+  readonly triggerRegenerate?: (
+    params: Parameters<typeof conversationApi.regenerate>[0],
+  ) => Promise<unknown>;
+  /** Trigger the delete-message RTK Query mutation. */
+  readonly triggerDeleteMessage?: (
+    params: Parameters<typeof conversationApi.deleteMessage>[0],
+  ) => Promise<unknown>;
+  /** Trigger the delete-all-messages RTK Query mutation. */
+  readonly triggerDeleteAllMessages?: (
+    params: Parameters<typeof conversationApi.deleteAllMessages>[0],
+  ) => Promise<unknown>;
+  /** Trigger the stop-chat-task RTK Query mutation. */
+  readonly triggerStopChatTask?: (
+    params: Parameters<typeof conversationApi.stopTask>[0],
+  ) => Promise<unknown>;
+  /** Regenerate an existing AI answer (legacy callback, kept for compatibility). */
   readonly regenerateAnswer?: (params: {
     messageId: string;
     question: string;
     questionId: string;
     participant?: unknown;
   }) => Promise<void>;
-  /** Delete a single message. */
+  /** Delete a single message (legacy callback, kept for compatibility). */
   readonly deleteMessage?: (messageId: string) => Promise<void>;
-  /** Delete all messages in the conversation. */
+  /** Delete all messages in the conversation (legacy callback, kept for compatibility). */
   readonly deleteAllMessages?: () => Promise<void>;
   /** Continue execution after MCP auth (emit `chat_continue_predict`). */
   readonly continueMcpExecution?: (messageId: string, addToIgnoreList?: boolean) => Promise<void>;
@@ -102,6 +123,16 @@ export interface UseChatBoxHandlersResult {
   readonly sendQuestion: (params: SendQuestionParams) => Promise<SendResult>;
   /** Copy a message's content to the system clipboard. */
   readonly copyToClipboard: (message: unknown) => Promise<boolean>;
+  /** Regenerate an AI answer by emitting a 'regenerate' socket event. */
+  readonly regenerateAnswer: (messageId: string) => Promise<void>;
+  /** Delete a single message via RTK Query mutation. */
+  readonly deleteAnswer: (messageId: string) => Promise<void>;
+  /** Clear all messages in the current conversation via RTK Query mutation. */
+  readonly clearChat: () => Promise<void>;
+  /** Continue execution after a HITL interrupt (emit 'hitl_response'). */
+  readonly continueHitl: (action: HitlInterruptAction) => Promise<void>;
+  /** Resume an MCP flow after authentication (emit 'mcp_resume'). */
+  readonly resumeMcpFlow: (prompt: string, variables: Record<string, unknown>) => Promise<void>;
 }
 
 /**
@@ -115,21 +146,26 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     setChatHistory,
     isStreamingNow,
     setStreamingInfo,
-    generateMessagePayload: _generateMessagePayload,
-    regenerateAnswer: _regenerateAnswer,
-    deleteMessage: _deleteMessage,
-    deleteAllMessages: _deleteAllMessages,
-    continueMcpExecution: _continueMcpExecution,
+    generateMessagePayload,
+    triggerRegenerate,
+    triggerDeleteMessage,
+    triggerDeleteAllMessages,
+    conversationUuid,
+    projectId,
   } = deps;
 
-  // -- Send handler --
+  /* ---------------------------------------------------------------- */
+  /*  sendQuestion — socket emit + local chat history                 */
+  /* ---------------------------------------------------------------- */
   const sendQuestion = async (params: SendQuestionParams): Promise<SendResult> => {
     const { question, attachments } = params;
-    if (!question.trim()) return { success: false };
+    if (!question.trim()) {
+      return { success: false };
+    }
 
     const questionId = crypto.randomUUID();
     const participant = deps.getActiveParticipant?.() ?? {};
-    const payload = deps.generateMessagePayload?.({
+    const payload = generateMessagePayload?.({
       question,
       questionId,
       participant,
@@ -147,8 +183,9 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
         ...payload,
         conversation_uuid: deps.conversationUuid || payload.conversation_uuid,
       });
-    } catch {
+    } catch (error) {
       // Socket failed — user will see an error through toast/other UI
+      console.warn('[useChatBoxHandlers] chat_predict emit failed:', error);
     }
 
     // Record the question in chat history
@@ -170,7 +207,9 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     return { success: true };
   };
 
-  // -- Copy handler --
+  /* ---------------------------------------------------------------- */
+  /*  copyToClipboard — navigator.clipboard                           */
+  /* ---------------------------------------------------------------- */
   const copyToClipboard = async (message: unknown): Promise<boolean> => {
     const content = (message as Record<string, unknown>)?.content as string | undefined;
     if (!content) return false;
@@ -183,8 +222,128 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     }
   };
 
+  /* ---------------------------------------------------------------- */
+  /*  regenerateAnswer — socket 'regenerate' event                    */
+  /* ---------------------------------------------------------------- */
+  const regenerateAnswer = async (messageId: string): Promise<void> => {
+    const convId = deps.conversationUuid ?? '';
+    const pid = String(projectId ?? '');
+
+    try {
+      // Emit socket event for real-time regeneration streaming
+      emitSocket('regenerate', {
+        conversation_uuid: convId,
+        project_id: pid,
+        message_id: messageId,
+      });
+
+      // Also trigger the REST regenerate mutation for backend persistence
+      if (triggerRegenerate) {
+        await triggerRegenerate({
+          projectId: pid,
+          id: messageId,
+        });
+      }
+    } catch (error) {
+      console.warn('[useChatBoxHandlers] regenerate failed:', error);
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /*  deleteAnswer — RTK Query mutation (DELETE message)              */
+  /* ---------------------------------------------------------------- */
+  const deleteAnswer = async (messageId: string): Promise<void> => {
+    if (!triggerDeleteMessage) {
+      console.warn('[useChatBoxHandlers] deleteAnswer: triggerDeleteMessage not provided');
+      return;
+    }
+
+    const pid = String(projectId ?? '');
+    const convId = conversationUuid ?? String(projectId ?? '');
+
+    try {
+      await triggerDeleteMessage({
+        projectId: pid,
+        id: messageId,
+        conversationId: convId,
+      });
+    } catch (error) {
+      console.warn('[useChatBoxHandlers] deleteAnswer failed:', error);
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /*  clearChat — RTK Query mutation (DELETE all messages)            */
+  /* ---------------------------------------------------------------- */
+  const clearChat = async (): Promise<void> => {
+    if (!triggerDeleteAllMessages) {
+      console.warn('[useChatBoxHandlers] clearChat: triggerDeleteAllMessages not provided');
+      return;
+    }
+
+    const pid = String(projectId ?? '');
+    const convId = conversationUuid ?? String(projectId ?? '');
+
+    try {
+      await triggerDeleteAllMessages({
+        projectId: pid,
+        conversationId: convId,
+      });
+    } catch (error) {
+      console.warn('[useChatBoxHandlers] clearChat failed:', error);
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /*  continueHitl — socket 'hitl_response' event                     */
+  /* ---------------------------------------------------------------- */
+  const continueHitl = async (action: HitlInterruptAction): Promise<void> => {
+    const convId = deps.conversationUuid ?? '';
+    const pid = String(projectId ?? '');
+
+    try {
+      emitSocket('hitl_response', {
+        conversation_uuid: convId,
+        project_id: pid,
+        action: action.action,
+        ...(action.value !== undefined && { value: action.value }),
+        ...(action.toolCallId !== undefined && { tool_call_id: action.toolCallId }),
+        ...(action.childThreadId !== undefined && { child_thread_id: action.childThreadId }),
+      });
+    } catch (error) {
+      console.warn('[useChatBoxHandlers] hitl_response emit failed:', error);
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /*  resumeMcpFlow — socket 'mcp_resume' event                       */
+  /* ---------------------------------------------------------------- */
+  const resumeMcpFlow = async (
+    prompt: string,
+    variables: Record<string, unknown>,
+  ): Promise<void> => {
+    const convId = deps.conversationUuid ?? '';
+    const pid = String(projectId ?? '');
+
+    try {
+      emitSocket('mcp_resume', {
+        conversation_uuid: convId,
+        project_id: pid,
+        prompt,
+        variables,
+      });
+    } catch (error) {
+      console.warn('[useChatBoxHandlers] mcp_resume emit failed:', error);
+    }
+  };
+
   return {
     sendQuestion,
     copyToClipboard,
+    regenerateAnswer,
+    deleteAnswer,
+    clearChat,
+    continueHitl,
+    resumeMcpFlow,
   };
 }

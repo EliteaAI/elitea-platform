@@ -4,5 +4,9 @@ export { default as RecommendationList } from './ui/RecommendationList';
 export type { NewParticipantCardProps } from './ui/NewParticipantCard';
 export type { NewParticipantListProps } from './ui/NewParticipantList';
 export type { RecommendationListProps } from './ui/RecommendationList';
-export type { RecommendationItem, UseRecommendationsResult } from './lib/useRecommendations';
+export type {
+  RecommendationItem,
+  UseRecommendationsParams,
+  UseRecommendationsResult,
+} from './lib/useRecommendations';
 export { useRecommendations } from './lib/useRecommendations';

@@ -1,27 +1,36 @@
 import { memo } from 'react';
 
-import { Box, IconButton, Tooltip, useTheme } from '@mui/material';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
+import Box from '@mui/material/Box';
+import IconButton from '@mui/material/IconButton';
+import Tooltip from '@mui/material/Tooltip';
 
 /**
- * Phase-2 Chat button primitive: ClearChatButton
- * Stub — no external dependencies. Full implementation wired in Phase 5.
+ * Chat button primitive: ClearChatButton
+ *
+ * Renders a trash / delete icon button that clears the current chat.
+ *
+ * Prop contract (injected by the composition root through `slots.renderClearChatButton`):
+ *   - `disabled` — disable the button (e.g. when chat is empty)
+ *   - `onClear`  — fire the clear action
  */
-const ClearChatButton = memo(({ disabled = false, onClear }: { disabled?: boolean; onClear?: () => void }) => {
-  const theme = useTheme();
+export interface ClearChatButtonProps {
+  disabled?: boolean;
+  onClear?: () => void;
+}
 
+export const ClearChatButton = memo(({ disabled = false, onClear }: ClearChatButtonProps) => {
   return (
-    <Tooltip placement="top" title="Clear the chat">
+    <Tooltip title="Clear chat" placement="top">
       <Box component="span">
         <IconButton
           color="secondary"
-          aria-label="clear the chat"
+          aria-label="clear chat"
           disabled={disabled}
           onClick={onClear}
           sx={{ marginLeft: 0 }}
         >
-          <Box component="span" sx={{ fontSize: 16, color: theme.palette.icon.fill.secondary }}>
-            ✕
-          </Box>
+          <DeleteOutlinedIcon fontSize="small" />
         </IconButton>
       </Box>
     </Tooltip>
