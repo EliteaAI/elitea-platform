@@ -10,9 +10,11 @@ interface ReasoningSliderProps {
   disabled?: boolean;
 }
 
+const REASONING_LABEL_MEDIUM = t('widgets.llmModelSelector.reasoningSlider.labelMedium', 'Medium');
+
 const REASONING_LABELS = [
   { label: t('widgets.llmModelSelector.reasoningSlider.labelLow', 'Low'), value: 'low' },
-  { label: t('widgets.llmModelSelector.reasoningSlider.labelMedium', 'Medium'), value: 'medium' },
+  { label: REASONING_LABEL_MEDIUM, value: 'medium' },
   { label: t('widgets.llmModelSelector.reasoningSlider.labelHigh', 'High'), value: 'high' },
 ];
 
@@ -42,7 +44,7 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="body2">{t('widgets.llmModelSelector.reasoningSlider.title', 'Reasoning effort')}</Typography>
         <Typography variant="body2">
-          {REASONING_LABELS.find((l) => l.value === value)?.label ?? 'Medium'}
+          {REASONING_LABELS.find((l) => l.value === value)?.label ?? REASONING_LABEL_MEDIUM}
         </Typography>
       </Box>
       <Slider

@@ -3,6 +3,9 @@ import { memo } from 'react';
 import { Box, Slider, Typography } from '@mui/material';
 
 import { DEFAULT_TEMPERATURE } from '@/shared/lib/constants';
+import { t } from '@/shared/i18n';
+
+const temperatureLabel = t('widgets.llmModelSelector.creativitySlider.label', 'Temperature');
 
 interface CreativitySliderProps {
   temperature: number;
@@ -19,7 +22,7 @@ export const CreativitySlider = memo(({ temperature, onChange }: CreativitySlide
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-        <Typography variant="body2">Temperature</Typography>
+        <Typography variant="body2">{temperatureLabel}</Typography>
         <Typography variant="body2">{temperature?.toFixed(2)}</Typography>
       </Box>
       <Slider
@@ -28,7 +31,7 @@ export const CreativitySlider = memo(({ temperature, onChange }: CreativitySlide
         min={0}
         max={2}
         step={0.01}
-        aria-label="Temperature"
+        aria-label={temperatureLabel}
       />
     </Box>
   );

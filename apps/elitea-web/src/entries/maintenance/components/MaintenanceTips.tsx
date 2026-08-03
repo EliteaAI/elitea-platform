@@ -1,27 +1,27 @@
-import { Box, Link, Typography, useTheme } from '@mui/material';
+import { Box, Link, Typography } from '@mui/material';
 import { memo } from 'react';
 
 import MaintenanceTipsContainer from './MaintenanceTipsContainer';
+import { t } from '@/shared/i18n';
 
 const TIPS_LINK = 'https://elitea.ai/docs/home/onboarding-tips/';
 const DOCS_LINK = 'https://elitea.ai/docs/';
 
-const MaintenanceTips = memo(() => {
-  const theme = useTheme();
+const introText = t(
+  'entries.maintenance.tips.intro',
+  'While we get things ready behind the scenes, why not explore some helpful resources?',
+);
+const tipsLinkLabel = t('entries.maintenance.tips.tipsLinkLabel', 'Tips & Features');
+const tipsLineSuffix = t('entries.maintenance.tips.tipsLineSuffix', 'to get the most out of Elitea');
+const tipsLinePrefix = t('entries.maintenance.tips.tipsLinePrefix', 'Discover our');
+const docsLinkLabel = t('entries.maintenance.tips.docsLinkLabel', 'Documentation.');
+const docsLinePrefix = t('entries.maintenance.tips.docsLinePrefix', 'Browse our guides in');
 
+const MaintenanceTips = memo(() => {
   return (
     <MaintenanceTipsContainer>
-      <Typography
-        component="div"
-        sx={{
-          fontStyle: 'normal',
-          fontWeight: 400,
-          fontSize: '14px',
-          lineHeight: '24px',
-          color: 'rgba(14, 19, 29, 1)',
-        }}
-      >
-        While we get things ready behind the scenes, why not explore some helpful resources?
+      <Typography component="div" variant="bodyMedium" sx={(theme) => ({ color: theme.vars.palette.text.secondary })}>
+        {introText}
       </Typography>
       <Box
         component="ul"
@@ -33,63 +33,53 @@ const MaintenanceTips = memo(() => {
       >
         <Typography
           component="li"
-          sx={{
-            fontStyle: 'normal',
-            fontWeight: 400,
-            fontSize: '14px',
-            lineHeight: '24px',
-            color: 'rgba(14, 19, 29, 1)',
-          }}
+          variant="bodyMedium"
+          sx={(theme) => ({ color: theme.vars.palette.text.secondary })}
         >
-          Discover our{' '}
+          {tipsLinePrefix}{' '}
           <Link
             href={TIPS_LINK}
             target="_blank"
             rel="noopener"
-            sx={{
-              color: (theme.palette.background?.text as any)?.link ?? 'rgba(41, 184, 245, 1)',
+            sx={(theme) => ({
+              color: theme.vars.palette.text.link,
               textDecoration: 'underline',
               '&:visited': {
-                color: (theme.palette.icon?.fill as any)?.magicAssistant ?? 'rgba(244, 124, 255, 1)',
+                color: theme.vars.palette.icon.fill.magicAssistant,
               },
               '&:hover': {
                 cursor: 'pointer',
                 textDecoration: 'underline',
               },
-            }}
+            })}
           >
-            Tips & Features
+            {tipsLinkLabel}
           </Link>{' '}
-          to get the most out of Elitea
+          {tipsLineSuffix}
         </Typography>
         <Typography
           component="li"
-          sx={{
-            fontStyle: 'normal',
-            fontWeight: 400,
-            fontSize: '14px',
-            lineHeight: '24px',
-            color: 'rgba(14, 19, 29, 1)',
-          }}
+          variant="bodyMedium"
+          sx={(theme) => ({ color: theme.vars.palette.text.secondary })}
         >
-          Browse our guides in{' '}
+          {docsLinePrefix}{' '}
           <Link
             href={DOCS_LINK}
             target="_blank"
             rel="noopener"
-            sx={{
-              color: (theme.palette.background?.text as any)?.link ?? 'rgba(41, 184, 245, 1)',
+            sx={(theme) => ({
+              color: theme.vars.palette.text.link,
               textDecoration: 'underline',
               '&:visited': {
-                color: (theme.palette.icon?.fill as any)?.magicAssistant ?? 'rgba(244, 124, 255, 1)',
+                color: theme.vars.palette.icon.fill.magicAssistant,
               },
               '&:hover': {
                 cursor: 'pointer',
                 textDecoration: 'underline',
               },
-            }}
+            })}
           >
-            Documentation.
+            {docsLinkLabel}
           </Link>
         </Typography>
       </Box>

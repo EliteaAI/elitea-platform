@@ -8,38 +8,36 @@ interface MaintenanceTipsContainerProps {
 const MaintenanceTipsContainer = memo(({ children }: MaintenanceTipsContainerProps) => {
   return (
     <Box
-      sx={{
+      sx={(theme) => ({
         width: '100%',
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '1.5rem',
+        borderRadius: theme.vars.shape.radiusLg,
         padding: '0.0625rem',
-        background:
-          'linear-gradient(42.04deg, rgba(97, 237, 233, 0.4) 8.85%, rgba(251, 66, 255, 0.4) 89.62%)',
-      }}
+        background: theme.vars.palette.background.welcome.outside,
+      })}
     >
       <Box
-        sx={{
+        sx={(theme) => ({
           width: '100%',
           flex: 1,
           display: 'flex',
           flexDirection: 'column',
-          borderRadius: '1.5rem',
-          background: 'rgba(250, 250, 250, 1)',
-        }}
+          borderRadius: theme.vars.shape.radiusLg,
+          background: theme.vars.palette.background.onboardingBody,
+        })}
       >
         <Box
-          sx={{
+          sx={(theme) => ({
             width: '100%',
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'flex-start',
-            borderRadius: '1.5rem',
+            borderRadius: theme.vars.shape.radiusLg,
             padding: '1.25rem',
-            background:
-              'linear-gradient(63.16deg, rgba(41, 169, 165, 0.14) 16.12%, rgba(231, 47, 235, 0.14) 85.3%)',
-          }}
+            background: theme.vars.palette.background.welcome.inner,
+          })}
         >
           {children}
         </Box>

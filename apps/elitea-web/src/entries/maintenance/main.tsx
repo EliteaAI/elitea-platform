@@ -21,7 +21,7 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={theme} defaultMode="light">
       <CssBaseline />
       <MaintenanceApp />
     </ThemeProvider>

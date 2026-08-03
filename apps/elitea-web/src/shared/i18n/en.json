@@ -616,5 +616,19 @@
   "widgets.llmModelSelector.reasoningSlider.labelLow": "Low",
   "widgets.llmModelSelector.reasoningSlider.labelMedium": "Medium",
   "widgets.llmModelSelector.reasoningSlider.labelHigh": "High",
-  "widgets.llmModelSelector.reasoningSlider.title": "Reasoning effort"
+  "widgets.llmModelSelector.reasoningSlider.title": "Reasoning effort",
+  "entries.maintenance.page.headline": "Elitea is under maintenance!",
+  "entries.maintenance.page.logoAlt": "EliteA",
+  "entries.maintenance.tips.intro": "While we get things ready behind the scenes, why not explore some helpful resources?",
+  "entries.maintenance.tips.tipsLinePrefix": "Discover our",
+  "entries.maintenance.tips.tipsLinkLabel": "Tips & Features",
+  "entries.maintenance.tips.tipsLineSuffix": "to get the most out of Elitea",
+  "entries.maintenance.tips.docsLinePrefix": "Browse our guides in",
+  "entries.maintenance.tips.docsLinkLabel": "Documentation.",
+  "widgets.llmModelSelector.creativitySlider.label": "Temperature",
+  "widgets.llmModelSelector.capabilityChip.visionLabel": "Vision",
+  "widgets.llmModelSelector.capabilityChip.reasoningLabel": "Reasoning",
+  "widgets.llmModelSelector.capabilityChip.visionTooltip": "Model supports image input",
+  "widgets.llmModelSelector.capabilityChip.reasoningTooltip": "Model supports reasoning",
+  "widgets.chat.chatButton.clearChat.label": "Clear chat"
 }

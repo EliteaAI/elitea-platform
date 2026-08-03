@@ -5,6 +5,10 @@ import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
+import { t } from '@/shared/i18n';
+
+const clearChatLabel = t('widgets.chat.chatButton.clearChat.label', 'Clear chat');
+
 /**
  * Chat button primitive: ClearChatButton
  *
@@ -21,11 +25,11 @@ export interface ClearChatButtonProps {
 
 export const ClearChatButton = memo(({ disabled = false, onClear }: ClearChatButtonProps) => {
   return (
-    <Tooltip title="Clear chat" placement="top">
+    <Tooltip title={clearChatLabel} placement="top">
       <Box component="span">
         <IconButton
           color="secondary"
-          aria-label="clear chat"
+          aria-label={clearChatLabel}
           disabled={disabled}
           onClick={onClear}
           sx={{ marginLeft: 0 }}

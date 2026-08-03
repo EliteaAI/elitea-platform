@@ -5,13 +5,17 @@ import MaintenanceTips from './MaintenanceTips';
 
 import MaintenanceLogo from '@/entries/maintenance/assets/maintenance-logo.svg?react';
 import ChatWelcomeImage from '@/entries/maintenance/assets/chat-welcome.png';
+import { t } from '@/shared/i18n';
 
 import { VITE_MAINTENANCE_START, VITE_MAINTENANCE_END, VITE_MAINTENANCE_MESSAGE } from '../constants';
+
+const maintenanceHeadline = t('entries.maintenance.page.headline', 'Elitea is under maintenance!');
+const maintenanceLogoAlt = t('entries.maintenance.page.logoAlt', 'EliteA');
 
 const MaintenancePage = memo(() => {
   return (
     <Box
-      sx={{
+      sx={(theme) => ({
         width: '100%',
         minWidth: '100%',
         height: '100vh',
@@ -20,9 +24,9 @@ const MaintenancePage = memo(() => {
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'auto',
-        background: '#F8FCFF',
+        background: theme.vars.palette.background.default,
         position: 'relative',
-      }}
+      })}
     >
       <Box
         sx={{
@@ -50,40 +54,39 @@ const MaintenancePage = memo(() => {
           <MaintenanceLogo />
         </Box>
         <Box
-          sx={{
+          sx={(theme) => ({
             height: 'auto',
             width: '100%',
             padding: '0.0625rem',
-            borderRadius: '1.5rem',
-            background:
-              'linear-gradient(247.51deg, rgba(161, 197, 255, 0.6) 0.02%, rgba(161, 197, 255, 0.12) 50.21%, rgba(161, 214, 255, 0.6) 99.64%)',
-            boxShadow: '0rem 3.975rem 4.2625rem -3.8125rem rgba(80, 161, 255, 0.2)',
+            borderRadius: theme.vars.shape.radiusLg,
+            background: theme.vars.palette.background.onboarding,
+            boxShadow: theme.vars.palette.boxShadow.onboarding,
             '@media (max-width: 900px)': {
               minHeight: '23.6875rem',
               height: 'auto',
             },
-          }}
+          })}
         >
           <Box
-            sx={{
+            sx={(theme) => ({
               width: '100%',
               minHeight: '100%',
               height: 'auto',
-              background: 'rgba(250, 250, 250, 1)',
-              borderRadius: 'calc(1.5rem - 0.0625rem)',
+              background: theme.vars.palette.background.onboardingBody,
+              borderRadius: `calc(${theme.vars.shape.radiusLg} - 0.0625rem)`,
               padding: '2rem',
               boxSizing: 'border-box',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               gap: '2rem',
-            }}
+            })}
           >
             <Box
               component="img"
               sx={{ height: '3.75rem', width: '3.75rem' }}
               src={ChatWelcomeImage}
-              alt="EliteA"
+              alt={maintenanceLogoAlt}
             />
             <Box
               sx={{
@@ -96,36 +99,31 @@ const MaintenancePage = memo(() => {
             >
               <Typography
                 component="div"
-                sx={{
-                  color: 'rgba(14, 19, 29, 1)',
-                  fontStyle: 'semibold',
-                  fontWeight: 600,
-                  fontSize: '1.25rem',
-                  lineHeight: '2rem',
-                }}
+                variant="headingLarge"
+                sx={(theme) => ({ color: theme.vars.palette.text.secondary })}
               >
-                Elitea is under maintenance!
+                {maintenanceHeadline}
               </Typography>
               {VITE_MAINTENANCE_START && VITE_MAINTENANCE_END && (
                 <>
                   <Typography
                     component="div"
-                    sx={{
+                    sx={(theme) => ({
                       width: '100%',
-                      color: 'rgba(244, 124, 255, 1)',
+                      color: theme.vars.palette.icon.fill.magicAssistant,
                       textAlign: 'center',
-                    }}
+                    })}
                   >
                     {`From ${VITE_MAINTENANCE_START} to ${VITE_MAINTENANCE_END}`}
                   </Typography>
                   {VITE_MAINTENANCE_MESSAGE && (
                     <Typography
                       component="div"
-                      sx={{
+                      sx={(theme) => ({
                         width: '100%',
-                        color: 'rgba(244, 124, 255, 1)',
+                        color: theme.vars.palette.icon.fill.magicAssistant,
                         textAlign: 'center',
-                      }}
+                      })}
                     >
                       {VITE_MAINTENANCE_MESSAGE}
                     </Typography>
