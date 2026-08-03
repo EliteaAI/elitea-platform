@@ -349,7 +349,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		return executionapp.AdmissionOutcome{}, fmt.Errorf("insert agent execution binding: %w", err)
 	}
 	if admission.CurrentTurn != nil {
-		if err := insertInitialCurrentApplicationTurn(
+		if err := insertCurrentApplicationTurn(
 			ctx,
 			txQueries,
 			admission.Record.Job.ID,
@@ -388,7 +388,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}, nil
 }
 
-func insertInitialCurrentApplicationTurn(
+func insertCurrentApplicationTurn(
 	ctx context.Context,
 	queries *sqlcgen.Queries,
 	executionID string,
@@ -410,9 +410,9 @@ func insertInitialCurrentApplicationTurn(
 	if err != nil {
 		return executionapp.ErrInvalidAdmission
 	}
-	row, err := queries.InsertInitialCurrentApplicationTurn(
+	row, err := queries.InsertCurrentApplicationTurn(
 		ctx,
-		sqlcgen.InsertInitialCurrentApplicationTurnParams{
+		sqlcgen.InsertCurrentApplicationTurnParams{
 			ActorUserID:          turn.ActorUserID,
 			TargetParticipantID:  int32(turn.TargetParticipantID),
 			ApplicationVersionID: int32(turn.ApplicationVersionID),

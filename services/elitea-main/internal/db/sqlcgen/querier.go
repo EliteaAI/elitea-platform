@@ -92,12 +92,12 @@ type Querier interface {
 	InsertAgentExecutionBinding(ctx context.Context, arg InsertAgentExecutionBindingParams) error
 	InsertAgentExecutionJob(ctx context.Context, arg InsertAgentExecutionJobParams) (string, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
+	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
 	InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
-	InsertInitialCurrentApplicationTurn(ctx context.Context, arg InsertInitialCurrentApplicationTurnParams) (InsertInitialCurrentApplicationTurnRow, error)
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
@@ -169,6 +169,7 @@ type Querier interface {
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
+	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role
 	// assignment; the system-user email fallback is considered only when that
@@ -176,7 +177,6 @@ type Querier interface {
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
 	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
-	ResolveInitialCurrentApplicationTurn(ctx context.Context, arg ResolveInitialCurrentApplicationTurnParams) (ResolveInitialCurrentApplicationTurnRow, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are

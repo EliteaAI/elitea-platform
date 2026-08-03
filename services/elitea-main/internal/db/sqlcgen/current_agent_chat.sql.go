@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertInitialCurrentApplicationTurn = `-- name: InsertInitialCurrentApplicationTurn :one
+const insertCurrentApplicationTurn = `-- name: InsertCurrentApplicationTurn :one
 WITH resolved AS MATERIALIZED (
     SELECT conversation.id AS conversation_id,
            author_participant.id AS author_participant_id,
@@ -38,10 +38,27 @@ WITH resolved AS MATERIALIZED (
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
       AND application_version.agent_type <> 'pipeline'
       AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(
+          conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+          ''
+      ) = ''
       AND NOT EXISTS (
           SELECT 1
-          FROM chat_message_group AS existing_message
-          WHERE existing_message.conversation_id = conversation.id
+          FROM chat_message_group AS pending_response
+          WHERE pending_response.conversation_id = conversation.id
+            AND pending_response.is_streaming
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS historical_group
+          JOIN chat_message_items AS historical_item
+            ON historical_item.message_group_id = historical_group.id
+          WHERE historical_group.conversation_id = conversation.id
+            AND historical_item.item_type IN (
+                'attachment_message',
+                'canvas_message',
+                'context_message'
+            )
       )
 ), question_group AS (
     INSERT INTO chat_message_group (
@@ -96,7 +113,7 @@ SELECT response_group.id AS response_message_group_id,
 FROM response_group
 `
 
-type InsertInitialCurrentApplicationTurnParams struct {
+type InsertCurrentApplicationTurnParams struct {
 	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
 	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
 	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
@@ -112,13 +129,13 @@ type InsertInitialCurrentApplicationTurnParams struct {
 	ExecutionID          string      `db:"execution_id" json:"execution_id"`
 }
 
-type InsertInitialCurrentApplicationTurnRow struct {
+type InsertCurrentApplicationTurnRow struct {
 	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
 	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
 }
 
-func (q *Queries) InsertInitialCurrentApplicationTurn(ctx context.Context, arg InsertInitialCurrentApplicationTurnParams) (InsertInitialCurrentApplicationTurnRow, error) {
-	row := q.db.QueryRow(ctx, insertInitialCurrentApplicationTurn,
+func (q *Queries) InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error) {
+	row := q.db.QueryRow(ctx, insertCurrentApplicationTurn,
 		arg.ActorUserID,
 		arg.TargetParticipantID,
 		arg.ApplicationVersionID,
@@ -133,7 +150,7 @@ func (q *Queries) InsertInitialCurrentApplicationTurn(ctx context.Context, arg I
 		arg.ExecutionGeneration,
 		arg.ExecutionID,
 	)
-	var i InsertInitialCurrentApplicationTurnRow
+	var i InsertCurrentApplicationTurnRow
 	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
 	return i, err
 }
@@ -152,7 +169,7 @@ func (q *Queries) LockCurrentAgentConversation(ctx context.Context, conversation
 	return id, err
 }
 
-const resolveInitialCurrentApplicationTurn = `-- name: ResolveInitialCurrentApplicationTurn :one
+const resolveCurrentApplicationTurn = `-- name: ResolveCurrentApplicationTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
        target_participant.id AS target_participant_id,
@@ -160,6 +177,7 @@ SELECT conversation.id AS conversation_id,
        (target_participant.entity_meta ->> 'project_id')::integer AS application_project_id,
        (target_mapping.entity_settings ->> 'version_id')::integer AS application_version_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
+       COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -262,25 +280,100 @@ JOIN chat_participants AS target_participant
 JOIN application_versions AS application_version
   ON application_version.id = (target_mapping.entity_settings ->> 'version_id')::integer
  AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
-WHERE conversation.uuid = $3::uuid
-  AND (target_participant.entity_meta ->> 'project_id')::integer = $4::integer
+LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'role', history_group.role,
+                   'content', history_group.content,
+                   'additional_kwargs', '{}'::jsonb
+               )
+               ORDER BY history_group.created_at, history_group.id
+           ) AS chat_history
+    FROM (
+        SELECT message_group.id,
+               message_group.created_at,
+               CASE
+                   WHEN author.entity_name = 'user' THEN 'user'
+                   ELSE 'assistant'
+               END AS role,
+               jsonb_agg(
+                   jsonb_build_object('type', 'text', 'text', message_text.content)
+                   ORDER BY message_item.order_index, message_item.id
+               ) FILTER (WHERE message_text.content <> '') AS content
+        FROM chat_message_group AS message_group
+        JOIN chat_participants AS author
+          ON author.id = message_group.author_participant_id
+        JOIN chat_message_items AS message_item
+          ON message_item.message_group_id = message_group.id
+         AND message_item.item_type = 'text_message'
+        JOIN chat_messages_text AS message_text
+          ON message_text.id = message_item.id
+        WHERE message_group.conversation_id = conversation.id
+          AND message_group.created_at < COALESCE(
+              (
+                  SELECT current_question.created_at
+                  FROM chat_message_group AS current_question
+                  WHERE current_question.conversation_id = conversation.id
+                    AND current_question.uuid = $3::uuid
+              ),
+              statement_timestamp()
+          )
+        GROUP BY message_group.id, message_group.created_at, author.entity_name
+    ) AS history_group
+    WHERE jsonb_array_length(history_group.content) > 0
+) AS current_history ON TRUE
+WHERE conversation.uuid = $4::uuid
+  AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
   AND application_version.agent_type <> 'pipeline'
   AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(
+      conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+      ''
+  ) = ''
   AND NOT EXISTS (
       SELECT 1
-      FROM chat_message_group AS existing_message
-      WHERE existing_message.conversation_id = conversation.id
+      FROM chat_message_group AS pending_response
+      WHERE pending_response.conversation_id = conversation.id
+        AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS retried_question
+            WHERE retried_question.id = pending_response.reply_to_id
+              AND retried_question.uuid = $3::uuid
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS historical_group
+      JOIN chat_message_items AS historical_item
+        ON historical_item.message_group_id = historical_group.id
+      WHERE historical_group.conversation_id = conversation.id
+        AND historical_group.created_at < COALESCE(
+            (
+                SELECT current_question.created_at
+                FROM chat_message_group AS current_question
+                WHERE current_question.conversation_id = conversation.id
+                  AND current_question.uuid = $3::uuid
+            ),
+            statement_timestamp()
+        )
+        AND historical_item.item_type IN (
+            'attachment_message',
+            'canvas_message',
+            'context_message'
+        )
   )
 `
 
-type ResolveInitialCurrentApplicationTurnParams struct {
+type ResolveCurrentApplicationTurnParams struct {
 	ActorUserID         int64       `db:"actor_user_id" json:"actor_user_id"`
 	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
 	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
 	ProjectID           int32       `db:"project_id" json:"project_id"`
 }
 
-type ResolveInitialCurrentApplicationTurnRow struct {
+type ResolveCurrentApplicationTurnRow struct {
 	ConversationID                int32  `db:"conversation_id" json:"conversation_id"`
 	AuthorParticipantID           int32  `db:"author_participant_id" json:"author_participant_id"`
 	TargetParticipantID           int32  `db:"target_participant_id" json:"target_participant_id"`
@@ -288,17 +381,19 @@ type ResolveInitialCurrentApplicationTurnRow struct {
 	ApplicationProjectID          int32  `db:"application_project_id" json:"application_project_id"`
 	ApplicationVersionID          int32  `db:"application_version_id" json:"application_version_id"`
 	ApplicationVariablesJson      string `db:"application_variables_json" json:"application_variables_json"`
+	ChatHistoryJson               string `db:"chat_history_json" json:"chat_history_json"`
 	ApplicationVersionDetailsJson string `db:"application_version_details_json" json:"application_version_details_json"`
 }
 
-func (q *Queries) ResolveInitialCurrentApplicationTurn(ctx context.Context, arg ResolveInitialCurrentApplicationTurnParams) (ResolveInitialCurrentApplicationTurnRow, error) {
-	row := q.db.QueryRow(ctx, resolveInitialCurrentApplicationTurn,
+func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentApplicationTurn,
 		arg.ActorUserID,
 		arg.TargetParticipantID,
+		arg.QuestionID,
 		arg.ConversationUuid,
 		arg.ProjectID,
 	)
-	var i ResolveInitialCurrentApplicationTurnRow
+	var i ResolveCurrentApplicationTurnRow
 	err := row.Scan(
 		&i.ConversationID,
 		&i.AuthorParticipantID,
@@ -307,6 +402,7 @@ func (q *Queries) ResolveInitialCurrentApplicationTurn(ctx context.Context, arg 
 		&i.ApplicationProjectID,
 		&i.ApplicationVersionID,
 		&i.ApplicationVariablesJson,
+		&i.ChatHistoryJson,
 		&i.ApplicationVersionDetailsJson,
 	)
 	return i, err

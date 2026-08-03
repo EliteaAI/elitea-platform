@@ -1,4 +1,4 @@
--- name: ResolveInitialCurrentApplicationTurn :one
+-- name: ResolveCurrentApplicationTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
        target_participant.id AS target_participant_id,
@@ -6,6 +6,7 @@ SELECT conversation.id AS conversation_id,
        (target_participant.entity_meta ->> 'project_id')::integer AS application_project_id,
        (target_mapping.entity_settings ->> 'version_id')::integer AS application_version_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
+       COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -108,14 +109,88 @@ JOIN chat_participants AS target_participant
 JOIN application_versions AS application_version
   ON application_version.id = (target_mapping.entity_settings ->> 'version_id')::integer
  AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
+LEFT JOIN LATERAL (
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'role', history_group.role,
+                   'content', history_group.content,
+                   'additional_kwargs', '{}'::jsonb
+               )
+               ORDER BY history_group.created_at, history_group.id
+           ) AS chat_history
+    FROM (
+        SELECT message_group.id,
+               message_group.created_at,
+               CASE
+                   WHEN author.entity_name = 'user' THEN 'user'
+                   ELSE 'assistant'
+               END AS role,
+               jsonb_agg(
+                   jsonb_build_object('type', 'text', 'text', message_text.content)
+                   ORDER BY message_item.order_index, message_item.id
+               ) FILTER (WHERE message_text.content <> '') AS content
+        FROM chat_message_group AS message_group
+        JOIN chat_participants AS author
+          ON author.id = message_group.author_participant_id
+        JOIN chat_message_items AS message_item
+          ON message_item.message_group_id = message_group.id
+         AND message_item.item_type = 'text_message'
+        JOIN chat_messages_text AS message_text
+          ON message_text.id = message_item.id
+        WHERE message_group.conversation_id = conversation.id
+          AND message_group.created_at < COALESCE(
+              (
+                  SELECT current_question.created_at
+                  FROM chat_message_group AS current_question
+                  WHERE current_question.conversation_id = conversation.id
+                    AND current_question.uuid = sqlc.arg(question_id)::uuid
+              ),
+              statement_timestamp()
+          )
+        GROUP BY message_group.id, message_group.created_at, author.entity_name
+    ) AS history_group
+    WHERE jsonb_array_length(history_group.content) > 0
+) AS current_history ON TRUE
 WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
   AND application_version.agent_type <> 'pipeline'
   AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(
+      conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+      ''
+  ) = ''
   AND NOT EXISTS (
       SELECT 1
-      FROM chat_message_group AS existing_message
-      WHERE existing_message.conversation_id = conversation.id
+      FROM chat_message_group AS pending_response
+      WHERE pending_response.conversation_id = conversation.id
+        AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS retried_question
+            WHERE retried_question.id = pending_response.reply_to_id
+              AND retried_question.uuid = sqlc.arg(question_id)::uuid
+        )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_group AS historical_group
+      JOIN chat_message_items AS historical_item
+        ON historical_item.message_group_id = historical_group.id
+      WHERE historical_group.conversation_id = conversation.id
+        AND historical_group.created_at < COALESCE(
+            (
+                SELECT current_question.created_at
+                FROM chat_message_group AS current_question
+                WHERE current_question.conversation_id = conversation.id
+                  AND current_question.uuid = sqlc.arg(question_id)::uuid
+            ),
+            statement_timestamp()
+        )
+        AND historical_item.item_type IN (
+            'attachment_message',
+            'canvas_message',
+            'context_message'
+        )
   );
 
 -- name: LockCurrentAgentConversation :one
@@ -124,7 +199,7 @@ FROM chat_conversations
 WHERE uuid = sqlc.arg(conversation_uuid)::uuid
 FOR UPDATE;
 
--- name: InsertInitialCurrentApplicationTurn :one
+-- name: InsertCurrentApplicationTurn :one
 WITH resolved AS MATERIALIZED (
     SELECT conversation.id AS conversation_id,
            author_participant.id AS author_participant_id,
@@ -151,10 +226,27 @@ WITH resolved AS MATERIALIZED (
       AND (target_participant.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
       AND application_version.agent_type <> 'pipeline'
       AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(
+          conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
+          ''
+      ) = ''
       AND NOT EXISTS (
           SELECT 1
-          FROM chat_message_group AS existing_message
-          WHERE existing_message.conversation_id = conversation.id
+          FROM chat_message_group AS pending_response
+          WHERE pending_response.conversation_id = conversation.id
+            AND pending_response.is_streaming
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_group AS historical_group
+          JOIN chat_message_items AS historical_item
+            ON historical_item.message_group_id = historical_group.id
+          WHERE historical_group.conversation_id = conversation.id
+            AND historical_item.item_type IN (
+                'attachment_message',
+                'canvas_message',
+                'context_message'
+            )
       )
 ), question_group AS (
     INSERT INTO chat_message_group (

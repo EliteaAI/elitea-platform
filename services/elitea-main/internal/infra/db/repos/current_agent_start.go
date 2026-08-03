@@ -33,13 +33,13 @@ func newCurrentAgentStartRepository(projects projectStore) (*CurrentAgentStartRe
 }
 
 type currentAgentStartQuerier interface {
-	ResolveInitialCurrentApplicationTurn(
+	ResolveCurrentApplicationTurn(
 		context.Context,
-		sqlcgen.ResolveInitialCurrentApplicationTurnParams,
-	) (sqlcgen.ResolveInitialCurrentApplicationTurnRow, error)
+		sqlcgen.ResolveCurrentApplicationTurnParams,
+	) (sqlcgen.ResolveCurrentApplicationTurnRow, error)
 }
 
-func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
+func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 	ctx context.Context,
 	request agentexecutionapp.CurrentApplicationStartRequest,
 ) (agentexecutionapp.CurrentApplicationTarget, error) {
@@ -55,6 +55,10 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 	if err != nil {
 		return agentexecutionapp.CurrentApplicationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
 	}
+	questionID, err := currentPGUUID(request.QuestionID)
+	if err != nil {
+		return agentexecutionapp.CurrentApplicationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
 	var target agentexecutionapp.CurrentApplicationTarget
 	err = repository.projects.WithinProjectTx(
 		ctx,
@@ -65,11 +69,12 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
-			row, queryErr := queries.ResolveInitialCurrentApplicationTurn(
+			row, queryErr := queries.ResolveCurrentApplicationTurn(
 				ctx,
-				sqlcgen.ResolveInitialCurrentApplicationTurnParams{
+				sqlcgen.ResolveCurrentApplicationTurnParams{
 					ActorUserID:         request.ActorUserID,
 					TargetParticipantID: targetParticipantID,
+					QuestionID:          questionID,
 					ConversationUuid:    conversationUUID,
 					ProjectID:           projectID,
 				},
@@ -82,9 +87,11 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 			}
 			variables := json.RawMessage(row.ApplicationVariablesJson)
 			versionDetails := json.RawMessage(row.ApplicationVersionDetailsJson)
+			chatHistory := json.RawMessage(row.ChatHistoryJson)
 			if int64(row.ApplicationProjectID) != request.ProjectID ||
 				row.ApplicationID <= 0 || row.ApplicationVersionID <= 0 ||
-				!json.Valid(variables) || !json.Valid(versionDetails) {
+				!json.Valid(variables) || !json.Valid(versionDetails) ||
+				!json.Valid(chatHistory) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 			}
 			target = agentexecutionapp.CurrentApplicationTarget{
@@ -92,6 +99,7 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 				ApplicationVersionID: int64(row.ApplicationVersionID),
 				Variables:            variables,
 				VersionDetails:       versionDetails,
+				ChatHistory:          chatHistory,
 			}
 			return nil
 		},
