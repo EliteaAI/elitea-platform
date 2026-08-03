@@ -1,7 +1,7 @@
 FROM python:3.12.10-slim AS build
 
-ARG ELITEA_SDK_REVISION=ccaa85f1894f34ce25074afcc232e11b406d2af1
-ARG ELITEA_SDK_ARCHIVE_SHA256=e2dbafca05bfbb9d9b36e5e79e1e29d530dc68436c415dcb5736193a3e538811
+ARG ELITEA_SDK_REVISION=6bc6dfcb740c8ec4f81c1da7c929f00786221cc6
+ARG ELITEA_SDK_ARCHIVE_SHA256=c8674ede3ff93c34bdee8a67f1cacf42c4ea2ba9bf652a755d830c04294129b9
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -22,7 +22,8 @@ RUN git clone \
       ./elitea-sdk \
     && git -C ./elitea-sdk checkout --detach "${ELITEA_SDK_REVISION}" \
     && test "$(git -C ./elitea-sdk archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${ELITEA_SDK_ARCHIVE_SHA256}"
-RUN python -m pip download \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip download \
       --dest /sources \
       --no-binary=:all: \
       --no-deps \
@@ -35,13 +36,14 @@ RUN python -m pip download \
       --wheel-dir /wheels \
       --no-deps \
       /sources/FigmaPy-2018.1.0.tar.gz
-RUN python -m pip wheel \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip wheel \
     --wheel-dir /wheels \
     --find-links /wheels \
     --prefer-binary \
     "elitea-sdk @ file:///build/elitea-sdk" \
     ./libs/proto \
-    "./services/elitea-worker-python[indexing-current]" \
+    "./services/elitea-worker-python[agent-current,indexing-current]" \
     && python ./services/elitea-worker-python/scripts/verify_locked_artifacts.py \
       ./services/elitea-worker-python/elitea-sdk.lock.json \
       /wheels \
@@ -73,9 +75,10 @@ RUN python -m pip install \
     --disable-pip-version-check \
     --no-index \
     --find-links /wheels \
-    "elitea-worker-python[indexing-current]==0.1.0" \
+    "elitea-worker-python[agent-current,indexing-current]==0.1.0" \
     && python -m pip check \
     && python -c "from elitea_worker.indexing_runtime_capabilities import require_indexing_runtime_capabilities; print('indexing-runtime-profile=' + require_indexing_runtime_capabilities())" \
+    && python -c "from langgraph.checkpoint.postgres import PostgresSaver; print('agent-checkpoint=' + PostgresSaver.__name__)" \
     && rm -rf /wheels
 
 USER 10001:10001

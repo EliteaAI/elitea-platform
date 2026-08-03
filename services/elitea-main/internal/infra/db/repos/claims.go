@@ -202,7 +202,7 @@ FOR UPDATE OF j, o`, request.ExecutionID, int64(request.Generation), request.Cap
 				decision.SettlementRecovery = &executionapp.SettlementRecovery{Proposal: &proposal}
 			} else if !errors.Is(recoveryErr, pgx.ErrNoRows) {
 				return recoveryErr
-			} else if request.CapabilityID == executiondomain.IndexIngestCapability {
+			} else if executiondomain.NodeEventCapability(request.CapabilityID) {
 				watermark, err := loadClaimHandoffWatermark(ctx, tx, existing.Fence, existing.ClaimID)
 				if err != nil {
 					return err
@@ -242,7 +242,7 @@ WHERE claim_id = $1 AND released_at IS NULL`, existing.ClaimID); err != nil {
 			}
 			if recoverable {
 				terminalRecoveryOnly = true
-			} else if request.CapabilityID == executiondomain.IndexIngestCapability && state == executiondomain.JobRunning {
+			} else if executiondomain.NodeEventCapability(request.CapabilityID) && state == executiondomain.JobRunning {
 				// A cancelled RUNNING index execution has no executable authority
 				// after its predecessor lease expires. Give a replacement worker a
 				// recovery-only fence so it can emit the canonical cancellation;
@@ -432,7 +432,7 @@ WHERE execution_id = $1 AND generation = $2`, request.ExecutionID, int64(request
 				// A terminal result exists but its predecessor claim is not eligible
 				// for this authenticated handoff. Never re-execute business logic.
 				decision.Disposition = executionapp.ClaimRetryLaterNoACK
-			} else if request.CapabilityID == executiondomain.IndexIngestCapability &&
+			} else if executiondomain.NodeEventCapability(request.CapabilityID) &&
 				state == executiondomain.JobRunning &&
 				invocationState != "PREPARING" {
 				// A replacement fence over RUNNING may reconcile durable output,
@@ -687,12 +687,7 @@ WHERE claim_id = $1
 }
 
 func claimCapabilityAllowed(capabilityID string) bool {
-	switch capabilityID {
-	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
-		return true
-	default:
-		return false
-	}
+	return executiondomain.SupportedCapability(capabilityID)
 }
 
 func exactClaimDigest(stored []byte, requested runtimedomain.Digest) bool {

@@ -6,23 +6,28 @@ CONFIGURATION_VALIDATION_CAPABILITY_ID = "configuration.validate.v1"
 TOOLKIT_AVAILABLE_TOOLS_CAPABILITY_ID = "toolkit.available_tools.v1"
 INDEX_INGEST_CAPABILITY_ID = "index.ingest.v1"
 INDEX_INGEST_CAPABILITY_VERSION = "2"
+AGENT_EXECUTE_APPLICATION_CAPABILITY_ID = "agent.execute.application.v1"
+AGENT_EXECUTE_ADHOC_CAPABILITY_ID = "agent.execute.adhoc.v1"
+AGENT_EXECUTION_CAPABILITY_VERSION = "1"
+AGENT_EXECUTION_REQUEST_ROLE = "agent.execution_request"
+AGENT_INPUT_MEDIA_TYPE = "application/vnd.elitea.agent-execution-input.v1+protobuf"
 # Backward-compatible name used by the first validation slice.
 CAPABILITY_ID = CONFIGURATION_VALIDATION_CAPABILITY_ID
 RUNTIME_IMPLEMENTATION = "elitea-worker-python"
 RUNTIME_VERSION = "0.1.0"
 
-# The admitted current-runtime SDK is distribution 0.8.53. The standalone
+# The admitted current-runtime SDK is distribution 0.9.1. The standalone
 # worker admits one exact reviewed source artifact rather than a floating
 # branch or an unverified same-version rebuild.
-SDK_SOURCE_REVISION = "ccaa85f1894f34ce25074afcc232e11b406d2af1"
-SDK_DISTRIBUTION_VERSION = "0.8.53"
+SDK_SOURCE_REVISION = "6bc6dfcb740c8ec4f81c1da7c929f00786221cc6"
+SDK_DISTRIBUTION_VERSION = "0.9.1"
 SDK_SOURCE_ARCHIVE_SHA256 = (
-    "e2dbafca05bfbb9d9b36e5e79e1e29d530dc68436c415dcb5736193a3e538811"
+    "c8674ede3ff93c34bdee8a67f1cacf42c4ea2ba9bf652a755d830c04294129b9"
 )
 SDK_PACKAGE_TREE_SHA256 = (
-    "6999d5c38ee77aa900b5ca767e96a300936d66216409ce69e22ce89fa41d18d9"
+    "2caab1755e33356ab86d4d0c88a9087507f01ca57a9a7f1f00c166dc89a2fddd"
 )
-# SDK 0.8.53 preserves the byte-identical admitted configuration catalog from
+# SDK 0.9.1 preserves the admitted configuration and indexing-type contracts;
 # 0.8.26, so that independently versioned projection stays stable.
 CONFIGURATION_CATALOG_REVISION = "a78d3654f99d8ff89ca7233f20a66d676e564f79"
 CONFIGURATION_CATALOG_SHA256 = (
@@ -32,6 +37,7 @@ CONFIGURATION_CATALOG_SHA256 = (
 INDEX_TYPES_SOURCE_REVISION = SDK_SOURCE_REVISION
 
 JSON_MEDIA_TYPES = frozenset({"application/json", "application/json; charset=utf-8"})
+SCOPED_INPUT_MEDIA_TYPES = JSON_MEDIA_TYPES | frozenset({AGENT_INPUT_MEDIA_TYPE})
 MAX_ENVELOPE_BYTES = 64 * 1024
 MAX_WORKER_COMMAND_BYTES = 32 * 1024
 MAX_SIGNED_ENVELOPE_BYTES = 48 * 1024
@@ -39,6 +45,7 @@ MAX_MANIFEST_BYTES = 64 * 1024
 MAX_GRPC_REQUEST_BYTES = 64 * 1024
 MAX_GRPC_RESPONSE_BYTES = 80 * 1024
 MAX_SETTINGS_BYTES = 256 * 1024
+MAX_AGENT_INPUT_BYTES = 1024 * 1024
 MAX_BUNDLE_ENTRIES = 16
 MAX_ISSUES = 64
 MAX_JSON_DEPTH = 64

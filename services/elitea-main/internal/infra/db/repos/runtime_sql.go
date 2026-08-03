@@ -59,6 +59,27 @@ func (e pgxExecutor) InsertCurrentIndexTerminalNotification(
 	return sqlcgen.New(e.queryer).InsertCurrentIndexTerminalNotification(ctx, arg)
 }
 
+func (e pgxExecutor) GetAgentExecutionTerminalNodeEvent(
+	ctx context.Context,
+	arg sqlcgen.GetAgentExecutionTerminalNodeEventParams,
+) (sqlcgen.GetAgentExecutionTerminalNodeEventRow, error) {
+	return sqlcgen.New(e.queryer).GetAgentExecutionTerminalNodeEvent(ctx, arg)
+}
+
+func (e pgxExecutor) GetCurrentAgentTraceBinding(
+	ctx context.Context,
+	arg sqlcgen.GetCurrentAgentTraceBindingParams,
+) (sqlcgen.GetCurrentAgentTraceBindingRow, error) {
+	return sqlcgen.New(e.queryer).GetCurrentAgentTraceBinding(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveInitialCurrentApplicationTurn(
+	ctx context.Context,
+	arg sqlcgen.ResolveInitialCurrentApplicationTurnParams,
+) (sqlcgen.ResolveInitialCurrentApplicationTurnRow, error) {
+	return sqlcgen.New(e.queryer).ResolveInitialCurrentApplicationTurn(ctx, arg)
+}
+
 type sharedStore interface {
 	sqlExecutor
 	WithinTx(ctx context.Context, opts pgx.TxOptions, fn func(sqlExecutor) error) error

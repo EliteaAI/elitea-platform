@@ -170,6 +170,63 @@ func TestConfigIndexIngestDispatchFailsClosed(t *testing.T) {
 	}
 }
 
+func TestConfigAgentExecutionDispatchIsOptionalWorkerPooledAndBounded(t *testing.T) {
+	baseline, err := ConfigFromEnv(mapLookup(validEnvironment()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.AgentExecutionDispatchEnabled {
+		t.Fatal("agent execution dispatch unexpectedly enabled")
+	}
+
+	environment := validEnvironment()
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = "commands.v1.agent.execute.agents.shared.1.0"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "elitea-agent-worker-v1"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "64"
+	config, err := ConfigFromEnv(mapLookup(environment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.AgentExecutionDispatchEnabled ||
+		config.AgentExecutionCommandStream != environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] ||
+		config.AgentExecutionConsumerGroup != "elitea-agent-worker-v1" ||
+		config.AgentExecutionStreamMaxEntries != 64 {
+		t.Fatalf("unexpected agent execution config: %+v", config)
+	}
+
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = environment["ELITEA_RUNTIME_COMMAND_STREAM"]
+	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil || !strings.Contains(err.Error(), "configuration-validation") {
+		t.Fatalf("shared validation/agent stream was accepted: %v", err)
+	}
+
+	environment = validEnvironment()
+	environment["ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"] = "commands.v1.index.ingest.indexing.shared.2.0"
+	environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"] = "elitea-indexer-worker-v2"
+	environment["ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES"] = "64"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = environment["ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM"]
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = environment["ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP"]
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "64"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err != nil {
+		t.Fatalf("shared index/agent worker pool was rejected: %v", err)
+	}
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "different-worker-pool"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil || !strings.Contains(err.Error(), "consumer group") {
+		t.Fatalf("one stream with competing capability groups was accepted: %v", err)
+	}
+
+	environment = validEnvironment()
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED"] = "true"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"] = "commands.v1.agent.execute.agents.shared.1.0"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"] = "elitea-agent-worker-v1"
+	environment["ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"] = "1025"
+	if _, err := ConfigFromEnv(mapLookup(environment)); err == nil {
+		t.Fatal("unbounded agent execution stream capacity was accepted")
+	}
+}
+
 func TestConfigIndexSchedulingIsExplicitAndRequiresDurableIndexAdmission(
 	t *testing.T,
 ) {

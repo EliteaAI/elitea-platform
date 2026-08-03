@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *testing.T) {
+func TestPostgresRuntimeContextRequiresExactActiveClaimSessionAndFence(t *testing.T) {
 	t.Parallel()
 
 	identity, err := url.Parse("spiffe://elitea.internal/runtime/worker-1")
@@ -23,8 +23,9 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 	store := contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {
 		for _, predicate := range []string{
 			"j.actor_id",
-			"i.initiator",
+			"WHEN j.capability_id = 'index.ingest.v1' THEN i.initiator",
 			"i.capability_id = j.capability_id",
+			"a.capability_id = j.capability_id",
 			"ws.workload_session_id = c.workload_session_id",
 			"ws.workload_identity = c.workload_identity",
 			"ws.producer_id = c.producer_id",
@@ -33,7 +34,10 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 			"ws.expires_at > clock_timestamp()",
 			"ws.revoked_at IS NULL",
 			"j.desired_state = 'RUNNING'",
-			"j.capability_id = 'index.ingest.v1'",
+			"j.capability_id = 'index.ingest.v1' AND i.execution_id IS NOT NULL",
+			"'agent.execute.application.v1'",
+			"'agent.execute.adhoc.v1'",
+			"a.execution_id IS NOT NULL",
 		} {
 			require.Contains(t, query, predicate)
 		}
@@ -62,7 +66,50 @@ func TestPostgresIndexRuntimeContextRequiresExactActiveClaimSessionAndFence(t *t
 	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
 }
 
-func TestPostgresIndexRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T) {
+func TestPostgresRuntimeContextAuthorizesAgentClaimAsInteractiveActor(t *testing.T) {
+	t.Parallel()
+
+	identity, err := url.Parse("spiffe://elitea.internal/runtime/worker-2")
+	require.NoError(t, err)
+	fence := bytes.Repeat([]byte{6}, sha256.Size)
+	store := contentQueryerFunc(func(_ context.Context, query string, args ...any) pgx.Row {
+		for _, predicate := range []string{
+			"LEFT JOIN elitea_runtime.agent_execution_jobs AS a",
+			"'agent.execute.application.v1'",
+			"'agent.execute.adhoc.v1'",
+			"THEN 'user'",
+			"a.execution_id IS NOT NULL",
+			"c.released_at IS NULL",
+			"j.desired_state = 'RUNNING'",
+		} {
+			require.Contains(t, query, predicate)
+		}
+		require.Equal(t, []any{"claim-agent", "execution-agent", uint64(5), identity.String(), fence}, args)
+		return contentRowFunc(func(dest ...any) error {
+			require.Len(t, dest, 3)
+			*dest[0].(*int64) = 84
+			*dest[1].(*string) = "19"
+			*dest[2].(*string) = runtimeContextInitiatorUser
+			return nil
+		})
+	})
+	repository, err := newPostgresContentRepository(store)
+	require.NoError(t, err)
+
+	authorization, err := repository.AuthorizeRuntimeContext(context.Background(), ContentClaim{
+		PeerCertificate: certificateWithURI(identity),
+		ExecutionID:     "execution-agent",
+		Generation:      5,
+		ClaimID:         "claim-agent",
+		FenceToken:      fence,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 84, authorization.ResourceProjectID)
+	require.Equal(t, "19", authorization.ActorID)
+	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
+}
+
+func TestPostgresRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T) {
 	t.Parallel()
 
 	identity, err := url.Parse("spiffe://elitea.internal/runtime/worker-1")
@@ -70,6 +117,7 @@ func TestPostgresIndexRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T
 	repository, err := newPostgresContentRepository(contentQueryerFunc(
 		func(_ context.Context, query string, _ ...any) pgx.Row {
 			require.True(t, strings.Contains(query, "j.capability_id = 'index.ingest.v1'"))
+			require.True(t, strings.Contains(query, "a.execution_id IS NOT NULL"))
 			return contentRowFunc(func(...any) error { return pgx.ErrNoRows })
 		},
 	))
@@ -85,11 +133,11 @@ func TestPostgresIndexRuntimeContextHidesInactiveOrMismatchedClaims(t *testing.T
 	require.ErrorIs(t, err, ErrContentUnauthorized)
 }
 
-// TestPostgresIndexRuntimeContextAuthorizationIntegration crosses a real
+// TestPostgresRuntimeContextAuthorizationIntegration crosses a real
 // PostgreSQL service and proves the active claim/session/fence predicates. It
 // intentionally leaves mTLS termination and PAT validation to their focused
 // component tests.
-func TestPostgresIndexRuntimeContextAuthorizationIntegration(t *testing.T) {
+func TestPostgresRuntimeContextAuthorizationIntegration(t *testing.T) {
 	databaseURL := os.Getenv("ELITEA_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("set ELITEA_TEST_DATABASE_URL to run the PostgreSQL runtime-context authorization test")
@@ -113,6 +161,12 @@ func TestPostgresIndexRuntimeContextAuthorizationIntegration(t *testing.T) {
     generation BIGINT NOT NULL,
     capability_id TEXT NOT NULL,
     initiator TEXT NOT NULL,
+    PRIMARY KEY (execution_id, generation)
+)`,
+		`CREATE TABLE elitea_runtime.agent_execution_jobs (
+    execution_id TEXT NOT NULL,
+    generation BIGINT NOT NULL,
+    capability_id TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
 )`,
 		`CREATE TABLE elitea_runtime.workload_sessions (
@@ -153,6 +207,16 @@ VALUES ('execution-1', 1, 42, '17', 'RUNNING', 'index.ingest.v1')`); err != nil 
 VALUES ('execution-1', 1, 'index.ingest.v1', 'user')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.execution_jobs
+    (execution_id, generation, resource_project_id, actor_id, desired_state, capability_id)
+VALUES ('execution-agent', 1, 42, '17', 'RUNNING', 'agent.execute.application.v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.agent_execution_jobs
+    (execution_id, generation, capability_id)
+VALUES ('execution-agent', 1, 'agent.execute.application.v1')`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.workload_sessions
     (workload_session_id, workload_identity, producer_id, issued_at, expires_at)
 VALUES ('session-1', $1, 'producer-1', clock_timestamp() - interval '1 minute', clock_timestamp() + interval '5 minutes')`, identity.String()); err != nil {
@@ -161,6 +225,11 @@ VALUES ('session-1', $1, 'producer-1', clock_timestamp() - interval '1 minute', 
 	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.execution_claims
     (claim_id, execution_id, generation, workload_session_id, workload_identity, producer_id, fence_token, lease_expires_at)
 VALUES ('claim-1', 'execution-1', 1, 'session-1', $1, 'producer-1', $2, clock_timestamp() + interval '1 minute')`, identity.String(), fence); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO elitea_runtime.execution_claims
+    (claim_id, execution_id, generation, workload_session_id, workload_identity, producer_id, fence_token, lease_expires_at)
+VALUES ('claim-agent', 'execution-agent', 1, 'session-1', $1, 'producer-1', $2, clock_timestamp() + interval '1 minute')`, identity.String(), fence); err != nil {
 		t.Fatal(err)
 	}
 	repository, err := NewPostgresContentRepository(pool)
@@ -177,6 +246,18 @@ VALUES ('claim-1', 'execution-1', 1, 'session-1', $1, 'producer-1', $2, clock_ti
 	require.EqualValues(t, 42, authorization.ResourceProjectID)
 	require.Equal(t, "17", authorization.ActorID)
 	require.Equal(t, runtimeContextInitiatorUser, authorization.Initiator)
+
+	agentAuthorization, err := repository.AuthorizeRuntimeContext(ctx, ContentClaim{
+		PeerCertificate: certificateWithURI(identity),
+		ExecutionID:     "execution-agent",
+		Generation:      1,
+		ClaimID:         "claim-agent",
+		FenceToken:      fence,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 42, agentAuthorization.ResourceProjectID)
+	require.Equal(t, "17", agentAuthorization.ActorID)
+	require.Equal(t, runtimeContextInitiatorUser, agentAuthorization.Initiator)
 
 	claim.FenceToken = bytes.Repeat([]byte{9}, sha256.Size)
 	_, err = repository.AuthorizeRuntimeContext(ctx, claim)

@@ -33,16 +33,20 @@ type Config struct {
 	MaxOutstanding   int64
 	StreamMaxEntries int64
 
-	IndexIngestDispatchEnabled  bool
-	IndexSchedulingEnabled      bool
-	SchedulerInstanceID         string
-	IndexIngestCommandStream    string
-	IndexIngestConsumerGroup    string
-	IndexIngestStreamMaxEntries int64
-	RedisURL                    string
-	RedisPasswordFile           string
-	RedisCAFile                 string
-	RedisPoolSize               int
+	IndexIngestDispatchEnabled     bool
+	IndexSchedulingEnabled         bool
+	SchedulerInstanceID            string
+	IndexIngestCommandStream       string
+	IndexIngestConsumerGroup       string
+	IndexIngestStreamMaxEntries    int64
+	AgentExecutionDispatchEnabled  bool
+	AgentExecutionCommandStream    string
+	AgentExecutionConsumerGroup    string
+	AgentExecutionStreamMaxEntries int64
+	RedisURL                       string
+	RedisPasswordFile              string
+	RedisCAFile                    string
+	RedisPoolSize                  int
 
 	SigningKeyID            string
 	SigningKeyFile          string
@@ -124,6 +128,32 @@ func ConfigFromEnv(lookup LookupEnv) (Config, error) {
 		}
 	default:
 		return Config{}, errors.New("ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED must be true or false")
+	}
+	agentExecutionEnabled, _ := lookup("ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED")
+	switch agentExecutionEnabled {
+	case "", "false":
+		for _, name := range []string{
+			"ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM",
+			"ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP",
+			"ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES",
+		} {
+			if value, ok := lookup(name); ok && value != "" {
+				return Config{}, errors.New("runtime agent execution dispatch settings require explicit enablement")
+			}
+		}
+	case "true":
+		config.AgentExecutionDispatchEnabled = true
+		if config.AgentExecutionCommandStream, err = required("ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM"); err != nil {
+			return Config{}, err
+		}
+		if config.AgentExecutionConsumerGroup, err = required("ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP"); err != nil {
+			return Config{}, err
+		}
+		if config.AgentExecutionStreamMaxEntries, err = integer("ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES"); err != nil {
+			return Config{}, err
+		}
+	default:
+		return Config{}, errors.New("ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED must be true or false")
 	}
 	indexSchedulingEnabled, _ := lookup("ELITEA_RUNTIME_INDEX_SCHEDULING_ENABLED")
 	switch indexSchedulingEnabled {
@@ -247,6 +277,33 @@ func (c Config) Validate() error {
 		}
 	} else if c.IndexIngestCommandStream != "" || c.IndexIngestConsumerGroup != "" || c.IndexIngestStreamMaxEntries != 0 {
 		return errors.New("runtime index ingest dispatch settings require explicit enablement")
+	}
+	if c.AgentExecutionDispatchEnabled {
+		if c.AgentExecutionCommandStream == "" || len(c.AgentExecutionCommandStream) > 256 || strings.ContainsAny(c.AgentExecutionCommandStream, " \r\n\x00") {
+			return errors.New("runtime agent execution command stream is invalid")
+		}
+		if c.AgentExecutionCommandStream == c.CommandStream ||
+			c.AgentExecutionCommandStream == c.CommandStream+":delivery-index.v1" ||
+			c.AgentExecutionCommandStream+":delivery-index.v1" == c.CommandStream {
+			return errors.New("runtime agent execution cannot share the configuration-validation stream")
+		}
+		if c.IndexIngestCommandStream != "" &&
+			(c.AgentExecutionCommandStream == c.IndexIngestCommandStream+":delivery-index.v1" ||
+				c.AgentExecutionCommandStream+":delivery-index.v1" == c.IndexIngestCommandStream) {
+			return errors.New("runtime agent execution command stream overlaps the index delivery index")
+		}
+		if c.AgentExecutionConsumerGroup == "" || len(c.AgentExecutionConsumerGroup) > 256 || strings.ContainsAny(c.AgentExecutionConsumerGroup, " \r\n\x00") {
+			return errors.New("runtime agent execution consumer group is invalid")
+		}
+		if c.AgentExecutionCommandStream == c.IndexIngestCommandStream &&
+			c.AgentExecutionConsumerGroup != c.IndexIngestConsumerGroup {
+			return errors.New("runtime agent execution sharing the index stream must share its consumer group")
+		}
+		if c.AgentExecutionStreamMaxEntries <= 0 || c.AgentExecutionStreamMaxEntries > maxRuntimeStreamEntries {
+			return errors.New("runtime agent execution Redis stream capacity is invalid")
+		}
+	} else if c.AgentExecutionCommandStream != "" || c.AgentExecutionConsumerGroup != "" || c.AgentExecutionStreamMaxEntries != 0 {
+		return errors.New("runtime agent execution dispatch settings require explicit enablement")
 	}
 	if c.IndexSchedulingEnabled {
 		if !c.IndexIngestDispatchEnabled {

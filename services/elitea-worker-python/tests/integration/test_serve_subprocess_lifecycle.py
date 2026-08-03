@@ -217,6 +217,7 @@ def _write_runtime_material(root: Path) -> Path:
         "ed25519_keyring_path": str(keyring_path),
         "spool_root": str(spool_root),
         "spool_key_path": str(spool_key_path),
+        "agent_checkpoint_connection_path": str(root / "agent-checkpoint-connection"),
         "limits": {
             "redis_read_batch": 1,
             "redis_block_millis": 100,

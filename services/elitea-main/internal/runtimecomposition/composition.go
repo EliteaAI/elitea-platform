@@ -8,6 +8,7 @@ import (
 	"time"
 
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
+	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
@@ -15,6 +16,7 @@ import (
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	schedulingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/scheduling"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -35,6 +37,7 @@ const (
 	outputSchemaRevision   = "elitea.runtime.execution-output.v1"
 	capabilityVersion      = "1"
 	indexCapabilityVersion = "2"
+	agentCapabilityVersion = "1"
 	limitsRevision         = "elitea.runtime.limits.conformance.v1"
 
 	resourceClass          = "validation-small"
@@ -48,7 +51,7 @@ const (
 	maxRedisFieldBytes            = 48 * 1024
 	maxInputManifestBytes         = 64 * 1024
 	maxInputEntries               = 16
-	maxInputContentBytes          = 256 * 1024
+	maxInputContentBytes          = executiondomain.MaxAgentExecutionInputBytes
 	maxOutputFrameBytes           = 64 * 1024
 	maxSafeStringBytes            = 256
 	maxGRPCRequestBytes           = 64 * 1024
@@ -57,6 +60,9 @@ const (
 	maxIndexArtifactBytes         = 1 * 1024 * 1024
 	claimLeaseTTL                 = 30 * time.Second
 	productionIndexRedisEntrySize = (64 * 1024) - 1
+	agentResourceClass            = "agents"
+	agentIsolationClass           = "project"
+	agentDeadlineTTL              = 24 * time.Hour
 )
 
 type Dependencies struct {
@@ -89,9 +95,9 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err := validateDependencies(dependencies); err != nil {
 		return nil, err
 	}
-	if config.IndexIngestDispatchEnabled &&
+	if (config.IndexIngestDispatchEnabled || config.AgentExecutionDispatchEnabled) &&
 		(dependencies.ActorTokenIssuer == nil || dependencies.ProjectTokenValidator == nil) {
-		return nil, errors.New("runtime index ingest actor-token bridge is required")
+		return nil, errors.New("runtime worker actor-token bridge is required")
 	}
 	if config.IndexSchedulingEnabled &&
 		dependencies.ProjectSystemTokenSource == nil {
@@ -196,6 +202,16 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		IsolationClass:    indexIsolationClass,
 		Priority:          1,
 		DeadlineTTL:       indexDeadlineTTL,
+		LimitsRevision:    limitsRevision,
+		MaxOutstanding:    config.MaxOutstanding,
+	}
+	agentDispatchPolicy := repos.AgentExecutionDispatchPolicy{
+		StreamName:        config.AgentExecutionCommandStream,
+		CapabilityVersion: agentCapabilityVersion,
+		ResourceClass:     agentResourceClass,
+		IsolationClass:    agentIsolationClass,
+		Priority:          1,
+		DeadlineTTL:       agentDeadlineTTL,
 		LimitsRevision:    limitsRevision,
 		MaxOutstanding:    config.MaxOutstanding,
 	}
@@ -373,12 +389,122 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, err
 		}
 	}
+	var agentJobs *repos.AgentExecutionJobsRepository
+	var agentStart *agentexecutionapp.CurrentApplicationStartService
+	var agentPublisher publisherRunner
+	var agentMaterializer *storage.CurrentConfigurationsMaterializer
+	if config.AgentExecutionDispatchEnabled {
+		agentLimits := limits
+		agentLimits.MaxRedisEntryBytes = productionIndexRedisEntrySize
+		agentAppender, err := redisdispatch.NewRedisStreamAppender(controlRedis, redisdispatch.RedisStreamAppenderConfig{
+			MaxEntries:    config.AgentExecutionStreamMaxEntries,
+			MaxEntryBytes: productionIndexRedisEntrySize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("construct bounded agent execution Redis appender: %w", err)
+		}
+		agentProducer, err := redisdispatch.NewAgentExecutionProducer(
+			redisdispatch.AgentExecutionProducerConfig{
+				Stream:                       config.AgentExecutionCommandStream,
+				ConsumerGroup:                config.AgentExecutionConsumerGroup,
+				ValidationStream:             config.CommandStream,
+				IndexIngestStream:            config.IndexIngestCommandStream,
+				ProtocolRevision:             protocolRevision,
+				EnvelopeSchemaRevision:       envelopeSchemaRevision,
+				ApplicationCapabilityVersion: agentCapabilityVersion,
+				AdhocCapabilityVersion:       agentCapabilityVersion,
+				Limits:                       agentLimits,
+			},
+			signer,
+			agentAppender,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct agent execution Redis producer: %w", err)
+		}
+		agentJobs, err = repos.NewAgentExecutionJobsRepository(
+			dependencies.AdmissionPool,
+			agentDispatchPolicy,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct agent execution jobs: %w", err)
+		}
+		agentInputs, inputErr := agentexecutionapp.NewInputBundleFactory(
+			agentexecutionapp.InputProfile{
+				Classification:        inputClassification,
+				RequiredGrantAudience: inputGrantAudience,
+			},
+			currentRuntimeID,
+		)
+		if inputErr != nil {
+			return nil, fmt.Errorf("construct agent execution input bundle factory: %w", inputErr)
+		}
+		agentAdmissions, admissionErr := agentexecutionapp.NewAdmissionService(
+			agentJobs,
+			agentInputs,
+			nil,
+			currentRuntimeID,
+		)
+		if admissionErr != nil {
+			return nil, fmt.Errorf("construct agent execution admission: %w", admissionErr)
+		}
+		agentTargets, targetErr := repos.NewCurrentAgentStartRepository(dependencies.AdmissionPool)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent start resolver: %w", targetErr)
+		}
+		agentVersions, targetErr := newCurrentAgentVersionFreezer(
+			dependencies.AdmissionPool,
+			dependencies.CurrentConfigurations,
+		)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent version freezer: %w", targetErr)
+		}
+		agentMaterializer, targetErr = storage.NewCurrentConfigurationsMaterializer(
+			dependencies.CurrentConfigurations.unsecreter,
+		)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent configuration materializer: %w", targetErr)
+		}
+		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
+			agentTargets,
+			agentVersions,
+			agentAdmissions,
+		)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent start service: %w", targetErr)
+		}
+		agentDispatcher, err := agentexecutionapp.NewDispatcher(agentJobs, agentProducer)
+		if err != nil {
+			return nil, err
+		}
+		agentPublisher, err = agentexecutionapp.NewOutboxPublisher(
+			agentJobs,
+			agentDispatcher,
+			executionapp.OutboxPublisherConfig{
+				PollInterval:      250 * time.Millisecond,
+				VisibilityTimeout: 30 * time.Second,
+				BatchSize:         64,
+				MaxConcurrent:     8,
+				ReportFailure: func(err error) {
+					dependencies.Logger.Error("agent execution outbox publisher cycle failed", "err", err)
+				},
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	publisherRoot, err := newConfiguredPublisherSet(config.IndexIngestDispatchEnabled, publisher, indexPublisher)
 	if err != nil {
 		return nil, err
 	}
+	if config.AgentExecutionDispatchEnabled {
+		publisherRoot, err = newPublisherSet(publisherRoot, agentPublisher)
+		if err != nil {
+			return nil, fmt.Errorf("compose agent execution publisher: %w", err)
+		}
+	}
 	var nodeEvents *repos.NodeEventsRepository
-	if config.IndexIngestDispatchEnabled {
+	if config.IndexIngestDispatchEnabled || config.AgentExecutionDispatchEnabled {
 		nodeEvents, err = repos.NewNodeEventsRepository(dependencies.OutputPool)
 		if err != nil {
 			return nil, fmt.Errorf("construct node event replay repository: %w", err)
@@ -490,17 +616,24 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	if err != nil {
 		return nil, err
 	}
+	capabilityVersions := map[string]string{
+		executiondomain.ConfigurationValidationCapability: capabilityVersion,
+	}
+	if config.IndexIngestDispatchEnabled {
+		capabilityVersions[executiondomain.IndexIngestCapability] = indexCapabilityVersion
+	}
+	if config.AgentExecutionDispatchEnabled {
+		capabilityVersions[executiondomain.AgentApplicationCapability] = agentCapabilityVersion
+		capabilityVersions[executiondomain.AgentAdhocCapability] = agentCapabilityVersion
+	}
 	verifier, err := control.NewProductionCommandVerifier(control.ProductionVerifierConfig{
 		EnvelopeSchemaRevision: envelopeSchemaRevision,
 		ProtocolRevision:       protocolRevision,
-		CapabilityVersions: map[string]string{
-			executiondomain.ConfigurationValidationCapability: capabilityVersion,
-			executiondomain.IndexIngestCapability:             indexCapabilityVersion,
-		},
-		LimitsRevision:        limitsRevision,
-		MaxWorkerCommandBytes: maxWorkerCommandBytes,
-		MaxInputManifestBytes: maxInputManifestBytes,
-		MaxStringBytes:        maxSafeStringBytes,
+		CapabilityVersions:     capabilityVersions,
+		LimitsRevision:         limitsRevision,
+		MaxWorkerCommandBytes:  maxWorkerCommandBytes,
+		MaxInputManifestBytes:  maxInputManifestBytes,
+		MaxStringBytes:         maxSafeStringBytes,
 	}, verificationKeys)
 	if err != nil {
 		return nil, err
@@ -583,6 +716,28 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	}
 	var outputServer *output.Server
 	var outputServerErr error
+	var agentOutput *outputapp.AgentExecutionService
+	if config.AgentExecutionDispatchEnabled {
+		agentResults, err := repos.NewAgentExecutionResultsRepository(dependencies.OutputPool)
+		if err != nil {
+			return nil, fmt.Errorf("construct agent execution result repository: %w", err)
+		}
+		agentOutput, err = outputapp.NewAgentExecutionService(
+			agentJobs,
+			outputClaims,
+			agentResults,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var nodeEventOutput *outputapp.NodeEventService
+	if config.IndexIngestDispatchEnabled || config.AgentExecutionDispatchEnabled {
+		nodeEventOutput, err = outputapp.NewNodeEventService(outputClaims, nodeEvents)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if config.IndexIngestDispatchEnabled {
 		indexResults, err := repos.NewIndexIngestResultsRepository(dependencies.OutputPool, repos.IndexIngestOutputPolicy{
 			LimitsRevision:    limitsRevision,
@@ -596,16 +751,33 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if err != nil {
 			return nil, err
 		}
-		nodeEventOutput, err := outputapp.NewNodeEventService(outputClaims, nodeEvents)
-		if err != nil {
-			return nil, err
+		if config.AgentExecutionDispatchEnabled {
+			outputServer, outputServerErr = output.NewServerWithIndexAgentAndNodeEvents(
+				outputServerConfig,
+				outputPeerAuthorizer,
+				validationOutput,
+				runtimeFailures,
+				indexOutput,
+				agentOutput,
+				nodeEventOutput,
+			)
+		} else {
+			outputServer, outputServerErr = output.NewServerWithIndexIngestAndNodeEvents(
+				outputServerConfig,
+				outputPeerAuthorizer,
+				validationOutput,
+				runtimeFailures,
+				indexOutput,
+				nodeEventOutput,
+			)
 		}
-		outputServer, outputServerErr = output.NewServerWithIndexIngestAndNodeEvents(
+	} else if config.AgentExecutionDispatchEnabled {
+		outputServer, outputServerErr = output.NewServerWithAgentAndNodeEvents(
 			outputServerConfig,
 			outputPeerAuthorizer,
 			validationOutput,
 			runtimeFailures,
-			indexOutput,
+			agentOutput,
 			nodeEventOutput,
 		)
 	} else {
@@ -627,14 +799,14 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 	var contentServer *storage.ContentServer
 	var indexStart indexingapi.StartUseCase
 	var currentIndex *currentIndexRuntime
-	if config.IndexIngestDispatchEnabled {
-		var projectSystemTokens storage.ProjectSystemTokenIssuer
-		if config.IndexSchedulingEnabled {
-			projectSystemTokens = currentProjectSystemTokenAdapter{
-				source: dependencies.ProjectSystemTokenSource,
-			}
+	var projectSystemTokens storage.ProjectSystemTokenIssuer
+	if config.IndexSchedulingEnabled {
+		projectSystemTokens = currentProjectSystemTokenAdapter{
+			source: dependencies.ProjectSystemTokenSource,
 		}
-		var runtimeToken *storage.EliteaClientTokenService
+	}
+	var runtimeToken *storage.EliteaClientTokenService
+	if config.IndexIngestDispatchEnabled || config.AgentExecutionDispatchEnabled {
 		if projectSystemTokens != nil {
 			runtimeToken, err = storage.NewEliteaClientTokenServiceWithSchedules(
 				contentRepository,
@@ -650,8 +822,10 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("construct runtime index client-token context: %w", err)
+			return nil, fmt.Errorf("construct runtime worker client-token context: %w", err)
 		}
+	}
+	if config.IndexIngestDispatchEnabled {
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
 			dependencies.CurrentConfigurations,
@@ -854,6 +1028,18 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				err,
 			)
 		}
+	} else if config.AgentExecutionDispatchEnabled {
+		contentServer, err = storage.NewMaterializingRuntimeContentServerWithLimits(
+			contentRepository,
+			contentRepository,
+			agentMaterializer,
+			runtimeToken,
+			maxInputContentBytes,
+			maxContentRequests,
+		)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		contentServer, err = storage.NewContentServerWithLimits(contentRepository, contentRepository, maxInputContentBytes, maxContentRequests)
 		if err != nil {
@@ -894,8 +1080,8 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		return nil, fmt.Errorf("construct runtime replay repository: %w", err)
 	}
 	publicAuthorizer, err := newPostgresPublicAuthorizer(
-		dependencies.AdmissionPool,
-		dependencies.ReplayPool,
+		sqlcgen.New(dependencies.AdmissionPool),
+		sqlcgen.New(dependencies.ReplayPool),
 		dependencies.PermissionResolver,
 	)
 	if err != nil {
@@ -906,6 +1092,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		validationSubmitter,
 		replay,
 		indexStart,
+		agentStart,
 		int(dependencies.ReplayPool.Config().MaxConns),
 	)
 	if err != nil {

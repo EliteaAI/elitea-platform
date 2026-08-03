@@ -31,6 +31,11 @@ func TestExpectedRuntimeFailureUsesExactCapabilitySpecificDurableBindings(t *tes
 			capability: executiondomain.IndexIngestCapability,
 			logical:    "index-ingest:execution-1",
 		},
+		{
+			name:       "application agent",
+			capability: executiondomain.AgentApplicationCapability,
+			logical:    "agent-execution:execution-1",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -56,6 +61,8 @@ func TestExpectedRuntimeFailureUsesExactCapabilitySpecificDurableBindings(t *tes
 				"e.entry_id = j.settings_entry_id",
 				"i.capability_id = j.capability_id",
 				"i.input_bundle_id = j.input_bundle_id",
+				"'agent.execute.application.v1'",
+				"a.input_bundle_id = j.input_bundle_id",
 			} {
 				if !strings.Contains(query, fragment) {
 					t.Fatalf("runtime failure binding SQL is missing %q", fragment)

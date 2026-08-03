@@ -234,6 +234,30 @@ def test_manifest_rejects_zero_length_content() -> None:
         project_input_manifest_entries(manifest)
 
 
+def test_manifest_accepts_agent_request_protobuf_content() -> None:
+    manifest = _manifest()
+    manifest.entries[0].semantic_role = "agent.execution_request"
+    manifest.entries[0].content.media_type = (
+        "application/vnd.elitea.agent-execution-input.v1+protobuf"
+    )
+
+    entries = project_input_manifest_entries(manifest)
+
+    assert entries[0].content.media_type == (
+        "application/vnd.elitea.agent-execution-input.v1+protobuf"
+    )
+
+
+def test_manifest_rejects_agent_protobuf_for_non_agent_role() -> None:
+    manifest = _manifest()
+    manifest.entries[0].content.media_type = (
+        "application/vnd.elitea.agent-execution-input.v1+protobuf"
+    )
+
+    with pytest.raises(InvalidInput, match="media type"):
+        project_input_manifest_entries(manifest)
+
+
 def _manifest() -> input_pb2.ExecutionInputBundleV1:
     return input_pb2.ExecutionInputBundleV1(
         input_bundle_id="bundle-1",

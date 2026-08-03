@@ -11,6 +11,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from elitea_worker.constants import SCOPED_INPUT_MEDIA_TYPES
 from elitea_worker.execution.errors import (
     AuthorizationFailure,
     DependencyUnavailable,
@@ -162,7 +163,7 @@ class ScopedInputContentClient:
         if (
             len(grant.expected_sha256) != 32
             or grant.expected_length < 1
-            or grant.expected_media_type != "application/json"
+            or grant.expected_media_type not in SCOPED_INPUT_MEDIA_TYPES
         ):
             raise InvalidInput("The scoped content descriptor is malformed.")
         if grant.expected_length > self._max_content_bytes:

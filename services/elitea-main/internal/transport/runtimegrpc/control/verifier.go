@@ -166,9 +166,36 @@ func validateCommand(command *runtimev1.WorkerCommandV1, config commandValidatio
 		return validateConfigurationCommand(command, config)
 	case executiondomain.IndexIngestCapability:
 		return validateIndexIngestCommand(command, config)
+	case executiondomain.AgentApplicationCapability, executiondomain.AgentAdhocCapability:
+		return validateAgentExecutionCommand(command, config)
 	default:
 		return ErrCommandIncompatible
 	}
+}
+
+func validateAgentExecutionCommand(command *runtimev1.WorkerCommandV1, config commandValidationConfig) error {
+	expectedType := runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION
+	if command.GetCapabilityId() == executiondomain.AgentAdhocCapability {
+		expectedType = runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC
+	}
+	agent := command.GetAgentExecution()
+	if command.GetCommandType() != expectedType || agent == nil ||
+		command.GetRootExecutionId() != command.GetExecutionId() ||
+		command.GetParentExecutionId() != "" || command.GetParentCallId() != "" {
+		return ErrMalformedWorkerCommand
+	}
+	for _, value := range []string{
+		agent.GetRequestEntryId(), agent.GetClientStreamId(),
+		agent.GetClientMessageId(), agent.GetSioEvent(),
+	} {
+		if value == "" || len(value) > config.MaxStringBytes || strings.ContainsAny(value, "\x00\r\n") {
+			return ErrMalformedWorkerCommand
+		}
+	}
+	if agent.GetSioEvent() != "chat_predict" && agent.GetSioEvent() != "chat_continue_predict" {
+		return ErrMalformedWorkerCommand
+	}
+	return nil
 }
 
 func validateConfigurationCommand(command *runtimev1.WorkerCommandV1, config commandValidationConfig) error {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,43 @@ def test_serve_loop_reports_settled_execution_error_to_event_sink() -> None:
         assert events == [("executed_settled_acked", failure)]
 
     asyncio.run(run())
+
+
+def test_serve_loop_reports_redacted_code_location_for_unexpected_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        stop = asyncio.Event()
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            stop.set()
+            raise ValueError("credential-shaped diagnostic must not be logged")
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1_000,
+            reclaim_interval_millis=100,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1_000,
+        )
+        await asyncio.wait_for(runtime.run(stop), timeout=0.2)
+
+    asyncio.run(run())
+    diagnostic = json.loads(capsys.readouterr().err)
+    assert diagnostic["event"] == "delivery_internal_failure"
+    assert diagnostic["exception_name"] == "ValueError"
+    assert diagnostic["frames"][-1]["function"] == "process"
+    assert diagnostic["causes"] == []
+    assert "credential-shaped" not in json.dumps(diagnostic)
 
 
 def test_serve_loop_does_not_run_reclaimed_duplicate_concurrently() -> None:

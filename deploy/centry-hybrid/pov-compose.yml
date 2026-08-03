@@ -45,6 +45,12 @@ services:
       ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM: commands.v1.index.ingest.indexing.shared.2.0
       ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP: elitea-indexer-worker-v2
       ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES: "16"
+      # Agent and index commands are reference-only envelopes consumed by the
+      # same existing SDK worker pool. Payloads and outputs remain off Redis.
+      ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED: "true"
+      ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM: commands.v1.index.ingest.indexing.shared.2.0
+      ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP: elitea-indexer-worker-v2
+      ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES: "16"
     depends_on:
       runtime-index-v2-bootstrap:
         condition: service_completed_successfully
@@ -68,6 +74,7 @@ services:
     image: ${ELITEA_INDEXER_WORKER_IMAGE:?set ELITEA_INDEXER_WORKER_IMAGE}
     volumes:
       - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/indexer-runtime-v2.json:/run/elitea-runtime/indexer-runtime.json:ro
+      - ${ELITEA_AUTH_POV_RUNTIME_DIR:?set ELITEA_AUTH_POV_RUNTIME_DIR}/runtime/agent-checkpoint-connection:/run/elitea-runtime/agent-checkpoint-connection:ro
       - runtime-indexer-worker-v2-spool:/var/lib/elitea-indexer-worker/output-spool
     depends_on:
       runtime-index-v2-bootstrap:

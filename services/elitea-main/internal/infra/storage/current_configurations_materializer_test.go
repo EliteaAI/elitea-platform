@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"google.golang.org/protobuf/proto"
 )
 
 type currentMaterializationUnsecreterStub struct {
@@ -93,6 +95,70 @@ func TestCurrentConfigurationsMaterializerRedeemsFrozenConfigurationOwnersWithou
 	}
 	if strings.Contains(string(result), configurationapp.CurrentFrozenConfigurationMarker) {
 		t.Fatalf("internal frozen-owner marker reached worker output: %s", result)
+	}
+}
+
+func TestCurrentConfigurationsMaterializerRedeemsConfiguredAgentToolsAtClaimTime(t *testing.T) {
+	unsecreter := &currentMaterializationUnsecreterStub{values: map[int32]map[string]string{
+		7: {"PROJECT_NOTE": "project-note"},
+		1: {"SHAREPOINT_TOKEN": "sharepoint-secret"},
+	}}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, unsecreter)
+	application := []byte(`{"id":3,"version_id":4,"version_details":{"id":4,"tools":[{"id":2,"type":"sharepoint","settings":{"sharepoint_configuration":{"configuration_uuid":"configuration-sharepoint","configuration_project_id":1,"configuration_type":"sharepoint","__elitea_frozen_configuration_v1":true,"token":"{{secret.SHAREPOINT_TOKEN}}"},"note":"{{secret.PROJECT_NOTE}}"}}]}}`)
+	request := &runtimev1.AgentExecutionInputV1{
+		SchemaRevision:         "elitea.runtime.agent-execution-input.v1",
+		Llm:                    []byte(`{"kwargs":{}}`),
+		ChatHistory:            []byte(`[]`),
+		UserInput:              []byte(`"hello"`),
+		Tools:                  []byte(`[]`),
+		Application:            application,
+		InternalTools:          []byte(`[]`),
+		McpTokens:              []byte(`{}`),
+		IgnoredMcpServers:      []byte(`[]`),
+		UserDeclinedMcpServers: []byte(`[]`),
+		HitlDecisions:          []byte(`[]`),
+		Meta:                   []byte(`{}`),
+		ContextSettings:        []byte(`{}`),
+		InvokedSkills:          []byte(`[]`),
+		AppliedSkills:          []byte(`[]`),
+		AttachedSkills:         []byte(`[]`),
+		InputAttachments:       []byte(`[]`),
+		ParallelReconcile:      []byte(`null`),
+		ParallelTerminalErrors: []byte(`[]`),
+	}
+	source, err := proto.MarshalOptions{Deterministic: true}.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := materializer.MaterializeContent(context.Background(), ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.AgentApplicationCapability,
+		SemanticRole:      executiondomain.AgentExecutionRequestRole,
+	}, source, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var materialized runtimev1.AgentExecutionInputV1
+	if err := proto.Unmarshal(result, &materialized); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := decodeCurrentMaterializationObject(materialized.GetApplication())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := resolved["version_details"].(map[string]any)["tools"].([]any)[0].(map[string]any)
+	settings := tool["settings"].(map[string]any)
+	credential := settings["sharepoint_configuration"].(map[string]any)
+	if credential["token"] != "sharepoint-secret" || settings["note"] != "project-note" ||
+		strings.Contains(string(result), configurationapp.CurrentFrozenConfigurationMarker) {
+		t.Fatalf("materialized settings=%#v", settings)
+	}
+	if !reflect.DeepEqual(unsecreter.projects, []int32{1, 7}) {
+		t.Fatalf("unsecret project ownership=%v, want [1 7]", unsecreter.projects)
+	}
+	if strings.Contains(string(source), "sharepoint-secret") {
+		t.Fatal("immutable agent input was mutated with plaintext")
 	}
 }
 

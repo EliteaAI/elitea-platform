@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package elitea.runtime.v1;
 
+import "elitea/runtime/v1/agent.proto";
 import "elitea/runtime/v1/common.proto";
 import "elitea/runtime/v1/errors.proto";
 import "elitea/runtime/v1/indexing.proto";
@@ -18,6 +19,7 @@ enum ExecutionOutputEventTypeV1 {
   EXECUTION_OUTPUT_EVENT_TYPE_V1_TOOLKIT_AVAILABLE_TOOLS_RESULT = 3;
   EXECUTION_OUTPUT_EVENT_TYPE_V1_INDEX_INGEST_RESULT = 4;
   EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT = 5;
+  EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT = 6;
 }
 
 message SettlementProposalV1 {
@@ -54,6 +56,7 @@ message ExecutionOutputFrameV1 {
     RuntimeErrorV1 runtime_error = 21;
     ToolkitAvailableToolsResultV1 toolkit_available_tools = 22;
     IndexIngestResultV1 index_ingest = 23;
+    AgentExecutionResultV1 agent_execution = 24;
     // Non-terminal current NodeEvent progress. terminal is false,
     // settlement_proposal is absent, and payload_digest binds the deterministic
     // NodeEventV1 bytes. The exact UI JSON is projected by elitea-main and
@@ -62,7 +65,7 @@ message ExecutionOutputFrameV1 {
   }
 
   reserved 14 to 19;
-  reserved 24 to 31;
+  reserved 25 to 31;
 }
 
 message ExecutionOutputAckV1 {

@@ -19,15 +19,22 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from elitea.runtime.v1 import command_pb2, control_pb2_grpc, output_pb2_grpc
 
+from elitea_worker.agents.checkpoint import CurrentAgentCheckpointFactory
 from elitea_worker.agents.client_context import ClaimBoundEliteaClientContextFactory
 from elitea_worker.agents.sdk_adapter import EliteaSdkAdapter
 from elitea_worker.config import (
     RuntimeDeployConfig,
     load_deploy_config,
+    read_regular_file,
     validate_private_directory,
 )
-from elitea_worker.constants import INDEX_INGEST_CAPABILITY_ID
+from elitea_worker.constants import (
+    AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+    AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+    INDEX_INGEST_CAPABILITY_ID,
+)
 from elitea_worker.execution.delivery import (
+    AgentExecutionDeliveryProcessor,
     ConfigurationValidationDeliveryProcessor,
     DeliveryDisposition,
     DeliveryResult,
@@ -381,13 +388,60 @@ class WorkerServeLoop:
                 raise
             except WorkerError as exc:
                 self._event_sink("delivery_rejected", exc)
-            except Exception:
+            except Exception as exc:
+                _emit_unexpected_delivery_failure(exc)
                 self._event_sink("delivery_unavailable", DependencyUnavailable())
             finally:
                 if key in self._owned_entry_ids:
                     self._owned_entry_ids.remove(key)
                     self._release_delivery_capacity(1)
                 self._queue.task_done()
+
+
+def _emit_unexpected_delivery_failure(error: Exception) -> None:
+    """Emit operator-useful code locations without exception text or locals."""
+
+    def describe(value: BaseException) -> dict[str, object]:
+        frames: list[dict[str, object]] = []
+        traceback = value.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            frames.append(
+                {
+                    "module": str(frame.f_globals.get("__name__", "")),
+                    "function": frame.f_code.co_name,
+                    "line": traceback.tb_lineno,
+                }
+            )
+            traceback = traceback.tb_next
+        value_type = type(value)
+        return {
+            "exception_module": value_type.__module__,
+            "exception_name": value_type.__name__,
+            "frames": frames[-8:],
+        }
+
+    causes: list[dict[str, object]] = []
+    current = error.__cause__ or error.__context__
+    while current is not None and len(causes) < 4:
+        causes.append(describe(current))
+        current = current.__cause__ or current.__context__
+    error_type = type(error)
+    print(
+        json.dumps(
+            {
+                "event": "delivery_internal_failure",
+                "causes": causes,
+                "exception_module": error_type.__module__,
+                "exception_name": error_type.__name__,
+                "frames": describe(error)["frames"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class ProductionDeliveryProcessor:
@@ -405,6 +459,7 @@ class ProductionDeliveryProcessor:
         input_client: ScopedInputContentClient,
         output_stub: output_pb2_grpc.ExecutionOutputServiceStub,
         index_client_context_factory: IndexClientContextFactory | None = None,
+        agent_checkpoint_factory: CurrentAgentCheckpointFactory | None = None,
     ) -> None:
         self._config = config
         self._trust = trust
@@ -418,6 +473,7 @@ class ProductionDeliveryProcessor:
         )
         self._output_stub = output_stub
         self._index_client_context_factory = index_client_context_factory
+        self._agent_checkpoint_factory = agent_checkpoint_factory
         self._authenticator = Ed25519CommandAuthenticator(trust.signing_keys)
         self._spool_root = validate_private_directory(
             config.spool_root,
@@ -487,6 +543,32 @@ class ProductionDeliveryProcessor:
             processor = IndexIngestDeliveryProcessor(
                 supervisor=self._supervisor,
                 client_context_factory=self._index_client_context_factory,
+                control=self._control,
+                command_acker=self._acker,
+                input_client=self._input,
+                input_request_builder=self._input_builder,
+                output_session_factory=output_session,
+                signed_command_authenticator=self._authenticator,
+                workload_session_id=self._config.workload_session_id,
+                producer_id=self._config.producer_id,
+                clock_unix_millis=lambda: int(time.time() * 1000),
+                output_ack_timeout_seconds=limits.output_ack_timeout_millis / 1000,
+                max_output_sessions=limits.output_max_sessions,
+                lease_poll_interval_seconds=limits.lease_poll_interval_millis / 1000,
+            )
+        elif command.capability_id in {
+            AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+            AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+        }:
+            checkpoint_factory = self._agent_checkpoint_factory
+            if checkpoint_factory is None:
+                raise DependencyUnavailable(
+                    "The durable agent checkpoint store is unavailable."
+                )
+            processor = AgentExecutionDeliveryProcessor(
+                supervisor=self._supervisor,
+                client_context_factory=self._index_client_context_factory,
+                checkpoint_factory=checkpoint_factory,
                 control=self._control,
                 command_acker=self._acker,
                 input_client=self._input,
@@ -668,6 +750,16 @@ async def _serve_deployment_inner(
             drain_timeout_seconds=limits.shutdown_timeout_millis / 1000,
         )
         await supervisor.__aenter__()
+        agent_checkpoint_factory = None
+        if config.agent_checkpoint_connection_path is not None:
+            agent_checkpoint_factory = CurrentAgentCheckpointFactory(
+                fallback_connection_string=read_regular_file(
+                    config.agent_checkpoint_connection_path,
+                    max_bytes=16 * 1024,
+                    private=True,
+                    description="agent checkpoint connection file",
+                ).decode("utf-8"),
+            )
         processor = ProductionDeliveryProcessor(
             config=config,
             trust=trust,
@@ -678,6 +770,7 @@ async def _serve_deployment_inner(
             input_client=content,
             output_stub=output_pb2_grpc.ExecutionOutputServiceStub(output_channel),
             index_client_context_factory=index_client_context_factory,
+            agent_checkpoint_factory=agent_checkpoint_factory,
         )
         runtime = WorkerServeLoop(
             consumer=consumer,

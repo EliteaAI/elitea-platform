@@ -11,8 +11,10 @@ import (
 	"strconv"
 	"strings"
 
+	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"google.golang.org/protobuf/proto"
 )
 
 const maxCurrentFrozenConfigurationScopes = 256
@@ -53,9 +55,23 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if authorization.CapabilityID == executiondomain.AgentApplicationCapability {
+		projectID, ok := positiveCurrentMaterializationID(authorization.ResourceProjectID)
+		if !ok {
+			return nil, ErrContentRejected
+		}
+		if _, ok := positiveCurrentMaterializationID(authorization.ActorID); !ok {
+			return nil, ErrContentRejected
+		}
+		if authorization.SemanticRole != executiondomain.AgentExecutionRequestRole {
+			return nil, ErrContentRejected
+		}
+		return m.materializeAgentApplication(ctx, projectID, source, maxBytes)
+	}
 	if authorization.CapabilityID != executiondomain.IndexIngestCapability {
-		// The shared content listener also serves validation inputs. Those bytes
-		// are not configuration-runtime inputs and remain byte-for-byte stable.
+		// The shared content listener also serves validation and ad-hoc agent
+		// inputs. Those bytes have no frozen configured-toolkit references and
+		// remain byte-for-byte stable.
 		return source, nil
 	}
 
@@ -87,6 +103,66 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 	default:
 		return nil, ErrContentRejected
 	}
+}
+
+func (m *CurrentConfigurationsMaterializer) materializeAgentApplication(
+	ctx context.Context,
+	projectID int32,
+	source []byte,
+	maxBytes int64,
+) ([]byte, error) {
+	var request runtimev1.AgentExecutionInputV1
+	if err := proto.Unmarshal(source, &request); err != nil {
+		return nil, ErrContentRejected
+	}
+	canonical, err := proto.MarshalOptions{Deterministic: true}.Marshal(&request)
+	if err != nil || !bytes.Equal(canonical, source) {
+		clearContentBytes(canonical)
+		return nil, ErrContentRejected
+	}
+	clearContentBytes(canonical)
+
+	application, err := decodeCurrentMaterializationObject(request.GetApplication())
+	if err != nil {
+		return nil, ErrContentRejected
+	}
+	version, ok := application["version_details"].(map[string]any)
+	if !ok || version == nil {
+		return nil, ErrContentRejected
+	}
+	tools, ok := version["tools"].([]any)
+	if !ok {
+		return nil, ErrContentRejected
+	}
+	walker := currentFrozenConfigurationWalker{unsecreter: m.unsecreter}
+	for index, value := range tools {
+		tool, ok := value.(map[string]any)
+		if !ok {
+			return nil, ErrContentRejected
+		}
+		settings, ok := tool["settings"].(map[string]any)
+		if !ok || settings == nil {
+			return nil, ErrContentRejected
+		}
+		materialized, err := walker.materializeOwnedMap(ctx, projectID, settings, 0, true)
+		if err != nil {
+			return nil, currentMaterializationError(ctx, err)
+		}
+		tool["settings"] = materialized
+		tools[index] = tool
+	}
+	version["tools"] = tools
+	application["version_details"] = version
+	request.Application, err = encodeCurrentMaterializationObject(application, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	result, err := proto.MarshalOptions{Deterministic: true}.Marshal(&request)
+	if err != nil || len(result) == 0 || int64(len(result)) > maxBytes {
+		clearContentBytes(result)
+		return nil, ErrContentRejected
+	}
+	return result, nil
 }
 
 func (m *CurrentConfigurationsMaterializer) materializeToolkit(

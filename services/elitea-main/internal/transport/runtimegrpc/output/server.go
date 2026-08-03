@@ -38,6 +38,10 @@ type IndexIngestIngestor interface {
 	IngestIndex(ctx context.Context, frame outputapp.IndexIngestFrame) (outputapp.ProjectionOutcome, error)
 }
 
+type AgentExecutionIngestor interface {
+	IngestAgent(ctx context.Context, frame outputapp.AgentExecutionFrame) (outputapp.ProjectionOutcome, error)
+}
+
 type NodeEventIngestor interface {
 	IngestNodeEvent(ctx context.Context, frame outputapp.NodeEventFrame) (outputapp.ProjectionOutcome, error)
 }
@@ -57,11 +61,12 @@ type Server struct {
 	ingestor   ValidationIngestor
 	failures   RuntimeFailureIngestor
 	indexes    IndexIngestIngestor
+	agents     AgentExecutionIngestor
 	nodeEvents NodeEventIngestor
 }
 
 func NewServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor) (*Server, error) {
-	return newServer(config, authorizer, ingestor, failures, nil, nil)
+	return newServer(config, authorizer, ingestor, failures, nil, nil, nil)
 }
 
 // NewServerWithIndexIngest adds the typed index.ingest.v1 terminal-output
@@ -71,7 +76,7 @@ func NewServerWithIndexIngest(config ServerConfig, authorizer WorkloadAuthorizer
 	if indexes == nil {
 		return nil, errors.New("index ingest output ingestor is required")
 	}
-	return newServer(config, authorizer, ingestor, failures, indexes, nil)
+	return newServer(config, authorizer, ingestor, failures, indexes, nil, nil)
 }
 
 // NewServerWithIndexIngestAndNodeEvents adds current-NodeEvent progress to the
@@ -80,17 +85,36 @@ func NewServerWithIndexIngestAndNodeEvents(config ServerConfig, authorizer Workl
 	if indexes == nil || nodeEvents == nil {
 		return nil, errors.New("index ingest and node event output ingestors are required")
 	}
-	return newServer(config, authorizer, ingestor, failures, indexes, nodeEvents)
+	return newServer(config, authorizer, ingestor, failures, indexes, nil, nodeEvents)
 }
 
-func newServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
+// NewServerWithAgentAndNodeEvents composes agent execution independently of
+// indexing. Both capabilities may share the authenticated output listener,
+// but neither is an enablement prerequisite for the other.
+func NewServerWithAgentAndNodeEvents(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, agents AgentExecutionIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
+	if agents == nil || nodeEvents == nil {
+		return nil, errors.New("agent and node event output ingestors are required")
+	}
+	return newServer(config, authorizer, ingestor, failures, nil, agents, nodeEvents)
+}
+
+// NewServerWithIndexAgentAndNodeEvents composes the two progress-capable
+// worker capabilities on the same authenticated output listener.
+func NewServerWithIndexAgentAndNodeEvents(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor, agents AgentExecutionIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
+	if indexes == nil || agents == nil || nodeEvents == nil {
+		return nil, errors.New("index, agent and node event output ingestors are required")
+	}
+	return newServer(config, authorizer, ingestor, failures, indexes, agents, nodeEvents)
+}
+
+func newServer(config ServerConfig, authorizer WorkloadAuthorizer, ingestor ValidationIngestor, failures RuntimeFailureIngestor, indexes IndexIngestIngestor, agents AgentExecutionIngestor, nodeEvents NodeEventIngestor) (*Server, error) {
 	if authorizer == nil || ingestor == nil || failures == nil {
 		return nil, errors.New("output authorizer, validation ingestor and runtime failure ingestor are required")
 	}
 	if config.OutputSchemaRevision == "" || config.MaxFrameBytes <= 0 || config.CreditFrames == 0 || config.CreditBytes == 0 {
 		return nil, errors.New("output schema and limits are required")
 	}
-	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures, indexes: indexes, nodeEvents: nodeEvents}, nil
+	return &Server{config: config, authorizer: authorizer, ingestor: ingestor, failures: failures, indexes: indexes, agents: agents, nodeEvents: nodeEvents}, nil
 }
 
 func (s *Server) Publish(stream grpc.BidiStreamingServer[runtimev1.ExecutionOutputFrameV1, runtimev1.ExecutionOutputAckV1]) error {
@@ -203,6 +227,15 @@ func (s *Server) ingestMessage(ctx context.Context, message *runtimev1.Execution
 			return outputapp.ProjectionOutcome{}, err
 		}
 		return s.indexes.IngestIndex(ctx, frame)
+	case runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT:
+		if s.agents == nil {
+			return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidAgentExecutionOutput
+		}
+		frame, err := s.agentExecutionFrame(message, workloadIdentity)
+		if err != nil {
+			return outputapp.ProjectionOutcome{}, err
+		}
+		return s.agents.IngestAgent(ctx, frame)
 	case runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT:
 		if s.nodeEvents == nil {
 			return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidNodeEventOutput
@@ -320,6 +353,61 @@ func (s *Server) indexIngestFrame(message *runtimev1.ExecutionOutputFrameV1, wor
 	}
 	if err := frame.Validate(); err != nil {
 		return outputapp.IndexIngestFrame{}, err
+	}
+	return frame, nil
+}
+
+func (s *Server) agentExecutionFrame(message *runtimev1.ExecutionOutputFrameV1, workloadIdentity string) (outputapp.AgentExecutionFrame, error) {
+	if message == nil || message.GetOutputSchemaRevision() != s.config.OutputSchemaRevision || hasUnknown(message.ProtoReflect()) || !validStreamIdentity(message) || message.GetOccurredAtUnixMillis() <= 0 {
+		return outputapp.AgentExecutionFrame{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	encodedFrame, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	if err != nil || len(encodedFrame) > s.config.MaxFrameBytes ||
+		message.GetEventType() != runtimev1.ExecutionOutputEventTypeV1_EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT ||
+		!message.GetTerminal() || message.GetAgentExecution() == nil ||
+		message.GetConfigurationValidation() != nil || message.GetRuntimeError() != nil ||
+		message.GetToolkitAvailableTools() != nil || message.GetIndexIngest() != nil || message.GetNodeEvent() != nil {
+		return outputapp.AgentExecutionFrame{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	identity := message.GetIdentity()
+	fence, err := fenceDomain(identity, message.GetFence(), workloadIdentity)
+	if err != nil {
+		return outputapp.AgentExecutionFrame{}, err
+	}
+	payload := message.GetAgentExecution()
+	encodedResult, err := proto.MarshalOptions{Deterministic: true}.Marshal(payload)
+	if err != nil || !matchesDigest(message.GetPayloadDigest(), encodedResult) {
+		return outputapp.AgentExecutionFrame{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	result, err := agentExecutionResultDomain(payload)
+	if err != nil {
+		return outputapp.AgentExecutionFrame{}, err
+	}
+	settlement, encodedSettlement, err := s.settlementProposalDomain(message, fence, encodedResult, executionapp.SettlementSucceeded)
+	if err != nil {
+		return outputapp.AgentExecutionFrame{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	frame := outputapp.AgentExecutionFrame{
+		StreamID:              message.GetStreamId(),
+		TenantID:              identity.GetTenantId(),
+		ResourceProjectID:     identity.GetResourceProjectId(),
+		ProjectionProjectID:   identity.GetProjectionProjectId(),
+		WorkloadSessionID:     fence.WorkloadSessionID,
+		ProducerID:            fence.ProducerID,
+		EventID:               message.GetEventId(),
+		LogicalOutputID:       message.GetLogicalOutputId(),
+		Sequence:              message.GetSequence(),
+		ClaimHandoffWatermark: message.GetClaimHandoffWatermark(),
+		OccurredAt:            time.UnixMilli(message.GetOccurredAtUnixMillis()).UTC(),
+		Fence:                 fence,
+		PayloadDigest:         runtimedomain.SHA256(encodedResult),
+		EncodedResult:         encodedResult,
+		Settlement:            settlement,
+		EncodedSettlement:     encodedSettlement,
+		Result:                result,
+	}
+	if err := frame.Validate(); err != nil {
+		return outputapp.AgentExecutionFrame{}, err
 	}
 	return frame, nil
 }
@@ -557,6 +645,47 @@ func indexIngestResultDomain(result *runtimev1.IndexIngestResultV1) (outputapp.I
 	}
 	if err := mapped.Validate(); err != nil {
 		return outputapp.IndexIngestResult{}, err
+	}
+	return mapped, nil
+}
+
+func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outputapp.AgentExecutionResult, error) {
+	if result == nil || result.GetTerminalState() != runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	bundleDigest, err := digestDomain(result.GetInputBundleDigest())
+	if err != nil {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	requestDigest, err := digestDomain(result.GetRequestContentDigest())
+	if err != nil {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	artifact := result.GetResultArtifact()
+	if artifact == nil {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	artifactDigest, err := digestDomain(artifact.GetDigest())
+	if err != nil {
+		return outputapp.AgentExecutionResult{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
+	mapped := outputapp.AgentExecutionResult{
+		InputBundleID:           result.GetInputBundleId(),
+		InputBundleDigest:       bundleDigest,
+		RequestEntryID:          result.GetRequestEntryId(),
+		RequestImmutableVersion: result.GetRequestImmutableVersion(),
+		RequestContentDigest:    requestDigest,
+		ResultArtifact: outputapp.AgentExecutionArtifactReference{
+			ArtifactID:       artifact.GetArtifactId(),
+			ImmutableVersion: artifact.GetImmutableVersion(),
+			MediaType:        artifact.GetMediaType(),
+			ByteLength:       artifact.GetByteLength(),
+			Digest:           artifactDigest,
+			Classification:   artifact.GetClassification(),
+		},
+	}
+	if err := mapped.Validate(); err != nil {
+		return outputapp.AgentExecutionResult{}, err
 	}
 	return mapped, nil
 }
@@ -816,6 +945,10 @@ func safeOutputError(err error) (runtimev1.RuntimeErrorCodeV1, string, bool) {
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The output does not match the admitted validation input.", false
 	case errors.Is(err, outputapp.ErrIndexIngestBindingMismatch):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The output does not match the admitted index input.", false
+	case errors.Is(err, outputapp.ErrAgentExecutionBindingMismatch):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INCOMPATIBLE_VERSION, "The output does not match the admitted agent input.", false
+	case errors.Is(err, outputapp.ErrAgentExecutionResultMismatch):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The agent result does not match its durable full message.", false
 	case errors.Is(err, outputapp.ErrIndexIngestArtifactUnavailable):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE, "The referenced index artifact is not durably available.", true
 	case errors.Is(err, outputapp.ErrIndexIngestArtifactMismatch):
@@ -824,7 +957,9 @@ func safeOutputError(err error) (runtimev1.RuntimeErrorCodeV1, string, bool) {
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output identity conflicts with a durable output.", false
 	case errors.Is(err, outputapp.ErrIndexIngestOutputConflict):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The index output identity conflicts with a durable output.", false
-	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, outputapp.ErrInvalidIndexIngestOutput), errors.Is(err, outputapp.ErrInvalidNodeEventOutput), errors.Is(err, outputapp.ErrNodeEventOutputConflict), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
+	case errors.Is(err, outputapp.ErrAgentExecutionOutputConflict):
+		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The agent output identity conflicts with a durable output.", false
+	case errors.Is(err, outputapp.ErrInvalidValidationOutput), errors.Is(err, outputapp.ErrInvalidIndexIngestOutput), errors.Is(err, outputapp.ErrInvalidAgentExecutionOutput), errors.Is(err, outputapp.ErrInvalidNodeEventOutput), errors.Is(err, outputapp.ErrNodeEventOutputConflict), errors.Is(err, configurationdomain.ErrInvalidValidationResult), errors.Is(err, runtimedomain.ErrInvalidFence):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_PROTOCOL_VIOLATION, "The output frame is malformed.", false
 	case errors.Is(err, context.Canceled):
 		return runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_CANCELLED, "The output operation was cancelled.", false

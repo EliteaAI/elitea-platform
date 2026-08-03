@@ -21,6 +21,7 @@ const (
 	payloadTypeConfigurationValidation = "CONFIGURATION_VALIDATION"
 	payloadTypeRuntimeFailure          = "RUNTIME_FAILURE"
 	payloadTypeIndexIngestResult       = "INDEX_INGEST_RESULT"
+	payloadTypeAgentExecutionResult    = "AGENT_EXECUTION_RESULT"
 )
 
 type OutputInboxRepository struct {
@@ -130,11 +131,15 @@ SELECT j.tenant_id,
        j.command_id,
        j.execution_id,
        j.generation,
-       CASE j.capability_id
+	       CASE j.capability_id
            WHEN 'configuration.validate.v1'
                THEN 'configuration-validation:' || j.configuration_revision_id
-           WHEN 'index.ingest.v1'
-               THEN 'index-ingest:' || j.execution_id
+	           WHEN 'index.ingest.v1'
+	               THEN 'index-ingest:' || j.execution_id
+	           WHEN 'agent.execute.application.v1'
+	               THEN 'agent-execution:' || j.execution_id
+	           WHEN 'agent.execute.adhoc.v1'
+	               THEN 'agent-execution:' || j.execution_id
        END AS logical_output_id
 FROM elitea_runtime.execution_jobs AS j
 WHERE j.execution_id = $1
@@ -152,8 +157,8 @@ WHERE j.execution_id = $1
           )
       )
       OR
-      (
-          j.capability_id = 'index.ingest.v1'
+	      (
+	          j.capability_id = 'index.ingest.v1'
           AND EXISTS (
               SELECT 1
               FROM elitea_runtime.index_ingest_jobs AS i
@@ -163,9 +168,26 @@ WHERE j.execution_id = $1
                 AND i.generation = j.generation
                 AND i.capability_id = j.capability_id
                 AND i.input_bundle_id = j.input_bundle_id
-          )
-      )
-  )`, executionID, int64(generation)).Scan(
+	          )
+	      )
+	      OR
+	      (
+	          j.capability_id IN (
+	              'agent.execute.application.v1',
+	              'agent.execute.adhoc.v1'
+	          )
+	          AND EXISTS (
+	              SELECT 1
+	              FROM elitea_runtime.agent_execution_jobs AS a
+	              JOIN elitea_runtime.input_bundles AS b
+	                ON b.input_bundle_id = a.input_bundle_id
+	              WHERE a.execution_id = j.execution_id
+	                AND a.generation = j.generation
+	                AND a.capability_id = j.capability_id
+	                AND a.input_bundle_id = j.input_bundle_id
+	          )
+	      )
+	  )`, executionID, int64(generation)).Scan(
 		&expected.TenantID,
 		&expected.ResourceProjectID,
 		&expected.ProjectionProjectID,
@@ -224,7 +246,7 @@ func (r outputRecord) validate() error {
 	if r.EventID == "" || r.LogicalOutputID == "" || r.ExecutionID == "" || r.Generation == 0 || r.TenantID == "" || r.ResourceProjectID <= 0 || r.ProjectionProjectID <= 0 || r.CommandID == "" || r.WorkloadIdentity == "" || r.WorkloadSessionID == "" || r.ProducerID == "" || r.ClaimAttempt == 0 || r.LeaseEpoch == 0 || r.FenceToken.IsZero() || r.StreamID == "" || r.Sequence == 0 || r.PayloadDigest.IsZero() || len(r.PayloadBytes) == 0 || r.SettlementProposalID == "" || r.SettlementOutcome == "" || len(r.SettlementBytes) == 0 || r.SettlementDigest.IsZero() || r.SettlementKey == "" || r.OccurredAt.IsZero() {
 		return outputapp.ErrInvalidValidationOutput
 	}
-	if r.PayloadType != payloadTypeConfigurationValidation && r.PayloadType != payloadTypeRuntimeFailure && r.PayloadType != payloadTypeIndexIngestResult {
+	if r.PayloadType != payloadTypeConfigurationValidation && r.PayloadType != payloadTypeRuntimeFailure && r.PayloadType != payloadTypeIndexIngestResult && r.PayloadType != payloadTypeAgentExecutionResult {
 		return outputapp.ErrInvalidValidationOutput
 	}
 	// Keep the durable payload type and terminal disposition coupled even when
@@ -239,6 +261,10 @@ func (r outputRecord) validate() error {
 	case payloadTypeIndexIngestResult:
 		if r.SettlementOutcome != executionapp.SettlementSucceeded &&
 			r.SettlementOutcome != executionapp.SettlementFailed {
+			return outputapp.ErrInvalidValidationOutput
+		}
+	case payloadTypeAgentExecutionResult:
+		if r.SettlementOutcome != executionapp.SettlementSucceeded {
 			return outputapp.ErrInvalidValidationOutput
 		}
 	case payloadTypeRuntimeFailure:

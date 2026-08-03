@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	executionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
@@ -20,6 +21,9 @@ type PublicRoutes struct {
 	// enabled. Main binds it to the current route's existing authentication and
 	// project-RBAC middleware before mounting it.
 	IndexStart indexingapi.StartUseCase
+	// AgentStart owns only the initial, same-project configured-application
+	// turn. Unsupported advanced turns stay on the current Socket.IO path.
+	AgentStart agentexecutionapi.StartUseCase
 	// IndexCancel preserves the current UI DELETE contract while selecting only
 	// Go-owned execution IDs at the compatibility edge.
 	IndexCancel indexingapi.CurrentIndexCanceller
@@ -52,6 +56,7 @@ func newPublicRoutes(
 	submitter validationSubmitter,
 	replay executionapi.EventRepository,
 	indexStart indexingapi.StartUseCase,
+	agentStart agentexecutionapi.StartUseCase,
 	replayCapacity int,
 ) (PublicRoutes, error) {
 	validation, err := configurationapi.NewValidationHandler(authorizer, submitter)
@@ -71,6 +76,7 @@ func newPublicRoutes(
 		Validation:      http.HandlerFunc(validation.Submit),
 		ExecutionEvents: http.HandlerFunc(events.Stream),
 		IndexStart:      indexStart,
+		AgentStart:      agentStart,
 	}, nil
 }
 

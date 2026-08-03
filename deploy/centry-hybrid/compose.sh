@@ -111,6 +111,7 @@ validate_model() {
   jq -e \
     --arg route "$ELITEA_INDEX_ROUTE_FILE" \
     --arg runtime "$runtime_root/runtime/indexer-runtime-v2.json" \
+    --arg checkpoint "$runtime_root/runtime/agent-checkpoint-connection" \
     --arg interface "$script_dir/runtime-interface-litellm.yml" \
     --arg engine "$script_dir/runtime-engine-litellm.yml" \
     '
@@ -122,10 +123,18 @@ validate_model() {
         == "elitea-main-pov-1"
       and .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
         == "elitea-indexer-worker-v2"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED
+        == "true"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM
+        == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP
+        == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
       and any(.services.auth_gateway.volumes[];
         .source == $route and .target == "/etc/traefik/dynamic/index.yml")
       and any(.services["elitea-indexer-worker"].volumes[];
         .source == $runtime and .target == "/run/elitea-runtime/indexer-runtime.json")
+      and any(.services["elitea-indexer-worker"].volumes[];
+        .source == $checkpoint and .target == "/run/elitea-runtime/agent-checkpoint-connection")
       and any(.services.pylon_main.volumes[];
         .source == $interface and .target == "/data/configs/runtime_interface_litellm.yml")
       and any(.services.pylon_indexer.volumes[];
@@ -140,6 +149,8 @@ validate_model() {
   grep -q 'go-current-notifications:' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/notifications/notifications/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q '/api/v2/notifications/notification/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/elitea_core/messages/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'agent.execute.application.v1' "$ELITEA_INDEX_ROUTE_FILE"
 
   rm -f "$rendered"
   trap - EXIT

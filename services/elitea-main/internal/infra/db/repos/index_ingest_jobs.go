@@ -56,7 +56,7 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 	if err := admission.Binding.Validate(admission.Record.InputBundle); err != nil {
 		return indexingapp.AdmissionOutcome{}, err
 	}
-	if err := validateIndexInputManifest(admission.Record.InputBundle); err != nil {
+	if err := validateInputManifest(admission.Record.InputBundle); err != nil {
 		return indexingapp.AdmissionOutcome{}, err
 	}
 	if len(admission.Record.InputBundle.Manifest) > maxStoredInputManifestBytes || len(admission.Record.InputBundle.Entries) > executiondomain.MaxInputBundleEntries {
@@ -194,11 +194,11 @@ func (r *IndexIngestJobsRepository) AdmitIndexIngest(ctx context.Context, admiss
 	if err != nil {
 		return indexingapp.AdmissionOutcome{}, fmt.Errorf("load index admission timing: %w", err)
 	}
-	timing, err := decodeIndexAdmissionTiming(timingRow, r.policy.DeadlineTTL)
+	timing, err := decodeAdmissionTiming(timingRow, r.policy.DeadlineTTL)
 	if err != nil {
 		return indexingapp.AdmissionOutcome{}, err
 	}
-	if err := insertIndexInputBundle(ctx, txQueries, int32(resourceProject), admission.Record, timing.AdmittedAt); err != nil {
+	if err := insertRuntimeInputBundle(ctx, txQueries, int32(resourceProject), admission.Record, timing.AdmittedAt); err != nil {
 		return indexingapp.AdmissionOutcome{}, err
 	}
 	createdID, err := txQueries.InsertIndexIngestExecutionJob(ctx, sqlcgen.InsertIndexIngestExecutionJobParams{
@@ -711,7 +711,7 @@ func loadIndexAdmission(ctx context.Context, queries *sqlcgen.Queries, scope, ke
 	}, digest, nil
 }
 
-func decodeIndexAdmissionTiming(row sqlcgen.LoadRuntimeAdmissionTimingRow, deadlineTTL time.Duration) (admissionTiming, error) {
+func decodeAdmissionTiming(row sqlcgen.LoadRuntimeAdmissionTimingRow, deadlineTTL time.Duration) (admissionTiming, error) {
 	if !row.AdmittedAt.Valid || !row.Deadline.Valid {
 		return admissionTiming{}, errors.New("database returned invalid index admission timing")
 	}
@@ -723,7 +723,7 @@ func decodeIndexAdmissionTiming(row sqlcgen.LoadRuntimeAdmissionTimingRow, deadl
 	return admissionTiming{AdmittedAt: admittedAt, Deadline: deadline}, nil
 }
 
-func insertIndexInputBundle(ctx context.Context, queries *sqlcgen.Queries, resourceProjectID int32, record executiondomain.Admission, admittedAt time.Time) error {
+func insertRuntimeInputBundle(ctx context.Context, queries *sqlcgen.Queries, resourceProjectID int32, record executiondomain.Admission, admittedAt time.Time) error {
 	bundle := record.InputBundle
 	if err := queries.InsertRuntimeInputBundle(ctx, sqlcgen.InsertRuntimeInputBundleParams{
 		InputBundleID:     bundle.ID,
@@ -736,7 +736,7 @@ func insertIndexInputBundle(ctx context.Context, queries *sqlcgen.Queries, resou
 		CreatedBy:         record.Job.ActorID,
 		CreatedAt:         timestamp(admittedAt),
 	}); err != nil {
-		return fmt.Errorf("insert index input bundle: %w", err)
+		return fmt.Errorf("insert runtime input bundle: %w", err)
 	}
 	for _, entry := range bundle.Entries {
 		if err := queries.InsertRuntimeInputBundleEntry(ctx, sqlcgen.InsertRuntimeInputBundleEntryParams{
@@ -752,7 +752,7 @@ func insertIndexInputBundle(ctx context.Context, queries *sqlcgen.Queries, resou
 			RequiredGrantAudience: entry.RequiredGrantAudience,
 			ContentBytes:          append([]byte(nil), entry.Content...),
 		}); err != nil {
-			return fmt.Errorf("insert index input bundle entry: %w", err)
+			return fmt.Errorf("insert runtime input bundle entry: %w", err)
 		}
 	}
 	return nil
@@ -792,19 +792,19 @@ func boundedIndexAdmissionStrings(admission indexingapp.Admission) bool {
 		!strings.ContainsRune(binding.IndexMetaCorrelationID, '\x00')
 }
 
-func validateIndexInputManifest(bundle executiondomain.InputBundle) error {
+func validateInputManifest(bundle executiondomain.InputBundle) error {
 	var manifest runtimev1.ExecutionInputBundleV1
 	if err := (proto.UnmarshalOptions{DiscardUnknown: false}).Unmarshal(bundle.Manifest, &manifest); err != nil {
-		return fmt.Errorf("%w: index input manifest is not decodable", executiondomain.ErrInvalidInputBundle)
+		return fmt.Errorf("%w: input manifest is not decodable", executiondomain.ErrInvalidInputBundle)
 	}
 	if manifest.GetInputBundleId() != bundle.ID || manifest.GetImmutableVersion() != bundle.Version || len(manifest.GetEntries()) != len(bundle.Entries) {
-		return fmt.Errorf("%w: index input manifest identity mismatch", executiondomain.ErrInvalidInputBundle)
+		return fmt.Errorf("%w: input manifest identity mismatch", executiondomain.ErrInvalidInputBundle)
 	}
 	for index, wireEntry := range manifest.GetEntries() {
 		entry := bundle.Entries[index]
 		content := wireEntry.GetContent()
 		if content == nil || wireEntry.GetEntryId() != entry.ID || wireEntry.GetImmutableVersion() != entry.Version || wireEntry.GetSemanticRole() != entry.SemanticRole || content.GetContentId() != entry.ContentID || content.GetImmutableVersion() != entry.Version || content.GetMediaType() != entry.MediaType || content.GetByteLength() != uint64(entry.ContentLength) || content.GetClassification() != entry.Classification || content.GetRequiredGrantAudience() != entry.RequiredGrantAudience || content.GetDigest().GetAlgorithm() != runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256 || len(content.GetDigest().GetValue()) != len(entry.ContentDigest) || string(content.GetDigest().GetValue()) != string(entry.ContentDigest[:]) {
-			return fmt.Errorf("%w: index input manifest entry mismatch", executiondomain.ErrInvalidInputBundle)
+			return fmt.Errorf("%w: input manifest entry mismatch", executiondomain.ErrInvalidInputBundle)
 		}
 	}
 	return nil

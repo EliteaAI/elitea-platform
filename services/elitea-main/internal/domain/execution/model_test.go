@@ -1,6 +1,11 @@
 package execution
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
+)
 
 func TestJobStateIncludesDurableQuarantine(t *testing.T) {
 	states := []JobState{
@@ -21,5 +26,117 @@ func TestJobStateIncludesDurableQuarantine(t *testing.T) {
 	}
 	if JobState("UNKNOWN").Valid() {
 		t.Fatal("unknown durable job state was accepted")
+	}
+}
+
+func TestSupportedCapabilityIncludesLanguageNeutralAgentSemantics(t *testing.T) {
+	for _, capabilityID := range []string{
+		ConfigurationValidationCapability,
+		IndexIngestCapability,
+		AgentApplicationCapability,
+		AgentAdhocCapability,
+	} {
+		if !SupportedCapability(capabilityID) {
+			t.Fatalf("capability %q is not supported", capabilityID)
+		}
+		job := Job{
+			ID:                  "execution",
+			CommandID:           "command",
+			TenantID:            "tenant",
+			ResourceProjectID:   "1",
+			ProjectionProjectID: "1",
+			ActorID:             "7",
+			CapabilityID:        capabilityID,
+			Generation:          1,
+			State:               JobPending,
+			CreatedAt:           time.Now(),
+		}
+		if err := job.Validate(); err != nil {
+			t.Fatalf("Job.Validate(%q) error = %v", capabilityID, err)
+		}
+	}
+	if SupportedCapability("index.search.v1") {
+		t.Fatal("standalone index search was accepted as an execution capability")
+	}
+}
+
+func TestNodeEventCapabilitiesExcludeControlOnlyValidation(t *testing.T) {
+	for _, capabilityID := range []string{
+		IndexIngestCapability,
+		AgentApplicationCapability,
+		AgentAdhocCapability,
+	} {
+		if !NodeEventCapability(capabilityID) {
+			t.Fatalf("capability %q cannot publish NodeEvents", capabilityID)
+		}
+	}
+	if NodeEventCapability(ConfigurationValidationCapability) {
+		t.Fatal("configuration validation was allowed onto the NodeEvent data plane")
+	}
+}
+
+func TestAgentExecutionBindingRequiresOneImmutableProtobufEntry(t *testing.T) {
+	content := []byte("agent-input")
+	bundle := InputBundle{
+		ID:        "bundle",
+		Version:   "version",
+		MediaType: InputBundleManifestMediaType,
+		Digest:    runtimedomain.SHA256([]byte("manifest")),
+		Manifest:  []byte("manifest"),
+		Entries: []InputEntry{{
+			ID:                    "agent-request",
+			Version:               "entry-version",
+			SemanticRole:          AgentExecutionRequestRole,
+			ContentID:             "content",
+			MediaType:             AgentExecutionInputMediaType,
+			Classification:        "tenant-confidential",
+			RequiredGrantAudience: "elitea.runtime.input.read.v1",
+			ContentDigest:         runtimedomain.SHA256(content),
+			ContentLength:         int64(len(content)),
+			Content:               content,
+		}},
+	}
+	binding := AgentExecutionBinding{
+		RequestEntryID:            "agent-request",
+		ClientStreamID:            "conversation-1",
+		ClientMessageID:           "message-1",
+		ClientExecutionGeneration: "generation-1",
+		SIOEvent:                  "chat_predict",
+	}
+	if err := binding.Validate(bundle); err != nil {
+		t.Fatalf("binding.Validate() error = %v", err)
+	}
+	continued := binding
+	continued.SIOEvent = "chat_continue_predict"
+	if err := continued.Validate(bundle); err != nil {
+		t.Fatalf("continued binding.Validate() error = %v", err)
+	}
+
+	invalid := binding
+	invalid.SIOEvent = "test_toolkit_tool"
+	if err := invalid.Validate(bundle); err == nil {
+		t.Fatal("agent binding accepted a toolkit event")
+	}
+	invalid = binding
+	invalid.ClientStreamID = "conversation\nforged"
+	if err := invalid.Validate(bundle); err == nil {
+		t.Fatal("agent binding accepted an unsafe stream identity")
+	}
+	invalid = binding
+	invalid.ClientExecutionGeneration = ""
+	if err := invalid.Validate(bundle); err == nil {
+		t.Fatal("agent binding accepted an empty client execution generation")
+	}
+}
+
+func TestInputBundleUsesMediaSpecificContentBounds(t *testing.T) {
+	if maxInputEntryContentBytes(SettingsJSONMediaType) != MaxInputEntryContentBytes {
+		t.Fatal("configuration input bound changed")
+	}
+	if maxInputEntryContentBytes(AgentExecutionInputMediaType) != MaxAgentExecutionInputBytes {
+		t.Fatal("agent input bound does not match the public worker contract")
+	}
+	if maxInputEntryContentBytes("application/octet-stream") != 0 {
+		t.Fatal("unknown input media type was accepted")
 	}
 }

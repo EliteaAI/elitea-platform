@@ -401,7 +401,11 @@ func (s *Server) verifyResolvedManifest(reference *runtimev1.ExecutionInputBundl
 			return errors.New("input manifest entry has the wrong command binding")
 		}
 		content := entry.GetContent()
-		if content.GetContentId() == "" || len(content.GetContentId()) > s.config.MaxStringBytes || content.GetImmutableVersion() == "" || len(content.GetImmutableVersion()) > s.config.MaxStringBytes || content.GetImmutableVersion() != entry.GetImmutableVersion() || content.GetMediaType() != "application/json" || content.GetClassification() == "" || len(content.GetClassification()) > s.config.MaxStringBytes || content.GetRequiredGrantAudience() == "" || len(content.GetRequiredGrantAudience()) > s.config.MaxStringBytes || content.GetByteLength() == 0 || content.GetByteLength() > s.config.MaxInputContentBytes || !validDigestMessage(content.GetDigest()) {
+		expectedMediaType, maxContentBytes, err := inputContentContract(expectedRole, s.config.MaxInputContentBytes)
+		if err != nil {
+			return err
+		}
+		if content.GetContentId() == "" || len(content.GetContentId()) > s.config.MaxStringBytes || content.GetImmutableVersion() == "" || len(content.GetImmutableVersion()) > s.config.MaxStringBytes || content.GetImmutableVersion() != entry.GetImmutableVersion() || content.GetMediaType() != expectedMediaType || content.GetClassification() == "" || len(content.GetClassification()) > s.config.MaxStringBytes || content.GetRequiredGrantAudience() == "" || len(content.GetRequiredGrantAudience()) > s.config.MaxStringBytes || content.GetByteLength() == 0 || content.GetByteLength() > maxContentBytes || !validDigestMessage(content.GetDigest()) {
 			return errors.New("input manifest content reference is malformed")
 		}
 	}
@@ -454,9 +458,37 @@ func expectedInputRoles(command *runtimev1.WorkerCommandV1) (map[string]string, 
 			expected[binding.entryID] = binding.role
 		}
 		return expected, nil
+	case executiondomain.AgentApplicationCapability, executiondomain.AgentAdhocCapability:
+		agent := command.GetAgentExecution()
+		if agent == nil || agent.GetRequestEntryId() == "" {
+			return nil, errors.New("agent input binding is required")
+		}
+		return map[string]string{
+			agent.GetRequestEntryId(): executiondomain.AgentExecutionRequestRole,
+		}, nil
 	default:
 		return nil, errors.New("unsupported command capability")
 	}
+}
+
+func inputContentContract(role string, configuredMax uint64) (string, uint64, error) {
+	var mediaType string
+	var roleMax uint64
+	switch role {
+	case executiondomain.AgentExecutionRequestRole:
+		mediaType = executiondomain.AgentExecutionInputMediaType
+		roleMax = executiondomain.MaxAgentExecutionInputBytes
+	default:
+		mediaType = executiondomain.SettingsJSONMediaType
+		roleMax = executiondomain.MaxInputEntryContentBytes
+	}
+	if configuredMax == 0 || roleMax == 0 {
+		return "", 0, errors.New("input manifest content limit is unavailable")
+	}
+	if configuredMax < roleMax {
+		roleMax = configuredMax
+	}
+	return mediaType, roleMax, nil
 }
 
 func identityProto(command *runtimev1.WorkerCommandV1) *runtimev1.ExecutionIdentityV1 {

@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package elitea.runtime.v1;
+
+import "elitea/runtime/v1/common.proto";
+
+option go_package = "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1;runtimev1";
+
+// AgentExecutionCommandV1 is shared by the two current execution semantics:
+// agent.execute.application.v1 and agent.execute.adhoc.v1. The capability ID
+// and WorkerCommandTypeV1 select the semantic entry point; this message only
+// identifies its immutable data-plane input and browser correlation fields.
+// Prompts, tools, model settings, credentials and resume values are forbidden
+// here and are fetched only after an authorized claim.
+message AgentExecutionCommandV1 {
+  string request_entry_id = 1;
+  string client_stream_id = 2;
+  string client_message_id = 3;
+  string sio_event = 4;
+  reserved 5 to 15;
+}
+
+// AgentExecutionInputV1 is the language-neutral form of the current
+// indexer_agent/indexer_predict_agent kwargs. Dynamic SDK-owned documents stay
+// as one complete UTF-8 JSON value per semantic field so their exact integer,
+// null and arbitrary toolkit shapes survive cross-language transport. They are
+// data-plane content and must never be embedded in WorkerCommandV1.
+message AgentExecutionInputV1 {
+  string schema_revision = 1;
+  bytes llm = 2;
+  bytes chat_history = 3;
+  bytes user_input = 4;
+  optional string thread_id = 5;
+  optional string checkpoint_id = 6;
+  bool debug = 7;
+  bytes tools = 8;
+  bytes application = 9;
+  bytes internal_tools = 10;
+  optional int32 steps_limit = 11;
+  bytes mcp_tokens = 12;
+  bytes ignored_mcp_servers = 13;
+  bytes user_declined_mcp_servers = 14;
+  bool should_continue = 15;
+  bool hitl_resume = 16;
+  optional string hitl_action = 17;
+  optional string hitl_value = 18;
+  bytes hitl_decisions = 19;
+  optional string execution_generation = 20;
+  bool is_regenerate = 21;
+  bytes meta = 22;
+  optional string conversation_id = 23;
+  string persona = 24;
+  bytes context_settings = 25;
+  bool supports_vision = 26;
+  bool return_chat_history = 27;
+  bytes invoked_skills = 28;
+  bytes applied_skills = 29;
+  bool auto_approve_sensitive_actions = 30;
+  bytes attached_skills = 31;
+  bytes input_attachments = 32;
+  bytes parallel_reconcile = 33;
+  bytes parallel_terminal_errors = 34;
+  optional bool exception_handling_enabled = 35;
+  optional bool debug_mode = 36;
+  reserved 37 to 63;
+}
+
+enum AgentExecutionTerminalStateV1 {
+  AGENT_EXECUTION_TERMINAL_STATE_V1_UNSPECIFIED = 0;
+  AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED = 1;
+  AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_HITL = 2;
+  AGENT_EXECUTION_TERMINAL_STATE_V1_PAUSED_MCP_AUTH = 3;
+  AGENT_EXECUTION_TERMINAL_STATE_V1_PARKED_CHILDREN = 4;
+}
+
+message AgentExecutionArtifactReferenceV1 {
+  string artifact_id = 1;
+  string immutable_version = 2;
+  string media_type = 3;
+  uint64 byte_length = 4;
+  DigestV1 digest = 5;
+  string classification = 6;
+  reserved 7 to 15;
+}
+
+// AgentExecutionResultV1 references the exact current task result. Thinking,
+// token, tool, HITL, MCP and child events are separate non-terminal NodeEventV1
+// frames; a large final task result is never materialized on Redis or gRPC.
+message AgentExecutionResultV1 {
+  string input_bundle_id = 1;
+  DigestV1 input_bundle_digest = 2;
+  string request_entry_id = 3;
+  string request_immutable_version = 4;
+  DigestV1 request_content_digest = 5;
+  AgentExecutionTerminalStateV1 terminal_state = 6;
+  AgentExecutionArtifactReferenceV1 result_artifact = 7;
+  reserved 8 to 15;
+}

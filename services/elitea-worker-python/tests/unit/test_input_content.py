@@ -20,7 +20,11 @@ from elitea_worker.transport.input_content import (
 )
 
 
-def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
+@pytest.mark.parametrize(
+    "media_type",
+    ["application/json", "application/vnd.elitea.agent-execution-input.v1+protobuf"],
+)
+def test_fetches_bounded_scoped_https_and_verifies_digest(media_type: str) -> None:
     async def run() -> None:
         content = b"{}\n"
 
@@ -36,7 +40,7 @@ def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
                     "content-length": str(len(content)),
                     "content-digest": f"sha-256=:{content_digest}:",
                     "cache-control": "private, no-store",
-                    "content-type": "application/json",
+                    "content-type": media_type,
                 },
             )
 
@@ -52,7 +56,7 @@ def test_fetches_bounded_scoped_https_and_verifies_digest() -> None:
                     url="https://content.internal/v1/read/object",
                     expected_length=len(content),
                     expected_sha256=hashlib.sha256(content).digest(),
-                    expected_media_type="application/json",
+                    expected_media_type=media_type,
                     headers=(
                         ("X-Elitea-Claim-Id", "claim-1"),
                         ("X-Elitea-Fence", "fence-1"),

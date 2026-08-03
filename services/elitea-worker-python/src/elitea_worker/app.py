@@ -13,6 +13,7 @@ from elitea_worker.constants import (
     INDEX_INGEST_CAPABILITY_VERSION,
 )
 from elitea_worker.execution.delivery import (
+    AgentExecutionDeliveryProcessor,
     ConfigurationValidationDeliveryProcessor,
     IndexIngestDeliveryProcessor,
 )
@@ -124,6 +125,7 @@ class OfflineValidationWorker:
 
 
 __all__ = [
+    "AgentExecutionDeliveryProcessor",
     "ConfigurationValidationDeliveryProcessor",
     "IndexIngestDeliveryProcessor",
     "OfflineValidationWorker",

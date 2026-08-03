@@ -41,6 +41,8 @@ func TestClaimServiceAcceptsOnlyImplementedCapabilities(t *testing.T) {
 	for _, capabilityID := range []string{
 		executiondomain.ConfigurationValidationCapability,
 		executiondomain.IndexIngestCapability,
+		executiondomain.AgentApplicationCapability,
+		executiondomain.AgentAdhocCapability,
 	} {
 		repository := &memoryClaimRepository{now: time.Now}
 		service, err := NewClaimService(repository, time.Now, time.Second)

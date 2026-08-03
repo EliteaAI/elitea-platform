@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
 	applicationskillsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	indexingapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/indexing"
@@ -435,6 +436,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var runtimeRoot *runtimecomposition.Runtime
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
+	var currentAgentStart http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
 	var currentIndexMetaDelete http.Handler
@@ -524,6 +526,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			)
 			if err != nil {
 				return fmt.Errorf("compose current index-start route: %w", err)
+			}
+		}
+		if publicRoutes.AgentStart != nil {
+			currentAgentStart, err = agentexecutionapi.NewCurrentApplicationStartRoute(
+				publicRoutes.AgentStart,
+				apimw.AuthConfig{
+					Validator:                 formGraph,
+					PrincipalValidator:        principalValidator,
+					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				},
+				legacyrbac.NewPostgresResolver(pool),
+			)
+			if err != nil {
+				return fmt.Errorf("compose current agent-start route: %w", err)
 			}
 		}
 		if publicRoutes.IndexCancel != nil {
@@ -629,6 +645,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationTypes:     currentConfigurationTypes,
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
+		CurrentAgentStart:             currentAgentStart,
 		CurrentIndexCancel:            currentIndexCancel,
 		CurrentIndexMeta:              currentIndexMeta,
 		CurrentIndexMetaDelete:        currentIndexMetaDelete,

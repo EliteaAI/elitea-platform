@@ -344,7 +344,7 @@ def bind_result_summary(
 def _normalize_current_sdk_summary(status: int, message: str) -> tuple[int, str]:
     """Correct a pinned-SDK success that contains parser/runtime failures.
 
-    SDK 0.8.53 exposes its structured indexing statistics only through a
+    SDK 0.9.1 exposes its structured indexing statistics only through a
     deterministic terminal message. In particular, document parser failures
     are counted as skipped items and can otherwise be returned as ``ok`` even
     when zero chunks were produced. Keep this compatibility parser generic:
