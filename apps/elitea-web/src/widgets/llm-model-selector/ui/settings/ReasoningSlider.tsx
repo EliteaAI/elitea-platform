@@ -54,11 +54,6 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
         step={1}
         marks={REASONING_LABELS.map((l) => ({ value: REASONING_VALUE_MAP[l.value] ?? 0, label: l.label }))}
         aria-label={t('widgets.llmModelSelector.reasoningSlider.title', 'Reasoning effort')}
-        sx={{
-          '& .MuiSlider-thumb': { width: 16, height: 16 },
-          '& .MuiSlider-track': { height: 4 },
-          '& .MuiSlider-rail': { height: 4 },
-        }}
       />
     </Box>
   );

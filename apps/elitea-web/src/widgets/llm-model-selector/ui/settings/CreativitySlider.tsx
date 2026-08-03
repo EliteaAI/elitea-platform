@@ -29,11 +29,6 @@ export const CreativitySlider = memo(({ temperature, onChange }: CreativitySlide
         max={2}
         step={0.01}
         aria-label="Temperature"
-        sx={{
-          '& .MuiSlider-thumb': { width: 16, height: 16 },
-          '& .MuiSlider-track': { height: 4 },
-          '& .MuiSlider-rail': { height: 4 },
-        }}
       />
     </Box>
   );
