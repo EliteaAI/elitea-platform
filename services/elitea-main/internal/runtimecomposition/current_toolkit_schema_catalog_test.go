@@ -38,7 +38,7 @@ func TestPinnedCurrentToolkitSchemaSnapshotMatchesAdmittedSDKProjection(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.SDKRevision() != "ccaa85f1894f34ce25074afcc232e11b406d2af1" || snapshot.EntryCount() != 52 {
+	if snapshot.SDKRevision() != "6bc6dfcb740c8ec4f81c1da7c929f00786221cc6" || snapshot.EntryCount() != 52 {
 		t.Fatalf("snapshot revision=%q entries=%d", snapshot.SDKRevision(), snapshot.EntryCount())
 	}
 
