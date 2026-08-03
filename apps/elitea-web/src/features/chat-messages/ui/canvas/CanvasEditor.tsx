@@ -33,6 +33,7 @@ import { Box, Typography } from '@mui/material';
 
 import { useCanvasDetailSocket, useCanvasEditSocket, useCanvasErrorSocket, useCanvasSyncSocket } from '@/entities/canvas/api/canvasSocket';
 
+import { extraCodeFromBlock } from './Canvas';
 import { CanvasEditHeader } from './CanvasEditHeader';
 
 export interface CanvasEditorProps {
@@ -116,7 +117,7 @@ export const CanvasEditor = forwardRef<CanvasEditorHandle, CanvasEditorProps>(
     // Canvas sync — when another editor pushes content, update local state
     const onCanvasSync = useCallback(
       (newContent: unknown) => {
-        const extracted = newContent as string;
+        const extracted = extraCodeFromBlock(newContent as string);
         if (code !== extracted) {
           setCode(extracted);
           // TODO: editorRef?.setCode(extracted)

@@ -6,15 +6,18 @@
  * Splits attachments into images (displayed in a responsive grid) and
  * non-image files (displayed as compact cards).
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 
 import { NormalAttachment } from './NormalAttachment';
 import { ViewImageAttachmentModal } from './ViewImageAttachmentModal';
 
 import type { Attachment } from '@/entities/attachment/model/types';
-import { getImageSource as getAttachmentImageSource } from '@/entities/attachment/model/selectors';
+import {
+  getImageSource as getAttachmentImageSource,
+  hasUnresolvedFilepath,
+} from '@/entities/attachment/model/selectors';
 
 /** Re-export for backwards compat — consumers importing from this file still get the type. */
 export type { NormalAttachmentArtifactData } from './types';
@@ -24,6 +27,10 @@ export interface MessageAttachmentListProps {
   readonly items?: readonly Attachment[];
   /** Called when the user confirms removal — `fileName` is the display name, `fromStorage` whether to also delete from artifact storage. */
   readonly onRemoveAttachment?: (fileName: string, fromStorage: boolean) => void;
+  /** Required to download an artifact-storage-backed attachment (forwarded to `NormalAttachment`/`ViewImageAttachmentModal`). */
+  readonly projectId?: string;
+  /** Called with a human-readable message on download failure or image load failure. */
+  readonly onError?: (message: string) => void;
 }
 
 /**
@@ -37,6 +44,8 @@ export interface MessageAttachmentListProps {
 export function MessageAttachmentList({
   items = [],
   onRemoveAttachment,
+  projectId,
+  onError,
 }: MessageAttachmentListProps): React.ReactElement | null {
   const { imagesItems, otherFilesItems } = useMemo(
     () =>
@@ -81,6 +90,8 @@ export function MessageAttachmentList({
               key={getAttachmentKey(file, index)}
               attachment={file}
               onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
+              {...(projectId !== undefined ? { projectId } : {})}
+              {...(onError !== undefined ? { onError } : {})}
             />
           ))}
         </Box>
@@ -102,6 +113,8 @@ export function MessageAttachmentList({
               key={getAttachmentKey(file, index)}
               attachment={file}
               onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
+              {...(projectId !== undefined ? { projectId } : {})}
+              {...(onError !== undefined ? { onError } : {})}
             />
           ))}
         </Box>
@@ -113,44 +126,89 @@ export function MessageAttachmentList({
 /**
  * Renders a single image attachment card that opens the image preview modal
  * when clicked.
+ *
+ * When the attachment has no resolved image source yet (baseline:
+ * `ImageAttachment.jsx`'s `isPending` — a `filepath:` URL not yet resolved
+ * by the indexer), a text placeholder is shown instead of an `<img>` with an
+ * empty `src`; when there is genuinely no source and no pending state, the
+ * card renders nothing at all (baseline: `if (!imageSource && !isPending)
+ * return null`).
  */
 function ImageAttachmentCard({
   attachment,
   onRemoveAttachment,
+  projectId,
+  onError,
 }: {
   readonly attachment: Attachment;
   readonly onRemoveAttachment?: (fileName: string, fromStorage: boolean) => void;
-}): React.ReactElement {
+  readonly projectId?: string;
+  readonly onError?: (message: string) => void;
+}): React.ReactElement | null {
   const [isOpen, setIsOpen] = useState(false);
   const fileName = getAttachmentName(attachment);
   const imageSrc = getAttachmentImageSource(attachment);
+  const isPending = imageSrc === null && hasUnresolvedFilepath(attachment);
+
+  const handleImageError = useCallback(() => {
+    /* eslint-disable-next-line i18next/no-literal-string — passed to caller's onError, not rendered directly */
+    onError?.('Failed to load image');
+  }, [onError]);
+
+  if (imageSrc === null && !isPending) return null;
 
   return (
     <>
       <Box
-        component="img"
-        src={imageSrc ?? ''}
-        alt={fileName}
         sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          position: 'relative',
           maxWidth: '16.25rem',
           maxHeight: '12rem',
-          objectFit: 'contain',
+          minHeight: '4rem',
+          overflow: 'hidden',
           // eslint-disable-next-line elitea/ad-hoc-radius — image card border radius
           borderRadius: '0.5rem',
-          cursor: 'pointer',
+          cursor: imageSrc !== null ? 'pointer' : 'default',
           border: '1px solid',
           borderColor: 'divider',
         }}
-        onClick={() => setIsOpen(true)}
+        onClick={imageSrc !== null ? () => setIsOpen(true) : undefined}
         data-testid="chat-image-attachment"
         data-name={fileName}
-      />
+      >
+        {imageSrc !== null ? (
+          <Box
+            component="img"
+            src={imageSrc}
+            alt={fileName}
+            sx={{
+              maxWidth: '16.25rem',
+              maxHeight: '12rem',
+              objectFit: 'contain',
+            }}
+            onError={handleImageError}
+          />
+        ) : (
+          <Typography
+            variant="bodySmall"
+            color="text.secondary"
+            sx={{ textAlign: 'center', padding: '0.5rem', wordBreak: 'break-word' }}
+          >
+            {fileName}
+          </Typography>
+        )}
+      </Box>
       {isOpen && (
         <ViewImageAttachmentModal
           open={true}
           onClose={() => setIsOpen(false)}
           attachment={attachment}
           onRemoveAttachment={onRemoveAttachment as (fileName: string, fromStorage: boolean) => void}
+          {...(projectId !== undefined ? { projectId } : {})}
+          {...(onError !== undefined ? { onError } : {})}
         />
       )}
     </>
@@ -160,15 +218,20 @@ function ImageAttachmentCard({
 /**
  * Returns `true` when `attachment` is an image file.
  *
- * Ported from `apps/elitea-ui/src/common/utils.jsx:isImageFile` — checks the
- * MIME type against the known image set.
+ * Ported from `apps/elitea-ui/src/utils/attachmentImageUtils.js:isAttachmentImage`
+ * / `getAttachmentType` — the wire value the upload flow writes to
+ * `item_details.attachment_type` is the bare literal `'image'` or
+ * `'document'` (see `useUploadAttachments.js`'s `getAttachmentType`), never a
+ * MIME type, so that's the primary signal here. `det.type` is kept as a
+ * secondary fallback for a File-like `Attachment` whose `type` genuinely is
+ * a MIME string (e.g. `'image/png'`).
  */
 function isImageFile(attachment: Attachment): boolean {
   const det = attachment as Record<string, unknown>;
   const itemDet = det?.item_details as Record<string, unknown> | undefined;
-  const t = itemDet?.attachment_type || det?.type;
-  if (!t) return false;
-  return (t as string).startsWith('image/');
+  if (itemDet?.attachment_type === 'image') return true;
+  const fallbackType = det?.type;
+  return typeof fallbackType === 'string' && fallbackType.startsWith('image/');
 }
 
 /**

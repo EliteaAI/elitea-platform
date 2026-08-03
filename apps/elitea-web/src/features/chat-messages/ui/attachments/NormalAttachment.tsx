@@ -14,9 +14,12 @@ import { Box, IconButton, Typography } from '@mui/material';
 
 import Tooltip from '@mui/material/Tooltip';
 
+import { downloadAttachmentFromArtifact, downloadAttachmentImage } from '@/entities/attachment';
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName } from '@/entities/attachment/model/selectors';
+import { getConfig } from '@/shared/config';
 
+import { planAttachmentDownload } from './attachmentDownload.helpers';
 import type { NormalAttachmentArtifactData } from './types';
 
 const IconButtonAny = IconButton as React.ComponentType<
@@ -34,6 +37,10 @@ export interface NormalAttachmentProps {
   readonly preview?: boolean;
   /** Called when the user taps the preview button — receives the artifact data shape. */
   readonly onOpenArtifactPreview?: (artifact: NormalAttachmentArtifactData) => void;
+  /** Required to download an artifact-storage-backed attachment. */
+  readonly projectId?: string;
+  /** Called with a human-readable message on download failure. */
+  readonly onError?: (message: string) => void;
 }
 
 /**
@@ -49,8 +56,22 @@ export function NormalAttachment({
   sx = {},
   preview = false,
   onOpenArtifactPreview,
+  projectId,
+  onError,
 }: NormalAttachmentProps): React.ReactElement | null {
   const attachmentName = getAttachmentName(attachment ?? {});
+  // For old custom bucket attachments, use filepath (/{bucket}/{filename});
+  // for new attachments, use name — baseline: NormalAttachment.jsx:39. Kept
+  // separate from `attachmentName` (the display label): this is the RAW
+  // identifier `onRemoveAttachment` expects, not a display string.
+  const fileName = (() => {
+    const det = (attachment ?? {}) as Record<string, unknown>;
+    const itemDet = det?.item_details as Record<string, unknown> | undefined;
+    return (itemDet?.filepath as string) ||
+      (itemDet?.name as string) ||
+      (det?.name as string) ||
+      attachmentName;
+  })();
 
   const [isHovering, setIsHovering] = useState(false);
   const [openAlert, setOpenAlert] = useState(false);
@@ -67,10 +88,27 @@ export function NormalAttachment({
   const onClickDownload = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
       event.stopPropagation();
-      // TODO: download implementation (S6 upload/download)
-      // Baseline: downloadAttachmentFile / downloadFileFromArtifact path resolution
+      const plan = planAttachmentDownload(attachment ?? {});
+      const reportError = (message: string): void => onError?.(message);
+
+      if (plan.kind === 'legacy-base64') {
+        downloadAttachmentImage(attachment ?? {}, reportError);
+        return;
+      }
+
+      const config = getConfig();
+      if (config.status !== 'ok' || projectId === undefined) {
+        /* eslint-disable-next-line i18next/no-literal-string — passed to caller's onError, not rendered directly */
+        reportError('Failed to download file from storage');
+        return;
+      }
+
+      void downloadAttachmentFromArtifact(
+        { baseUrl: config.config.vite_server_url, projectId, filepath: plan.filepath },
+        reportError,
+      );
     },
-    [],
+    [attachment, projectId, onError],
   );
 
   const onPreviewFile = useCallback(() => {
@@ -94,10 +132,10 @@ export function NormalAttachment({
   const onConfirmDelete = useCallback(
     (event?: React.MouseEvent<HTMLElement>) => {
       event?.stopPropagation();
-      onRemoveAttachment?.(attachmentName, needToRemoveFromStorage);
+      onRemoveAttachment?.(fileName, needToRemoveFromStorage);
       setOpenAlert(false);
     },
-    [attachmentName, needToRemoveFromStorage, onRemoveAttachment],
+    [fileName, needToRemoveFromStorage, onRemoveAttachment],
   );
 
   // Don't render if no valid attachment name (baseline: `!attachmentName` early return)
@@ -196,7 +234,7 @@ export function NormalAttachment({
           >
             {/* eslint-disable-next-line i18next/no-literal-string — confirmation dialog text */}
             <Typography variant="bodyMedium" sx={{ marginBottom: '1rem' }}>
-              Are you sure you want to remove {attachmentName}?
+              Are you sure you want to remove {fileName}?
             </Typography>
             <Box sx={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start', marginTop: '-0.5rem' }}>
               <Box

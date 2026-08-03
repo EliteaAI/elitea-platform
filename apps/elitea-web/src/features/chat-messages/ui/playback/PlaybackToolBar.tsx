@@ -104,7 +104,7 @@ export function PlaybackToolBar({
 
   // Show expand/collapse icon when the content overflows
   useEffect(() => {
-    if (textInputRef.current?.offsetHeight ?? 0 > MIN_HEIGHT) {
+    if ((textInputRef.current?.offsetHeight ?? 0) > MIN_HEIGHT) {
       setShowExpandIcon(true);
       setRows(MAX_ROWS);
     } else {
@@ -125,7 +125,7 @@ export function PlaybackToolBar({
   });
   const itemsFinal = itemsMapped.filter((c): c is string => c.length > 0);
 
-  const messageContent: string = (message?.content ?? itemsFinal.join(', ')) as string;
+  const messageContent: string = (message?.content || itemsFinal.join(', ')) as string;
 
   return (
     <Box

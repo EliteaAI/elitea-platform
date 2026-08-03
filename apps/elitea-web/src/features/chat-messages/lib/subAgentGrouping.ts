@@ -199,6 +199,23 @@ export interface SubAgentLiveness {
 }
 
 /**
+ * The two liveness signals `resolveSubAgentLiveness` cannot derive from the
+ * `PartitionedBlock` alone — the caller owns them (baseline: `lastRoundDone`,
+ * keyed off the per-round `subAgentDone` map, and `hasError`, the child
+ * hard-failure flag).
+ */
+export interface SubAgentLivenessSignals {
+  /**
+   * Whether the block's latest round has genuinely terminated — independent
+   * of `block.actions.length` (actions only ever get pushed, never removed,
+   * so `actions.length > 0` can never signal completion on its own).
+   */
+  readonly done: boolean;
+  /** Whether the child hard-failed — suppresses `running` even while paused/in-flight. */
+  readonly hasError: boolean;
+}
+
+/**
  * `resolveSubAgentLiveness` — determines whether a sub-agent block is still
  * active (waiting for more actions) or completed.
  *
@@ -215,19 +232,21 @@ export interface SubAgentLiveness {
  * }
  * ```
  *
- * The new-app variant derives the state from the `PartitionedBlock` —
- * `pausedForResume` ≈ `paused`, block actions' existence ≈ `hasInflight`/`lastRoundDone`.
- * This is a faithful simplification: the block itself carries all the state
- * the old-app caller computed and passed as separate booleans.
+ * The new-app variant derives `paused`/`hasInflight` from the
+ * `PartitionedBlock` (`pausedForResume` ≈ `paused`, non-empty `actions` ≈
+ * `hasInflight`) and takes the two signals the block cannot carry —
+ * `done`/`hasError` — as an explicit `signals` param, matching the
+ * baseline's real semantics: completion is an explicit terminal signal, not
+ * an artifact of whether any actions have arrived yet.
  */
-export function resolveSubAgentLiveness(block: PartitionedBlock): SubAgentLiveness {
+export function resolveSubAgentLiveness(block: PartitionedBlock, signals: SubAgentLivenessSignals): SubAgentLiveness {
   if (block.kind !== 'sub') {
     return { running: false, done: true };
   }
   const paused = block.pausedForResume;
   const hasInflight = block.actions.length > 0;
-  const done = !paused && !hasInflight;
-  const running = !done && (paused || hasInflight);
+  const done = !paused && signals.done;
+  const running = !signals.hasError && !done && (paused || hasInflight);
   return { running, done };
 }
 

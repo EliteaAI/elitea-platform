@@ -213,21 +213,26 @@ const ChatBoxInner = memo(function ChatBox({
 
   return (
     <Box sx={{ display: hidden ? 'none' : 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
-      <Box sx={{ flex: 1, overflow: 'auto', px: 2 }}>
+      <Box sx={{ flex: 1, minHeight: 0, px: 2 }}>
         <ChatMessageList
           chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''}
-          onCopyToClipboard={handleCopy} onDeleteAnswer={handleDeleteAnswer}
-          onRegenerateAnswer={handleRegenerate} autoSpeak={false}
-          speakingMessageId={
-            readAloud.speakingMessageId !== null && readAloud.speakingMessageId !== undefined
-              ? String(readAloud.speakingMessageId) : undefined as string | undefined
-          }
-          speakingSegments={readAloud.speakingSegments ?? undefined}
-          spokenRange={
-            readAloud.spokenRange !== null && readAloud.spokenRange !== undefined
-              ? { start: readAloud.spokenRange.start, end: readAloud.spokenRange.end }
-              : undefined as { readonly start: number; readonly end: number } | undefined
-          }
+          messageActions={{
+            onCopyToClipboard: handleCopy,
+            onDeleteAnswer: handleDeleteAnswer,
+            onRegenerateAnswer: handleRegenerate,
+          }}
+          tts={{
+            autoSpeak: false,
+            onAutoSpeak: readAloud.onAutoSpeak,
+            speakingMessageId:
+              readAloud.speakingMessageId !== null && readAloud.speakingMessageId !== undefined
+                ? String(readAloud.speakingMessageId) : undefined as string | undefined,
+            speakingSegments: readAloud.speakingSegments ?? undefined,
+            spokenRange:
+              readAloud.spokenRange !== null && readAloud.spokenRange !== undefined
+                ? { start: readAloud.spokenRange.start, end: readAloud.spokenRange.end }
+                : undefined as { readonly start: number; readonly end: number } | undefined,
+          }}
         />
       </Box>
       <Box sx={{ p: 1 }}>

@@ -10,8 +10,13 @@ import { memo, useEffect, useRef, useState } from 'react';
 
 import { Box, Dialog, DialogContent, IconButton, Typography } from '@mui/material';
 
+import { downloadAttachmentFromArtifact, downloadAttachmentImage } from '@/entities/attachment';
 import type { Attachment } from '@/entities/attachment/model/types';
 import { getAttachmentName, getImageSource } from '@/entities/attachment/model/selectors';
+import { fetchArtifactBlob } from '@/shared/api/artifacts';
+import { getConfig } from '@/shared/config';
+
+import { planAttachmentDownload, parseAttachmentFilepath } from './attachmentDownload.helpers';
 
 const IconButtonAny = IconButton as React.ComponentType<
   React.ComponentProps<typeof IconButton> & { variant?: string }
@@ -26,6 +31,10 @@ export interface ViewImageAttachmentModalProps {
   readonly attachment: Attachment;
   /** Called when the user confirms removal — `fileName` is the display name, `fromStorage` whether to also delete from artifact storage. */
   readonly onRemoveAttachment?: (fileName: string, fromStorage: boolean) => void;
+  /** Required to fetch the full-resolution image and to download an artifact-storage-backed attachment. */
+  readonly projectId?: string;
+  /** Called with a human-readable message on download failure or image load failure. */
+  readonly onError?: (message: string) => void;
 }
 
 /**
@@ -41,6 +50,8 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
   onClose,
   attachment,
   onRemoveAttachment,
+  projectId,
+  onError,
 }: ViewImageAttachmentModalProps): React.ReactElement | null {
   const imageSource = getImageSource(attachment);
   const attachmentName = getAttachmentName(attachment);
@@ -58,24 +69,36 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
       setFullResSource(null);
       return;
     }
-    if (!attachmentFilepath || attachmentBucket === '__undefined__') return;
+    if (!attachmentFilepath || attachmentBucket === '__undefined__' || projectId === undefined) return;
+
+    const parsed = parseAttachmentFilepath(attachmentFilepath);
+    if (parsed === null) return;
+
+    const config = getConfig();
+    if (config.status !== 'ok') return;
 
     let cancelled = false;
-    // TODO: replace with shared fetchArtifactBlob (S6)
-    // Baseline: `fetchArtifactBlobUrl({ projectId, filepath: attachmentFilepath })`
-    (() => {
-      // Placeholder — real implementation would fetch the artifact blob
-      if (cancelled) return;
+    const controller = new AbortController();
+    void fetchArtifactBlob({
+      baseUrl: config.config.vite_server_url,
+      projectId,
+      bucket: parsed.bucket,
+      filePath: parsed.filename,
+      signal: controller.signal,
+    }).then((result) => {
+      if (cancelled || !result.ok) return;
+      const objectUrl = URL.createObjectURL(result.data);
       const currentUrl = blobUrlRef.current;
       if (currentUrl) URL.revokeObjectURL(currentUrl);
-      // blobUrlRef.current = objectUrl;
-      // setFullResSource(objectUrl);
-    })();
+      blobUrlRef.current = objectUrl;
+      setFullResSource(objectUrl);
+    });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [open, attachmentFilepath, attachmentBucket]);
+  }, [open, attachmentFilepath, attachmentBucket, projectId]);
 
   // Revoke blob URL on unmount — capture ref value in effect body so cleanup
   // never touches `.current` directly (react-hooks/exhaustive-deps rule).
@@ -116,6 +139,34 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
     onRemoveAttachment?.(fileName, needToRemoveFromStorage);
     setOpenAlert(false);
     onClose();
+  };
+
+  const onClickDownload = (event: React.MouseEvent<HTMLElement>): void => {
+    event.stopPropagation();
+    const plan = planAttachmentDownload(attachment);
+    const reportError = (message: string): void => onError?.(message);
+
+    if (plan.kind === 'legacy-base64') {
+      downloadAttachmentImage(attachment, reportError);
+      return;
+    }
+
+    const config = getConfig();
+    if (config.status !== 'ok' || projectId === undefined) {
+      /* eslint-disable-next-line i18next/no-literal-string — passed to caller's onError, not rendered directly */
+      reportError('Failed to download image from storage');
+      return;
+    }
+
+    void downloadAttachmentFromArtifact(
+      { baseUrl: config.config.vite_server_url, projectId, filepath: plan.filepath },
+      reportError,
+    );
+  };
+
+  const handleImageError = (): void => {
+    /* eslint-disable-next-line i18next/no-literal-string — passed to caller's onError, not rendered directly */
+    onError?.('Failed to load image');
   };
 
   return (
@@ -168,10 +219,7 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
               variant="elitea"
               color="secondary"
               size="small"
-              onClick={(e: React.MouseEvent<HTMLElement>) => {
-                e.stopPropagation();
-                // TODO: download implementation
-              }}
+              onClick={onClickDownload}
               // eslint-disable-next-line i18next/no-literal-string — aria-label is accessibility, not user-facing
               aria-label="Download image"
             >
@@ -220,9 +268,7 @@ export const ViewImageAttachmentModal = memo(function ViewImageAttachmentModal({
             height="100%"
             alt={attachmentName}
             style={{ objectFit: 'contain' }}
-            onError={() => {
-              // TODO: toast error
-            }}
+            onError={handleImageError}
           />
         </DialogContent>
       </Dialog>

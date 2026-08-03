@@ -82,7 +82,9 @@ export function ToolModal({ open, onClose, toolAction }: ToolModalProps): ReactN
                 overflow: 'auto',
               }}
             >
-              {JSON.stringify(toolAction.toolInputs, null, 2)}
+              {typeof toolAction.toolInputs === 'string'
+                ? toolAction.toolInputs
+                : JSON.stringify(toolAction.toolInputs, null, 2)}
             </Box>
           </Box>
         )}
@@ -105,7 +107,9 @@ export function ToolModal({ open, onClose, toolAction }: ToolModalProps): ReactN
                 overflow: 'auto',
               }}
             >
-              {JSON.stringify(toolAction.toolOutputs, null, 2)}
+              {typeof toolAction.toolOutputs === 'string'
+                ? toolAction.toolOutputs
+                : JSON.stringify(toolAction.toolOutputs, null, 2)}
             </Box>
           </Box>
         )}

@@ -170,11 +170,8 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
   // Get text content from message_items — API uses 'text_message' as item_type.
   const textItem = child.message_items?.find(
     (item) => (item as unknown as Record<string, unknown>).item_type === 'text_message',
-  ) as unknown as Record<string, unknown> | undefined;
-  const content =
-    (textItem as Record<string, unknown>)?.content ??
-    child.content ??
-    '';
+  );
+  const content = textItem?.item_details?.content ?? child.content ?? '';
 
   return {
     id: child.uuid,
@@ -270,7 +267,7 @@ export function convertMessagesToChatHistory(
         return convertToPlayerQuestion(messageGroup, playerInfo, participants);
       }
       // normaliseUserMessage returns a UserMessage; cast to ChatMessage.
-      return normaliseUserMessage(messageGroup, [], participants) as ChatMessage;
+      return normaliseUserMessage(messageGroup, users, participants) as ChatMessage;
     }
 
     // Convert AI answer using entities-level normaliser.

@@ -12,11 +12,16 @@
 import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
+import type { Theme } from '@mui/material/styles';
+import { useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 
 import type { PartitionedBlock } from '../../lib/subAgentGrouping';
+
+import type { SubAgentTool } from './subAgentIcon.helpers';
+import { resolveSubAgentIcon } from './subAgentIcon.helpers';
 
 /** @public Props for `SubAgentAccordion`. */
 export interface SubAgentAccordionProps {
@@ -26,6 +31,21 @@ export interface SubAgentAccordionProps {
   readonly defaultExpanded?: boolean;
   /** Called when a tool action is clicked. */
   readonly onActionClick?: ((action: unknown) => void) | undefined;
+  /** The invoking participant's tool list — resolves each block's header icon (baseline: `SubAgentAccordion.jsx:55`'s `resolveSubAgentIcon(name, tools, theme, agentType)`). */
+  readonly tools?: readonly SubAgentTool[];
+}
+
+/** Renders a block's header: its resolved icon (if any) followed by its display name. */
+function BlockTitle({ block, tools, theme }: { readonly block: PartitionedBlock; readonly tools: readonly SubAgentTool[] | undefined; readonly theme: Theme }): ReactNode {
+  const name = block.kind === 'sub' ? block.name : '';
+  const icon = resolveSubAgentIcon(name, tools, theme);
+  const Icon = icon?.component;
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+      {Icon && <Box sx={icon.sx}><Icon /></Box>}
+      {name || 'Sub-agent'}
+    </Box>
+  );
 }
 
 /**
@@ -36,7 +56,10 @@ export function SubAgentAccordion({
   blocks,
   defaultExpanded = false,
   onActionClick,
+  tools,
 }: SubAgentAccordionProps): ReactNode {
+  const theme = useTheme();
+
   if (!blocks?.length) return null;
 
   return (
@@ -53,7 +76,7 @@ export function SubAgentAccordion({
             key={`${block.instanceKey}-${index}`}
             items={[
               {
-                title: block.name || 'Sub-agent',
+                title: <BlockTitle block={block} tools={tools} theme={theme} />,
                 content: (
                   <Box sx={{ px: 2, pb: 1 }}>
                     {block.actions.map((action, actionIndex) => (

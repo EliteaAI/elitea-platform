@@ -23,6 +23,8 @@ import { PlaybackToolBar } from './PlaybackToolBar';
 
 import type { ConversationWire } from '@/entities/conversation/api/conversationApi';
 
+import { useLoadPlaybackMessages } from '../../model/useLoadPlaybackMessages';
+
 /** The playback mode message shape — each entry is either a chat message or a boundary marker (`isStart`/`isEnd`). */
 export interface PlaybackChatMessage {
   readonly id?: string | number;
@@ -45,6 +47,8 @@ export interface PlaybackChatBoxProps {
   readonly hidden?: boolean;
   /** Called with error strings from the playback hooks. */
   readonly toastError?: (message: string) => void;
+  /** The project ID — needed to fetch additional playback pages via `useLoadPlaybackMessages`. */
+  readonly projectId?: string | number;
 }
 
 /** Imperative handle for resetting playback state. */
@@ -64,7 +68,7 @@ export interface PlaybackChatBoxHandle {
  * - Renders `ChatMessageList` for the current window and a `PlaybackToolBar` for navigation
  */
 export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBoxProps>(
-  function PlaybackChatBox({ conversation, messageListSX, hidden, toastError: _toastError }, ref) {
+  function PlaybackChatBox({ conversation, messageListSX, hidden, toastError: _toastError, projectId }, ref) {
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const [chatHistory, setChatHistory] = useState<PlaybackChatMessage[]>(() => {
@@ -82,6 +86,13 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
     const [_page, setPage] = useState(1);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
 
+    const { messages: loadedPlaybackMessages, loadMore: loadMorePlaybackMessages } = useLoadPlaybackMessages({
+      projectId: projectId ?? '',
+      conversationId: String(conversation.id),
+      ...(conversation.participants ? { participants: conversation.participants } : {}),
+    });
+    const loadedMessageCountRef = useRef(0);
+
     // Sync refs
     useEffect(() => {
       messageListRef.current = messageList;
@@ -90,6 +101,27 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
     useEffect(() => {
       chatHistoryRef.current = [...chatHistory];
     }, [chatHistory]);
+
+    // Splice newly-loaded playback messages (deduped by id) into chatHistory,
+    // right before the trailing `{isEnd: true}` sentinel — mirrors the old
+    // app's "await onLoadMoreMessages(), dedup by id, splice into ref,
+    // setChatHistory" pattern (PlaybackChatBox.jsx:140-148), adapted for
+    // useLoadPlaybackMessages's state-based (not return-value-based) contract.
+    useEffect(() => {
+      if (loadedPlaybackMessages.length === loadedMessageCountRef.current) return;
+      loadedMessageCountRef.current = loadedPlaybackMessages.length;
+
+      const newMessages = loadedPlaybackMessages.filter(
+        (msg) => !chatHistoryRef.current.some((item) => item.id === msg.id),
+      );
+      if (newMessages.length === 0) return;
+
+      const insertIndex = Math.max(chatHistoryRef.current.length - 1, 0);
+      const spliced = [...chatHistoryRef.current];
+      spliced.splice(insertIndex, 0, ...(newMessages as unknown as PlaybackChatMessage[]));
+      chatHistoryRef.current = spliced;
+      setChatHistory(spliced);
+    }, [loadedPlaybackMessages]);
 
     // Reset chat history when conversation changes
     useEffect(() => {
@@ -117,7 +149,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
     /** Step backward through the chat history. */
     const onBackward = useCallback(() => {
       const prevIndex = currentIndex - 1;
-      if (message !== undefined) {
+      if (message) {
         setMessage(null);
         setCurrentIndex((prev) => prev - 1);
       } else if (chatHistoryRef.current[currentIndex]?.isEnd) {
@@ -171,7 +203,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
     }, [currentIndex, message]);
 
     /** Step forward through the chat history, loading more messages when needed. */
-    const onForward = useCallback(() => {
+    const onForward = useCallback(async () => {
       const nextIndex = currentIndex + 1;
       const currentMsg = chatHistoryRef.current[currentIndex];
       let nextMsg = chatHistoryRef.current[nextIndex];
@@ -184,7 +216,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
         if (chatHistoryRef.current.length < messagesCount + 2 && chatHistoryRef.current[nextIndex]?.isEnd) {
           // Load more messages
           setIsLoadingMore(true);
-          // TODO: call onLoadMoreMessages() from useLoadPlaybackMessages
+          await loadMorePlaybackMessages();
           setIsLoadingMore(false);
           nextMsg = chatHistoryRef.current[nextIndex];
         }
@@ -192,7 +224,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
         if (nextMsg?.role === 'user') {
           setMessage(nextMsg);
           if (currentMsg?.role === 'user') {
-            setMessageList([{ ...currentMsg, created_at: Date.now() }]);
+            setMessageList((prev) => [...prev, { ...currentMsg, created_at: Date.now() }]);
           }
         } else if (nextMsg?.role === 'assistant') {
           setMessage(null);
@@ -233,7 +265,7 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
       }
 
       setCurrentIndex((prev) => prev + 1);
-    }, [conversation.messages_count, currentIndex, messageList]);
+    }, [conversation.messages_count, currentIndex, messageList, loadMorePlaybackMessages]);
 
     if (hidden) return <></>;
 
@@ -246,11 +278,13 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
       currentIndex >= messagesCountNum + lastUserIndex || currentIndex >= chatHistoryRef.current.length - 1;
 
     // Extract message attachments for the toolbar
-    const rawItems = (message?.message_items ?? []) as Array<{ item_details?: { name?: string; id?: string | number } }>;
-    const items = rawItems.map((item) => ({
-      name: item.item_details?.name ?? '',
-      id: item.item_details?.id ?? '',
-    }));
+    const rawItems = (message?.message_items ?? []) as Array<{ item_type?: string; item_details?: { name?: string; id?: string | number } }>;
+    const items = rawItems
+      .filter((item) => item.item_type === 'attachment_message')
+      .map((item) => ({
+        name: item.item_details?.name ?? '',
+        id: item.item_details?.id ?? '',
+      }));
     const attachments: import('./PlaybackToolBar').PlaybackToolBarAttachment[] = items.filter((a) => a.name.length > 0 && a.id != null) as import('./PlaybackToolBar').PlaybackToolBarAttachment[];
 
     return (
@@ -293,7 +327,9 @@ export const PlaybackChatBox = forwardRef<PlaybackChatBoxHandle, PlaybackChatBox
 
         {/* Playback toolbar with backward/forward navigation */}
         <PlaybackToolBar
-          onForward={onForward}
+          onForward={() => {
+            void onForward();
+          }}
           onBackward={onBackward}
           disableBackward={disableBackward}
           disableForward={disableForward}

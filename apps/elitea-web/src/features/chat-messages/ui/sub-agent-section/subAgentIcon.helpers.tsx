@@ -8,6 +8,7 @@
  * Port of `apps/elitea-ui/src/[fsd]/features/chat/ui/sub-agent-section/
  * subAgentIcon.helpers.jsx`.
  */
+import Box from '@mui/material/Box';
 import type { Theme } from '@mui/material/styles';
 
 import { ApplicationsIcon } from '@/shared/ui/icons/applications-icon';
@@ -18,11 +19,23 @@ import { ToolIcon } from '@/shared/ui/icons/tool-icon';
 export interface SubAgentTool {
   readonly name?: string;
   readonly toolkit_name?: string;
-  readonly meta?: { readonly name?: string };
+  readonly meta?: { readonly name?: string; readonly icon_meta?: { readonly url?: string } };
   readonly type?: string;
   readonly entity_settings?: { readonly toolkit_type?: string };
   readonly agent_type?: string;
   readonly icon_meta?: { readonly url?: string };
+}
+
+/** Renders a custom-uploaded sub-agent icon from its `icon_meta.url` — baseline's `EliteAImage`, simplified to a plain `img`. */
+function SubAgentCustomIcon({ url }: { readonly url: string }): React.ReactElement {
+  return (
+    <Box
+      component="img"
+      src={url}
+      alt=""
+      sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
+    />
+  );
 }
 
 /**
@@ -58,10 +71,11 @@ export function resolveSubAgentIcon(
     type = tool?.type || tool?.entity_settings?.toolkit_type || '';
   }
 
-  const iconMeta = tool?.icon_meta;
+  const iconMeta = tool?.icon_meta ?? tool?.meta?.icon_meta;
   if (iconMeta?.url && (type === 'application' || type === 'pipeline')) {
+    const url = iconMeta.url;
     return {
-      component: () => null, // Custom icon from URL handled separately
+      component: () => <SubAgentCustomIcon url={url} />,
       sx: {
         width: '1rem',
         height: '1rem',

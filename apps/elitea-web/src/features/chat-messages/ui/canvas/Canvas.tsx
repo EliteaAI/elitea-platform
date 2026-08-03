@@ -6,7 +6,7 @@
  * diagrams/tables) with an edit button that opens the canvas editor and a
  * copy button that copies the content to the clipboard.
  */
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { Box, IconButton, Typography } from '@mui/material';
 
@@ -16,6 +16,8 @@ import Tooltip from '@mui/material/Tooltip';
 
 import type { CanvasEditorPresence } from '@/entities/canvas/model/types';
 import { realCanvasEditors } from '@/entities/canvas/model/selectors';
+
+import { EditingPlaceholder } from '../EditingPlaceholder';
 
 export interface CanvasProps {
   /** The content to display — code for `type=code`, mermaid for diagrams, markdown for tables. */
@@ -51,8 +53,10 @@ export interface CodeBlockInfo {
   readonly isBlock: boolean;
   readonly canvasId?: string;
   readonly messageItemId?: string | number;
-  readonly blockId?: string;
+  readonly blockId?: number;
   readonly viewOnly?: boolean;
+  /** True while a brand-new canvas is being created for this block (canvasId not yet assigned). */
+  readonly isCreatingCanvas?: boolean;
 }
 
 export interface CanvasEditPayload {
@@ -68,7 +72,7 @@ export interface CanvasEditPayload {
   readonly endPos?: number;
   readonly canvasId?: string;
   readonly messageItemId?: string | number;
-  readonly blockId?: string;
+  readonly blockId?: number;
   /** When true, only the current user can edit. */
   readonly viewOnly?: boolean;
 }
@@ -97,6 +101,20 @@ export function Canvas({
   conversation_uuid,
 }: CanvasProps): React.ReactElement {
   const { canvasId, messageItemId, startPos, endPos } = canvasRef ?? {};
+  // Stable per-instance id (baseline: `useCheckIsBlockEditing`'s `useState(new Date().getTime())`)
+  // — matched back against `selectedCodeBlockInfo.blockId` while a brand-new canvas this block
+  // requested is still being created (canvasId not assigned yet).
+  const [blockId] = useState(() => Date.now());
+  // True when this block's canvas is the one currently open in the editor — either an existing
+  // canvas (canvasId match) or a new one this block just requested (isCreatingCanvas + blockId match).
+  const isBlockEditing = useMemo(
+    () =>
+      Boolean(
+        (canvasId && canvasId === selectedCodeBlockInfo?.canvasId) ||
+          (selectedCodeBlockInfo?.isCreatingCanvas && selectedCodeBlockInfo?.blockId === blockId),
+      ),
+    [canvasId, selectedCodeBlockInfo?.canvasId, selectedCodeBlockInfo?.isCreatingCanvas, selectedCodeBlockInfo?.blockId, blockId],
+  );
   // Filter out admin/system editors (baseline: CANVAS_ADMIN_USER / CANVAS_SYSTEM_USER)
   const realEditors = useMemo(
     () =>
@@ -161,10 +179,19 @@ export function Canvas({
       ...((canvasRef?.endPos ?? endPos) != null ? { endPos: canvasRef?.endPos ?? endPos } : {}),
       ...((canvasRef?.canvasId ?? canvasId) != null ? { canvasId: canvasRef?.canvasId ?? canvasId } : {}),
       ...((canvasRef?.messageItemId ?? messageItemId) != null ? { messageItemId: canvasRef?.messageItemId ?? messageItemId } : {}),
-      ...(selectedCodeBlockInfo?.blockId != null ? { blockId: selectedCodeBlockInfo.blockId } : {}),
+      // Baseline always sends the block's own stable id (`useCheckIsBlockEditing`'s `blockId`), not
+      // `selectedCodeBlockInfo.blockId` (that field belongs to whichever block previously opened — a
+      // new click here is a new edit request, matched back to THIS block instance via its own id).
+      blockId,
       viewOnly: !!realEditors.length,
     });
-  }, [onEdit, content, type, language, canvasRef, realEditors, selectedCodeBlockInfo, messageItemId, canvasId, startPos, endPos]);
+  }, [onEdit, content, type, language, canvasRef, realEditors, messageItemId, canvasId, startPos, endPos, blockId]);
+
+  // This block's canvas is already open for editing (by this user or elsewhere) — swap the
+  // toolbar+content for a placeholder instead (baseline: Canvas.jsx's `!isBlockEditing` ternary).
+  if (isBlockEditing) {
+    return <EditingPlaceholder title={editingTitle} />;
+  }
 
   return (
     <Box sx={{ width: '100%' }}>
@@ -197,9 +224,11 @@ export function Canvas({
         )}
         {onEdit && (
           <Tooltip title={realEditors.length > 0 ? 'Watch editing' : editButtonTitle} placement="top">
-            <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickEdit}>
-              ✏️
-            </IconButtonAny>
+            <span>
+              <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickEdit} disabled={isStreaming}>
+                ✏️
+              </IconButtonAny>
+            </span>
           </Tooltip>
         )}
         <Tooltip title="Copy code" placement="top">
@@ -266,8 +295,11 @@ function CanvasContent({
  *
  * Ported from `extraCodeFromBlock` in `apps/elitea-ui/src/components/Canvas.jsx` —
  * strips the opening/closing triple-backtick fence and trims trailing empty lines.
+ *
+ * Exported for reuse by `CanvasEditor.tsx` (sibling file, same `ui/canvas/` slice),
+ * which strips the same fence off incoming real-time sync payloads.
  */
-function extraCodeFromBlock(code: string): string {
+export function extraCodeFromBlock(code: string): string {
   const trimmed = trimEmptyStringsAtEnd((code || '').split('\n'));
   // If the code starts with ``` and ends with ```, strip them
   if (trimmed.length > 2 && trimmed[0]?.startsWith('```') && trimmed[trimmed.length - 1]?.startsWith('```')) {

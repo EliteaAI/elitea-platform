@@ -11,15 +11,40 @@
  *
  * Port of `apps/elitea-ui/src/components/Chat/FileList.jsx`.
  */
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
+import { useCallback, useState } from 'react';
 
+import AttachFileIcon from '@mui/icons-material/AttachFile';
 import CloseIcon from '@mui/icons-material/Close';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
+import IconButton from '@mui/material/IconButton';
 import List from '@mui/material/List';
 import ListItem from '@mui/material/ListItem';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
+import Typography from '@mui/material/Typography';
 
 import type { Attachment } from '@/entities/attachment';
+
+/**
+ * Fixed threshold instead of the baseline's `useGetComponentWidth`
+ * measurement (baseline: `FileList.jsx:17-18,50-56` divides the measured
+ * container width by a fixed per-item width to compute how many fit) — no
+ * container-width-measurement hook exists yet anywhere in `shared/ui`, and a
+ * simpler fixed count is an explicitly acceptable substitute for this fix.
+ */
+const MAX_VISIBLE_ATTACHMENTS = 3;
+
+function attachmentLabel(attachment: Attachment, index: number): string {
+  return ((attachment as Record<string, unknown>)?.name as string | undefined) ?? `File ${index + 1}`;
+}
+
+function attachmentKey(attachment: Attachment, index: number): React.Key {
+  const id = (attachment as Record<string, unknown>)?.id;
+  return id != null ? (id as React.Key) : index;
+}
 
 /** @public Props for `FileList`. */
 export interface FileListProps {
@@ -32,53 +57,129 @@ export interface FileListProps {
 }
 
 /**
- * `FileList` — renders a horizontal scrollable list of file-name chips,
- * each with a close button for deletion.
+ * `FileList` — renders file-name chips for the first `MAX_VISIBLE_ATTACHMENTS`
+ * attachments, each with a close button for deletion. Attachments beyond that
+ * threshold collapse behind a "+N" chip that opens a `Menu` listing the rest
+ * (baseline: `FileList.jsx`'s measured-width overflow menu), so overflowing
+ * files stay discoverable instead of only reachable by horizontal scroll.
  */
 export function FileList({ attachments, onDeleteAttachment, disabled = false }: FileListProps): ReactNode {
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const open = Boolean(anchorEl);
+
+  const handleMoreClick = useCallback((event: MouseEvent<HTMLElement>) => {
+    setAnchorEl(event.currentTarget);
+  }, []);
+
+  const handleMenuClose = useCallback(() => setAnchorEl(null), []);
+
   if (!attachments?.length) return null;
 
+  const visibleAttachments = attachments.slice(0, MAX_VISIBLE_ATTACHMENTS);
+  const hiddenAttachments = attachments.slice(MAX_VISIBLE_ATTACHMENTS);
+
   return (
-    <Box sx={{ mb: 1, maxHeight: '60px', overflowX: 'auto', overflowY: 'hidden' }}>
+    <Box sx={{ mb: 1 }}>
       <List
         disablePadding
-        sx={{ display: 'flex', gap: 0.5, flexWrap: 'nowrap' }}
+        sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}
       >
-        {attachments.map((attachment, index) => {
-          const key = (attachment as Record<string, unknown>)?.id != null
-            ? (attachment as Record<string, unknown>)?.id as React.Key
-            : index;
-          return (
-            <ListItem
-              key={key}
-              disableGutters
-              sx={{ p: 0 }}
-            >
-              <Chip
-                label={((attachment as Record<string, unknown>)?.name ?? `File ${index + 1}`) as string}
-                size="small"
-                variant="outlined"
-                sx={{
-                  maxWidth: '200px',
-                  '& .MuiChip-label': {
+        {visibleAttachments.map((attachment, index) => (
+          <ListItem
+            key={attachmentKey(attachment, index)}
+            disableGutters
+            sx={{ p: 0, width: 'auto' }}
+          >
+            <Chip
+              label={attachmentLabel(attachment, index)}
+              size="small"
+              variant="outlined"
+              sx={{
+                maxWidth: '200px',
+                '& .MuiChip-label': {
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                },
+              }}
+              deleteIcon={
+                <CloseIcon fontSize="small" />
+              }
+              onDelete={
+                onDeleteAttachment && !disabled
+                  ? () => onDeleteAttachment(index)
+                  : undefined
+              }
+            />
+          </ListItem>
+        ))}
+        {hiddenAttachments.length > 0 && (
+          <ListItem
+            disableGutters
+            sx={{ p: 0, width: 'auto' }}
+          >
+            <Chip
+              label={`+${hiddenAttachments.length}`}
+              size="small"
+              variant="outlined"
+              onClick={handleMoreClick}
+              aria-haspopup="menu"
+              aria-expanded={open ? 'true' : undefined}
+              // eslint-disable-next-line i18next/no-literal-string — icon-only chip aria label
+              aria-label="Show more files"
+            />
+          </ListItem>
+        )}
+      </List>
+      {hiddenAttachments.length > 0 && (
+        <Menu
+          anchorEl={anchorEl}
+          open={open}
+          onClose={handleMenuClose}
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        >
+          {hiddenAttachments.map((attachment, index) => {
+            const actualIndex = MAX_VISIBLE_ATTACHMENTS + index;
+            return (
+              <MenuItem
+                key={attachmentKey(attachment, actualIndex)}
+                sx={{ gap: 1 }}
+              >
+                <ListItemIcon sx={{ minWidth: 'auto' }}>
+                  <AttachFileIcon fontSize="small" />
+                </ListItemIcon>
+                <Typography
+                  variant="bodyMedium"
+                  color="text.secondary"
+                  sx={{
+                    flex: 1,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
-                  },
-                }}
-                deleteIcon={
-                  <CloseIcon fontSize="small" />
-                }
-                onDelete={
-                  onDeleteAttachment && !disabled
-                    ? () => onDeleteAttachment(index)
-                    : undefined
-                }
-              />
-            </ListItem>
-          );
-        })}
-      </List>
+                    maxWidth: '11.25rem',
+                  }}
+                >
+                  {attachmentLabel(attachment, actualIndex)}
+                </Typography>
+                {onDeleteAttachment && !disabled && (
+                  <IconButton
+                    size="small"
+                    onClick={(event: MouseEvent<HTMLElement>) => {
+                      event.stopPropagation();
+                      onDeleteAttachment(actualIndex);
+                    }}
+                    // eslint-disable-next-line i18next/no-literal-string — icon-only aria label
+                    aria-label="Remove attachment"
+                  >
+                    <CloseIcon fontSize="small" />
+                  </IconButton>
+                )}
+              </MenuItem>
+            );
+          })}
+        </Menu>
+      )}
     </Box>
   );
 }

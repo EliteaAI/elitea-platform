@@ -268,7 +268,27 @@
     "src/routes/_shell/settings/ai-configuration/AddModelButton.tsx",
     // Barrel `index.ts` re-exports are not consumed by any Wave-2 consumer yet.
     // Adding the barrel itself to entry marks its re-exports as reachable.
-    "src/routes/_shell/settings/ai-configuration/index.ts"
+    "src/routes/_shell/settings/ai-configuration/index.ts",
+    // C4 (chat-messages) adversarial-verify fix round: option-object prop-group
+    // types (`ApplicationAnswerStatus`/`ApplicationAnswerActionHandlers`/
+    // `ApplicationAnswerTts`/`ApplicationAnswerContinuation`/`ApplicationAnswerHitl`
+    // on `ApplicationAnswer.tsx`, `ChatMessageListActions`/`ChatMessageListTts`/
+    // `ChatMessageListContinuation`/`ChatMessageListPagination` on
+    // `ChatMessageList.tsx`) are real, used-structurally types — callers pass a
+    // matching object literal without importing the type by name, same pattern
+    // as `AgentEditorShellProps`/`ConfigurationTabRunHistoryRenderProps` above.
+    // `ChatContinue.tsx`'s `McpAuthMetadataLocal`/`ChatContinueAuthModalSlotProps`
+    // are its local auth-metadata shape and the `renderAuthModal` slot-prop type
+    // a future page-level composition root fills with the real `McpAuthModal`
+    // (no-sideways-features forbids importing it directly from `features/mcps`
+    // here). `MessageAttachmentList.tsx`'s `NormalAttachmentArtifactData` is the
+    // artifact-storage attachment shape its own exported helpers are typed
+    // against. Wave-2 unit C4 itself is still awaiting full route-level wiring
+    // (see the `src/features/chat-messages/**` entry in `ignoreFiles` below).
+    "src/features/chat-messages/ui/chat-box/ApplicationAnswer.tsx",
+    "src/features/chat-messages/ui/chat-box/ChatMessageList.tsx",
+    "src/features/chat-messages/ui/chat-continue/ChatContinue.tsx",
+    "src/features/chat-messages/ui/attachments/MessageAttachmentList.tsx"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.mjs", "tools/lint-rules/**/*.mjs"],
   "ignoreFiles": [

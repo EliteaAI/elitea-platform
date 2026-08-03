@@ -4,11 +4,13 @@
  * This slice (`features/chat-messages`) is the Wave-2 unit C4 (chat-messages)
  * — the largest C-unit by LOC (~11,915). It owns:
  *
- *  - Message-row rendering: ApplicationAnswer, UserMessage, ChatMessageList,
- *    ChatMessageWrapper, HighlightedText, ErrorTrace, ChatContinue,
- *    ChatHitlActions, SubAgentAccordion
- *  - Attachments: FileList, ChatAttachment, NormalAttachment,
- *    MessageAttachmentList, ViewImageAttachmentModal
+ *  - Message-row rendering: ApplicationAnswer, UserMessage, ChatMessageList
+ *    (which folds the baseline's per-message `ChatMessageWrapper` controller
+ *    directly into its own render loop — see that file's deletion note),
+ *    HighlightedText, ErrorTrace, ChatContinue, ChatHitlActions,
+ *    SubAgentAccordion
+ *  - Attachments: FileList, NormalAttachment, MessageAttachmentList,
+ *    ViewImageAttachmentModal
  *  - Canvas: Canvas, CanvasEditor, CanvasEditHeader, canvas hooks
  *  - Playback: PlaybackChatBox, PlaybackToolBar, playback hooks
  *  - Shared helpers: convertMessagesToChatHistory, subAgentGrouping,
@@ -72,16 +74,12 @@ export { ActionView } from './ui/ActionView';
 export type { ActionViewProps } from './ui/ActionView';
 export { ApplicationAnswer } from './ui/chat-box/ApplicationAnswer';
 export type { ApplicationAnswerProps } from './ui/chat-box/ApplicationAnswer';
-export { ChatAttachment } from './ui/ChatAttachment';
-export type { ChatAttachmentProps } from './ui/ChatAttachment';
 export { ChatContinue } from './ui/chat-continue/ChatContinue';
 export type { ChatContinueProps } from './ui/chat-continue/ChatContinue';
 export { ChatHitlActions } from './ui/chat-hitl-actions/ChatHitlActions';
 export type { ChatHitlActionsProps } from './ui/chat-hitl-actions/ChatHitlActions';
 export { ChatMessageList } from './ui/chat-box/ChatMessageList';
 export type { ChatMessageListProps } from './ui/chat-box/ChatMessageList';
-export { ChatMessageWrapper } from './ui/chat-box/ChatMessageWrapper';
-export type { ChatMessageWrapperProps } from './ui/chat-box/ChatMessageWrapper';
 export { CreatedTimeInfo } from './ui/CreatedTimeInfo';
 export type { CreatedTimeInfoProps } from './ui/CreatedTimeInfo';
 export { EditingPlaceholder } from './ui/EditingPlaceholder';

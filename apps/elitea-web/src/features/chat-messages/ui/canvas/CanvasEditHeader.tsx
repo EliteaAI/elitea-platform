@@ -15,6 +15,8 @@ const IconButtonAny = IconButton as React.ComponentType<
 
 import Tooltip from '@mui/material/Tooltip';
 
+import { CANVAS_LANGUAGE_OPTIONS } from './canvasLanguageOptions';
+
 /** Action callbacks grouped to stay within §3.5 prop budget. */
 export interface CanvasEditHeaderActions {
   readonly onClose?: (() => void) | undefined;
@@ -132,28 +134,8 @@ export function CanvasEditHeader({
   );
 
   // Language options — matches CodeMirrorEditorHelpers.languageOptions from the baseline
-  const languageOptions = useMemo<Array<{ value: string; label: string }>>(
-    () => [
-      { value: 'text', label: 'text' },
-      { value: 'javascript', label: 'javascript' },
-      { value: 'typescript', label: 'typescript' },
-      { value: 'python', label: 'python' },
-      { value: 'java', label: 'java' },
-      { value: 'c++', label: 'c++' },
-      { value: 'go', label: 'go' },
-      { value: 'rust', label: 'rust' },
-      { value: 'markdown', label: 'markdown' },
-      { value: 'html', label: 'html' },
-      { value: 'css', label: 'css' },
-      { value: 'sql', label: 'sql' },
-      { value: 'bash', label: 'bash' },
-      { value: 'json', label: 'json' },
-      { value: 'xml', label: 'xml' },
-      { value: 'yaml', label: 'yaml' },
-      { value: 'mermaid', label: 'mermaid' },
-    ],
-    [],
-  );
+  // (apps/elitea-ui/src/[fsd]/shared/lib/helpers/codeMirrorEditor.helpers.js:63-236).
+  const languageOptions = CANVAS_LANGUAGE_OPTIONS;
 
   return (
     <Box
