@@ -372,6 +372,42 @@ def test_sdk_adapter_rejects_an_unrecoverable_random_thread() -> None:
         _adapter(_Client()).execute_application(request.payload)
 
 
+def test_sdk_adapter_submits_projected_history_on_one_checkpoint_thread() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    first = _request().payload
+    second = _request().payload
+    object.__setattr__(first, "chat_history", [])
+    object.__setattr__(
+        second,
+        "chat_history",
+        [
+            {"role": "user", "content": "first turn"},
+            {"role": "assistant", "content": "first response"},
+        ],
+    )
+    object.__setattr__(first, "thread_id", "conversation-1")
+    object.__setattr__(second, "thread_id", "conversation-1")
+    object.__setattr__(first, "conversation_id", "conversation-1")
+    object.__setattr__(second, "conversation_id", "conversation-1")
+    object.__setattr__(first, "user_input", "first turn")
+    object.__setattr__(second, "user_input", "second turn")
+
+    adapter.execute_application(first)
+    adapter.execute_application(second)
+
+    assert len(client.application_executor.calls) == 2
+    first_input, first_config = client.application_executor.calls[0]
+    second_input, second_config = client.application_executor.calls[1]
+    assert first_config["configurable"]["thread_id"] == "conversation-1"
+    assert second_config["configurable"]["thread_id"] == "conversation-1"
+    assert [message.content for message in first_input["messages"]] == ["first turn"]
+    assert [
+        message.get("content") if isinstance(message, dict) else message.content
+        for message in second_input["messages"]
+    ] == ["first turn", "first response", "second turn"]
+
+
 def test_sdk_adapter_rejects_unimplemented_resume_instead_of_drifting() -> None:
     request = _request()
     object.__setattr__(request.payload, "should_continue", True)

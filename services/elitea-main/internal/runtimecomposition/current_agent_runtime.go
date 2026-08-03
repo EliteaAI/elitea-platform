@@ -66,6 +66,8 @@ func newCurrentAgentVersionFreezer(
 	return agentexecutionapp.NewCurrentApplicationToolSnapshotService(
 		settings,
 		currentAgentToolkitNameAdapter{names: names},
+		configurations.models,
+		configurations.publicProjectID,
 	)
 }
 

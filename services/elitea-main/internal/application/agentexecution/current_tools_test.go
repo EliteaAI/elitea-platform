@@ -30,6 +30,30 @@ type currentAgentNameResolverStub struct {
 	err      error
 }
 
+type currentAgentModelCatalogStub struct {
+	queries  []configurationapp.CurrentModelCatalogQuery
+	response configurationapp.CurrentModelCatalogResponse
+	err      error
+}
+
+func (stub *currentAgentModelCatalogStub) Get(
+	_ context.Context,
+	query configurationapp.CurrentModelCatalogQuery,
+) (configurationapp.CurrentModelCatalogResponse, error) {
+	stub.queries = append(stub.queries, query)
+	return stub.response, stub.err
+}
+
+func currentAgentModelCatalogForTest(compatible bool) *currentAgentModelCatalogStub {
+	reasoning := false
+	return &currentAgentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
+		Items: []configurationapp.CurrentModelCatalogItem{{
+			Name: "model", ProjectID: 7, OpenAICompatible: &compatible,
+			SupportsReasoning: &reasoning,
+		}},
+	}}
+}
+
 func (stub *currentAgentNameResolverStub) ResolveCurrentAgentToolkitName(
 	_ context.Context,
 	request CurrentAgentToolkitNameRequest,
@@ -51,7 +75,8 @@ func TestCurrentApplicationToolSnapshotFreezesGenericToolkitReferences(t *testin
 		},
 	}}
 	names := &currentAgentNameResolverStub{result: "team_docs"}
-	service, err := NewCurrentApplicationToolSnapshotService(settings, names)
+	models := currentAgentModelCatalogForTest(true)
+	service, err := NewCurrentApplicationToolSnapshotService(settings, names, models, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +88,7 @@ func TestCurrentApplicationToolSnapshotFreezesGenericToolkitReferences(t *testin
 			VersionDetails: json.RawMessage(`{
   "id":41,
   "agent_type":"agent",
+  "llm_settings":{"model_name":"model"},
   "tools":[{
     "id":19,
     "type":"sharepoint",
@@ -84,11 +110,19 @@ func TestCurrentApplicationToolSnapshotFreezesGenericToolkitReferences(t *testin
 		t.Fatal(err)
 	}
 	tool := version["tools"].([]any)[0].(map[string]any)
+	llmSettings := version["llm_settings"].(map[string]any)
 	toolID, validToolID := positiveCurrentAgentJSONInteger(tool["id"])
 	if !validToolID || toolID != 19 || tool["type"] != "sharepoint" ||
 		tool["description"] != "Current toolkit" || tool["toolkit_name"] != "team_docs" ||
 		!reflect.DeepEqual(tool["settings"], settings.result) {
 		t.Fatalf("frozen tool=%#v", tool)
+	}
+	modelProjectID, validModelProjectID := positiveCurrentAgentJSONInteger(llmSettings["model_project_id"])
+	if llmSettings["openai_compatible"] != true || !validModelProjectID || modelProjectID != 7 ||
+		len(models.queries) != 1 || models.queries[0].Section != configurationapp.CurrentModelSectionLLM ||
+		models.queries[0].ProjectID != 7 || models.queries[0].PublicProjectID != 1 ||
+		!models.queries[0].IncludeShared {
+		t.Fatalf("llm_settings=%#v queries=%+v", llmSettings, models.queries)
 	}
 	if len(settings.requests) != 1 || settings.requests[0].Mode != configurationapp.CurrentToolkitSettingsReferenceMode ||
 		settings.requests[0].ProjectID != 7 || settings.requests[0].UserID != 11 ||
@@ -102,6 +136,8 @@ func TestCurrentApplicationToolSnapshotRejectsNestedApplicationUntilChildParity(
 	service, err := NewCurrentApplicationToolSnapshotService(
 		&currentAgentSettingsResolverStub{},
 		&currentAgentNameResolverStub{},
+		currentAgentModelCatalogForTest(false),
+		1,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -119,10 +155,17 @@ func TestCurrentApplicationToolSnapshotRejectsNestedApplicationUntilChildParity(
 }
 
 func TestCurrentApplicationToolSnapshotValidatesConstruction(t *testing.T) {
-	if service, err := NewCurrentApplicationToolSnapshotService(nil, &currentAgentNameResolverStub{}); err == nil || service != nil {
+	models := currentAgentModelCatalogForTest(false)
+	if service, err := NewCurrentApplicationToolSnapshotService(nil, &currentAgentNameResolverStub{}, models, 1); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
-	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, nil); err == nil || service != nil {
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, nil, models, 1); err == nil || service != nil {
+		t.Fatalf("service=%#v error=%v", service, err)
+	}
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, nil, 1); err == nil || service != nil {
+		t.Fatalf("service=%#v error=%v", service, err)
+	}
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, 0); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
 }

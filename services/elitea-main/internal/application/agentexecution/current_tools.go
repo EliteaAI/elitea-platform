@@ -51,19 +51,32 @@ type CurrentAgentToolkitSettingsResolver interface {
 	) (map[string]any, error)
 }
 
+type CurrentAgentModelCatalog interface {
+	Get(
+		context.Context,
+		configurationapp.CurrentModelCatalogQuery,
+	) (configurationapp.CurrentModelCatalogResponse, error)
+}
+
 type CurrentApplicationToolSnapshotService struct {
-	settings CurrentAgentToolkitSettingsResolver
-	names    CurrentAgentToolkitNameResolver
+	settings        CurrentAgentToolkitSettingsResolver
+	names           CurrentAgentToolkitNameResolver
+	models          CurrentAgentModelCatalog
+	publicProjectID int32
 }
 
 func NewCurrentApplicationToolSnapshotService(
 	settings CurrentAgentToolkitSettingsResolver,
 	names CurrentAgentToolkitNameResolver,
+	models CurrentAgentModelCatalog,
+	publicProjectID int32,
 ) (*CurrentApplicationToolSnapshotService, error) {
-	if settings == nil || names == nil {
+	if settings == nil || names == nil || models == nil || publicProjectID <= 0 {
 		return nil, errors.New("current agent toolkit snapshot dependencies are required")
 	}
-	return &CurrentApplicationToolSnapshotService{settings: settings, names: names}, nil
+	return &CurrentApplicationToolSnapshotService{
+		settings: settings, names: names, models: models, publicProjectID: publicProjectID,
+	}, nil
 }
 
 // FreezeCurrentApplicationVersion preserves the current generic toolkit shape,
@@ -74,7 +87,8 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 	ctx context.Context,
 	request CurrentApplicationVersionFreezeRequest,
 ) (json.RawMessage, error) {
-	if service == nil || service.settings == nil || service.names == nil || ctx == nil ||
+	if service == nil || service.settings == nil || service.names == nil || service.models == nil ||
+		service.publicProjectID <= 0 || ctx == nil ||
 		request.ProjectID <= 0 || request.ActorUserID <= 0 ||
 		!validJSONObject(request.VersionDetails) {
 		return nil, ErrUnsupportedCurrentAgentStart
@@ -85,6 +99,12 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 
 	version, err := decodeCurrentApplicationVersion(request.VersionDetails)
 	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	if err := service.resolveCurrentAgentModel(ctx, request.ProjectID, version); err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
 		return nil, ErrUnsupportedCurrentAgentStart
 	}
 	tools, ok := version["tools"].([]any)
@@ -162,6 +182,117 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		return nil, ErrUnsupportedCurrentAgentStart
 	}
 	return encoded, nil
+}
+
+func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
+	ctx context.Context,
+	projectID int32,
+	version map[string]any,
+) error {
+	settings, ok := version["llm_settings"].(map[string]any)
+	if !ok || settings == nil {
+		return ErrUnsupportedCurrentAgentStart
+	}
+	// This is Configurations-owned metadata. A stored or caller-projected value
+	// must never select the SDK model client implementation.
+	delete(settings, "openai_compatible")
+
+	catalog, err := service.models.Get(ctx, configurationapp.CurrentModelCatalogQuery{
+		Section: configurationapp.CurrentModelSectionLLM, ProjectID: projectID,
+		PublicProjectID: service.publicProjectID, IncludeShared: true,
+	})
+	if err != nil {
+		return err
+	}
+	modelName, _ := settings["model_name"].(string)
+	modelProjectID, modelProjectSet := positiveCurrentAgentJSONInteger(settings["model_project_id"])
+	selected, found := selectCurrentAgentModel(
+		catalog.Items, modelName, modelProjectID, modelProjectSet, projectID, service.publicProjectID,
+	)
+	if !found {
+		if catalog.DefaultModelName == nil || catalog.DefaultModelProjectID == nil ||
+			*catalog.DefaultModelName == "" || *catalog.DefaultModelProjectID <= 0 {
+			return ErrUnsupportedCurrentAgentStart
+		}
+		modelName = *catalog.DefaultModelName
+		modelProjectID = int64(*catalog.DefaultModelProjectID)
+		selected, found = selectCurrentAgentModel(
+			catalog.Items, modelName, modelProjectID, true, projectID, service.publicProjectID,
+		)
+		if !found {
+			return ErrUnsupportedCurrentAgentStart
+		}
+		settings["model_name"] = modelName
+		settings["model_project_id"] = modelProjectID
+		normalizeCurrentAgentModelFamily(settings, selected.SupportsReasoning)
+	} else {
+		if !modelProjectSet {
+			settings["model_project_id"] = int64(selected.ProjectID)
+		}
+		if currentAgentModelFamilyConflict(settings) {
+			normalizeCurrentAgentModelFamily(settings, selected.SupportsReasoning)
+		}
+	}
+	compatible := false
+	if selected.OpenAICompatible != nil {
+		compatible = *selected.OpenAICompatible
+	}
+	settings["openai_compatible"] = compatible
+	version["llm_settings"] = settings
+	return nil
+}
+
+func selectCurrentAgentModel(
+	items []configurationapp.CurrentModelCatalogItem,
+	name string,
+	modelProjectID int64,
+	modelProjectSet bool,
+	projectID int32,
+	publicProjectID int32,
+) (configurationapp.CurrentModelCatalogItem, bool) {
+	if name == "" || (modelProjectSet && (modelProjectID <= 0 || modelProjectID > math.MaxInt32)) {
+		return configurationapp.CurrentModelCatalogItem{}, false
+	}
+	if modelProjectSet {
+		for _, item := range items {
+			if item.Name == name && int64(item.ProjectID) == modelProjectID {
+				return item, true
+			}
+		}
+		return configurationapp.CurrentModelCatalogItem{}, false
+	}
+	for _, preferredProject := range []int32{projectID, publicProjectID} {
+		for _, item := range items {
+			if item.Name == name && item.ProjectID == preferredProject {
+				return item, true
+			}
+		}
+	}
+	return configurationapp.CurrentModelCatalogItem{}, false
+}
+
+func currentAgentModelFamilyConflict(settings map[string]any) bool {
+	_, hasTemperature := settings["temperature"]
+	if !hasTemperature || settings["temperature"] == nil {
+		return false
+	}
+	reasoning, _ := settings["reasoning_effort"].(string)
+	return reasoning != "" && reasoning != "none"
+}
+
+func normalizeCurrentAgentModelFamily(settings map[string]any, supportsReasoning *bool) {
+	reasoning := supportsReasoning != nil && *supportsReasoning
+	if reasoning {
+		settings["temperature"] = nil
+		if effort, _ := settings["reasoning_effort"].(string); effort == "" {
+			settings["reasoning_effort"] = "medium"
+		}
+		return
+	}
+	settings["reasoning_effort"] = nil
+	if value, exists := settings["temperature"]; !exists || value == nil {
+		settings["temperature"] = 0.7
+	}
 }
 
 func decodeCurrentApplicationVersion(source []byte) (map[string]any, error) {
