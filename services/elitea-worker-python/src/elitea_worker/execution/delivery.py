@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from elitea.runtime.v1 import (
+    agent_pb2,
     command_pb2,
     common_pb2,
     control_pb2,
@@ -35,16 +36,24 @@ from elitea.runtime.v1 import (
 
 from elitea_worker.agents.client_context import (
     EliteaClientContext,
-    IndexExecutionClaim,
+    RuntimeExecutionClaim,
 )
+from elitea_worker.agents.checkpoint import CurrentAgentCheckpointFactory
 from elitea_worker.agents.sdk_adapter import (
+    EliteaSdkAgentAdapter,
     EliteaSdkIndexingAdapter,
     SdkBudgetExceeded,
 )
 from elitea_worker.constants import (
+    AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+    AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+    AGENT_EXECUTION_CAPABILITY_VERSION,
+    AGENT_EXECUTION_REQUEST_ROLE,
+    AGENT_INPUT_MEDIA_TYPE,
     INDEX_INGEST_CAPABILITY_ID,
     INDEX_INGEST_CAPABILITY_VERSION,
     MAX_BUNDLE_ENTRIES,
+    MAX_AGENT_INPUT_BYTES,
     MAX_SAFE_STRING_BYTES,
     MAX_SETTINGS_BYTES,
     OUTPUT_SCHEMA_REVISION,
@@ -83,6 +92,15 @@ from elitea_worker.handlers.indexing import (
     IndexIngestInputBinding,
     ResolvedIndexIngestInput,
 )
+from elitea_worker.handlers.agent import (
+    AgentExecutionHandler,
+    AgentExecutionKind,
+    AgentExecutionRequest,
+)
+from elitea_worker.handlers.agent_events import (
+    CurrentAgentNodeEventCallback,
+    CurrentAgentNodeEventContext,
+)
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.protocol.codec import (
     VerifiedWorkerCommand,
@@ -97,6 +115,11 @@ from elitea_worker.protocol.indexing import (
     bind_result_summary,
     request_from,
     resolve_embedding_binding,
+)
+from elitea_worker.protocol.agent import (
+    bind_result_artifact as bind_agent_result_artifact,
+    parse_agent_execution_input,
+    request_from as agent_request_from,
 )
 from elitea_worker.protocol.node_event import (
     InvalidCurrentNodeEvent,
@@ -238,6 +261,14 @@ class _AcceptedIndexClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class _AcceptedAgentClaim:
+    verified: VerifiedWorkerCommand
+    entry: FixtureEntry
+    claim_id: str
+    claim_handoff_watermark: int
+
+
+@dataclass(frozen=True, slots=True)
 class _ResolvedIndexInputs:
     toolkit_configuration: ResolvedIndexIngestInput
     tool_parameters: ResolvedIndexIngestInput
@@ -245,6 +276,12 @@ class _ResolvedIndexInputs:
     llm_configuration: ResolvedIndexIngestInput | None
     mcp_tokens: ResolvedIndexIngestInput | None
     embedding_binding: ResolvedIndexIngestInput | None
+    client_context: EliteaClientContext
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedAgentInputs:
+    request: AgentExecutionRequest
     client_context: EliteaClientContext
 
 
@@ -499,7 +536,7 @@ class _IndexProgressOutput:
 
 
 IndexClientContextFactory = Callable[
-    [IndexExecutionClaim],
+    [RuntimeExecutionClaim],
     Awaitable[EliteaClientContext],
 ]
 
@@ -1097,7 +1134,7 @@ class ConfigurationValidationDeliveryProcessor:
 
     def _new_progress_output(
         self,
-        accepted: _AcceptedClaim | _AcceptedIndexClaim,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim | _AcceptedAgentClaim,
         output: OutputSession,
     ) -> _IndexProgressOutput | None:
         _ = accepted, output
@@ -1155,7 +1192,7 @@ class ConfigurationValidationDeliveryProcessor:
 
     async def _resolve_inputs_with_lease(
         self,
-        accepted: _AcceptedClaim | _AcceptedIndexClaim,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim | _AcceptedAgentClaim,
         *,
         receipt: control_pb2.ClaimReceiptV1,
         lease: _ClaimLeaseMonitor,
@@ -1841,7 +1878,7 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
             raise DependencyUnavailable(
                 "The claim-scoped SDK client context is unavailable."
             )
-        claim = IndexExecutionClaim(
+        claim = RuntimeExecutionClaim(
             execution_id=receipt.identity.execution_id,
             generation=int(receipt.identity.generation),
             claim_id=accepted.claim_id,
@@ -2038,6 +2075,236 @@ class IndexIngestDeliveryProcessor(ConfigurationValidationDeliveryProcessor):
         ):
             raise AmbiguousExecutionRecovery()
         raise InvalidInput("The invocation authorization disposition is malformed.")
+
+
+class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
+    """Initial current-compatible agent execution over the durable lifecycle."""
+
+    def __init__(
+        self,
+        *,
+        checkpoint_factory: CurrentAgentCheckpointFactory,
+        **kwargs: Any,
+    ) -> None:
+        if checkpoint_factory is None:
+            raise ValueError("agent checkpoint factory is required")
+        super().__init__(**kwargs)
+        self._checkpoint_factory = checkpoint_factory
+
+    def _new_progress_output(
+        self,
+        accepted: _AcceptedClaim | _AcceptedIndexClaim | _AcceptedAgentClaim,
+        output: OutputSession,
+    ) -> _IndexProgressOutput | None:
+        if not isinstance(accepted, _AcceptedAgentClaim):
+            raise InternalFailure()
+        return _IndexProgressOutput(
+            verified=accepted.verified,
+            initial_output=output,
+            output_session_factory=self._output_session_factory,
+            clock_unix_millis=self._clock,
+            claim_handoff_watermark=accepted.claim_handoff_watermark,
+            output_ack_timeout_seconds=self._output_ack_timeout,
+            max_output_sessions=self._max_output_sessions,
+        )
+
+    def _accept_claim(
+        self,
+        *,
+        signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+        command: command_pb2.WorkerCommandV1,
+        receipt: control_pb2.ClaimReceiptV1,
+        workload_session_id: str,
+        producer_id: str,
+        now_unix_millis: int,
+    ) -> _AcceptedAgentClaim:
+        return _accepted_agent_claim(
+            signed=signed,
+            command=command,
+            receipt=receipt,
+            workload_session_id=workload_session_id,
+            producer_id=producer_id,
+            now_unix_millis=now_unix_millis,
+        )
+
+    def _validate_capability_identity(
+        self,
+        command: command_pb2.WorkerCommandV1,
+    ) -> None:
+        if (
+            command.capability_version != AGENT_EXECUTION_CAPABILITY_VERSION
+            or command.WhichOneof("capability_command") != "agent_execution"
+        ):
+            raise UnsupportedCapability()
+        pairs = {
+            (
+                AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+                command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION,
+            ),
+            (
+                AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+                command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC,
+            ),
+        }
+        if (command.capability_id, command.command_type) not in pairs:
+            raise UnsupportedCapability()
+
+    async def _resolve_inputs(
+        self,
+        accepted: _AcceptedAgentClaim,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+    ) -> _ResolvedAgentInputs:
+        grant = self._input_request_builder.build(
+            _claim_bound_reference(
+                accepted.entry.content,
+                receipt=receipt,
+                claim_id=accepted.claim_id,
+            )
+        )
+        raw = await self._input_client.fetch_materialized(
+            grant,
+            source_immutable_version=accepted.entry.immutable_version,
+        )
+        message = parse_agent_execution_input(raw)
+        kind = (
+            AgentExecutionKind.APPLICATION
+            if accepted.verified.command.capability_id
+            == AGENT_EXECUTE_APPLICATION_CAPABILITY_ID
+            else AgentExecutionKind.ADHOC
+        )
+        request = agent_request_from(
+            message,
+            kind=kind,
+            input_bundle_id=receipt.input_bundle.input_bundle_id,
+            input_bundle_digest=bytes(receipt.input_bundle_ref.digest.value),
+            request_entry_id=accepted.entry.entry_id,
+            request_immutable_version=accepted.entry.immutable_version,
+            request_content_digest=accepted.entry.content.digest,
+        )
+        factory = self._client_context_factory
+        if factory is None:
+            raise DependencyUnavailable(
+                "The claim-scoped SDK client context is unavailable."
+            )
+        claim = RuntimeExecutionClaim(
+            execution_id=receipt.identity.execution_id,
+            generation=int(receipt.identity.generation),
+            claim_id=accepted.claim_id,
+            fence_token=bytes(receipt.fence.fence_token),
+            resource_project_id=receipt.identity.resource_project_id,
+        )
+        try:
+            context = await factory(claim)
+            if str(context.project_id) != receipt.identity.resource_project_id:
+                raise AuthorizationFailure(
+                    "The claim-scoped SDK project identity does not match the execution."
+                )
+        except WorkerError:
+            raise
+        except Exception as error:
+            _emit_agent_internal_failure(
+                stage="input_context",
+                execution_id=receipt.identity.execution_id,
+                error=error,
+            )
+            raise InternalFailure() from None
+        return _ResolvedAgentInputs(request=request, client_context=context)
+
+    async def _execute_resolved(
+        self,
+        accepted: _AcceptedAgentClaim,
+        resolved_input: object,
+        *,
+        receipt: control_pb2.ClaimReceiptV1,
+        progress: _IndexProgressOutput | None,
+    ) -> agent_pb2.AgentExecutionResultV1:
+        if not isinstance(resolved_input, _ResolvedAgentInputs) or progress is None:
+            raise InternalFailure()
+        command = accepted.verified.command
+        payload = resolved_input.request.payload
+        callback = CurrentAgentNodeEventCallback(
+            CurrentAgentNodeEventContext(
+                stream_id=command.agent_execution.client_stream_id,
+                message_id=command.agent_execution.client_message_id,
+                execution_generation=(
+                    payload.execution_generation
+                    or str(command.generation)
+                ),
+                sio_event=command.agent_execution.sio_event,
+                thread_id=(
+                    payload.thread_id
+                    or payload.conversation_id
+                    or command.agent_execution.client_stream_id
+                ),
+                project_id=_current_numeric_identity(command.resource_project_id),
+                chat_project_id=_current_numeric_identity(command.projection_project_id),
+            ),
+            progress.publish_from_sdk,
+        )
+        adapter = EliteaSdkAgentAdapter.from_context(
+            resolved_input.client_context,
+            callbacks=[callback],
+            checkpoint_factory=self._checkpoint_factory,
+        )
+        handler = AgentExecutionHandler(adapter)
+        await self._authorize_invocation(receipt)
+
+        def invoke_agent():
+            callback.emit_agent_start(invoked_skills=payload.invoked_skills)
+            result = handler.execute(resolved_input.request)
+            full_message = callback.emit_completion(result.sdk_result, payload)
+            callback.raise_if_failed()
+            return result, full_message
+
+        try:
+            result, full_message = await self._supervisor.run_sync(invoke_agent)
+            browser_result = encode_current_node_event_json(full_message)
+            digest = hashlib.sha256(browser_result).digest()
+            return bind_agent_result_artifact(
+                result,
+                artifact_id=(
+                    f"node-event:{command.execution_id}:full-message"
+                ),
+                immutable_version=f"sha256:{digest.hex()}",
+                byte_length=len(browser_result),
+                digest=digest,
+            )
+        except _IndexProgressTransportFailure:
+            raise
+        except WorkerError:
+            raise
+        except Exception as error:
+            _emit_agent_internal_failure(
+                stage="execute",
+                execution_id=receipt.identity.execution_id,
+                error=error,
+            )
+            raise InternalFailure() from None
+
+
+def _emit_agent_internal_failure(
+    *,
+    stage: str,
+    execution_id: str,
+    error: Exception,
+) -> None:
+    error_type = type(error)
+    print(
+        json.dumps(
+            {
+                "event": "agent_execution_internal_failure",
+                "stage": stage,
+                "execution_id": execution_id,
+                "exception_module": error_type.__module__,
+                "exception_name": error_type.__name__,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 async def _publish_missing_index_failure_status(
@@ -2242,6 +2509,43 @@ def _accepted_index_claim(
     )
 
 
+def _accepted_agent_claim(
+    *,
+    signed: envelope_pb2.SignedWorkerCommandEnvelopeV1,
+    command: command_pb2.WorkerCommandV1,
+    receipt: control_pb2.ClaimReceiptV1,
+    workload_session_id: str,
+    producer_id: str,
+    now_unix_millis: int,
+) -> _AcceptedAgentClaim:
+    entries = _validated_claim_entries(
+        command=command,
+        receipt=receipt,
+        workload_session_id=workload_session_id,
+        producer_id=producer_id,
+        now_unix_millis=now_unix_millis,
+    )
+    selected = command.agent_execution
+    matches = [entry for entry in entries if entry.entry_id == selected.request_entry_id]
+    if len(matches) != 1 or len(entries) != 1:
+        raise InvalidInput("The selected agent request is absent or ambiguous.")
+    entry = matches[0]
+    if (
+        entry.semantic_role != AGENT_EXECUTION_REQUEST_ROLE
+        or entry.immutable_version != entry.content.immutable_version
+        or entry.content.media_type != AGENT_INPUT_MEDIA_TYPE
+        or entry.content.required_grant_audience != _INDEX_INPUT_AUDIENCE
+        or entry.content.byte_length > MAX_AGENT_INPUT_BYTES
+    ):
+        raise InvalidInput("The selected agent request is malformed.")
+    return _AcceptedAgentClaim(
+        verified=_verified_claim_command(signed, command, receipt),
+        entry=entry,
+        claim_id=receipt.claim_id,
+        claim_handoff_watermark=int(receipt.claim_handoff_watermark),
+    )
+
+
 def _validated_claim_entries(
     *,
     command: command_pb2.WorkerCommandV1,
@@ -2325,8 +2629,12 @@ def _validate_pending_output(
             f"{command.configuration_validation.configuration_revision_id}"
         )
         valid_sequence = frame.sequence == 1
-    elif selected_capability == "index_ingest":
-        expected_logical_output = f"index-ingest:{command.execution_id}"
+    elif selected_capability in ("index_ingest", "agent_execution"):
+        expected_logical_output = (
+            f"index-ingest:{command.execution_id}"
+            if selected_capability == "index_ingest"
+            else f"agent-execution:{command.execution_id}"
+        )
         valid_sequence = (
             frame.sequence >= 1
             and int(frame.claim_handoff_watermark) < int(frame.sequence)
@@ -2354,7 +2662,7 @@ def _validate_pending_output(
             f"node-event:{command.execution_id}:{frame.sequence}"
         )
         if (
-            selected_capability != "index_ingest"
+            selected_capability not in ("index_ingest", "agent_execution")
             or frame.logical_output_id != expected_progress_output
             or frame.event_type
             != output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_NODE_EVENT

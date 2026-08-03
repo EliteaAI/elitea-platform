@@ -17,6 +17,7 @@ from google.protobuf.descriptor import Descriptor, FieldDescriptor
 from google.protobuf.message import DecodeError, Message
 
 from elitea.runtime.v1 import (
+    agent_pb2,
     command_pb2,
     common_pb2,
     envelope_pb2,
@@ -29,6 +30,9 @@ from elitea.runtime.v1 import (
 )
 
 from elitea_worker.constants import (
+    AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
+    AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
+    AGENT_EXECUTION_CAPABILITY_VERSION,
     CAPABILITY_ID,
     CAPABILITY_VERSION,
     CONFORMANCE_HMAC_KEY,
@@ -265,7 +269,12 @@ def validation_request_from(
 
 def build_output_frame(
     verified: VerifiedWorkerCommand,
-    outcome: ConfigurationValidationResult | indexing_pb2.IndexIngestResultV1 | WorkerError,
+    outcome: (
+        ConfigurationValidationResult
+        | indexing_pb2.IndexIngestResultV1
+        | agent_pb2.AgentExecutionResultV1
+        | WorkerError
+    ),
     *,
     occurred_at_unix_millis: int,
     claim_handoff_watermark: int = 0,
@@ -324,6 +333,16 @@ def build_output_frame(
             == indexing_pb2.INDEX_INGEST_STATUS_V1_ERROR
             else common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
         )
+    elif (
+        isinstance(outcome, agent_pb2.AgentExecutionResultV1)
+        and selected_capability == "agent_execution"
+    ):
+        payload = outcome
+        frame.event_type = (
+            output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_AGENT_EXECUTION_RESULT
+        )
+        frame.agent_execution.CopyFrom(payload)
+        requested_outcome = common_pb2.EXECUTION_OUTCOME_V1_SUCCEEDED
     elif isinstance(outcome, WorkerError):
         payload = _runtime_error_message(outcome)
         frame.event_type = output_pb2.EXECUTION_OUTPUT_EVENT_TYPE_V1_RUNTIME_ERROR
@@ -360,18 +379,19 @@ def build_node_event_output_frame(
     occurred_at_unix_millis: int,
     claim_handoff_watermark: int = 0,
 ) -> output_pb2.ExecutionOutputFrameV1:
-    """Bind one current NodeEvent to the claimed index output stream."""
+    """Bind one current NodeEvent to a claimed progress-capable output stream."""
 
     command = verified.command
+    selected_capability = command.WhichOneof("capability_command")
     if (
-        command.WhichOneof("capability_command") != "index_ingest"
+        selected_capability not in ("index_ingest", "agent_execution")
         or sequence < 1
         or sequence >= 1 << 64
         or occurred_at_unix_millis <= 0
         or claim_handoff_watermark < 0
         or claim_handoff_watermark >= sequence
     ):
-        raise InvalidInput("The index progress output identity is malformed.")
+        raise InvalidInput("The progress output identity is malformed.")
     # Reuse the single current-contract validator before any protobuf digest is
     # allocated. The return value is intentionally discarded; elitea-main owns
     # the exact browser projection from the protobuf payload.
@@ -401,7 +421,7 @@ def build_node_event_output_frame(
     )
     if len(frame.SerializeToString(deterministic=True)) > MAX_GRPC_REQUEST_BYTES:
         raise ResourceExhausted(
-            "The index progress event exceeds the approved output limit."
+            "The progress event exceeds the approved output limit."
         )
     return frame
 
@@ -504,11 +524,27 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
         and command.command_type == command_pb2.WORKER_COMMAND_TYPE_V1_INDEX_INGEST
         and selected_capability == "index_ingest"
     )
-    if not configuration_command and not index_command:
-        raise UnsupportedCapability()
-    expected_capability_version = (
-        INDEX_INGEST_CAPABILITY_VERSION if index_command else CAPABILITY_VERSION
+    agent_application_command = (
+        command.capability_id == AGENT_EXECUTE_APPLICATION_CAPABILITY_ID
+        and command.command_type
+        == command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION
+        and selected_capability == "agent_execution"
     )
+    agent_adhoc_command = (
+        command.capability_id == AGENT_EXECUTE_ADHOC_CAPABILITY_ID
+        and command.command_type
+        == command_pb2.WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC
+        and selected_capability == "agent_execution"
+    )
+    agent_command = agent_application_command or agent_adhoc_command
+    if not configuration_command and not index_command and not agent_command:
+        raise UnsupportedCapability()
+    if index_command:
+        expected_capability_version = INDEX_INGEST_CAPABILITY_VERSION
+    elif agent_command:
+        expected_capability_version = AGENT_EXECUTION_CAPABILITY_VERSION
+    else:
+        expected_capability_version = CAPABILITY_VERSION
     if command.capability_version != expected_capability_version:
         raise UnsupportedCapability()
     required = (
@@ -535,10 +571,17 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             command.configuration_validation.schema_revision,
             command.configuration_validation.settings_entry_id,
         )
-    else:
+    elif index_command:
         required += (
             command.index_ingest.toolkit_configuration_entry_id,
             command.index_ingest.tool_parameters_entry_id,
+        )
+    else:
+        required += (
+            command.agent_execution.request_entry_id,
+            command.agent_execution.client_stream_id,
+            command.agent_execution.client_message_id,
+            command.agent_execution.sio_event,
         )
     if any(not value for value in required):
         raise InvalidInput("The worker command is missing a required reference or identity.")
@@ -570,7 +613,7 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
     if configuration_command:
         _require_sha256(command.configuration_validation.catalog_digest, "catalog digest")
         _require_sha256(command.configuration_validation.schema_digest, "schema digest")
-    else:
+    elif index_command:
         index_entry_ids = (
             command.index_ingest.toolkit_configuration_entry_id,
             command.index_ingest.tool_parameters_entry_id,
@@ -618,6 +661,31 @@ def _validate_command(command: command_pb2.WorkerCommandV1) -> None:
             raise InvalidInput("The index-ingest event route is malformed.")
         if command.index_ingest.initiator not in ("user", "llm", "schedule"):
             raise InvalidInput("The index-ingest initiator is malformed.")
+    else:
+        client_correlations = (
+            command.agent_execution.client_stream_id,
+            command.agent_execution.client_message_id,
+        )
+        if any(len(value.encode("utf-8")) > 512 for value in client_correlations):
+            raise ResourceExhausted(
+                "An agent-execution client correlation exceeds the string limit."
+            )
+        if any(
+            any(character in value for character in ("\x00", "\r", "\n"))
+            for value in client_correlations
+        ):
+            raise InvalidInput("An agent-execution client correlation is malformed.")
+        if command.agent_execution.sio_event not in (
+            "chat_predict",
+            "chat_continue_predict",
+        ):
+            raise InvalidInput("The agent-execution event route is malformed.")
+        if (
+            command.root_execution_id != command.execution_id
+            or command.parent_execution_id
+            or command.parent_call_id
+        ):
+            raise InvalidInput("The agent-execution root identity is malformed.")
     if (
         command.input_bundle_ref.byte_length < 1
         or command.input_bundle_ref.byte_length > MAX_MANIFEST_BYTES
@@ -634,6 +702,8 @@ def _logical_output_id(command: command_pb2.WorkerCommandV1) -> str:
         )
     if selected == "index_ingest":
         return f"index-ingest:{command.execution_id}"
+    if selected == "agent_execution":
+        return f"agent-execution:{command.execution_id}"
     raise UnsupportedCapability()
 
 
@@ -717,6 +787,11 @@ def _scan_worker_command(raw: bytes) -> None:
         _scan_message(
             _length_field(fields, 34, "index ingest command"),
             indexing_pb2.IndexIngestCommandV1.DESCRIPTOR,
+        )
+    elif 35 in fields:
+        _scan_message(
+            _length_field(fields, 35, "agent execution command"),
+            agent_pb2.AgentExecutionCommandV1.DESCRIPTOR,
         )
 
 

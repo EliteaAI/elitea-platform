@@ -127,6 +127,10 @@ class RuntimeDeployConfig(BaseModel):
     ed25519_keyring_path: Path
     spool_root: Path
     spool_key_path: Path
+    # Only worker pools admitting agent capabilities need the current
+    # ``agentstate`` checkpoint database. Other capability pools remain valid
+    # without receiving an unrelated database credential.
+    agent_checkpoint_connection_path: Path | None = None
     limits: RuntimeLimits
 
     @field_validator("workload_session_id", "producer_id", "consumer_id")
@@ -208,6 +212,13 @@ class RuntimeDeployConfig(BaseModel):
     @classmethod
     def validate_absolute_path(cls, value: Path) -> Path:
         if not value.is_absolute():
+            raise ValueError("runtime material paths must be absolute")
+        return value
+
+    @field_validator("agent_checkpoint_connection_path")
+    @classmethod
+    def validate_optional_agent_checkpoint_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
             raise ValueError("runtime material paths must be absolute")
         return value
 

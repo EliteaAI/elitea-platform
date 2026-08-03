@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import sys
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -285,88 +285,142 @@ class EliteaSdkAgentAdapter:
     advertised or wired into production delivery.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        memory: Any = None,
+        callbacks: list[Any] | None = None,
+        checkpoint_factory: Any = None,
+        project_id: int | None = None,
+    ) -> None:
         client_type = _indexing_client_type()
         if not isinstance(client, client_type):
             raise TypeError(
                 "client must be an EliteAClient from the admitted SDK artifact"
             )
         self._client = client
+        # The claim-bound composition owns this checkpointer. It is never part
+        # of AgentExecutionInputV1 and never crosses Redis or gRPC. The SDK and
+        # LangGraph remain the only readers/writers of checkpoint state.
+        self._memory = memory
+        self._callbacks = list(callbacks or [])
+        self._checkpoint_factory = checkpoint_factory
+        self._project_id = project_id
 
     @classmethod
-    def from_context(cls, context: EliteaClientContext) -> EliteaSdkAgentAdapter:
+    def from_context(
+        cls,
+        context: EliteaClientContext,
+        *,
+        memory: Any = None,
+        callbacks: list[Any] | None = None,
+        checkpoint_factory: Any = None,
+    ) -> EliteaSdkAgentAdapter:
         client_type = _indexing_client_type()
         client = client_type(
             project_id=context.project_id,
             base_url=context.base_url,
             auth_token=context.auth_token,
         )
-        return cls(client)
+        return cls(
+            client,
+            memory=memory,
+            callbacks=callbacks,
+            checkpoint_factory=checkpoint_factory,
+            project_id=context.project_id,
+        )
 
     def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        application = payload.application
-        version_details = deepcopy(application.get("version_details") or {})
-        llm_kwargs = _llm_kwargs(payload.llm)
-        executor = self._client.application(
-            application_id=application.get("id"),
-            application_version_id=application.get("version_id"),
-            application_variables=deepcopy(application.get("variables")),
-            version_details=version_details or None,
-            mcp_tokens=deepcopy(payload.mcp_tokens),
-            conversation_id=payload.conversation_id,
-            ignored_mcp_servers=list(payload.ignored_mcp_servers),
-            user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
-            exception_handling_enabled=bool(payload.exception_handling_enabled),
-            context_settings=deepcopy(payload.context_settings),
-            auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
-            openai_compatible=bool(llm_kwargs.get("openai_compatible", False)),
-        )
-        return _invoke_initial_agent(executor, payload, version_details.get("meta"))
+        with self._execution_memory() as memory:
+            application = payload.application
+            version_details = deepcopy(application.get("version_details") or {})
+            llm_kwargs = _llm_kwargs(payload.llm)
+            executor = self._client.application(
+                application_id=application.get("id"),
+                application_version_id=application.get("version_id"),
+                tools=deepcopy(payload.tools) or None,
+                memory=memory,
+                application_variables=deepcopy(application.get("variables")),
+                version_details=version_details or None,
+                mcp_tokens=deepcopy(payload.mcp_tokens),
+                conversation_id=payload.conversation_id,
+                ignored_mcp_servers=list(payload.ignored_mcp_servers),
+                user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+                exception_handling_enabled=bool(payload.exception_handling_enabled),
+                context_settings=deepcopy(payload.context_settings),
+                auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+                openai_compatible=bool(llm_kwargs.get("openai_compatible", False)),
+            )
+            return _invoke_initial_agent(
+                executor,
+                payload,
+                version_details.get("meta"),
+                self._callbacks,
+            )
 
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        llm_kwargs = _llm_kwargs(payload.llm)
-        llm = self._client.get_llm(
-            model_name=llm_kwargs.get("model"),
-            model_config={
-                "model_project_id": llm_kwargs.get("model_project_id"),
-                "max_tokens": llm_kwargs.get("max_tokens"),
-                "reasoning_effort": llm_kwargs.get("reasoning_effort"),
-                "temperature": llm_kwargs.get("temperature"),
-                "streaming": llm_kwargs.get("stream", True),
-                "openai_compatible": llm_kwargs.get("openai_compatible", False),
-            },
-        )
-        executor = self._client.predict_agent(
-            llm=llm,
-            instructions=payload.application.get(
-                "instructions", "You are a helpful assistant."
-            ),
-            tools=deepcopy(payload.tools),
-            chat_history=deepcopy(payload.chat_history),
-            debug_mode=True if payload.debug_mode is None else payload.debug_mode,
-            mcp_tokens=deepcopy(payload.mcp_tokens),
-            conversation_id=payload.conversation_id,
-            ignored_mcp_servers=list(payload.ignored_mcp_servers),
-            persona=payload.persona,
-            lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
-            internal_tools=list(payload.internal_tools),
-            exception_handling_enabled=bool(payload.exception_handling_enabled),
-            context_settings=deepcopy(payload.context_settings),
-            step_limit=payload.steps_limit,
-            auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
-            user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
-        )
-        return _invoke_initial_agent(executor, payload, None)
+        with self._execution_memory() as memory:
+            llm_kwargs = _llm_kwargs(payload.llm)
+            llm = self._client.get_llm(
+                model_name=llm_kwargs.get("model"),
+                model_config={
+                    "model_project_id": llm_kwargs.get("model_project_id"),
+                    "max_tokens": llm_kwargs.get("max_tokens"),
+                    "reasoning_effort": llm_kwargs.get("reasoning_effort"),
+                    "temperature": llm_kwargs.get("temperature"),
+                    "streaming": llm_kwargs.get("stream", True),
+                    "openai_compatible": llm_kwargs.get("openai_compatible", False),
+                },
+            )
+            executor = self._client.predict_agent(
+                llm=llm,
+                instructions=payload.application.get(
+                    "instructions", "You are a helpful assistant."
+                ),
+                tools=deepcopy(payload.tools),
+                chat_history=deepcopy(payload.chat_history),
+                memory=memory,
+                debug_mode=True if payload.debug_mode is None else payload.debug_mode,
+                mcp_tokens=deepcopy(payload.mcp_tokens),
+                conversation_id=payload.conversation_id,
+                ignored_mcp_servers=list(payload.ignored_mcp_servers),
+                persona=payload.persona,
+                lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
+                internal_tools=list(payload.internal_tools),
+                exception_handling_enabled=bool(payload.exception_handling_enabled),
+                context_settings=deepcopy(payload.context_settings),
+                step_limit=payload.steps_limit,
+                auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
+                user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
+            )
+            return _invoke_initial_agent(executor, payload, None, self._callbacks)
+
+    @contextmanager
+    def _execution_memory(self):
+        """Keep one saver open for exactly one synchronous SDK invocation."""
+
+        if self._memory is not None:
+            yield self._memory
+            return
+        if self._checkpoint_factory is None or self._project_id is None:
+            raise DependencyUnavailable(
+                "The durable agent checkpoint store is unavailable."
+            )
+        with self._checkpoint_factory.open(
+            self._client,
+            project_id=self._project_id,
+        ) as memory:
+            yield memory
 
 
 def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
     """Keep partial behavior unreachable instead of silently drifting."""
 
     if (
-        payload.thread_id
-        or payload.checkpoint_id
+        payload.checkpoint_id
         or payload.should_continue
         or payload.hitl_resume
         or payload.hitl_decisions
@@ -380,6 +434,10 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
     ):
         raise UnsupportedCapability(
             "This agent execution requires a parity path that is not admitted yet."
+        )
+    if not payload.thread_id and not payload.conversation_id:
+        raise UnsupportedCapability(
+            "A durable agent thread identity is required for this parity path."
         )
 
 
@@ -399,13 +457,18 @@ def _invoke_initial_agent(
     executor: Any,
     payload: AgentExecutionPayload,
     application_meta: Any,
+    callbacks: list[Any],
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
 
     messages = deepcopy(payload.chat_history)
     messages.append(HumanMessage(content=deepcopy(payload.user_input)))
-    configurable: dict[str, Any] = {}
+    configurable: dict[str, Any] = {
+        "thread_id": payload.thread_id or payload.conversation_id,
+    }
     invoke_config: dict[str, Any] = {"configurable": configurable}
+    if callbacks:
+        invoke_config["callbacks"] = list(callbacks)
     if isinstance(application_meta, dict):
         step_limit = application_meta.get("step_limit")
         if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:

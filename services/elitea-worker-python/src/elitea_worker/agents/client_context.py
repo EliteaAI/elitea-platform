@@ -10,7 +10,7 @@ from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput, 
 
 
 @dataclass(frozen=True, slots=True)
-class IndexExecutionClaim:
+class RuntimeExecutionClaim:
     execution_id: str
     generation: int
     claim_id: str
@@ -28,7 +28,7 @@ class IndexExecutionClaim:
             or self.generation < 1
             or len(self.fence_token) != 32
         ):
-            raise InvalidInput("The index execution claim identity is malformed.")
+            raise InvalidInput("The execution claim identity is malformed.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +47,7 @@ class EliteaClientContext:
                 "The claim-scoped SDK client context is unavailable."
             )
 
-ClaimBoundTokenFetcher = Callable[[IndexExecutionClaim], Awaitable[str]]
+ClaimBoundTokenFetcher = Callable[[RuntimeExecutionClaim], Awaitable[str]]
 
 
 class ClaimBoundEliteaClientContextFactory:
@@ -64,13 +64,13 @@ class ClaimBoundEliteaClientContextFactory:
         self._base_url = base_url.rstrip("/")
         self._token_fetcher = token_fetcher
 
-    async def __call__(self, claim: IndexExecutionClaim) -> EliteaClientContext:
+    async def __call__(self, claim: RuntimeExecutionClaim) -> EliteaClientContext:
         try:
             project_id = int(claim.resource_project_id)
         except (TypeError, ValueError) as exc:
-            raise InvalidInput("The index execution project identity is malformed.") from exc
+            raise InvalidInput("The execution project identity is malformed.") from exc
         if str(project_id) != claim.resource_project_id or project_id < 1:
-            raise InvalidInput("The index execution project identity is malformed.")
+            raise InvalidInput("The execution project identity is malformed.")
         try:
             token = await self._token_fetcher(claim)
         except WorkerError:
@@ -88,6 +88,12 @@ class ClaimBoundEliteaClientContextFactory:
             base_url=self._base_url,
             auth_token=token,
         )
+
+
+# Backward-compatible name for the already-shipped indexing composition. The
+# claim is capability-neutral; the Go authorizer decides which capabilities may
+# redeem it.
+IndexExecutionClaim = RuntimeExecutionClaim
 
 
 def _valid_base_url(value: object) -> bool:

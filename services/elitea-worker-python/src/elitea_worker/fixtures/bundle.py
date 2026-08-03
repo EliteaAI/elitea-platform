@@ -20,6 +20,8 @@ from typing import Any
 from elitea.runtime.v1 import common_pb2, input_pb2
 
 from elitea_worker.constants import (
+    AGENT_EXECUTION_REQUEST_ROLE,
+    AGENT_INPUT_MEDIA_TYPE,
     JSON_MEDIA_TYPES,
     MAX_BUNDLE_ENTRIES,
     MAX_JSON_DEPTH,
@@ -295,7 +297,12 @@ def _project_manifest_entries(
             ),
             blob_name=f"blobs/sha256/{content_value.digest.value.hex()}",
         )
-        if content.media_type != "application/json":
+        expected_media_type = (
+            AGENT_INPUT_MEDIA_TYPE
+            if value.semantic_role == AGENT_EXECUTION_REQUEST_ROLE
+            else "application/json"
+        )
+        if content.media_type != expected_media_type:
             raise InvalidInput("The input bundle content media type is not supported.")
         entries.append(
             FixtureEntry(

@@ -9,7 +9,7 @@ description = "Standalone language-neutral ELITEA runtime reference worker"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "cryptography>=48.0.1,<49",
-  "elitea-sdk==0.8.53",
+  "elitea-sdk==0.9.1",
   "elitea-runtime-proto==0.1.0",
   "grpcio>=1.76,<2",
   "h2>=4.2,<5",
@@ -26,6 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+agent-current = [
+  # Current SDK/LangGraph durable checkpoint implementation. Keep this exact
+  # until the asynchronous SDK phase replaces the synchronous agent adapter.
+  "langgraph-checkpoint-postgres==2.0.21",
+]
 indexing-current = [
   # Exact current-baseline indexing closure. This intentionally replaces
   # elitea-sdk[all]: provider, browser, cloud, analytics and developer stacks

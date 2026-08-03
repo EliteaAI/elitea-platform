@@ -37,6 +37,7 @@ def _config(tmp_path: Path) -> dict[str, object]:
         "ed25519_keyring_path": str(tmp_path / "command-keys.json"),
         "spool_root": str(tmp_path / "spool"),
         "spool_key_path": str(tmp_path / "spool.key"),
+        "agent_checkpoint_connection_path": str(tmp_path / "agent-checkpoint-connection"),
         "limits": {
             "redis_read_batch": 8,
             "redis_block_millis": 1000,
@@ -77,6 +78,7 @@ def test_deploy_config_is_strict_file_only_and_credential_free(tmp_path: Path) -
 
     assert loaded.redis_url == "rediss://elitea-worker@redis.internal:6379/0"
     assert loaded.workload_session_id == "session-1"
+    assert loaded.agent_checkpoint_connection_path == tmp_path / "agent-checkpoint-connection"
     assert loaded.limits.delivery_max_concurrency == 4
     assert loaded.limits.redis_max_entry_bytes == 64 * 1024
     assert loaded.limits.redis_max_field_bytes == 48 * 1024
@@ -97,6 +99,19 @@ def test_deploy_config_is_strict_file_only_and_credential_free(tmp_path: Path) -
     _write_config(path, value)
     with pytest.raises(InvalidInput):
         load_deploy_config(path)
+
+
+def test_deploy_config_allows_non_agent_pool_without_checkpoint_database(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime.json"
+    value = _config(tmp_path)
+    del value["agent_checkpoint_connection_path"]
+    _write_config(path, value)
+
+    loaded = load_deploy_config(path)
+
+    assert loaded.agent_checkpoint_connection_path is None
 
 
 @pytest.mark.parametrize(

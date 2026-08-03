@@ -84,7 +84,7 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     ) in worker_ci
     assert f"SDK_ARCHIVE_SHA256: {SDK_SOURCE_ARCHIVE_SHA256}" in worker_ci
     assert '"elitea-sdk @ file:///tmp/elitea-sdk-current"' in worker_ci
-    assert '"./services/elitea-worker-python[indexing-current,test]"' in worker_ci
+    assert '"./services/elitea-worker-python[agent-current,indexing-current,test]"' in worker_ci
     assert lock["distribution_version"] == SDK_DISTRIBUTION_VERSION
     assert lock["source"]["revision"] == SDK_SOURCE_REVISION
     assert lock["source"]["git_archive_sha256"] == SDK_SOURCE_ARCHIVE_SHA256
