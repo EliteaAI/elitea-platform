@@ -111,7 +111,7 @@ describe('useEditorMutex', () => {
 
     act(() => result.current.onEditCanvas('hello', { rawData: 'code', canvasId: 'c1' }));
 
-    expect(params.onShowCanvasEditor).toHaveBeenCalledWith({ rawData: 'code', canvasId: 'c1' });
+    expect(params.onShowCanvasEditor).toHaveBeenCalledWith({ message: 'hello', rawData: 'code', canvasId: 'c1' });
   });
 
   it('onCreateAgent/onCreateToolkit/onCreatePipeline open directly when free', () => {

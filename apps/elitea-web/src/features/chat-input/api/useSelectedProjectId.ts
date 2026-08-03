@@ -2,8 +2,12 @@ import { useRouteContext } from '@tanstack/react-router';
 
 /**
  * "Currently selected project id" — the baseline's `useSelectedProjectId()`
- * (`apps/elitea-ui/src/hooks/useSelectedProject.jsx`, backed by
- * `state.settings.project.id`, falling back to `personal_project_id`).
+ * (`apps/elitea-ui/src/hooks/useSelectedProject.jsx:5-16`, evaluating
+ * `project?.id || (personal_project_id ? undefined : '')`). NOT "falls back
+ * to `personal_project_id`": when there is no selected `project.id`, the
+ * baseline returns `undefined` if `personal_project_id` IS set, and only
+ * returns `''` when neither is set — it never returns the personal project
+ * id's value itself.
  *
  * Local duplicate of `features/agents/api/useSelectedProjectId.ts` (and
  * every other Wave-2 feature slice's own copy — `features/apps/api/`,

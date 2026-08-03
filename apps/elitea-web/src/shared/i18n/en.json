@@ -483,6 +483,8 @@
   "features.chatInput.voiceConfigDialog.cancel": "Cancel",
   "features.chatInput.voiceConfigDialog.title": "Voice settings",
   "features.chatInput.voicePersonalizationSection.title": "Voice Personalization",
+  "chatInput.slashSuggestionList.availableTools": "available tools",
+  "chatInput.agentEditorPanel.modelSelectorMenu": "Model Selector Menu",
   "entities.secret.pageTitle": "Secrets",
   "entities.secret.searchPlaceholder": "Search secrets",
   "entities.secret.addTooltip": "Create new secret",

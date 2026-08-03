@@ -88,7 +88,7 @@ describe('useEditFolder', () => {
     await waitFor(() => expect(toastError).toHaveBeenCalledWith('boom'));
   });
 
-  it('distinctive rule: without folders.update permission, onEditFolder and onPinFolder are both no-ops (no network, no local update)', async () => {
+  it('distinctive rule: without folders.update permission, onEditFolder and onPinFolder both skip the network call and local update', async () => {
     let putHit = false;
     let patchHit = false;
     server.use(
@@ -104,10 +104,11 @@ describe('useEditFolder', () => {
 
     const setActiveFolder = vi.fn();
     const setFolders = vi.fn();
+    const toastError = vi.fn();
 
     const { wrapper } = createWrapper([]);
     const { result } = renderHook(
-      () => useEditFolder({ projectId: '7', activeFolder: undefined, setActiveFolder, setFolders, toastError: vi.fn() }),
+      () => useEditFolder({ projectId: '7', activeFolder: undefined, setActiveFolder, setFolders, toastError }),
       { wrapper },
     );
 
@@ -117,6 +118,48 @@ describe('useEditFolder', () => {
     expect(putHit).toBe(false);
     expect(patchHit).toBe(false);
     expect(setActiveFolder).not.toHaveBeenCalled();
+    expect(setFolders).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Regression (found by adversarial verify): a permission-denied
+   * `onEditFolder` used to return with zero user feedback. The baseline's
+   * own (real network round-trip) behavior for this scenario surfaced a
+   * toast — see this hook's own doc comment for the full citation.
+   */
+  it('onEditFolder without folders.update permission surfaces a toast (unlike onPinFolder, which stays a true silent no-op)', async () => {
+    const setActiveFolder = vi.fn();
+    const setFolders = vi.fn();
+    const toastError = vi.fn();
+
+    const { wrapper } = createWrapper([]);
+    const { result } = renderHook(
+      () => useEditFolder({ projectId: '7', activeFolder: undefined, setActiveFolder, setFolders, toastError }),
+      { wrapper },
+    );
+
+    await result.current.onEditFolder(mkFolder({ id: 'f1' }));
+    expect(toastError).toHaveBeenCalledWith('You do not have permission to edit folders');
+
+    toastError.mockClear();
+    await result.current.onPinFolder(mkFolder({ id: 'f1' }), true);
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('onEditFolder with no projectId stays a silent no-op (nothing to act on yet)', async () => {
+    const setActiveFolder = vi.fn();
+    const setFolders = vi.fn();
+    const toastError = vi.fn();
+
+    const { wrapper } = createWrapper([]);
+    const { result } = renderHook(
+      () => useEditFolder({ projectId: undefined, activeFolder: undefined, setActiveFolder, setFolders, toastError }),
+      { wrapper },
+    );
+
+    await result.current.onEditFolder(mkFolder({ id: 'f1' }));
+
+    expect(toastError).not.toHaveBeenCalled();
     expect(setFolders).not.toHaveBeenCalled();
   });
 

@@ -19,6 +19,7 @@ import { memo, useCallback, useEffect, useImperativeHandle, useRef } from 'react
 
 import { Box } from '@mui/material';
 import { useNavBlockerStore } from '@/widgets/app-shell';
+import type { AttachmentButtonHandle, VoiceButtonHandle } from '@/widgets/chat';
 import { ChatConversationStarters, NewChatInput, voiceHooks } from '@/features/chat-input';
 import { useSocketClient } from '@/shared/api/socket/client';
 import { ChatMessageList, useDeleteMessageAlert } from '@/features/chat-messages';
@@ -108,6 +109,7 @@ const ChatBoxInner = memo(function ChatBox({
   onDelete,
 }: ChatBoxProps) {
   const chatInputRef = useRef<NewChatInputHandle>(null);
+  const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
 
@@ -372,8 +374,9 @@ const ChatBoxInner = memo(function ChatBox({
             attachments: { attachments: data.attachments.state.attachments, onAttachFiles: data.attachments.state.onAttachFiles },
             internalTools: { disabled: isInputLoading, tools: internalToolsButtonTools, onToolChange: handleInternalToolChange },
             model: { llmSettings, onSetLLMSettings, selectedModel: selectedLlmModel, onSelectModel: handleSelectModel, models: modelsList },
+            refs: { attachmentButtonRef, voiceButtonRef, voiceInputRef: chatInputRef },
           })}
-          refs={{}}
+          refs={{ attachmentButtonRef, voiceButtonRef }}
         />
       </Box>
       <DeleteEntityModal

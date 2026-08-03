@@ -112,6 +112,29 @@ describe('useLoadMoreMessages', () => {
     expect(result.current.isLoadingMore).toBe(false);
   });
 
+  it('advances the page even after a failed fetch, matching the baseline (skips the failed page on retry rather than retrying it)', async () => {
+    let requestedOffsets: string[] = [];
+    server.use(
+      http.get(`${BASE}/elitea_core/messages/prompt_lib/7/1`, ({ request }) => {
+        requestedOffsets.push(new URL(request.url).searchParams.get('offset') ?? '');
+        return HttpResponse.json({ error: 'boom' }, { status: 500 });
+      }),
+    );
+    const onError = vi.fn();
+    const { result } = renderHook(() => useHarness({ id: 1, messages_count: 45 }, onError));
+
+    await act(async () => {
+      await result.current.onLoadMoreMessages();
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.onLoadMoreMessages();
+    });
+
+    expect(requestedOffsets).toEqual(['10', '20']);
+  });
+
   it('resets its page back to 1 when the active conversation id changes', async () => {
     let capturedOffsets: string[] = [];
     server.use(

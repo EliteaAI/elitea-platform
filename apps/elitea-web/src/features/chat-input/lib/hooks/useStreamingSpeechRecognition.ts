@@ -11,10 +11,22 @@
  * and the exact emit/receive event payloads `shared/api/socket/events.ts`
  * (unit S5) already documents for `asr_*`.
  *
- * Socket access: `useSocketClient()` (S5's context hook) replaces the old
- * app's `socket` prop — every Wave-2 socket consumer in this codebase reads
- * the client from context rather than having it prop-drilled in (see
- * `entities/canvas/api/canvasSocket.ts`).
+ * Socket access: reads the client via `useContext(SocketClientContext)`
+ * (degrading to `null`), NOT the throwing `useSocketClient()` — same
+ * posture as this cluster's own `useTextToSpeech.hooks.ts` and
+ * `VoiceConfigDialog.tsx`: no `app/` file mounts a
+ * `SocketClientContext.Provider` yet, and a missing socket is this hook's
+ * legitimate "backend ASR unavailable" state (old-app parity:
+ * `useStreamingSpeechRecognition.hooks.js`'s own `socket` came from
+ * `useContext(SocketContext)`, which defaults to `null` with no provider,
+ * and every usage there guards it — `if (!socket) return;` in the listener
+ * effect, `socket?.emit(...)` for `asr_stop`), not a programmer error
+ * `useSocketClient()`'s throw-if-absent contract would be correct for.
+ * Every socket-dependent operation below (the listener effect, the
+ * `asr_start`/`asr_stop` emits, the raw `socket.emit` chunk path) is a
+ * no-op when `client` is `null`; `isSupported` stays gated on `!!asrModel`
+ * only (this file's own return, unchanged), so a missing socket silently
+ * disables backend ASR instead of crashing the component.
  *
  * `asr_audio_chunk` uses `client.socket.emit(...)` directly — the raw-socket
  * escape hatch `shared/api/socket/client.ts`'s own doc comment names this
@@ -25,9 +37,9 @@
  * frequency, structured payloads and go through the normal validated
  * `client.emit()`.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 
-import { useSocketClient } from '@/shared/api/socket/client';
+import { SocketClientContext } from '@/shared/api/socket/client';
 import type { EmitPayloadOf, ReceivePayloadOf } from '@/shared/api/socket/events';
 
 import { isWhisperModel } from '../helpers/asrHelpers';
@@ -172,7 +184,9 @@ export function useStreamingSpeechRecognition(
   params: UseStreamingSpeechRecognitionParams = {},
 ): UseStreamingSpeechRecognitionResult {
   const { onTranscript, onTranscriptDone, onSpeechStarted, onVadFlush, onError, projectId, asrModel } = params;
-  const client = useSocketClient();
+  // Nullable — see this file's module doc for why `useContext` (not the
+  // throwing `useSocketClient()`) is used here.
+  const client = useContext(SocketClientContext);
   const [isRecording, setIsRecording] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -206,8 +220,11 @@ export function useStreamingSpeechRecognition(
     onErrorRef.current = onError;
   }, [onError]);
 
-  // Listen for transcription events from the backend.
+  // Listen for transcription events from the backend. No-op when no socket
+  // is available (see this file's module doc).
   useEffect(() => {
+    if (!client) return undefined;
+
     const onDelta = (payload: ReceivePayloadOf<'asr_transcript_delta'>): void => {
       if (!acceptEventsRef.current) return;
       onTranscriptRef.current?.({ interim: payload.delta ?? '', final: '' });
@@ -300,8 +317,9 @@ export function useStreamingSpeechRecognition(
       workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
         const pcm16Buffer = float32ToPcm16Buffer(event.data);
         const payload = { audio: pcm16Buffer } satisfies EmitPayloadOf<'asr_audio_chunk'>;
-        // Raw-socket escape hatch — see this file's module doc.
-        client.socket.emit('asr_audio_chunk', payload);
+        // Raw-socket escape hatch — see this file's module doc. No-op when
+        // no socket is available.
+        client?.socket.emit('asr_audio_chunk', payload);
       };
 
       const gainNode = audioContext.createGain();
@@ -320,7 +338,7 @@ export function useStreamingSpeechRecognition(
         model_project_id: asrModel?.project_id,
         language: navigator.language?.split('-')[0] ?? 'en',
       } satisfies EmitPayloadOf<'asr_start'>;
-      client.emit('asr_start', startPayload);
+      client?.emit('asr_start', startPayload);
 
       setIsRecording(true);
     } catch (err) {
@@ -336,7 +354,7 @@ export function useStreamingSpeechRecognition(
     // are discarded.
     acceptEventsRef.current = false;
     releaseAudio();
-    client.emit('asr_stop', {});
+    client?.emit('asr_stop', {});
     setIsRecording(false);
   }, [isRecording, client, releaseAudio]);
 
@@ -346,7 +364,7 @@ export function useStreamingSpeechRecognition(
       if (!streamRef.current) return;
       acceptEventsRef.current = false;
       releaseAudio();
-      client.emit('asr_stop', {});
+      client?.emit('asr_stop', {});
     };
   }, [client, releaseAudio]);
 

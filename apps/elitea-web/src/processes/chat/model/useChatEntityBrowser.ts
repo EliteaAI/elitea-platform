@@ -130,7 +130,15 @@ export function useChatEntityBrowser(params: UseChatEntityBrowserParams): UseCha
 
   return {
     agents: toBucket(agentsResult, (item) => item.participantType === 'application'),
-    pipelines: toBucket(pipelinesResult, (item) => item.participantType === 'pipeline'),
+    // Private only: the baseline's chat "+" submenu sources pipelines exclusively
+    // from the private-project applications endpoint (`useApplicationParticipants`
+    // with `agents_type: 'pipeline'`) and never fetches/displays public/marketplace
+    // pipelines here — `usePublicApplicationParticipants` is baseline-wired to the
+    // agents section only. `useParticipants` has no way to skip its own public-pipeline
+    // fetch (see this module's deviation-disclosure header, point 1), so the fetch
+    // still happens, but `isPublic` items must be filtered back out here to keep the
+    // DISPLAYED bucket at parity with the baseline.
+    pipelines: toBucket(pipelinesResult, (item) => item.participantType === 'pipeline' && !item.isPublic),
     toolkits: toBucket(toolkitsResult, (item) => !isMcpParticipantItem(item)),
     mcps: toBucket(mcpsResult, isMcpParticipantItem),
   };

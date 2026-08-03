@@ -12,28 +12,22 @@ import { useHasPermission } from '../useHasPermission';
 import type { DateGroupListItem, FolderListItem } from './conversationListState.types';
 
 /**
- * `entities/folder`'s `FolderConversationRef` only models `id`/`updatedAt`/
- * `createdAt`/`isPlayback` (its own module doc: "what the folders-LIST wire
- * response gives"), narrower than `entities/conversation`'s `Conversation`
- * (`name`/`isPrivate` required). The real wire rows almost certainly DO
- * carry more — confirmed against the baseline: `ConversationItem.jsx:57-66`
- * destructures `name`/`is_private`/`users_count`/`author_id`/… directly off
- * exactly this list-row shape — `FolderConversationRef` is simply narrower
- * because the prior phase (entities/folder) only modelled what ITS OWN
- * selectors needed, not the full row. **Disclosed, real gap:** synthesizing
- * `name: ''`/`isPrivate: true` placeholders here is the only way to satisfy
- * this feature's `Conversation`-typed `FolderListItem`/`DateGroupListItem`
- * state trees without widening `entities/folder` (out of this unit's
- * scope) — a future phase should either widen `FolderConversationRef` to
- * the real wire shape or give this list-row concept its own narrower type
- * threaded through every hook in this directory instead of reusing
- * `Conversation`.
+ * `entities/folder`'s `FolderConversationRef` now models `name`/`isPrivate`
+ * (widened alongside `entities/folder/api/foldersApi.ts`'s wire normaliser
+ * to stop dropping them — was a real, disclosed regression: every row from
+ * this hook rendered with a blank title, confirmed against the baseline's
+ * `ConversationItem.jsx:57-66`, which destructures `name`/`is_private`
+ * directly off this exact list-row shape). Both remain optional on
+ * `FolderConversationRef` since not every caller of `entities/folder`
+ * necessarily has them (e.g. a client-synthesized ref) — this hook falls
+ * back to the previous placeholders only when the wire genuinely omits
+ * them, not unconditionally.
  */
 function toConversation(ref: FolderConversationRef, extra?: Partial<Conversation>): Conversation {
   return {
     id: ref.id,
-    name: '',
-    isPrivate: true,
+    name: ref.name ?? '',
+    isPrivate: ref.isPrivate ?? true,
     ...(ref.updatedAt !== undefined ? { updatedAt: ref.updatedAt } : {}),
     ...(ref.createdAt !== undefined ? { createdAt: ref.createdAt } : {}),
     ...(ref.isPlayback !== undefined ? { isPlayback: ref.isPlayback } : {}),

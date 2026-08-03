@@ -19,6 +19,8 @@ export const DEFAULT_FOLDER_NAME = 'New folder';
 
 export interface FolderConversationRef {
   readonly id: string;
+  readonly name?: string;
+  readonly isPrivate?: boolean;
   readonly updatedAt?: string;
   readonly createdAt?: string;
   /** Needed to compute `genConversationId` parity — see `lib/normalise.ts`. */

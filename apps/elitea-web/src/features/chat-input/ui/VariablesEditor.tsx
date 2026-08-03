@@ -48,6 +48,8 @@ export function VariablesEditor(props: VariablesEditorProps): ReactNode {
       >
         <Button
           size="small"
+          variant="elitea"
+          color="secondary"
           aria-expanded={open ? 'true' : undefined}
           aria-label={t('chatInput.variablesEditor.menuLabel', 'variables selector menu')}
           aria-haspopup="menu"

@@ -35,7 +35,7 @@ function extractCopyableContent(message: CopyableChatMessage): string {
   if (message.exception) return JSON.stringify(message.exception);
   if (message.message_items?.length) {
     return message.message_items
-      .map((item) => item.content ?? item.item_details?.content ?? '')
+      .map((item) => item.content || item.item_details?.content || '')
       .filter(Boolean)
       .join('\n');
   }

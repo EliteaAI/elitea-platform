@@ -60,6 +60,11 @@ const INLINE_HANDLERS: Readonly<Record<string, InlineTextHandler>> = {
   codespan: (token) => (token as Tokens.Codespan).text ?? '',
 };
 
+/** Fallback for any inline token type not in {@link INLINE_HANDLERS} (e.g. GFM `del`/strikethrough, inline `html`) — old-app parity (`tts.helpers.js`'s `inlineText` switch `default: return stripEmoji(token.text ?? token.raw ?? '');`), same scoping as the position-tracking sibling {@link defaultSegmentStep} below (`stripEmoji` wraps only the fallback, not every handler — handlers that already apply it, like {@link textInline}, would otherwise be double-wrapped for no benefit, and handlers that deliberately don't, like {@link linkInline}'s literal href/text passthrough, would have their output altered). */
+function defaultInlineText(token: Token): string {
+  return stripEmoji(genericTokenText(token));
+}
+
 /**
  * Extract speakable plain text from an array of inline tokens.
  *
@@ -71,7 +76,7 @@ const INLINE_HANDLERS: Readonly<Record<string, InlineTextHandler>> = {
  */
 export function inlineText(tokens: readonly Token[] | undefined): string {
   if (!tokens || tokens.length === 0) return '';
-  return tokens.map((token) => (INLINE_HANDLERS[token.type] ?? genericTokenText)(token)).join('');
+  return tokens.map((token) => (INLINE_HANDLERS[token.type] ?? defaultInlineText)(token)).join('');
 }
 
 // ─── inlineTextSegments — same conversion, plus orig↔stripped position map ──

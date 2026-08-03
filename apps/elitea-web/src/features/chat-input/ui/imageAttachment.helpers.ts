@@ -80,3 +80,40 @@ export function planAttachmentDownload(attachment: Attachment): AttachmentDownlo
   }
   return { kind: 'legacy-base64' };
 }
+
+/** `ImageAttachmentViewerModal`'s `artifactFilepath`/`projectId` props, pre-shaped for conditional spreading under `exactOptionalPropertyTypes`. Split out of `ImageAttachment.tsx` so its own §3.5 cyclomatic-complexity budget isn't spent on this prop-shaping ternary/spread logic — `planAttachmentDownload`'s `'artifact-storage'` branch is what feeds the viewer modal's full-resolution-original fetch (see that file's own doc comment). */
+export interface ViewerModalArtifactProps {
+  readonly artifactFilepath?: string;
+  readonly projectId?: string;
+}
+
+export function viewerModalArtifactProps(attachment: Attachment, projectId: string | undefined): ViewerModalArtifactProps {
+  const plan = planAttachmentDownload(attachment);
+  const artifactFilepath = plan.kind === 'artifact-storage' ? plan.filepath : undefined;
+  return {
+    ...(artifactFilepath !== undefined ? { artifactFilepath } : {}),
+    ...(projectId !== undefined ? { projectId } : {}),
+  };
+}
+
+/**
+ * `/{bucket}/{filename}` -> `{bucket, filename}` — old app: `parseFilepath`,
+ * common/utils.jsx:359-370. Mirrors the identically-named private helper in
+ * `entities/attachment/lib/download.ts` (not exported from there) and its
+ * public duplicate in the sibling `features/chat-messages/ui/attachments/
+ * attachmentDownload.helpers.ts` — same no-sideways-features-style boundary
+ * reasoning as `planAttachmentDownload` above: this cluster cannot import a
+ * private helper from another slice, so it keeps its own copy. Needed by
+ * `ImageAttachmentViewerModal.tsx` to split a `planAttachmentDownload`
+ * 'artifact-storage' `filepath` into the `bucket`/`filePath` pair
+ * `fetchArtifactBlob` takes. Returns `null` on malformed input instead of
+ * throwing (§3.6).
+ */
+export function parseAttachmentFilepath(filepath: string): { readonly bucket: string; readonly filename: string } | null {
+  if (!filepath.startsWith('/')) return null;
+  const parts = filepath.slice(1).split('/');
+  const bucket = parts[0];
+  const filename = parts.slice(1).join('/');
+  if (bucket === undefined || bucket === '' || filename === '') return null;
+  return { bucket, filename };
+}

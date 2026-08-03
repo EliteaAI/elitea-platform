@@ -50,6 +50,8 @@ const FOLDER_QUERY_ROOT = ['folder'] as const;
 
 interface FolderConversationRefWire {
   readonly id: string;
+  readonly name?: string;
+  readonly is_private?: boolean;
   readonly updated_at?: string;
   readonly created_at?: string;
   readonly isPlayback?: boolean;
@@ -59,6 +61,8 @@ interface FolderConversationRefWire {
 function normaliseFolderConversationRef(wire: FolderConversationRefWire): FolderConversationRef {
   return {
     id: wire.id,
+    ...(wire.name !== undefined ? { name: wire.name } : {}),
+    ...(wire.is_private !== undefined ? { isPrivate: wire.is_private } : {}),
     ...(wire.updated_at !== undefined ? { updatedAt: wire.updated_at } : {}),
     ...(wire.created_at !== undefined ? { createdAt: wire.created_at } : {}),
     ...(wire.isPlayback !== undefined ? { isPlayback: wire.isPlayback } : {}),

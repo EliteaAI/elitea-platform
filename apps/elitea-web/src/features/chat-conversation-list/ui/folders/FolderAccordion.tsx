@@ -44,7 +44,16 @@ export interface FolderAccordionSlotProps {
 interface FolderAccordionInteractionState {
   readonly isHovering?: boolean | undefined;
   readonly isNextFolderHovered?: boolean | undefined;
-  /** Kept visible (independent of hover) while its own `ControlsDropdown` menu is showing — see this component's own module doc for why this can only be set by the caller, not toggled internally in response to the menu opening/closing. */
+  /**
+   * Optional force-show escape hatch for a caller-owned reason to keep the
+   * trigger visible independent of hover — see this component's own module
+   * doc for why this can only be set by the caller, not toggled internally
+   * in response to the menu opening/closing. NOT required for the menu's
+   * own open/close visibility any more: `menuContainerSx`'s own `:has(
+   * [aria-expanded="true"])` rule keeps the trigger container visible for
+   * the whole time `ControlsDropdown`'s menu is open regardless of this
+   * prop, hover, or hover state going stale after the mouse leaves the row.
+   */
   readonly showMenu?: boolean | undefined;
   readonly onMouseEnter?: (() => void) | undefined;
   readonly onMouseLeave?: (() => void) | undefined;
@@ -88,13 +97,18 @@ export interface FolderAccordionProps {
  * §1's C2/folders context). `ControlsDropdown` owns its own open/anchor
  * state internally and exposes no `onShowMenuList`/`onCloseMenuList`-style
  * hook — unlike the baseline's `DotMenu`, there is nothing for THIS
- * component to observe or drive in response to the menu opening/closing.
- * `interaction.showMenu` is kept as a plain caller-controlled prop (still
- * useful for e.g. force-showing the trigger button while some OTHER
- * caller-owned UI needs it visible) but is never toggled by this component
- * itself — the baseline's `onShowMenuList`/`onCloseMenuList` props have no
- * port here, disclosed judgment call (no equivalent surface exists on
- * `ControlsDropdown` to wire them to).
+ * component (or any caller, `FolderItem.tsx` included) to OBSERVE and feed
+ * back into a `showMenu` prop in response to the menu opening/closing; the
+ * baseline's own `onShowMenuList`/`onCloseMenuList` props have no port here,
+ * disclosed judgment call (no equivalent surface exists on `ControlsDropdown`
+ * to wire them to). `interaction.showMenu` is kept regardless as a plain
+ * caller-controlled prop, still useful for e.g. force-showing the trigger
+ * while some OTHER caller-owned UI needs it visible, but — unlike the
+ * baseline, where `showMenu` was the ONLY thing keeping the trigger up once
+ * opened — this component no longer depends on it for that: `menuContainerSx`
+ * reads `ControlsDropdown`'s own trigger `aria-expanded` state directly via
+ * `:has()`, so the trigger (and its container) stays visible for the menu's
+ * entire open lifetime even when no caller ever sets `showMenu` at all.
  *
  * `FolderIcon`/`PinIcon` — `FolderIcon` (baseline: `@/components/Icons/
  * FolderIcon`) has no `shared/ui/icons/**` equivalent (confirmed: `ls
@@ -239,20 +253,29 @@ function summaryContainerSx(
 const expandIconSx: SxProps<Theme> = (theme: Theme) => ({ width: '0.875rem', height: '0.875rem', color: theme.vars.palette.icon.fill.secondary });
 
 /**
- * Baseline's own `'& .MuiAccordionSummary-content': { minWidth: 0 }` is
- * dropped, disclosed: `elitea/no-mui-internal-selector` (R-T6) bans deep
- * `.Mui*-*` selectors outright with no override mechanism available here —
- * `StyledAccordionSummary`'s own `StyledAccordionSummaryProps` explicitly
- * `Omit`s `slotProps` from its public API (its own internal `slotProps.
- * content` already owns that slot for the expand-icon-rotation fix), so
- * there is no sanctioned way for a caller to reach the content wrapper's
- * `min-width` either. Minor, disclosed visual gap: without it, a very long
- * folder title's ellipsis truncation (`titleTextSx`'s own `overflow:
- * hidden`/`textOverflow: ellipsis`) may not always engage inside a very
- * narrow sidebar, since the flex parent's own `min-width: auto` default can
- * still block the child from shrinking below its natural content width.
+ * Baseline's own `'& .MuiAccordionSummary-content': { minWidth: 0 }` can't
+ * be ported by naming that class directly — `elitea/no-mui-internal-selector`
+ * (R-T6) bans deep `.Mui*-*` selectors outright, and `StyledAccordionSummary`'s
+ * own `StyledAccordionSummaryProps` `Omit`s `slotProps` from its public API
+ * (its own internal `slotProps.content` already owns that slot for the
+ * expand-icon-rotation fix), so there is no sanctioned prop-based route to
+ * that wrapper's `min-width` either.
+ *
+ * Reached structurally instead: `AccordionSummary`'s root (verified against
+ * `node_modules/@mui/material/AccordionSummary/AccordionSummary.js`) has
+ * *exactly* two direct children — the content `span` (`flexGrow: 1`, this
+ * component's baseline target) and, when `expandIcon` is set (always, here),
+ * the expand-icon-wrapper `span`. `'& > *'` is a plain child-combinator
+ * selector — no `.Mui*` class named anywhere — so `elitea/no-mui-internal-
+ * selector` does not apply, and it reaches the same content wrapper the
+ * baseline's class selector did (plus the icon wrapper, harmless: it has no
+ * `flexGrow` and is never squeezed below its fixed icon size). Restores the
+ * same effect as the baseline: `titleTextSx`'s own `overflow: hidden`/
+ * `textOverflow: ellipsis` can now actually engage for a very long folder
+ * title in a narrow sidebar, since every ancestor flex item down to the
+ * title text itself carries `min-width: 0`.
  */
-const summarySx: SxProps<Theme> = { overflow: 'hidden', minWidth: 0 };
+const summarySx: SxProps<Theme> = { overflow: 'hidden', minWidth: 0, '& > *': { minWidth: 0 } };
 
 const titleContainerSx: SxProps<Theme> = (theme: Theme) => ({ display: 'flex', alignItems: 'center', gap: theme.spacing(1.5), overflow: 'hidden', minWidth: 0 });
 
@@ -275,5 +298,23 @@ function menuContainerSx(isHovering: boolean, showMenu: boolean): SxProps<Theme>
     justifyContent: 'center',
     alignItems: 'center',
     alignSelf: 'center',
+    // Disclosed-gap fix: baseline `showMenu` (`FolderItem.jsx:164-171`) is
+    // set by the caller's own `onShowMenuList`/`onCloseMenuList`, wired to
+    // the baseline `DotMenu`'s open/close events. `ControlsDropdown` (this
+    // codebase's equivalent, see this file's own module doc) owns its open
+    // state internally and exposes no such callback, so no caller —
+    // `FolderItem.tsx` included — can drive `interaction.showMenu` from a
+    // real "menu is open" signal; `showMenu` alone can therefore go stale
+    // the instant the mouse leaves the row, taking this container (and the
+    // trigger `IconButton` inside it) to `display: none` while the popup
+    // menu itself is still open and being interacted with.
+    // Fixed without a `shared/ui` API change: `ControlsDropdown`'s own
+    // trigger `IconButton` sets `aria-expanded="true"` on itself for the
+    // exact span its `Menu` (top-level or nested submenu — closing either
+    // resets `anchorEl`) stays open. `:has()` reads that live DOM state
+    // directly — no `.Mui*` class involved, so `elitea/no-mui-internal-
+    // selector` does not apply — keeping this container visible for the
+    // whole time the menu is open regardless of hover/`showMenu`.
+    '&:has([aria-expanded="true"])': { display: 'flex', visibility: 'visible' },
   };
 }

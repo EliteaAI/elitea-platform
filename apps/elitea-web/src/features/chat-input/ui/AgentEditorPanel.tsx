@@ -2,9 +2,11 @@ import type { ReactNode } from 'react';
 import { useCallback } from 'react';
 
 import Box from '@mui/material/Box';
+import ButtonGroup from '@mui/material/ButtonGroup';
 import Divider from '@mui/material/Divider';
 
 import { useIsActiveParticipantBeingEdited } from '@/entities/participant';
+import { t } from '@/shared/i18n';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 
 import { useEditedParticipantId } from '../api/useEditedParticipantId';
@@ -34,6 +36,29 @@ import { VariablesEditor } from './VariablesEditor';
 import { VersionSelector } from './VersionSelector';
 
 export type { AgentEditorPanelProps } from './AgentEditorPanel.types';
+
+/**
+ * Local module augmentation, scoped to this file's own need: `shared/brand/
+ * theme.augment.d.ts` (out of this cluster's file scope — a shared brand/
+ * theme file, not editable here) already adds `elitea` to `@mui/material/
+ * Button`'s `ButtonPropsVariantOverrides`, but has no equivalent entry for
+ * `@mui/material/ButtonGroup`'s sibling `ButtonGroupPropsVariantOverrides`.
+ * Without it, restoring the baseline's `<ButtonGroup variant="elitea" ...>`
+ * below (see this component's own doc comment, "ButtonGroup restoration")
+ * fails `tsc` with `Type '"elitea"' is not assignable to type
+ * OverridableStringUnion<'contained'|'outlined'|'text', ...>`. TypeScript's
+ * declaration-merging is file-location-agnostic (this is the same mechanism
+ * `theme.augment.d.ts` itself uses), so this is a real, typed fix, not a
+ * cast — but the canonical home for it is alongside the existing `Button`
+ * augmentation in `theme.augment.d.ts`. Flagged as a follow-up in this
+ * fix's own report rather than edited there, per this cluster's file-scope
+ * boundary.
+ */
+declare module '@mui/material/ButtonGroup' {
+  interface ButtonGroupPropsVariantOverrides {
+    elitea: true;
+  }
+}
 
 /**
  * Port of `apps/elitea-ui/src/[fsd]/features/chat/ui/chat-input/
@@ -145,7 +170,14 @@ export function AgentEditorPanel(props: AgentEditorPanelProps): ReactNode {
       ref={containerRef}
       sx={styles.outerContainer}
     >
-      <Box sx={styles.buttonRow}>
+      <ButtonGroup
+        variant="elitea"
+        disableElevation
+        color="secondary"
+        disabled={disabled}
+        aria-label={t('chatInput.agentEditorPanel.modelSelectorMenu', 'Model Selector Menu')}
+        sx={styles.buttonRow}
+      >
         <EntitySwitchButton
           tooltip={switchEntityTooltip(isPipeline)}
           onClick={onClickParticipant}
@@ -193,7 +225,7 @@ export function AgentEditorPanel(props: AgentEditorPanelProps): ReactNode {
           canEdit={canEdit}
           styles={styles}
         />
-      </Box>
+      </ButtonGroup>
 
       <SwitchToModelButton
         disabled={disabled || disableSwitchToModel}

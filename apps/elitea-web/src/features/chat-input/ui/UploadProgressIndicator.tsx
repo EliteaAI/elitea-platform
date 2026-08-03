@@ -30,12 +30,7 @@ export function UploadProgressIndicator({ progress }: { readonly progress?: numb
       </Box>
     );
   }
-  return (
-    <CircularProgress
-      size={20}
-      sx={circleSx}
-    />
-  );
+  return <CircularProgress sx={circleSx} />;
 }
 
 const wrapperSx: SxProps<Theme> = {

@@ -52,6 +52,11 @@
 import type { ReactNode } from 'react';
 import { useEffect, useMemo } from 'react';
 
+import Box from '@mui/material/Box';
+import CircularProgress from '@mui/material/CircularProgress';
+import ClickAwayListener from '@mui/material/ClickAwayListener';
+import Typography from '@mui/material/Typography';
+
 import { toolkitValidation } from '@/entities/toolkit';
 import { t } from '@/shared/i18n';
 import { MentionToolList } from '@/shared/ui/MentionToolList';
@@ -111,6 +116,64 @@ export interface SlashSuggestionListProps {
 }
 
 /**
+ * Local visual twin of `shared/ui/MentionToolList`'s outer chrome (border,
+ * sticky toolkit-name header, background) — shown in the 'tool' phase while
+ * `useToolkitDetailsQuery` is still fetching, mirroring the baseline's
+ * `ToolList.jsx` `isLoading` branch (`<CircularProgress size="1.25rem" />`
+ * in place of the tool rows, same sticky header kept above it).
+ * `shared/ui/MentionToolList` has no loading prop of its own — adding one
+ * would mean editing a file outside this cluster's scope — so this stays a
+ * small local twin (same container styling, same `ClickAwayListener`
+ * "click outside closes" convention) rather than a shared-component change.
+ */
+function ToolsLoadingPlaceholder(props: { readonly toolkitName: string; readonly onSelectTool: (toolName: string | null) => void }): ReactNode {
+  return (
+    <ClickAwayListener onClickAway={() => props.onSelectTool(null)}>
+      <Box
+        sx={(theme) => ({
+          border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
+          width: '100%',
+          maxWidth: '100%',
+          maxHeight: '15.4375rem',
+          borderRadius: theme.vars.shape.radiusLg,
+          boxSizing: 'border-box',
+          padding: '0.75rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.5rem',
+          background: theme.vars.palette.background.secondary,
+          overflowY: 'auto',
+        })}
+      >
+        <Box
+          sx={{
+            position: 'sticky',
+            top: '-0.75rem',
+            zIndex: 1,
+            height: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            padding: '1rem 0.75rem',
+            margin: '-0.75rem -0.75rem 0',
+            background: 'inherit',
+          }}
+        >
+          <Typography
+            variant="subtitle"
+            color="text.primary"
+          >
+            {props.toolkitName} {t('chatInput.slashSuggestionList.availableTools', 'available tools')}
+          </Typography>
+        </Box>
+        <Box sx={{ display: 'flex', justifyContent: 'center', padding: '0.5rem 0' }}>
+          <CircularProgress size="1.25rem" />
+        </Box>
+      </Box>
+    </ClickAwayListener>
+  );
+}
+
+/**
  * The phase-dependent render output — extracted from `SlashSuggestionList`
  * itself purely to keep that component's own `complexity` under this
  * codebase's budget (12); every hook (`useMemo`/`useEffect`) stays in the
@@ -150,6 +213,18 @@ function renderPhaseBody(params: {
 
   // phase === 'tool' — hide the list entirely when the filter matches nothing (but not while loading)
   if (!params.isFetchingTools && params.toolQuery && params.filteredTools.length === 0) return null;
+
+  // While the toolkit-details fetch is in flight, show the loading affordance
+  // instead of the (empty-or-stale) tool list — matches the baseline's
+  // `ToolList.jsx` `isLoading` branch (see `ToolsLoadingPlaceholder`'s doc comment).
+  if (params.isFetchingTools) {
+    return (
+      <ToolsLoadingPlaceholder
+        toolkitName={params.selectedToolkitName}
+        onSelectTool={params.onSelectTool}
+      />
+    );
+  }
 
   return (
     <MentionToolList

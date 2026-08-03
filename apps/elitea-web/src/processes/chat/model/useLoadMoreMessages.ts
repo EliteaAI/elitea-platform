@@ -109,10 +109,13 @@ export function useLoadMoreMessages<TMessage>(params: UseLoadMoreMessagesParams<
           const prevIds = new Set(prev.map(getMessageId));
           return [...olderMessages.filter((m) => !prevIds.has(getMessageId(m))), ...prev];
         });
-        setPage((prev) => prev + 1);
       } catch (error) {
         onErrorRef.current?.(error);
       } finally {
+        // Advances regardless of fetch outcome, matching the baseline (`setPage`/
+        // `setIsLoadingMore(false)` sit outside its `if (result.data)` block) — a
+        // failed page is skipped on retry rather than retried forever.
+        setPage((prev) => prev + 1);
         setIsLoadingMore(false);
       }
     },

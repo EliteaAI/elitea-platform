@@ -103,6 +103,28 @@ describe('FolderAccordion', () => {
     expect(queryByLabelText('Pinned')).not.toBeInTheDocument();
   });
 
+  it('gives the accordion-summary content wrapper a shrinkable min-width, so a long title can ellipsize (baseline parity)', () => {
+    // jsdom does no real layout, so actual ellipsis truncation can't be
+    // observed here — this asserts the CSS min-width CHAIN this fix
+    // restores instead: without it, the flex item wrapping the title (an
+    // internal `AccordionSummary` DOM node this codebase's `elitea/no-mui-
+    // internal-selector` lint rule bans naming directly — reached instead,
+    // disclosed in `summarySx`'s own doc comment, via the plain `'& > *'`
+    // child-combinator on the `AccordionSummary` root) keeps its default
+    // `min-width: auto`, which blocks `titleTextSx`'s `overflow: hidden`/
+    // `textOverflow: ellipsis` from ever engaging.
+    const { getByRole } = renderWithProviders(
+      <FolderAccordion
+        items={[{ title: 'My folder', content: 'Folder body' }]}
+        menuItems={MENU_ITEMS}
+      />,
+    );
+    const summaryButton = getByRole('button', { name: 'My folder' });
+    const contentWrapper = summaryButton.children[0];
+    expect(contentWrapper).toBeDefined();
+    expect(window.getComputedStyle(contentWrapper as Element).minWidth).toBe('0px');
+  });
+
   it('renders the pre-bound menuItems through ControlsDropdown', async () => {
     // The menu trigger's actual `visibility: visible` only comes from a REAL
     // CSS `:hover` pseudo-class rule (`&:hover #${MENU_CONTAINER_ID}`,
@@ -133,6 +155,43 @@ describe('FolderAccordion', () => {
     fireEvent.click(trigger as Element);
     await user.click(getByRole('menuitem', { name: 'Delete folder' }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the menu trigger container visible while its ControlsDropdown menu is open, even after the mouse leaves the row', async () => {
+    // Disclosed-gap regression: `interaction.showMenu` (never set by
+    // `FolderItem.tsx` — `ControlsDropdown` exposes no onOpen/onClose
+    // callback to drive it from, see this file's own module doc) must not
+    // be the only thing keeping the trigger up. `menuContainerSx`'s
+    // `:has([aria-expanded="true"])` rule reads `ControlsDropdown`'s own
+    // trigger state directly instead, so the container should stay
+    // `display:flex` for the whole time the menu is open regardless of
+    // hover. Trigger queried by `aria-label` attribute and clicked via
+    // `fireEvent` (not `userEvent`), same jsdom-`:hover`-limitation
+    // workaround this file's own "renders the pre-bound menuItems" test
+    // above already establishes: the container is CSS-hidden absent a real
+    // hover, which `userEvent.click` correctly refuses to interact with.
+    const user = userEvent.setup();
+    const { container, getByRole } = renderWithProviders(
+      <FolderAccordion
+        items={[{ title: 'My folder', content: 'Folder body' }]}
+        menuItems={MENU_ITEMS}
+      />,
+    );
+    const menuContainer = container.querySelector('#folder-accordion-menu-container');
+    const trigger = container.querySelector('[aria-label="Folder actions"]');
+    expect(menuContainer).not.toBeNull();
+    expect(trigger).not.toBeNull();
+
+    // Not hovering, menu not open: container is display:none, same as before this fix.
+    expect(window.getComputedStyle(menuContainer as Element).display).toBe('none');
+
+    fireEvent.click(trigger as Element);
+    expect(getByRole('menu')).toBeInTheDocument();
+    // Menu is open, mouse never entered the row: container must stay visible.
+    expect(window.getComputedStyle(menuContainer as Element).display).toBe('flex');
+
+    await user.click(getByRole('menuitem', { name: 'Delete' }));
+    expect(window.getComputedStyle(menuContainer as Element).display).toBe('none');
   });
 
   it('fires onMouseEnter/onMouseLeave from the interaction bag on the summary row', () => {

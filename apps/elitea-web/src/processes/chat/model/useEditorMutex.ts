@@ -177,7 +177,7 @@ export function useEditorMutex(params: UseEditorMutexParams): UseEditorMutexResu
       if (isAnyEditorOpen) {
         queue({ kind: 'forCanvas', information: { message, ...payload } });
       } else {
-        onShowCanvasEditor(payload);
+        onShowCanvasEditor({ message, ...payload });
       }
     },
     [isAnyEditorOpen, onShowCanvasEditor, queue],
