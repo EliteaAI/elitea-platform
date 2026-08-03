@@ -27,15 +27,22 @@ import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useNavigate } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 
+import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { useListModelsQuery } from '@/shared/api/configurationsApi';
-import { TokensSection } from '@/routes/_shell/settings/personal-tokens/TokensSection';
-import { SettingsPreview } from '@/routes/_shell/settings/personal-tokens/SettingsPreview';
+import { TokensSection } from '@/features/settings/ui/personal-tokens/TokensSection';
+import { SettingsPreview } from '@/features/settings/ui/personal-tokens/SettingsPreview';
 import { t } from '@/shared/ui/lib/t';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
+
+export const Route = createFileRoute('/_shell/settings/tokens')({
+  pendingComponent: RoutePending,
+  errorComponent: RouteError,
+  component: PersonalTokensPage,
+});
 
 export function PersonalTokensPage() {
   const navigate = useNavigate();
@@ -158,6 +165,7 @@ export function PersonalTokensPage() {
       />
       <Box sx={styles.content}>
         <TokensSection
+          projectId={projectId}
           search={search}
           showPreview
           onPreviewToken={handlePreview}

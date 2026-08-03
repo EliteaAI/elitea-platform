@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Button, Modal, Typography } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { t } from '@/shared/i18n';
 import { VALIDATION_RULE, validateMaxTokens } from '@/widgets/llm-model-selector/lib/validation';
 import { LLMSettings } from './LLMSettings';
 
@@ -16,11 +17,6 @@ interface LLMSettingsDialogProps {
   showStepsLimit?: boolean;
   onResetToDefaults?: (() => void) | undefined;
 }
-
-const MODEL_SETTINGS_TITLE = 'Model settings';
-const RESET_TO_DEFAULTS_LABEL = 'Reset to defaults';
-const CANCEL_LABEL = 'Cancel';
-const APPLY_LABEL = 'Apply';
 
 // R-T10/R-T1: radius and box-shadow colour must come from brand tokens, so
 // this needs the theme — same `SxProps<Theme> = (theme) => ({...})` shape
@@ -87,7 +83,7 @@ export const LLMSettingsDialog = memo(
             variant="h6"
             sx={{ mb: 2, fontWeight: 600 }}
           >
-            {MODEL_SETTINGS_TITLE}
+            {t('widgets.llmModelSelector.llmSettingsDialog.title', 'Model settings')}
           </Typography>
           <LLMSettings
             llmSettings={localSettings}
@@ -106,7 +102,7 @@ export const LLMSettingsDialog = memo(
                   onCancel();
                 }}
               >
-                {RESET_TO_DEFAULTS_LABEL}
+                {t('widgets.llmModelSelector.llmSettingsDialog.resetToDefaultsLabel', 'Reset to defaults')}
               </Button>
             )}
             <Button
@@ -114,14 +110,14 @@ export const LLMSettingsDialog = memo(
               color="secondary"
               onClick={onCancel}
             >
-              {CANCEL_LABEL}
+              {t('widgets.llmModelSelector.llmSettingsDialog.cancelLabel', 'Cancel')}
             </Button>
             <Button
               variant="contained"
               onClick={handleOK}
               disabled={isDisabled}
             >
-              {APPLY_LABEL}
+              {t('widgets.llmModelSelector.llmSettingsDialog.applyLabel', 'Apply')}
             </Button>
           </Box>
         </Box>

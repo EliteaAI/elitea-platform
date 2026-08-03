@@ -9,6 +9,7 @@ import type { Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 
 import { agentEditorHooks } from '@/features/agents';
+import { t } from '@/shared/i18n';
 
 import { AttachmentsPanel, MainMenuList } from './PlusChatButton.parts';
 import {
@@ -77,9 +78,6 @@ export interface PlusChatButtonProps {
   participants?: unknown[];
   entitySubmenus?: PlusChatButtonEntitySubmenus;
 }
-
-const PLUS_MENU_TOOLTIP = 'Add files, agents, toolkits and more...';
-const PLUS_MENU_ARIA_LABEL = 'plus menu';
 
 export const PlusChatButton = memo(
   ({
@@ -172,11 +170,11 @@ export const PlusChatButton = memo(
 
     return (
       <>
-        <Tooltip title={PLUS_MENU_TOOLTIP} placement="top">
+        <Tooltip title={t('widgets.chat.plusChatButton.tooltip', 'Add files, agents, toolkits and more...')} placement="top">
           <IconButton
             ref={anchorRef}
             color="secondary"
-            aria-label={PLUS_MENU_ARIA_LABEL}
+            aria-label={t('widgets.chat.plusChatButton.ariaLabel', 'plus menu')}
             data-testid="plus-menu-button"
             onClick={toggleMenu}
             sx={{ marginLeft: 0 }}
@@ -217,12 +215,12 @@ export const PlusChatButton = memo(
                   items={submenuItems}
                   searchValue={searchValue}
                   onSearchChange={(e) => setSearchValue(e.target.value)}
-                  searchPlaceholder="Search..."
+                  searchPlaceholder={t('widgets.chat.plusChatButton.searchPlaceholder', 'Search...')}
                   showCreateNew={createConfig?.showCreateNew ?? false}
                   onCreateNew={createConfig?.onCreateNew}
-                  createNewLabel="Create new"
-                  emptyMessage={`No ${activeSubmenu} available`}
-                  noResultsMessage="No items found"
+                  createNewLabel={t('widgets.chat.plusChatButton.createNewLabel', 'Create new')}
+                  emptyMessage={t('widgets.chat.plusChatButton.noItemsAvailable', 'No {{submenu}} available', { submenu: activeSubmenu })}
+                  noResultsMessage={t('widgets.chat.plusChatButton.noItemsFound', 'No items found')}
                   isLoading={false}
                 />
               ) : (

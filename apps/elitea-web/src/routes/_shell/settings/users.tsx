@@ -8,7 +8,7 @@ import { createFileRoute, useRouteContext } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { pickParams } from '@/routes/-search/params';
-import { UsersPage } from './users-page';
+import { Users } from '@/pages/settings/Users';
 
 export const Route = createFileRoute('/_shell/settings/users')({
   validateSearch: pickParams('inviteUsers'),
@@ -23,5 +23,5 @@ function UsersPageComponent() {
     (context as { auth?: { getSelectedProjectId?: () => string | undefined } })
       ?.auth?.getSelectedProjectId?.() ?? '';
 
-  return <UsersPage projectId={projectId} />;
+  return <Users projectId={projectId} />;
 }

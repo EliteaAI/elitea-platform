@@ -4,7 +4,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { pickParams } from '@/routes/-search/params';
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { RouteShell } from '@/routes/-ui/RouteShell';
-import { SecretsContent } from '@/routes/_shell/settings/secrets/SecretsContent';
+import { SecretsContent } from '@/pages/settings/Secrets';
 
 export const Route = createFileRoute('/_shell/settings/secrets')({
   pendingComponent: RoutePending,

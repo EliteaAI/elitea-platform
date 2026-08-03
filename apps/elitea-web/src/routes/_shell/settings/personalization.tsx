@@ -9,13 +9,16 @@ import type { SxProps, Theme } from '@mui/material/styles';
 
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { t } from '@/shared/i18n';
-import ProfilePage from '@/routes/_shell/settings/profile/ProfilePage';
+import { useSelectedProjectStore } from '@/widgets/app-shell';
+import Personalization from '@/pages/settings/Personalization';
 
 export const Route = createFileRoute('/_shell/settings/personalization')({
   component: SettingsPersonalizationPage,
 });
 
 function SettingsPersonalizationPage() {
+  const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
+
   return (
     <Paper elevation={0} sx={styles.root}>
       <DrawerPageHeader
@@ -23,7 +26,7 @@ function SettingsPersonalizationPage() {
         showBorder
       />
       <Box sx={styles.content}>
-        <ProfilePage />
+        <Personalization projectId={projectId} />
       </Box>
     </Paper>
   );

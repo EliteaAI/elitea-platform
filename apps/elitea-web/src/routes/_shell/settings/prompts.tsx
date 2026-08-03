@@ -4,7 +4,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import Paper from '@mui/material/Paper';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { ServicePromptsSection } from '@/routes/_shell/settings/system-prompts/ServicePromptsSection';
+import { ServicePrompts } from '@/pages/settings/ServicePrompts';
 
 export const Route = createFileRoute('/_shell/settings/prompts')({
   component: ServicePromptsPage,
@@ -13,7 +13,7 @@ export const Route = createFileRoute('/_shell/settings/prompts')({
 function ServicePromptsPage() {
   return (
     <Paper elevation={0} sx={styles.root}>
-      <ServicePromptsSection />
+      <ServicePrompts />
     </Paper>
   );
 }

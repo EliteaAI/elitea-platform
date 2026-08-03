@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 
+import { t } from '@/shared/i18n';
+
 import Box from '@mui/material/Box';
 import Checkbox from '@mui/material/Checkbox';
 import MenuItem from '@mui/material/MenuItem';
@@ -30,9 +32,6 @@ export interface PlusChatSubmenuProps {
 
 type PlusChatSubmenuItem = NonNullable<PlusChatSubmenuProps['items']>[number];
 
-const LOADING_LABEL = 'Loading...';
-const TOGGLE_PLACEHOLDER_LABEL = 'Toggle options coming soon';
-
 /**
  * Case-insensitive substring filter of `items` by `label`; an empty
  * `searchValue` short-circuits to `items` unchanged.
@@ -62,7 +61,7 @@ function submenuStatusLabel(
   noResultsMessage: string,
 ): string | null {
   if (isLoading) {
-    return LOADING_LABEL;
+    return t('widgets.chat.plusChatSubmenu.loadingLabel', 'Loading...');
   }
   if (hasItems) {
     return null;
@@ -75,13 +74,13 @@ export const PlusChatSubmenu = memo(
     items = [],
     searchValue = '',
     onSearchChange,
-    searchPlaceholder = 'Search...',
+    searchPlaceholder = t('widgets.chat.plusChatSubmenu.searchPlaceholder', 'Search...'),
     onCreateNew,
-    createNewLabel = 'Create new',
+    createNewLabel = t('widgets.chat.plusChatSubmenu.createNewLabel', 'Create new'),
     showCreateNew = false,
     isLoading = false,
-    emptyMessage = 'No items available',
-    noResultsMessage = 'No items found',
+    emptyMessage = t('widgets.chat.plusChatSubmenu.emptyMessage', 'No items available'),
+    noResultsMessage = t('widgets.chat.plusChatSubmenu.noResultsMessage', 'No items found'),
     onScroll,
     showToggle,
   }: PlusChatSubmenuProps) => {
@@ -199,7 +198,7 @@ export const PlusChatSubmenu = memo(
                 fontSize: theme.typography.bodySmall.fontSize,
               })}
             >
-              {TOGGLE_PLACEHOLDER_LABEL}
+              {t('widgets.chat.plusChatSubmenu.togglePlaceholder', 'Toggle options coming soon')}
             </Box>
           )}
         </Box>

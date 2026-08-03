@@ -60,10 +60,6 @@ const LLMModelsMenu = memo(
             selected={item.id === selectedModel?.id}
             onClick={handleItemClick(item)}
             sx={{
-              '& .MuiListItemIcon-root': {
-                minWidth: 0,
-                marginRight: '0.6rem',
-              },
               '&:hover': {
                 backgroundColor: 'action.hover',
               },
@@ -75,7 +71,7 @@ const LLMModelsMenu = memo(
               },
             }}
           >
-            <ListItemIcon>
+            <ListItemIcon sx={{ minWidth: 0, marginRight: '0.6rem' }}>
               {item.shared ? (
                 <PublicIcon fontSize="small" />
               ) : (

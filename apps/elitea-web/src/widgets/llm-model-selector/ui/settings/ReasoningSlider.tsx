@@ -2,6 +2,8 @@ import { memo } from 'react';
 
 import { Box, Slider, Typography } from '@mui/material';
 
+import { t } from '@/shared/i18n';
+
 interface ReasoningSliderProps {
   value: string;
   onChange: (value: string) => void;
@@ -9,9 +11,9 @@ interface ReasoningSliderProps {
 }
 
 const REASONING_LABELS = [
-  { label: 'Low', value: 'low' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
+  { label: t('widgets.llmModelSelector.reasoningSlider.labelLow', 'Low'), value: 'low' },
+  { label: t('widgets.llmModelSelector.reasoningSlider.labelMedium', 'Medium'), value: 'medium' },
+  { label: t('widgets.llmModelSelector.reasoningSlider.labelHigh', 'High'), value: 'high' },
 ];
 
 const REASONING_VALUE_MAP: Record<string, number> = {
@@ -38,7 +40,7 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-        <Typography variant="body2">Reasoning effort</Typography>
+        <Typography variant="body2">{t('widgets.llmModelSelector.reasoningSlider.title', 'Reasoning effort')}</Typography>
         <Typography variant="body2">
           {REASONING_LABELS.find((l) => l.value === value)?.label ?? 'Medium'}
         </Typography>
@@ -51,7 +53,7 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
         max={2}
         step={1}
         marks={REASONING_LABELS.map((l) => ({ value: REASONING_VALUE_MAP[l.value] ?? 0, label: l.label }))}
-        aria-label="Reasoning effort"
+        aria-label={t('widgets.llmModelSelector.reasoningSlider.title', 'Reasoning effort')}
         sx={{
           '& .MuiSlider-thumb': { width: 16, height: 16 },
           '& .MuiSlider-track': { height: 4 },

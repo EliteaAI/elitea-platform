@@ -292,5 +292,3 @@ function useContextBudgetSlot(
 }
 
 ParticipantsWrapper.displayName = 'ParticipantsWrapper';
-
-export { ParticipantsWrapper };

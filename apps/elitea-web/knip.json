@@ -245,30 +245,11 @@
     "src/features/chat-participants/ui/ParticipantActions/EditParticipantButton.tsx",
     "src/features/chat-participants/ui/ParticipantActions/ParticipantActions.tsx",
     "src/features/chat-participants/ui/ParticipantsWrapper.tsx",
-    // Barrel `index.ts` re-exports are not consumed by any Wave-2 consumer yet.
-    // Adding the barrel itself to entry marks its re-exports as reachable.
-    "src/routes/_shell/settings/ai-configuration/index.ts",
     // Legacy shared API exports — functions exported from the old app's
     // configurations API and sound notification hooks, not consumed by
     // Wave-2 consumers yet.
     "src/shared/api/configurationsApi.ts",
     "src/shared/lib/hooks/useSoundNotification.ts",
-    // Remaining ai-configuration source files whose exports are re-exported
-    // through the barrel `index.ts` but not consumed directly. Adding these
-    // directly marks their exports as reachable for knip.
-    "src/routes/_shell/settings/ai-configuration/CodePreview.tsx",
-    "src/routes/_shell/settings/ai-configuration/CodePreviewContent.tsx",
-    "src/routes/_shell/settings/ai-configuration/CodePreviewEmpty.tsx",
-    "src/routes/_shell/settings/ai-configuration/CodePreviewHeader.tsx",
-    "src/routes/_shell/settings/ai-configuration/ConfigurationCard.tsx",
-    "src/routes/_shell/settings/ai-configuration/ConfigurationSection.tsx",
-    "src/routes/_shell/settings/ai-configuration/ConfigurationsPanel.tsx",
-    "src/routes/_shell/settings/ai-configuration/FieldWithCopy.tsx",
-    "src/routes/_shell/settings/ai-configuration/OpenAITemplate.tsx",
-    "src/routes/_shell/settings/ai-configuration/AddModelButton.tsx",
-    // Barrel `index.ts` re-exports are not consumed by any Wave-2 consumer yet.
-    // Adding the barrel itself to entry marks its re-exports as reachable.
-    "src/routes/_shell/settings/ai-configuration/index.ts",
     // C4 (chat-messages) adversarial-verify fix round: option-object prop-group
     // types (`ApplicationAnswerStatus`/`ApplicationAnswerActionHandlers`/
     // `ApplicationAnswerTts`/`ApplicationAnswerContinuation`/`ApplicationAnswerHitl`
@@ -332,19 +313,7 @@
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
-    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
-    // Personal tokens route files from the old app — not wired into the new
-    // settings page yet (Wave-2 settings page re-implementation). REMOVE
-    // when a real consumer imports from these routes.
-    "src/routes/_shell/settings/create-personal-token.tsx",
-    "src/routes/_shell/settings/personal-tokens/GeneratedTokenDialog.tsx",
-    "src/routes/_shell/settings/personal-tokens/SettingsPreview.tsx",
-    "src/routes/_shell/settings/personal-tokens/TokenRow.styles.ts",
-    "src/routes/_shell/settings/personal-tokens/TokenRow.tsx",
-    "src/routes/_shell/settings/personal-tokens/TokensSection.tsx",
-    "src/routes/_shell/settings/personal-tokens/TokensTable.styles.ts",
-    "src/routes/_shell/settings/personal-tokens/TokensTable.tsx",
-    "src/routes/_shell/settings/tokens.tsx"
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't

@@ -2,7 +2,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
-import { ProjectContextContent } from '@/routes/_shell/settings/project-context/ProjectContextContent';
+import { ProjectContext } from '@/pages/settings/ProjectContext';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 export const Route = createFileRoute('/_shell/settings/project-params')({
@@ -20,5 +20,5 @@ function ProjectParamsPage() {
     return <RoutePending />;
   }
 
-  return <ProjectContextContent projectId={projectId} projectName={projectName} />;
+  return <ProjectContext projectId={projectId} projectName={projectName} />;
 }

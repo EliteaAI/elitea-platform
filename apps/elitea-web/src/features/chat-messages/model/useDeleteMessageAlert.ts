@@ -16,6 +16,8 @@
  */
 import { useCallback, useState } from 'react';
 
+import { t } from '@/shared/i18n';
+
 /** Sentinel `messageId` value meaning "delete every message", not one — baseline's `ALL_MESSAGES`. */
 export const ALL_MESSAGES = 'ALL_MESSAGES';
 
@@ -47,9 +49,6 @@ export interface UseDeleteMessageAlertResult {
   readonly confirmDelete: () => Promise<void>;
 }
 
-const SINGLE_MESSAGE_COPY = "The deleted message can't be restored. Are you sure to delete the message?";
-const ALL_MESSAGES_COPY = "The deleted messages can't be restored. Are you sure to delete all the messages?";
-
 /**
  * `useDeleteMessageAlert` — manages the state for a message deletion
  * confirmation dialog (used before calling the delete mutation), for both
@@ -65,13 +64,13 @@ export function useDeleteMessageAlert({
 
   const openDialog = useCallback((id: string) => {
     setMessageId(id);
-    setConfirmationMessage(SINGLE_MESSAGE_COPY);
+    setConfirmationMessage(t('chatMessages.deleteMessageAlert.singleMessageCopy', "The deleted message can't be restored. Are you sure to delete the message?"));
     setIsOpen(true);
   }, []);
 
   const openDialogForAll = useCallback(() => {
     setMessageId(ALL_MESSAGES);
-    setConfirmationMessage(ALL_MESSAGES_COPY);
+    setConfirmationMessage(t('chatMessages.deleteMessageAlert.allMessagesCopy', "The deleted messages can't be restored. Are you sure to delete all the messages?"));
     setIsOpen(true);
   }, []);
 

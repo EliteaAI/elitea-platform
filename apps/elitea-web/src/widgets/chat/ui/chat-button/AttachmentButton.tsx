@@ -5,6 +5,7 @@ import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
+import { t } from '@/shared/i18n';
 import { ATTACHMENT_LIMITS, getRemainingAttachmentCapacity, validateAttachmentFiles } from '@/shared/lib/attachments';
 
 /**
@@ -59,8 +60,6 @@ export interface AttachmentButtonProps {
   onError?: (message: string) => void;
 }
 
-const ATTACH_FILES_LABEL = 'attach files';
-
 export const AttachmentButton = memo(
   forwardRef<AttachmentButtonHandle, AttachmentButtonProps>(
     ({ disableAttachments = false, attachments = [], onAttachFiles, limits, onError }, ref) => {
@@ -101,7 +100,11 @@ export const AttachmentButton = memo(
 
       const handleButtonClick = useCallback(() => {
         if (capacity.isAtMaxCapacity) {
-          onError?.(`You've reached the ${effectiveLimits.MAX_ATTACHMENTS}-file limit.`);
+          onError?.(
+            t('widgets.chat.attachmentButton.fileLimitReachedError', "You've reached the {{max}}-file limit.", {
+              max: effectiveLimits.MAX_ATTACHMENTS,
+            }),
+          );
           return;
         }
         fileInputRef.current?.click();
@@ -120,12 +123,20 @@ export const AttachmentButton = memo(
       );
 
       const tooltipText = isProcessing
-        ? 'Processing...'
+        ? t('widgets.chat.attachmentButton.processingTooltip', 'Processing...')
         : capacity.isAtMaxCapacity
-          ? `Max ${effectiveLimits.MAX_ATTACHMENTS} attachments`
+          ? t('widgets.chat.attachmentButton.maxAttachmentsTooltip', 'Max {{max}} attachments', {
+              max: effectiveLimits.MAX_ATTACHMENTS,
+            })
           : capacity.isAtMaxSize
-            ? 'Size limit reached'
-            : `${capacity.remainingAttachments} file${capacity.remainingAttachments !== 1 ? 's' : ''} left`;
+            ? t('widgets.chat.attachmentButton.sizeLimitTooltip', 'Size limit reached')
+            : capacity.remainingAttachments === 1
+              ? t('widgets.chat.attachmentButton.oneFileLeftTooltip', '{{count}} file left', {
+                  count: capacity.remainingAttachments,
+                })
+              : t('widgets.chat.attachmentButton.filesLeftTooltip', '{{count}} files left', {
+                  count: capacity.remainingAttachments,
+                });
 
       return (
         <>
@@ -133,7 +144,7 @@ export const AttachmentButton = memo(
             <Box component="span">
               <IconButton
                 color="secondary"
-                aria-label={ATTACH_FILES_LABEL}
+                aria-label={t('widgets.chat.attachmentButton.ariaLabel', 'attach files')}
                 disabled={isDisabled}
                 onClick={handleButtonClick}
                 sx={{ marginLeft: 0 }}

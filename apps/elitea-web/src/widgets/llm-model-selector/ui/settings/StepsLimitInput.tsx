@@ -5,13 +5,12 @@ import { Box, TextField, Typography } from '@mui/material';
 import { DEFAULT_STEPS_LIMIT } from '@/shared/lib/constants';
 import { MAX_STEP_LIMIT, MIN_STEP_LIMIT } from '@/shared/lib/limits';
 import { parseValueToIntNumber } from '@/shared/lib/number';
+import { t } from '@/shared/i18n';
 
 interface StepsLimitInputProps {
   value: number;
   onChange: (value: number) => void;
 }
-
-const STEPS_LIMIT_LABEL = 'Steps limit';
 
 /** Steps limit numeric input. */
 export const StepsLimitInput = memo(({ value, onChange }: StepsLimitInputProps) => {
@@ -27,7 +26,7 @@ export const StepsLimitInput = memo(({ value, onChange }: StepsLimitInputProps) 
         variant="body2"
         sx={{ mb: 0.5 }}
       >
-        {STEPS_LIMIT_LABEL}
+        {t('widgets.llmModelSelector.stepsLimitInput.label', 'Steps limit')}
       </Typography>
       <TextField
         type="number"

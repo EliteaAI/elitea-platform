@@ -42,7 +42,10 @@ describe('SkillsGuard (full router)', () => {
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/chat');
     });
-    expect(screen.queryByTestId('route-shell')).toHaveAttribute('data-route-id', 'chat');
+    // `/chat` now renders the real `ChatPage` composition root (C6), not the
+    // `RouteShell` placeholder this test originally asserted on — its
+    // absence here is itself the proof the real page took over the route.
+    expect(screen.queryByTestId('route-shell')).not.toBeInTheDocument();
   });
 
   it('a non-public-project user navigating to /skills/all renders the skills tab list, not a redirect', async () => {

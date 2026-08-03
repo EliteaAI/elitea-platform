@@ -3,6 +3,8 @@ import { useCallback } from 'react';
 import { Box, ClickAwayListener, Skeleton, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 
+import { t } from '@/shared/i18n';
+
 import NewParticipantCard from './NewParticipantCard';
 
 /**
@@ -19,8 +21,6 @@ export type NewParticipantListProps = {
   title?: string;
   activeIndex?: number;
 };
-
-const NO_MATCHING_RESULTS_LABEL = 'No matching results';
 
 /** Pulled out of the component body to keep NewParticipantList's own cyclomatic complexity in budget. */
 function shouldShowEmptyState(isLoading: boolean, isFetching: boolean, participants: unknown[]): boolean {
@@ -89,7 +89,7 @@ const NewParticipantList = ({
         >
           {shouldShowEmptyState(isLoading, isFetching, participants) && (
             <Typography variant="bodyMedium" color="text.secondary" sx={{ padding: theme.spacing(0, 1), width: '100%' }}>
-              {NO_MATCHING_RESULTS_LABEL}
+              {t('chatRecommendations.newParticipantList.noMatchingResults', 'No matching results')}
             </Typography>
           )}
           {isLoading &&

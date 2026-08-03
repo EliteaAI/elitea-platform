@@ -9,6 +9,7 @@ import {
   DEFAULT_STEPS_LIMIT,
   DEFAULT_TEMPERATURE,
 } from '@/shared/lib/constants';
+import { t } from '@/shared/i18n';
 import { PROMPT_PAYLOAD_KEY } from '@/shared/lib/prompt-payload';
 import { parseValueToIntNumber } from '@/shared/lib/number';
 import { isNullOrUndefined } from '@/shared/lib/object';
@@ -27,8 +28,6 @@ interface LLMSettingsProps {
   showWebhookSecret?: boolean;
   showStepsLimit?: boolean;
 }
-
-const WEBHOOK_SECRET_LABEL = 'Webhook secret';
 
 /**
  * Below: pure helpers extracted from the `LLMSettings` component body to
@@ -248,7 +247,7 @@ export const LLMSettings = memo(
         )}
         {showWebhookSecret && (
           <SecretField
-            label={WEBHOOK_SECRET_LABEL}
+            label={t('widgets.llmModelSelector.llmSettings.webhookSecretLabel', 'Webhook secret')}
             value={derived.webhookSecret}
             onChange={onChangeWebhookSecret}
             passwordVisibilityToggle={false}

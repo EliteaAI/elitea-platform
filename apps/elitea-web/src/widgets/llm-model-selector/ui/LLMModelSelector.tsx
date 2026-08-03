@@ -6,6 +6,7 @@ import BusinessIcon from '@mui/icons-material/Business';
 import PublicIcon from '@mui/icons-material/Public';
 import SettingsIcon from '@mui/icons-material/Settings';
 
+import { t } from '@/shared/i18n';
 import type { LLMModel, LLMModelSelectorProps, LLMSettingsValues } from '@/widgets/llm-model-selector/lib/types';
 
 import { LLMSettingsDialog } from './LLMSettingsDialog';
@@ -32,8 +33,8 @@ function resolveDefaultProps(props: LLMModelSelectorProps): NormalizedLLMModelSe
     showWebhookSecret: props.showWebhookSecret ?? false,
     showStepsLimit: props.showStepsLimit ?? false,
     showSettingsEntry: props.showSettingsEntry ?? true,
-    modelTooltip: props.modelTooltip ?? 'Select LLM Model',
-    settingsTooltip: props.settingsTooltip ?? 'Model Settings',
+    modelTooltip: props.modelTooltip ?? t('widgets.llmModelSelector.selector.modelTooltip', 'Select LLM Model'),
+    settingsTooltip: props.settingsTooltip ?? t('widgets.llmModelSelector.selector.settingsTooltip', 'Model Settings'),
   };
 }
 
@@ -107,8 +108,6 @@ const LLMModelSelector = memo(
       setShowLLMSettings(false);
     }, []);
 
-    const modelSelectorAriaLabel = 'Model Selector Menu';
-    const settingsMenuAriaLabel = 'model settings menu';
     const modelDisplayName = resolveModelDisplayName(selectedModel, 'None');
     const settingsIconColor = resolveSettingsIconColor(theme, onSetLLMSettings, disabled);
 
@@ -119,7 +118,7 @@ const LLMModelSelector = memo(
           disableElevation
           disabled={disabled}
           ref={anchorRef}
-          aria-label={modelSelectorAriaLabel}
+          aria-label={t('widgets.llmModelSelector.selector.modelMenuAriaLabel', 'Model Selector Menu')}
           data-testid="model-selector-button"
           sx={styles.buttonGroup}
           data-tour={dataTourTargetId || undefined}
@@ -163,7 +162,7 @@ const LLMModelSelector = memo(
                   <Button
                     size="small"
                     aria-expanded={showLLMSettings ? 'true' : undefined}
-                    aria-label={settingsMenuAriaLabel}
+                    aria-label={t('widgets.llmModelSelector.selector.settingsMenuAriaLabel', 'model settings menu')}
                     aria-haspopup="menu"
                     onClick={handleSettingsClick}
                     variant="outlined"

@@ -4,6 +4,7 @@
  * `AgentEditorPanel.derive.ts`/`NewChatInput.types.ts` elsewhere in this
  * codebase.
  */
+import { t } from '@/shared/i18n';
 
 export interface PlusChatButtonEntitySubmenus {
   readonly pipelines?: readonly unknown[];
@@ -22,12 +23,12 @@ export interface MenuItemDef {
 }
 
 export const MENU_ITEMS: MenuItemDef[] = [
-  { key: 'agents', label: 'Agents', icon: '🤖', submenu: 'agents' },
-  { key: 'pipelines', label: 'Pipelines', icon: '📊', submenu: 'pipelines' },
-  { key: 'toolkits', label: 'Toolkits', icon: '🧰', submenu: 'toolkits' },
-  { key: 'mcps', label: 'MCPs', icon: '🔌', submenu: 'mcps' },
-  { key: 'attachments', label: 'Attachments', icon: '📎', submenu: 'attachments' },
-  { key: 'tools', label: 'Tools', icon: '⚙️', submenu: 'tools' },
+  { key: 'agents', label: t('widgets.chat.plusChatButton.menuAgents', 'Agents'), icon: '🤖', submenu: 'agents' },
+  { key: 'pipelines', label: t('widgets.chat.plusChatButton.menuPipelines', 'Pipelines'), icon: '📊', submenu: 'pipelines' },
+  { key: 'toolkits', label: t('widgets.chat.plusChatButton.menuToolkits', 'Toolkits'), icon: '🧰', submenu: 'toolkits' },
+  { key: 'mcps', label: t('widgets.chat.plusChatButton.menuMcps', 'MCPs'), icon: '🔌', submenu: 'mcps' },
+  { key: 'attachments', label: t('widgets.chat.plusChatButton.menuAttachments', 'Attachments'), icon: '📎', submenu: 'attachments' },
+  { key: 'tools', label: t('widgets.chat.plusChatButton.menuTools', 'Tools'), icon: '⚙️', submenu: 'tools' },
 ];
 
 interface SubmenuItem {

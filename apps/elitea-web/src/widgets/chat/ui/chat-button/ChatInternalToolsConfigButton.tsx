@@ -1,5 +1,7 @@
 import { memo, useCallback, useRef, useState } from 'react';
 
+import { t } from '@/shared/i18n';
+
 import ClickAwayListener from '@mui/material/ClickAwayListener';
 import SettingsIcon from '@mui/icons-material/Settings';
 import Checkbox from '@mui/material/Checkbox';
@@ -60,9 +62,6 @@ const DEV_FALLBACK_TOOLS: { key: string; label: string }[] = [
   { key: 'image_generation', label: 'Image Generation' },
 ];
 
-const TOOLS_TOOLTIP = 'Tools';
-const TOOLS_CONFIG_ARIA_LABEL = 'internal tools config';
-
 export const ChatInternalToolsConfigButton = memo(
   ({ disabled = false, tools, onToolChange }: ChatInternalToolsConfigButtonProps) => {
     const [anchorEl, setAnchorEl] = useState<HTMLButtonElement | null>(null);
@@ -97,11 +96,11 @@ export const ChatInternalToolsConfigButton = memo(
 
     return (
       <>
-        <Tooltip title={TOOLS_TOOLTIP} placement="top">
+        <Tooltip title={t('widgets.chat.chatInternalToolsConfigButton.tooltip', 'Tools')} placement="top">
           <IconButton
             ref={buttonRef}
             color="secondary"
-            aria-label={TOOLS_CONFIG_ARIA_LABEL}
+            aria-label={t('widgets.chat.chatInternalToolsConfigButton.ariaLabel', 'internal tools config')}
             onClick={toggleMenu}
             disabled={disabled}
             sx={{ marginLeft: 0 }}

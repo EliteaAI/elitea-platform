@@ -11,11 +11,10 @@ import Box from '@mui/material/Box';
 import type { Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
+import { t } from '@/shared/i18n';
+
 import AttachmentButton from './AttachmentButton';
 import type { MenuItemDef, SubmenuKey } from './PlusChatButton.helpers';
-
-const ATTACH_FILES_LABEL = 'Attach files';
-const ADD_TO_CHAT_LABEL = 'Add to chat';
 
 export interface AttachmentsPanelProps {
   readonly disableAttachments: boolean;
@@ -39,7 +38,7 @@ export function AttachmentsPanel({
           onAttachFiles={onAttachFiles}
           limits={limits}
         />
-        <Typography variant="bodyMedium">{ATTACH_FILES_LABEL}</Typography>
+        <Typography variant="bodyMedium">{t('widgets.chat.plusChatButton.attachFilesLabel', 'Attach files')}</Typography>
       </Box>
       {attachments.length > 0 && (
         <Box sx={{ maxHeight: '12rem', overflowY: 'auto' }}>
@@ -83,7 +82,7 @@ export function MainMenuList({ items, onBack, onSelectSubmenu }: MainMenuListPro
         onClick={onBack}
       >
         <Typography variant="bodyMedium" sx={{ flex: 1 }}>
-          {ADD_TO_CHAT_LABEL}
+          {t('widgets.chat.plusChatButton.addToChatLabel', 'Add to chat')}
         </Typography>
       </Box>
 

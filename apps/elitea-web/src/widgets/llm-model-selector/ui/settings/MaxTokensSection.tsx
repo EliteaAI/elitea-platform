@@ -5,17 +5,14 @@ import ClearIcon from '@mui/icons-material/Clear';
 
 import { DEFAULT_MAX_TOKENS, DEFAULT_MAX_TOKENS_CUSTOM } from '@/shared/lib/constants';
 import { RadioButtonGroup } from '@/shared/ui/RadioButtonGroup';
+import { t } from '@/shared/i18n';
 
 type MaxTokensMode = 'auto' | 'custom';
 
 const MODE_ITEMS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'custom', label: 'Custom' },
+  { value: 'auto', label: t('widgets.llmModelSelector.maxTokensSection.modeAuto', 'Auto') },
+  { value: 'custom', label: t('widgets.llmModelSelector.maxTokensSection.modeCustom', 'Custom') },
 ] as const;
-
-const MAX_TOKENS_LABEL = 'Max tokens';
-const MAX_TOKENS_MODE_LABEL = 'Max tokens mode';
-const REMAINING_TOKENS_LABEL = 'Remaining tokens';
 
 interface MaxTokensSectionProps {
   value: number | string;
@@ -64,7 +61,9 @@ export const MaxTokensSection = memo(
     return (
       <Box>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
-          <Typography variant="body2">{MAX_TOKENS_LABEL}</Typography>
+          <Typography variant="body2">
+            {t('widgets.llmModelSelector.maxTokensSection.label', 'Max tokens')}
+          </Typography>
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
             {maxOutputTokens !== undefined ? `Max: ${maxOutputTokens}` : ''}
           </Typography>
@@ -73,11 +72,15 @@ export const MaxTokensSection = memo(
           value={mode}
           onChange={handleModeChange}
           items={MODE_ITEMS}
-          aria-label={MAX_TOKENS_MODE_LABEL}
+          aria-label={t('widgets.llmModelSelector.maxTokensSection.modeAriaLabel', 'Max tokens mode')}
         />
         <Box sx={{ display: 'flex', gap: 2, mt: 1 }}>
           <TextField
-            value={isAuto ? 'Auto' : String(value)}
+            value={
+              isAuto
+                ? t('widgets.llmModelSelector.maxTokensSection.modeAuto', 'Auto')
+                : String(value)
+            }
             onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
             onBlur={onBlur}
             onFocus={onFocus}
@@ -114,7 +117,7 @@ export const MaxTokensSection = memo(
                 variant="caption"
                 sx={{ color: 'text.secondary', display: 'block', mb: 0.5 }}
               >
-                {REMAINING_TOKENS_LABEL}
+                {t('widgets.llmModelSelector.maxTokensSection.remainingLabel', 'Remaining tokens')}
               </Typography>
               <TextField
                 value={remainingTokens}

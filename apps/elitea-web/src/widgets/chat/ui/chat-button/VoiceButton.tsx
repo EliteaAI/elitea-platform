@@ -8,6 +8,7 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
 import { voiceHooks } from '@/features/chat-input';
+import { t } from '@/shared/i18n';
 
 /**
  * Chat button primitive: VoiceButton
@@ -73,14 +74,28 @@ export interface VoiceButtonProps {
 const VOICE_FEATURES_ENABLED = true;
 const VOICE_FEATURES_TEMPORARILY_DISABLED = false;
 
-const STOP_DICTATION_TITLE = 'Stop dictation';
-const STOP_VOICE_INPUT_LABEL = 'stop voice input';
-
-const VOICE_ERROR_MESSAGES: Record<string, string> = {
-  'not-allowed': 'Microphone access denied. Please allow microphone access in your browser settings.',
-  'audio-capture': 'No microphone found. Please connect a microphone and try again.',
-  network: 'Voice input requires an internet connection. Please check your connection and try again.',
-};
+/** Maps a speech-recognition error code to human-readable text — split out of `handleVoiceError` purely so each message can carry its own `t()` call. Unmapped codes (e.g. 'no-speech'/'aborted') resolve to `undefined`, same as the plain-object lookup this replaces. */
+function voiceErrorMessage(error: string): string | undefined {
+  switch (error) {
+    case 'not-allowed':
+      return t(
+        'widgets.chat.voiceButton.errorNotAllowed',
+        'Microphone access denied. Please allow microphone access in your browser settings.',
+      );
+    case 'audio-capture':
+      return t(
+        'widgets.chat.voiceButton.errorAudioCapture',
+        'No microphone found. Please connect a microphone and try again.',
+      );
+    case 'network':
+      return t(
+        'widgets.chat.voiceButton.errorNetwork',
+        'Voice input requires an internet connection. Please check your connection and try again.',
+      );
+    default:
+      return undefined;
+  }
+}
 
 interface VoiceCursorRefs {
   readonly preCursor: RefObject<string>;
@@ -131,15 +146,17 @@ interface VoiceButtonUiState {
 /** All of the render's derived (disabled/color/label/wrapper-shape) state in one place — split out purely to keep the component itself under the §3.5 cyclomatic-complexity-12 budget. */
 function deriveVoiceButtonUiState(disabled: boolean, isRecording: boolean, isAdminDisabled: boolean): VoiceButtonUiState {
   const tooltipTitle = isAdminDisabled
-    ? 'Temporarily disabled by admin'
+    ? t('widgets.chat.voiceButton.tooltipAdminDisabled', 'Temporarily disabled by admin')
     : isRecording
-      ? 'Voice input active'
-      : 'Start voice input';
+      ? t('widgets.chat.voiceButton.tooltipRecording', 'Voice input active')
+      : t('widgets.chat.voiceButton.tooltipStart', 'Start voice input');
   return {
     micDisabled: disabled || isRecording || isAdminDisabled,
     tooltipTitle,
     iconColor: isRecording ? 'primary' : 'secondary',
-    ariaLabel: isRecording ? 'voice input active' : 'start voice input',
+    ariaLabel: isRecording
+      ? t('widgets.chat.voiceButton.ariaLabelRecording', 'voice input active')
+      : t('widgets.chat.voiceButton.ariaLabelStart', 'start voice input'),
     wrapperGap: isRecording ? 0.5 : 0,
     wrapperBorder: isRecording ? '0.0625rem solid' : 'none',
     wrapperBorderRadius: isRecording ? '1.75rem' : 0,
@@ -189,7 +206,7 @@ export const VoiceButton = memo(
 
       const handleVoiceError = useCallback(
         (error: string) => {
-          const message = VOICE_ERROR_MESSAGES[error];
+          const message = voiceErrorMessage(error);
           // 'no-speech'/'aborted' are silently ignored — not user-facing errors (baseline parity).
           if (message) onError?.(message);
         },
@@ -279,11 +296,11 @@ export const VoiceButton = memo(
           </Tooltip>
 
           {isRecording && (
-            <Tooltip title={STOP_DICTATION_TITLE} placement="top">
+            <Tooltip title={t('widgets.chat.voiceButton.stopDictationTitle', 'Stop dictation')} placement="top">
               <Box component="span">
                 <IconButton
                   color="secondary"
-                  aria-label={STOP_VOICE_INPUT_LABEL}
+                  aria-label={t('widgets.chat.voiceButton.stopVoiceInputAriaLabel', 'stop voice input')}
                   onClick={handleStopRecording}
                   disabled={disabled}
                   sx={{ marginLeft: 0 }}

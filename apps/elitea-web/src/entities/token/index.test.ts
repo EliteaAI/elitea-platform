@@ -26,6 +26,8 @@ const PUBLIC_SURFACE = [
   'MAX_TOKEN_NAME_LENGTH',
   'TOKEN_EXPIRATION_OPTIONS',
   'TOKEN_NAME_PATTERN',
+  'SETTINGS_PREVIEW_LABELS',
+  'SETTINGS_PREVIEW_TYPES',
 ] as const;
 
 describe('entities/token public surface', () => {

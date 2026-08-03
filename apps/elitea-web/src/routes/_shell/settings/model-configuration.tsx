@@ -20,7 +20,8 @@ import { createFileRoute } from '@tanstack/react-router';
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { RouteShell } from '@/routes/-ui/RouteShell';
 
-import { AIConfiguration } from '@/routes/_shell/settings/ai-configuration';
+import { AIConfiguration } from '@/pages/settings/AIConfiguration';
+import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 export const Route = createFileRoute('/_shell/settings/model-configuration')({
   pendingComponent: RoutePending,
@@ -29,10 +30,12 @@ export const Route = createFileRoute('/_shell/settings/model-configuration')({
 });
 
 function ModelConfigurationShell() {
+  const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
+
   return (
     <>
       <RouteShell routeId="settings.model-configuration" fallback="AI Configuration" />
-      <AIConfiguration />
+      <AIConfiguration projectId={projectId} />
     </>
   );
 }

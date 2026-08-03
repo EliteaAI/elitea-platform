@@ -6,7 +6,7 @@ import Paper from '@mui/material/Paper';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
-import { EnvironmentSection } from '@/routes/_shell/settings/environment/EnvironmentSection';
+import { Environment } from '@/pages/settings/Environment';
 import { t } from '@/shared/i18n';
 
 export const Route = createFileRoute('/_shell/settings/environment')({
@@ -21,7 +21,7 @@ function EnvironmentSettingsPage() {
         showBorder
       />
       <Box sx={styles.content}>
-        <EnvironmentSection />
+        <Environment />
       </Box>
     </Paper>
   );

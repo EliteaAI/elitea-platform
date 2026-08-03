@@ -31,13 +31,21 @@ import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useNavigate } from '@tanstack/react-router';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
 
+import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
-import { GeneratedTokenDialog } from '@/routes/_shell/settings/personal-tokens/GeneratedTokenDialog';
+import { GeneratedTokenDialog } from '@/features/settings/ui/personal-tokens/GeneratedTokenDialog';
 import { t } from '@/shared/ui/lib/t';
 import { TOKEN_NAME_PATTERN, MAX_TOKEN_NAME_LENGTH, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
 import { useCreateTokenMutation, useListTokensQuery } from '@/entities/token/api/tokenApi';
+import { useTheme } from '@mui/material/styles';
+
+export const Route = createFileRoute('/_shell/settings/create-personal-token')({
+  pendingComponent: RoutePending,
+  errorComponent: RouteError,
+  component: CreatePersonalTokenPage,
+});
 
 /* ── zod validation schema ─────────────────────────────────────────────── */
 
@@ -67,6 +75,7 @@ export function CreatePersonalTokenPage() {
   const createMutation = useCreateTokenMutation();
   const isGenerating = createMutation.isPending;
   useListTokensQuery({ enabled: false });
+  const theme = useTheme();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const form = useForm<FormValues>({
@@ -120,7 +129,7 @@ export function CreatePersonalTokenPage() {
 
   const isGenerateDisabled = !isValid || isGenerating || !hasChanged;
 
-  const styles = getStyles();
+  const styles = getStyles(theme);
 
   return (
     <>
@@ -244,7 +253,7 @@ export function CreatePersonalTokenPage() {
   );
 }
 
-const getStyles = (): {
+const getStyles = (theme: Theme): {
   root: SxProps<Theme>;
   headerRight: SxProps<Theme>;
   content: SxProps<Theme>;
@@ -264,7 +273,7 @@ const getStyles = (): {
     width: '100%',
     border: 'none',
     borderBottom: '1px solid',
-    borderBottomColor: (theme as Theme).vars.palette.border.lines,
+    borderBottomColor: theme.vars.palette.border.lines,
     padding: '0.5rem 0',
     fontSize: ({ typography }) => typography.headingMedium.fontSize,
     outline: 'none',

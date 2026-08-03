@@ -25,6 +25,7 @@ import { ChatMessageList, useDeleteMessageAlert } from '@/features/chat-messages
 import { conversationApi } from '@/entities/conversation';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { getConfig } from '@/shared/config';
+import { t } from '@/shared/i18n';
 
 import {
   buildAgentEditorProps,
@@ -169,7 +170,7 @@ const ChatBoxInner = memo(function ChatBox({
 
   const createConversationForSend = useCallback(
     async (question: string) => {
-      const created = await lifecycle.createConversation({ name: question.slice(0, 50) || 'New Chat', isPrivate: true });
+      const created = await lifecycle.createConversation({ name: question.slice(0, 50) || t('widgets.chatBox.defaultConversationName', 'New Chat'), isPrivate: true });
       return created ? pickIdAndUuid(created) : undefined;
     },
     [lifecycle],
@@ -355,7 +356,7 @@ const ChatBoxInner = memo(function ChatBox({
           ref={chatInputRef}
           conversationId={conversationId !== undefined ? String(conversationId) : undefined}
           state={{ isLoading: isInputLoading, isStreaming, disabledSend, isCreatingConversation: data.lifecycle.isCreating }}
-          content={{ placeholder: 'Type a message...', clearInputAfterSubmit: true, slashHighlights: state.combinedHighlightRanges }}
+          content={{ placeholder: t('widgets.chatBox.inputPlaceholder', 'Type a message...'), clearInputAfterSubmit: true, slashHighlights: state.combinedHighlightRanges }}
           callbacks={{ onSend: handleSend, onStopGeneration: data.streaming.stopStreaming, onNormalKeyDown: state.onNormalKeyDown, onInputChange: state.onInputChange }}
           agentEditor={buildAgentEditorProps({
             participantForEditor,
@@ -380,7 +381,7 @@ const ChatBoxInner = memo(function ChatBox({
         onClose={deleteAlert.closeDialog}
         onConfirm={() => { void deleteAlert.confirmDelete(); }}
         copy={{
-          title: deleteAlert.isAllMessages ? 'Clear chat' : 'Delete message',
+          title: deleteAlert.isAllMessages ? t('widgets.chatBox.clearChatTitle', 'Clear chat') : t('widgets.chatBox.deleteMessageTitle', 'Delete message'),
           textContent: deleteAlert.confirmationMessage,
         }}
         content={{ inline: '' }}

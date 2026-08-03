@@ -17,9 +17,10 @@
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
+import ChatPage from '@/pages/chat';
+
 import { requireChatPermission } from '../-guards/requirePermission';
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
-import { RouteShell } from '../-ui/RouteShell';
 import { pickParams } from '../-search/params';
 
 export const Route = createFileRoute('/_shell/chat')({
@@ -33,7 +34,7 @@ export const Route = createFileRoute('/_shell/chat')({
 function ChatWrapperShell() {
   return (
     <>
-      <RouteShell routeId="chat" fallback="Chat" />
+      <ChatPage />
       <Outlet />
     </>
   );

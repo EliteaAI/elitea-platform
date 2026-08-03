@@ -8,6 +8,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
+import { t } from '@/shared/i18n';
 import { VoicewaveIcon } from '@/shared/ui/icons/voicewave-icon';
 
 /**
@@ -54,16 +55,15 @@ const VOICE_FEATURES_TEMPORARILY_DISABLED = false;
 
 const voicewaveIconStyle = { width: '1rem', height: '1rem' };
 
-const SPEAKING_LABEL = 'Speaking...';
-const STOP_SPEAKING_TITLE = 'Stop speaking';
-
 /** Split out purely to keep the component under the §3.5 cyclomatic-complexity-12 budget — every branch below is driven by a single `disabled` flag, repeated per render state. */
 function disabledCursorOpacitySx(disabled: boolean): { cursor: 'default' | 'pointer'; opacity: number } {
   return { cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 };
 }
 
 function micTooltipTitle(): string {
-  return VOICE_FEATURES_TEMPORARILY_DISABLED ? 'Temporarily disabled by admin' : 'Start speaking';
+  return VOICE_FEATURES_TEMPORARILY_DISABLED
+    ? t('widgets.chat.sendButton.micDisabledTooltip', 'Temporarily disabled by admin')
+    : t('widgets.chat.sendButton.startSpeakingTooltip', 'Start speaking');
 }
 
 export const SendButton = memo(
@@ -74,7 +74,7 @@ export const SendButton = memo(
     onEnterSpeakingMode,
     onExitSpeakingMode,
     onSend,
-    tooltipOfSendButton = 'Send',
+    tooltipOfSendButton = t('widgets.chat.sendButton.defaultTooltip', 'Send'),
   }: SendButtonProps) => {
     const isEmpty = !question;
     const isDisabled = disabledSend || isEmpty;
@@ -118,10 +118,10 @@ export const SendButton = memo(
           >
             <VoicewaveIcon style={voicewaveIconStyle} />
             <Typography component="span" variant="bodyMedium" color="text.secondary">
-              {SPEAKING_LABEL}
+              {t('widgets.chat.sendButton.speakingLabel', 'Speaking...')}
             </Typography>
           </Box>
-          <Tooltip title={STOP_SPEAKING_TITLE}>
+          <Tooltip title={t('widgets.chat.sendButton.stopSpeakingTitle', 'Stop speaking')}>
             <IconButton
               size="small"
               onClick={handleExitSpeaking}
