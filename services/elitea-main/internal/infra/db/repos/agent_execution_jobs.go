@@ -125,7 +125,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	if admission.CurrentTurn != nil {
 		turn := admission.CurrentTurn
 		if turn.Validate() != nil ||
-			turn.ProjectID > math.MaxInt32 || turn.ActorUserID > math.MaxInt64 ||
+			turn.ProjectID > math.MaxInt32 ||
 			turn.TargetParticipantID > math.MaxInt32 ||
 			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
 			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||

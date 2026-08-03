@@ -160,7 +160,7 @@ func (r *AgentExecutionJobsRepository) StorePreparedAgentExecution(ctx context.C
 	if err != nil {
 		return executionapp.StoredPreparedEnvelope{}, err
 	}
-	selected := executionapp.StoredPreparedEnvelope{}
+	var selected executionapp.StoredPreparedEnvelope
 	if stored != nil {
 		selected = *stored
 	} else {
