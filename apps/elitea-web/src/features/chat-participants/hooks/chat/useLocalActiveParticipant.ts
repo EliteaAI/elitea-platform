@@ -8,6 +8,15 @@ import { useCallback } from 'react';
 
 import { useSelectedProjectId } from '../../api/useSelectedProjectId';
 
+/**
+ * Old-app's actual key value (`common/constants.js:983`:
+ * `export const ActiveConversationParticipantKey = 'ActiveConversationParticipantKey';`)
+ * — NOT a new, differently-named literal. Reusing the same key lets data
+ * written by the old app (e.g. during a parallel old/new rollout on the same
+ * origin) still be read by this port.
+ */
+const ACTIVE_CONVERSATION_PARTICIPANT_KEY = 'ActiveConversationParticipantKey';
+
 interface ParticipantEntry {
   cid: string;
   pid: string;
@@ -27,7 +36,7 @@ export function useLocalActiveParticipant() {
   const getLocalActiveParticipantMap = useCallback((): ProjectParticipantMap => {
     try {
       // eslint-disable-next-line no-restricted-globals
-      const stored = localStorage.getItem('ACTIVE_CONVERSATION_PARTICIPANT') || '{}';
+      const stored = localStorage.getItem(ACTIVE_CONVERSATION_PARTICIPANT_KEY) || '{}';
       return JSON.parse(stored);
     } catch {
       return {};
@@ -51,7 +60,7 @@ export function useLocalActiveParticipant() {
       const map = getLocalActiveParticipantMap();
       const list = map[projectId] || [];
       const foundItem = list.find((item) => item.cid === conversationId);
-      const key = 'ACTIVE_CONVERSATION_PARTICIPANT';
+      const key = ACTIVE_CONVERSATION_PARTICIPANT_KEY;
 
       if (foundItem) {
         // eslint-disable-next-line no-restricted-globals
@@ -85,7 +94,7 @@ export function useLocalActiveParticipant() {
       const leftList = list.filter((item) => item.cid !== conversationId);
       // eslint-disable-next-line no-restricted-globals
       localStorage.setItem(
-        'ACTIVE_CONVERSATION_PARTICIPANT',
+        ACTIVE_CONVERSATION_PARTICIPANT_KEY,
         JSON.stringify({
           ...map,
           [projectId]: leftList,

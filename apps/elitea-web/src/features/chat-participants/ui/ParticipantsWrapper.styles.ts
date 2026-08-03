@@ -16,8 +16,16 @@ export function useWrapperGridSizes(collapsed: boolean): { xsSize: number; lgSiz
 
 /**
  * Derives responsive styling properties from layout state.
+ *
+ * `collapsed` fixes adversarial review C5-wrapper #7: old-app
+ * `ParticipantsWrapper.jsx`'s `largeScreenParticipantsWrapper` forces the
+ * panel to a fixed `5rem` width when collapsed (`maxWidth: collapsed ?
+ * '5rem !important' : ...`), regardless of the configured `panelWidth`. This
+ * only applies on large screens — the small-window branch never shows the
+ * collapsed icon-strip (see `Participants.tsx`'s `showCollapsedParticipants`),
+ * so `collapsed` is intentionally not read there.
  */
-export function deriveWrapperStyleParams(isSmallWindow: boolean, panelWidth: number): {
+export function deriveWrapperStyleParams(isSmallWindow: boolean, panelWidth: number, collapsed: boolean): {
   height: string;
   marginBottom: string | number;
   maxWidth: string;
@@ -31,11 +39,12 @@ export function deriveWrapperStyleParams(isSmallWindow: boolean, panelWidth: num
       minWidth: `${panelWidth}px`,
     };
   }
+  const width = collapsed ? '5rem' : `${panelWidth}px`;
   return {
     height: '100%',
     marginBottom: 0,
-    maxWidth: `${panelWidth}px`,
-    minWidth: `${panelWidth}px`,
+    maxWidth: width,
+    minWidth: width,
   };
 }
 

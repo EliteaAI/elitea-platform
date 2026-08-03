@@ -2,22 +2,61 @@
  * DropdownFooter — footer for user participant dropdown.
  *
  * Ported from `[fsd]/features/chat/participants/ui/UsersParticipantDropdown/DropdownFooter.jsx`.
+ *
+ * Baseline behaviour (`DropdownFooter.jsx:7-74`): a clickable "All users"
+ * row, gated on `usersCount > 1` (a single-member chat has no "everyone
+ * else" to bulk-add), that fires through the SAME selection handler wired to
+ * individual user rows (`index.jsx`'s `onSelectUser={onSelectParticipant}`)
+ * — i.e. selecting the footer performs a bulk add-all action, not decoration.
  */
 import { memo } from 'react';
 
-import { Box, Typography } from '@mui/material';
+import { Box, MenuItem, Typography } from '@mui/material';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 /**
- * DropdownFooter component — renders the footer of the user participant dropdown.
+ * Sentinel passed to `onSelectAll` in place of a real user row — mirrors the
+ * baseline's own sentinel (`DropdownFooter.jsx:24-29`'s
+ * `onClick?.(event, 'All users')`, routed through the individual-selection
+ * handler) so a future caller can special-case it the same way `widgets/
+ * chat-box/ui/hooks/useChatBoxActions.ts`'s own `'@everyone'` sentinel is
+ * special-cased for the unrelated @-mention "everyone" concept.
  */
-const DropdownFooter = memo((): React.ReactElement => {
+export const ALL_USERS_SENTINEL_ID = 'All users';
+
+export interface DropdownFooterProps {
+  /** Total selectable user count — the "All users" action is hidden at `<= 1` (baseline: `DropdownFooter.jsx:31`). */
+  usersCount: number;
+  /** Fires the same bulk-add-all action the baseline routed through `onSelectOption('All users')`. */
+  onSelectAll: () => void;
+}
+
+/**
+ * DropdownFooter component — renders the "All users" bulk-add quick action.
+ */
+const DropdownFooter = memo((props: DropdownFooterProps): React.ReactElement | null => {
+  const { usersCount, onSelectAll } = props;
+
+  if (usersCount <= 1) return null;
+
   return (
     <Box sx={{ borderTop: '1px solid', borderColor: 'divider', p: 1 }}>
-      <Typography variant="caption" color="text.disabled" sx={{ display: 'block', textAlign: 'center' }}>
-        {t('chat-participants.dropdown.footer', 'Select a user to add to the chat')}
-      </Typography>
+      <MenuItem
+        onClick={onSelectAll}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          borderRadius: 'var(--el-shape-radiusSm, 4px)',
+        }}
+      >
+        <GroupOutlinedIcon fontSize="small" sx={{ color: 'text.secondary' }} />
+        <Typography variant="bodyMedium" color="text.secondary">
+          {t('chat-participants.dropdown.allUsers', 'All users')}
+        </Typography>
+      </MenuItem>
     </Box>
   );
 });

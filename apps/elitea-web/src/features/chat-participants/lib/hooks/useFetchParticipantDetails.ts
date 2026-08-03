@@ -42,8 +42,22 @@ export interface UseFetchParticipantDetailsResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Maximum toolkit instances to fetch in a single page for the detail lookup. */
-const MAX_TOOLKIT_LOOKUP_PAGE_SIZE = 200;
+/** Page size for the toolkit detail lookup's list-scan fallback (see `fetchToolkit`). */
+const TOOLKIT_LOOKUP_PAGE_SIZE = 200;
+
+/**
+ * Hard cap on pages scanned by `fetchToolkit`'s fallback (5,000 toolkit
+ * instances). Old-app used a dedicated single-toolkit GET
+ * (`GET /tool/prompt_lib/{projectId}/{toolkitId}`, `api/toolkits.js:122-124`)
+ * with no such ceiling; no equivalent single-entity endpoint exists in this
+ * app's generated client (only the paginated list, `/tools/prompt_lib/
+ * {projectId}`) — a real, disclosed backend/client-coverage gap, not
+ * something this port can close. This bound only protects against runaway
+ * sequential fetches for a pathologically large project; a toolkit ranked
+ * beyond it is still unreachable, same class of gap as the single-page cap
+ * this replaces, just far less likely to bite in practice.
+ */
+const MAX_TOOLKIT_LOOKUP_PAGES = 25;
 
 // ---------------------------------------------------------------------------
 // Fetch helpers (complexity ≤ 7 per function)
@@ -90,18 +104,33 @@ async function fetchVersionDetails(
   return result?.data || {};
 }
 
+async function fetchToolkitPage(id: string, projectId: string, offset: number): Promise<{ toolkit?: Record<string, unknown>; rowCount: number }> {
+  const search = new URLSearchParams();
+  search.set('limit', String(TOOLKIT_LOOKUP_PAGE_SIZE));
+  search.set('offset', String(offset));
+  const url = `/elitea_core/tools/prompt_lib/${projectId}?${search.toString()}`;
+  const envelope = await eliteaFetch<{ data: { rows: Record<string, unknown>[]; total: number } }>(url);
+  const rows = envelope?.data?.rows || [];
+  return { toolkit: rows.find((row) => String(row.id) === id), rowCount: rows.length };
+}
+
+/**
+ * Scans `/elitea_core/tools/prompt_lib/{projectId}` page by page for the
+ * toolkit instance with the given `id`, stopping at the first short page
+ * (fewer rows than the page size — the real last page) or
+ * `MAX_TOOLKIT_LOOKUP_PAGES`, whichever comes first. See the constants above
+ * for why this is a scan, not a single-entity GET.
+ */
 async function fetchToolkit(
   id: string,
   projectId: string,
 ): Promise<Record<string, unknown>> {
-  const search = new URLSearchParams();
-  search.set('limit', String(MAX_TOOLKIT_LOOKUP_PAGE_SIZE));
-  search.set('offset', '0');
-  const url = `/elitea_core/tools/prompt_lib/${projectId}?${search.toString()}`;
-  const envelope = await eliteaFetch<{ data: { rows: Record<string, unknown>[]; total: number } }>(url);
-  const rows = envelope?.data?.rows || [];
-  const toolkit = rows.find((row) => String(row.id) === id) || {};
-  return toolkit;
+  for (let page = 0; page < MAX_TOOLKIT_LOOKUP_PAGES; page += 1) {
+    const { toolkit, rowCount } = await fetchToolkitPage(id, projectId, page * TOOLKIT_LOOKUP_PAGE_SIZE);
+    if (toolkit) return toolkit;
+    if (rowCount < TOOLKIT_LOOKUP_PAGE_SIZE) break;
+  }
+  return {};
 }
 
 // ---------------------------------------------------------------------------

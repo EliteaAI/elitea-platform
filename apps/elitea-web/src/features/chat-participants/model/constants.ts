@@ -3,19 +3,42 @@
  * the old app's `common/constants`, but exported as string literals so
  * callers don't need to import that constant (avoiding a cross-feature
  * dependency if `common/constants` ever moves).
+ *
+ * **Known duplication, not resolved here**: `@/shared/lib/chat` (unit S3)
+ * already exports its own correct `ChatParticipantType` with the same
+ * 6 overlapping keys — this feature reinvented its own copy instead of
+ * importing that one, and the reinvention had the wrong (plural) values
+ * for `Users`/`Models`/`Applications`/`Pipelines` until the wave-2 C5
+ * adversarial-review fix that corrected them here. A future pass should
+ * consider importing `ChatParticipantType` from `@/shared/lib/chat` and
+ * keeping only this file's genuinely extra values (`Tools`/`Attachments`/
+ * `MCP`, which the shared constant doesn't have) locally — out of scope
+ * for this fix, which only corrects the wrong values in place.
  */
 
 /** Public/shared project id — mirrors old-app `common/constants:PUBLIC_PROJECT_ID`. */
 const VITE_PUBLIC_PROJECT_ID = import.meta.env.VITE_PUBLIC_PROJECT_ID ?? '';
 export const PUBLIC_PROJECT_ID = VITE_PUBLIC_PROJECT_ID || '0';
 
+/**
+ * Wire values ported from old-app `common/constants.js:950-958`
+ * (`ChatParticipantType`). `Users`/`Models`/`Applications`/`Pipelines` were
+ * previously wrong here (plural — `'users'`/`'models'`/`'applications'`/
+ * `'pipelines'`) — a real, confirmed regression: every `entity_name`
+ * comparison against these constants throughout this feature (participant
+ * grouping, active-participant matching, permission-map lookups) silently
+ * never matched real wire data. `Toolkits`/`Dummy` were already correct.
+ * `Tools`/`Attachments`/`MCP` have no old-app `ChatParticipantType`
+ * counterpart (the old app used separate ad hoc checks for those) — left
+ * as-is, not part of this fix.
+ */
 export const ChatParticipantType = {
-  Users: 'users',
+  Users: 'user',
   Toolkits: 'toolkit',
   Tools: 'tools',
-  Models: 'models',
-  Applications: 'applications',
-  Pipelines: 'pipelines',
+  Models: 'llm',
+  Applications: 'application',
+  Pipelines: 'pipeline',
   Attachments: 'attachments',
   Dummy: 'dummy',
   MCP: 'mcp',

@@ -9,12 +9,33 @@
  */
 import { memo, useCallback, useState } from 'react';
 
+import { useRouteContext } from '@tanstack/react-router';
+
 import { Autocomplete, Box, TextField, Typography } from '@mui/material';
 
 import { useFilteredEntityItems } from '@/entities/participant';
-import { useSelectedProjectId } from '@/shared/config';
 
 import { t } from '@/shared/ui/lib/t';
+
+/**
+ * "Currently selected project id" — local duplicate of `features/chat-input/
+ * api/useSelectedProjectId.ts` (and every other Wave-2 feature slice's own
+ * copy), NOT an import of it: `no-sideways-features` forbids one
+ * `features/*` slice importing another, and no `shared`/`entities`
+ * primitive for "the selected project id" exists yet.
+ *
+ * `@/shared/config` (this file's previous import source) only exports
+ * `getConfig`/`Config`/`MissingEnvPage` — it has never exported a
+ * `useSelectedProjectId` hook, so that import silently failed to resolve at
+ * module load (a real, pre-existing defect independent of the confirmed C5
+ * findings this unit fixes).
+ */
+function useSelectedProjectId(): string | undefined {
+  const context: unknown = useRouteContext({ strict: false });
+  if (typeof context !== 'object' || context === null) return undefined;
+  const auth = (context as { readonly auth?: { readonly getSelectedProjectId?: () => string | undefined } }).auth;
+  return auth?.getSelectedProjectId?.();
+}
 
 // ---------------------------------------------------------------------------
 // Props

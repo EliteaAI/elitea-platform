@@ -64,4 +64,16 @@ export const participantItemStyles = (theme: { vars: { shape: { radiusMd: string
   attentionMessage: { wordBreak: 'break-word' },
   infoMessageRow: { display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '.375rem', padding: '0 .75rem .25rem' },
   infoIcon: { display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: '1rem', height: '1rem', '& svg, & path': { fill: 'icon.fill.secondary' } },
+  iconBoxNormal: (isActive: boolean | undefined) => ({
+    width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
+    borderRadius: 'var(--el-shape-radiusMd, 8px)', backgroundColor: isActive ? 'action.selected' : 'background.paper',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
+  }),
+  iconBoxAttention: {
+    width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
+    borderRadius: 'var(--el-shape-radiusMd, 8px)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
+  },
 });

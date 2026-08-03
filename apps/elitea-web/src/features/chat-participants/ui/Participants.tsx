@@ -26,6 +26,9 @@
 
 import { memo, useCallback, useMemo } from 'react';
 
+import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
+import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
+
 import { ChatParticipantType } from '../model/constants';
 import type { TransformedParticipant } from '../model/types';
 import { isParticipantStillActive } from '@/entities/participant';
@@ -88,11 +91,19 @@ export const Participants = memo(
     onUpdateParticipant,
     editingToolkit,
     resolveToolkitIcon,
-    _isMcpVisible = false,
+    isMcpVisible = false,
     renderContextBudget,
     maxVisibleUsers = 5,
+    isSmallWindow = false,
+    selectedManager,
+    newConversationSelectedManager,
   }: ParticipantsProps) => {
-    const showTitle = !collapsed;
+    // Mirrors old-app `Participants.jsx`'s `showTitle`/`showCollapsedParticipants`
+    // (adversarial review C5-wrapper #4): on a small window the full section
+    // list always shows (with title), regardless of the `collapsed` toggle —
+    // the collapsed icon-strip is a large-screen-only affordance.
+    const showTitle = !collapsed || isSmallWindow;
+    const showCollapsedParticipants = collapsed && !isSmallWindow;
     const collapseIcon = collapsed
       ? KeyboardDoubleArrowLeftIcon
       : KeyboardDoubleArrowRightIcon;
@@ -129,14 +140,14 @@ export const Participants = memo(
         }
 
         // Filter out MCP toolkits when MCP visibility is off
-        if (key === 'mcp' && !_isMcpVisible) continue;
+        if (key === 'mcp' && !isMcpVisible) continue;
 
         if (!groups[key]) groups[key] = [];
         groups[key].push(p);
       }
 
       return groups;
-    }, [participants, _isMcpVisible]);
+    }, [participants, isMcpVisible]);
 
     // -----------------------------------------------------------------------
     // Users section — extract and limit
@@ -167,7 +178,7 @@ export const Participants = memo(
     // -----------------------------------------------------------------------
 
     const sections = useMemo(() => {
-      const result: Array<{ key: string; type: string; participants: TransformedParticipant[] }> = [];
+      const result: Array<{ key: string; type: string; participants: TransformedParticipant[]; entityType: string }> = [];
 
       for (const type of entityOrder) {
         const key = typeof type === 'string' ? type : String(type);
@@ -199,9 +210,16 @@ export const Participants = memo(
 
     return (
       <ParticipantsLayout
-        header={{ showTitle, collapseIcon, collapsed, onCollapsed }}
+        header={{ showTitle, collapseIcon, collapsed, onCollapsed, showCollapsedParticipants }}
         users={{ usersToDisplay, hasOverflow, visibleCount, maxVisibleUsers }}
-        sections={{ sections, activeParticipantId, disabledEdit, disabledAdd }}
+        sections={{
+          sections,
+          activeParticipantId,
+          disabledEdit,
+          disabledAdd,
+          selectedManager,
+          newConversationSelectedManager,
+        }}
         actions={{
           onSelectParticipant: handleSelectParticipant,
           onDeleteParticipant,
