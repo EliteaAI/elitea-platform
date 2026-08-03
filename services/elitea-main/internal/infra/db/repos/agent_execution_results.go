@@ -59,10 +59,14 @@ func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Cont
 	if err != nil {
 		return outputapp.ProjectionOutcome{}, err
 	}
+	projectDatabaseID, ok := currentAgentDatabaseID(projectID)
+	if !ok {
+		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidAgentExecutionOutput
+	}
 	var outcome outputapp.ProjectionOutcome
 	cancellationWon := false
 	err = r.projects.WithinProjectTx(ctx, projectID, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}, func(tx sqlExecutor) error {
-		fullMessage, err := loadCurrentAgentFullMessage(ctx, tx, projectID, projection)
+		fullMessage, err := loadCurrentAgentFullMessage(ctx, tx, projectDatabaseID, projection)
 		if err != nil {
 			return err
 		}
@@ -149,7 +153,7 @@ func agentExecutionOutputRecord(frame outputapp.AgentExecutionFrame) (outputReco
 	), projectionProjectID, nil
 }
 
-func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID int64, projection outputapp.AgentExecutionProjection) (currentAgentFullMessage, error) {
+func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID int32, projection outputapp.AgentExecutionProjection) (currentAgentFullMessage, error) {
 	frame := projection.Frame
 	artifact := frame.Result.ResultArtifact
 	queries, ok := tx.(agentExecutionTerminalNodeEventQuerier)
@@ -161,7 +165,7 @@ func loadCurrentAgentFullMessage(ctx context.Context, tx sqlExecutor, projectID 
 		sqlcgen.GetAgentExecutionTerminalNodeEventParams{
 			ExecutionID:         frame.Fence.ExecutionID,
 			Generation:          int64(frame.Fence.Generation),
-			ProjectionProjectID: int32(projectID),
+			ProjectionProjectID: projectID,
 		},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

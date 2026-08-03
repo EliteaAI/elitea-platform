@@ -143,12 +143,16 @@ func (p *postgresCurrentAgentTraceProjector) projectAgentTraceDelta(
 	if err != nil || !recognized {
 		return err
 	}
+	projectDatabaseID, ok := currentAgentDatabaseID(projectID)
+	if !ok {
+		return outputapp.ErrInvalidNodeEventOutput
+	}
 	binding, bound, err := loadCurrentAgentTraceBinding(
 		ctx,
 		tx,
 		frame.Fence.ExecutionID,
 		frame.Fence.Generation,
-		projectID,
+		projectDatabaseID,
 	)
 	if err != nil || !bound {
 		return err
@@ -348,7 +352,7 @@ func loadCurrentAgentTraceBinding(
 	tx sqlExecutor,
 	executionID string,
 	generation uint64,
-	projectID int64,
+	projectID int32,
 ) (currentAgentTraceBinding, bool, error) {
 	querier, ok := tx.(currentAgentTraceBindingQuerier)
 	if !ok {
@@ -357,7 +361,7 @@ func loadCurrentAgentTraceBinding(
 	row, err := querier.GetCurrentAgentTraceBinding(ctx, sqlcgen.GetCurrentAgentTraceBindingParams{
 		ExecutionID: executionID,
 		Generation:  int64(generation),
-		ProjectID:   int32(projectID),
+		ProjectID:   projectID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return currentAgentTraceBinding{}, false, nil

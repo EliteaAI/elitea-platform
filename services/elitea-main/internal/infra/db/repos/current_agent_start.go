@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -44,8 +43,12 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 	ctx context.Context,
 	request agentexecutionapp.CurrentApplicationStartRequest,
 ) (agentexecutionapp.CurrentApplicationTarget, error) {
-	if err := request.Validate(); err != nil || request.ProjectID > math.MaxInt32 ||
-		request.TargetParticipantID > math.MaxInt32 {
+	if err := request.Validate(); err != nil {
+		return agentexecutionapp.CurrentApplicationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	projectID, projectIDValid := currentAgentDatabaseID(request.ProjectID)
+	targetParticipantID, targetParticipantIDValid := currentAgentDatabaseID(request.TargetParticipantID)
+	if !projectIDValid || !targetParticipantIDValid {
 		return agentexecutionapp.CurrentApplicationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
 	}
 	conversationUUID, err := currentPGUUID(request.ConversationUUID)
@@ -66,9 +69,9 @@ func (repository *CurrentAgentStartRepository) ResolveInitialCurrentApplication(
 				ctx,
 				sqlcgen.ResolveInitialCurrentApplicationTurnParams{
 					ActorUserID:         request.ActorUserID,
-					TargetParticipantID: int32(request.TargetParticipantID),
+					TargetParticipantID: targetParticipantID,
 					ConversationUuid:    conversationUUID,
-					ProjectID:           int32(request.ProjectID),
+					ProjectID:           projectID,
 				},
 			)
 			if errors.Is(queryErr, pgx.ErrNoRows) {
