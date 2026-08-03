@@ -12,6 +12,9 @@ runtime_root="$2"
 : "${APPLICATION_AUTH_SECRET_KEY:?missing APPLICATION_AUTH_SECRET_KEY in the Centry environment}"
 : "${DEFAULT_ADMIN_PASSWORD:?missing DEFAULT_ADMIN_PASSWORD in the Centry environment}"
 : "${SECRETS_MASTER_KEY:?missing SECRETS_MASTER_KEY in the Centry environment}"
+: "${POSTGRES_USER:?missing POSTGRES_USER in the Centry environment}"
+: "${POSTGRES_PASSWORD:?missing POSTGRES_PASSWORD in the Centry environment}"
+: "${POSTGRES_PORT:?missing POSTGRES_PORT in the Centry environment}"
 
 for command in jq openssl; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -117,10 +120,22 @@ indexer_worker_password="$(<"$runtime/redis-indexer-worker-password")"
 
 acl_tmp="$(mktemp "$runtime/.redis-users-v2.acl.XXXXXX")"
 config_tmp="$(mktemp "$runtime/.indexer-runtime-v2.json.XXXXXX")"
+checkpoint_tmp="$(mktemp "$runtime/.agent-checkpoint-connection.XXXXXX")"
 cleanup() {
-  rm -f "$acl_tmp" "$config_tmp"
+  rm -f "$acl_tmp" "$config_tmp" "$checkpoint_tmp"
 }
 trap cleanup EXIT
+
+if [[ ! "$POSTGRES_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( POSTGRES_PORT > 65535 )); then
+  echo "POSTGRES_PORT must be a valid TCP port" >&2
+  exit 2
+fi
+postgres_user_uri="$(printf '%s' "$POSTGRES_USER" | jq -sRr @uri)"
+postgres_password_uri="$(printf '%s' "$POSTGRES_PASSWORD" | jq -sRr @uri)"
+printf 'postgresql://%s:%s@postgres:%s/agentstate?sslmode=disable' \
+  "$postgres_user_uri" "$postgres_password_uri" "$POSTGRES_PORT" \
+  > "$checkpoint_tmp"
+chmod 600 "$checkpoint_tmp"
 
 index_v1_stream='commands.v1.index.ingest.indexing.shared.1.0'
 index_v2_stream='commands.v1.index.ingest.indexing.shared.2.0'
@@ -157,6 +172,7 @@ printf '%s\n' \
   '  "ed25519_keyring_path": "/run/elitea-runtime/command-signing-keyring.json",' \
   '  "spool_root": "/var/lib/elitea-indexer-worker/output-spool",' \
   '  "spool_key_path": "/run/elitea-runtime/indexer-output-spool-key",' \
+  '  "agent_checkpoint_connection_path": "/run/elitea-runtime/agent-checkpoint-connection",' \
   '  "limits": {' \
   '    "redis_read_batch": 4,' \
   '    "redis_block_millis": 1000,' \
@@ -193,6 +209,7 @@ jq -e \
 
 mv "$acl_tmp" "$runtime/redis-users-v2.acl"
 mv "$config_tmp" "$runtime/indexer-runtime-v2.json"
+mv "$checkpoint_tmp" "$runtime/agent-checkpoint-connection"
 trap - EXIT
 
 echo "mixed-deployment runtime material is ready at $runtime_root"
