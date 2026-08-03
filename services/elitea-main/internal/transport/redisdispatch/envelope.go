@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	runtimev1 "github.com/EliteaAI/elitea-platform/libs/proto/gen/go/elitea/runtime/v1"
+	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
@@ -61,6 +62,57 @@ func validationWorkerCommand(protocolRevision string, dispatch executionapp.Vali
 				SchemaRevision:          command.SchemaRevision,
 				SchemaDigest:            digestProto(command.SchemaDigest),
 				SettingsEntryId:         command.SettingsEntryID,
+			},
+		},
+	}, nil
+}
+
+func agentExecutionWorkerCommand(protocolRevision string, dispatch agentexecutionapp.AgentExecutionDispatch) (*runtimev1.WorkerCommandV1, error) {
+	if protocolRevision == "" || len(protocolRevision) > 128 {
+		return nil, errors.New("invalid protocol revision")
+	}
+	if err := dispatch.Validate(); err != nil {
+		return nil, err
+	}
+	commandType := runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_APPLICATION
+	if dispatch.CapabilityID == executiondomain.AgentAdhocCapability {
+		commandType = runtimev1.WorkerCommandTypeV1_WORKER_COMMAND_TYPE_V1_AGENT_EXECUTE_ADHOC
+	}
+	return &runtimev1.WorkerCommandV1{
+		ProtocolRevision:    protocolRevision,
+		CommandId:           dispatch.CommandID,
+		IdempotencyKey:      dispatch.OutboxID,
+		CommandType:         commandType,
+		ExecutionId:         dispatch.ExecutionID,
+		Generation:          dispatch.Generation,
+		DispatchOrdinal:     dispatch.DispatchOrdinal,
+		RootExecutionId:     dispatch.ExecutionID,
+		TenantId:            dispatch.TenantID,
+		ResourceProjectId:   dispatch.ResourceProjectID,
+		ProjectionProjectId: dispatch.ProjectionProjectID,
+		PrincipalRef:        dispatch.PrincipalRef,
+		InputBundleRef: &runtimev1.ExecutionInputBundleReferenceV1{
+			InputBundleId:    dispatch.InputBundleID,
+			ImmutableVersion: dispatch.InputBundleVersion,
+			Digest:           digestProto(dispatch.InputBundleDigest),
+			ByteLength:       dispatch.InputBundleByteLength,
+			MediaType:        dispatch.InputBundleMediaType,
+		},
+		CapabilityId:       dispatch.CapabilityID,
+		CapabilityVersion:  dispatch.CapabilityVersion,
+		ResourceClass:      dispatch.ResourceClass,
+		IsolationClass:     dispatch.IsolationClass,
+		Priority:           dispatch.Priority,
+		DeadlineUnixMillis: dispatch.Deadline.UTC().UnixMilli(),
+		Traceparent:        dispatch.Traceparent,
+		Tracestate:         dispatch.Tracestate,
+		LimitsRevision:     dispatch.LimitsRevision,
+		CapabilityCommand: &runtimev1.WorkerCommandV1_AgentExecution{
+			AgentExecution: &runtimev1.AgentExecutionCommandV1{
+				RequestEntryId:  dispatch.RequestEntryID,
+				ClientStreamId:  dispatch.ClientStreamID,
+				ClientMessageId: dispatch.ClientMessageID,
+				SioEvent:        dispatch.SIOEvent,
 			},
 		},
 	}, nil
@@ -159,6 +211,12 @@ func validateBoundedStrings(command *runtimev1.WorkerCommandV1, maximum int) err
 		if binding := index.GetEmbeddingBinding(); binding != nil {
 			values = append(values, binding.GetEntryId(), binding.GetImmutableVersion())
 		}
+	}
+	if agent := command.GetAgentExecution(); agent != nil {
+		values = append(values,
+			agent.GetRequestEntryId(), agent.GetClientStreamId(),
+			agent.GetClientMessageId(), agent.GetSioEvent(),
+		)
 	}
 	for _, value := range values {
 		if len(value) > maximum || strings.ContainsRune(value, '\x00') {

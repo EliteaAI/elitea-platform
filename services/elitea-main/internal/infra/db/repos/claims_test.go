@@ -14,6 +14,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func TestClaimCapabilityGateIncludesLanguageNeutralAgentWorkers(t *testing.T) {
+	for _, capabilityID := range []string{
+		executiondomain.ConfigurationValidationCapability,
+		executiondomain.IndexIngestCapability,
+		executiondomain.AgentApplicationCapability,
+		executiondomain.AgentAdhocCapability,
+	} {
+		if !claimCapabilityAllowed(capabilityID) {
+			t.Fatalf("claim capability %q was rejected", capabilityID)
+		}
+	}
+	if claimCapabilityAllowed("index.search.v1") {
+		t.Fatal("standalone search capability was accepted by the claim gate")
+	}
+}
+
 func TestClaimValidationRequiresExactPublishedEnvelopeBeforeLease(t *testing.T) {
 	publishedDigest := runtimedomain.SHA256([]byte("published-signed-envelope"))
 	otherDigest := runtimedomain.SHA256([]byte("other-signed-envelope"))

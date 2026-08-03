@@ -3,14 +3,12 @@ package runtimecomposition
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 
 	configurationapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	executionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
-	"github.com/jackc/pgx/v5"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 )
 
 type authorizationRow struct {
@@ -19,36 +17,29 @@ type authorizationRow struct {
 	err          error
 }
 
-func (r authorizationRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
-	}
-	if len(dest) != 1 {
-		return fmt.Errorf("scan destinations = %d", len(dest))
-	}
-	switch value := dest[0].(type) {
-	case *bool:
-		*value = r.active
-	case *string:
-		*value = r.capabilityID
-	default:
-		return errors.New("unsupported authorization destination")
-	}
-	return nil
-}
-
 type authorizationStore struct {
-	row   pgx.Row
-	sql   string
-	args  []any
-	calls int
+	row             authorizationRow
+	admissionParams sqlcgen.AuthorizeRuntimeValidationProjectParams
+	outputParams    sqlcgen.ResolveRuntimeExecutionEventCapabilityParams
+	calls           int
 }
 
-func (s *authorizationStore) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+func (s *authorizationStore) AuthorizeRuntimeValidationProject(
+	_ context.Context,
+	params sqlcgen.AuthorizeRuntimeValidationProjectParams,
+) (bool, error) {
 	s.calls++
-	s.sql = sql
-	s.args = append([]any(nil), args...)
-	return s.row
+	s.admissionParams = params
+	return s.row.active, s.row.err
+}
+
+func (s *authorizationStore) ResolveRuntimeExecutionEventCapability(
+	_ context.Context,
+	params sqlcgen.ResolveRuntimeExecutionEventCapabilityParams,
+) (string, error) {
+	s.calls++
+	s.outputParams = params
+	return s.row.capabilityID, s.row.err
 }
 
 type authorizationPermissionResolver struct {
@@ -100,8 +91,8 @@ func TestPublicAuthorizerDerivesPhaseOneIdentityFromVerifiedMembership(t *testin
 	if identity.TenantID != "42" || identity.ResourceProjectID != "42" || identity.ProjectionProjectID != "42" || identity.ActorID != "17" {
 		t.Fatalf("unexpected admission identity: %+v", identity)
 	}
-	if store.calls != 1 || !strings.Contains(store.sql, "p.owner_id = $2") || !strings.Contains(store.sql, "auth_core__project_user_role") {
-		t.Fatalf("authorization query is not strict membership SQL: %s", store.sql)
+	if store.calls != 1 || store.admissionParams.ProjectID != 42 || store.admissionParams.UserID != 17 {
+		t.Fatalf("authorization query params = %+v calls=%d", store.admissionParams, store.calls)
 	}
 }
 
@@ -173,27 +164,8 @@ func TestPublicAuthorizerBindsAllowlistedExecutionEventsToProjectionProject(t *t
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
 		t.Fatal(err)
 	}
-	for _, binding := range []string{
-		"j.tenant_id = ($2::bigint)::text",
-		"j.resource_project_id = $2::bigint",
-		"j.projection_project_id = $2::bigint",
-		"j.execution_id = $1",
-		"COUNT(*) = 1",
-	} {
-		if store.calls != 1 || !strings.Contains(store.sql, binding) {
-			t.Fatalf("execution authorization query is missing %q: %s", binding, store.sql)
-		}
-	}
-	for _, capability := range []string{"'configuration.validate.v1'", "'index.ingest.v1'"} {
-		if !strings.Contains(store.sql, capability) {
-			t.Fatalf("execution authorization is missing allowlisted capability %s: %s", capability, store.sql)
-		}
-	}
-	if !strings.Contains(store.sql, "j.capability_id IN") {
-		t.Fatalf("execution authorization capability predicate is not closed: %s", store.sql)
-	}
-	if len(store.args) != 2 || store.args[0] != "execution-1" || store.args[1] != int64(42) {
-		t.Fatalf("execution authorization args = %v", store.args)
+	if store.calls != 1 || store.outputParams.ExecutionID != "execution-1" || store.outputParams.ProjectID != 42 {
+		t.Fatalf("execution authorization params = %+v calls=%d", store.outputParams, store.calls)
 	}
 	if permissions.calls != 1 ||
 		permissions.principal.ID != "17" ||

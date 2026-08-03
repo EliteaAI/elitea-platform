@@ -112,6 +112,10 @@ func (e ExpectedRuntimeFailure) Validate() error {
 		if e.LogicalOutputID != "index-ingest:"+e.ExecutionID {
 			return ErrInvalidValidationOutput
 		}
+	case executiondomain.AgentApplicationCapability, executiondomain.AgentAdhocCapability:
+		if e.LogicalOutputID != "agent-execution:"+e.ExecutionID {
+			return ErrInvalidValidationOutput
+		}
 	default:
 		return ErrInvalidValidationOutput
 	}

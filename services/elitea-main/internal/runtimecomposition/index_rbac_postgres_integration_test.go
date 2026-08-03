@@ -24,6 +24,7 @@ import (
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
 	indexmetaapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexmeta"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
@@ -618,7 +619,7 @@ func newIndexRBACRouter(
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizer, err := newPostgresPublicAuthorizer(pool, pool, resolver)
+	authorizer, err := newPostgresPublicAuthorizer(sqlcgen.New(pool), sqlcgen.New(pool), resolver)
 	if err != nil {
 		t.Fatal(err)
 	}

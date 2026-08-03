@@ -49,9 +49,10 @@ func (p replayRetentionPolicy) validate() error {
 // NodeEventsRepository appends current-NodeEvent JSON directly to the durable
 // execution replay log. Redis is deliberately absent from this data path.
 type NodeEventsRepository struct {
-	store     sharedStore
-	retention replayRetentionPolicy
-	activity  currentIndexActivityProjector
+	store      sharedStore
+	retention  replayRetentionPolicy
+	activity   currentIndexActivityProjector
+	agentTrace currentAgentTraceProjector
 }
 
 func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) {
@@ -64,6 +65,7 @@ func NewNodeEventsRepository(pool *pgxpool.Pool) (*NodeEventsRepository, error) 
 		return nil, err
 	}
 	repository.activity = &postgresCurrentIndexActivityProjector{}
+	repository.agentTrace = &postgresCurrentAgentTraceProjector{}
 	return repository, nil
 }
 
@@ -79,9 +81,10 @@ func newNodeEventsRepositoryWithPolicy(store sharedStore, retention replayRetent
 		return nil, err
 	}
 	return &NodeEventsRepository{
-		store:     store,
-		retention: retention,
-		activity:  noopCurrentIndexActivityProjector{},
+		store:      store,
+		retention:  retention,
+		activity:   noopCurrentIndexActivityProjector{},
+		agentTrace: noopCurrentAgentTraceProjector{},
 	}, nil
 }
 
@@ -188,7 +191,11 @@ WITH authority AS MATERIALIZED (
       ON o.execution_id = j.execution_id AND o.generation = j.generation
     WHERE c.execution_id = $2
       AND c.generation = $3
-	  AND j.capability_id = 'index.ingest.v1'
+	  AND j.capability_id IN (
+	      'index.ingest.v1',
+	      'agent.execute.application.v1',
+	      'agent.execute.adhoc.v1'
+	  )
       AND j.tenant_id = $8
       AND j.resource_project_id = $9
       AND j.projection_project_id = $4
@@ -308,6 +315,14 @@ SELECT COALESCE((SELECT cursor FROM updated_state LIMIT 1), 0),
 		}
 		if cursor > 0 {
 			if err := r.activity.projectNodeEvent(
+				ctx,
+				tx,
+				projectionProjectID,
+				frame,
+			); err != nil {
+				return err
+			}
+			if err := r.agentTrace.projectAgentTraceDelta(
 				ctx,
 				tx,
 				projectionProjectID,
@@ -519,7 +534,11 @@ JOIN elitea_runtime.command_outbox AS o
   ON o.execution_id = j.execution_id AND o.generation = j.generation
 WHERE c.execution_id = $1
   AND c.generation = $2
-  AND j.capability_id = 'index.ingest.v1'
+	  AND j.capability_id IN (
+	      'index.ingest.v1',
+	      'agent.execute.application.v1',
+	      'agent.execute.adhoc.v1'
+	  )
   AND j.tenant_id = $3
   AND j.resource_project_id = $4
   AND j.projection_project_id = $5

@@ -68,7 +68,7 @@ func TestContentServerRequiresVerifiedMTLSAndClaimFence(t *testing.T) {
 func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 	t.Parallel()
 
-	data := []byte(`{"auth_type":"Digest"}`)
+	data := []byte{0x0a, 0x00}
 	digest := sha256.Sum256(data)
 	fence := bytes.Repeat([]byte{7}, sha256.Size)
 	certificate := &x509.Certificate{SerialNumber: nil}
@@ -84,8 +84,9 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 				ResourceProjectID: "42",
 				ActorID:           "17",
 				InputBundleID:     "bundle-1",
-				CapabilityID:      executiondomain.ConfigurationValidationCapability,
-				SemanticRole:      "configuration.settings",
+				CapabilityID:      executiondomain.AgentApplicationCapability,
+				SemanticRole:      executiondomain.AgentExecutionRequestRole,
+				ExpectedMediaType: executiondomain.AgentExecutionInputMediaType,
 				ExpectedDigest:    digest,
 				ExpectedLength:    int64(len(data)),
 			}, nil
@@ -110,11 +111,12 @@ func TestContentServerReturnsOnlyAuthorizedVerifiedBytes(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, response.Code)
 	require.Equal(t, data, response.Body.Bytes())
+	require.Equal(t, executiondomain.AgentExecutionInputMediaType, response.Header().Get("Content-Type"))
 	require.Equal(t, "private, no-store", response.Header().Get("Cache-Control"))
 	require.NotEmpty(t, response.Header().Get("Content-Digest"))
 	require.Equal(t, response.Header().Get("Content-Digest"), response.Header().Get(SourceContentDigestHeader))
 	require.Equal(t, "v1", response.Header().Get(SourceImmutableVersionHeader))
-	require.Equal(t, "22", response.Header().Get(SourceContentLengthHeader))
+	require.Equal(t, "2", response.Header().Get(SourceContentLengthHeader))
 }
 
 func TestContentServerDecodesEscapedClaimPathParts(t *testing.T) {
@@ -137,6 +139,7 @@ func TestContentServerDecodesEscapedClaimPathParts(t *testing.T) {
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.IndexIngestCapability,
 				SemanticRole:      "index.toolkit_configuration",
+				ExpectedMediaType: "application/json",
 				ExpectedDigest:    digest,
 				ExpectedLength:    int64(len(data)),
 			}, nil
@@ -194,6 +197,7 @@ func TestContentServerDoesNotReleaseWrongDigest(t *testing.T) {
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.ConfigurationValidationCapability,
 				SemanticRole:      "configuration.settings",
+				ExpectedMediaType: "application/json",
 				ExpectedDigest:    sha256.Sum256([]byte("different")),
 				ExpectedLength:    int64(len(data)),
 			}, nil
@@ -245,6 +249,7 @@ func TestContentServerRejectsOverLimitBeforeOpeningContent(t *testing.T) {
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.ConfigurationValidationCapability,
 				SemanticRole:      "configuration.settings",
+				ExpectedMediaType: "application/json",
 				ExpectedDigest:    sha256.Sum256([]byte("bounded")),
 				ExpectedLength:    9,
 			}, nil
@@ -316,6 +321,7 @@ func TestMaterializingRuntimeContentServerComposesBothBoundedPaths(t *testing.T)
 				InputBundleID:     "bundle-1",
 				CapabilityID:      executiondomain.IndexIngestCapability,
 				SemanticRole:      "index.toolkit_configuration",
+				ExpectedMediaType: "application/json",
 				ExpectedDigest:    digest,
 				ExpectedLength:    int64(len(source)),
 			}, nil

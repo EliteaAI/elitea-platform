@@ -257,7 +257,10 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 		return outputapp.ProjectionOutcome{}, err
 	}
 	switch projection.CapabilityID {
-	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
+	case executiondomain.ConfigurationValidationCapability,
+		executiondomain.IndexIngestCapability,
+		executiondomain.AgentApplicationCapability,
+		executiondomain.AgentAdhocCapability:
 	default:
 		return outputapp.ProjectionOutcome{}, outputapp.ErrInvalidValidationOutput
 	}
@@ -391,6 +394,16 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 		}); err != nil {
 			return err
 		}
+		if err := persistCurrentAgentRuntimeFailure(
+			ctx,
+			tx,
+			projectID,
+			projection.CapabilityID,
+			record,
+			projection.Frame.Failure.SafeMessage,
+		); err != nil {
+			return err
+		}
 		if err := markOutputProjected(ctx, tx, record.EventID); err != nil {
 			return err
 		}
@@ -418,6 +431,59 @@ func (r *RuntimeFailureResultsRepository) ProjectRuntimeFailure(ctx context.Cont
 		return outputapp.ProjectionOutcome{}, outputapp.ErrOutputCancelled
 	}
 	return outcome, nil
+}
+
+func persistCurrentAgentRuntimeFailure(
+	ctx context.Context,
+	tx sqlExecutor,
+	projectID int64,
+	capabilityID string,
+	record outputRecord,
+	safeMessage string,
+) error {
+	if capabilityID != executiondomain.AgentApplicationCapability &&
+		capabilityID != executiondomain.AgentAdhocCapability {
+		return nil
+	}
+	if safeMessage == "" || len(safeMessage) > 256 {
+		return outputapp.ErrInvalidValidationOutput
+	}
+	schema, err := currentProjectSchema(projectID)
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, fmt.Sprintf(`
+UPDATE %s AS message_group
+SET is_streaming = FALSE,
+    meta = message_group.meta || jsonb_build_object(
+        'is_error', TRUE,
+        'error', $3::text
+    ),
+    updated_at = clock_timestamp()
+FROM elitea_runtime.agent_execution_jobs AS agent,
+     %s AS conversation
+WHERE agent.execution_id = $1
+  AND agent.generation = $2
+  AND agent.capability_id IN (
+      'agent.execute.application.v1',
+      'agent.execute.adhoc.v1'
+  )
+  AND message_group.uuid::text = agent.client_message_id
+  AND conversation.id = message_group.conversation_id
+  AND conversation.uuid::text = agent.client_stream_id
+  AND message_group.task_id = agent.execution_id
+  AND message_group.meta->>'execution_generation' =
+      agent.client_execution_generation`,
+		schema+".chat_message_group",
+		schema+".chat_conversations",
+	), record.ExecutionID, int64(record.Generation), safeMessage)
+	if err != nil {
+		return fmt.Errorf("finalize current agent failure: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("current agent failure response message group is unavailable")
+	}
+	return nil
 }
 
 func (r *RuntimeFailureResultsRepository) projectCurrentIndexActivityTerminal(

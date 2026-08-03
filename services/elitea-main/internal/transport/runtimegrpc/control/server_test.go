@@ -497,6 +497,50 @@ func TestVerifyResolvedManifestBindsEveryIndexEntryExactly(t *testing.T) {
 	}
 }
 
+func TestVerifyResolvedManifestBindsAgentProtobufEntryExactly(t *testing.T) {
+	server := &Server{config: ServerConfig{
+		MaxInputManifestBytes: 64 * 1024,
+		MaxInputEntries:       16,
+		MaxInputContentBytes:  executiondomain.MaxAgentExecutionInputBytes,
+		MaxStringBytes:        256,
+	}}
+	command := &runtimev1.WorkerCommandV1{
+		CapabilityId: executiondomain.AgentApplicationCapability,
+		CapabilityCommand: &runtimev1.WorkerCommandV1_AgentExecution{
+			AgentExecution: &runtimev1.AgentExecutionCommandV1{
+				RequestEntryId: "agent-request",
+			},
+		},
+	}
+	manifest := &runtimev1.ExecutionInputBundleV1{
+		InputBundleId:    "agent-bundle",
+		ImmutableVersion: "agent-bundle-v1",
+		Entries: []*runtimev1.ExecutionInputEntryV1{{
+			EntryId:          "agent-request",
+			ImmutableVersion: "agent-request-v1",
+			SemanticRole:     executiondomain.AgentExecutionRequestRole,
+			Content: &runtimev1.ScopedContentReferenceV1{
+				ContentId:             "agent-content",
+				ImmutableVersion:      "agent-request-v1",
+				MediaType:             executiondomain.AgentExecutionInputMediaType,
+				ByteLength:            344,
+				Digest:                testDigest([]byte("agent request")),
+				Classification:        "tenant-confidential",
+				RequiredGrantAudience: "elitea.runtime.input.read.v1",
+			},
+		}},
+	}
+	if err := server.verifyResolvedManifest(inputReferenceForManifest(t, manifest), manifest, command); err != nil {
+		t.Fatalf("valid agent manifest rejected: %v", err)
+	}
+
+	wrongMediaType := proto.Clone(manifest).(*runtimev1.ExecutionInputBundleV1)
+	wrongMediaType.Entries[0].Content.MediaType = executiondomain.SettingsJSONMediaType
+	if err := server.verifyResolvedManifest(inputReferenceForManifest(t, wrongMediaType), wrongMediaType, command); err == nil {
+		t.Fatal("agent manifest with JSON content was accepted")
+	}
+}
+
 func TestClaimCommandAcceptsBoundedIndexManifestAfterAuthorizedClaim(t *testing.T) {
 	manifest := validIndexManifest()
 	calls := []string{}

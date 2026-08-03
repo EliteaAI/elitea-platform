@@ -44,18 +44,26 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 		require.Contains(t, query, "ws.issued_at <= clock_timestamp()")
 		require.Contains(t, query, "ws.expires_at > clock_timestamp()")
 		require.Contains(t, query, "ws.revoked_at IS NULL")
-		require.Contains(t, query, "j.capability_id IN ('configuration.validate.v1', 'index.ingest.v1')")
+		for _, capabilityID := range []string{
+			"configuration.validate.v1",
+			"index.ingest.v1",
+			"agent.execute.application.v1",
+			"agent.execute.adhoc.v1",
+		} {
+			require.Contains(t, query, "'"+capabilityID+"'")
+		}
 		require.Len(t, args, 8)
 		require.Equal(t, inputReadGrantAudience, args[7])
 		return contentRowFunc(func(dest ...any) error {
-			require.Len(t, dest, 7)
+			require.Len(t, dest, 8)
 			*dest[0].(*string) = "42"
 			*dest[1].(*string) = "17"
 			*dest[2].(*string) = "bundle-1"
 			*dest[3].(*string) = "index.ingest.v1"
 			*dest[4].(*string) = "index.toolkit_configuration"
-			*dest[5].(*[]byte) = append([]byte(nil), wantDigest[:]...)
-			*dest[6].(*int64) = 22
+			*dest[5].(*string) = "application/json"
+			*dest[6].(*[]byte) = append([]byte(nil), wantDigest[:]...)
+			*dest[7].(*int64) = 22
 			return nil
 		})
 	})
@@ -77,6 +85,7 @@ func TestPostgresContentAuthorizationRequiresInputReadAudience(t *testing.T) {
 	require.Equal(t, "bundle-1", authorization.InputBundleID)
 	require.Equal(t, "index.ingest.v1", authorization.CapabilityID)
 	require.Equal(t, "index.toolkit_configuration", authorization.SemanticRole)
+	require.Equal(t, "application/json", authorization.ExpectedMediaType)
 	require.Equal(t, wantDigest, authorization.ExpectedDigest)
 	require.EqualValues(t, 22, authorization.ExpectedLength)
 }

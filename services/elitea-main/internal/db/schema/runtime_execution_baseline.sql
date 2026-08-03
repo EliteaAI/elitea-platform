@@ -106,6 +106,25 @@ CREATE TABLE elitea_runtime.command_outbox (
     UNIQUE (execution_id, generation)
 );
 
+CREATE TABLE elitea_runtime.execution_claims (
+    claim_id text PRIMARY KEY,
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    workload_session_id text NOT NULL,
+    workload_identity text NOT NULL,
+    producer_id text NOT NULL,
+    claim_attempt bigint NOT NULL,
+    lease_epoch bigint NOT NULL,
+    fence_token bytea NOT NULL,
+    claimed_at timestamptz NOT NULL,
+    lease_expires_at timestamptz NOT NULL,
+    released_at timestamptz,
+    release_reason text,
+    initial_output_watermark bigint NOT NULL,
+    FOREIGN KEY (execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
+);
+
 CREATE TABLE elitea_runtime.index_ingest_jobs (
     execution_id text NOT NULL,
     generation bigint NOT NULL,
@@ -168,6 +187,24 @@ CREATE TABLE elitea_runtime.index_ingest_jobs (
                    (execution_id, generation, capability_id, input_bundle_id)
 );
 
+CREATE TABLE elitea_runtime.agent_execution_jobs (
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    capability_id text NOT NULL,
+    input_bundle_id text NOT NULL,
+    request_entry_id text NOT NULL,
+    client_stream_id text NOT NULL,
+    client_message_id text NOT NULL,
+    client_execution_generation text NOT NULL,
+    sio_event text NOT NULL,
+    PRIMARY KEY (execution_id, generation),
+    FOREIGN KEY (execution_id, generation, capability_id, input_bundle_id)
+        REFERENCES elitea_runtime.execution_jobs
+                   (execution_id, generation, capability_id, input_bundle_id),
+    FOREIGN KEY (input_bundle_id, request_entry_id)
+        REFERENCES elitea_runtime.input_bundle_entries (input_bundle_id, entry_id)
+);
+
 CREATE TABLE elitea_runtime.execution_replay_events (
     cursor bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_id text NOT NULL UNIQUE,
@@ -178,6 +215,24 @@ CREATE TABLE elitea_runtime.execution_replay_events (
     event_bytes bytea NOT NULL,
     event_digest bytea NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (execution_id, generation)
+        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
+);
+
+CREATE TABLE elitea_runtime.execution_replay_state (
+    execution_id text NOT NULL,
+    generation bigint NOT NULL,
+    projection_project_id integer NOT NULL REFERENCES centry.project(id),
+    last_node_sequence bigint NOT NULL DEFAULT 0,
+    last_node_event_id text,
+    last_node_event_bytes bytea,
+    last_node_event_digest bytea,
+    last_node_cursor bigint,
+    pruned_through_cursor bigint NOT NULL DEFAULT 0,
+    retained_progress_events bigint NOT NULL DEFAULT 0,
+    retained_progress_bytes bigint NOT NULL DEFAULT 0,
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (execution_id, generation),
     FOREIGN KEY (execution_id, generation)
         REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
 );

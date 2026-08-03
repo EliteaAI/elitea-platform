@@ -13,10 +13,14 @@ import (
 const (
 	ConfigurationValidationCapability = "configuration.validate.v1"
 	IndexIngestCapability             = "index.ingest.v1"
+	AgentApplicationCapability        = "agent.execute.application.v1"
+	AgentAdhocCapability              = "agent.execute.adhoc.v1"
 	SettingsJSONMediaType             = "application/json"
+	AgentExecutionInputMediaType      = "application/vnd.elitea.agent-execution-input.v1+protobuf"
 	InputBundleManifestMediaType      = "application/x-protobuf"
 	MaxInputBundleEntries             = 16
 	MaxInputEntryContentBytes         = 256 * 1024
+	MaxAgentExecutionInputBytes       = 1024 * 1024
 
 	IndexToolkitConfigurationRole = "index.toolkit_configuration"
 	IndexToolParametersRole       = "index.tool_parameters"
@@ -24,6 +28,7 @@ const (
 	IndexLLMConfigurationRole     = "index.llm_configuration"
 	IndexMCPTokensRole            = "index.mcp_tokens"
 	IndexEmbeddingBindingRole     = "index.embedding_binding"
+	AgentExecutionRequestRole     = "agent.execution_request"
 	MaxIndexMetaIDBytes           = 256
 	MaxIndexMetaCorrelationBytes  = 512
 )
@@ -71,7 +76,7 @@ func (b InputBundle) Validate() error {
 	}
 	entryIDs := make(map[string]struct{}, len(b.Entries))
 	for _, entry := range b.Entries {
-		if entry.ID == "" || entry.Version == "" || entry.SemanticRole == "" || entry.ContentID == "" || entry.MediaType != SettingsJSONMediaType || entry.Classification == "" || entry.RequiredGrantAudience == "" || entry.ContentDigest.IsZero() || entry.ContentLength <= 0 {
+		if entry.ID == "" || entry.Version == "" || entry.SemanticRole == "" || entry.ContentID == "" || !validInputEntryMediaType(entry.MediaType) || entry.Classification == "" || entry.RequiredGrantAudience == "" || entry.ContentDigest.IsZero() || entry.ContentLength <= 0 || entry.ContentLength > maxInputEntryContentBytes(entry.MediaType) {
 			return ErrInvalidInputBundle
 		}
 		if _, duplicate := entryIDs[entry.ID]; duplicate {
@@ -83,6 +88,21 @@ func (b InputBundle) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validInputEntryMediaType(mediaType string) bool {
+	return maxInputEntryContentBytes(mediaType) > 0
+}
+
+func maxInputEntryContentBytes(mediaType string) int64 {
+	switch mediaType {
+	case SettingsJSONMediaType:
+		return MaxInputEntryContentBytes
+	case AgentExecutionInputMediaType:
+		return MaxAgentExecutionInputBytes
+	default:
+		return 0
+	}
 }
 
 func (b InputBundle) Clone() InputBundle {
@@ -143,10 +163,31 @@ func (j Job) Validate() error {
 	if j.ID == "" || j.CommandID == "" || j.TenantID == "" || j.ResourceProjectID == "" || j.ProjectionProjectID == "" || j.ActorID == "" {
 		return ErrInvalidJob
 	}
-	if (j.CapabilityID != ConfigurationValidationCapability && j.CapabilityID != IndexIngestCapability) || j.Generation == 0 || !j.State.Valid() || j.State != JobPending || j.CreatedAt.IsZero() {
+	if !SupportedCapability(j.CapabilityID) || j.Generation == 0 || !j.State.Valid() || j.State != JobPending || j.CreatedAt.IsZero() {
 		return ErrInvalidJob
 	}
 	return nil
+}
+
+func SupportedCapability(capabilityID string) bool {
+	switch capabilityID {
+	case ConfigurationValidationCapability,
+		IndexIngestCapability,
+		AgentApplicationCapability,
+		AgentAdhocCapability:
+		return true
+	default:
+		return false
+	}
+}
+
+func NodeEventCapability(capabilityID string) bool {
+	switch capabilityID {
+	case IndexIngestCapability, AgentApplicationCapability, AgentAdhocCapability:
+		return true
+	default:
+		return false
+	}
 }
 
 type IndexIngestInitiator string
@@ -250,6 +291,35 @@ func validIndexMetaText(value string, limit int) bool {
 
 func validOptionalIndexMetaText(value string, limit int) bool {
 	return value == "" || validIndexMetaText(value, limit)
+}
+
+// AgentExecutionBinding connects one immutable agent request to the bounded
+// command correlation fields used by Main and the browser. The request bytes
+// stay in the input data plane and are never copied into a Redis command.
+type AgentExecutionBinding struct {
+	RequestEntryID            string
+	ClientStreamID            string
+	ClientMessageID           string
+	ClientExecutionGeneration string
+	SIOEvent                  string
+}
+
+func (b AgentExecutionBinding) Validate(bundle InputBundle) error {
+	if b.RequestEntryID == "" ||
+		!validIndexMetaText(b.ClientStreamID, MaxIndexMetaCorrelationBytes) ||
+		!validIndexMetaText(b.ClientMessageID, MaxIndexMetaCorrelationBytes) ||
+		!validIndexMetaText(b.ClientExecutionGeneration, MaxIndexMetaCorrelationBytes) ||
+		(b.SIOEvent != "chat_predict" && b.SIOEvent != "chat_continue_predict") ||
+		len(bundle.Entries) != 1 {
+		return ErrInvalidInputBundle
+	}
+	entry := bundle.Entries[0]
+	if entry.ID != b.RequestEntryID ||
+		entry.SemanticRole != AgentExecutionRequestRole ||
+		entry.MediaType != AgentExecutionInputMediaType {
+		return ErrInvalidInputBundle
+	}
+	return nil
 }
 
 type OutboxRecord struct {

@@ -25,6 +25,8 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	agentTrace := &recordingCurrentAgentTraceProjector{}
+	repository.agentTrace = agentTrace
 	outcome, err := repository.ProjectNodeEvent(context.Background(), frame)
 	if err != nil {
 		t.Fatal(err)
@@ -32,11 +34,24 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	if !outcome.Inserted || outcome.Cursor != 17 || outcome.CommittedSequence != 1 || store.txCalls != 1 {
 		t.Fatalf("unexpected node event projection: %+v tx=%d", outcome, store.txCalls)
 	}
+	if agentTrace.calls != 1 || agentTrace.projectID != 42 ||
+		string(agentTrace.frame.BrowserData) != string(frame.BrowserData) {
+		t.Fatalf("agent trace projector did not share the durable event transaction: %+v", agentTrace)
+	}
 	if len(executor.rowCalls) != 4 {
 		t.Fatalf("unexpected node event query count: %d", len(executor.rowCalls))
 	}
 	lockQuery := executor.rowCalls[1]
-	for _, evidence := range []string{"execution_claims", "command_outbox", "j.capability_id = 'index.ingest.v1'", "c.initial_output_watermark = $13", "FOR UPDATE OF j, o, c"} {
+	for _, evidence := range []string{
+		"execution_claims",
+		"command_outbox",
+		"j.capability_id IN (",
+		"'index.ingest.v1'",
+		"'agent.execute.application.v1'",
+		"'agent.execute.adhoc.v1'",
+		"c.initial_output_watermark = $13",
+		"FOR UPDATE OF j, o, c",
+	} {
 		if !strings.Contains(lockQuery.sql, evidence) {
 			t.Fatalf("node event authority lock SQL is missing %q", evidence)
 		}
@@ -57,6 +72,24 @@ func TestNodeEventsRepositoryProjectsThroughLiveAuthorityAndReplayLog(t *testing
 	if query.args[4] != replayEventNodeEvent || string(query.args[5].([]byte)) != string(frame.BrowserData) {
 		t.Fatal("node event did not project exact browser JSON into the replay log")
 	}
+}
+
+type recordingCurrentAgentTraceProjector struct {
+	calls     int
+	projectID int64
+	frame     outputapp.NodeEventFrame
+}
+
+func (p *recordingCurrentAgentTraceProjector) projectAgentTraceDelta(
+	_ context.Context,
+	_ sqlExecutor,
+	projectID int64,
+	frame outputapp.NodeEventFrame,
+) error {
+	p.calls++
+	p.projectID = projectID
+	p.frame = frame
+	return nil
 }
 
 func TestNodeEventsRepositoryReplaysIdenticalEventAndRejectsDifferentBytes(t *testing.T) {

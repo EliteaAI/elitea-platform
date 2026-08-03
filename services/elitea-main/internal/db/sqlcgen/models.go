@@ -174,6 +174,66 @@ type CentrySocialUser struct {
 	DefaultSummarization     []byte  `db:"default_summarization" json:"default_summarization"`
 }
 
+type ChatConversation struct {
+	ID           int32            `db:"id" json:"id"`
+	Uuid         pgtype.UUID      `db:"uuid" json:"uuid"`
+	Name         string           `db:"name" json:"name"`
+	IsPrivate    bool             `db:"is_private" json:"is_private"`
+	AuthorID     int32            `db:"author_id" json:"author_id"`
+	Meta         []byte           `db:"meta" json:"meta"`
+	Source       string           `db:"source" json:"source"`
+	Instructions *string          `db:"instructions" json:"instructions"`
+	CreatedAt    pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt    pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
+type ChatMessageGroup struct {
+	ID                  int32            `db:"id" json:"id"`
+	Uuid                pgtype.UUID      `db:"uuid" json:"uuid"`
+	AuthorParticipantID int32            `db:"author_participant_id" json:"author_participant_id"`
+	ConversationID      int32            `db:"conversation_id" json:"conversation_id"`
+	SentToID            *int32           `db:"sent_to_id" json:"sent_to_id"`
+	ReplyToID           *int32           `db:"reply_to_id" json:"reply_to_id"`
+	Meta                []byte           `db:"meta" json:"meta"`
+	IsStreaming         bool             `db:"is_streaming" json:"is_streaming"`
+	CreatedAt           pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt           pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	TaskID              *string          `db:"task_id" json:"task_id"`
+}
+
+type ChatMessageItem struct {
+	ID             int32            `db:"id" json:"id"`
+	Uuid           pgtype.UUID      `db:"uuid" json:"uuid"`
+	ItemType       string           `db:"item_type" json:"item_type"`
+	OrderIndex     int32            `db:"order_index" json:"order_index"`
+	Meta           []byte           `db:"meta" json:"meta"`
+	CreatedAt      pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	MessageGroupID int32            `db:"message_group_id" json:"message_group_id"`
+}
+
+type ChatMessagesText struct {
+	ID      int32  `db:"id" json:"id"`
+	Content string `db:"content" json:"content"`
+}
+
+type ChatParticipant struct {
+	ID         int32       `db:"id" json:"id"`
+	Uuid       pgtype.UUID `db:"uuid" json:"uuid"`
+	EntityName string      `db:"entity_name" json:"entity_name"`
+	EntityMeta []byte      `db:"entity_meta" json:"entity_meta"`
+	Meta       []byte      `db:"meta" json:"meta"`
+}
+
+type ChatParticipantMapping struct {
+	ID             int32            `db:"id" json:"id"`
+	ConversationID int32            `db:"conversation_id" json:"conversation_id"`
+	ParticipantID  int32            `db:"participant_id" json:"participant_id"`
+	EntitySettings []byte           `db:"entity_settings" json:"entity_settings"`
+	CreatedAt      pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
 type Configuration struct {
 	ID          int32            `db:"id" json:"id"`
 	Uuid        pgtype.UUID      `db:"uuid" json:"uuid"`
@@ -191,6 +251,18 @@ type Configuration struct {
 	AuthorID    *int32           `db:"author_id" json:"author_id"`
 	CreatedAt   pgtype.Timestamp `db:"created_at" json:"created_at"`
 	UpdatedAt   pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+}
+
+type EliteaRuntimeAgentExecutionJob struct {
+	ExecutionID               string `db:"execution_id" json:"execution_id"`
+	Generation                int64  `db:"generation" json:"generation"`
+	CapabilityID              string `db:"capability_id" json:"capability_id"`
+	InputBundleID             string `db:"input_bundle_id" json:"input_bundle_id"`
+	RequestEntryID            string `db:"request_entry_id" json:"request_entry_id"`
+	ClientStreamID            string `db:"client_stream_id" json:"client_stream_id"`
+	ClientMessageID           string `db:"client_message_id" json:"client_message_id"`
+	ClientExecutionGeneration string `db:"client_execution_generation" json:"client_execution_generation"`
+	SioEvent                  string `db:"sio_event" json:"sio_event"`
 }
 
 type EliteaRuntimeCommandOutbox struct {
@@ -250,6 +322,23 @@ type EliteaRuntimeExecutionAdmissionPolicy struct {
 	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
+type EliteaRuntimeExecutionClaim struct {
+	ClaimID                string             `db:"claim_id" json:"claim_id"`
+	ExecutionID            string             `db:"execution_id" json:"execution_id"`
+	Generation             int64              `db:"generation" json:"generation"`
+	WorkloadSessionID      string             `db:"workload_session_id" json:"workload_session_id"`
+	WorkloadIdentity       string             `db:"workload_identity" json:"workload_identity"`
+	ProducerID             string             `db:"producer_id" json:"producer_id"`
+	ClaimAttempt           int64              `db:"claim_attempt" json:"claim_attempt"`
+	LeaseEpoch             int64              `db:"lease_epoch" json:"lease_epoch"`
+	FenceToken             []byte             `db:"fence_token" json:"fence_token"`
+	ClaimedAt              pgtype.Timestamptz `db:"claimed_at" json:"claimed_at"`
+	LeaseExpiresAt         pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	ReleasedAt             pgtype.Timestamptz `db:"released_at" json:"released_at"`
+	ReleaseReason          *string            `db:"release_reason" json:"release_reason"`
+	InitialOutputWatermark int64              `db:"initial_output_watermark" json:"initial_output_watermark"`
+}
+
 type EliteaRuntimeExecutionJob struct {
 	ExecutionID             string             `db:"execution_id" json:"execution_id"`
 	Generation              int64              `db:"generation" json:"generation"`
@@ -291,6 +380,21 @@ type EliteaRuntimeExecutionReplayEvent struct {
 	EventBytes          []byte             `db:"event_bytes" json:"event_bytes"`
 	EventDigest         []byte             `db:"event_digest" json:"event_digest"`
 	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+type EliteaRuntimeExecutionReplayState struct {
+	ExecutionID            string             `db:"execution_id" json:"execution_id"`
+	Generation             int64              `db:"generation" json:"generation"`
+	ProjectionProjectID    int32              `db:"projection_project_id" json:"projection_project_id"`
+	LastNodeSequence       int64              `db:"last_node_sequence" json:"last_node_sequence"`
+	LastNodeEventID        *string            `db:"last_node_event_id" json:"last_node_event_id"`
+	LastNodeEventBytes     []byte             `db:"last_node_event_bytes" json:"last_node_event_bytes"`
+	LastNodeEventDigest    []byte             `db:"last_node_event_digest" json:"last_node_event_digest"`
+	LastNodeCursor         *int64             `db:"last_node_cursor" json:"last_node_cursor"`
+	PrunedThroughCursor    int64              `db:"pruned_through_cursor" json:"pruned_through_cursor"`
+	RetainedProgressEvents int64              `db:"retained_progress_events" json:"retained_progress_events"`
+	RetainedProgressBytes  int64              `db:"retained_progress_bytes" json:"retained_progress_bytes"`
+	UpdatedAt              pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 type EliteaRuntimeIndexGenerationCounter struct {
@@ -458,4 +562,15 @@ type EliteaTool struct {
 	SharedOwnerID *int32           `db:"shared_owner_id" json:"shared_owner_id"`
 	SharedID      *int32           `db:"shared_id" json:"shared_id"`
 	Meta          []byte           `db:"meta" json:"meta"`
+}
+
+type EntityToolMapping struct {
+	ID              int32            `db:"id" json:"id"`
+	ToolID          int32            `db:"tool_id" json:"tool_id"`
+	EntityID        int32            `db:"entity_id" json:"entity_id"`
+	EntityVersionID int32            `db:"entity_version_id" json:"entity_version_id"`
+	EntityType      string           `db:"entity_type" json:"entity_type"`
+	CreatedAt       pgtype.Timestamp `db:"created_at" json:"created_at"`
+	UpdatedAt       pgtype.Timestamp `db:"updated_at" json:"updated_at"`
+	SelectedTools   []byte           `db:"selected_tools" json:"selected_tools"`
 }

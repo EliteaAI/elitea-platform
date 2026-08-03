@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -53,12 +54,13 @@ type ContentAuthorization struct {
 	ResourceProjectID string
 	// ActorID is the exact durable execution_jobs.actor_id. Materializers own
 	// any capability-specific interpretation, including current user lookup.
-	ActorID        string
-	InputBundleID  string
-	CapabilityID   string
-	SemanticRole   string
-	ExpectedDigest [sha256.Size]byte
-	ExpectedLength int64
+	ActorID           string
+	InputBundleID     string
+	CapabilityID      string
+	SemanticRole      string
+	ExpectedMediaType string
+	ExpectedDigest    [sha256.Size]byte
+	ExpectedLength    int64
 }
 
 // ContentAuthorizer validates workload identity, claim, generation, fence,
@@ -188,7 +190,12 @@ func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authorization, err := s.authorizer.AuthorizeContent(r.Context(), claim)
-	if err != nil || authorization.ResourceProjectID == "" || authorization.InputBundleID == "" || authorization.CapabilityID == "" || authorization.SemanticRole == "" || authorization.ExpectedLength <= 0 {
+	if err != nil || authorization.ResourceProjectID == "" || authorization.InputBundleID == "" || authorization.CapabilityID == "" || authorization.SemanticRole == "" || authorization.ExpectedMediaType == "" || authorization.ExpectedLength <= 0 {
+		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+		return
+	}
+	mediaType, parameters, err := mime.ParseMediaType(authorization.ExpectedMediaType)
+	if err != nil || mediaType != authorization.ExpectedMediaType || len(parameters) != 0 {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
@@ -251,7 +258,7 @@ func (s *ContentServer) Get(w http.ResponseWriter, r *http.Request) {
 	responseDigest := sha256.Sum256(responseData)
 	defer clearContentBytes(responseData)
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", authorization.ExpectedMediaType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(responseData)))
 	w.Header().Set("Content-Digest", formatSHA256Digest(responseDigest))
 	w.Header().Set(SourceContentDigestHeader, formatSHA256Digest(digest))

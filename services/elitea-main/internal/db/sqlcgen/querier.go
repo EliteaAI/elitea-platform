@@ -17,6 +17,7 @@ type Querier interface {
 	AllocateIndexGeneration(ctx context.Context, arg AllocateIndexGenerationParams) (int64, error)
 	AssignAuthUserRoleByNameAndMode(ctx context.Context, arg AssignAuthUserRoleByNameAndModeParams) (int64, error)
 	AssignExistingProjectRoles(ctx context.Context, arg AssignExistingProjectRolesParams) (int64, error)
+	AuthorizeRuntimeValidationProject(ctx context.Context, arg AuthorizeRuntimeValidationProjectParams) (bool, error)
 	BulkDeleteCurrentNotifications(ctx context.Context, arg BulkDeleteCurrentNotificationsParams) (int64, error)
 	BulkSetCurrentNotificationsSeen(ctx context.Context, arg BulkSetCurrentNotificationsSeenParams) (int64, error)
 	// Claim only the oldest unfinished revision for each configuration. A lower
@@ -58,9 +59,12 @@ type Querier interface {
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveProjectSystemPAT(ctx context.Context, projectID int32) (GetActiveProjectSystemPATRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
+	GetAgentExecutionAdmissionByIdempotency(ctx context.Context, arg GetAgentExecutionAdmissionByIdempotencyParams) (GetAgentExecutionAdmissionByIdempotencyRow, error)
+	GetAgentExecutionTerminalNodeEvent(ctx context.Context, arg GetAgentExecutionTerminalNodeEventParams) (GetAgentExecutionTerminalNodeEventRow, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
+	GetCurrentAgentTraceBinding(ctx context.Context, arg GetCurrentAgentTraceBindingParams) (GetCurrentAgentTraceBindingRow, error)
 	GetCurrentConfiguration(ctx context.Context, arg GetCurrentConfigurationParams) (GetCurrentConfigurationRow, error)
 	GetCurrentConfigurationRenameToolkit(ctx context.Context, arg GetCurrentConfigurationRenameToolkitParams) (GetCurrentConfigurationRenameToolkitRow, error)
 	// Raw data is intentional: the Go adapter performs type-safe, redacted
@@ -68,30 +72,38 @@ type Querier interface {
 	// duplicate candidates a deterministic baseline order.
 	GetCurrentModelCatalogBounds(ctx context.Context, arg GetCurrentModelCatalogBoundsParams) (GetCurrentModelCatalogBoundsRow, error)
 	GetCurrentNotification(ctx context.Context, arg GetCurrentNotificationParams) (GetCurrentNotificationRow, error)
+	GetCurrentTenantSchema(ctx context.Context) (string, error)
 	// The unqualified table name is intentional. This query runs only inside an
 	// authorized project transaction whose local search_path is p_<project_id>.
 	GetCurrentToolkit(ctx context.Context, toolkitID int32) (EliteaTool, error)
 	GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error)
+	GetExpectedAgentExecutionHeader(ctx context.Context, arg GetExpectedAgentExecutionHeaderParams) (GetExpectedAgentExecutionHeaderRow, error)
 	GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error)
 	// The project vault row serializes configuration mutations for one project,
 	// so selecting the last indexed revision is sufficient inside the same
 	// transaction. The unique key remains the final integrity fence.
 	GetLatestConfigurationLifecycleRevision(ctx context.Context, arg GetLatestConfigurationLifecycleRevisionParams) (int64, error)
 	GetOwnedPAT(ctx context.Context, arg GetOwnedPATParams) (GetOwnedPATRow, error)
+	GetPendingAgentExecutionDispatch(ctx context.Context, arg GetPendingAgentExecutionDispatchParams) (GetPendingAgentExecutionDispatchRow, error)
+	GetPreparedAgentExecutionEnvelope(ctx context.Context, arg GetPreparedAgentExecutionEnvelopeParams) (GetPreparedAgentExecutionEnvelopeRow, error)
 	GetRuntimeAdmissionByIdempotency(ctx context.Context, arg GetRuntimeAdmissionByIdempotencyParams) (GetRuntimeAdmissionByIdempotencyRow, error)
 	GetScheduledJobCursorForUpdate(ctx context.Context, jobID string) (GetScheduledJobCursorForUpdateRow, error)
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
+	InsertAgentExecutionBinding(ctx context.Context, arg InsertAgentExecutionBindingParams) error
+	InsertAgentExecutionJob(ctx context.Context, arg InsertAgentExecutionJobParams) (string, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
 	InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
+	InsertInitialCurrentApplicationTurn(ctx context.Context, arg InsertInitialCurrentApplicationTurnParams) (InsertInitialCurrentApplicationTurnRow, error)
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
 	InsertScheduledJobCursor(ctx context.Context, arg InsertScheduledJobCursorParams) error
 	InsertScheduledOccurrence(ctx context.Context, arg InsertScheduledOccurrenceParams) error
+	InstallCurrentTenantSearchPath(ctx context.Context, searchPath string) (string, error)
 	IsCurrentUserProjectMember(ctx context.Context, arg IsCurrentUserProjectMemberParams) (bool, error)
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
@@ -126,16 +138,24 @@ type Querier interface {
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
+	ListPendingAgentExecutionIDs(ctx context.Context, arg ListPendingAgentExecutionIDsParams) ([]string, error)
 	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)
 	LoadRuntimeAdmissionTiming(ctx context.Context, deadlineTtlMillis int64) (LoadRuntimeAdmissionTimingRow, error)
+	LockAgentExecutionEnvelope(ctx context.Context, arg LockAgentExecutionEnvelopeParams) (LockAgentExecutionEnvelopeRow, error)
+	LockAgentExecutionPublication(ctx context.Context, arg LockAgentExecutionPublicationParams) (LockAgentExecutionPublicationRow, error)
+	LockCancelledNoAuthorityAgentExecutions(ctx context.Context, arg LockCancelledNoAuthorityAgentExecutionsParams) ([]LockCancelledNoAuthorityAgentExecutionsRow, error)
+	LockCurrentAgentConversation(ctx context.Context, conversationUuid pgtype.UUID) (int32, error)
 	// The unqualified configuration relation is intentional. These queries run
 	// only inside a tenant transaction whose local search_path was derived from an
 	// already authorized positive project identity.
 	LockCurrentConfigurationForMutation(ctx context.Context, arg LockCurrentConfigurationForMutationParams) (LockCurrentConfigurationForMutationRow, error)
 	LockCurrentIndexScheduleToolkit(ctx context.Context, toolkitID int32) (LockCurrentIndexScheduleToolkitRow, error)
 	LockCurrentIndexScheduleToolkitMeta(ctx context.Context, toolkitID int32) ([]byte, error)
+	LockExpiredNoAuthorityAgentExecutions(ctx context.Context, arg LockExpiredNoAuthorityAgentExecutionsParams) ([]LockExpiredNoAuthorityAgentExecutionsRow, error)
 	LockPATByUUID(ctx context.Context, uuid string) (LockPATByUUIDRow, error)
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
+	MarkAgentExecutionDispatched(ctx context.Context, arg MarkAgentExecutionDispatchedParams) (int64, error)
+	MarkAgentExecutionPublished(ctx context.Context, arg MarkAgentExecutionPublishedParams) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
@@ -143,6 +163,7 @@ type Querier interface {
 	MarkIndexMetaInitialized(ctx context.Context, arg MarkIndexMetaInitializedParams) (pgtype.Timestamptz, error)
 	QuarantineExpiredTerminalIndexMetaInitializations(ctx context.Context, quarantineLimit int32) (int64, error)
 	QuarantineIndexMetaInitialization(ctx context.Context, arg QuarantineIndexMetaInitializationParams) (string, error)
+	RefreshAgentExecutionPublication(ctx context.Context, arg RefreshAgentExecutionPublicationParams) (int64, error)
 	ReleaseIndexMetaInitialization(ctx context.Context, arg ReleaseIndexMetaInitializationParams) (int64, error)
 	ReleaseScheduledOccurrenceForRetry(ctx context.Context, arg ReleaseScheduledOccurrenceForRetryParams) (int64, error)
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
@@ -153,12 +174,16 @@ type Querier interface {
 	// assignment; the system-user email fallback is considered only when that
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
+	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
+	ResolveInitialCurrentApplicationTurn(ctx context.Context, arg ResolveInitialCurrentApplicationTurnParams) (ResolveInitialCurrentApplicationTurnRow, error)
+	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
 	// intentional: every such statement runs inside an authorized project
 	// transaction whose local search_path is p_<project_id>.
 	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
+	StorePreparedAgentExecutionEnvelope(ctx context.Context, arg StorePreparedAgentExecutionEnvelopeParams) (int64, error)
 	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)

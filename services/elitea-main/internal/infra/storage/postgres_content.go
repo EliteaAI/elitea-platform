@@ -58,6 +58,7 @@ SELECT j.resource_project_id::text,
        j.input_bundle_id,
        j.capability_id,
        e.semantic_role,
+       e.media_type,
        e.content_digest,
        e.content_size
 FROM elitea_runtime.execution_claims AS c
@@ -80,7 +81,12 @@ WHERE c.claim_id = $1
   AND ws.expires_at > clock_timestamp()
   AND ws.revoked_at IS NULL
   AND j.desired_state = 'RUNNING'
-  AND j.capability_id IN ('configuration.validate.v1', 'index.ingest.v1')
+  AND j.capability_id IN (
+      'configuration.validate.v1',
+      'index.ingest.v1',
+      'agent.execute.application.v1',
+      'agent.execute.adhoc.v1'
+  )
   AND e.content_reference = $6
   AND e.entry_version = $7
   AND e.required_grant_audience = $8`,
@@ -98,6 +104,7 @@ WHERE c.claim_id = $1
 		&authorization.InputBundleID,
 		&authorization.CapabilityID,
 		&authorization.SemanticRole,
+		&authorization.ExpectedMediaType,
 		&digest,
 		&authorization.ExpectedLength,
 	)

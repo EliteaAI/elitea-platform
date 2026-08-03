@@ -299,12 +299,7 @@ func (s *ClaimService) AuthorizeInvocation(ctx context.Context, fence runtimedom
 }
 
 func claimCapabilityAllowed(capabilityID string) bool {
-	switch capabilityID {
-	case executiondomain.ConfigurationValidationCapability, executiondomain.IndexIngestCapability:
-		return true
-	default:
-		return false
-	}
+	return executiondomain.SupportedCapability(capabilityID)
 }
 
 func (s *ClaimService) VerifyActive(ctx context.Context, fence runtimedomain.Fence) error {
