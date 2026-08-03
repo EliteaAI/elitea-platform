@@ -16,8 +16,11 @@
  *  - Shared helpers: convertMessagesToChatHistory, subAgentGrouping,
  *    participantName
  *
- * Barrel split across these groups for readability (the spec §3.5 budget is
- * ≤20 named exports; this barrel has exactly 20).
+ * Barrel split across these groups for readability. The spec §3.5 budget is
+ * ≤20 named exports; this barrel is over that (waived — `slice-public-api`
+ * in `scripts/lib/budgets-core.mjs`'s `BUDGET_WAIVERS`) given the size of
+ * this unit's surface (message rendering, attachments, canvas, playback,
+ * socket sync).
  */
 
 // Bundled hooks (imported at top so chatHooks can reference them).
@@ -41,6 +44,13 @@ export {
   convertToPlayerQuestion,
   isUserMessage,
 } from './lib/convertMessagesToChatHistory';
+
+// Socket-driven message_group sync (chat_message_sync) — waived, see budgets-core.mjs.
+export { useSyncChatMessage } from './model/useSyncChatMessage';
+
+// Delete-confirmation dialog orchestrator — waived, see budgets-core.mjs.
+export { useDeleteMessageAlert, ALL_MESSAGES } from './model/useDeleteMessageAlert';
+export type { UseDeleteMessageAlertParams, UseDeleteMessageAlertResult } from './model/useDeleteMessageAlert';
 
 export type {
   ClassifyWrapper,

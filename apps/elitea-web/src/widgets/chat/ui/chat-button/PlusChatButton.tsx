@@ -1,37 +1,69 @@
 import { memo, useCallback, useRef, useState } from 'react';
 
 import AddIcon from '@mui/icons-material/Add';
-import Box from '@mui/material/Box';
 import ClickAwayListener from '@mui/material/ClickAwayListener';
 import IconButton from '@mui/material/IconButton';
 import Paper from '@mui/material/Paper';
 import Popper from '@mui/material/Popper';
 import type { Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
-import Typography from '@mui/material/Typography';
 
+import { agentEditorHooks } from '@/features/agents';
+
+import { AttachmentsPanel, MainMenuList } from './PlusChatButton.parts';
+import {
+  MENU_ITEMS,
+  resolveActiveSubmenuView,
+  type PlusChatButtonEntitySubmenus,
+  type SubmenuKey,
+} from './PlusChatButton.helpers';
 import PlusChatSubmenu from './PlusChatSubmenu';
 
 /**
  * Chat button primitive: PlusChatButton
  *
  * A "+" icon button that opens a dropdown menu for adding agents, pipelines,
- * toolkits, and other chat enhancements. When a menu item is clicked it opens
- * the corresponding `PlusChatSubmenu` for the user to pick from the available
- * items (with search and create-new support).
+ * toolkits, MCPs, attachments and internal-tool toggles. Every entity
+ * category (agents/pipelines/toolkits/mcps) renders whatever real items the
+ * composition root supplies via `entitySubmenus` and calls
+ * `entitySubmenus.onSelectParticipant` on click — this widget cannot fetch
+ * that data itself: the equivalent of baseline's `useApplicationSubmenu`
+ * lives at `processes/chat/model/useChatEntityBrowser.ts`, a layer ABOVE
+ * `widgets/` (R-L1 forbids the upward import), so wiring real data in is a
+ * later composition-root stage's job, same as `participants` already was.
+ * Until that lands, an omitted category just renders its own empty state
+ * (`PlusChatSubmenu`'s `emptyMessage`), not fake placeholder rows.
+ *
+ * "Tools" renders the real internal-tools catalog
+ * (`agentEditorHooks.useAvailableInternalTools()`, feature/agents — the
+ * same source baseline's `PlusChatButton.jsx` reads directly) with working
+ * checkboxes that call `onInternalToolsConfigChange`. "MCPs" is gated by
+ * `agentEditorHooks.useIsMcpVisible()`, matching baseline's `isMcpVisible`
+ * gate. "Attachments" embeds the real `AttachmentButton` (via
+ * `PlusChatButton.parts.tsx`'s `AttachmentsPanel`) wired to the real
+ * `onAttachFiles`/`disableAttachments`/`attachments`/`limits` props,
+ * instead of discarding them.
+ *
+ * Split across `PlusChatButton.helpers.ts` (pure submenu-item/create-config
+ * logic) and `PlusChatButton.parts.tsx` (the attachments panel + main menu
+ * list JSX) purely to keep this file under the §3.5 file-length-400 and
+ * cyclomatic-complexity-12 budgets.
  *
  * Prop contract (injected by the composition root through `slots.attachmentButton` / the footer row):
- *   - `onAttachFiles`                — pass-through to the attachment submenu
- *   - `disableAttachments`           — pass-through to the attachment submenu
- *   - `attachments`                  — pass-through to the attachment submenu
- *   - `limits`                       — pass-through to the attachment submenu
- *   - `onInternalToolsConfigChange`  — pass-through for tools config
- *   - `internal_tools`               — pass-through for tools config
+ *   - `onAttachFiles`                — real file-picker callback (also used by the embedded AttachmentButton)
+ *   - `disableAttachments`           — disables the attachments row
+ *   - `attachments`                  — current attachment list (shown + counted)
+ *   - `limits`                       — optional overrides merged onto `ATTACHMENT_LIMITS` (see `AttachmentButton`'s own doc comment)
+ *   - `onInternalToolsConfigChange`  — toggles a tool on/off
+ *   - `internal_tools`               — currently-enabled tool names
  *   - `onCreateAgent`                — navigate/create an agent
  *   - `onCreatePipeline`             — navigate/create a pipeline
- *   - `onCreateToolkit`              — navigate/create a toolkit (optional `isMcp`)
+ *   - `onCreateToolkit`              — navigate/create a toolkit (`isMcp` for the MCPs category's "create new")
  *   - `participants`                 — list of participants for agent selection
+ *   - `entitySubmenus`               — real pipelines/toolkits/mcps lists + the shared select callback (grouped to stay under the §3.5 12-prop budget)
  */
+export type { PlusChatButtonEntitySubmenus } from './PlusChatButton.helpers';
+
 export interface PlusChatButtonProps {
   onAttachFiles?: (files: readonly File[]) => void;
   disableAttachments?: boolean;
@@ -43,40 +75,33 @@ export interface PlusChatButtonProps {
   onCreatePipeline?: () => void;
   onCreateToolkit?: (isMcp?: boolean) => void;
   participants?: unknown[];
+  entitySubmenus?: PlusChatButtonEntitySubmenus;
 }
 
-interface MenuItemDef {
-  key: string;
-  label: string;
-  icon: React.ReactNode;
-  submenu?: 'agents' | 'pipelines' | 'toolkits' | 'attachments' | 'tools';
-}
-
-const MENU_ITEMS: MenuItemDef[] = [
-  { key: 'agents', label: 'Agents', icon: '🤖', submenu: 'agents' },
-  { key: 'pipelines', label: 'Pipelines', icon: '📊', submenu: 'pipelines' },
-  { key: 'toolkits', label: 'Toolkits', icon: '🧰', submenu: 'toolkits' },
-  { key: 'attachments', label: 'Attachments', icon: '📎', submenu: 'attachments' },
-  { key: 'tools', label: 'Tools', icon: '⚙️', submenu: 'tools' },
-];
+const PLUS_MENU_TOOLTIP = 'Add files, agents, toolkits and more...';
+const PLUS_MENU_ARIA_LABEL = 'plus menu';
 
 export const PlusChatButton = memo(
   ({
-    onAttachFiles: _onAttachFiles,
-    disableAttachments: _disableAttachments,
-    attachments,
-    limits: _limits,
-    onInternalToolsConfigChange: _onInternalToolsConfigChange,
+    onAttachFiles = () => {},
+    disableAttachments = false,
+    attachments = [],
+    limits = {},
+    onInternalToolsConfigChange,
     internal_tools,
     onCreateAgent,
     onCreatePipeline,
     onCreateToolkit,
     participants,
+    entitySubmenus,
   }: PlusChatButtonProps) => {
     const [menuOpen, setMenuOpen] = useState(false);
-    const [activeSubmenu, setActiveSubmenu] = useState<string | null>(null);
+    const [activeSubmenu, setActiveSubmenu] = useState<SubmenuKey | null>(null);
     const [searchValue, setSearchValue] = useState('');
     const anchorRef = useRef<HTMLButtonElement>(null);
+
+    const availableTools = agentEditorHooks.useAvailableInternalTools();
+    const isMcpVisible = agentEditorHooks.useIsMcpVisible();
 
     const toggleMenu = useCallback(() => {
       setMenuOpen((prev) => !prev);
@@ -91,7 +116,7 @@ export const PlusChatButton = memo(
       setSearchValue('');
     }, []);
 
-    const handleSubmenuOpen = useCallback((key: string) => {
+    const handleSubmenuOpen = useCallback((key: SubmenuKey) => {
       setActiveSubmenu(key);
     }, []);
 
@@ -115,44 +140,43 @@ export const PlusChatButton = memo(
       closeMenu();
     }, [onCreateToolkit, closeMenu]);
 
-    // Build submenu items based on the active submenu
-    const submenuItems = activeSubmenu
-      ? (() => {
-          switch (activeSubmenu) {
-            case 'agents':
-              return (participants ?? []).map((p, i) => ({
-                key: `agent-${i}`,
-                label: (p as { name?: string })?.name ?? `Agent ${i + 1}`,
-              }));
-            case 'pipelines':
-              return [{ key: 'pipeline-1', label: 'No pipelines configured' }];
-            case 'toolkits':
-              return [{ key: 'toolkit-1', label: 'No toolkits configured' }];
-            case 'attachments':
-              return attachments && attachments.length > 0
-                ? attachments.map((f, i) => ({
-                    key: `attach-${i}`,
-                    label: f.name,
-                  }))
-                : [{ key: 'no-attachments', label: 'No files attached' }];
-            case 'tools':
-              return (internal_tools ?? []).map((t, i) => ({
-                key: `tool-${i}`,
-                label: t,
-              }));
-            default:
-              return [];
-          }
-        })()
-      : [];
+    const handleCreateMcp = useCallback(() => {
+      onCreateToolkit?.(true);
+      closeMenu();
+    }, [onCreateToolkit, closeMenu]);
+
+    const handleSelectParticipant = useCallback(
+      (participant: unknown) => {
+        entitySubmenus?.onSelectParticipant?.(participant);
+        closeMenu();
+      },
+      [entitySubmenus, closeMenu],
+    );
+
+    const { items: submenuItems, createConfig } = resolveActiveSubmenuView(activeSubmenu, {
+      participants,
+      entities: entitySubmenus,
+      availableTools,
+      enabledToolNames: internal_tools,
+      onInternalToolsConfigChange,
+      onSelect: handleSelectParticipant,
+      onCreate: {
+        agents: handleCreateAgent,
+        pipelines: handleCreatePipeline,
+        toolkits: handleCreateToolkit,
+        mcps: handleCreateMcp,
+      },
+    });
+
+    const visibleMenuItems = MENU_ITEMS.filter((item) => item.key !== 'mcps' || isMcpVisible);
 
     return (
       <>
-        <Tooltip title="Add files, agents, toolkits and more..." placement="top">
+        <Tooltip title={PLUS_MENU_TOOLTIP} placement="top">
           <IconButton
             ref={anchorRef}
             color="secondary"
-            aria-label="plus menu"
+            aria-label={PLUS_MENU_ARIA_LABEL}
             data-testid="plus-menu-button"
             onClick={toggleMenu}
             sx={{ marginLeft: 0 }}
@@ -172,7 +196,7 @@ export const PlusChatButton = memo(
               elevation={8}
               sx={(theme: Theme) => ({
                 minWidth: '17.5rem',
-                borderRadius: '0.75rem',
+                borderRadius: theme.vars.shape.radiusMd,
                 border: '0.0625rem solid',
                 borderColor: 'border.lines',
                 background: theme.vars.palette.background.secondary,
@@ -181,93 +205,28 @@ export const PlusChatButton = memo(
               })}
             >
               {/* Main menu or submenu */}
-              {activeSubmenu ? (
+              {activeSubmenu === 'attachments' ? (
+                <AttachmentsPanel
+                  disableAttachments={disableAttachments}
+                  attachments={attachments}
+                  onAttachFiles={onAttachFiles}
+                  limits={limits}
+                />
+              ) : activeSubmenu ? (
                 <PlusChatSubmenu
                   items={submenuItems}
                   searchValue={searchValue}
                   onSearchChange={(e) => setSearchValue(e.target.value)}
                   searchPlaceholder="Search..."
-                  showCreateNew={
-                    activeSubmenu === 'agents' ||
-                    activeSubmenu === 'pipelines' ||
-                    activeSubmenu === 'toolkits'
-                  }
-                  onCreateNew={
-                    activeSubmenu === 'agents'
-                      ? handleCreateAgent
-                      : activeSubmenu === 'pipelines'
-                        ? handleCreatePipeline
-                        : activeSubmenu === 'toolkits'
-                          ? handleCreateToolkit
-                          : undefined
-                  }
+                  showCreateNew={createConfig?.showCreateNew ?? false}
+                  onCreateNew={createConfig?.onCreateNew}
                   createNewLabel="Create new"
                   emptyMessage={`No ${activeSubmenu} available`}
                   noResultsMessage="No items found"
                   isLoading={false}
                 />
               ) : (
-                <Box>
-                  {/* Back button header */}
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 1,
-                      padding: '0.5rem 1rem',
-                      borderBottom: '0.0625rem solid',
-                      borderColor: 'border.lines',
-                      cursor: 'pointer',
-                      color: 'text.secondary',
-                    }}
-                    onClick={handleBack}
-                  >
-                    <Typography variant="bodyMedium" sx={{ flex: 1 }}>
-                      Add to chat
-                    </Typography>
-                  </Box>
-
-                  {/* Menu items */}
-                  {MENU_ITEMS.map((item) => (
-                    <Box
-                      key={item.key}
-                      role="menuitem"
-                      tabIndex={0}
-                      sx={(theme: Theme) => ({
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 0.75,
-                        padding: '0.5rem 1rem',
-                        height: '2.75rem',
-                        cursor: 'pointer',
-                        color: theme.vars.palette.text.secondary,
-                        '&:hover': {
-                          backgroundColor: theme.vars.palette.action.hover,
-                        },
-                      })}
-                      onClick={() => item.submenu && handleSubmenuOpen(item.key)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          if (item.submenu) handleSubmenuOpen(item.key);
-                        }
-                      }}
-                    >
-                      <Typography sx={{ flex: 1, fontSize: '0.875rem', lineHeight: '1.5rem' }}>
-                        {item.label}
-                      </Typography>
-                      <Box
-                        sx={(theme: Theme) => ({
-                          opacity: 0.5,
-                          fontSize: '0.75rem',
-                          color: theme.vars.palette.text.disabled,
-                        })}
-                      >
-                        ›
-                      </Box>
-                    </Box>
-                  ))}
-                </Box>
+                <MainMenuList items={visibleMenuItems} onBack={handleBack} onSelectSubmenu={handleSubmenuOpen} />
               )}
             </Paper>
           </ClickAwayListener>

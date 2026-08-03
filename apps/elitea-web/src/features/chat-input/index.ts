@@ -84,8 +84,11 @@ import { deriveConversationStarters, useConversationStarters } from './lib/useCo
 import { useConversationStartersSync } from './lib/useConversationStartersSync';
 import { useChatSkillMention } from './lib/hooks/useChatSkillMention';
 import { useSlashMention } from './lib/hooks/useSlashMention';
-import { useSpeakingModeLoop } from './lib/hooks/useSpeakingModeLoop';
+import { selectAsrModel, useSpeakingModeLoop } from './lib/hooks/useSpeakingModeLoop';
+import { useSpeechRecognition } from './lib/hooks/useSpeechRecognition';
+import { useStreamingSpeechRecognition } from './lib/hooks/useStreamingSpeechRecognition';
 import { useReadAloud } from './lib/hooks/useReadAloud.hooks';
+import { useModelsList } from './api/models';
 import { useChatAttachments } from './model/useChatAttachments';
 import { useNewConversationAttachments } from './model/useNewConversationAttachments';
 
@@ -173,10 +176,26 @@ export type { SpeakingModeInputHandle } from './lib/hooks/useSpeakingModeLoop';
  * `SpeakingModeInputHandle` (above) is the one real contract a caller must
  * independently type its own textarea ref against before calling
  * `voiceHooks.useSpeakingModeLoop`.
+ *
+ * `useSpeechRecognition`/`useStreamingSpeechRecognition`/`useModelsList`/
+ * `selectAsrModel` are bundled in here too (widget-C6 `VoiceButton`'s
+ * consumers) — they were previously intra-slice-only building blocks of
+ * `useSpeakingModeLoop` itself; `VoiceButton` needs the same client/server
+ * ASR priority `useSpeakingModeLoop` already implements, but for one-shot
+ * cursor-aware dictation rather than the hands-free auto-send loop, so it
+ * calls the two ASR hooks directly instead of going through
+ * `useSpeakingModeLoop`. Adding these as new MEMBERS of the existing
+ * `voiceHooks` object costs zero additional slots against the §3.5
+ * `slice-public-api` budget (`scripts/lib/budgets-core.mjs`'s `countExports`
+ * counts the one `export const voiceHooks` declaration, not its members).
  */
 export const voiceHooks = {
   useSpeakingModeLoop,
   useReadAloud,
+  useSpeechRecognition,
+  useStreamingSpeechRecognition,
+  useModelsList,
+  selectAsrModel,
 };
 
 export { VoiceControlButton } from './ui/VoiceControlButton';

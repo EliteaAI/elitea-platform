@@ -1,7 +1,7 @@
-// @ts-nocheck — ported from JS; strict TS refinements pending
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Box, Button, Modal, Typography } from '@mui/material';
+import type { SxProps, Theme } from '@mui/material/styles';
 
 import { VALIDATION_RULE, validateMaxTokens } from '@/widgets/llm-model-selector/lib/validation';
 import { LLMSettings } from './LLMSettings';
@@ -14,23 +14,33 @@ interface LLMSettingsDialogProps {
   llmSettings?: Record<string, unknown>;
   showWebhookSecret?: boolean;
   showStepsLimit?: boolean;
-  onResetToDefaults?: () => void;
+  onResetToDefaults?: (() => void) | undefined;
 }
 
-const paperStyle = {
-  position: 'absolute' as const,
+const MODEL_SETTINGS_TITLE = 'Model settings';
+const RESET_TO_DEFAULTS_LABEL = 'Reset to defaults';
+const CANCEL_LABEL = 'Cancel';
+const APPLY_LABEL = 'Apply';
+
+// R-T10/R-T1: radius and box-shadow colour must come from brand tokens, so
+// this needs the theme — same `SxProps<Theme> = (theme) => ({...})` shape
+// `BucketSidebar.tsx`'s `sidebarSx` uses. `boxShadow.default` is the exact
+// token role `MuiDialog.ts`'s override already documents for this baseline
+// `#FFFFFF0D` literal (R-T1).
+const paperStyle: SxProps<Theme> = (theme) => ({
+  position: 'absolute',
   top: '50%',
   left: '50%',
   transform: 'translate(-50%, -50%)',
   width: 480,
   maxWidth: '90vw',
   bgcolor: 'background.paper',
-  borderRadius: '16px',
+  borderRadius: theme.vars.shape.radiusLg,
   border: '1px solid',
   borderColor: 'divider',
-  boxShadow: '0px 0px 23.6px 0px #FFFFFF0D',
+  boxShadow: theme.vars.palette.boxShadow.default,
   p: 2,
-} as const;
+});
 
 /**
  * Modal dialog for editing LLM model settings.
@@ -77,11 +87,11 @@ export const LLMSettingsDialog = memo(
             variant="h6"
             sx={{ mb: 2, fontWeight: 600 }}
           >
-            Model settings
+            {MODEL_SETTINGS_TITLE}
           </Typography>
           <LLMSettings
             llmSettings={localSettings}
-            model={selectedModel}
+            model={selectedModel ?? undefined}
             onChangeLLMSettings={onChangeLLMSettings}
             showWebhookSecret={showWebhookSecret}
             showStepsLimit={showStepsLimit}
@@ -96,7 +106,7 @@ export const LLMSettingsDialog = memo(
                   onCancel();
                 }}
               >
-                Reset to defaults
+                {RESET_TO_DEFAULTS_LABEL}
               </Button>
             )}
             <Button
@@ -104,14 +114,14 @@ export const LLMSettingsDialog = memo(
               color="secondary"
               onClick={onCancel}
             >
-              Cancel
+              {CANCEL_LABEL}
             </Button>
             <Button
               variant="contained"
               onClick={handleOK}
               disabled={isDisabled}
             >
-              Apply
+              {APPLY_LABEL}
             </Button>
           </Box>
         </Box>

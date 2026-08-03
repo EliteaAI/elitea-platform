@@ -1,7 +1,20 @@
 /**
  * Public API — spec §3.3: named exports only, curated (§3.5 budget: ≤20).
- * 19/20 used — 1 slot of deliberate headroom (unit C1 landing report).
+ * 20/20 used — the 1 remaining slot (unit C1 landing report) spent on
+ * `participantSources` below (Wave-2 unit C6's `chat-recommendations`
+ * consumer), a curated OBJECT BUNDLE of the 5 candidate-source
+ * hooks/helpers — 1 named export regardless of property count, same
+ * pattern `entities/conversation/index.ts` uses for `conversationApi`/
+ * `chatHelpers`/etc.
  */
+import { buildParticipantCandidates } from './model/participantCandidates';
+import {
+  usePrivateApplicationParticipants,
+  usePublicApplicationParticipants,
+} from './model/applicationParticipants';
+import { useToolkitParticipants } from './model/toolkitParticipants';
+import { useUserParticipants } from './model/userParticipants';
+
 export type {
   Participant,
   ParticipantEntityMeta,
@@ -29,3 +42,12 @@ export {
   useUpdateParticipantSettingsMutation,
   useUpdateParticipantLlmSettingsMutation,
 } from './api/participantApi';
+
+/** Candidate-source hooks/helpers for building a browsable participant list (Wave-2 unit C6). */
+export const participantSources = {
+  buildParticipantCandidates,
+  usePrivateApplicationParticipants,
+  usePublicApplicationParticipants,
+  useToolkitParticipants,
+  useUserParticipants,
+};

@@ -1,4 +1,10 @@
-import { Box, Typography, useTheme } from '@mui/material';
+import type { ReactNode } from 'react';
+
+import { Box, Typography } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+
+import { t } from '@/shared/i18n';
+import { DiscardButton } from '@/shared/ui/DiscardButton';
 
 /**
  * Phase-3 Editor header: EditorHeader
@@ -9,11 +15,11 @@ export type EditorHeaderProps = {
   subtitle?: string;
   onCancel: () => void;
   onDiscard: () => void;
-  saveButton?: React.ReactNode;
+  saveButton?: ReactNode;
   isPublic?: boolean;
 };
 
-const EditorHeader = ({ title, subtitle, onCancel }: EditorHeaderProps) => {
+const EditorHeader = ({ title, subtitle, onCancel, onDiscard, saveButton, isPublic }: EditorHeaderProps) => {
   const theme = useTheme();
 
   return (
@@ -34,23 +40,49 @@ const EditorHeader = ({ title, subtitle, onCancel }: EditorHeaderProps) => {
           component="span"
           sx={{
             cursor: 'pointer',
-            fontSize: '1.125rem',
-            color: theme.palette.icon.fill.default,
+            fontSize: theme.typography.headingMedium.fontSize,
+            color: theme.vars.palette.icon.fill.default,
           }}
           onClick={onCancel}
         >
-          ✕
+          {t('widgets.editor.editorHeader.close', '✕')}
         </Box>
         <Box>
-          <Typography variant="subtitle1" color="text.secondary" noWrap sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+          <Typography variant="subtitle1" color="text.secondary" noWrap sx={{ fontWeight: 600, fontSize: theme.typography.headingSmall.fontSize }}>
             {title}
           </Typography>
           {subtitle && (
-            <Typography variant="body2" color="text.primary" noWrap sx={{ fontSize: '0.75rem' }}>
+            <Typography variant="body2" color="text.primary" noWrap sx={{ fontSize: theme.typography.bodySmall.fontSize }}>
               {subtitle}
             </Typography>
           )}
         </Box>
+      </Box>
+
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        {isPublic ? (
+          <Box
+            sx={{
+              boxSizing: 'border-box',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0.125rem 0.375rem',
+              height: '1.25rem',
+              borderRadius: theme.vars.shape.radiusPill,
+              border: '1px solid',
+              borderColor: 'border.lines',
+            }}
+          >
+            <Typography variant="bodySmall" color="text.metrics" sx={{ textTransform: 'none' }}>
+              {t('widgets.editor.editorHeader.publicLabel', 'Public')}
+            </Typography>
+          </Box>
+        ) : (
+          <>
+            <DiscardButton onDiscard={onDiscard} />
+            {saveButton}
+          </>
+        )}
       </Box>
     </Box>
   );

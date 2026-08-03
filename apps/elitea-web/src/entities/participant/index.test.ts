@@ -17,6 +17,7 @@ const PUBLIC_SURFACE = [
   'isParticipantStillActive',
   'isSkippedContainerParticipant',
   'participantDisplayName',
+  'participantSources',
   'useParticipants',
   'useFilteredEntityItems',
   'useIsActiveParticipantBeingEdited',

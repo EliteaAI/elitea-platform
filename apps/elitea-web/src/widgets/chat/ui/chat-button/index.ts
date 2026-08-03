@@ -7,9 +7,9 @@ export { default as PlusChatButton } from './PlusChatButton';
 export { default as PlusChatSubmenu } from './PlusChatSubmenu';
 
 export type { AttachmentButtonHandle, AttachmentButtonProps } from './AttachmentButton';
-export type { VoiceButtonHandle, VoiceButtonProps } from './VoiceButton';
+export type { VoiceButtonHandle, VoiceButtonInputHandle, VoiceButtonProps } from './VoiceButton';
 export type { SendButtonProps } from './SendButton';
-export type { PlusChatButtonProps } from './PlusChatButton';
+export type { PlusChatButtonEntitySubmenus, PlusChatButtonProps } from './PlusChatButton';
 export type { PlusChatSubmenuProps } from './PlusChatSubmenu';
 export type { ClearChatButtonProps } from './ClearChatButton';
 export type { ChatInternalToolsConfigButtonProps } from './ChatInternalToolsConfigButton';

@@ -18,20 +18,23 @@ import Typography from '@mui/material/Typography';
  *
  * Renders a settings / gear icon button that opens a popper with toggles for
  * internal chat tools (e.g. web search, code interpreter, file upload).
- * Each toggle is a checkbox that calls `onInternalToolsConfigChange` when
- * switched.
+ * Each toggle is a checkbox that calls `onToolChange` when switched.
+ *
+ * Purely prop-driven — it does NOT call `useAvailableInternalTools()`
+ * itself (unlike baseline `ChatInternalToolsConfigButton.jsx`, which reads
+ * it directly): the composition root that eventually wires this into
+ * `ChatBox` supplies real `tools`/`onToolChange`, matching whatever data
+ * shape it has resolved for its own use. Until it does, `tools` is
+ * `undefined` (the button's only current caller passes none) and this
+ * component falls back to `DEV_FALLBACK_TOOLS` — a dev-only stand-in, not
+ * real product data (see that constant's own doc comment). Renders nothing
+ * when the resolved tool list is empty, matching baseline's own
+ * hide-when-empty behavior.
  *
  * Prop contract (injected by the composition root through `slots.internalToolsConfig`):
- *   - `disabled` — disable the settings button
- *
- * Internal state:
- *   - Tool toggles are stored locally; each toggle fires the
- *     `onInternalToolsConfigChange` callback on change.
- *
- * Composition-root integration:
- *   - The consumer passes an `internal_tools` list to PlusChatButton; this
- *     button only exposes the config UI. Actual tool wiring is done by the
- *     composition root in the conversation pipeline.
+ *   - `disabled`     — disable the settings button
+ *   - `tools`        — the real tool list to render (omit entirely for the dev fallback; pass `[]` to hide the button)
+ *   - `onToolChange` — fired with `(toolKey, nextEnabled)` when a toggle is clicked
  */
 export interface ChatInternalToolsConfigButtonProps {
   disabled?: boolean;
@@ -41,13 +44,24 @@ export interface ChatInternalToolsConfigButtonProps {
   onToolChange?: (toolKey: string, enabled: boolean) => void;
 }
 
-/** Default tool definitions used when no `tools` prop is supplied. */
-const DEFAULT_TOOLS: { key: string; label: string }[] = [
+/**
+ * Fallback-only, dev-time tool list — NOT the primary data source. Applies
+ * only when the caller supplies no `tools` prop at all (`undefined`, not an
+ * explicit `[]`). Real tool data comes from `useAvailableInternalTools()`
+ * (`features/agents/lib/internalTools.ts`) via whatever `tools`/
+ * `onToolChange` props a future composition-root stage passes in — wiring
+ * that INTO this component from ChatBox is that later stage's job, not
+ * this one's (see this file's module doc).
+ */
+const DEV_FALLBACK_TOOLS: { key: string; label: string }[] = [
   { key: 'web_search', label: 'Web Search' },
   { key: 'code_interpreter', label: 'Code Interpreter' },
   { key: 'file_upload', label: 'File Upload' },
   { key: 'image_generation', label: 'Image Generation' },
 ];
+
+const TOOLS_TOOLTIP = 'Tools';
+const TOOLS_CONFIG_ARIA_LABEL = 'internal tools config';
 
 export const ChatInternalToolsConfigButton = memo(
   ({ disabled = false, tools, onToolChange }: ChatInternalToolsConfigButtonProps) => {
@@ -64,8 +78,11 @@ export const ChatInternalToolsConfigButton = memo(
       setAnchorEl(null);
     }, []);
 
-    // Resolve tool list: use provided tools or fall back to defaults (all enabled)
-    const resolvedTools = tools ?? DEFAULT_TOOLS.map((t) => ({ ...t, enabled: true }));
+    // `tools === undefined` (no prop supplied at all) -> dev fallback. An
+    // explicit `tools={[]}` is real data saying "no tools available" and
+    // must NOT be overridden by the fallback — it hits the hide-when-empty
+    // return below instead, matching baseline's own hide-when-empty behavior.
+    const resolvedTools = tools ?? DEV_FALLBACK_TOOLS.map((t) => ({ ...t, enabled: true }));
 
     const handleToolToggle = useCallback(
       (toolKey: string, enabled: boolean) => {
@@ -74,13 +91,17 @@ export const ChatInternalToolsConfigButton = memo(
       [onToolChange],
     );
 
+    // Baseline (`ChatInternalToolsConfigButton.jsx:40-42`): don't render the
+    // button at all when no tools are available.
+    if (resolvedTools.length === 0) return null;
+
     return (
       <>
-        <Tooltip title="Tools" placement="top">
+        <Tooltip title={TOOLS_TOOLTIP} placement="top">
           <IconButton
             ref={buttonRef}
             color="secondary"
-            aria-label="internal tools config"
+            aria-label={TOOLS_CONFIG_ARIA_LABEL}
             onClick={toggleMenu}
             disabled={disabled}
             sx={{ marginLeft: 0 }}
@@ -100,7 +121,7 @@ export const ChatInternalToolsConfigButton = memo(
               elevation={8}
               sx={(theme: Theme) => ({
                 minWidth: '14rem',
-                borderRadius: '0.5rem',
+                borderRadius: theme.vars.shape.radiusMd,
                 border: '0.0625rem solid',
                 borderColor: 'border.lines',
                 boxShadow: theme.vars.palette.boxShadow.default,
@@ -129,17 +150,12 @@ export const ChatInternalToolsConfigButton = memo(
                       checked={tool.enabled}
                       onChange={() => handleToolToggle(tool.key, !tool.enabled)}
                       onClick={(e) => e.stopPropagation()}
-                      sx={{
-                        '&.MuiCheckbox-root': { padding: 0.25 },
-                        '& .MuiSvgIcon-root': { fontSize: '1rem' },
-                      }}
                     />
                     <ListItemText
                       primary={
                         <Typography
                           variant="bodySmall"
                           sx={{
-                            fontSize: '0.8125rem',
                             lineHeight: '1.375rem',
                             color: 'text.secondary',
                           }}

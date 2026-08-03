@@ -12,7 +12,7 @@
  * dependency on that pipeline.
  *
  * That socket pipeline is NOT reachable from this app's current
- * message-rendering path: `features/chat-box/ui/hooks/useChatBoxData.ts`
+ * message-rendering path: `widgets/chat-box/ui/hooks/useChatBoxData.ts`
  * only emits `chat_predict` (see `ChatBox.tsx`'s `handleSend`) and never
  * registers an `on(...)` listener; live/derived state instead comes from
  * `entities/conversation/lib/hooks/useChatStreaming.ts`, which its own doc

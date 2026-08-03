@@ -1,4 +1,3 @@
-// @ts-nocheck — ported from JS; strict TS refinements pending
 import { memo } from 'react';
 
 import { Box, ListItemIcon, MenuItem, Menu, Typography } from '@mui/material';

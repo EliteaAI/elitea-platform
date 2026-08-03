@@ -1,39 +1,86 @@
-// @ts-nocheck — ported from JS with MUI sx callbacks; strict TS refinements pending
 import { memo, useCallback, useRef, useState } from 'react';
 
-import { Box, Button, ButtonGroup, Divider, Tooltip, Typography, useTheme } from '@mui/material';
+import { Box, Button, ButtonGroup, Divider, Tooltip, Typography } from '@mui/material';
+import { useTheme, type Theme } from '@mui/material/styles';
 import BusinessIcon from '@mui/icons-material/Business';
 import PublicIcon from '@mui/icons-material/Public';
 import SettingsIcon from '@mui/icons-material/Settings';
 
-import type { LLMModelSelectorProps } from '@/widgets/llm-model-selector/lib/types';
+import type { LLMModel, LLMModelSelectorProps, LLMSettingsValues } from '@/widgets/llm-model-selector/lib/types';
 
 import { LLMSettingsDialog } from './LLMSettingsDialog';
 import LLMModelsMenu from './LLMModelsMenu';
+
+/** Defaulted subset of {@link LLMModelSelectorProps}, resolved outside the component body. */
+type NormalizedLLMModelSelectorProps = {
+  models: LLMModel[];
+  disabled: boolean;
+  llmSettings: LLMSettingsValues;
+  showWebhookSecret: boolean;
+  showStepsLimit: boolean;
+  showSettingsEntry: boolean;
+  modelTooltip: string;
+  settingsTooltip: string;
+};
+
+/** Applies the component's default prop values. Kept outside the component to keep its complexity low. */
+function resolveDefaultProps(props: LLMModelSelectorProps): NormalizedLLMModelSelectorProps {
+  return {
+    models: props.models ?? [],
+    disabled: props.disabled ?? false,
+    llmSettings: props.llmSettings ?? {},
+    showWebhookSecret: props.showWebhookSecret ?? false,
+    showStepsLimit: props.showStepsLimit ?? false,
+    showSettingsEntry: props.showSettingsEntry ?? true,
+    modelTooltip: props.modelTooltip ?? 'Select LLM Model',
+    settingsTooltip: props.settingsTooltip ?? 'Model Settings',
+  };
+}
+
+/** Resolves the label shown for the currently selected model. */
+function resolveModelDisplayName(selectedModel: LLMModel | null | undefined, fallbackLabel: string): string {
+  return selectedModel?.display_name || selectedModel?.name || fallbackLabel;
+}
+
+/** Renders the shared/business icon for the selected model, or nothing when no model is selected. */
+function renderModelIcon(selectedModel: LLMModel | null | undefined) {
+  if (!selectedModel) return null;
+  return (
+    <Box component="span" sx={styles.iconWrapper}>
+      {selectedModel.shared ? <PublicIcon fontSize="small" /> : <BusinessIcon fontSize="small" />}
+    </Box>
+  );
+}
+
+/** Resolves the settings-icon fill color: muted when settings can't be opened or the control is disabled. */
+function resolveSettingsIconColor(
+  theme: Theme,
+  onSetLLMSettings: LLMModelSelectorProps['onSetLLMSettings'],
+  disabled: boolean,
+) {
+  return !onSetLLMSettings || disabled ? theme.vars.palette.text.disabled : undefined;
+}
 
 /**
  * Reusable LLM Model Selector with model dropdown and optional settings.
  * Ported from `[fsd]/widgets/llm-model-selector/ui/LLMModelSelector.jsx`.
  */
 const LLMModelSelector = memo(
-  ({
-    selectedModel,
-    onSelectModel,
-    models = [],
-    disabled = false,
-    onClickSettings,
-    llmSettings = {},
-    onSetLLMSettings,
-    showWebhookSecret = false,
-    showStepsLimit = false,
-    showSettingsEntry = true,
-    modelTooltip = 'Select LLM Model',
-    settingsTooltip = 'Model Settings',
-    onResetToDefaults,
-    dataTourTargetId,
-  }: LLMModelSelectorProps) => {
+  (props: LLMModelSelectorProps) => {
+    const { selectedModel, onSelectModel, onClickSettings, onSetLLMSettings, onResetToDefaults, dataTourTargetId } =
+      props;
+    const {
+      models,
+      disabled,
+      llmSettings,
+      showWebhookSecret,
+      showStepsLimit,
+      showSettingsEntry,
+      modelTooltip,
+      settingsTooltip,
+    } = resolveDefaultProps(props);
     const theme = useTheme();
-    const anchorRef = useRef<HTMLButtonElement>(null);
+    const anchorRef = useRef<HTMLDivElement>(null);
     const [showLLMSettings, setShowLLMSettings] = useState(false);
     const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
 
@@ -50,7 +97,7 @@ const LLMModelSelector = memo(
 
     const handleApplySettings = useCallback(
       (newSettings: Record<string, unknown>) => {
-        if (onSetLLMSettings) onSetLLMSettings(newSettings as LLMModelSelectorProps['llmSettings']);
+        if (onSetLLMSettings) onSetLLMSettings(newSettings);
         setShowLLMSettings(false);
       },
       [onSetLLMSettings],
@@ -60,6 +107,11 @@ const LLMModelSelector = memo(
       setShowLLMSettings(false);
     }, []);
 
+    const modelSelectorAriaLabel = 'Model Selector Menu';
+    const settingsMenuAriaLabel = 'model settings menu';
+    const modelDisplayName = resolveModelDisplayName(selectedModel, 'None');
+    const settingsIconColor = resolveSettingsIconColor(theme, onSetLLMSettings, disabled);
+
     return (
       <>
         <ButtonGroup
@@ -67,7 +119,7 @@ const LLMModelSelector = memo(
           disableElevation
           disabled={disabled}
           ref={anchorRef}
-          aria-label="Model Selector Menu"
+          aria-label={modelSelectorAriaLabel}
           data-testid="model-selector-button"
           sx={styles.buttonGroup}
           data-tour={dataTourTargetId || undefined}
@@ -84,18 +136,7 @@ const LLMModelSelector = memo(
                 sx={styles.modelButton}
                 data-testid="model-selector-name"
               >
-                {selectedModel && (
-                  <Box
-                    component="span"
-                    sx={styles.iconWrapper}
-                  >
-                    {selectedModel.shared ? (
-                      <PublicIcon fontSize="small" />
-                    ) : (
-                      <BusinessIcon fontSize="small" />
-                    )}
-                  </Box>
-                )}
+                {renderModelIcon(selectedModel)}
                 <Box
                   component="span"
                   sx={styles.modelNameWrapper}
@@ -108,7 +149,7 @@ const LLMModelSelector = memo(
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {selectedModel?.display_name || selectedModel?.name || 'None'}
+                    {modelDisplayName}
                   </Typography>
                 </Box>
               </Button>
@@ -122,7 +163,7 @@ const LLMModelSelector = memo(
                   <Button
                     size="small"
                     aria-expanded={showLLMSettings ? 'true' : undefined}
-                    aria-label="model settings menu"
+                    aria-label={settingsMenuAriaLabel}
                     aria-haspopup="menu"
                     onClick={handleSettingsClick}
                     variant="outlined"
@@ -133,10 +174,7 @@ const LLMModelSelector = memo(
                       sx={{
                         width: '1rem',
                         height: '1rem',
-                        fill:
-                          !onSetLLMSettings || disabled
-                            ? theme.palette.text.disabled
-                            : undefined,
+                        fill: settingsIconColor,
                       }}
                     />
                   </Button>
@@ -150,7 +188,7 @@ const LLMModelSelector = memo(
           anchorEl={anchorEl}
           onClose={handleClose}
           models={models}
-          selectedModel={selectedModel !== null ? selectedModel : undefined}
+          selectedModel={selectedModel ?? null}
           onSelectModel={onSelectModel ?? (() => {})}
         />
 
@@ -159,7 +197,7 @@ const LLMModelSelector = memo(
             open={showLLMSettings}
             onApply={handleApplySettings}
             onCancel={handleCancelSettings}
-            selectedModel={selectedModel !== null ? selectedModel : undefined}
+            selectedModel={selectedModel ?? null}
             llmSettings={llmSettings as Record<string, unknown>}
             showWebhookSecret={showWebhookSecret}
             showStepsLimit={showStepsLimit}

@@ -1,9 +1,6 @@
-// @ts-nocheck — strict TS refinements pending
 import { memo } from 'react';
 
-import { Box, Slider } from '@mui/material';
-
-import { REASONING_EFFORT_VALUES } from '@/shared/lib/constants';
+import { Box, Slider, Typography } from '@mui/material';
 
 interface ReasoningSliderProps {
   value: string;
@@ -34,7 +31,7 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
   const numericValue = REASONING_VALUE_MAP[value] ?? 1;
 
   const handleChange = (_event: Event | React.SyntheticEvent, newValue: number | number[]) => {
-    const num = Array.isArray(newValue) ? newValue[0] : newValue;
+    const num = (Array.isArray(newValue) ? newValue[0] : newValue) ?? 1;
     onChange(REASONING_INVERSE[num] ?? 'medium');
   };
 
@@ -53,7 +50,7 @@ export const ReasoningSlider = memo(({ value, onChange, disabled }: ReasoningSli
         min={0}
         max={2}
         step={1}
-        marks={REASONING_LABELS.map((l) => ({ value: REASONING_VALUE_MAP[l.value], label: l.label }))}
+        marks={REASONING_LABELS.map((l) => ({ value: REASONING_VALUE_MAP[l.value] ?? 0, label: l.label }))}
         aria-label="Reasoning effort"
         sx={{
           '& .MuiSlider-thumb': { width: 16, height: 16 },
