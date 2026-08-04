@@ -7,6 +7,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -14,7 +15,24 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+)
+
+const (
+	// defaultMaxObjectBytes matches the legacy vault-sourced
+	// chat_max_file_upload_size_mb default (150 MiB), used when the
+	// project's storage policy has no max_object_bytes and
+	// ARTIFACT_MAX_OBJECT_BYTES is unset (S12).
+	defaultMaxObjectBytes int64 = 150 * 1024 * 1024
+
+	// artifactStreamDeadline bounds a single upload/download body once past
+	// the header phase, replacing the global http.Server{ReadTimeout,
+	// WriteTimeout} S12 removes (see cmd/elitea-main/http_server.go).
+	// Generous enough to comfortably cover both stated targets (a 100 MiB
+	// upload over 30s, a 300s download) without acting as a de facto
+	// unlimited timeout.
+	artifactStreamDeadline = 10 * time.Minute
 )
 
 // objectSummary is the JSON-facing shape of one listed object
@@ -89,6 +107,17 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	writeError(w, statusForCode(code), code, err.Error())
 }
 
+// isMaxBytesError reports whether err (or something it wraps) is
+// http.MaxBytesReader's limit-exceeded error. It can surface either from
+// multipart.Reader.NextPart (scanning boundary/headers) or later from a
+// part's own Read calls (inside ObjectStore.Put) — both mean the same
+// thing, S12's per-object size limit, and both must map to 413/TooLarge
+// rather than whatever generic error the caller would otherwise report.
+func isMaxBytesError(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
+}
+
 func mimeFromExtension(key string) string {
 	if ext := path.Ext(key); ext != "" {
 		if mt := mime.TypeByExtension(ext); mt != "" {
@@ -100,35 +129,54 @@ func mimeFromExtension(key string) string {
 
 // requireBucket 404s (typed envelope) when the bucket doesn't exist and
 // 500s on any other repository error, writing the response itself. Callers
-// return immediately when ok is false.
-func (h *Handler) requireBucket(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) (ok bool) {
-	if _, err := h.repo.GetBucket(r.Context(), projectID, bucket); err != nil {
+// return immediately when ok is false. Returns the fetched row so callers
+// that need the bucket's database ID (object metadata read/write, S12)
+// don't have to look it up a second time.
+func (h *Handler) requireBucket(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) (repos.BucketRow, bool) {
+	row, err := h.repo.GetBucket(r.Context(), projectID, bucket)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NotFound", "bucket not found")
 		} else {
 			writeError(w, http.StatusInternalServerError, "Internal", "get bucket: "+err.Error())
 		}
-		return false
+		return repos.BucketRow{}, false
 	}
-	return true
+	return row, true
 }
 
 // requireBucketNoBody is requireBucket for HEAD responses, which must not
 // carry a body.
-func (h *Handler) requireBucketNoBody(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) (ok bool) {
-	if _, err := h.repo.GetBucket(r.Context(), projectID, bucket); err != nil {
+func (h *Handler) requireBucketNoBody(w http.ResponseWriter, r *http.Request, projectID int64, bucket string) (repos.BucketRow, bool) {
+	row, err := h.repo.GetBucket(r.Context(), projectID, bucket)
+	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			w.WriteHeader(http.StatusNotFound)
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
-		return false
+		return repos.BucketRow{}, false
 	}
-	return true
+	return row, true
 }
 
 func objectKeyFromRequest(r *http.Request) string {
 	return strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+}
+
+// artifactMaxObjectBytesFromEnv reads ARTIFACT_MAX_OBJECT_BYTES — the
+// fallback used when a project has no explicit max_object_bytes policy
+// (S12). A missing, non-numeric, or non-positive value means "no override."
+func artifactMaxObjectBytesFromEnv() (int64, bool) {
+	raw := os.Getenv("ARTIFACT_MAX_OBJECT_BYTES")
+	if raw == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +187,7 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucket(w, r, projectID, bucket) {
+	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
 		return
 	}
 
@@ -208,6 +256,14 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 // ObjectStore.Put. It deliberately avoids every net/http form-parsing helper
 // that buffers the body to memory or spills it to os.TempDir (ADR-0016) —
 // MultipartReader is the one API here that does neither.
+//
+// S12 wraps the body in http.MaxBytesReader (per-object cap) and sets a
+// per-request read deadline, then — after a successful write — records the
+// object's metadata row (UpsertObject) and enforces the project-wide quota
+// against the resulting SumProjectBytes, rolling back both the physical
+// object and its metadata row on violation. The quota check runs after the
+// write, not before, because the object's exact byte length isn't known
+// until the stream has been fully read.
 func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -216,9 +272,29 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucket(w, r, projectID, bucket) {
+	bucketRow, ok := h.requireBucket(w, r, projectID, bucket)
+	if !ok {
 		return
 	}
+
+	policy, err := h.repo.GetProjectStoragePolicy(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
+		return
+	}
+	maxObjectBytes := defaultMaxObjectBytes
+	if policy.MaxObjectBytes != nil {
+		maxObjectBytes = *policy.MaxObjectBytes
+	} else if envLimit, ok := artifactMaxObjectBytesFromEnv(); ok {
+		maxObjectBytes = envLimit
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
+
+	// Best-effort: httptest.ResponseRecorder and similar test writers don't
+	// support this (http.ErrNotSupported), which is expected and harmless —
+	// the deadline is a defense-in-depth ceiling, not a correctness
+	// requirement checked here.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(artifactStreamDeadline))
 
 	overwrite := r.URL.Query().Get("overwrite") == "true"
 
@@ -232,6 +308,10 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
+			if isMaxBytesError(err) {
+				writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "object exceeds the project's max_object_bytes limit")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "InvalidArgument", "file field is required")
 			return
 		}
@@ -287,8 +367,36 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		ContentLength: -1,
 	})
 	if err != nil {
+		if isMaxBytesError(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "object exceeds the project's max_object_bytes limit")
+			return
+		}
 		writeStorageError(w, err)
 		return
+	}
+
+	if _, err := h.repo.UpsertObject(r.Context(), repos.NewObjectInput{
+		BucketID:   bucketRow.ID,
+		Key:        info.Key,
+		ByteLength: info.Size,
+		MediaType:  contentType,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "Internal", "record object metadata: "+err.Error())
+		return
+	}
+
+	if policy.MaxTotalBytes != nil {
+		total, err := h.repo.SumProjectBytes(r.Context(), projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Internal", "sum project bytes: "+err.Error())
+			return
+		}
+		if total > *policy.MaxTotalBytes {
+			_ = h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{info.Key})
+			_ = h.store.Delete(r.Context(), ref)
+			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "upload would exceed the project's storage quota")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -308,7 +416,8 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucket(w, r, projectID, bucket) {
+	bucketRow, ok := h.requireBucket(w, r, projectID, bucket)
+	if !ok {
 		return
 	}
 
@@ -349,6 +458,12 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		for _, f := range result.Failed {
 			failed = append(failed, batchDeleteFailure{Key: f.Key, Code: storageErrorCode(f.Err), Message: f.Err.Error()})
 		}
+		if len(deleted) > 0 {
+			if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, deleted); err != nil {
+				writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+				return
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
@@ -370,7 +485,7 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireBucket(w, r, projectID, bucket) {
+	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
 		return
 	}
 
@@ -392,6 +507,12 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = body.Close() }()
+
+	// S12: replaces the global http.Server WriteTimeout (120s), which
+	// otherwise caps every download at 120 seconds regardless of size —
+	// see cmd/elitea-main/http_server.go. Best-effort for the same reason
+	// as the read deadline above.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(artifactStreamDeadline))
 
 	contentType := info.ContentType
 	if contentType == "" {
@@ -422,7 +543,7 @@ func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireBucketNoBody(w, r, projectID, bucket) {
+	if _, ok := h.requireBucketNoBody(w, r, projectID, bucket); !ok {
 		return
 	}
 
@@ -466,7 +587,8 @@ func (h *Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.requireBucket(w, r, projectID, bucket) {
+	bucketRow, ok := h.requireBucket(w, r, projectID, bucket)
+	if !ok {
 		return
 	}
 
@@ -479,6 +601,12 @@ func (h *Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+
+	if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{key}); err != nil {
+		writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

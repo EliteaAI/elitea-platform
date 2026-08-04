@@ -674,17 +674,11 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		ObjectStore:                   objectStore,
 	})
 
-	srv := &http.Server{
-		Addr: publicAddress,
-		// Socket.IO remains unmounted until its legacy connection
-		// authentication, project-membership checks, room authorization, and
-		// per-event permission contract are implemented. Mounting the current
-		// prototype would expose cross-tenant rooms and execution events.
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	// Socket.IO remains unmounted until its legacy connection authentication,
+	// project-membership checks, room authorization, and per-event
+	// permission contract are implemented. Mounting the current prototype
+	// would expose cross-tenant rooms and execution events.
+	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)
 	var runtimeLifecycleRoot runtimeLifecycle

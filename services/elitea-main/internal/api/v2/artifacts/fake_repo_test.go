@@ -3,6 +3,7 @@ package artifacts_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -22,6 +23,23 @@ type fakeRepo struct {
 	policies map[int64]repos.ProjectStoragePolicy
 	sizes    map[int64]int64
 	counts   map[int64]int64
+	// objects backs UpsertObject/DeleteObjects/SumProjectBytes (S12) with
+	// real per-object tracking, independent of sizes/counts above (which
+	// stay directly seedable via setAggregate for S8's bucket-enrichment
+	// tests) — this is what lets a test genuinely exercise the S12 quota
+	// rollback path (upload, observe SumProjectBytes grow, delete, observe
+	// it shrink) through the real handler rather than a seeded number.
+	objects map[string]fakeObjectRecord
+}
+
+type fakeObjectRecord struct {
+	bucketID   int64
+	key        string
+	byteLength int64
+}
+
+func fakeObjectKey(bucketID int64, key string) string {
+	return fmt.Sprintf("%d\x00%s", bucketID, key)
 }
 
 func newFakeRepo() *fakeRepo {
@@ -30,6 +48,7 @@ func newFakeRepo() *fakeRepo {
 		policies: make(map[int64]repos.ProjectStoragePolicy),
 		sizes:    make(map[int64]int64),
 		counts:   make(map[int64]int64),
+		objects:  make(map[string]fakeObjectRecord),
 	}
 }
 
@@ -152,16 +171,32 @@ func (r *fakeRepo) SoftDeleteBucket(_ context.Context, id int64) error {
 	return nil
 }
 
+// SumBucketBytes adds the seeded baseline (setAggregate, for S8 tests that
+// never call UpsertObject) to the real total of tracked objects (S12) —
+// this is what lets both a pre-seeded aggregate and a genuine
+// upload-then-sum round trip work through the same fake.
 func (r *fakeRepo) SumBucketBytes(_ context.Context, bucketID int64) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.sizes[bucketID], nil
+	total := r.sizes[bucketID]
+	for _, obj := range r.objects {
+		if obj.bucketID == bucketID {
+			total += obj.byteLength
+		}
+	}
+	return total, nil
 }
 
 func (r *fakeRepo) CountBucketObjects(_ context.Context, bucketID int64) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.counts[bucketID], nil
+	count := r.counts[bucketID]
+	for _, obj := range r.objects {
+		if obj.bucketID == bucketID {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (r *fakeRepo) GetProjectStoragePolicy(_ context.Context, projectID int64) (repos.ProjectStoragePolicy, error) {
@@ -171,6 +206,44 @@ func (r *fakeRepo) GetProjectStoragePolicy(_ context.Context, projectID int64) (
 		return p, nil
 	}
 	return repos.ProjectStoragePolicy{ProjectID: projectID}, nil
+}
+
+func (r *fakeRepo) UpsertObject(_ context.Context, input repos.NewObjectInput) (repos.ObjectRow, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	r.objects[fakeObjectKey(input.BucketID, input.Key)] = fakeObjectRecord{
+		bucketID: input.BucketID, key: input.Key, byteLength: input.ByteLength,
+	}
+	return repos.ObjectRow{
+		BucketID: input.BucketID, Key: input.Key, ByteLength: input.ByteLength,
+		MediaType: input.MediaType, CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (r *fakeRepo) DeleteObjects(_ context.Context, bucketID int64, keys []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, key := range keys {
+		delete(r.objects, fakeObjectKey(bucketID, key))
+	}
+	return nil
+}
+
+// SumProjectBytes sums every tracked object whose bucket belongs to
+// projectID — cross-referencing r.buckets, since fakeObjectRecord only
+// carries a bucketID, mirroring the real schema (elitea_storage.objects has
+// no project_id column of its own; project scoping goes through the bucket).
+func (r *fakeRepo) SumProjectBytes(_ context.Context, projectID int64) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int64
+	for _, obj := range r.objects {
+		if bucket, ok := r.buckets[obj.bucketID]; ok && bucket.ProjectID == projectID {
+			total += obj.byteLength
+		}
+	}
+	return total, nil
 }
 
 var _ artifacts.Repository = (*fakeRepo)(nil)

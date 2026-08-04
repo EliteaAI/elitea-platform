@@ -55,6 +55,14 @@ type Repository interface {
 	SumBucketBytes(ctx context.Context, bucketID int64) (int64, error)
 	CountBucketObjects(ctx context.Context, bucketID int64) (int64, error)
 	GetProjectStoragePolicy(ctx context.Context, projectID int64) (repos.ProjectStoragePolicy, error)
+	// UpsertObject, DeleteObjects (metadata), and SumProjectBytes are S12's
+	// additions — the object-plane handlers (objects.go) had no metadata
+	// footprint at all before S12, which left SumBucketBytes/SumProjectBytes/
+	// CountBucketObjects permanently zero for real uploads and made the
+	// project-quota check below meaningless without them.
+	UpsertObject(ctx context.Context, input repos.NewObjectInput) (repos.ObjectRow, error)
+	DeleteObjects(ctx context.Context, bucketID int64, keys []string) error
+	SumProjectBytes(ctx context.Context, projectID int64) (int64, error)
 }
 
 type Handler struct {

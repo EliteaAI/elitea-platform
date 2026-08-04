@@ -108,6 +108,20 @@ func (alwaysSucceedsArtifactRepo) GetProjectStoragePolicy(_ context.Context, pro
 	return repos.ProjectStoragePolicy{ProjectID: projectID}, nil
 }
 
+func (alwaysSucceedsArtifactRepo) UpsertObject(_ context.Context, input repos.NewObjectInput) (repos.ObjectRow, error) {
+	now := time.Now()
+	return repos.ObjectRow{
+		ID: 1, BucketID: input.BucketID, Key: input.Key, ByteLength: input.ByteLength,
+		MediaType: input.MediaType, CreatedAt: now, UpdatedAt: now,
+	}, nil
+}
+
+func (alwaysSucceedsArtifactRepo) DeleteObjects(context.Context, int64, []string) error { return nil }
+
+func (alwaysSucceedsArtifactRepo) SumProjectBytes(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+
 var _ v2artifacts.Repository = alwaysSucceedsArtifactRepo{}
 
 // alwaysSucceedsArtifactStore satisfies storage.ObjectStore, returning an

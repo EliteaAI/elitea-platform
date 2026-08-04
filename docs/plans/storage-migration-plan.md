@@ -1465,6 +1465,26 @@ walks the prototype router. One shared mount function satisfies both.
   single-bucket and cannot be summed across a project by looping (see S6) —
   returning 413.
 
+**Prerequisite gap found while implementing the bullet above, not stated
+anywhere in S8/S9's text: nothing ever wrote to `elitea_storage.objects`.**
+S9's object-plane handlers call `ObjectStore.Put`/`Delete`/`DeleteBatch`
+directly against the physical backend and never call S6's
+`UpsertObject`/`DeleteObjects` against the metadata table those aggregates
+read from. `SumBucketBytes`, `SumProjectBytes`, and `CountBucketObjects` —
+S8's own `size_bytes`/`object_count` bucket fields, not just this stage's
+quota check — have been silently returning zero for every real upload since
+S9 shipped; nothing in S8 or S9's acceptance criteria caught it because
+their fakes never modeled the metadata table as the write path's
+responsibility. A `SumProjectBytes` comparison against a total that never
+moves off zero is not a partial implementation of this bullet, it is a
+no-op with no way to ever return 413. Fix in this stage, not a follow-up:
+`UploadObject` calls `UpsertObject` after a successful `Put` (using the
+resulting `ObjectInfo`, since the exact byte length isn't known until the
+stream is fully read — this is also why the quota check itself runs after
+the write and rolls back on violation, not before); `DeleteObject` and
+`BatchDeleteObjects` call `DeleteObjects` for whatever the physical delete
+actually removed.
+
 **The `http.Server{ReadTimeout, WriteTimeout}` edit lives in `cmd/elitea-main/main.go`
 (`package main`), which nothing under `internal/api/v2/artifacts` can import —
 not just by convention, but as a genuine Go import cycle
@@ -1478,6 +1498,19 @@ helper — `func newHTTPServer(handler http.Handler) *http.Server` in
 `ReadHeaderTimeout` is set and `ReadTimeout`/`WriteTimeout` are zero. This is
 the only way the ceiling change is checked by anything, since no later stage
 touches `cmd/elitea-main` either.
+
+**Known, deliberately deferred gap: `DeleteBucket`'s cascade
+(`deleteAllObjects`, S8) deletes every physical object via
+`ObjectStore.DeleteBatch` but never calls the metadata-layer `DeleteObjects`
+for the same keys, orphaning their `elitea_storage.objects` rows.** This is
+not a quota-correctness bug — every aggregate query this stage and S8 rely
+on (`SumProjectBytes`, `SumBucketBytes`, `CountBucketObjects`) joins through
+`elitea_storage.buckets` and filters `deleted_at IS NULL`, so a soft-deleted
+bucket's orphaned object rows are already excluded regardless of whether
+they still physically exist. It is a real data-hygiene gap (unbounded row
+growth) worth closing alongside S14's sweeper, which already touches
+expired-row cleanup — not this stage's job, since it doesn't affect
+anything S12 needs to be correct.
 
 **Acceptance criteria:** a 200 MiB upload returns 413 with a JSON error body,
 not a truncated stream or a connection reset; a 100 MiB upload over a 30-second
