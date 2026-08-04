@@ -760,11 +760,16 @@ CREATE UNIQUE INDEX objects_bucket_key_uniq ON elitea_storage.objects (bucket_id
 CREATE INDEX objects_expiry ON elitea_storage.objects (expires_at) WHERE expires_at IS NOT NULL;
 
 -- Required by S12 (quota) and S20a (attachment bucket name).
+-- retention_default_days and retention_max_days are deliberately distinct:
+-- the first is what a bucket gets when the caller omits a value, the second
+-- is the ceiling S8's PATCH validates a caller-supplied value against. They
+-- are not interchangeable — see S8.
 CREATE TABLE elitea_storage.project_storage_policy (
     project_id             BIGINT PRIMARY KEY,
     max_object_bytes       BIGINT,
     max_total_bytes        BIGINT,
     retention_default_days INTEGER,
+    retention_max_days     INTEGER, -- null means unlimited
     attachment_bucket      TEXT,
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -803,6 +808,23 @@ conformance suite exercises "patch (pin, tags, retention)" end to end, but
 without this method there is no way to persist a tag update at all — say so
 explicitly in S8 too, when you get there, not just here.
 
+**Also add `GetProjectStoragePolicy(ctx, projectID) (ProjectStoragePolicy, error)`**,
+reading the `project_storage_policy` row (a missing row means every field is
+unlimited/default — do not error). S8's retention-limit check and S12's quota
+check both need to read this row and no earlier stage provides a way to; there
+is no other repository method anywhere in this plan that fetches it.
+
+**And add the four methods S14's sweeper needs**, none of which the methods
+above can compose into, because a background sweeper has no request-bound
+`projectID` to scope by and this plan defines no cross-project enumeration
+method otherwise: `ListExpiredObjects(ctx, olderThan time.Time, limit int32) ([]ObjectRow, error)`
+(bounded batch, backed by the `objects_expiry` index above — this is the query
+that index exists for, and until now nothing used it),
+`DeleteObjectRows(ctx, ids []int64) error`,
+`ListBucketsNeedingExpiryNotice(ctx, within time.Duration, limit int32) ([]BucketRow, error)`
+(buckets with `expires_at` inside the window and `notified_at` still null),
+and `MarkBucketNotified(ctx, bucketID int64) error`.
+
 **Acceptance criteria:** every method has a `*_postgres_integration_test.go`
 following the existing pattern. Unique-violation and no-rows paths map to the S1
 sentinels. **Every test function in this package is named with a `TestArtifact`
@@ -826,7 +848,14 @@ therefore exits 0 with every new test skipped. Either add a `postgres:16`
 service and the DSN to the ci-go test job as part of this stage, or accept that
 the suite is local-only and gate on the explicit run below.
 
-**Verify:** `cd services/elitea-main && go test ./internal/infra/db/repos/ -race -run TestArtifact -v 2>&1 | tee /tmp/s6.log && grep -qc -- '--- PASS' /tmp/s6.log && ! grep -q -- '--- SKIP' /tmp/s6.log`
+**Do not pipe `go test` through `tee` and then check the pipeline's exit
+code — it lies.** This shell has `pipefail` off by default (confirmed:
+`false | tee /tmp/x; echo $?` prints `0`), so `go test ... | tee log && grep ...`
+reports success from `tee`'s exit code, not `go test`'s — a single genuinely
+failing test among a dozen passing ones is invisible to this command.
+Capture `go test`'s own exit code before piping:
+
+**Verify:** `cd services/elitea-main && go test ./internal/infra/db/repos/ -race -run TestArtifact -v > /tmp/s6.log 2>&1; rc=$?; cat /tmp/s6.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s6.log && ! grep -q -- '--- SKIP' /tmp/s6.log`
 
 ---
 
@@ -1045,9 +1074,13 @@ tag update; this is the only place it happens.
 
 **Retention is an explicit `retention_days` integer.** Do not port legacy's
 `(expiration_measure, expiration_value)` pair or its `relativedelta` calendar
-arithmetic. A client that wants "one year" sends `365`. Reject with 403 and
-`code: QuotaExceeded` when the value exceeds the project's configured retention
-limit, where a limit of `-1` or null means unlimited.
+arithmetic. A client that wants "one year" sends `365`. Read the limit via S6's
+`GetProjectStoragePolicy(ctx, projectID).RetentionMaxDays` — **not**
+`retention_default_days`, which is what applies when the caller omits a value,
+not a ceiling on what they may request; the two columns exist separately in S6
+precisely because they mean different things. Reject with 403 and
+`code: QuotaExceeded` when `retention_days` exceeds `RetentionMaxDays`, where a
+null `RetentionMaxDays` (or a missing policy row) means unlimited.
 
 `POST` validates the bucket name against `^[a-z][a-z0-9-]{1,62}$` and rejects a
 duplicate with 409 and `code: AlreadyExists`. **Do not silently normalise** —
@@ -1427,24 +1460,83 @@ rule in S6, which this stage's Verify command relies on for the same reason.
 **Preconditions:** S6, S8, **S9** — stamping `expires_at` on written objects
 means editing the upload path, which S9 introduces; it does not exist after S8
 alone.
+**Read first:** `internal/api/v2/artifacts/handler.go` (bucket create/retention
+update, S8) and the object-write path (S9); the S6-created
+`internal/infra/db/repos/artifact_{buckets,objects}.go`;
+`internal/runtimecomposition/current_index_schedule_due_work*.go` and
+`current_index_runtime.go` for the sweeper *shape*; **and
+`internal/runtimecomposition/composition.go`, specifically the
+`schedulingapp.Registry`/`newPublisherSet` chain around line 985** — this is
+where the pattern files' shape actually gets registered into the running
+scheduler, and neither pattern file references it. Skipping this file is why
+an otherwise-correct sweeper never runs in production.
 
-- On bucket create and retention update, compute `expires_at` for the bucket and
-  stamp `expires_at` on objects written into it.
-- Add a scheduled sweeper following the pattern in
-  `internal/runtimecomposition/current_index_schedule_due_work*.go` and
-  `current_index_runtime.go`. It selects expired objects in bounded batches,
-  deletes them through `ObjectStore.DeleteBatch`, and removes the metadata rows
-  in the same transaction boundary as the delete acknowledgement.
-- Emit the expiry warning notification when a bucket has one day remaining,
-  deduplicated via `notified_at`.
-- Provider-native lifecycle rules are **not** used for per-bucket retention. Set
-  one coarse rule aborting incomplete multipart uploads after 7 days.
+This stage has four distinct pieces of work. Each needs its own acceptance
+check — a Verify command scoped to one package, as below, structurally cannot
+exercise all four:
 
-**Acceptance criteria:** an object with `expires_at` in the past is gone from
-both the object store and the metadata table after one sweeper tick; the
-notification fires exactly once per bucket per expiry cycle.
+1. **Stamp `expires_at`.** On bucket create and retention update, compute
+   `expires_at` for the bucket (edit in `internal/api/v2/artifacts/handler.go`,
+   S8's package). Stamp `expires_at` on objects written into it (edit in the
+   S9 upload path, same package). Neither edit touches
+   `internal/runtimecomposition` at all.
+2. **The sweeper `Handler`.** Follow the shape in
+   `current_index_schedule_due_work*.go`/`current_index_runtime.go`: selects
+   expired objects in bounded batches via S6's new `ListExpiredObjects`,
+   deletes them through `ObjectStore.DeleteBatch`, and removes the metadata
+   rows via `DeleteObjectRows` in the same transaction boundary as the delete
+   acknowledgement.
+3. **Wire the sweeper into production — the pattern files alone do not do
+   this.** `schedulingapp.Job{...}` is registered exactly once in the whole
+   codebase, inside `composition.go`'s `New(...)`, accumulated into
+   `publisherRoot` via repeated `newPublisherSet(...)` calls. Add the
+   retention-sweeper `Job` to that same chain. Without this edit, a fully
+   correct `Handler` compiles, unit-tests green, and never runs — objects past
+   `expires_at` are never deleted and the notification never fires, in a
+   running service, indefinitely. This is the same class of gap S15 already
+   flags for its own routes ("no other stage catches the gap... a
+   handler-level Verify command can pass while the route itself is still
+   unwired") — the identical failure mode, one layer down, in the scheduler
+   instead of the router.
+4. **The notification.** Emit the expiry warning when a bucket has one day
+   remaining, using S6's `ListBucketsNeedingExpiryNotice`, deduplicated by
+   calling `MarkBucketNotified` once sent.
+5. **Multipart-abort lifecycle rule.** Provider-native lifecycle rules are
+   **not** used for per-bucket retention (see item 2). Set one coarse
+   provider-native rule aborting incomplete multipart uploads after 7 days —
+   this is a one-time backend/factory-level configuration call (S3's package),
+   not sweeper logic, and belongs in whichever of `s3`/`azure`/`gcs`
+   `New(...)` already runs at startup.
 
-**Verify:** `cd services/elitea-main && go test ./internal/runtimecomposition/ -race -run Retention`
+**Acceptance criteria:**
+
+- An object with `expires_at` in the past is gone from both the object store
+  and the metadata table after one sweeper tick.
+- The notification fires exactly once per bucket per expiry cycle.
+- **A composition-level test asserts the sweeper `Job` is actually present in
+  `composition.go`'s registry** — not just that the standalone `Handler`
+  passes its own unit test. This is the check that catches item 3 being
+  skipped.
+- A newly created bucket with `retention_days: 30` has `expires_at` set on
+  itself and on every object subsequently uploaded into it — checked through
+  the real S8/S9 handlers, not by calling the sweeper's repository methods
+  directly.
+- The configured backend reports an active multipart-abort lifecycle rule
+  after startup.
+- **Every new test function in this stage's scope is named with a
+  `TestArtifactRetention` prefix.** A bare `-run Retention` collides with
+  three genuine, unrelated, already-passing tests in
+  `internal/runtimecomposition` (`TestExecutionReplayRetentionJanitor*`, about
+  execution-history replay, nothing to do with artifact storage) — confirmed:
+  that filter alone reports a clean PASS today, before any S14 code exists.
+
+**Verify:**
+```bash
+cd services/elitea-main && \
+  go test ./internal/runtimecomposition/ -race -run TestArtifactRetention -v > /tmp/s14.log 2>&1; rc=$?; cat /tmp/s14.log; \
+  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s14.log && ! grep -q -- '--- SKIP' /tmp/s14.log && \
+  go test ./internal/api/v2/artifacts/... ./internal/infra/storage/... -race -run TestArtifactRetention -v
+```
 
 ---
 
@@ -1471,18 +1563,49 @@ own tests exercise the handler directly and never touch the mounted route.
 
 Add `POST /api/v2/artifacts/grants/{projectID}/{bucket}` returning a
 short-lived presigned URL bound to a server-derived key, persisted in
-`elitea_storage.transfer_grants`.
+`elitea_storage.transfer_grants`. **The request body carries the caller's
+expected `digest_alg`/`digest` (and content type and size) for the object it
+is about to upload** — this is not optional decoration. The grant row's
+`digest`/`digest_alg` columns exist so commit has something to check the
+uploaded bytes *against*; nothing else in this plan populates them, so if the
+caller doesn't supply an expected digest at grant-creation time, commit has
+no digest to compare and the "mismatched digest returns 409" criterion below
+is unimplementable. Reject a grant request with no digest when the caller
+declares one is required (media types where integrity matters); allow it to
+be optional for cases where digest verification genuinely isn't needed.
 
 The grant response carries the URL, the required method, the expiry, and the
 required content type and maximum size. It does **not** carry the physical
 bucket, the backend URL, or any credential. The caller may request a display
 name and a logical bucket; the server chooses the key.
 
-`POST /api/v2/artifacts/grants/{projectID}/{grantID}:commit` verifies size, digest, and media type against
-the grant row before the object becomes listable, then stamps `consumed_at`.
-Media type verification at commit is **mandatory**, not defensive: `ContentType`
-is not part of the signed presigned-PUT payload, so the URL alone does not
-enforce it.
+`POST /api/v2/artifacts/grants/{projectID}/{grantID}:commit` verifies size,
+digest, and media type against the grant row before the object becomes
+listable, then stamps `consumed_at`. Media type verification at commit is
+**mandatory**, not defensive: `ContentType` is not part of the signed
+presigned-PUT payload, so the URL alone does not enforce it.
+
+**Digest verification cannot be done with `Stat`/`HeadObject` alone — this is
+not an implementation shortcut to find, it is a real property of presigned
+uploads that must be designed around.** Confirmed empirically against a real
+RustFS instance: a presigned PUT followed by `HeadObject` returns an `ETag`
+that is the object's content-MD5 (not SHA-256, and not even the same
+algorithm S1's `ObjectInfo.DigestSHA256` names), and `ChecksumSHA256` is
+`nil` — including with `ChecksumMode: ENABLED` and via
+`GetObjectAttributes`. No cheap provider-side call yields a SHA-256 for an
+object that landed via presigned PUT, on any backend. **The commit handler
+must call `Get` on the object and stream it through a SHA-256 hasher to learn
+the real digest — there is no shortcut.** This costs one full read of the
+object from the store to `elitea-main` at commit time. That is a real,
+deliberate cost of verifying integrity on a path designed to keep bulk bytes
+off `elitea-main` during upload; it is not paid during the upload itself, and
+it is bounded to once per commit, not once per read. If that cost is judged
+unacceptable for large objects, the alternative is to relax commit to
+size-and-media-type-only and drop digest verification — but that is a
+material change to what ADR-0016 promises ("Go verifies size, digest, and
+media type on commit") and should be a deliberate decision, not a silent
+downgrade because the digest check turned out to be inconvenient to
+implement.
 
 Default TTL 15 minutes, maximum 60. `PUT` grants are single-use.
 
@@ -1497,9 +1620,21 @@ returns 403 from the provider; a second commit on the same grant returns 409;
 **both grant endpoints resolve through the real chi router**, not just the
 handler under test — a request to the mounted route returns something other
 than 501 with `code: NotImplemented`, matching the pattern S9 already requires
-for its own routes.
+for its own routes. **Name every new test function with a
+`TestArtifactGrant` prefix.** Both `-run Grant` target packages
+(`internal/api/v2/artifacts` and `internal/api`) currently have zero tests
+matching that substring, so an unimplemented S15 also reports
+`[no tests to run]`, exit 0 — indistinguishable from success without a
+required-match guard.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run Grant && go test ./internal/api/ -race -run Grant`
+**Verify:**
+```bash
+cd services/elitea-main && \
+  go test ./internal/api/v2/artifacts/ -race -run TestArtifactGrant -v > /tmp/s15a.log 2>&1; rc=$?; cat /tmp/s15a.log; \
+  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s15a.log && \
+  go test ./internal/api/ -race -run TestArtifactGrant -v > /tmp/s15b.log 2>&1; rc=$?; cat /tmp/s15b.log; \
+  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s15b.log
+```
 
 ---
 
@@ -1522,9 +1657,14 @@ Ownership must be verified on every part and completion call.
 
 **Acceptance criteria:** a 2-part 10 MiB upload against S3 and Azure completes
 with a matching digest; the same request against GCS transparently uses the
-facade; a part call with another project's grant returns 403.
+facade; a part call with another project's grant returns 403. **Name every new
+test function with a `TestArtifactMultipart` prefix.** `-run Multipart` alone
+matches zero tests on the unmodified tree (`internal/api/v2/artifacts` has no
+existing test containing that substring) — so an unimplemented S16 also
+reports `ok ... [no tests to run]`, exit 0, indistinguishable from success.
+Require at least one match, the same way S6 does.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run Multipart`
+**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run TestArtifactMultipart -v > /tmp/s16.log 2>&1; rc=$?; cat /tmp/s16.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s16.log`
 
 ---
 
@@ -1573,15 +1713,41 @@ byte-usage gauge below is sourced from S14's sweeper tick, which is a sibling
 branch off S6/S8/S9, not something S11 or S15 transitively guarantees.
 
 Instrument every `ObjectStore` method with the existing OTel setup — read
-`internal/api/middleware/otel.go` for the house pattern. Operation duration
-histogram, error counter by sentinel type, bytes-in and bytes-out counters, all
-labelled by backend and operation but **never** by project identifier or key,
-which would explode cardinality. Add a per-project byte-usage gauge sourced from
-the metadata table on the sweeper tick (S14), not per request.
+`internal/api/middleware/otel.go` for the house pattern (its actual test names
+are `TestOtelMiddleware_SetsStatusCode` / `TestOtelMiddleware_DefaultStatus200` —
+behavior-named, no "Metrics" substring; do not assume you can grep for that
+word in existing code and find the convention this stage should follow).
+Operation duration histogram, error counter by sentinel type, bytes-in and
+bytes-out counters, all labelled by backend and operation but **never** by
+project identifier or key, which would explode cardinality. Add a per-project
+byte-usage gauge sourced from the metadata table on the sweeper tick (S14), not
+per request.
 
-Emit an audit record for every delete and every grant issuance.
+**There is no audit-record mechanism anywhere in this codebase to hook —
+verified exhaustively.** `internal/domain/admin/types.go` declares
+`AuditEntry`/`AuditListResponse` types with zero writers and zero consumers
+anywhere else in the tree. The existing `AuditTraces`/`AuditTraceHeatmap`
+handlers (`internal/api/v2/eliteacore/handler.go`) are hardcoded stubs
+returning an empty list — not real persistence to extend. No migration
+creates an audit table. The only other "audit" code in the repository
+(`cmd/cutover-ctl/audit.go`) is an unrelated static-analysis CLI for a
+different migration. **Do not invent a bespoke audit mechanism for this stage
+alone.** Emit a structured `slog` line (`operation`, `bucket`, `key`,
+`project_id`, `principal`, `outcome`) for every delete and every grant
+issuance instead, and record this as an explicit open question: an owner
+needs to decide whether artifact deletes and grants belong in a real,
+queryable audit trail — and if so, whether that's the same
+`AuditEntry`/`AuditListResponse` shape already declared and unused, or
+something new. This is the same treatment S13 gives its own missing
+integration point.
 
-**Verify:** `cd services/elitea-main && go test ./internal/infra/storage/... -race -run Metrics`
+**Name every new test function with a `TestArtifactObservability` prefix.**
+`-run Metrics` alone matches nothing today (`[no tests to run]`, exit 0 —
+already hollow before any code exists) and, worse, would silently exclude any
+correctly-implemented but behaviorally-named tracing or audit-logging test
+even once one Metrics-named test exists to make the bare command pass.
+
+**Verify:** `cd services/elitea-main && go test ./internal/infra/storage/... -race -run TestArtifactObservability -v > /tmp/s18.log 2>&1; rc=$?; cat /tmp/s18.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s18.log`
 
 ---
 
@@ -1592,6 +1758,8 @@ real handlers S15 wires in, not the S7 stub. **S4** — this stage needs the
 RustFS/Azurite/fake-gcs-server emulator wiring S4 builds, and S4 is deferrable
 relative to S1-S11 (it has no critical-path dependents until now), so check it
 was actually done before starting this stage rather than assuming it was.
+**Read first:** `tests/contract/contract_test.go` (the existing `TestMain` and
+its `CONTRACT_AUTH_TOKEN` gate), `.github/workflows/ci-contract.yml`.
 
 `services/elitea-main/tests/contract/` and `.github/workflows/ci-contract.yml`
 already exist and run weekly. The workflow accepts a `legacy_url` input and was
@@ -1599,6 +1767,27 @@ built to diff Go against the legacy service — **that comparison is no longer
 meaningful** and the input should be removed. Repurpose the harness as a
 self-contained conformance suite driving the new artifact API against a running
 Go service plus a RustFS emulator (S4).
+
+**`package contract`'s existing `TestMain` (`tests/contract/contract_test.go`)
+gates the entire package shut by default, and this stage's Verify command
+cannot detect it — this is not the same bug the `TestArtifact`-naming rule
+below fixes, it is a different, deeper one.** `TestMain` reads
+`CONTRACT_AUTH_TOKEN` and calls `os.Exit(0)` **before `m.Run()`** when it's
+unset — which is the default locally, and is exactly what
+`ci-contract.yml`'s PR-triggered `compile` job does (it deliberately sets no
+token, by design, so the legacy-parity fixtures merely compile on every PR
+without needing secrets; only the weekly `schedule`/`workflow_dispatch` job
+sets the real token from `secrets.CONTRACT_AUTH_TOKEN`). Any new
+`TestArtifact*` test added to this same package inherits that gate — it is
+never reached, at all, regardless of its name. **You must restructure
+`TestMain` as part of this stage**, not merely add tests alongside it: gate
+only the legacy-parity comparison tests on `CONTRACT_AUTH_TOKEN`, and let the
+new self-contained `TestArtifact*` suite run unconditionally, skipping
+per-test via `t.Skip` only when S4's RustFS environment variables are absent
+— the same pattern S4 already uses for its own emulator-gated cases, not a
+new one. Then edit `ci-contract.yml`'s PR-triggered `compile` job to actually
+start the RustFS emulator (mirroring what S4 already wires into `ci-go.yml`)
+so the new suite runs on every PR, not only in the weekly cron.
 
 Cover, end to end through the real router with real auth:
 
@@ -1628,7 +1817,7 @@ a correctly-implemented test named by what it checks rather than by
 containing the literal word "Artifact" is silently excluded from this
 command's run with no failure or skip reported.
 
-**Verify:** `cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v`
+**Verify:** `cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v > /tmp/s19.log 2>&1; rc=$?; cat /tmp/s19.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s19.log && ! grep -q 'CONTRACT_AUTH_TOKEN not set' /tmp/s19.log`
 
 ---
 
@@ -1651,16 +1840,34 @@ per-project limits from `elitea_storage.project_storage_policy` — legacy reads
 them from vault secrets at request time: 150 MB total, 150 MB per file, 3 MB per
 image, 365-day retention, and the attachment bucket name from
 `default_attachment_bucket`. A cutover that flips this route before the byte
-path exists silently drops attachment bytes.
-*Verify:* `cd services/elitea-main && go test ./internal/api/v2/... -race -run Attachment`
+path exists silently drops attachment bytes. Name every new test
+`TestArtifactAttachment*` — `-run Attachment` alone would also match any
+pre-existing `chat_conversations`-meta attachment tests that aren't about the
+byte path.
+*Verify:*
+```
+cd services/elitea-main && go test ./internal/api/v2/... -race -run TestArtifactAttachment -v > /tmp/s20a.log 2>&1; rc=$?; cat /tmp/s20a.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20a.log && ! grep -q -- '--- SKIP' /tmp/s20a.log
+```
 
 **S20b — Icons.** `UploadIcon` writes to `ICONS_DATA_DIR` and returns
 `/icons/{projectID}/{filename}`, but nothing serves `/icons/*` — no route, no
 Traefik rule, no volume. Every uploaded icon is currently unreachable. Move
 icons onto the object store using the S9 object plane with a reserved system
 bucket, and serve them through the download route. Replace the
-`internal/api/oapiserver/misc.go` stub that returns an empty URL.
-*Verify:* `cd services/elitea-main && go test ./internal/api/v2/eliteacore/ ./internal/api/oapiserver/ -race -run Icon`
+`internal/api/oapiserver/misc.go` stub that returns an empty URL. Once icon
+bytes are written through the object store instead of `ICONS_DATA_DIR`, the
+pre-existing `TestUploadIconStoresFileWithinConfiguredRoot`,
+`TestUploadIconRejectsTraversalAndSymlinkEscape`, and
+`TestDeleteIconIsConfinedToConfiguredRoot` are testing a code path (filesystem
+path confinement) that no longer exists — delete them as part of this stage
+rather than leaving them green-but-meaningless against dead code. Name the
+replacement tests `TestArtifactIcon*` — `-run Icon` alone would keep matching
+those three tests until they're actually removed, hiding whether the removal
+happened.
+*Verify:*
+```
+cd services/elitea-main && go test ./internal/api/v2/eliteacore/ ./internal/api/oapiserver/ -race -run TestArtifactIcon -v > /tmp/s20b.log 2>&1; rc=$?; cat /tmp/s20b.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20b.log && ! grep -q -- '--- SKIP' /tmp/s20b.log
+```
 
 **S20c — Result-artifact attestation.** `elitea_runtime.index_result_artifacts`
 is documented as owned by "the future artifact upload data plane".
@@ -1671,7 +1878,29 @@ cannot settle today. Implement the writer: a grant, commit, and verify path on
 the S15 machinery, honouring the existing 1 MiB and `application/json` policy,
 sharing the `ObjectStore` adapter but keeping its own metadata and settlement
 semantics per ADR-0014. Requires an answer to open question 2 in the spec.
-*Verify:* `cd services/elitea-main && go test ./internal/application/output/ ./internal/infra/db/repos/ -race -run IndexIngestArtifact`
+
+This stage builds a writer with **no wired caller** — same shape as S13.
+`ArtifactVerifier`'s production implementation lives in
+`internal/application/output/`, called from the index-ingest completion path,
+but nothing in that path today constructs a grant or commits bytes to the
+object store first; the codebase has no worker- or provider-facing surface
+that a result-producing caller (a skill run, a pipeline step,
+`services/elitea-worker-python`, or elsewhere) could call to obtain a grant,
+stream the artifact bytes, and commit before index-ingest tries to verify it.
+Implement `CreateArtifactGrant` / `CommitArtifact` / `ResolveArtifact` per
+ADR-0014 as isolated, tested functions on the S15 grant machinery, and leave
+them unwired from any producer. Do not invent a call site — record as an open
+question for a human owner: who builds the producer-side caller (is
+`services/elitea-worker-python` in scope, or a Go-side skill/pipeline runner?),
+and whether that's a new stage or belongs to the worker's own tracked issue.
+Name every new test `TestIndexIngestArtifact*` so the Verify command actually
+matches something — `-run IndexIngestArtifact` alone matches zero tests today
+(there is nothing in the tree that satisfies that filter), so the bare command
+would exit 0 for the wrong reason: no tests found, not tests passed.
+*Verify:*
+```
+cd services/elitea-main && go test ./internal/application/output/ ./internal/infra/db/repos/ -race -run TestIndexIngestArtifact -v > /tmp/s20c.log 2>&1; rc=$?; cat /tmp/s20c.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s20c.log && ! grep -q -- '--- SKIP' /tmp/s20c.log
+```
 
 ---
 
