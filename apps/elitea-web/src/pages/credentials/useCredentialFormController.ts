@@ -22,6 +22,8 @@ import {
 import { t } from '@/shared/i18n';
 import type { ConfigSchemaNode, ConfigurationTypeDescriptor } from '@/features/credentials';
 
+import { useCredentialDeleteGuard } from './useCredentialDeleteGuard';
+
 export interface CredentialFormContext {
   readonly projectId: string;
   readonly personalProjectId?: string;
@@ -58,9 +60,30 @@ function findTypeDescriptor(list: readonly ConfigurationTypeDescriptor[] | undef
   return list?.find((item) => item.type === type);
 }
 
-/** `useCreateCredential.jsx`'s title fallback: `settings.elitea_title || \`${type}_${timestamp}\`` — same for update (`updated_configurartion_...`, baseline's own typo not reproduced here since this port shares one title builder for both paths; the value is a fallback default a user virtually always overrides). */
-function buildTitle(eliteaTitle: string | undefined, type: string): string {
+/**
+ * `useCreateCredential.jsx`'s title fallback: `settings.elitea_title ||
+ * \`${type}_${timestamp}\`` — same for update (`updated_configurartion_...`,
+ * baseline's own typo not reproduced here since this port shares one title
+ * builder for both paths; the value is a fallback default a user virtually
+ * always overrides).
+ *
+ * `label` is a SECOND fallback this port adds ahead of the generated
+ * timestamp, for the one case baseline's own `settings?.elitea_title`
+ * genuinely has none to read: creating a brand-new credential, where no
+ * stable key exists yet and the generic ToolBase form (out of this port's
+ * scope, see `CredentialForm.tsx`'s disclosed-scope note) would otherwise
+ * have slugified whatever the user just typed as the starting key. On
+ * *edit*, `eliteaTitle` is seeded from the server and is basically never
+ * empty in practice, so this fallback essentially never fires there —
+ * `label` is deliberately still second (never first): a stable
+ * non-empty `eliteaTitle` always wins, so an edit-save can never let a
+ * rename creep into the lookup key other domains resolve this credential
+ * by (finding A7-pages/1 — see `performSave`'s own `eliteaTitle` doc
+ * comment).
+ */
+function buildTitle(eliteaTitle: string | undefined, label: string, type: string): string {
   if (eliteaTitle && eliteaTitle.trim() !== '') return eliteaTitle;
+  if (label && label.trim() !== '') return label;
   return `${type}_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}`;
 }
 
@@ -81,7 +104,19 @@ interface PerformSaveParams {
   readonly mode: CredentialFormMode;
   readonly projectId: string;
   readonly type: string;
-  readonly name: string;
+  /** The freely-editable display name — always submitted as `label`, unmodified, exactly as typed (`hooks/credentials/useUpdateCredential.jsx`'s `getRequestBody`: `label: settings.label || ''`). */
+  readonly label: string;
+  /**
+   * The internally-stable lookup key other domains resolve this credential
+   * by. `undefined` on create (none exists yet — `buildTitle` derives one
+   * from `label`, matching `hooks/credentials/useCreateCredential.jsx`'s
+   * `settings?.elitea_title || \`${toolType}_${timestamp}\`` with no prior
+   * value to fall back to). On edit this is the value loaded from the
+   * server (seeded once by `useFormSeeding`, never re-derived from
+   * `label`) — submitted as-is, matching `useUpdateCredential.jsx`'s own
+   * `settings?.elitea_title || fallback-generated` (never `settings.label`).
+   */
+  readonly eliteaTitle: string | undefined;
   readonly shared: boolean;
   readonly data: Readonly<Record<string, unknown>>;
   readonly schemaProperties: Readonly<Record<string, ConfigSchemaNode>>;
@@ -91,8 +126,8 @@ interface PerformSaveParams {
 
 /** The create-vs-update dispatch + error-mapping, isolated from the hook so its own complexity is measured separately (§3.5). */
 async function performSave(params: PerformSaveParams): Promise<SaveOutcome> {
-  const { mode, projectId, type, name, shared, data, schemaProperties, createConfiguration, updateConfiguration } = params;
-  const body = { elitea_title: buildTitle(name, type), label: name, data, shared };
+  const { mode, projectId, type, label, eliteaTitle, shared, data, schemaProperties, createConfiguration, updateConfiguration } = params;
+  const body = { elitea_title: buildTitle(eliteaTitle, label, type), label, data, shared };
   try {
     if (mode.kind === 'edit' && mode.configId) {
       await updateConfiguration.mutateAsync({ projectId, configId: mode.configId, body });
@@ -110,8 +145,8 @@ async function performSave(params: PerformSaveParams): Promise<SaveOutcome> {
 type TestOutcome = { readonly status: 'success' } | { readonly status: 'failure'; readonly message: string };
 
 /** Split out of the hook body — one more condition there would push `useCredentialFormController` over the §3.5 complexity budget. */
-function canSubmit(canUpdate: boolean, name: string, effectiveType: string | undefined, isSaving: boolean): boolean {
-  return canUpdate && name.trim() !== '' && Boolean(effectiveType) && !isSaving;
+function canSubmit(canUpdate: boolean, label: string, effectiveType: string | undefined, isSaving: boolean): boolean {
+  return canUpdate && label.trim() !== '' && Boolean(effectiveType) && !isSaving;
 }
 
 /** Isolated for the same reason as `performSave`. */
@@ -130,19 +165,52 @@ async function performTestConnection(
   }
 }
 
-/** Seeds `name`/`shared`/`data` once the relevant query settles — split out of the hook body so the `useEffect` callback (a separate function scope) carries its own branches, not the hook's. */
+interface FormSeedingSetters {
+  readonly setName: Dispatch<SetStateAction<string>>;
+  /**
+   * The stable `elitea_title` lookup key, seeded once from the loaded
+   * detail and never re-derived from `name`/`label` afterwards — see
+   * `performSave`'s `eliteaTitle` doc comment. Bundled into this object
+   * (rather than a 4th positional setter) purely to keep this function's
+   * own parameter list from creeping every time a new field needs seeding.
+   */
+  readonly setEliteaTitle: Dispatch<SetStateAction<string | undefined>>;
+  readonly setShared: Dispatch<SetStateAction<boolean>>;
+  readonly setData: Dispatch<SetStateAction<Record<string, unknown>>>;
+}
+
+/**
+ * Seeds `name`/`eliteaTitle`/`shared`/`data` once the relevant query
+ * settles — split out of the hook body so the `useEffect` callback (a
+ * separate function scope) carries its own branches, not the hook's.
+ *
+ * `name` (the single visible "Name" textbox this port's simplified form
+ * exposes — see `CredentialForm.tsx`'s own disclosed-scope doc comment on
+ * dropping the baseline's full ToolBase renderer) seeds from `label` FIRST
+ * — `label` is the free-text display name a person actually reads/edits
+ * (`pages/Credentials/EditCredential.jsx`'s `settings: { label:
+ * configuration?.label || '' , elitea_title: … }` seeds them as two
+ * genuinely independent fields) — falling back to `elitea_title` only for
+ * legacy rows that somehow have no `label` at all, so the box is never
+ * blank. `eliteaTitle` itself seeds separately and is never mixed into
+ * `name`: it is carried untouched through to `performSave` regardless of
+ * what the user later types into the Name box (fixes the blocker where
+ * every edit-save — even a no-op one — silently overwrote the stored
+ * `label` with the `elitea_title` value, and any rename rewrote the
+ * stable `elitea_title` other domains resolve this credential by).
+ */
 function useFormSeeding(
   mode: CredentialFormMode,
   detailData: { elitea_title?: string; label?: string; shared?: boolean; data?: Readonly<Record<string, unknown>> } | undefined,
   dataSchema: ConfigSchemaNode | undefined,
-  setName: Dispatch<SetStateAction<string>>,
-  setShared: Dispatch<SetStateAction<boolean>>,
-  setData: Dispatch<SetStateAction<Record<string, unknown>>>,
+  setters: FormSeedingSetters,
 ): void {
+  const { setName, setEliteaTitle, setShared, setData } = setters;
   useEffect(() => {
     if (mode.kind === 'edit') {
       if (!detailData) return;
-      setName(detailData.elitea_title ?? detailData.label ?? '');
+      setName(detailData.label ?? detailData.elitea_title ?? '');
+      setEliteaTitle(detailData.elitea_title);
       setShared(detailData.shared ?? false);
       setData({ ...initialDataForSchema(dataSchema), ...detailData.data });
       return;
@@ -157,6 +225,7 @@ export function useCredentialFormController(props: CredentialFormControllerProps
 
   const [selectedType, setSelectedType] = useState<string | undefined>(mode.credentialType);
   const [name, setName] = useState(prefill?.name ?? '');
+  const [eliteaTitle, setEliteaTitle] = useState<string | undefined>(undefined);
   const [shared, setShared] = useState(false);
   const [data, setData] = useState<Record<string, unknown>>({});
   const [apiError, setApiError] = useState('');
@@ -182,7 +251,14 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   // not a style nit — `save` would never actually stay referentially stable).
   const schemaProperties = useMemo(() => dataSchema?.properties ?? {}, [dataSchema]);
 
-  useFormSeeding(mode, detail.data, dataSchema, setName, setShared, setData);
+  useFormSeeding(mode, detail.data, dataSchema, { setName, setEliteaTitle, setShared, setData });
+
+  // Delete guard (finding A7-pages/2) — see `./useCredentialDeleteGuard.ts`
+  // for the full baseline citation, the reason this uses
+  // `useConfigurationsList` rather than a dedicated
+  // `getConfigurationsBySection` hook, and an out-of-scope follow-up this
+  // guard's own reactivity surfaces in `CredentialsControls.tsx`.
+  const deleteGuard = useCredentialDeleteGuard(mode.kind === 'edit', context.projectId, context.canDelete, detail.data?.section);
 
   const createConfiguration = useCreateConfiguration();
   const updateConfiguration = useUpdateConfiguration();
@@ -192,11 +268,11 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   const isSaving = createConfiguration.isPending || updateConfiguration.isPending;
   const canSave = canSubmit(context.canUpdate, name, effectiveType, isSaving);
 
-  // Collapses 3 separate `save`/`testConnectionAction` dependencies into 1
+  // Collapses 4 separate `save`/`testConnectionAction` dependencies into 1
   // — keeps both `useCallback` dependency arrays within the §3.5 budget
   // (≤8 entries) without losing memoization correctness (this object is
-  // itself re-derived only when one of the three fields actually changes).
-  const formValues = useMemo(() => ({ name, shared, data }), [name, shared, data]);
+  // itself re-derived only when one of the four fields actually changes).
+  const formValues = useMemo(() => ({ name, eliteaTitle, shared, data }), [name, eliteaTitle, shared, data]);
 
   const chooseType = useCallback(
     (type: string) => {
@@ -218,7 +294,8 @@ export function useCredentialFormController(props: CredentialFormControllerProps
       mode,
       projectId: context.projectId,
       type: effectiveType,
-      name: formValues.name,
+      label: formValues.name,
+      eliteaTitle: formValues.eliteaTitle,
       shared: formValues.shared,
       data: formValues.data,
       schemaProperties,
@@ -268,6 +345,8 @@ export function useCredentialFormController(props: CredentialFormControllerProps
     isTesting: testConnection.isPending,
     isDeleting: deleteConfiguration.isPending,
     canSave,
+    canDelete: deleteGuard.canDelete,
+    deleteDisabledReason: deleteGuard.deleteDisabledReason,
     chooseType,
     save,
     testConnection: testConnectionAction,

@@ -54,6 +54,40 @@ describe('useCredentialValidation', () => {
     expect(result.current.getCredentialMessage('c1')).toBe('bad key');
   });
 
+  it('transitions to invalid and records the message on a thrown HTTP error (e.g. a 500)', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(
+      http.post(`${BASE}/configurations/check_connection/7/openai`, () =>
+        HttpResponse.json({ error: 'invalid credentials' }, { status: 500 }),
+      ),
+    );
+    const { result } = renderHook(() => useCredentialValidation(), { wrapper });
+
+    await act(async () => {
+      await result.current.validateCredential({ projectId: 7, credentialId: 'c1', credentialType: 'openai', data: {} });
+    });
+
+    expect(result.current.getCredentialStatus('c1')).toBe('invalid');
+    expect(result.current.getCredentialMessage('c1')).toBe('invalid credentials');
+  });
+
+  it('falls back to the body `message` field when a thrown HTTP error has no `error` field', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(
+      http.post(`${BASE}/configurations/check_connection/7/openai`, () =>
+        HttpResponse.json({ message: 'server exploded' }, { status: 502 }),
+      ),
+    );
+    const { result } = renderHook(() => useCredentialValidation(), { wrapper });
+
+    await act(async () => {
+      await result.current.validateCredential({ projectId: 7, credentialId: 'c1', credentialType: 'openai', data: {} });
+    });
+
+    expect(result.current.getCredentialStatus('c1')).toBe('invalid');
+    expect(result.current.getCredentialMessage('c1')).toBe('server exploded');
+  });
+
   it('marks a 404 response as unsupported, not invalid', async () => {
     configureGeneratedClient({ baseUrl: BASE });
     server.use(http.post(`${BASE}/configurations/check_connection/7/legacy`, () => new HttpResponse(null, { status: 404 })));

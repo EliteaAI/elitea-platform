@@ -10,6 +10,38 @@
  * `model/useCredentialWarningModal.ts` — `BaseModal`'s own `onClose` prop
  * only drives its header close button, so the two custom action buttons are
  * supplied via `actions.node` rather than its default Cancel/Confirm pair.
+ *
+ * **KNOWN LIVE DUPLICATE (A7-ui adversarial-review finding, not fully
+ * fixable from this file alone).** As of this fix this component IS
+ * exported from `features/credentials/index.ts` (together with its
+ * `useCredentialWarningModal` hook), but a byte-for-byte functional
+ * duplicate — `features/toolkits/ui/form/ToolkitForm/
+ * CredentialWarningModal.tsx`, driven by that slice's own
+ * `model/useCredentialWarning.hooks.ts` rather than this file's
+ * `useCredentialWarningModal` — is the copy actually wired to the toolkit
+ * Save button (`ToolkitsOperationButtons.tsx`). That duplicate exists
+ * because `features/toolkits` cannot import this file directly
+ * (`no-sideways-features` — R-L1; see that copy's own doc comment, which
+ * cites this exact constraint). Exporting this component does not remove
+ * the duplicate: sibling `features/*` slices still cannot import each
+ * other, so `features/toolkits` gained nothing new to import from.
+ *
+ * The two copies WILL silently drift on any future edit to either one.
+ * Real fix, outside this cluster's file scope: relocate this component and
+ * `useCredentialWarningModal` (and, if a shared owner wants it,
+ * `CredentialWarningBanner`) out of `features/credentials` into a new
+ * `entities/credential-warning/{ui,model}` slice — matching where the
+ * original baseline itself placed this component (see this file's own
+ * "Ported from" line above). `entities/*` is a lower FSD layer that ANY
+ * `features/*` slice may legally import, which resolves the
+ * `no-sideways-features` conflict at its root instead of duplicating
+ * around it. Once moved: delete
+ * `features/toolkits/ui/form/ToolkitForm/CredentialWarningModal.tsx` and
+ * its bespoke `model/useCredentialWarning.hooks.ts`, and repoint
+ * `ToolkitsOperationButtons.tsx` at the new `entities/credential-warning`
+ * exports. Neither `entities/credential-warning` nor
+ * `features/toolkits/ui/form/ToolkitForm/*` is in this cluster's scope, so
+ * that migration is not performed here.
  */
 import type { ReactNode } from 'react';
 

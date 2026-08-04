@@ -130,9 +130,10 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
         {mode.kind === 'edit' && (
           <CredentialsControls
             credentialName={c.name}
-            canDelete={context.canDelete}
+            canDelete={c.canDelete}
             isDeleting={c.isDeleting}
             onDelete={c.remove}
+            {...(c.deleteDisabledReason !== undefined ? { deleteDisabledReason: c.deleteDisabledReason } : {})}
           />
         )}
       </Box>

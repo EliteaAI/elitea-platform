@@ -31,6 +31,21 @@
  *    domain, unit A9); only the `credentials`-section auto-select (first
  *    shared row when the value is blank) is ported, and only as the
  *    `autoSelectFirstShared` opt-in flag a caller can set.
+ *
+ * **STATUS (A7-ui adversarial-review finding): zero live call sites**,
+ * despite this component + sub-parts being fully built, exported, and
+ * tested. Architectural, not fixable from this file: the one prospective
+ * consumer (`ToolBaseProperty.tsx`'s `type === 'configuration'` branch)
+ * cannot import this directly (`no-sideways-features` — R-L1); it threads
+ * an opaque `slots.renderCredentialLikeField` (`CredentialLikeFieldContext`
+ * in `features/toolkits/ui/form/ToolBase/types.ts`) that has zero
+ * implementations anywhere in the worktree. Routing for whoever lands the
+ * fix: a page/widget composition root (none exists yet) that may legally
+ * import both `features/toolkits` and `features/credentials` must supply
+ * that slot, rendering `<CredentialsSelect>` for `kind === 'configuration'`
+ * from `context.value`/`onChange`/`propertyKey`/`presetOptions`/
+ * `onCredentialReload`. Out of this cluster's scope (`features/toolkits`
+ * and any new page/widget file are outside A7-ui's file scope).
  */
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react';
 

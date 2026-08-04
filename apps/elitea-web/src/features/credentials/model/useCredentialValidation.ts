@@ -77,6 +77,10 @@ export function useCredentialValidation(): UseCredentialValidationResult {
           return;
         }
         setStatuses((prev) => ({ ...prev, [credentialId]: 'invalid' }));
+        const message = getHttpErrorMessage(error);
+        if (message !== undefined) {
+          setMessages((prev) => ({ ...prev, [credentialId]: message }));
+        }
       }
     },
     [testConnection],
@@ -173,4 +177,50 @@ function getHttpStatus(error: unknown): number | undefined {
   const record = failure as { kind?: unknown; status?: unknown };
   if (record.kind !== 'http') return undefined;
   return typeof record.status === 'number' ? record.status : undefined;
+}
+
+/**
+ * Best-effort message extraction for a THROWN test-connection failure
+ * (adversarial-review finding: this catch branch previously discarded the
+ * failure entirely, so `getCredentialMessage()` silently returned `''` for
+ * the most common real-world validation-failure path — a non-2xx response,
+ * as opposed to the 2xx-with-`{error}`-body case the try branch above
+ * already handles via `result.error`).
+ *
+ * `error.failure.body` is `HttpFailure`'s parsed-JSON-or-raw-text response
+ * body (`shared/api/http.ts`'s `toResult`) for an `'http'`-kind failure —
+ * duck-typed locally, same shape/convention as this file's own
+ * `getHttpStatus` above, rather than importing `EliteaApiError` from
+ * `@/shared/api/generated/mutator`, to keep one duck-typing style per file.
+ * The `body.error ?? body.message` precedence mirrors the two other
+ * call sites in this codebase that already extract a message from this
+ * exact failure shape: `pages/credentials/useCredentialFormController.ts`'s
+ * `toCredentialApiError` (`record['error'] ?? record['message']`) and
+ * `features/mcps/lib/registerDynamicClient.ts`'s `extractOAuthErrorDetail`.
+ * Returns `undefined` (never a synthesized generic string) when the body
+ * carries no such text, so a real "no message available" case still
+ * degrades to `getCredentialMessage()`'s existing `''` fallback instead of
+ * inventing wording the server never sent.
+ */
+function getHttpErrorMessage(error: unknown): string | undefined {
+  return extractMessageFromFailureBody(getHttpFailureBody(error));
+}
+
+/** Pulls the `'http'`-kind `HttpFailure`'s raw `body` out of a thrown error — same duck-typing as `getHttpStatus` above, split out purely so `getHttpErrorMessage` stays within the §3.5 cyclomatic-complexity budget. `undefined` for anything else (network/auth/aborted failures, or a non-`EliteaApiError` throw). */
+function getHttpFailureBody(error: unknown): unknown {
+  if (typeof error !== 'object' || error === null || !('failure' in error)) return undefined;
+  const failure = (error as { failure?: unknown }).failure;
+  if (typeof failure !== 'object' || failure === null) return undefined;
+  const record = failure as { kind?: unknown; body?: unknown };
+  if (record.kind !== 'http') return undefined;
+  return record.body;
+}
+
+/** `body.error ?? body.message` (or the body itself when it's a raw string) — see `getHttpErrorMessage`'s doc comment above for the convention this mirrors. Non-empty strings only. */
+function extractMessageFromFailureBody(body: unknown): string | undefined {
+  if (typeof body === 'string') return body !== '' ? body : undefined;
+  if (typeof body !== 'object' || body === null) return undefined;
+  const bodyRecord = body as Record<string, unknown>;
+  const message = bodyRecord['error'] ?? bodyRecord['message'];
+  return typeof message === 'string' && message !== '' ? message : undefined;
 }

@@ -362,6 +362,162 @@ describe('CredentialForm — edit flow', () => {
     expect(onDiscarded).toHaveBeenCalledTimes(1);
   });
 
+  it('seeds Name from the stored label (not elitea_title), and a no-op save never rewrites either field (regression: A7-pages finding 1)', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({
+          uid: 'abc',
+          type: 'openai',
+          elitea_title: 'internal-key-v1',
+          label: 'My Prod Key',
+          data: { api_key: 'sk-existing' },
+        }),
+      ),
+    );
+    let capturedBody: unknown;
+    server.use(
+      http.put(`${BASE}/configurations/configuration/7/abc`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({ uid: 'abc' });
+      }),
+    );
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+    // The visible Name box shows the freely-editable display label — not
+    // the internally-stable elitea_title lookup key — even though the old
+    // (buggy) seed order preferred elitea_title.
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('My Prod Key'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(capturedBody).toBeDefined());
+    // Zero user changes: label must round-trip unchanged, and elitea_title
+    // must stay exactly what the server sent — never overwritten with the
+    // label value.
+    expect(capturedBody).toMatchObject({ elitea_title: 'internal-key-v1', label: 'My Prod Key' });
+  });
+
+  it('a deliberate rename updates label but keeps elitea_title stable (regression: A7-pages finding 1)', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({
+          uid: 'abc',
+          type: 'openai',
+          elitea_title: 'internal-key-v1',
+          label: 'My Prod Key',
+          data: { api_key: 'sk-existing' },
+        }),
+      ),
+    );
+    let capturedBody: unknown;
+    server.use(
+      http.put(`${BASE}/configurations/configuration/7/abc`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({ uid: 'abc' });
+      }),
+    );
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('My Prod Key'));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My Prod Key v2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(capturedBody).toBeDefined());
+    // The rename reaches `label`; `elitea_title` — what other domains
+    // resolve this credential by — is untouched by the rename.
+    expect(capturedBody).toMatchObject({ elitea_title: 'internal-key-v1', label: 'My Prod Key v2' });
+  });
+
+  it("disables Delete with a reason on a project's last vectorstorage configuration (regression: A7-pages finding 2)", async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({ uid: 'abc', type: 'openai', elitea_title: 'only-pgvector', section: 'vectorstorage', data: {} }),
+      ),
+    );
+    server.use(
+      http.get(`${BASE}/configurations/configurations/7`, () =>
+        HttpResponse.json({ items: [{ uid: 'abc' }], total: 1, limit: 2, offset: 0, shared: { items: [], total: 0 } }),
+      ),
+    );
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('only-pgvector'));
+    fireEvent.click(screen.getByRole('button', { name: 'Credential actions' }));
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Delete' })).toHaveAttribute('aria-disabled', 'true'));
+    expect(screen.getByLabelText('Cannot delete the only pgVector configuration. At least one is required for the project.')).toBeInTheDocument();
+  });
+
+  it('keeps Delete enabled when a second configuration exists in the same protected section (regression: A7-pages finding 2)', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({ uid: 'abc', type: 'openai', elitea_title: 'one-of-two', section: 'vectorstorage', data: {} }),
+      ),
+    );
+    server.use(
+      http.get(`${BASE}/configurations/configurations/7`, () =>
+        HttpResponse.json({
+          items: [{ uid: 'abc' }, { uid: 'def' }],
+          total: 2,
+          limit: 2,
+          offset: 0,
+          shared: { items: [], total: 0 },
+        }),
+      ),
+    );
+    server.use(
+      http.delete(`${BASE}/configurations/configuration/7/abc`, () => HttpResponse.json({})),
+    );
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('one-of-two'));
+    // Re-clicks the trigger on every poll (not just once before waiting):
+    // `CredentialsControls`'s disabled-vs-enabled branches are two
+    // differently-shaped trees (`Tooltip`-wrapped vs bare), so the section
+    // guard settling from its conservative "blocked" default to "allowed"
+    // remounts the open dropdown out from under a menu opened before that
+    // — see this file's own `useDeleteGuard` doc comment for the
+    // out-of-scope fix this needs in `CredentialsControls.tsx`. Clicking
+    // inside the poll re-opens whatever instance is current, so this
+    // assertion is robust to that remount rather than racing it.
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'Credential actions' }));
+      expect(screen.getByRole('menuitem', { name: 'Delete' })).not.toHaveAttribute('aria-disabled', 'true');
+    });
+    fireEvent.click(screen.getByText('Delete'));
+    expect(screen.getByText('Delete confirmation')).toBeInTheDocument();
+  });
+
   it('disables Delete when canDelete is false', async () => {
     configureGeneratedClient({ baseUrl: BASE });
     server.use(http.get(`${BASE}/configurations/available/`, () => HttpResponse.json([OPENAI_TYPE])));
