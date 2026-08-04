@@ -120,7 +120,7 @@ interface HealthRow {
   readonly eventType: string;
   readonly total: number;
   readonly errors: number;
-  readonly errorRate: number;
+  readonly errorRatePercent: number;
   readonly avgDurationMs: number;
 }
 
@@ -145,7 +145,21 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
         eventType: strField(row, 'event_type'),
         total: numField(row, 'total'),
         errors: numField(row, 'errors'),
-        errorRate: numField(row, 'error_rate'),
+        // `error_rate` is a 0-1 fraction (same field family as
+        // `AgentAnalytics.error_rate`/`ToolAnalytics.error_rate`,
+        // `internal/domain/analytics/types.go:22-37`; `health` rows
+        // themselves have no formal schema — see this file's header
+        // comment — but the backend never emits `health` today, so this
+        // is forward-looking parity with the sibling tabs), not a 0-100
+        // percentage — must be scaled ×100 for display/threshold
+        // comparisons, matching this feature's other fraction→percent
+        // readouts (e.g. `ModelUsageTable.tsx`'s `share.toFixed(1)}%`,
+        // and the already-fixed `AnalyticsAgents.tsx`/`AnalyticsTools.tsx`
+        // `errorRatePercent` handling). Previously stored and compared/
+        // rendered the raw fraction directly, so the `> 5` "unhealthy"
+        // threshold could never trigger and a real 20% error rate
+        // displayed as "0.2%".
+        errorRatePercent: numField(row, 'error_rate') * 100,
         avgDurationMs: numField(row, 'avg_duration_ms'),
       })),
     [health],
@@ -286,10 +300,10 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
               <Typography
                 sx={combineSx(cellValueSx, {
                   flex: 1,
-                  color: row.errorRate > 5 ? theme.vars.palette.status.rejected : undefined,
+                  color: row.errorRatePercent > 5 ? theme.vars.palette.status.rejected : undefined,
                 })}
               >
-                {row.errorRate}%
+                {row.errorRatePercent.toFixed(1)}%
               </Typography>
               <Typography sx={combineSx(cellValueSx, { flex: 1 })}>{fmtDuration(row.avgDurationMs)}</Typography>
             </Box>
