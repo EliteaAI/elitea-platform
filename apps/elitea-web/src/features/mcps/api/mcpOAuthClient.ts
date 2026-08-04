@@ -91,7 +91,15 @@ export interface ExchangeMcpOAuthTokenParams {
   scope?: string | undefined;
   toolkit_id?: string | undefined;
   toolkit_type?: string | undefined;
-  /** Baseline: `mcpAuthFlow.helpers.js:497` — `used_dcr: usedDCR || undefined`. */
+  /**
+   * NOT in the pinned `apps/elitea-ui` submodule snapshot (`a55f36cf`) —
+   * added by the real upstream `frontends/EliteaUI` fix, commit `6ebe8ff7`
+   * ("fix: [EL-5697] Aha! mcp token issue"), which postdates that pin. See
+   * `oauthFlow.ts`'s `exchangeAuthorizationCode` for the full evidence
+   * chain (including confirmation the currently-running legacy pylon
+   * backend actually reads this field to decide whether to load a
+   * DB-configured `client_secret`).
+   */
   used_dcr?: boolean | undefined;
 }
 
@@ -107,6 +115,21 @@ export interface RefreshMcpOAuthTokenParams {
   client_id?: string | undefined;
   client_secret?: string | undefined;
   toolkit_id?: string | undefined;
+  /**
+   * Baseline: `mcpAuthFlow.helpers.js` `refreshAccessToken`/`getValidAccessToken`
+   * (`used_dcr: usedDcr || undefined`, threaded through by commit `6ebe8ff7`
+   * "fix: [EL-5697] Aha! mcp token issue") — a proactive/reactive refresh needs
+   * the same `used_dcr` signal the exchange call sends, so the backend proxy
+   * (and any caller-side credential-fallback logic) can tell a DCR-issued
+   * client apart from a toolkit-DB one on EVERY grant type, not just the
+   * initial `authorization_code` exchange. Without this field on the params
+   * type, `refreshMcpOAuthToken()` had no way to forward it even if a caller
+   * wanted to — this was a TS-port-only regression: the untyped JS baseline's
+   * `mcpOAuth.js` request body is a plain object spread, so it silently
+   * accepted whatever fields the caller passed; the hand-written TS port's
+   * explicit params interface is what dropped this one.
+   */
+  used_dcr?: boolean | undefined;
 }
 
 /** API-165 — same endpoint as the exchange call; `grant_type` is force-set to `refresh_token` regardless of caller input (baseline parity: `mcpOAuth.js:33`). */

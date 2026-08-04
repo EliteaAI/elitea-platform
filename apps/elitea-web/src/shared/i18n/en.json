@@ -730,5 +730,6 @@
   "processes.chat.editorShell.discardDialogContent": "You are editing now. Do you want to discard current changes and continue?",
   "processes.chat.editorShell.discardDialogTitle": "Warning",
   "processes.chat.editorShell.loadErrorFallback": "Failed to load configuration",
-  "processes.chat.editorShell.publicBadgeLabel": "Public"
+  "processes.chat.editorShell.publicBadgeLabel": "Public",
+  "mcps.logout.success": "You have successfully logged out!"
 }

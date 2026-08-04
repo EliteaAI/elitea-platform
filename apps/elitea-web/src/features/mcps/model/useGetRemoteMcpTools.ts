@@ -24,7 +24,7 @@ import { useSocketClient } from '@/shared/api/socket/client';
 
 import type { McpSyncToolsParams, McpSyncToolsResponse } from '../api/mcpSyncTools';
 import { mcpSyncTools } from '../api/mcpSyncTools';
-import { isPrebuildMcpType } from '../lib/storage';
+import { isPrebuildMcpType, setConnectionVerified } from '../lib/storage';
 import { getAllTokens } from '../lib/tokenRefresh';
 
 import type { UseMcpAuthCheckValues } from './useMcpAuthCheck';
@@ -89,7 +89,13 @@ export function useGetRemoteMcpTools(options: UseGetRemoteMcpToolsOptions): UseG
       const requestParams = buildSyncToolsRequestParams(values, mcpMeta, projectId, socket.socket.id, mcpTokens);
       const response = await mcpSyncTools(requestParams);
 
-      applySyncToolsOutcome(classifySyncToolsResult(response), { handleMcpAuthRequired, onToolsFetchedRef, onSuccess, onError });
+      applySyncToolsOutcome(classifySyncToolsResult(response), {
+        handleMcpAuthRequired,
+        onToolsFetchedRef,
+        onSuccess,
+        onError,
+        markConnectionVerified: () => markToolsFetchConnectionVerified(isPrebuildMcp, effectiveToolkitType, serverUrl),
+      });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : 'Failed to fetch tools');
     } finally {
@@ -203,6 +209,8 @@ function classifySyncToolsResult(response: McpSyncToolsResponse): SyncToolsOutco
 interface SyncToolsOutcomeHandlers {
   handleMcpAuthRequired: (source: { response_metadata: Record<string, unknown> }) => void;
   onToolsFetchedRef: { current: ((tools: readonly unknown[], argsSchemas: Record<string, unknown> | undefined) => void) | undefined };
+  /** Marks the server "connection verified" in storage — see `markToolsFetchConnectionVerified`'s doc comment. */
+  markConnectionVerified: () => void;
   onSuccess: ((toolCount: number) => void) | undefined;
   onError: ((message: string) => void) | undefined;
 }
@@ -215,10 +223,33 @@ function applySyncToolsOutcome(outcome: SyncToolsOutcome, handlers: SyncToolsOut
       return;
     case 'tools':
       handlers.onToolsFetchedRef.current?.(outcome.tools, outcome.argsSchemas);
+      handlers.markConnectionVerified();
       handlers.onSuccess?.(outcome.tools.length);
       return;
     case 'error':
       handlers.onError?.(outcome.message);
       return;
+  }
+}
+
+/**
+ * Marks a header-based-auth (non-OAuth) MCP server "connection verified"
+ * after `mcp_sync_tools` succeeds — mirrors `useMcpLogin.ts`'s
+ * `handleConnectionSuccess` and the baseline
+ * (`useGetRemoteMcpTools.hooks.js:112-117`,
+ * `McpAuthHelpers.setConnectionVerified`). A successful tools fetch for a
+ * server that needs no client-side OAuth token never goes through
+ * `startMcpAuthFlow` (the only other call site that stores a token), so
+ * without this, `useMcpTokenChange`'s `isLoggedIn` — and the
+ * login/connected UI it drives for THIS hook's own caller — would never
+ * flip for that server, even though tools were just fetched successfully.
+ * A no-op for an OAuth-backed remote MCP that already has a real token:
+ * `setConnectionVerified` itself refuses to overwrite one (`storage.ts`).
+ */
+function markToolsFetchConnectionVerified(isPrebuildMcp: boolean, effectiveToolkitType: string | undefined, serverUrl: string | undefined): void {
+  if (isPrebuildMcp) {
+    setConnectionVerified(undefined, effectiveToolkitType);
+  } else if (serverUrl) {
+    setConnectionVerified(serverUrl);
   }
 }

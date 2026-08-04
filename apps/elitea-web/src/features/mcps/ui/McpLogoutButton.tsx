@@ -5,7 +5,9 @@
 import type { ReactNode } from 'react';
 import { useCallback, useState } from 'react';
 
+import Alert from '@mui/material/Alert';
 import IconButton from '@mui/material/IconButton';
+import Snackbar from '@mui/material/Snackbar';
 import type { SxProps, Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 
@@ -25,10 +27,12 @@ export interface McpLogoutButtonProps {
 
 export function McpLogoutButton({ serverUrl, toolkitType, onSuccess, sx }: McpLogoutButtonProps): ReactNode {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showLogoutSuccess, setShowLogoutSuccess] = useState(false);
 
   const onConfirmLogout = useCallback(() => {
     if (serverUrl) logout(serverUrl, toolkitType);
     setShowLogoutModal(false);
+    setShowLogoutSuccess(true);
     onSuccess?.();
   }, [serverUrl, toolkitType, onSuccess]);
 
@@ -38,6 +42,7 @@ export function McpLogoutButton({ serverUrl, toolkitType, onSuccess, sx }: McpLo
   }, []);
 
   const onCloseLogout = useCallback(() => setShowLogoutModal(false), []);
+  const onCloseLogoutSuccess = useCallback(() => setShowLogoutSuccess(false), []);
 
   const stopPropagation = useCallback((event: { stopPropagation: () => void }) => {
     event.stopPropagation();
@@ -72,6 +77,20 @@ export function McpLogoutButton({ serverUrl, toolkitType, onSuccess, sx }: McpLo
         onClose={onCloseLogout}
         onConfirm={onConfirmLogout}
       />
+      <Snackbar
+        open={showLogoutSuccess}
+        autoHideDuration={3000}
+        onClose={onCloseLogoutSuccess}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          onClose={onCloseLogoutSuccess}
+          severity="success"
+          variant="filled"
+        >
+          {t('mcps.logout.success', 'You have successfully logged out!')}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

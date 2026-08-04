@@ -100,11 +100,13 @@ export function McpAuthModal(props: McpAuthModalProps): ReactNode {
     setScope(scopesToString(resourceScopes) || scopesToString(scopes));
     setAuthError('');
     setAuthSuccess(false);
-    // Rebuilding this array is intentional every time the modal opens for a
-    // (possibly) different server — `scopes`/`resourceScopes` intentionally excluded to avoid
-    // re-running when only their reference identity changes between renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, storageKey, isPrebuildMcp, toolkitType]);
+    // `scopes`/`resourceScopes` ARE real dependencies (baseline includes
+    // them in this effect's array too): if the modal is re-targeted at a
+    // different resource's auth metadata (a new `mcpAuthMetadata` prop)
+    // while it stays open — same `storageKey`/`toolkitType` — the scope
+    // input must re-derive from the new resource's scopes, not keep
+    // showing the previous one's.
+  }, [open, storageKey, isPrebuildMcp, toolkitType, scopes, resourceScopes]);
 
   useEffect(() => {
     return () => {

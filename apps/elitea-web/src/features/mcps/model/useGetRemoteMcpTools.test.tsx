@@ -9,6 +9,7 @@ import { createTestSocketClient } from '@/shared/api/socket/testing';
 import type { TestSocketClient } from '@/shared/api/socket/testing';
 
 import { server } from '../../../test/setup';
+import { getAccessToken } from '../lib/storage';
 
 import { useGetRemoteMcpTools } from './useGetRemoteMcpTools';
 
@@ -127,5 +128,45 @@ describe('useGetRemoteMcpTools', () => {
     act(() => result.current.fetchTools());
     await waitFor(() => expect(onToolsFetched).toHaveBeenCalled());
     expect(capturedBody).toMatchObject({ toolkit_type: 'mcp_github' });
+  });
+
+  // Regression test for a warning: a successful `mcp_sync_tools` response
+  // used to skip `setConnectionVerified` entirely, so a header-based-auth
+  // (non-OAuth) remote MCP's own login/connected UI (`useMcpTokenChange`'s
+  // `isLoggedIn`, keyed off `getAccessToken`) never flipped even though
+  // tools were fetched successfully.
+  it('marks a header-auth remote MCP connection verified after a successful tools fetch', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const client = createTestSocketClient();
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_sync_tools/prompt_lib/1', () => HttpResponse.json({ success: true, tools: [{ name: 'list_files' }] })),
+    );
+
+    expect(getAccessToken('https://verify-me.example.com')).toBeNull();
+
+    const { result } = renderHook(() => useGetRemoteMcpTools({ values: { type: 'mcp', settings: { url: 'https://verify-me.example.com' } } }), {
+      wrapper: withSocket(client),
+    });
+
+    act(() => result.current.fetchTools());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(getAccessToken('https://verify-me.example.com')).toBeTruthy();
+  });
+
+  // Same regression, for the pre-built-MCP (toolkitType-keyed) path.
+  it('marks a pre-built MCP connection verified after a successful tools fetch', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const client = createTestSocketClient();
+    server.use(http.post('*/api/v2/elitea_core/mcp_sync_tools/prompt_lib/1', () => HttpResponse.json({ success: true, tools: [{ name: 'search_repos' }] })));
+
+    expect(getAccessToken(undefined, 'mcp_github')).toBeNull();
+
+    const { result } = renderHook(() => useGetRemoteMcpTools({ toolkitType: 'mcp_github' }), { wrapper: withSocket(client) });
+
+    act(() => result.current.fetchTools());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(getAccessToken(undefined, 'mcp_github')).toBeTruthy();
   });
 });

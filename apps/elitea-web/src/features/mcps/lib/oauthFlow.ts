@@ -24,7 +24,7 @@ import type { McpOAuthTokenResponse } from '../api/mcpOAuthClient';
 import { MCP_OAUTH_ERRORS } from './constants';
 import { normalizeScope, randomString, sha256, isOIDCFlow } from './crypto';
 import { extractAuthServerMetadata } from './discoveryMetadata';
-import { registerDynamicClient } from './registerDynamicClient';
+import { extractOAuthErrorDetail, registerDynamicClient } from './registerDynamicClient';
 import { isPrebuildMcpType, setAccessToken } from './storage';
 import type { OAuthServerMetadata } from './types';
 import { createAuthorizationMonitor, navigateAuthPopup, openAuthPopup } from './window';
@@ -101,7 +101,22 @@ interface ClientCredentialsResolution {
   usedDCR: boolean;
 }
 
-/** A caller-provided `client_id` wins outright; otherwise Dynamic Client Registration if the server supports it; otherwise the flow cannot proceed. */
+/**
+ * A caller-provided `client_id` wins outright; otherwise Dynamic Client
+ * Registration if the server supports it; otherwise the flow cannot
+ * proceed.
+ *
+ * `registerDynamicClient` returns `{clientId, clientSecret}` (a sibling
+ * A5 cluster's fix, `registerDynamicClient.ts`'s own header comment —
+ * baseline post-`6ebe8ff7`: some servers, e.g. Aha!, issue a
+ * `client_secret` alongside the `client_id` even for a `token_endpoint_
+ * auth_method: none` request). Only `clientId` is used here — threading
+ * the DCR-issued `clientSecret` through `exchangeAuthorizationCode`/
+ * `buildTokenPersistenceMetadata` (so THIS flow also stops discarding it)
+ * is that same sibling cluster's own documented "OUT-OF-SCOPE FOLLOW-UP"
+ * for `oauthFlow.ts`, not one of this cluster's 3 assigned findings —
+ * left unwired here deliberately, not silently.
+ */
 async function resolveClientCredentials(
   registrationEndpoint: string | undefined,
   initialClientId: string | undefined,
@@ -110,7 +125,7 @@ async function resolveClientCredentials(
   if (initialClientId) return { clientId: initialClientId, usedDCR: false };
   if (registrationEndpoint) {
     const redirectUri = getRedirectUri();
-    const clientId = await registerDynamicClient(registrationEndpoint, redirectUri, projectId);
+    const { clientId } = await registerDynamicClient(registrationEndpoint, redirectUri, projectId);
     return { clientId, usedDCR: true };
   }
   throw new Error(
@@ -160,23 +175,58 @@ interface ExchangeAuthorizationCodeParams {
   toolkitType: string | undefined;
 }
 
+/** `true || undefined` normalization for a wire field, split into its own function purely to keep the caller's own cyclomatic-complexity count under the §3.5 budget (12) — see `used_dcr`'s own doc comment at each call site for why this must be sent. */
+function toWireFlag(used: boolean | undefined): boolean | undefined {
+  return used || undefined;
+}
+
 /** Trades the authorization code for a token — credentials (`client_id`/`client_secret`) are sent only when DCR issued them or the toolkit isn't a pre-built MCP (baseline: pre-built MCPs with backend-resolved credentials must not leak them client-side). */
 async function exchangeAuthorizationCode(params: ExchangeAuthorizationCodeParams): Promise<McpOAuthTokenResponse> {
   const shouldSendCredentials = params.usedDCR || !params.isPrebuildMcp;
 
-  const tokenJson = await exchangeMcpOAuthToken({
-    projectId: params.projectId ?? 1,
-    token_endpoint: params.tokenEndpoint,
-    code: params.code,
-    redirect_uri: params.redirectUri,
-    client_id: shouldSendCredentials ? (params.clientId ?? undefined) : undefined,
-    client_secret: shouldSendCredentials ? params.clientSecret : undefined,
-    code_verifier: params.usePKCE ? params.codeVerifier : undefined,
-    scope: params.normalizedScope || undefined,
-    toolkit_id: params.toolkitId,
-    toolkit_type: params.isPrebuildMcp ? params.toolkitType : undefined,
-    used_dcr: params.usedDCR || undefined,
-  });
+  let tokenJson: McpOAuthTokenResponse;
+  try {
+    tokenJson = await exchangeMcpOAuthToken({
+      projectId: params.projectId ?? 1,
+      token_endpoint: params.tokenEndpoint,
+      code: params.code,
+      redirect_uri: params.redirectUri,
+      client_id: shouldSendCredentials ? (params.clientId ?? undefined) : undefined,
+      client_secret: shouldSendCredentials ? params.clientSecret : undefined,
+      code_verifier: params.usePKCE ? params.codeVerifier : undefined,
+      scope: params.normalizedScope || undefined,
+      toolkit_id: params.toolkitId,
+      toolkit_type: params.isPrebuildMcp ? params.toolkitType : undefined,
+      // MUST be sent, not merely persisted locally — corrects a prior pass
+      // here that removed it, reasoning the pinned baseline snapshot
+      // (`apps/elitea-ui` submodule, `a55f36cf`) has no such field and no
+      // backend route reads it. That reasoning was wrong on both counts:
+      // (1) `a55f36cf` predates the real upstream fix, `frontends/EliteaUI`
+      // commit `6ebe8ff7` ("fix: [EL-5697] Aha! mcp token issue"), which
+      // adds exactly this field to the request body; (2) the CURRENTLY
+      // RUNNING legacy pylon backend
+      // (`legacy/plugins/elitea_core/api/v2/mcp_oauth_proxy.py`) DOES read
+      // it — `if not client_secret and not data.used_dcr: client_secret =
+      // settings.get('client_secret') or ...` (loads a DB-configured
+      // client_secret for the toolkit). Omitting `used_dcr` here makes the
+      // backend load and send a DB client_secret for what is actually a
+      // DCR-registered PUBLIC client, which some providers (Aha! and
+      // others, per the fix's own commit message) reject with "unknown
+      // client" — the exact bug class `registerDynamicClient.ts`'s
+      // sibling `client_secret`-preservation fix (finding 1,
+      // A5-api-pages) exists to prevent, reintroduced here via the wire
+      // omission instead.
+      used_dcr: toWireFlag(params.usedDCR),
+    });
+  } catch (cause) {
+    // Baseline: `mcpAuthFlow.helpers.js:446-448` — `errorData.error_description
+    // || errorData.error || 'Token exchange failed'`. Before this fix, a
+    // failed exchange's `EliteaApiError` (a generic "eliteaFetch: 400 from
+    // ..." message) propagated as-is, losing the OAuth server's specific
+    // reason (e.g. `invalid_grant: code already used`) that the modal
+    // should show the user.
+    throw new Error(extractOAuthErrorDetail(cause) ?? 'Token exchange failed', { cause });
+  }
 
   if (!tokenJson.access_token) {
     throw new Error('No access token received from token exchange');
@@ -202,10 +252,24 @@ function buildTokenPersistenceMetadata(params: TokenPersistenceMetadataParams) {
     client_secret: params.clientSecret,
     project_id: params.projectId === undefined ? undefined : String(params.projectId),
     toolkit_id: params.toolkitId,
-    // Baseline: `mcpAuthFlow.helpers.js:536` persists `used_dcr` alongside
-    // the token so a later proactive refresh (`tokenLifecycle.ts`) never
-    // lets the toolkit-API credential fallback overwrite a DCR-issued
-    // client_id/secret with an unrelated toolkit-DB OAuth client.
+    // NOT a baseline field — `mcpAuthFlow.helpers.js`'s own `setAccessToken`
+    // call site (lines 464-490) persists only `token_endpoint`/`client_id`/
+    // `client_secret`/`project_id`/`toolkit_id` (+ the spread OAuth
+    // metadata); it never persists `used_dcr`, and the file is 499 lines
+    // total, so a prior pass's `mcpAuthFlow.helpers.js:536` citation for
+    // this line was fabricated.
+    //
+    // Kept anyway as a DISCLOSED, deliberate deviation (not a silent one):
+    // `tokenLifecycle.ts`'s `applyToolkitCredentialFallback` reads
+    // `tokenInfo.used_dcr` as a gate so a later proactive refresh never lets
+    // the toolkit-DB-configured OAuth client silently replace a DCR-issued
+    // client_id/secret with an unrelated client (see that function's own
+    // comment and `tokenLifecycle.test.ts`'s "used_dcr gate" regression
+    // test, which asserts exactly this). Removing this field would silently
+    // reintroduce that credential mixup for DCR-registered clients — do not
+    // delete it without also removing/replacing `tokenLifecycle.ts`'s gate
+    // and its test (out of this file's scope; see the A5-oauth-discovery
+    // fix report for the precise follow-up).
     used_dcr: params.usedDCR || undefined,
     ...(params.providedOauthMetadata
       ? {

@@ -18,12 +18,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useSocketClient } from '@/shared/api/socket/client';
 
-const SUCCESS_MESSAGE_TYPES: ReadonlySet<string> = new Set([
-  'agent_tool_end',
-  'agent_response',
-  'chat_user_message', // baseline's "AgentMessage" discriminant has no 1:1 name in the new catalogue; nearest completion-shaped type kept for parity intent.
-  'chunk',
-]);
+/**
+ * Baseline's `SUCCESS_MESSAGE_TYPES` array (`useMcpAuthCheck.hooks.js:11-17`)
+ * lists `SocketMessageType.AgentToolEnd`, `.AgentResponse`, `.AgentMessage`,
+ * `.ToolResponseComplete`, `.FullMessage` — but `SocketMessageType`
+ * (`common/constants.js:157-192`) has no `AgentMessage`, `ToolResponseComplete`,
+ * or `FullMessage` key at all. Those three entries evaluate to `undefined`
+ * in the real baseline app, i.e. they can never match a real
+ * `message.type` string and are dead weight — the baseline's REAL,
+ * behaving success set is only `agent_tool_end` + `agent_response`.
+ * `'chat_user_message'` and `'chunk'` (a mid-stream partial fragment) are
+ * real, defined `SocketMessageType` values, but NEITHER was ever in the
+ * baseline's success list — they must stay OUT of this set, or a
+ * connection test gets marked "successful" on a message that isn't a
+ * completion signal (e.g. the user's own echoed chat message, or a partial
+ * streaming chunk that a real completion/error message will still follow).
+ */
+const SUCCESS_MESSAGE_TYPES: ReadonlySet<string> = new Set(['agent_tool_end', 'agent_response']);
 
 const ERROR_MESSAGE_TYPES: ReadonlySet<string> = new Set(['agent_tool_error', 'error', 'agent_exception']);
 
@@ -113,6 +124,12 @@ export function useMcpAuthCheck(options: UseMcpAuthCheckOptions): UseMcpAuthChec
   const socket = useSocketClient();
   const [isRunning, setIsRunning] = useState(false);
   const streamIdRef = useRef<string | null>(null);
+  // Exact function reference passed to `socket.on(...)` for the check
+  // currently in flight (`null` when idle) — `off()` needs this precise
+  // reference to remove the right listener, kept separate from
+  // `handleSocketResponse` itself so `cleanupSession` doesn't have to
+  // depend on that callback's identity (see its doc comment below).
+  const activeHandlerRef = useRef<((message: TestConnectionMessage) => void) | null>(null);
 
   const onMcpAuthRequiredRef = useRef(onMcpAuthRequired);
   const onSuccessRef = useRef(onSuccess);
@@ -127,14 +144,38 @@ export function useMcpAuthCheck(options: UseMcpAuthCheckOptions): UseMcpAuthChec
     onErrorRef.current = onError;
   }, [onError]);
 
+  /**
+   * Unsubscribes the socket listener registered for the CHECK IN FLIGHT (if
+   * any) and resets running state. Reads `activeHandlerRef` rather than
+   * closing over `handleSocketResponse` directly — `handleSocketResponse`
+   * itself calls `cleanupSession`, so a direct reference would be a
+   * circular `useCallback` dependency.
+   */
   const cleanupSession = useCallback(() => {
     setIsRunning(false);
     streamIdRef.current = null;
-  }, []);
+    if (activeHandlerRef.current) {
+      socket.off('test_mcp_connection', activeHandlerRef.current);
+      activeHandlerRef.current = null;
+    }
+  }, [socket]);
 
   const handleSocketResponse = useCallback(
     (message: TestConnectionMessage) => {
-      if (streamIdRef.current && message.stream_id !== streamIdRef.current) return;
+      // Fail closed, unconditionally: only ever act on a message whose
+      // stream_id matches the check WE started. `streamIdRef.current` is
+      // `null` whenever no check is active, and `null !== message.stream_id`
+      // for every real message (including one with no stream_id at all), so
+      // an idle instance rejects everything — it does not "open up" just
+      // because `streamIdRef.current` happens to be falsy. (The socket
+      // listener is also only attached below, from `runAuthCheck` to
+      // `cleanupSession`/unmount, for the same reason: this SOCK-029 event
+      // is broadcast to every client testing ANY toolkit, not scoped to
+      // this instance, so both "don't listen while idle" AND "reject a
+      // non-matching stream_id" are needed — see
+      // useMcpAuthCheck.test.tsx's "ignores an unrelated toolkit's response
+      // while idle" / "...after this check has already completed" tests.)
+      if (message.stream_id !== streamIdRef.current) return;
 
       if (message.type === 'mcp_authorization_required') {
         cleanupSession();
@@ -154,10 +195,17 @@ export function useMcpAuthCheck(options: UseMcpAuthCheckOptions): UseMcpAuthChec
     [cleanupSession],
   );
 
+  // Unregisters on unmount if a check is still in flight when the
+  // component goes away — `cleanupSession` (above) handles the normal
+  // check-completed case; this covers the abandoned-mid-check case.
   useEffect(() => {
-    socket.on('test_mcp_connection', handleSocketResponse);
-    return () => socket.off('test_mcp_connection', handleSocketResponse);
-  }, [socket, handleSocketResponse]);
+    return () => {
+      if (activeHandlerRef.current) {
+        socket.off('test_mcp_connection', activeHandlerRef.current);
+        activeHandlerRef.current = null;
+      }
+    };
+  }, [socket]);
 
   const runAuthCheck = useCallback(() => {
     if (isRunning) return;
@@ -167,6 +215,13 @@ export function useMcpAuthCheck(options: UseMcpAuthCheckOptions): UseMcpAuthChec
     const messageId = nextId('msg');
     streamIdRef.current = streamId;
 
+    // Subscribe only for the lifetime of THIS check, not the component's —
+    // registering earlier (e.g. an always-on mount effect) would leave the
+    // listener attached while idle, where any other toolkit's
+    // `test_mcp_connection` response could reach `handleSocketResponse`.
+    socket.on('test_mcp_connection', handleSocketResponse);
+    activeHandlerRef.current = handleSocketResponse;
+
     socket.emit('test_mcp_connection', {
       stream_id: streamId,
       message_id: messageId,
@@ -174,7 +229,7 @@ export function useMcpAuthCheck(options: UseMcpAuthCheckOptions): UseMcpAuthChec
       toolkit_config: buildTestConnectionToolkitConfig(toolkitId, values),
       mcp_tokens: values?.mcp_tokens ?? {},
     });
-  }, [isRunning, toolkitId, projectId, values, socket]);
+  }, [isRunning, toolkitId, projectId, values, socket, handleSocketResponse]);
 
   return { runAuthCheck, isRunning };
 }

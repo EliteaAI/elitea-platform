@@ -208,4 +208,40 @@ describe('McpAuthModal', () => {
     expect(screen.getByText('Configuration OAuth')).toBeInTheDocument();
     expect(screen.queryByText('MCP Authorization')).not.toBeInTheDocument();
   });
+
+  it('re-derives the scope field when the modal is re-targeted at a different resource while it stays open', () => {
+    const { rerender } = renderWithTheme(
+      <McpAuthModal
+        {...baseProps({
+          mcpAuthMetadata: {
+            authServers: ['https://as.example.com'],
+            oauthAuthorizationServer: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+            resourceScopes: ['repo:read'],
+          },
+        })}
+      />,
+    );
+    // Not `getByLabelText` — the label wraps an `InfoTooltip` info button
+    // whenever `availableScopes` is non-empty, and that button inherits the
+    // same implicit label text (a pre-existing `OAuthFormFields` quirk,
+    // out of this fix's scope), which would make the query ambiguous.
+    expect(screen.getByPlaceholderText('Enter OAuth scopes (space-separated)')).toHaveValue('repo:read');
+
+    // Same `open`/`serverUrl` (this modal instance never unmounts) but a
+    // NEW `mcpAuthMetadata` for a different resource's scopes — regression
+    // guard for the effect that must re-run and re-derive `scope`, not
+    // keep showing the previous resource's value.
+    rerender(
+      <McpAuthModal
+        {...baseProps({
+          mcpAuthMetadata: {
+            authServers: ['https://as.example.com'],
+            oauthAuthorizationServer: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+            resourceScopes: ['issues:write'],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByPlaceholderText('Enter OAuth scopes (space-separated)')).toHaveValue('issues:write');
+  });
 });

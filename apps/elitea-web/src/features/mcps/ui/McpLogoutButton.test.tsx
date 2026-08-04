@@ -38,6 +38,7 @@ describe('McpLogoutButton', () => {
     await user.click(screen.getByRole('button', { name: 'Log out' }));
 
     expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('You have successfully logged out!')).toBeInTheDocument();
   });
 
   it('cancelling the modal leaves the token untouched', async () => {

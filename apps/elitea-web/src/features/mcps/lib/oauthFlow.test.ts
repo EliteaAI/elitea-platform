@@ -21,7 +21,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 
 import { server } from '../../../test/setup';
 
-import { getAccessToken } from './storage';
+import { getAccessToken, getTokenInfo } from './storage';
 import { startMcpAuthFlow } from './oauthFlow';
 
 interface FakePopup {
@@ -213,10 +213,14 @@ describe('startMcpAuthFlow', () => {
     await assertion;
   });
 
-  it('rejects when the exchange call fails', async () => {
+  it('rejects with the OAuth server\'s error_description when the exchange call fails', async () => {
     configureGeneratedClient({ baseUrl: '/api/v2' });
     const { popup } = stubPopup();
-    server.use(http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', () => HttpResponse.json({ error: 'invalid_grant' }, { status: 400 })));
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', () =>
+        HttpResponse.json({ error: 'invalid_grant', error_description: 'authorization code already used' }, { status: 400 }),
+      ),
+    );
 
     const flowPromise = startMcpAuthFlow({
       serverUrl: 'https://exchange-fails.example.com',
@@ -225,12 +229,80 @@ describe('startMcpAuthFlow', () => {
         oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
       },
     });
-    const assertion = expect(flowPromise).rejects.toThrow();
+    // Regression coverage: before this fix, a failed exchange's generic
+    // "eliteaFetch: 400 from ..." message propagated as-is instead of the
+    // OAuth server's own `error_description` — this assertion fails against
+    // that prior behaviour.
+    const assertion = expect(flowPromise).rejects.toThrow('authorization code already used');
 
     await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
     deliverAuthResult({ code: 'auth-code-fail' }, stateFromPopupUrl(popup));
 
     await assertion;
+  });
+
+  it('falls back to a generic "Token exchange failed" message when the exchange failure carries no OAuth error body', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+    server.use(http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', () => HttpResponse.text('Internal Server Error', { status: 500 })));
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://exchange-fails-no-body.example.com',
+      clientId: 'c',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+    const assertion = expect(flowPromise).rejects.toThrow('Token exchange failed');
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-fail-no-body' }, stateFromPopupUrl(popup));
+
+    await assertion;
+  });
+
+  it('sends used_dcr to the backend on token exchange when DCR issued the client_id', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_dcr_proxy/9', () => HttpResponse.json({ client_id: 'dcr-issued-client' })),
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/9', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'issued-access-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://mcp-used-dcr.example.com',
+      projectId: 9,
+      resourceMetadata: {
+        oauth_authorization_server: {
+          authorization_endpoint: 'https://as.example.com/authorize',
+          token_endpoint: 'https://as.example.com/token',
+          registration_endpoint: 'https://as.example.com/register',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-used-dcr' }, stateFromPopupUrl(popup));
+
+    await flowPromise;
+    // The currently-running legacy pylon backend
+    // (`mcp_oauth_proxy.py`: `if not client_secret and not data.used_dcr: ...`)
+    // reads this field to decide whether to load a DB-configured
+    // `client_secret` for the toolkit — omitting it would make the backend
+    // send a secret for what is actually a DCR-registered PUBLIC client,
+    // reproducing the "unknown client" rejection bug upstream commit
+    // `6ebe8ff7` ("Aha! mcp token issue") fixed.
+    expect(exchangeBody).toMatchObject({ used_dcr: true });
+    // ...and also persisted LOCALLY — `tokenLifecycle.ts`'s
+    // `applyToolkitCredentialFallback` depends on `tokenInfo.used_dcr` to
+    // stop a proactive refresh's toolkit-API credential fallback from
+    // overwriting this DCR-issued client_id with an unrelated one.
+    expect(getTokenInfo('https://mcp-used-dcr.example.com')).toMatchObject({ used_dcr: true });
   });
 
   it('a pre-built MCP (toolkitType) omits its client_id/secret from the exchange UNLESS DCR was used', async () => {

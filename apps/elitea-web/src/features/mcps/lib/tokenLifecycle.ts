@@ -123,6 +123,12 @@ async function performProactiveRefresh(serverUrl: string, tokenInfo: StoredMcpTo
     client_id: credentials.clientId ?? undefined,
     client_secret: credentials.clientSecret ?? undefined,
     toolkit_id: tokenInfo.toolkit_id,
+    // Same requirement as `oauthFlow.ts`'s initial exchange (see that
+    // file's own doc comment for the evidence chain) — a proactive refresh
+    // of a DCR-issued token must also tell the backend proxy not to load a
+    // DB-configured `client_secret` for it, on every grant, not just the
+    // first one.
+    used_dcr: tokenInfo.used_dcr || undefined,
   });
 
   applyRefreshedTokenResult(serverUrl, tokenInfo, credentials, tokenJson);
@@ -176,6 +182,11 @@ export interface McpOAuthTokenResult {
   refresh_token?: string;
 }
 
+/** `true || undefined` normalization for a wire field, split out purely to keep `refreshAccessToken`'s own cyclomatic-complexity count under the §3.5 budget (12) — same tiny helper as `oauthFlow.ts`'s `toWireFlag`, duplicated locally rather than shared (too small to be worth a cross-file import for a single extra branch). */
+function toWireFlag(used: boolean | undefined): boolean | undefined {
+  return used || undefined;
+}
+
 /** User-visible (awaited) refresh — clears the stored token on failure (it may have been revoked), unlike the silent proactive path. */
 export async function refreshAccessToken(options: RefreshAccessTokenOptions): Promise<McpOAuthTokenResult> {
   const { serverUrl, tokenEndpoint, clientId, clientSecret, projectId, toolkitId } = options;
@@ -186,6 +197,10 @@ export async function refreshAccessToken(options: RefreshAccessTokenOptions): Pr
   }
 
   const canonicalServer = canonicalizeServerUrl(serverUrl);
+  // Fetched up front (not just after the refresh call) so `used_dcr` is
+  // available to send on the request itself — see `performProactiveRefresh`'s
+  // identical requirement, same evidence chain (`oauthFlow.ts`'s doc comment).
+  const existingTokenInfo = getTokenInfo(serverUrl);
 
   let tokenJson: McpOAuthTokenResult;
   try {
@@ -196,6 +211,7 @@ export async function refreshAccessToken(options: RefreshAccessTokenOptions): Pr
       client_id: clientId,
       client_secret: clientSecret,
       toolkit_id: toolkitId,
+      used_dcr: toWireFlag(existingTokenInfo?.used_dcr),
     });
   } catch (error) {
     logout(serverUrl);
@@ -206,7 +222,6 @@ export async function refreshAccessToken(options: RefreshAccessTokenOptions): Pr
     throw new Error('No access token received from token refresh');
   }
 
-  const existingTokenInfo = getTokenInfo(serverUrl);
   const sessionId = tokenJson.session_id ?? existingTokenInfo?.session_id ?? generateSessionId();
 
   setAccessToken(

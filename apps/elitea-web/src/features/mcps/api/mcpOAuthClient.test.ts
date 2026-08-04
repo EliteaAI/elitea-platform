@@ -110,6 +110,22 @@ describe('refreshMcpOAuthToken (API-165)', () => {
     const result = await refreshMcpOAuthToken({ projectId: 3, refresh_token: 'old-refresh' });
     expect(result).toMatchObject({ access_token: 'new-access', refresh_token: 'new-refresh' });
   });
+
+  // Regression test: `RefreshMcpOAuthTokenParams` used to omit `used_dcr`
+  // entirely, so a refresh call could never forward it even when a caller
+  // wanted to — asymmetric with `ExchangeMcpOAuthTokenParams`, which has
+  // always carried it (baseline: `mcpAuthFlow.helpers.js`'s
+  // `refreshAccessToken`/`getValidAccessToken`, threaded through by
+  // `frontends/EliteaUI` commit `6ebe8ff7`).
+  it('forwards used_dcr on the request body when the caller supplies it', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const sink: CapturedPost[] = [];
+    server.use(http.post('*/api/v2/elitea_core/mcp_oauth_proxy/11', captureBody(sink)));
+
+    await refreshMcpOAuthToken({ projectId: 11, refresh_token: 'refresh-abc', used_dcr: true });
+
+    expect(sink[0]?.body).toMatchObject({ grant_type: 'refresh_token', used_dcr: true });
+  });
 });
 
 describe('registerMcpDynamicClient (API-166)', () => {

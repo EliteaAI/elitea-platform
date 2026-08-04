@@ -66,6 +66,30 @@ describe('refreshAccessToken', () => {
       'No access token received from token refresh',
     );
   });
+
+  it('forwards the stored used_dcr flag on the refresh request (backend needs it on every grant, not just the initial exchange)', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    setAccessToken(
+      'https://refresh-dcr.example.com',
+      'old',
+      3600,
+      undefined,
+      undefined,
+      'refresh-dcr',
+      { client_id: 'dcr-client', used_dcr: true },
+    );
+
+    let refreshBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', async ({ request }) => {
+        refreshBody = await request.json();
+        return HttpResponse.json({ access_token: 'refreshed' });
+      }),
+    );
+
+    await refreshAccessToken({ serverUrl: 'https://refresh-dcr.example.com' });
+    expect(refreshBody).toMatchObject({ used_dcr: true });
+  });
 });
 
 describe('getValidAccessToken', () => {
@@ -129,6 +153,32 @@ describe('triggerProactiveRefresh', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(getAccessToken('https://proactive.example.com')).toBe('refreshed-proactively');
+  });
+
+  it('forwards the stored used_dcr flag on a proactive refresh request too', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    setAccessToken(
+      'https://proactive-dcr.example.com',
+      'old',
+      3600,
+      undefined,
+      undefined,
+      'refresh-proactive-dcr',
+      { token_endpoint: 'https://as.example.com/token', client_id: 'dcr-client', project_id: '1', toolkit_id: 'tk-1', used_dcr: true },
+    );
+
+    let refreshBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', async ({ request }) => {
+        refreshBody = await request.json();
+        return HttpResponse.json({ access_token: 'refreshed-proactively', expires_in: 3600 });
+      }),
+    );
+
+    triggerProactiveRefresh('https://proactive-dcr.example.com');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(refreshBody).toMatchObject({ used_dcr: true });
   });
 
   it('does not log the user out on a failed proactive refresh (best-effort only)', async () => {
