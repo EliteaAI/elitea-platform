@@ -49,13 +49,24 @@ import type { AgentToolAssociation } from '../lib/types';
  *
  * `onSaveTools` therefore does not attempt a network call: there is no
  * server-side representation of "selected_tools changed" to persist against
- * today. When nothing changed it resolves `true` (identical to the
- * baseline's own early-return `changedTools.length > 0` branch). When
- * something DID change, it resolves `false` and reports the changed entries
- * via `UseSaveChangedToolsResult.unsavedTools` — the caller (this unit's
- * consumers: `useSaveVersion.ts`/`useSaveNewVersion.ts`, ultimately
- * `AgentEditor.jsx`) can surface this instead of silently discarding the
- * user's edit or lying about having saved it.
+ * today. **It always resolves `true`, never `false`, for exactly the same
+ * reason the baseline's gate never blocks a real user session:** the
+ * baseline's `onSaveTools()`/`saveChangedTools()` only resolves `false` on a
+ * genuine network/API failure of the PATCH call (`useSaveVersion.js:57-60`,
+ * `useSaveNewVersion.js:144-146` both gate on `=== false`, i.e. a thrown
+ * error or an `{error}` response) — and per gap #2 above, the real backend
+ * always 201s that PATCH (it's a same-`has_relation` no-op, not a rejection).
+ * So in the baseline this gate is, for a healthy session, unconditionally
+ * `true`. Resolving `false` here whenever tools merely changed — rather than
+ * only on a genuine failure, of which there can be none without a network
+ * call — would turn a silent backend no-op into a hard client-side block on
+ * saving the version at all (`useSaveVersion.ts`'s/`useSaveNewVersion.ts`'s
+ * callers gate the PUT/POST on this exact boolean, matching the baseline's
+ * own gate position). Instead, the changed entries are reported via
+ * `UseSaveChangedToolsResult.unsavedTools` — a non-blocking side channel the
+ * caller (this unit's consumers: `useSaveVersion.ts`/`useSaveNewVersion.ts`,
+ * ultimately `AgentEditor.jsx`) can use to surface a "tool subset changes
+ * weren't saved" warning without withholding the actual save.
  */
 
 export interface ChangedTool {
@@ -99,10 +110,10 @@ export function getChangedTools(
 }
 
 export interface UseSaveChangedToolsResult {
-  /** `true` when there was nothing to save, or (misleadingly, per the baseline's own contract) after an attempted save; see `onSaveTools`'s doc comment for why this hook never returns `true` for a save that actually persisted a change. */
+  /** Always resolves `true` — there is no network call that could genuinely fail; see the module doc comment for why this must not gate the version PUT/POST the way a real failure would in the baseline. */
   readonly onSaveTools: () => Promise<boolean>;
   readonly changedTools: readonly ChangedTool[];
-  /** Non-empty exactly when `onSaveTools` resolved `false` because there was real, unpersistable `selected_tools` state to save — see the module doc comment's gap #2. */
+  /** Non-empty exactly when there is real, unpersistable `selected_tools` state — see the module doc comment's gap #2. Non-blocking: callers should use this to surface a warning, not to withhold the save. */
   readonly unsavedTools: readonly ChangedTool[];
   readonly isSavingToolkit: false;
 }
@@ -121,9 +132,13 @@ export function useSaveChangedTools(
   // comment's gap #2/#3); the `Promise<boolean>` return type is kept so
   // this still satisfies `useSaveVersion.ts`'s/`useSaveNewVersion.ts`'s
   // injected `onSaveTools: () => Promise<boolean>` gate shape exactly.
+  // Always resolves `true` — see the module doc comment for why signaling
+  // `false` here (rather than only on a genuine failure, of which there can
+  // be none without a network call) would regress into blocking the version
+  // save entirely, unlike the baseline's own gate.
   const onSaveTools = useCallback((): Promise<boolean> => {
-    return Promise.resolve(changedTools.length === 0);
-  }, [changedTools]);
+    return Promise.resolve(true);
+  }, []);
 
   return { onSaveTools, changedTools, unsavedTools: changedTools, isSavingToolkit: false };
 }

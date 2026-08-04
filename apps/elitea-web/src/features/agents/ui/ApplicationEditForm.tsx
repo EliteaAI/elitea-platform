@@ -13,16 +13,23 @@ import { useListTags } from '@/shared/api/generated/tags/tags';
 import { t } from '@/shared/i18n';
 import { MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, TAG_NAME_MAX_LENGTH } from '@/shared/lib/limits';
 import { PROMPT_PAYLOAD_KEY } from '@/shared/lib/prompt-payload';
+import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 import { StyledInputEnhancer } from '@/shared/ui/StyledInputEnhancer';
 
 import { useFieldFocus } from '../lib/useFieldFocus';
 
 import { EntityIcon } from './EntityIcon';
 
-/** Old app's `NormalTagNameInputRegExp`/`NormalSingleTagNameInputRegExp` (`common/constants.js:91-92`) collapsed into one "is this a legal tag name" check for the freeSolo-create path. */
+/**
+ * Old app's `NormalTagNameInputRegExp` (`common/constants.js:91`,
+ * `/^[\w,\s]+$/g`, paired with `TagEditor.jsx:27`'s help text "Only
+ * alphanumeric characters, white space, comma and underscore allowed")
+ * collapsed into one "is this a legal tag name" check for the freeSolo-create
+ * path — the character class keeps the baseline's comma allowance.
+ */
 function isValidTagName(name: string): boolean {
   const trimmed = name.trim();
-  return trimmed.length > 0 && trimmed.length <= TAG_NAME_MAX_LENGTH && /^[\w\s]+$/.test(trimmed);
+  return trimmed.length > 0 && trimmed.length <= TAG_NAME_MAX_LENGTH && /^[\w,\s]+$/.test(trimmed);
 }
 
 interface AgentTagEditorProps {
@@ -152,6 +159,14 @@ export interface ApplicationEditFormProps {
  *    replaced with the generated `useListTags` + an explicit `projectId`
  *    prop (the caller already resolves it via this slice's own
  *    `useSelectedProjectId`, `../api/useSelectedProjectId.ts`).
+ *  - Wraps its content in `BasicAccordion` (`showMode="left"`, title
+ *    `'General'`) — matching the baseline's own `<BasicAccordion ...
+ *    items={[{ title: 'General', ... }]} />` (`ApplicationEditForm.jsx:86-178`)
+ *    and the same convention every sibling panel in this sub-unit already
+ *    follows (`ApplicationAdvanceSettings.tsx`/`ApplicationEditorNotes.tsx`/
+ *    `ApplicationTools.tsx`/`ApplicationVariables.tsx`). `style` now targets
+ *    the accordion's root slot (`slotSx.root`) instead of the outer content
+ *    box, mirroring those same siblings' `sx`-to-`slotSx.root` wiring.
  */
 export function ApplicationEditForm({
   name,
@@ -200,75 +215,90 @@ export function ApplicationEditForm({
   );
 
   return (
-    <Box sx={style}>
-      <Box sx={nameContainerSx}>
-        <EntityIcon
-          entityType={isFromPipeline ? 'pipeline' : 'agent'}
-          sx={iconWrapperSx}
-        />
-        <Box sx={nameWrapperSx}>
-          <StyledInputEnhancer
-            autoComplete="off"
-            id="name"
-            name="name"
-            label={t('agents.applicationEditForm.nameLabel', 'Name')}
-            error={nameError !== undefined}
-            helperText={nameError}
-            onChange={onChangeName}
-            onBlur={onNameBlur}
-            onFocus={() => toggleFieldFocus(PROMPT_PAYLOAD_KEY.name)}
-            value={localName}
-            required
-            slotProps={{ htmlInput: { maxLength: MAX_NAME_LENGTH, 'data-testid': 'agent-name-input' } }}
-          />
-          {isFocused(PROMPT_PAYLOAD_KEY.name) && localName.length === MAX_NAME_LENGTH && (
-            <Typography
-              variant="labelTiny"
-              sx={nameCharactersLabelSx}
-            >
-              {t('agents.applicationEditForm.charactersLeftZero', ' 0 characters left')}
-            </Typography>
-          )}
-        </Box>
-      </Box>
+    <BasicAccordion
+      showMode="left"
+      slotSx={{ accordion: accordionSx, ...(style !== undefined ? { root: style } : {}) }}
+      items={[
+        {
+          title: t('agents.applicationEditForm.generalTitle', 'General'),
+          content: (
+            <Box>
+              <Box sx={nameContainerSx}>
+                <EntityIcon
+                  entityType={isFromPipeline ? 'pipeline' : 'agent'}
+                  sx={iconWrapperSx}
+                />
+                <Box sx={nameWrapperSx}>
+                  <StyledInputEnhancer
+                    autoComplete="off"
+                    id="name"
+                    name="name"
+                    label={t('agents.applicationEditForm.nameLabel', 'Name')}
+                    error={nameError !== undefined}
+                    helperText={nameError}
+                    onChange={onChangeName}
+                    onBlur={onNameBlur}
+                    onFocus={() => toggleFieldFocus(PROMPT_PAYLOAD_KEY.name)}
+                    value={localName}
+                    required
+                    slotProps={{ htmlInput: { maxLength: MAX_NAME_LENGTH, 'data-testid': 'agent-name-input' } }}
+                  />
+                  {isFocused(PROMPT_PAYLOAD_KEY.name) && localName.length === MAX_NAME_LENGTH && (
+                    <Typography
+                      variant="labelTiny"
+                      sx={nameCharactersLabelSx}
+                    >
+                      {t('agents.applicationEditForm.charactersLeftZero', ' 0 characters left')}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
 
-      <Box sx={descriptionWrapperSx}>
-        <StyledInputEnhancer
-          autoComplete="off"
-          label={t('agents.applicationEditForm.descriptionLabel', 'Description')}
-          id="description"
-          name="description"
-          required
-          expand={{ maxRows: 15 }}
-          actions={{ enabled: true }}
-          onChange={onChangeDescription}
-          onBlur={handleDescriptionBlur}
-          onFocus={() => toggleFieldFocus(PROMPT_PAYLOAD_KEY.description)}
-          value={description}
-          error={descriptionError !== undefined}
-          helperText={descriptionError}
-          slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION_LENGTH, 'data-testid': 'agent-description-input' } }}
-        />
-        {isFocused(PROMPT_PAYLOAD_KEY.description) && description.length > 0 && (
-          <Typography
-            variant="labelTiny"
-            sx={descriptionCharactersLabelSx}
-          >
-            {t('agents.applicationEditForm.charactersLeft', '{{count}} characters left', {
-              count: MAX_DESCRIPTION_LENGTH - description.length,
-            })}
-          </Typography>
-        )}
-      </Box>
+              <Box sx={descriptionWrapperSx}>
+                <StyledInputEnhancer
+                  autoComplete="off"
+                  label={t('agents.applicationEditForm.descriptionLabel', 'Description')}
+                  id="description"
+                  name="description"
+                  required
+                  expand={{ maxRows: 15 }}
+                  actions={{ enabled: true }}
+                  onChange={onChangeDescription}
+                  onBlur={handleDescriptionBlur}
+                  onFocus={() => toggleFieldFocus(PROMPT_PAYLOAD_KEY.description)}
+                  value={description}
+                  error={descriptionError !== undefined}
+                  helperText={descriptionError}
+                  slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION_LENGTH, 'data-testid': 'agent-description-input' } }}
+                />
+                {isFocused(PROMPT_PAYLOAD_KEY.description) && description.length > 0 && (
+                  <Typography
+                    variant="labelTiny"
+                    sx={descriptionCharactersLabelSx}
+                  >
+                    {t('agents.applicationEditForm.charactersLeft', '{{count}} characters left', {
+                      count: MAX_DESCRIPTION_LENGTH - description.length,
+                    })}
+                  </Typography>
+                )}
+              </Box>
 
-      <AgentTagEditor
-        projectId={projectId}
-        value={tags}
-        onChange={onTagsChange}
-      />
-    </Box>
+              <AgentTagEditor
+                projectId={projectId}
+                value={tags}
+                onChange={onTagsChange}
+              />
+            </Box>
+          ),
+        },
+      ]}
+    />
   );
 }
+
+const accordionSx: SxProps<Theme> = (theme: Theme) => ({
+  background: theme.vars.palette.background.tabPanel,
+});
 
 const nameContainerSx: SxProps<Theme> = {
   display: 'flex',

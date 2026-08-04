@@ -30,6 +30,71 @@ describe('CreateAgentForm', () => {
     expect(screen.getByTestId('agent-description-input')).toHaveValue('Does things');
   });
 
+  it('shows no validation error before the name field has been touched', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={{ ...baseValues, name: '' }}
+        onFieldChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Name is required')).not.toBeInTheDocument();
+  });
+
+  it('shows a validation error under the name field once blurred empty', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={{ ...baseValues, name: '' }}
+        onFieldChange={vi.fn()}
+      />,
+    );
+    const nameInput = screen.getByTestId('agent-name-input');
+    fireEvent.blur(nameInput);
+    expect(screen.getByText('Name is required')).toBeInTheDocument();
+    expect(nameInput).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('clears the name validation error once the user types a non-blank value', () => {
+    const onFieldChange = vi.fn();
+    renderWithProviders(
+      <CreateAgentForm
+        values={{ ...baseValues, name: '' }}
+        onFieldChange={onFieldChange}
+      />,
+    );
+    const nameInput = screen.getByTestId('agent-name-input');
+    fireEvent.blur(nameInput);
+    expect(screen.getByText('Name is required')).toBeInTheDocument();
+
+    fireEvent.change(nameInput, { target: { value: 'Agent' } });
+    expect(screen.queryByText('Name is required')).not.toBeInTheDocument();
+  });
+
+  it('shows a validation error under the description field once blurred empty', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={{ ...baseValues, description: '' }}
+        onFieldChange={vi.fn()}
+      />,
+    );
+    const descriptionInput = screen.getByTestId('agent-description-input');
+    fireEvent.blur(descriptionInput);
+    expect(screen.getByText('Description is required')).toBeInTheDocument();
+    expect(descriptionInput).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('disables the name/description/instructions/welcome-message fields when disabled is true', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={baseValues}
+        onFieldChange={vi.fn()}
+        disabled
+      />,
+    );
+    expect(screen.getByTestId('agent-name-input')).toBeDisabled();
+    expect(screen.getByTestId('agent-description-input')).toBeDisabled();
+    expect(screen.getByTestId('agent-welcome-message-input')).toBeDisabled();
+  });
+
   it('calls onFieldChange with the trimmed name on blur', () => {
     const onFieldChange = vi.fn();
     renderWithProviders(

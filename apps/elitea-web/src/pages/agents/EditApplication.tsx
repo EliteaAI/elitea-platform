@@ -12,6 +12,7 @@ import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
 import { applicationDetailDisplayName, toVersionSummaries } from './lib/editApplicationMappers';
+import { isPublicAgentsProject } from './lib/isPublicAgentsProject';
 import { useCorrectUserNameInUrl } from './lib/useCorrectUserNameInUrl';
 import { useEditApplicationData } from './lib/useEditApplicationData';
 import { useEditApplicationForm } from './lib/useEditApplicationForm';
@@ -118,6 +119,26 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *    not-wired-in-this-pass endpoint) are saved. See `entities/
  *    application-form/model/mutations.ts`'s own doc comment for the
  *    `tags`/`tools`/`pipeline_settings` gap on this same endpoint.
+ *
+ * **Read-only (public-viewer) gating, save-failure feedback, and the
+ * detail-404 page** (adversarial-review fixes): the baseline's
+ * `useViewMode()` hides the Save/Save-New-Version buttons whenever the
+ * currently selected project is the public project (`ApplicationTabBar.jsx:65`);
+ * this page reproduces that default via the same `isPublicAgentsProject`
+ * check `Applications.tsx`/`useApplicationsData.ts` (this unit) already use
+ * for the identical "is the current viewing context public" question — no
+ * override is threaded through the `viewMode` search param declared on
+ * `/agents/$tab` because nothing in this unit's own navigation call sites
+ * (`Latest`/`MyLiked`/`Trending`/`PrivateAgentsList`) ever sets it, so
+ * reading it here would not change the actual, reachable behaviour. A
+ * failed save now surfaces via `useEditApplicationForm`'s `saveError`,
+ * rendered as an inline `role="alert"` banner (this app has no toast
+ * infrastructure — see that hook's own doc comment). A 404/400 on the
+ * application-DETAIL fetch itself now renders the same dedicated
+ * not-found `NoResultsMessage` this file already used for an unknown
+ * version id, instead of falling through to the normal edit-page shell —
+ * old app: `EditApplication.jsx`'s `shouldShowNotFoundPage = (isError &&
+ * isNotFoundError(error)) || isVersionNotFound` → `<Page404 />`.
  */
 export function EditApplication(): ReactNode {
   const projectId = useSelectedProjectId();
@@ -126,7 +147,7 @@ export function EditApplication(): ReactNode {
   const applicationId = parseApplicationId(params.agentId);
   const requestedVersionId = params.version;
 
-  const { detail, versions, activeVersion, isFetching, isError } = useEditApplicationData(
+  const { detail, versions, activeVersion, isFetching, isError, isDetailNotFound } = useEditApplicationData(
     projectId,
     applicationId,
     requestedVersionId,
@@ -143,7 +164,28 @@ export function EditApplication(): ReactNode {
 
   useCorrectUserNameInUrl(detail?.name);
 
-  const { form, handleSave, isSaving } = useEditApplicationForm(detail, activeVersion, projectId, applicationId);
+  const { form, handleSave, isSaving, saveError } = useEditApplicationForm(detail, activeVersion, projectId, applicationId);
+
+  // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
+  // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
+  // `ApplicationTabBar.jsx:65` only renders the Save/Save-New-Version
+  // buttons when `viewMode !== ViewMode.Public` — every viewer reaching
+  // this page through this unit's own public-project tabs (`Latest`/
+  // `MyLiked`/`Trending`/the public "Admin" `PrivateAgentsList`, none of
+  // which pass a `viewMode` override on navigation) is a read-only viewer
+  // of someone else's public agent, not its owner.
+  const isReadOnlyView = isPublicAgentsProject(projectId);
+
+  if (isDetailNotFound) {
+    return (
+      <Box sx={pageSx}>
+        <NoResultsMessage
+          title={t('pages.agents.editApplication.agentNotFound.title', 'Agent not found')}
+          description={t('pages.agents.editApplication.agentNotFound.description', 'This agent no longer exists.')}
+        />
+      </Box>
+    );
+  }
 
   if (isVersionMissing) {
     return (
@@ -163,7 +205,7 @@ export function EditApplication(): ReactNode {
           <Typography variant="headingSmall">
             {detail ? applicationDetailDisplayName(detail) : t('pages.agents.editApplication.title', 'Agent')}
           </Typography>
-          {!isFetching && (
+          {!isFetching && !isReadOnlyView && (
             <EditApplicationSaveBar
               onSave={handleSave}
               canSave={form.formState.isValid && !isSaving}
@@ -178,6 +220,14 @@ export function EditApplication(): ReactNode {
               variant="bodyMedium"
             >
               {t('pages.agents.editApplication.error', 'Failed to load this agent.')}
+            </Typography>
+          )}
+          {saveError !== undefined && (
+            <Typography
+              role="alert"
+              variant="bodyMedium"
+            >
+              {t('pages.agents.editApplication.saveError', 'Failed to save your changes.')}
             </Typography>
           )}
           {/* Composition gap: `Components/Applications/ConfigurationTab.jsx` is not in this unit's (A1g) owned-file list — see doc comment above. */}

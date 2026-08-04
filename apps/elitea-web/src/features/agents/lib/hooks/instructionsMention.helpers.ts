@@ -27,7 +27,7 @@ import type { CommittedMention } from './useInstructionsSlashCommand.hooks';
 export interface MentionableTool extends Omit<AgentToolAssociation, 'settings'> {
   readonly id: string | number;
   readonly settings?: AgentToolAssociation['settings'] & {
-    readonly available_mcp_tools?: readonly { readonly value?: string; readonly label?: string }[];
+    readonly available_mcp_tools?: readonly MentionableMcpTool[];
   };
 }
 
@@ -35,6 +35,13 @@ export interface FileReaderInputHandle {
   getCursorPosition?: () => number;
   getInputContent?: () => string;
   replaceRange?: (start: number, end: number, replacement: string) => void;
+}
+
+/** One MCP sub-tool entry, as read off `MentionableTool.settings.available_mcp_tools` for the "/" mention tools-phase dropdown. `description` mirrors the baseline's own `item.description` (`useInstructionsMention.hooks.js:278-291`) — dropped in an earlier port pass; restored here so `resolveAvailableTools` below has a real field to read instead of a hardcoded `''`. */
+export interface MentionableMcpTool {
+  readonly value?: string | undefined;
+  readonly label?: string | undefined;
+  readonly description?: string | undefined;
 }
 
 export interface FilteredMentionableItem {
@@ -151,7 +158,7 @@ export function resolveAvailableTools(
   if (!settings) return [];
   const isMcp = resolvedSelectedItem?.type === 'mcp' || resolvedSelectedItem?.type?.startsWith('mcp_');
   if (isMcp) {
-    return (settings.available_mcp_tools ?? []).map((item) => ({ name: item.value ?? item.label ?? '', description: '' }));
+    return (settings.available_mcp_tools ?? []).map((item) => ({ name: item.value ?? item.label ?? '', description: item.description ?? '' }));
   }
   return (settings.selected_tools ?? []).map((name) => ({ name, description: '' }));
 }

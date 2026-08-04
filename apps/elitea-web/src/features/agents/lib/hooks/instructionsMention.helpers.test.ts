@@ -142,6 +142,23 @@ describe('resolveAvailableTools', () => {
     ]);
   });
 
+  it('maps each MCP sub-tools own description (baseline `item.description || ""`), not a hardcoded empty string', () => {
+    const selected: SelectedItemLike = {
+      name: 'GithubMcp',
+      type: 'mcp',
+      settings: {
+        available_mcp_tools: [
+          { value: 'create_issue', label: 'Create Issue', description: 'Opens a new GitHub issue' },
+          { value: 'close_issue', label: 'Close Issue' },
+        ],
+      },
+    };
+    expect(resolveAvailableTools(selected)).toStrictEqual([
+      { name: 'create_issue', description: 'Opens a new GitHub issue' },
+      { name: 'close_issue', description: '' },
+    ]);
+  });
+
   it('maps available_mcp_tools for a type starting with "mcp_"', () => {
     const selected: SelectedItemLike = {
       name: 'GithubMcp',

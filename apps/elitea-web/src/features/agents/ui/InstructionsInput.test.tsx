@@ -1,9 +1,38 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
+import { getListApplicationSkillsMockHandler } from '@/shared/api/generated/skills/skills.msw';
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
+import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
+
+import type { MentionableTool } from '../lib/hooks/useInstructionsMention.hooks';
 import { renderWithProviders } from '../__tests__/testUtils';
 
 import { InstructionsInput } from './InstructionsInput';
+
+installCodeMirrorTestPolyfills();
+
+/** CM6's `.cm-content` is the actual `role="textbox"` element every interaction below types into. */
+function getContent(container: HTMLElement): HTMLElement {
+  const content = container.querySelector('.cm-content');
+  if (!(content instanceof HTMLElement)) throw new Error('CodeMirror content element not found');
+  return content;
+}
+
+const TOOLS: readonly MentionableTool[] = [
+  { id: 1, name: 'Github', type: 'github', settings: { selected_tools: ['create_issue'] } },
+  { id: 2, name: 'SubAgent', type: 'application', agent_type: 'chat' },
+];
+
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: '/api/v2' });
+});
+
+afterEach(() => {
+  resetGeneratedClient();
+});
 
 describe('InstructionsInput', () => {
   it('renders the current instructions text', () => {
@@ -43,5 +72,118 @@ describe('InstructionsInput', () => {
       />,
     );
     expect(screen.getByText('Be helpful.')).toBeInTheDocument();
+  });
+
+  it('does not truncate instructions already longer than the Skills-only MAX_INSTRUCTIONS_LENGTH constant (regression: no maxLength on the agent instructions field)', async () => {
+    const user = userEvent.setup();
+    const longInstructions = 'x'.repeat(2600);
+    const onInstructionsChange = vi.fn();
+    const { container } = renderWithProviders(
+      <InstructionsInput
+        instructions={longInstructions}
+        onInstructionsChange={onInstructionsChange}
+      />,
+    );
+    const content = getContent(container);
+    expect(content).toHaveTextContent(longInstructions);
+    await user.click(content);
+    await user.keyboard('{End}!');
+    await waitFor(() => {
+      expect(onInstructionsChange).toHaveBeenCalledWith(longInstructions + '!');
+    });
+  });
+
+  it('opens the "/" mention dropdown listing the version tools, and inserts a token on click', async () => {
+    const user = userEvent.setup();
+    const onInstructionsChange = vi.fn();
+    const { container } = renderWithProviders(
+      <InstructionsInput
+        instructions=""
+        onInstructionsChange={onInstructionsChange}
+        tools={TOOLS}
+        versionId="v1"
+        entityProjectId="proj-1"
+      />,
+    );
+    const content = getContent(container);
+    await user.click(content);
+    await user.keyboard('/');
+
+    expect(await screen.findByText('Github')).toBeInTheDocument();
+    expect(screen.getByText('SubAgent')).toBeInTheDocument();
+
+    await user.click(screen.getByText('SubAgent'));
+
+    await waitFor(() => {
+      expect(onInstructionsChange).toHaveBeenCalledWith('/SubAgent ');
+    });
+  });
+
+  it('closes the "/" mention dropdown on Escape without inserting anything extra', async () => {
+    const user = userEvent.setup();
+    const onInstructionsChange = vi.fn();
+    const { container } = renderWithProviders(
+      <InstructionsInput
+        instructions=""
+        onInstructionsChange={onInstructionsChange}
+        tools={TOOLS}
+        versionId="v1"
+        entityProjectId="proj-1"
+      />,
+    );
+    const content = getContent(container);
+    await user.click(content);
+    await user.keyboard('/');
+    expect(await screen.findByText('Github')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => {
+      expect(screen.queryByText('Github')).not.toBeInTheDocument();
+    });
+  });
+
+  it('opens the "~" skill mention dropdown listing the project/version skills, and inserts a token on click', async () => {
+    server.use(
+      getListApplicationSkillsMockHandler({
+        items: [
+          {
+            id: 'skill-1',
+            project_id: 'proj-1',
+            name: 'Summarizer',
+            description: 'Summarizes text',
+            type: 'skill',
+            is_default: false,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      }),
+    );
+
+    const user = userEvent.setup();
+    const onInstructionsChange = vi.fn();
+    const { container } = renderWithProviders(
+      <InstructionsInput
+        instructions=""
+        onInstructionsChange={onInstructionsChange}
+        versionId={7}
+        entityProjectId="proj-1"
+      />,
+    );
+    const content = getContent(container);
+    await user.click(content);
+    await user.keyboard('~');
+
+    expect(await screen.findByText('Summarizer')).toBeInTheDocument();
+
+    await user.click(screen.getByText('Summarizer'));
+
+    await waitFor(() => {
+      expect(onInstructionsChange).toHaveBeenCalledWith('~Summarizer ');
+    });
   });
 });

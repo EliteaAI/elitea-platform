@@ -5,8 +5,11 @@ import {
   agentId,
   agentViewMode,
   canEditAgent,
+  canEditModel,
   isPublicAgent,
+  publicLlmOverride,
   PUBLIC_PROJECT_ID,
+  resolveValidateProjectId,
 } from './agentEditorViewState';
 
 describe('agentId', () => {
@@ -74,5 +77,53 @@ describe('agentDisplayName', () => {
 
   it('falls back to the supplied default when neither is set', () => {
     expect(agentDisplayName(undefined, 'Unnamed Agent')).toBe('Unnamed Agent');
+  });
+});
+
+describe('publicLlmOverride', () => {
+  it('passes the override through for a public agent', () => {
+    const override = () => {};
+    expect(publicLlmOverride(true, override)).toBe(override);
+  });
+
+  it('is undefined for a non-public agent, even when an override is supplied', () => {
+    const override = () => {};
+    expect(publicLlmOverride(false, override)).toBeUndefined();
+  });
+
+  it('is undefined when no override is supplied', () => {
+    expect(publicLlmOverride(true, undefined)).toBeUndefined();
+  });
+});
+
+describe('canEditModel', () => {
+  it('is true when the viewer can edit the whole agent', () => {
+    expect(canEditModel(true, false)).toBe(true);
+  });
+
+  it('is true when a conversation LLM override is available, even without edit permission', () => {
+    expect(canEditModel(false, true)).toBe(true);
+  });
+
+  it('is false without edit permission or an override', () => {
+    expect(canEditModel(false, false)).toBe(false);
+  });
+});
+
+describe('resolveValidateProjectId', () => {
+  it('prefers the agent\'s own numeric entity_meta.project_id, stringified', () => {
+    expect(resolveValidateProjectId(42, 'p1')).toBe('42');
+  });
+
+  it('prefers the agent\'s own string entity_meta.project_id', () => {
+    expect(resolveValidateProjectId('public', 'p1')).toBe('public');
+  });
+
+  it('falls back to the globally-selected project when entityProjectId is absent', () => {
+    expect(resolveValidateProjectId(undefined, 'p1')).toBe('p1');
+  });
+
+  it('falls back to the globally-selected project when entityProjectId is falsy (0)', () => {
+    expect(resolveValidateProjectId(0, 'p1')).toBe('p1');
   });
 });

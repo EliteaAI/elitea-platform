@@ -71,4 +71,49 @@ describe('useAgentEditorCreate', () => {
       versions: [expect.objectContaining({ instructions: 'Use {{topic}}' })],
     });
   });
+
+  it('starts clean and becomes dirty once a field changes', () => {
+    const { result } = renderHookWithProviders(() => useAgentEditorCreate('p1'));
+    expect(result.current.isDirty).toBe(false);
+
+    act(() => result.current.onFieldChange('name', 'My Agent'));
+
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it('reset restores the empty values and clears the dirty flag', () => {
+    const { result } = renderHookWithProviders(() => useAgentEditorCreate('p1'));
+
+    act(() => result.current.onFieldChange('name', 'My Agent'));
+    expect(result.current.isDirty).toBe(true);
+
+    act(() => result.current.reset());
+
+    expect(result.current.values.name).toBe('');
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it('submit clears the dirty flag on success', async () => {
+    server.use(
+      getCreateApplicationMockHandler(() => ({
+        id: '42',
+        name: 'My Agent',
+        description: '',
+        type: 'interface',
+        icon: '',
+        owner_id: 'u1',
+        created_at: '2026-01-01T00:00:00Z',
+      })),
+    );
+    const { result } = renderHookWithProviders(() => useAgentEditorCreate('p1'));
+
+    act(() => result.current.onFieldChange('name', 'My Agent'));
+    expect(result.current.isDirty).toBe(true);
+
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(result.current.isDirty).toBe(false);
+  });
 });

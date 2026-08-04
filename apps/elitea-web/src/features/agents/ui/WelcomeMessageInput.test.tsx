@@ -33,6 +33,32 @@ describe('WelcomeMessageInput', () => {
     expect(onWelcomeMessageChange).toHaveBeenCalledWith('Hi!');
   });
 
+  it('re-syncs local state when welcomeMessage changes externally without a versionId change', () => {
+    // Baseline (`components/WelcomeMessage.jsx`) resyncs on ANY external
+    // change to the value, not just a version switch — e.g. a future
+    // discard/reset action that resets `welcomeMessage` while `versionId`
+    // stays the same.
+    function Host(): ReactNode {
+      const [message, setMessage] = useState('First message');
+      return (
+        <div>
+          <button onClick={() => setMessage('Reset message')}>reset</button>
+          <WelcomeMessageInput
+            welcomeMessage={message}
+            onWelcomeMessageChange={vi.fn()}
+            versionId={1}
+          />
+        </div>
+      );
+    }
+
+    renderWithProviders(<Host />);
+    expect(screen.getByDisplayValue('First message')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('reset'));
+    expect(screen.getByDisplayValue('Reset message')).toBeInTheDocument();
+  });
+
   it('re-syncs local state when versionId changes (version switch)', () => {
     // A tiny stateful host, rendered once via `renderWithProviders` (so the
     // MUI theme/query-client wrapper survives the update) — clicking

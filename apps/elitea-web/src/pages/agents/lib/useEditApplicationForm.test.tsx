@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getUpdateApplicationVersionMockHandler } from '@/shared/api/generated/applications/applications.msw';
@@ -107,5 +108,59 @@ describe('useEditApplicationForm', () => {
     const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
 
     expect(result.current.isSaving).toBe(false);
+  });
+
+  it('saveError is undefined before any save attempt', () => {
+    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+    expect(result.current.saveError).toBeUndefined();
+  });
+
+  it('saveError surfaces once a save attempt fails — old app: useSaveVersion.js toasts on every failed save; this app has no toast infra, so the caller renders this instead', async () => {
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    const { result } = renderHook(() => useEditApplicationForm(DETAIL, VERSION, '9', 42), { wrapper });
+
+    act(() => {
+      result.current.handleSave();
+    });
+
+    await waitFor(() => expect(result.current.saveError).toBeDefined());
+    expect(result.current.isSaving).toBe(false);
+  });
+
+  it('saveError clears once a subsequent save attempt succeeds', async () => {
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    const { result, rerender } = renderHook(
+      ({ detail, version }: { detail: ApplicationDetail; version: ApplicationVersionDetail }) =>
+        useEditApplicationForm(detail, version, '9', 42),
+      { wrapper, initialProps: { detail: DETAIL, version: VERSION } },
+    );
+
+    act(() => {
+      result.current.handleSave();
+    });
+    await waitFor(() => expect(result.current.saveError).toBeDefined());
+
+    server.use(
+      getUpdateApplicationVersionMockHandler({
+        id: '1',
+        application_id: '42',
+        name: 'base',
+        status: 'draft',
+      }),
+    );
+    rerender({ detail: DETAIL, version: VERSION });
+
+    act(() => {
+      result.current.handleSave();
+    });
+    await waitFor(() => expect(result.current.saveError).toBeUndefined());
   });
 });

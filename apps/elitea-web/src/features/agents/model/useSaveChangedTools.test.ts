@@ -68,7 +68,7 @@ describe('useSaveChangedTools', () => {
     expect(result.current.isSavingToolkit).toBe(false);
   });
 
-  it('onSaveTools resolves false (never silently succeeds) and surfaces unsavedTools when something changed — the real backend gap', async () => {
+  it('onSaveTools still resolves true when something changed (no network call can fail; matches the baseline gate never blocking a healthy session) but surfaces unsavedTools — the real backend gap', async () => {
     const current = [tool('a', ['x', 'y'])];
     const original = [tool('a', ['x'])];
     const { result } = renderHook(() => useSaveChangedTools(current, original));
@@ -78,7 +78,7 @@ describe('useSaveChangedTools', () => {
     await act(async () => {
       resolved = await result.current.onSaveTools();
     });
-    expect(resolved).toBe(false);
+    expect(resolved).toBe(true);
     expect(result.current.unsavedTools).toHaveLength(1);
     await waitFor(() => expect(result.current.isSavingToolkit).toBe(false));
   });

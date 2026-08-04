@@ -70,9 +70,12 @@ import { useApplicationsStore } from './applicationsStore';
  *   client — see `useCreateApplication.ts`'s doc comment point 3 for the
  *   full trace; not resent here either.
  * - Tool changes (`selected_tools`) go through `useSaveChangedTools`'s
- *   `onSaveTools` gate FIRST, exactly like the baseline's `onSave` — see
- *   that hook's own doc comment for why it cannot actually persist a
- *   `selected_tools` change today.
+ *   `onSaveTools` gate FIRST, exactly like the baseline's `onSave`
+ *   (`useSaveVersion.js:57-60`) gates on `onSaveTools()` before its own
+ *   save call — see that hook's own doc comment for why it cannot actually
+ *   persist a `selected_tools` change today, and why it therefore always
+ *   resolves `true` rather than blocking this PUT the way a genuine
+ *   baseline failure would.
  * - The baseline also fetches `useListModelsQuery` and runs
  *   `cleanLLMSettings(llmSettings, model)` to strip fields (e.g.
  *   `reasoning_effort`) the selected model doesn't support, before sending

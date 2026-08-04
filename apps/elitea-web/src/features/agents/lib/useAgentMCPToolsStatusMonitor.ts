@@ -83,7 +83,13 @@ export function useAgentMCPToolsStatusMonitor<T extends AgentMcpToolLike>({
       if (!isMcp) return;
       const { type, connected, project_id: eventProjectId } = event;
       if (type === undefined || connected === undefined) return;
-      if (projectId !== undefined && eventProjectId !== undefined && String(eventProjectId) !== projectId) return;
+      // Baseline (`apps/elitea-ui/src/hooks/application/useAgentMCPToolsStatusMonitor.js:32,49-52`):
+      // `projectId === project_id` (strict) on BOTH branches — if either is falsy/undefined, the
+      // comparison fails and nothing is patched. Requiring both to be defined AND equal (rather
+      // than short-circuiting the skip only when both are defined and differ) reproduces that
+      // exactly, instead of falling through and patching a status meant for a DIFFERENT project's
+      // same-`type` MCP toolkit whenever either id is transiently undefined.
+      if (projectId === undefined || eventProjectId === undefined || String(eventProjectId) !== projectId) return;
       // Structural match against `applyMcpToolStatus`'s `McpStatusEvent` parameter —
       // that type isn't re-exported from `entities/application-form`'s public
       // index.ts (R-L3 forbids a deep import to `model/toolStatus.ts` just for it).

@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 
 import { applicationCreationSchema, ApplicationSaveButton, ApplicationValidator } from '@/entities/application-form';
-import type { ApplicationCreatedResponse } from '@/shared/api/generated/model';
+import type { ApplicationCreatedResponse, LlmSettings } from '@/shared/api/generated/model';
 import { ChatParticipantType } from '@/shared/lib/chat';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 
@@ -12,7 +12,10 @@ import {
   agentId as resolveAgentId,
   agentViewMode,
   canEditAgent,
+  canEditModel as resolveCanEditModel,
   isPublicAgent,
+  publicLlmOverride,
+  resolveValidateProjectId,
   type AgentEditorAgentLike,
 } from '../lib/agentEditorViewState';
 import { useAgentEditorCreate } from '../lib/useAgentEditorCreate';
@@ -71,14 +74,12 @@ import { GenerateAgentButton } from './generate-agent-modal/GenerateAgentButton'
  *    `AgentEditor.jsx:5,123,284-290`) is dropped outright, same
  *    documented-gap treatment as `../model/useAgentCreation.ts`'s own doc
  *    comment (no analytics-event SDK exists anywhere in this app).
- *  - `isDirty` stays local `useState` (baseline: `AgentEditor.jsx:126`,
- *    also plain local state there, NOT Formik-derived) — no behaviour
- *    change, but nothing in this port currently calls `setIsDirty` since
- *    dirty-tracking for the not-yet-landed config-form slot's own edits is
- *    that slot's own concern (`ConfigurationTab.tsx`'s own doc comment
- *    makes the identical call for the same reason: "dirty-state tracking
- *    is react-hook-form's own `formState.isDirty`, owned by whichever page
- *    mounts the RHF form... not this component's concern").
+ *  - `isDirty` (baseline: `AgentEditor.jsx:126`, plain local state there,
+ *    NOT Formik-derived) is `create.isDirty` in CREATE mode (this file owns
+ *    that state, so it can answer "has anything changed" for real) and
+ *    always `false` in EDIT mode — dirty-tracking for the not-yet-landed
+ *    config-form slot's own edits is that slot's own concern, same call
+ *    `ConfigurationTab.tsx`'s own doc comment already makes.
  */
 
 export interface AgentEditorShellProps {
@@ -89,6 +90,8 @@ export interface AgentEditorShellProps {
   readonly subtitle: string | undefined;
   readonly error: unknown;
   readonly onDirtyStateChange?: ((isDirty: boolean) => void) | undefined;
+  /** Baseline: `AgentEditor.jsx:270-273`'s `handleDiscard`. Only wired for CREATE mode (resets `useAgentEditorCreate`'s `values` back to empty) — no EDIT-mode form state exists here to discard, so `undefined` rather than a silent no-op. */
+  readonly onDiscard?: (() => void) | undefined;
   readonly saveButton: ReactNode;
   readonly isPublic: boolean;
   readonly children: ReactNode;
@@ -106,8 +109,21 @@ export interface AgentEditorDeps {
   readonly renderShell: (props: AgentEditorShellProps) => ReactNode;
   /** The not-yet-landed sibling form — see the module doc comment. Omitted entirely (not rendered) when absent. */
   readonly renderConfigurationForm?: (props: AgentConfigurationFormSlotProps) => ReactNode;
-  /** Baseline: `pages/NewChat/components/LLMModelSelectorWrapper.jsx`, edit mode only. */
-  readonly renderLlmModelSelector?: (props: { projectId: string | undefined; disabled: boolean; isPublic: boolean }) => ReactNode;
+  /**
+   * Baseline: `pages/NewChat/components/LLMModelSelectorWrapper.jsx`, edit
+   * mode only. `onConversationLlmOverride` is the baseline's own
+   * `onPublicLlmOverride` (`AgentEditor.jsx:61-84`) — already gated to
+   * `isPublic` by the caller (`AgentEditorBody`), so a real implementation
+   * of this slot only needs to wire it into `LLMModelSelectorWrapper`'s own
+   * `onPublicLlmOverride`/`onResetToDefaults` props and compute the
+   * matching tooltips.
+   */
+  readonly renderLlmModelSelector?: (props: {
+    projectId: string | undefined;
+    disabled: boolean;
+    isPublic: boolean;
+    onConversationLlmOverride?: ((settings: LlmSettings | null) => void) | undefined;
+  }) => ReactNode;
   /** Baseline: `useConversationStartersSync` (`features/chat/lib/hooks`). Defaults to a no-op — see the module doc comment. */
   readonly useConversationStartersSync?: (onChange: ((starters: readonly string[]) => void) | undefined) => void;
   /** Edit-mode save — owned by whoever supplies `renderConfigurationForm`'s real live state (this component does not own edit-mode values). */
@@ -126,8 +142,19 @@ export interface AgentEditorProps {
   readonly onAgentCreated?: (result: ApplicationCreatedResponse) => void;
   readonly onAgentDirtyStateChange?: (isDirty: boolean) => void;
   readonly onConversationStartersChange?: (starters: readonly string[]) => void;
-  readonly onAttachmentToolChange?: () => void;
+  /** Baseline: `AgentEditor.jsx:297-303`'s `handleAttachmentToolChange`, which forwards the agent id (`agent?.id`) to this callback. */
+  readonly onAttachmentToolChange?: (agentId: string | number | undefined) => void;
   readonly onAssociationWarning?: (message: string) => void;
+  /**
+   * Baseline: `onConversationLlmOverride` (`AgentEditor.jsx:121`) — enables
+   * per-conversation LLM-model overrides for PUBLISHED PUBLIC agents (a
+   * viewer with no edit permission can still pick a model for their own
+   * conversation when the caller opts in by supplying this). Only takes
+   * effect when the agent being edited `isPublicAgent` — see
+   * `deps.renderLlmModelSelector`'s own doc comment for how it reaches the
+   * real model selector.
+   */
+  readonly onConversationLlmOverride?: (settings: LlmSettings | null) => void;
   readonly deps: AgentEditorDeps;
 }
 
@@ -141,6 +168,11 @@ function noopSave(): void {}
 function asValidatorId(value: string | number | undefined): number | undefined {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+/** `isCreateMode ? value : fallback` — this component only owns CREATE-mode state (module doc comment), so several values are only real in that mode. Extracted purely to keep `AgentEditor` under the complexity budget, same reason as `asValidatorId` above. */
+function whenCreateMode<T>(isCreateMode: boolean, value: T, fallback: T): T {
+  return isCreateMode ? value : fallback;
 }
 
 interface SaveButtonSlotProps {
@@ -186,6 +218,8 @@ export interface EditorBodyAgentState {
   readonly validateProjectId: string | undefined;
   readonly versionId: string | number | undefined;
   readonly canEditIt: boolean;
+  /** `canEditIt || (isPublic && onConversationLlmOverride is supplied)` — baseline's `canEditModel`, `AgentEditor.jsx:62`. */
+  readonly canEditModel: boolean;
   readonly isPublic: boolean;
   readonly viewMode: 'Owner' | 'Public';
   readonly projectId: string | undefined;
@@ -196,14 +230,16 @@ interface EditorBodyProps {
   readonly state: EditorBodyAgentState;
   readonly onAttachmentToolChange: (() => void) | undefined;
   readonly onAssociationWarning: ((message: string) => void) | undefined;
+  /** Already gated to `isPublic` by the caller — see `EditorBodyAgentState.canEditModel`'s doc comment. */
+  readonly onConversationLlmOverride: ((settings: LlmSettings | null) => void) | undefined;
   readonly create: ReturnType<typeof useAgentEditorCreate>;
   readonly handleAgentCreated: (result: ApplicationCreatedResponse) => void;
   readonly deps: AgentEditorDeps;
 }
 
 /** The validator + LLM-selector-slot + create-or-config-form body, extracted purely to keep `AgentEditor` under the complexity budget. */
-function AgentEditorBody({ state, onAttachmentToolChange, onAssociationWarning, create, handleAgentCreated, deps }: EditorBodyProps): ReactNode {
-  const { isCreateMode, theAgentId, validateProjectId, versionId, canEditIt, isPublic, viewMode, projectId, entityProjectId } = state;
+function AgentEditorBody({ state, onAttachmentToolChange, onAssociationWarning, onConversationLlmOverride, create, handleAgentCreated, deps }: EditorBodyProps): ReactNode {
+  const { isCreateMode, theAgentId, validateProjectId, versionId, canEditModel, isPublic, viewMode, projectId, entityProjectId } = state;
   return (
     <>
       <ApplicationValidator
@@ -214,11 +250,13 @@ function AgentEditorBody({ state, onAttachmentToolChange, onAssociationWarning, 
         isCreateMode={isCreateMode}
         useValidate={useValidateAgentVersion}
       />
-      {!isCreateMode && deps.renderLlmModelSelector?.({ projectId, disabled: !canEditIt, isPublic })}
+      {!isCreateMode &&
+        deps.renderLlmModelSelector?.({ projectId, disabled: !canEditModel, isPublic, onConversationLlmOverride })}
       {isCreateMode ? (
         <CreateAgentForm
           values={create.values}
           onFieldChange={create.onFieldChange}
+          disabled={create.isCreating}
           generateAgentButtonSlot={
             <GenerateAgentButton
               onAgentCreated={handleAgentCreated}
@@ -244,6 +282,7 @@ export function AgentEditor({
   onConversationStartersChange,
   onAttachmentToolChange,
   onAssociationWarning,
+  onConversationLlmOverride,
   deps,
 }: AgentEditorProps): ReactNode {
   const projectId = useSelectedProjectId();
@@ -251,17 +290,20 @@ export function AgentEditor({
   const useStartersSync = deps.useConversationStartersSync ?? noopConversationStartersSync;
   useStartersSync(onConversationStartersChange);
 
-  const [isDirty] = useState(false);
-
   const isPublic = isPublicAgent(agent);
   const canEditIt = canEditAgent(isPublic, hasEditPermission);
+  // See `publicLlmOverride`/`canEditModel`'s own doc comments (`../lib/agentEditorViewState.ts`) for the baseline lines these restore.
+  const conversationLlmOverride = publicLlmOverride(isPublic, onConversationLlmOverride);
+  const canEditModel = resolveCanEditModel(canEditIt, conversationLlmOverride !== undefined);
   const viewMode = agentViewMode(canEditIt);
   const theAgentId = resolveAgentId(agent);
   const versionId = agent?.entity_settings?.version_id;
   const entityProjectId = agent?.entity_meta?.project_id;
-  const validateProjectId = typeof entityProjectId === 'string' ? entityProjectId : projectId;
+  // See `resolveValidateProjectId`'s own doc comment (`../lib/agentEditorViewState.ts`) for the baseline line this restores.
+  const validateProjectId = resolveValidateProjectId(entityProjectId, projectId);
 
   const create = useAgentEditorCreate(projectId);
+  const isDirty = whenCreateMode(isCreateMode, create.isDirty, false);
 
   const handleClose = useCallback(() => {
     onCloseAgentEditor?.();
@@ -279,6 +321,16 @@ export function AgentEditor({
     const result = await create.submit();
     if (result) handleAgentCreated(result);
   }, [create, handleAgentCreated]);
+
+  // Baseline: `AgentEditor.jsx:270-273`'s `handleDiscard` — see `AgentEditorShellProps.onDiscard`'s own doc comment for why only CREATE mode gets a real one.
+  const handleDiscard = useCallback(() => {
+    create.reset();
+  }, [create]);
+
+  // Baseline: `AgentEditor.jsx:297-303`'s `handleAttachmentToolChange` — forwards the resolved agent id. The refetch half has no equivalent here: this component doesn't own the edit-mode version-details query (module doc comment) — that belongs to whichever real component eventually fills `renderConfigurationForm`'s slot, same as `deps.onEditorClosed` already replacing `useRefetchAgentVersionDetailsOnClose`.
+  const handleAttachmentToolChange = useCallback(() => {
+    onAttachmentToolChange?.(theAgentId);
+  }, [onAttachmentToolChange, theAgentId]);
 
   const canSaveCreate = useMemo(() => applicationCreationSchema.safeParse(create.values).success, [create.values]);
 
@@ -304,6 +356,7 @@ export function AgentEditor({
     validateProjectId,
     versionId,
     canEditIt,
+    canEditModel,
     isPublic,
     viewMode,
     projectId,
@@ -313,8 +366,9 @@ export function AgentEditor({
   const body = (
     <AgentEditorBody
       state={bodyState}
-      onAttachmentToolChange={onAttachmentToolChange}
+      onAttachmentToolChange={handleAttachmentToolChange}
       onAssociationWarning={onAssociationWarning}
+      onConversationLlmOverride={conversationLlmOverride}
       create={create}
       handleAgentCreated={handleAgentCreated}
       deps={deps}
@@ -327,8 +381,12 @@ export function AgentEditor({
     onClose: handleClose,
     title,
     subtitle,
-    error: create.error,
+    // Mode-appropriate, matching the baseline's own `isPublishedAgent ? publicError : privateError`
+    // (both `skip`ped in create mode, `AgentEditor.jsx:162-164`): `create.error`
+    // is this component's OWN mutation-error state, real only for CREATE mode.
+    error: whenCreateMode(isCreateMode, create.error, undefined),
     onDirtyStateChange: onAgentDirtyStateChange,
+    onDiscard: whenCreateMode(isCreateMode, handleDiscard, undefined),
     saveButton,
     isPublic: !canEditIt,
     children: body,

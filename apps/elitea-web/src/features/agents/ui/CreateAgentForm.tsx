@@ -1,9 +1,11 @@
 import type { ChangeEvent, FocusEvent, ReactNode } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
+import { applicationCreationSchema } from '@/entities/application-form';
 import { MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH } from '@/shared/lib/limits';
 import { t } from '@/shared/i18n';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
@@ -71,6 +73,8 @@ interface GeneralFieldsNameProps {
   readonly onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
   readonly onFocus: () => void;
   readonly onBlur: () => void;
+  /** Set only once the field has been touched (blurred) — matches the baseline's `formik.touched?.name && formik.errors.name`. */
+  readonly error?: string | undefined;
 }
 
 interface GeneralFieldsDescriptionProps {
@@ -79,6 +83,30 @@ interface GeneralFieldsDescriptionProps {
   readonly onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
   readonly onFocus: () => void;
   readonly onBlur: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  /** Set only once the field has been touched (blurred) — matches the baseline's `formik.touched?.description && formik.errors.description`. */
+  readonly error?: string | undefined;
+}
+
+/**
+ * `message` (a real `t()` string, chosen by the caller) once `field` has
+ * been `touched` AND `applicationCreationSchema`'s `safeParse` has rejected
+ * it — the zod re-expression of the baseline's `formik.touched?.name &&
+ * formik.errors.name` (this app's own `AgentEditor.tsx` already runs the
+ * identical `safeParse` for the Save button's disabled state). Renders
+ * `message`, not the schema's own raw (non-`t()`, out of this file's scope)
+ * issue text — "name"/"description" only ever have the one "required" rule,
+ * so which exact issue fired doesn't matter, only whether one did. Takes
+ * `touched`/`message` themselves purely to keep `CreateAgentForm` under the
+ * oxlint complexity budget.
+ */
+function requiredFieldError(
+  touched: boolean,
+  validation: ReturnType<typeof applicationCreationSchema.safeParse>,
+  field: 'name' | 'description',
+  message: string,
+): string | undefined {
+  const hasError = touched && !validation.success && validation.error.issues.some((issue) => issue.path[0] === field);
+  return hasError ? message : undefined;
 }
 
 interface GeneralFieldsProps {
@@ -114,6 +142,8 @@ function GeneralFields({ name, description, disabled, iconSlot, tagsSlot }: Gene
             onBlur={name.onBlur}
             value={name.value}
             required
+            error={Boolean(name.error)}
+            helperText={name.error}
             slotProps={{ htmlInput: { maxLength: MAX_NAME_LENGTH, 'data-testid': 'agent-name-input' } }}
           />
           {name.focused && name.atMax && (
@@ -139,6 +169,8 @@ function GeneralFields({ name, description, disabled, iconSlot, tagsSlot }: Gene
           onBlur={description.onBlur}
           value={description.value}
           disabled={disabled}
+          error={Boolean(description.error)}
+          helperText={description.error}
           slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION_LENGTH, 'data-testid': 'agent-description-input' } }}
         />
         {description.focused && description.value.length > 0 && (
@@ -196,6 +228,39 @@ export function CreateAgentForm({
   const versionDetails = values.version_details;
   const state = useCreateAgentFormState(values, onFieldChange);
 
+  // Client-side "required" validation-error state, restored to parity with
+  // the baseline's `formik.touched?.name && Boolean(formik.errors.name)` —
+  // see `requiredFieldError`'s own doc comment. `*Touched` stand in for
+  // Formik's own per-field `touched` map (no ambient form context here).
+  // Validated off `state.name` (this component's own optimistic local
+  // mirror of what the input shows), not `values.name`: a caller that
+  // doesn't round-trip `onFieldChange` synchronously would otherwise leave
+  // the error stale one keystroke behind. `state.description` has no such
+  // local mirror (reads straight off `values.description`), so equivalent either way.
+  const [nameTouched, setNameTouched] = useState(false);
+  const [descriptionTouched, setDescriptionTouched] = useState(false);
+  const validation = useMemo(
+    () => applicationCreationSchema.safeParse({ name: state.name, description: state.description, version_details: values.version_details }),
+    [state.name, state.description, values.version_details],
+  );
+  const nameRequiredMessage = t('features.agents.createAgentForm.nameRequired', 'Name is required');
+  const descriptionRequiredMessage = t('features.agents.createAgentForm.descriptionRequired', 'Description is required');
+  const nameError = requiredFieldError(nameTouched, validation, 'name', nameRequiredMessage);
+  const descriptionError = requiredFieldError(descriptionTouched, validation, 'description', descriptionRequiredMessage);
+
+  const handleNameBlur = useCallback(() => {
+    state.onNameBlur();
+    setNameTouched(true);
+  }, [state]);
+
+  const handleDescriptionBlur = useCallback(
+    (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      state.onDescriptionBlur(event);
+      setDescriptionTouched(true);
+    },
+    [state],
+  );
+
   return (
     <Box sx={combineSx(rootContainerSx, sx)}>
       <BasicAccordion
@@ -213,14 +278,16 @@ export function CreateAgentForm({
                   focused: state.nameFocused,
                   onChange: state.onChangeName,
                   onFocus: state.onNameFocus,
-                  onBlur: state.onNameBlur,
+                  onBlur: handleNameBlur,
+                  error: nameError,
                 }}
                 description={{
                   value: state.description,
                   focused: state.descriptionFocused,
                   onChange: state.onDescriptionChange,
                   onFocus: state.onDescriptionFocus,
-                  onBlur: state.onDescriptionBlur,
+                  onBlur: handleDescriptionBlur,
+                  error: descriptionError,
                 }}
                 disabled={disabled}
                 iconSlot={iconSlot}

@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useRef } from 'react';
 
+import { t } from '@/shared/i18n';
 import { ROLES } from '@/shared/lib/enums';
 import type { SocketClient } from '@/shared/api/socket/client';
 import type { Participant } from '@/entities/participant';
 
-import { applicationErrorMessage } from '../errorMessage';
+import { applicationErrorMessageOrFallback } from '../errorMessage';
 import { getInitialChatHistory, isMessageInFlight } from './applicationChat.helpers';
 import type { ChatApplicationVersionDetails, ChatConversation, ChatConversationAdapter, ChatHistoryMessage } from './applicationChat.types';
 
@@ -121,13 +122,29 @@ export function useApplicationChatStreaming(params: UseApplicationChatStreamingP
     [adapter, projectId, setChatHistory, socket],
   );
 
-  const onStopAll = useCallback(async () => {
+  /**
+   * `useApplicationChat.hooks.js:561-570`'s `messagesWithTaskId.forEach(async message => {...})`.
+   *
+   * **Confirmed regression fix (A1-application-chat cluster, finding 4):** baseline's `forEach`
+   * callback is `async` but the outer function never `await`s the `forEach` call itself, so every
+   * `stopChatTask` round-trip fires concurrently and `chat_leave_rooms` is emitted immediately after
+   * the (synchronous) dispatch loop — NOT after any of them settle. A prior port of this function
+   * `await`ed each `stopChatTask` call inside a `for` loop, making N concurrently-streaming messages
+   * (e.g. swarm children) take roughly N times as long to stop as baseline, since `chat_leave_rooms`
+   * (and the promise this function returns, which callers like `onDeleteAllMessages` below DO await)
+   * only resolved after every network round-trip completed in sequence. Restored to fire-and-parallel:
+   * every `stopChatTask` call is dispatched without being awaited (`void`, matching baseline's own
+   * unhandled-rejection-on-failure behaviour — baseline's `await` inside the un-awaited `forEach`
+   * callback has the exact same "errors are never observed by the caller" shape), and
+   * `chat_leave_rooms` fires right after the dispatch loop.
+   */
+  const onStopAll = useCallback(() => {
     const inFlight = chatHistoryRef.current.filter((message) => message.role !== ROLES.User && isMessageInFlight(message));
     const streamIds = inFlight.map((message) => message.id);
 
     for (const message of inFlight) {
       if (message.task_id && message.id !== undefined) {
-        await adapter.stopChatTask({ projectId, messageGroupUuid: message.id });
+        void adapter.stopChatTask({ projectId, messageGroupUuid: message.id });
       }
     }
     if (streamIds.length) socket.emit('chat_leave_rooms', streamIds);
@@ -136,13 +153,20 @@ export function useApplicationChatStreaming(params: UseApplicationChatStreamingP
       () => setChatHistory((prev) => prev.map((msg) => ({ ...msg, isStreaming: false, isLoading: false, isRegenerating: false, task_id: undefined }))),
       200,
     );
+
+    return Promise.resolve();
   }, [adapter, projectId, setChatHistory, socket, chatHistoryRef]);
 
   const onDeleteMessage = useCallback(
     async (messageIdToDelete: string | number, callback?: () => void) => {
       const result = await adapter.deleteMessage({ conversationId: activeConversation?.id, projectId, id: messageIdToDelete });
       if (result.error) {
-        onError?.(applicationErrorMessage(result.error) || 'Failed to delete the message, please try again.');
+        onError?.(
+          applicationErrorMessageOrFallback(
+            result.error,
+            t('features.agents.applicationChat.deleteMessageFailed', 'Failed to delete the message, please try again.'),
+          ),
+        );
         return;
       }
       setChatHistory((prev) => {
@@ -161,7 +185,12 @@ export function useApplicationChatStreaming(params: UseApplicationChatStreamingP
       await onStopAll();
       const result = await p.adapter.deleteAllMessages({ projectId: p.projectId, conversationId: p.activeConversation?.id });
       if (result.error) {
-        p.onError?.(applicationErrorMessage(result.error) || 'Failed to delete the message, please try again.');
+        p.onError?.(
+          applicationErrorMessageOrFallback(
+            result.error,
+            t('features.agents.applicationChat.deleteMessageFailed', 'Failed to delete the message, please try again.'),
+          ),
+        );
         return;
       }
       p.setActiveConversation(

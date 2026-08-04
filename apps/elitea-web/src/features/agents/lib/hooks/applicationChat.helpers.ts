@@ -44,7 +44,35 @@ export function getInitialChatHistory(
   return [];
 }
 
-/** `useApplicationChat.hooks.js`'s `applicationParticipant` `useMemo` body, extracted as a standalone pure function. */
+/**
+ * `useApplicationChat.hooks.js`'s `applicationParticipant` `useMemo` body, extracted as a
+ * standalone pure function.
+ *
+ * **KNOWN GAP, NOT FIXABLE IN THIS FILE (A1-application-chat cluster, finding 2):**
+ * baseline's `entity_settings` also carries `instructions: applicationVersionDetails.instructions`
+ * and `tools: applicationVersionDetails.tools` (`useApplicationChat.hooks.js:129-138`) — read
+ * directly off the application participant by the baseline's chat "regenerate" payload builder
+ * (`ChatBox.jsx:414,418`: `realParticipant?.entity_settings.instructions`/`.tools`) instead of
+ * re-deriving them from `applicationVersionDetails`. Neither field can be added to the object
+ * literal below: `entities/participant/model/types.ts`'s `ParticipantSettings` (the type
+ * `entitySettings` is declared against) has no `instructions`/`tools` member and no index
+ * signature — confirmed empirically, `npx tsc --noEmit` rejects
+ * `TS2353: Object literal may only specify known properties, and 'instructions' does not exist in
+ * type 'ParticipantSettings'` the moment either key is added here. `entities/participant` is a
+ * shared entity OUTSIDE this cluster's file scope (a different Wave-2 unit owns it), so this gap
+ * cannot be closed from this file without either widening that type (out of scope) or an unsafe
+ * cast (forbidden by this codebase's conventions). Currently latent — no call site in this app
+ * reads `entitySettings.instructions`/`.tools` yet, since the `features/chat` "regenerate" flow
+ * this baseline behaviour feeds doesn't exist here yet either — but will silently starve that flow
+ * once it's built on top of this participant shape unless BOTH of the following land together:
+ *  1. `entities/participant/model/types.ts`'s `ParticipantSettings` gains
+ *     `readonly instructions?: string` and `readonly tools?: readonly unknown[]`.
+ *  2. This function's `entitySettings` object literal below gains
+ *     `...(applicationVersionDetails.instructions !== undefined ? { instructions:
+ *     applicationVersionDetails.instructions } : {})` and the equivalent conditional spread for
+ *     `tools` (matching this same function's existing `variables`/`versionId`/`agentType` spread
+ *     style immediately below).
+ */
 export function buildApplicationParticipant(
   applicationId: string | number | undefined,
   applicationName: string | undefined,

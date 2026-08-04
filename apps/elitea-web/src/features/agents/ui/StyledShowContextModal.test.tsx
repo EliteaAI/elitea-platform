@@ -93,4 +93,47 @@ describe('StyledShowContextModal', () => {
     );
     expect(screen.getByRole('progressbar')).toBeInTheDocument();
   });
+
+  it('calls onCopied when the header copy action succeeds', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const onCopied = vi.fn();
+    renderWithProviders(
+      <StyledShowContextModal
+        open
+        onClose={vi.fn()}
+        context="content to copy"
+        onCopied={onCopied}
+      />,
+    );
+    // The copy action is the first button in the header (`showCopyAction`
+    // renders before the close button) — same ordering `calls onClose when
+    // the close button is clicked` above relies on.
+    fireEvent.click(screen.getAllByRole('button')[0]!);
+    await vi.waitFor(() => expect(onCopied).toHaveBeenCalled());
+    expect(writeText).toHaveBeenCalledWith('content to copy');
+  });
+
+  it('calls onCopyFailed (not onCopied) when the header copy action genuinely fails', async () => {
+    // Restored parity target: the baseline's `onCopy` gets a REAL
+    // success/failure result from a direct `navigator.clipboard.writeText`
+    // call (`StyledShowContextModal.jsx:42-50`) — see this file's own
+    // module doc comment.
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const onCopied = vi.fn();
+    const onCopyFailed = vi.fn();
+    renderWithProviders(
+      <StyledShowContextModal
+        open
+        onClose={vi.fn()}
+        context="content to copy"
+        onCopied={onCopied}
+        onCopyFailed={onCopyFailed}
+      />,
+    );
+    fireEvent.click(screen.getAllByRole('button')[0]!);
+    await vi.waitFor(() => expect(onCopyFailed).toHaveBeenCalled());
+    expect(onCopied).not.toHaveBeenCalled();
+  });
 });

@@ -1,13 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
 
 import { getGetApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { resetConfigForTests } from '@/shared/config/get-config';
 import { server } from '@/test/setup';
 
 import { EditApplication } from './EditApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
+
+const globals = globalThis as unknown as Record<string, unknown>;
+
+/** Same fixture shape `lib/isPublicAgentsProject.test.ts` already establishes for this exact config surface. */
+function setPublicProjectId(publicProjectId: string): void {
+  globals['elitea_ui_config'] = {
+    vite_server_url: 'https://elitea.example',
+    vite_base_uri: '/',
+    vite_public_project_id: publicProjectId,
+  };
+  resetConfigForTests();
+}
 
 function detail(overrides: { versions?: { id: string; name: string; status: string; agent_type: string; created_at: string }[] } = {}) {
   return {
@@ -37,6 +51,8 @@ beforeEach(() => {
 
 afterEach(() => {
   resetGeneratedClient();
+  delete globals['elitea_ui_config'];
+  resetConfigForTests();
 });
 
 describe('EditApplication', () => {
@@ -101,5 +117,53 @@ describe('EditApplication', () => {
     await user.click(screen.getByText('Cancel'));
 
     await waitFor(() => expect(screen.getByTestId('edit-application-configuration-tab-panel')).toBeInTheDocument());
+  });
+
+  it('hides the Save/Cancel bar for a read-only viewer of a public agent (viewing under the public project)', async () => {
+    setPublicProjectId('42');
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/latest/42', { projectId: '42' });
+
+    await screen.findByText('My Agent');
+    expect(screen.queryByTestId('agent-save-button')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cancel')).not.toBeInTheDocument();
+  });
+
+  it('still renders the Save/Cancel bar for the same agent when the selected project is NOT the public project', async () => {
+    setPublicProjectId('42');
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByTestId('agent-save-button')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  });
+
+  it('shows a dedicated not-found page when the application-detail fetch 404s (e.g. a deleted/nonexistent agent)', async () => {
+    server.use(
+      http.get('*/elitea_core/application/prompt_lib/:projectId/:applicationId', () =>
+        HttpResponse.json({ error: 'not found' }, { status: 404 }),
+      ),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/999', { projectId: '9' });
+
+    expect(await screen.findByText('Agent not found')).toBeInTheDocument();
+    expect(screen.queryByTestId('agent-save-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('edit-application-configuration-tab-panel')).not.toBeInTheDocument();
+  });
+
+  it('shows a save-error banner (instead of nothing) when a save attempt fails', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    const saveButton = await screen.findByTestId('agent-save-button');
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    await user.click(saveButton);
+
+    expect(await screen.findByText('Failed to save your changes.')).toBeInTheDocument();
   });
 });

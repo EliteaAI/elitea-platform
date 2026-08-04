@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -16,6 +16,7 @@ import {
   type ApplicationCreationInput,
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
@@ -38,6 +39,49 @@ interface CreateAgentFormExtraFields {
   readonly welcomeMessage: string;
   readonly variables: { readonly name: string; readonly value: string }[];
   readonly stepLimit: number | undefined;
+}
+
+interface CreateApplicationFieldErrors {
+  readonly name?: string;
+  readonly description?: string;
+}
+
+function isFastApiErrorDetail(value: unknown): value is { readonly msg?: unknown; readonly loc?: readonly unknown[] } {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Maps the create-application endpoint's failure onto per-field messages —
+ * old app: `useCreateApplication.jsx:85-107` inspects `error.data` (a
+ * FastAPI/Pydantic-style array of `{loc, msg}` entries — same shape
+ * `shared/lib/http-error.ts`'s `ErrorDetail`/`messageFromValidationArray`
+ * already ports for this exact backend family) and calls
+ * `formik.setFieldError('name'|'description', msg)` per entry, so e.g. a
+ * duplicate-name rejection is shown attributed to the Name field rather than
+ * as one generic message.
+ *
+ * **Disclosed gap:** `features/agents/ui/CreateAgentForm.tsx` (out of this
+ * unit's file scope — owned by sub-unit A1c) takes no `nameError`/
+ * `descriptionError`-shaped prop at all (verified: `CreateAgentFormProps`
+ * has no such field, and `GeneralFields`' `StyledInputEnhancer` calls pass
+ * no `error`/`helperText`), so a mapped field error cannot be rendered
+ * literally under the Name/Description inputs from this file alone. This
+ * still closes the finding's real complaint — field-attributed text instead
+ * of one generic, un-attributed message — via the banner below;
+ * true inline-under-field parity needs a follow-up prop on `CreateAgentForm`.
+ */
+function mapCreateErrorToFieldErrors(error: unknown): CreateApplicationFieldErrors {
+  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') return {};
+  const body: unknown = error.failure.body;
+  if (!Array.isArray(body)) return {};
+  const fieldErrors: { name?: string; description?: string } = {};
+  for (const entry of body) {
+    if (!isFastApiErrorDetail(entry) || typeof entry.msg !== 'string') continue;
+    const loc = entry.loc ?? [];
+    if (loc.includes('name')) fieldErrors.name = entry.msg;
+    else if (loc.includes('description')) fieldErrors.description = entry.msg;
+  }
+  return fieldErrors;
 }
 
 const pageSx: SxProps<Theme> = {
@@ -132,8 +176,12 @@ export function CreateApplication(): ReactNode {
   const params = useParams({ strict: false }) as { tab?: string };
   const projectId = useSelectedProjectId();
   const draftDefaults = useCreateApplicationInitialValues(false);
-  const { create, isCreating } = useCreateApplicationDraft(projectId);
-  const [createError, setCreateError] = useState<unknown>(undefined);
+  const { create, isCreating, error: createDraftError } = useCreateApplicationDraft(projectId);
+  // Per-field attribution (e.g. a duplicate-name conflict shown under the
+  // Name field) — see `mapCreateErrorToFieldErrors`'s own doc comment for
+  // the baseline citation and the disclosed `CreateAgentForm` gap.
+  const createFieldErrors = useMemo(() => mapCreateErrorToFieldErrors(createDraftError), [createDraftError]);
+  const hasCreateFieldError = createFieldErrors.name !== undefined || createFieldErrors.description !== undefined;
 
   const form = useForm<ApplicationCreationInput>({
     resolver: zodResolver(applicationCreationSchema),
@@ -211,7 +259,6 @@ export function CreateApplication(): ReactNode {
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
-      setCreateError(undefined);
       const created = await create({
         name: values.name,
         description: values.description,
@@ -226,10 +273,10 @@ export function CreateApplication(): ReactNode {
           meta: { ...draftDefaults.versionDetails.meta, step_limit: extraFields.stepLimit ?? draftDefaults.versionDetails.meta.step_limit },
         },
       });
-      if (created === undefined) {
-        setCreateError(new Error('createFailed'));
-        return;
-      }
+      // On failure, `create`'s own `error` state (destructured above as
+      // `createDraftError`) carries the real failure — rendered below,
+      // field-attributed where possible. Nothing further to do here.
+      if (created === undefined) return;
       void navigate({
         to: '/agents/$tab/$agentId',
         params: { tab: params.tab ?? 'latest', agentId: created.id },
@@ -255,13 +302,28 @@ export function CreateApplication(): ReactNode {
           />
         </Box>
         <Box sx={contentSx}>
-          {createError !== undefined && (
-            <Typography
-              role="alert"
-              variant="bodyMedium"
-            >
-              {t('pages.agents.createApplication.error', 'Failed to create the agent.')}
-            </Typography>
+          {createDraftError !== undefined && (
+            <Box role="alert">
+              {createFieldErrors.name !== undefined && (
+                <Typography variant="bodyMedium">
+                  {t('pages.agents.createApplication.fieldError.name', 'Name: {{message}}', {
+                    message: createFieldErrors.name,
+                  })}
+                </Typography>
+              )}
+              {createFieldErrors.description !== undefined && (
+                <Typography variant="bodyMedium">
+                  {t('pages.agents.createApplication.fieldError.description', 'Description: {{message}}', {
+                    message: createFieldErrors.description,
+                  })}
+                </Typography>
+              )}
+              {!hasCreateFieldError && (
+                <Typography variant="bodyMedium">
+                  {t('pages.agents.createApplication.error', 'Failed to create the agent.')}
+                </Typography>
+              )}
+            </Box>
           )}
           <CreateAgentForm
             values={agentDraftValues}

@@ -201,6 +201,34 @@ describe('useApplicationChatStreaming — onStopAll', () => {
     // Still leaves the room for the in-flight message id.
     expect(client.getEmitted('chat_leave_rooms')[0]?.payload).toEqual(['m1']);
   });
+
+  // A1-application-chat cluster, finding 4: baseline dispatches every `stopChatTask` call
+  // fire-and-parallel (the outer function never awaits the forEach) and emits `chat_leave_rooms`
+  // right after the dispatch loop, without waiting on any round-trip. Proven here with a
+  // `stopChatTask` mock whose promise never resolves during the test: if `onStopAll` awaited it
+  // sequentially, `await result.current.onStopAll()` below would hang and this test would time out.
+  it('resolves and emits chat_leave_rooms without waiting for stopChatTask round-trips to settle', async () => {
+    const client = createTestSocketClient();
+    let stopTaskCalls = 0;
+    const stopChatTask = vi.fn(() => {
+      stopTaskCalls += 1;
+      return new Promise<void>(() => {
+        // Deliberately never resolves — proves onStopAll doesn't await it.
+      });
+    });
+    const adapter = stubAdapter({ stopChatTask });
+    const inFlight: ChatHistoryMessage[] = [{ id: 'm1', role: 'assistant', isStreaming: true, task_id: 't1' }];
+    const { params } = baseParams(client, { adapter, chatHistory: inFlight });
+    const { result } = renderHook(() => useApplicationChatStreaming(params));
+
+    await act(async () => {
+      await result.current.onStopAll();
+    });
+
+    expect(stopTaskCalls).toBe(1);
+    expect(client.getEmitted('chat_leave_rooms')).toHaveLength(1);
+    expect(client.getEmitted('chat_leave_rooms')[0]?.payload).toEqual(['m1']);
+  });
 });
 
 describe('useApplicationChatStreaming — onDeleteMessage', () => {
@@ -251,6 +279,25 @@ describe('useApplicationChatStreaming — onDeleteMessage', () => {
     });
 
     expect(onError).toHaveBeenCalledWith('Failed to delete the message, please try again.');
+  });
+
+  // A1-application-chat cluster, finding 3: a non-Error, non-string `result.error` (e.g. a plain
+  // object) previously degraded to the literal "[object Object]" instead of the friendly fallback,
+  // since `applicationErrorMessage(result.error) || fallback` never sees the left side go falsy for
+  // that shape. `applicationErrorMessageOrFallback` fixes this.
+  it('falls back to a generic error message when the error is a plain object, not "[object Object]"', async () => {
+    const client = createTestSocketClient();
+    const onError = vi.fn();
+    const adapter = stubAdapter({ deleteMessage: vi.fn().mockResolvedValue({ error: { some: 'shape' } }) });
+    const { params } = baseParams(client, { adapter, onError });
+    const { result } = renderHook(() => useApplicationChatStreaming(params));
+
+    await act(async () => {
+      await result.current.onDeleteMessage('m1');
+    });
+
+    expect(onError).toHaveBeenCalledWith('Failed to delete the message, please try again.');
+    expect(onError).not.toHaveBeenCalledWith('[object Object]');
   });
 });
 
@@ -336,6 +383,21 @@ describe('useApplicationChatStreaming — onDeleteAllMessages', () => {
     });
 
     expect(onError).toHaveBeenCalledWith('Failed to delete the message, please try again.');
+  });
+
+  it('falls back to a generic error message when deleteAllMessages fails with a plain object, not "[object Object]"', async () => {
+    const client = createTestSocketClient();
+    const onError = vi.fn();
+    const adapter = stubAdapter({ deleteAllMessages: vi.fn().mockResolvedValue({ error: { some: 'shape' } }) });
+    const { params } = baseParams(client, { adapter, onError });
+    const { result } = renderHook(() => useApplicationChatStreaming(params));
+
+    await act(async () => {
+      await result.current.onDeleteAllMessages();
+    });
+
+    expect(onError).toHaveBeenCalledWith('Failed to delete the message, please try again.');
+    expect(onError).not.toHaveBeenCalledWith('[object Object]');
   });
 
   it('does not throw when deleteAllMessages fails and no onError callback was supplied', async () => {

@@ -179,7 +179,7 @@ describe('useDisassociateToolkit', () => {
     expect(onToolRemovedFromFlow).toHaveBeenCalledTimes(1);
   });
 
-  it('recovers from a stale-version-reference error by requesting a refetch instead of surfacing an error', async () => {
+  it('recovers from a stale-version-reference error by requesting a refetch instead of surfacing an error, and notifies the caller', async () => {
     server.use(
       http.patch(
         '*/elitea_core/application_relation/prompt_lib/:projectId/:selectedApplicationId/:selectedVersionId',
@@ -189,9 +189,10 @@ describe('useDisassociateToolkit', () => {
     const { useApplicationsStore } = await import('../../model/applicationsStore');
     useApplicationsStore.setState({ shouldRefetchDetails: false });
     const onToolRemoved = vi.fn();
+    const onStaleVersionReference = vi.fn();
 
     const { result } = await renderDisassociate(
-      baseParams({ tools: [APPLICATION_TOOL], initialTools: [APPLICATION_TOOL], onToolRemoved }),
+      baseParams({ tools: [APPLICATION_TOOL], initialTools: [APPLICATION_TOOL], onToolRemoved, onStaleVersionReference }),
     );
 
     await act(async () => {
@@ -201,6 +202,33 @@ describe('useDisassociateToolkit', () => {
     expect(result.current.isDisassociateError).toBe(false);
     expect(onToolRemoved).not.toHaveBeenCalled();
     expect(useApplicationsStore.getState().shouldRefetchDetails).toBe(true);
+    // Regression guard: the baseline also calls `toastInfo('Tool reference was outdated. Page
+    // has been refreshed with current state.')` here — this app has no toast infrastructure, so
+    // the equivalent user-facing message is handed to the caller via an injected callback instead
+    // of being dropped silently.
+    expect(onStaleVersionReference).toHaveBeenCalledWith('Tool reference was outdated. Page has been refreshed with current state.');
+  });
+
+  it('surfaces an error instead of silently no-oping when the application/version reference is missing', async () => {
+    const incompleteTool: AgentToolAssociation = {
+      id: 9,
+      type: 'application',
+      name: 'IncompleteSubAgent',
+      settings: { application_id: 'sub-app-2' },
+    };
+    const onToolRemoved = vi.fn();
+
+    const { result } = await renderDisassociate(
+      baseParams({ tools: [incompleteTool], initialTools: [incompleteTool], onToolRemoved }),
+    );
+
+    await act(async () => {
+      await result.current.onDisassociateTool({ tool: incompleteTool });
+    });
+
+    expect(onToolRemoved).not.toHaveBeenCalled();
+    expect(result.current.isDisassociateError).toBe(true);
+    expect(result.current.disassociateError).toBeDefined();
   });
 
   it('invokes onPipelineAutoSave only when isFromPipeline is true', async () => {

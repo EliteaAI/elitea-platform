@@ -136,6 +136,37 @@ import type { UseApplicationChatParams, UseApplicationChatResult } from './appli
  *  11. `streamingState.streamingMessages` (a redundant tracked `Set`, never
  *      exposed) -> dropped; see `useApplicationChatStreaming.hooks.ts`'s own
  *      `useIsStreaming` doc comment.
+ *  12. `useStreamingNavBlocker(isStreaming)` (`hooks/chat/
+ *      useStreamingNavBlocker.js` — dispatches the in-app nav-blocker AND
+ *      the browser `beforeunload` prompt while a response is streaming,
+ *      reset on unmount) -> NOT called from this hook. This app's ported
+ *      equivalent (`processes/chat/model/useStreamingNavBlocker.ts`, unit
+ *      C1) sits in the `processes/` layer — ABOVE `features/` in this repo's
+ *      `app → processes → pages → widgets → features → entities → shared`
+ *      chain (`.dependency-cruiser.cjs`). Confirmed empirically: importing
+ *      it here trips `no-upward-from-features`
+ *      (`src/features/agents/lib/hooks/useApplicationChat.hooks.ts →
+ *      src/processes/chat/index.ts`), the same hard CI-enforced boundary
+ *      `features/agents/model/useCreateApplication.ts`'s own doc comment
+ *      (point 4) already hit for this exact nav-blocker store — and, unlike
+ *      that hook's plain-navigation callback, there is no lower-layer
+ *      substitute to duplicate INTO either: `useStreamingNavBlocker` writes
+ *      into `widgets/app-shell/model/navBlocker.store.ts`'s zustand
+ *      singleton, which `NavBlockerDialog` (`widgets/app-shell`) reads
+ *      DIRECTLY from — a duplicate store instance in `features/agents` would
+ *      compile but would be silently inert (two independent zustand stores
+ *      never see each other's writes; the real dialog would never learn a
+ *      stream is in flight). `isStreaming` is therefore exposed on this
+ *      hook's own return value (see `UseApplicationChatResult.isStreaming`)
+ *      specifically so a `pages/`/`widgets/`-level caller — which legally
+ *      sits ABOVE both `features/` and can import `processes/chat` — calls
+ *      `useStreamingNavBlocker(isStreaming, 'prompt')` itself, the same
+ *      "caller owns the layer-crossing seam" resolution
+ *      `useCreateApplication.ts` already established for `onSuccess`. No
+ *      `pages/`/`widgets/` caller wires `useApplicationChat` yet (grepped:
+ *      zero non-test call sites) — whoever builds that composition root
+ *      must add this call, or the baseline's navigate-away warning stays
+ *      dropped.
  */
 export function useApplicationChat(params: UseApplicationChatParams): UseApplicationChatResult {
   const {
