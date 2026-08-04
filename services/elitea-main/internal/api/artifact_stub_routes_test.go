@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
 
 // TestArtifactStubRoutesReturn501WithTypedEnvelope verifies S7's own
@@ -74,5 +78,94 @@ func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
 				t.Fatalf("error.code = %q, want NotImplemented", envelope.Error.Code)
 			}
 		})
+	}
+}
+
+// noopObjectStore satisfies storage.ObjectStore without doing anything —
+// TestArtifactBucketRoutesWireToRealHandlerWhenConfigured never lets a
+// request reach it (GetBucket fails against the unreachable pool first), it
+// only needs to be non-nil to clear newArtifactBucketHandlers' guard.
+type noopObjectStore struct{ storage.ObjectStore }
+
+// TestArtifactBucketRoutesWireToRealHandlerWhenConfigured proves S8's
+// newArtifactBucketHandlers guard actually flips: with cfg.Pool and
+// cfg.ObjectStore both set, the five bucket-plane routes must stop
+// returning the S7 notImplementedArtifact stub body, even though the pool
+// here never successfully connects (pgxpool.New does not dial eagerly) and
+// every request still ends in an error. Distinguishing "wired to the real
+// handler, which then failed" from "still the stub" is exactly the branch
+// TestArtifactStubRoutesReturn501WithTypedEnvelope's AppsRepo-only config
+// cannot exercise, because that config leaves cfg.Pool nil.
+func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
+	if err != nil {
+		t.Fatalf("pgxpool.New (lazy, must not dial): %v", err)
+	}
+	defer pool.Close()
+
+	router := NewRouter(RouterConfig{
+		AppsRepo:    struct{ applications.Repository }{},
+		Pool:        pool,
+		ObjectStore: noopObjectStore{},
+	})
+
+	cases := []struct{ method, path string }{
+		{http.MethodGet, "/api/v2/artifacts/buckets/1"},
+		{http.MethodPost, "/api/v2/artifacts/buckets/1"},
+		{http.MethodGet, "/api/v2/artifacts/buckets/1/reports"},
+		{http.MethodPatch, "/api/v2/artifacts/buckets/1/reports"},
+		{http.MethodDelete, "/api/v2/artifacts/buckets/1/reports"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotImplemented {
+				t.Fatalf("still the S7 stub (501) with Pool and ObjectStore configured; body=%s", rec.Body.String())
+			}
+			var envelope struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
+			}
+			if envelope.Error.Code == "NotImplemented" {
+				t.Fatalf("still the S7 stub error code with Pool and ObjectStore configured; body=%s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestArtifactBucketRoutesStayStubbedWithoutObjectStore proves the other
+// side of the same guard: cfg.Pool alone is not enough to activate the real
+// handlers — newArtifactBucketHandlers requires both.
+func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
+	if err != nil {
+		t.Fatalf("pgxpool.New (lazy, must not dial): %v", err)
+	}
+	defer pool.Close()
+
+	router := NewRouter(RouterConfig{
+		AppsRepo: struct{ applications.Repository }{},
+		Pool:     pool,
+		// ObjectStore deliberately left nil.
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d (stub) when ObjectStore is unset; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
 }

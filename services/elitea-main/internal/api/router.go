@@ -44,6 +44,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -105,10 +106,10 @@ type RouterConfig struct {
 	AdminUI            *adminui.Config
 	Storage            storage.Backend
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
-	// docs/plans/storage-migration-plan.md). Assigning it here does not, by
-	// itself, put it on any request path — it is unread until S11 mounts the
-	// new artifact routes, the same caveat Storage above already has via
-	// newPrototypeCompatibilityRouter/prototypeCompatibilityRequested.
+	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
+	// DELETE cascade, but only inside newPrototypeCompatibilityRouter — like
+	// Storage above, it is not on any production request path until S11
+	// mounts the new artifact routes there.
 	ObjectStore      storage.ObjectStore
 	BudgetAlertStore *gateway.BudgetAlertStore
 	SessionSecret    string
@@ -164,6 +165,38 @@ func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotImplemented)
 	_, _ = w.Write([]byte(`{"error":{"code":"NotImplemented","message":"pending S8/S9"}}`))
+}
+
+// artifactRepoAdapter satisfies v2artifacts.Repository by embedding both S6
+// repositories — they share no method names, so Go's method promotion does
+// the rest. Neither constructor accepts a nil pool without erroring, unlike
+// most other prototype-router dependencies, so newArtifactBucketHandlers
+// below builds this only when cfg.Pool and cfg.ObjectStore are both set.
+type artifactRepoAdapter struct {
+	*dbrepos.ArtifactBucketsRepository
+	*dbrepos.ArtifactObjectsRepository
+}
+
+// newArtifactBucketHandlers builds the five real bucket-plane handlers when
+// cfg.Pool and cfg.ObjectStore are both available, falling back to
+// notImplementedArtifact otherwise — the same placeholder S7 registered for
+// every artifact route, so a router built without database/storage config
+// (as most tests do) keeps behaving exactly as it did before S8.
+func newArtifactBucketHandlers(cfg RouterConfig) (list, create, get, update, del http.HandlerFunc) {
+	list, create, get, update, del = notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	if cfg.Pool == nil || cfg.ObjectStore == nil {
+		return
+	}
+	bucketsRepo, err := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
+	if err != nil {
+		return
+	}
+	objectsRepo, err := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
+	if err != nil {
+		return
+	}
+	h := v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo}, cfg.ObjectStore)
+	return h.ListBuckets, h.CreateBucket, h.GetBucket, h.UpdateBucket, h.DeleteBucket
 }
 
 // newPrototypeCompatibilityRouter preserves the broad prototype registration
@@ -686,18 +719,21 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
 
 			// === Artifacts ===
-			// docs/plans/storage-migration-plan.md S7: the 13 new-contract
-			// paths, all stubbed to notImplementedArtifact for now. S8
+			// docs/plans/storage-migration-plan.md S7 registered 13
+			// new-contract paths, all stubbed to notImplementedArtifact. S8
 			// (bucket plane), S9 (object plane), and S15 (transfer grants)
 			// each replace their own lines in place — never add a second
 			// registration at the same path, chi panics on that.
 			r.Route("/artifacts", func(r chi.Router) {
-				// Bucket plane — S8 replaces these five.
-				r.Get("/buckets/{projectID}", notImplementedArtifact)
-				r.Post("/buckets/{projectID}", notImplementedArtifact)
-				r.Get("/buckets/{projectID}/{bucket}", notImplementedArtifact)
-				r.Patch("/buckets/{projectID}/{bucket}", notImplementedArtifact)
-				r.Delete("/buckets/{projectID}/{bucket}", notImplementedArtifact)
+				// Bucket plane — S8. newArtifactBucketHandlers falls back to
+				// notImplementedArtifact itself when cfg.Pool/cfg.ObjectStore
+				// are unset, so this stays a single registration per path.
+				listBuckets, createBucket, getBucket, updateBucket, deleteBucket := newArtifactBucketHandlers(cfg)
+				r.Get("/buckets/{projectID}", listBuckets)
+				r.Post("/buckets/{projectID}", createBucket)
+				r.Get("/buckets/{projectID}/{bucket}", getBucket)
+				r.Patch("/buckets/{projectID}/{bucket}", updateBucket)
+				r.Delete("/buckets/{projectID}/{bucket}", deleteBucket)
 
 				// Object plane — S9 replaces these six. The three key-bearing
 				// routes use a trailing chi wildcard, not the spec's literal
