@@ -19,6 +19,7 @@ import { ToolIcon } from '@/shared/ui/icons/tool-icon';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlined';
 
 import { navSections, selectedNavItem, visibleNavSections, type NavItemValue } from '../lib/navSections';
+import { NotificationButton } from './NotificationButton';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { SidebarFooter } from './SidebarFooter';
 import { SidebarHeader } from './SidebarHeader';
@@ -73,6 +74,14 @@ export interface SidebarBodyProps {
  * a strictly more robust mechanism than re-implementing a per-click check
  * here. The React-Query cache-reset half is not ported: there is no
  * per-project cache to reset yet (no landed Wave-2 unit populates one).
+ *
+ * `NotificationButton` (SHELL-013) is mounted directly before
+ * `<SidebarFooter>`, gated on `!collapsed` — this unit's task brief's
+ * explicit mount instruction. `NotificationButton.tsx`'s own doc comment
+ * has the full account of why that is NOT actually where the old app put
+ * it (`SidebarBody.jsx:233`: inside the sticky-top header row, next to the
+ * logo/toggle button) and why it stays here anyway (this unit's file scope
+ * is this file + the new widget only, not `SidebarHeader.tsx`).
  */
 export function SidebarBody({
   collapsed,
@@ -143,6 +152,7 @@ export function SidebarBody({
         })}
       </Box>
 
+      {!collapsed && <NotificationButton />}
       <SidebarFooter collapsed={collapsed} />
     </Box>
   );
