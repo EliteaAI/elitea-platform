@@ -279,10 +279,9 @@ class EliteaSdkIndexingAdapter:
 class EliteaSdkAgentAdapter:
     """Initial synchronous SDK seam for the two current agent constructors.
 
-    The first kernel deliberately accepts only a new, non-resume invocation.
-    Checkpoint/HITL, callbacks, MCP pause, image resolution, durable children and
-    result projection remain admission gates before these capabilities can be
-    advertised or wired into production delivery.
+    The admitted kernel accepts ordinary turns and explicit response
+    regeneration. Resume/HITL, MCP pause, image resolution and durable children
+    remain separate admission gates.
     """
 
     def __init__(
@@ -431,7 +430,6 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
         or payload.should_continue
         or payload.hitl_resume
         or payload.hitl_decisions
-        or payload.is_regenerate
         or payload.invoked_skills
         or payload.applied_skills
         or payload.attached_skills
@@ -481,7 +479,10 @@ def _invoke_initial_agent(
         step_limit = application_meta.get("step_limit")
         if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:
             invoke_config["recursion_limit"] = step_limit
-    _discard_failed_checkpoint(memory, invoke_config)
+    if payload.is_regenerate:
+        _discard_regenerated_thread(memory, invoke_config)
+    else:
+        _discard_failed_checkpoint(memory, invoke_config)
     result = executor.invoke({"messages": messages}, invoke_config)
     if not isinstance(result, dict):
         raise TypeError("the SDK agent invocation returned a non-object result")
@@ -512,6 +513,34 @@ def _discard_failed_checkpoint(memory: Any, config: dict[str, Any]) -> None:
         for write in pending_writes
     ):
         return
+    configurable = config.get("configurable")
+    thread_id = (
+        configurable.get("thread_id")
+        if isinstance(configurable, dict)
+        else None
+    )
+    if not isinstance(thread_id, str) or not thread_id:
+        raise DependencyUnavailable(
+            "The durable agent checkpoint identity is unavailable."
+        )
+    delete_thread(thread_id)
+    configurable.pop("checkpoint_id", None)
+
+
+def _discard_regenerated_thread(memory: Any, config: dict[str, Any]) -> None:
+    """Start explicit regeneration from Main's truncated durable history.
+
+    Regeneration intentionally time-travels to the original question while
+    reusing the browser response UUID. A checkpoint on the stable conversation
+    thread may contain later turns or a paused graph, so it cannot be merged
+    into that replacement run.
+    """
+
+    delete_thread = getattr(memory, "delete_thread", None)
+    if not callable(delete_thread):
+        raise DependencyUnavailable(
+            "The durable agent checkpoint store cannot reset a regenerated thread."
+        )
     configurable = config.get("configurable")
     thread_id = (
         configurable.get("thread_id")

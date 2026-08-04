@@ -434,6 +434,20 @@ def test_sdk_adapter_repairs_only_an_explicit_failed_checkpoint() -> None:
     assert len(client.adhoc_executor.calls) == 1
 
 
+def test_sdk_adapter_regeneration_resets_the_exact_thread_before_invoke() -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory([])
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=False).payload
+    object.__setattr__(payload, "is_regenerate", True)
+
+    adapter.execute_adhoc(payload)
+
+    assert memory.deleted_threads == ["thread-1"]
+    assert len(client.adhoc_executor.calls) == 1
+
+
 @pytest.mark.parametrize(
     "pending_writes",
     [

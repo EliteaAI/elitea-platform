@@ -62,8 +62,32 @@ CREATE TABLE chat_message_items (
 );
 
 CREATE TABLE chat_messages_text (
-    id integer PRIMARY KEY REFERENCES chat_message_items(id),
+    id integer PRIMARY KEY REFERENCES chat_message_items(id) ON DELETE CASCADE,
     content text NOT NULL
+);
+
+-- Existing current-schema trace projection. This is a SQLC compiler input,
+-- not a migration; the tenant lifecycle remains the table owner.
+CREATE TABLE chat_message_trace_step (
+    id bigint PRIMARY KEY,
+    message_group_id integer NOT NULL REFERENCES chat_message_group(id) ON DELETE CASCADE,
+    kind text NOT NULL,
+    run_id text,
+    parent_agent_name text,
+    parent_agent_call_id text,
+    started_at timestamptz,
+    finished_at timestamptz,
+    is_error boolean NOT NULL DEFAULT FALSE,
+    has_visible_content boolean NOT NULL DEFAULT TRUE,
+    tool_name text,
+    tool_inputs jsonb,
+    tool_output text,
+    finish_reason text,
+    step_type text,
+    text text,
+    thinking text,
+    model_name text,
+    attrs jsonb
 );
 
 -- Existing current-schema support-assistant context projection. This is a

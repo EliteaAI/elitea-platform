@@ -212,6 +212,28 @@ type ChatMessageItem struct {
 	MessageGroupID int32            `db:"message_group_id" json:"message_group_id"`
 }
 
+type ChatMessageTraceStep struct {
+	ID                int64              `db:"id" json:"id"`
+	MessageGroupID    int32              `db:"message_group_id" json:"message_group_id"`
+	Kind              string             `db:"kind" json:"kind"`
+	RunID             *string            `db:"run_id" json:"run_id"`
+	ParentAgentName   *string            `db:"parent_agent_name" json:"parent_agent_name"`
+	ParentAgentCallID *string            `db:"parent_agent_call_id" json:"parent_agent_call_id"`
+	StartedAt         pgtype.Timestamptz `db:"started_at" json:"started_at"`
+	FinishedAt        pgtype.Timestamptz `db:"finished_at" json:"finished_at"`
+	IsError           bool               `db:"is_error" json:"is_error"`
+	HasVisibleContent bool               `db:"has_visible_content" json:"has_visible_content"`
+	ToolName          *string            `db:"tool_name" json:"tool_name"`
+	ToolInputs        []byte             `db:"tool_inputs" json:"tool_inputs"`
+	ToolOutput        *string            `db:"tool_output" json:"tool_output"`
+	FinishReason      *string            `db:"finish_reason" json:"finish_reason"`
+	StepType          *string            `db:"step_type" json:"step_type"`
+	Text              *string            `db:"text" json:"text"`
+	Thinking          *string            `db:"thinking" json:"thinking"`
+	ModelName         *string            `db:"model_name" json:"model_name"`
+	Attrs             []byte             `db:"attrs" json:"attrs"`
+}
+
 type ChatMessagesContext struct {
 	ContextData []byte  `db:"context_data" json:"context_data"`
 	ContextType *string `db:"context_type" json:"context_type"`

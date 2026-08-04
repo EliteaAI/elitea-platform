@@ -385,6 +385,138 @@ func (q *Queries) LockCurrentAgentConversation(ctx context.Context, conversation
 	return id, err
 }
 
+const resetCurrentAgentResponse = `-- name: ResetCurrentAgentResponse :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = $1::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = $2::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = $3::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = $4::uuid
+      AND response.uuid = $5::uuid
+      AND question.uuid = $6::uuid
+      AND NOT response.is_streaming
+      AND (
+          conversation.author_id = $7::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $7::bigint
+      )
+      AND (
+          (
+              $8::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND $3::integer = 0
+              AND $2::integer = 0
+          )
+          OR (
+              $8::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = $9::integer
+              AND application_version.id IS NOT NULL
+              AND application_version.agent_type <> 'pipeline'
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_items AS unsupported_question_item
+          WHERE unsupported_question_item.message_group_id = question.id
+            AND unsupported_question_item.item_type <> 'text_message'
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_message_items AS unsupported_response_item
+          WHERE unsupported_response_item.message_group_id = response.id
+            AND unsupported_response_item.item_type <> 'text_message'
+      )
+    FOR UPDATE OF response
+), removed_trace AS (
+    DELETE FROM chat_message_trace_step AS trace
+    USING resolved
+    WHERE trace.message_group_id = resolved.id
+    RETURNING trace.id
+), removed_items AS (
+    DELETE FROM chat_message_items AS item
+    USING resolved
+    WHERE item.message_group_id = resolved.id
+    RETURNING item.id
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = (
+            response.meta
+            - 'resolved_hitl_interrupt_ids'
+            - 'hitl_interrupts'
+            - 'hitl_interrupt'
+            - 'invoked_skills'
+        ) || jsonb_build_object(
+            'execution_generation', $10::text
+        ),
+        is_streaming = TRUE,
+        task_id = $11::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+      AND (SELECT count(*) FROM removed_trace) >= 0
+      AND (SELECT count(*) FROM removed_items) >= 0
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated
+`
+
+type ResetCurrentAgentResponseParams struct {
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	RegenerationKind     string      `db:"regeneration_kind" json:"regeneration_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
+}
+
+type ResetCurrentAgentResponseRow struct {
+	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
+	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+}
+
+func (q *Queries) ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error) {
+	row := q.db.QueryRow(ctx, resetCurrentAgentResponse,
+		arg.TargetParticipantID,
+		arg.ApplicationVersionID,
+		arg.ApplicationID,
+		arg.ConversationUuid,
+		arg.ResponseMessageID,
+		arg.QuestionID,
+		arg.ActorUserID,
+		arg.RegenerationKind,
+		arg.ProjectID,
+		arg.ExecutionGeneration,
+		arg.ExecutionID,
+	)
+	var i ResetCurrentAgentResponseRow
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	return i, err
+}
+
 const resolveCurrentAdhocTurn = `-- name: ResolveCurrentAdhocTurn :one
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
@@ -892,6 +1024,96 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 		&i.ApplicationVariablesJson,
 		&i.ChatHistoryJson,
 		&i.ApplicationVersionDetailsJson,
+	)
+	return i, err
+}
+
+const resolveCurrentRegeneration = `-- name: ResolveCurrentRegeneration :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS regeneration_kind,
+       question_text.content::text AS user_input
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = $1::bigint
+JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+WHERE response.uuid = $2::uuid
+  AND NOT response.is_streaming
+  AND (
+      conversation.author_id = $1::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = $1::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = $3::integer
+      )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_items AS unsupported_question_item
+      WHERE unsupported_question_item.message_group_id = question.id
+        AND unsupported_question_item.item_type <> 'text_message'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_message_items AS unsupported_response_item
+      WHERE unsupported_response_item.message_group_id = response.id
+        AND unsupported_response_item.item_type <> 'text_message'
+  )
+`
+
+type ResolveCurrentRegenerationParams struct {
+	ActorUserID       int64       `db:"actor_user_id" json:"actor_user_id"`
+	ResponseMessageID pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	ProjectID         int32       `db:"project_id" json:"project_id"`
+}
+
+type ResolveCurrentRegenerationRow struct {
+	ConversationUuid    pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	QuestionID          pgtype.UUID `db:"question_id" json:"question_id"`
+	TargetParticipantID int32       `db:"target_participant_id" json:"target_participant_id"`
+	RegenerationKind    string      `db:"regeneration_kind" json:"regeneration_kind"`
+	UserInput           string      `db:"user_input" json:"user_input"`
+}
+
+func (q *Queries) ResolveCurrentRegeneration(ctx context.Context, arg ResolveCurrentRegenerationParams) (ResolveCurrentRegenerationRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentRegeneration, arg.ActorUserID, arg.ResponseMessageID, arg.ProjectID)
+	var i ResolveCurrentRegenerationRow
+	err := row.Scan(
+		&i.ConversationUuid,
+		&i.QuestionID,
+		&i.TargetParticipantID,
+		&i.RegenerationKind,
+		&i.UserInput,
 	)
 	return i, err
 }

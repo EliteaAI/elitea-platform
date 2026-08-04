@@ -152,6 +152,8 @@ validate_model() {
   grep -q '/api/v2/elitea_core/messages/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q 'agent.execute.application.v1' "$ELITEA_INDEX_ROUTE_FILE"
   grep -q 'agent.execute.adhoc.v1' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q '/api/v2/elitea_core/regenerate/prompt_lib/' "$ELITEA_INDEX_ROUTE_FILE"
+  grep -q 'agent.regenerate.v1' "$ELITEA_INDEX_ROUTE_FILE"
 
   rm -f "$rendered"
   trap - EXIT

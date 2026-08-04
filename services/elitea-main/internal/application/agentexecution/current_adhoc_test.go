@@ -31,7 +31,7 @@ func TestCurrentAdhocStartBuildsCurrentMainChatInputAndTurn(t *testing.T) {
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	freezer := &currentApplicationVersionFreezerStub{}
-	service, err := NewCurrentApplicationStartService(resolver, resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestCurrentAdhocStartRejectsMalformedConversationOptionsBeforeAdmission(t *
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, &currentApplicationVersionFreezerStub{}, admissions,
+		resolver, resolver, resolver, &currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestCurrentAdhocStartAcceptsCurrentDefaultMaxTokensSentinel(t *testing.T) {
   "llm_settings":{"model_name":"requested","model_project_id":9,"max_tokens":4000,"openai_compatible":true},
   "tools":[]
 }`)}
-	service, err := NewCurrentApplicationStartService(resolver, resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}

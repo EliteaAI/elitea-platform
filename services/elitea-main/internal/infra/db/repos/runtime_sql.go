@@ -87,6 +87,13 @@ func (e pgxExecutor) ResolveCurrentAdhocTurn(
 	return sqlcgen.New(e.queryer).ResolveCurrentAdhocTurn(ctx, arg)
 }
 
+func (e pgxExecutor) ResolveCurrentRegeneration(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentRegenerationParams,
+) (sqlcgen.ResolveCurrentRegenerationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentRegeneration(ctx, arg)
+}
+
 type sharedStore interface {
 	sqlExecutor
 	WithinTx(ctx context.Context, opts pgx.TxOptions, fn func(sqlExecutor) error) error

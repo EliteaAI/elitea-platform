@@ -125,6 +125,7 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	if admission.CurrentTurn != nil {
 		turn := admission.CurrentTurn
 		if admission.CurrentAdhocTurn != nil ||
+			admission.CurrentRegenerateTurn != nil ||
 			admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability ||
 			turn.Validate() != nil ||
 			turn.ProjectID > math.MaxInt32 ||
@@ -138,12 +139,27 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	}
 	if admission.CurrentAdhocTurn != nil {
 		turn := admission.CurrentAdhocTurn
-		if admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability ||
+		if admission.CurrentRegenerateTurn != nil ||
+			admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability ||
 			turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
 			turn.TargetParticipantID > math.MaxInt32 ||
 			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
 			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
 			turn.ConversationUUID != admission.Binding.ClientStreamID {
+			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
+		}
+	}
+	if admission.CurrentRegenerateTurn != nil {
+		turn := admission.CurrentRegenerateTurn
+		if turn.Validate() != nil || turn.ProjectID > math.MaxInt32 ||
+			turn.TargetParticipantID > math.MaxInt32 ||
+			turn.ApplicationID > math.MaxInt32 || turn.ApplicationVersionID > math.MaxInt32 ||
+			turn.ProjectID != resourceProjectIDUnchecked(admission.Record.Job.ResourceProjectID) ||
+			turn.ResponseMessageID != admission.Binding.ClientMessageID ||
+			turn.ConversationUUID != admission.Binding.ClientStreamID ||
+			turn.ExecutionGeneration != admission.Binding.ClientExecutionGeneration ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationApplication && admission.Record.Job.CapabilityID != executiondomain.AgentApplicationCapability) ||
+			(turn.Kind == agentexecutionapp.CurrentRegenerationAdhoc && admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability) {
 			return executionapp.AdmissionOutcome{}, executionapp.ErrInvalidAdmission
 		}
 	}
@@ -199,6 +215,8 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		currentProjectID = admission.CurrentTurn.ProjectID
 	} else if admission.CurrentAdhocTurn != nil {
 		currentProjectID = admission.CurrentAdhocTurn.ProjectID
+	} else if admission.CurrentRegenerateTurn != nil {
+		currentProjectID = admission.CurrentRegenerateTurn.ProjectID
 	}
 	if currentProjectID > 0 {
 		if err := tenant.BindProject(
@@ -211,8 +229,10 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		conversationID := ""
 		if admission.CurrentTurn != nil {
 			conversationID = admission.CurrentTurn.ConversationUUID
-		} else {
+		} else if admission.CurrentAdhocTurn != nil {
 			conversationID = admission.CurrentAdhocTurn.ConversationUUID
+		} else {
+			conversationID = admission.CurrentRegenerateTurn.ConversationUUID
 		}
 		conversationUUID, err := currentPGUUID(conversationID)
 		if err != nil {
@@ -391,6 +411,15 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		); err != nil {
 			return executionapp.AdmissionOutcome{}, err
 		}
+	} else if admission.CurrentRegenerateTurn != nil {
+		if err := resetCurrentAgentResponse(
+			ctx,
+			txQueries,
+			admission.Record.Job.ID,
+			*admission.CurrentRegenerateTurn,
+		); err != nil {
+			return executionapp.AdmissionOutcome{}, err
+		}
 	}
 	if err := txQueries.InsertRuntimeCommandOutbox(
 		ctx,
@@ -420,6 +449,48 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 		AdmittedAt:  timing.AdmittedAt,
 		Deadline:    timing.Deadline,
 	}, nil
+}
+
+func resetCurrentAgentResponse(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	executionID string,
+	turn agentexecutionapp.CurrentRegenerateTurn,
+) error {
+	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionID, err := currentPGUUID(turn.QuestionID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	responseMessageID, err := currentPGUUID(turn.ResponseMessageID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	row, err := queries.ResetCurrentAgentResponse(
+		ctx,
+		sqlcgen.ResetCurrentAgentResponseParams{
+			ActorUserID: turn.ActorUserID, TargetParticipantID: int32(turn.TargetParticipantID),
+			ConversationUuid: conversationUUID, QuestionID: questionID,
+			ResponseMessageID: responseMessageID, RegenerationKind: string(turn.Kind),
+			ApplicationID:        int32(turn.ApplicationID),
+			ApplicationVersionID: int32(turn.ApplicationVersionID),
+			ExecutionGeneration:  turn.ExecutionGeneration, ExecutionID: executionID,
+			ProjectID: int32(turn.ProjectID),
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+	}
+	if err != nil {
+		return fmt.Errorf("reset current agent response: %w", err)
+	}
+	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
+		return errors.New("current agent regeneration returned an invalid response binding")
+	}
+	return nil
 }
 
 func insertCurrentApplicationTurn(
