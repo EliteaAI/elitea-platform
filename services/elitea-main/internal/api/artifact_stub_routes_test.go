@@ -30,30 +30,40 @@ func TestArtifactStubRoutesReturn501WithTypedEnvelope(t *testing.T) {
 	// route group (middleware/auth.go) — without it every request 401s
 	// before reaching notImplementedArtifact.
 	t.Setenv("AUTH_DEV_MODE", "true")
-	router := NewRouter(RouterConfig{
-		AppsRepo: struct{ applications.Repository }{},
-	})
 
 	cases := []struct {
 		method, path string
+		// perm is the exact permission RBAC requires for this route (S11's
+		// mapping in router.go). Without a resolver granting it, every
+		// request 403s before ever reaching notImplementedArtifact, which
+		// this test is actually trying to observe — so each subtest builds
+		// its own router with a resolver granting only its own permission,
+		// which also self-evidently proves the RBAC gate is checking the
+		// right permission per route (a wrong grant would still 403).
+		perm string
 	}{
-		{http.MethodGet, "/api/v2/artifacts/buckets/1"},
-		{http.MethodPost, "/api/v2/artifacts/buckets/1"},
-		{http.MethodGet, "/api/v2/artifacts/buckets/1/reports"},
-		{http.MethodPatch, "/api/v2/artifacts/buckets/1/reports"},
-		{http.MethodDelete, "/api/v2/artifacts/buckets/1/reports"},
-		{http.MethodGet, "/api/v2/artifacts/objects/1/reports"},
-		{http.MethodPost, "/api/v2/artifacts/objects/1/reports"},
-		{http.MethodPost, "/api/v2/artifacts/objects/1/reports:batchDelete"},
-		{http.MethodGet, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
-		{http.MethodHead, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
-		{http.MethodDelete, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
-		{http.MethodPost, "/api/v2/artifacts/grants/1/reports"},
-		{http.MethodPost, "/api/v2/artifacts/grants/1/abc123:commit"},
+		{http.MethodGet, "/api/v2/artifacts/buckets/1", artifactPermissionView},
+		{http.MethodPost, "/api/v2/artifacts/buckets/1", artifactPermissionCreate},
+		{http.MethodGet, "/api/v2/artifacts/buckets/1/reports", artifactPermissionView},
+		{http.MethodPatch, "/api/v2/artifacts/buckets/1/reports", artifactPermissionEdit},
+		{http.MethodDelete, "/api/v2/artifacts/buckets/1/reports", artifactPermissionDelete},
+		{http.MethodGet, "/api/v2/artifacts/objects/1/reports", artifactPermissionView},
+		{http.MethodPost, "/api/v2/artifacts/objects/1/reports", artifactPermissionCreate},
+		{http.MethodPost, "/api/v2/artifacts/objects/1/reports:batchDelete", artifactPermissionDelete},
+		{http.MethodGet, "/api/v2/artifacts/objects/1/reports/a/b/c.png", artifactPermissionView},
+		{http.MethodHead, "/api/v2/artifacts/objects/1/reports/a/b/c.png", artifactPermissionView},
+		{http.MethodDelete, "/api/v2/artifacts/objects/1/reports/a/b/c.png", artifactPermissionDelete},
+		{http.MethodPost, "/api/v2/artifacts/grants/1/reports", artifactPermissionCreate},
+		{http.MethodPost, "/api/v2/artifacts/grants/1/abc123:commit", artifactPermissionCreate},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			router := NewRouter(RouterConfig{
+				AppsRepo:                   struct{ applications.Repository }{},
+				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{tc.perm}},
+			})
+
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
@@ -109,6 +119,15 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 		AppsRepo:    struct{ applications.Repository }{},
 		Pool:        pool,
 		ObjectStore: noopObjectStore{},
+		// This test's 5 subtests span view/create/edit/delete (the full
+		// bucket-plane permission mapping), so grant all four up front —
+		// what this test is actually checking is "real handler wired, not
+		// the S7 stub," and RBAC gating per se is already proven by
+		// TestArtifactStubRoutesReturn501WithTypedEnvelope's per-permission
+		// subtests.
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{
+			artifactPermissionView, artifactPermissionCreate, artifactPermissionEdit, artifactPermissionDelete,
+		}},
 	})
 
 	cases := []struct{ method, path string }{
@@ -159,6 +178,13 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 		AppsRepo: struct{ applications.Repository }{},
 		Pool:     pool,
 		// ObjectStore deliberately left nil.
+		//
+		// This subtest only issues a GET, so grant view — without a grant
+		// here the request would still 501, but that would prove nothing:
+		// it could be RBAC 403-ing before ever reaching the
+		// stub-vs-real-handler branch this test exists to check, rather
+		// than the still-stubbed branch it claims to prove.
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/buckets/1", nil)
@@ -188,6 +214,15 @@ func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 		AppsRepo:    struct{ applications.Repository }{},
 		Pool:        pool,
 		ObjectStore: noopObjectStore{},
+		// This test's 6 subtests span view/create/delete (the object-plane
+		// permission mapping has no PATCH/edit route), so grant that union
+		// up front — the point of this test is "real handler wired, not
+		// the S7 stub," not RBAC gating itself, which is already covered by
+		// TestArtifactStubRoutesReturn501WithTypedEnvelope's per-permission
+		// subtests.
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{
+			artifactPermissionView, artifactPermissionCreate, artifactPermissionDelete,
+		}},
 	})
 
 	cases := []struct{ method, path string }{

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
+	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 )
@@ -39,9 +43,10 @@ func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
 	defer pool.Close()
 
 	router := NewRouter(RouterConfig{
-		AppsRepo:    struct{ applications.Repository }{},
-		Pool:        pool,
-		ObjectStore: noopObjectStore{},
+		AppsRepo:                   struct{ applications.Repository }{},
+		Pool:                       pool,
+		ObjectStore:                noopObjectStore{},
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/1/reports/../escape.txt", nil)
@@ -92,4 +97,355 @@ func TestInternalAdminRoutesRemainProductionUnmountedForEveryTokenStrength(t *te
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// S11 acceptance criteria — "Production mount, auth, RBAC"
+// (docs/plans/storage-migration-plan.md, search "## S11").
+// ---------------------------------------------------------------------------
+
+// artifactRoutePermission is one of the 13 mounted artifact routes together
+// with the single permission string the S11 mapping requires for it.
+// Literal (method, path) pairs are kept identical to
+// TestArtifactStubRoutesReturn501WithTypedEnvelope in artifact_stub_routes_test.go
+// so both tests exercise exactly the same route surface.
+type artifactRoutePermission struct {
+	method     string
+	path       string
+	permission string
+	isGrant    bool // grant routes stay 501 regardless of authorization (S15 not implemented yet)
+}
+
+var artifactRoutePermissions = []artifactRoutePermission{
+	{method: http.MethodGet, path: "/api/v2/artifacts/buckets/1", permission: artifactPermissionView},
+	{method: http.MethodPost, path: "/api/v2/artifacts/buckets/1", permission: artifactPermissionCreate},
+	{method: http.MethodGet, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionView},
+	{method: http.MethodPatch, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionEdit},
+	{method: http.MethodDelete, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionDelete},
+	{method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports", permission: artifactPermissionView},
+	{method: http.MethodPost, path: "/api/v2/artifacts/objects/1/reports", permission: artifactPermissionCreate},
+	{method: http.MethodPost, path: "/api/v2/artifacts/objects/1/reports:batchDelete", permission: artifactPermissionDelete},
+	{method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView},
+	{method: http.MethodHead, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView},
+	{method: http.MethodDelete, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionDelete},
+	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/reports", permission: artifactPermissionCreate, isGrant: true},
+	{method: http.MethodPost, path: "/api/v2/artifacts/grants/1/abc123:commit", permission: artifactPermissionCreate, isGrant: true},
+}
+
+// allArtifactPermissions is used where a test wants authorization to be a
+// non-issue (e.g. proving 401 happens before RBAC ever runs).
+var allArtifactPermissions = []string{
+	artifactPermissionView, artifactPermissionCreate, artifactPermissionEdit, artifactPermissionDelete,
+}
+
+// TestArtifactRoutesRequireAuthentication proves S11's first acceptance bullet:
+// every one of the 13 artifact routes returns 401 when the caller is
+// unauthenticated, even though a real handler is wired and the resolver would
+// grant every permission — an auth bypass would show up here as a 2xx/501,
+// not a silent pass, because RBAC is never given the chance to run first.
+func TestArtifactRoutesRequireAuthentication(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "false")
+
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	router := NewRouter(RouterConfig{
+		AppsRepo:                   struct{ applications.Repository }{},
+		ArtifactHandler:            handler,
+		ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
+	})
+
+	for _, rp := range artifactRoutePermissions {
+		t.Run(rp.method+" "+rp.path, func(t *testing.T) {
+			req := httptest.NewRequest(rp.method, rp.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestArtifactRoutesRequirePermission proves S11's first acceptance bullet's
+// other half: every one of the 13 routes returns 403 for an authenticated
+// principal holding none of the artifact permissions — including the two
+// still-stubbed grant routes, which S11 gates unconditionally even though
+// S15 hasn't implemented their handlers yet.
+func TestArtifactRoutesRequirePermission(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	router := NewRouter(RouterConfig{
+		AppsRepo:                   struct{ applications.Repository }{},
+		ArtifactHandler:            handler,
+		ArtifactPermissionResolver: fakePermissionResolver{granted: nil},
+	})
+
+	for _, rp := range artifactRoutePermissions {
+		t.Run(rp.method+" "+rp.path, func(t *testing.T) {
+			req := httptest.NewRequest(rp.method, rp.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+		})
+	}
+}
+
+// artifactJSONBody returns a body-builder for a fixed JSON request body.
+func artifactJSONBody(body string) func(t *testing.T) (io.Reader, string) {
+	return func(t *testing.T) (io.Reader, string) {
+		return strings.NewReader(body), "application/json"
+	}
+}
+
+// artifactMultipartUploadBody builds a genuine multipart/form-data body with
+// a "file" field carrying a filename, matching what UploadObject
+// (internal/api/v2/artifacts/objects.go) requires before it ever reaches the
+// store.
+func artifactMultipartUploadBody(t *testing.T) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", "photo.png")
+	if err != nil {
+		t.Fatalf("create multipart form file: %v", err)
+	}
+	if _, err := part.Write([]byte("data")); err != nil {
+		t.Fatalf("write multipart form file: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	return &buf, mw.FormDataContentType()
+}
+
+// artifactSuccessCase is one of the 11 real-handler artifact routes (5
+// bucket-plane + 6 object-plane), the exact permission the S11 mapping
+// requires, and the 2xx status the real handler
+// (alwaysSucceedsArtifactRepo/alwaysSucceedsArtifactStore) returns once RBAC
+// lets the request through.
+type artifactSuccessCase struct {
+	desc       string
+	method     string
+	path       string
+	permission string
+	wantStatus int
+	newBody    func(t *testing.T) (io.Reader, string) // nil => no request body
+}
+
+var artifactSuccessCases = []artifactSuccessCase{
+	{desc: "list buckets", method: http.MethodGet, path: "/api/v2/artifacts/buckets/1", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	{desc: "create bucket", method: http.MethodPost, path: "/api/v2/artifacts/buckets/1", permission: artifactPermissionCreate, wantStatus: http.StatusOK, newBody: artifactJSONBody(`{"name":"reports"}`)},
+	{desc: "get bucket", method: http.MethodGet, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	{desc: "update bucket", method: http.MethodPatch, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionEdit, wantStatus: http.StatusOK, newBody: artifactJSONBody(`{"is_pinned":true}`)},
+	{desc: "delete bucket", method: http.MethodDelete, path: "/api/v2/artifacts/buckets/1/reports", permission: artifactPermissionDelete, wantStatus: http.StatusNoContent},
+	{desc: "list objects", method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	// overwrite=true: alwaysSucceedsArtifactStore.Stat always succeeds, so
+	// without it UploadObject's own pre-existing-key check (objects.go) would
+	// report 409 AlreadyExists instead of ever reaching Put — a genuine
+	// handler behavior, not an RBAC concern, but it means this is the one
+	// case that needs the query parameter to observe the real 201.
+	{desc: "upload object", method: http.MethodPost, path: "/api/v2/artifacts/objects/1/reports?overwrite=true", permission: artifactPermissionCreate, wantStatus: http.StatusCreated, newBody: artifactMultipartUploadBody},
+	{desc: "batch delete objects", method: http.MethodPost, path: "/api/v2/artifacts/objects/1/reports:batchDelete", permission: artifactPermissionDelete, wantStatus: http.StatusOK, newBody: artifactJSONBody(`{"keys":["a.png"]}`)},
+	{desc: "download object", method: http.MethodGet, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	{desc: "stat object", method: http.MethodHead, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionView, wantStatus: http.StatusOK},
+	{desc: "delete object", method: http.MethodDelete, path: "/api/v2/artifacts/objects/1/reports/a/b/c.png", permission: artifactPermissionDelete, wantStatus: http.StatusNoContent},
+}
+
+// TestArtifactRoutesSucceedWithExactRequiredPermission proves S11's second
+// acceptance bullet: each of the 11 routes with a real handler (5 bucket-plane
+// from S8, 6 object-plane from S9) returns a genuine 2xx — not just "past the
+// stub" — once the principal holds exactly the permission the S11 mapping
+// assigns it, exercised through the full auth/RBAC/handler chain.
+func TestArtifactRoutesSucceedWithExactRequiredPermission(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	for _, sc := range artifactSuccessCases {
+		t.Run(sc.desc, func(t *testing.T) {
+			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+			router := NewRouter(RouterConfig{
+				AppsRepo:                   struct{ applications.Repository }{},
+				ArtifactHandler:            handler,
+				ArtifactPermissionResolver: fakePermissionResolver{granted: []string{sc.permission}},
+			})
+
+			var body io.Reader
+			var contentType string
+			if sc.newBody != nil {
+				body, contentType = sc.newBody(t)
+			}
+			req := httptest.NewRequest(sc.method, sc.path, body)
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != sc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, sc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestArtifactGrantRoutesRemainNotImplementedWithCreatePermission proves S11's
+// explicit carve-out: the two transfer-grant routes are excluded from the 2xx
+// check above and correctly still return 501 (NotImplemented), even when the
+// caller holds the create permission the S11 mapping assigns them — S15,
+// which replaces notImplementedArtifact for these two routes, has not run
+// yet. This is asserted directly rather than left untested.
+func TestArtifactGrantRoutesRemainNotImplementedWithCreatePermission(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	router := NewRouter(RouterConfig{
+		AppsRepo:                   struct{ applications.Repository }{},
+		ArtifactHandler:            handler,
+		ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
+	})
+
+	for _, rp := range artifactRoutePermissions {
+		if !rp.isGrant {
+			continue
+		}
+		t.Run(rp.method+" "+rp.path, func(t *testing.T) {
+			req := httptest.NewRequest(rp.method, rp.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotImplemented {
+				t.Fatalf("status = %d, want %d (S15 not implemented yet); body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+			}
+			var envelope struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
+			}
+			if envelope.Error.Code != "NotImplemented" {
+				t.Fatalf("error.code = %q, want NotImplemented; body=%s", envelope.Error.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestArtifactBucketPatchRequiresEditPermissionNotCreate proves S11's third
+// acceptance bullet: PATCH on a bucket is gated on the edit permission, not
+// create — a principal holding only create (which authorizes bucket/object
+// creation, a materially different operation) is denied, while edit alone is
+// sufficient.
+func TestArtifactBucketPatchRequiresEditPermissionNotCreate(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	cases := []struct {
+		name       string
+		granted    []string
+		wantStatus int
+	}{
+		{name: "only create granted is insufficient", granted: []string{artifactPermissionCreate}, wantStatus: http.StatusForbidden},
+		{name: "edit granted succeeds", granted: []string{artifactPermissionEdit}, wantStatus: http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+			router := NewRouter(RouterConfig{
+				AppsRepo:                   struct{ applications.Repository }{},
+				ArtifactHandler:            handler,
+				ArtifactPermissionResolver: fakePermissionResolver{granted: tc.granted},
+			})
+
+			req := httptest.NewRequest(http.MethodPatch, "/api/v2/artifacts/buckets/1/reports", strings.NewReader(`{"is_pinned":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject proves
+// S11's fourth acceptance bullet: a request for project 8's object from a
+// principal whose granted permissions are scoped to project 7 is denied.
+// This goes through the real mounted router (NewRouter), not the handler or
+// fakePermissionResolver directly, so it actually proves chi's {projectID}
+// URL param threads into the RBAC check correctly — not just that
+// fakePermissionResolver's own forProject logic works in isolation.
+func TestArtifactObjectRouteDeniesPermissionScopedToDifferentProject(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	router := NewRouter(RouterConfig{
+		AppsRepo:        struct{ applications.Repository }{},
+		ArtifactHandler: handler,
+		ArtifactPermissionResolver: fakePermissionResolver{
+			granted:    []string{artifactPermissionView},
+			forProject: "7",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/8/reports", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// TestArtifactRoutesGateIdenticallyThroughProductionRouter proves the
+// auth/RBAC gating above isn't specific to the prototype-compatibility
+// router. Every other test in this file builds its RouterConfig with
+// AppsRepo set, which trips prototypeCompatibilityRequested and always
+// dispatches to newPrototypeCompatibilityRouter — none of them ever
+// exercises production_router.go's own NewRouter branch, even though it
+// calls the identical mountArtifactRoutes with independently constructed
+// ArtifactDeps. This constructs a RouterConfig with none of
+// prototypeCompatibilityRequested's trigger fields set, so NewRouter takes
+// the production branch, and checks the same three outcomes (401
+// unauthenticated, 403 wrong permission, 2xx right permission) there too.
+func TestArtifactRoutesGateIdenticallyThroughProductionRouter(t *testing.T) {
+	handler := v2artifacts.NewHandler(alwaysSucceedsArtifactRepo{}, alwaysSucceedsArtifactStore{})
+	const path = "/api/v2/artifacts/buckets/1"
+
+	t.Run("401 unauthenticated", func(t *testing.T) {
+		t.Setenv("AUTH_DEV_MODE", "false")
+		router := NewRouter(RouterConfig{
+			ArtifactHandler:            handler,
+			ArtifactPermissionResolver: fakePermissionResolver{granted: allArtifactPermissions},
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+		}
+	})
+
+	t.Run("403 wrong permission", func(t *testing.T) {
+		t.Setenv("AUTH_DEV_MODE", "true")
+		router := NewRouter(RouterConfig{
+			ArtifactHandler:            handler,
+			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionCreate}},
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+	})
+
+	t.Run("2xx right permission", func(t *testing.T) {
+		t.Setenv("AUTH_DEV_MODE", "true")
+		router := NewRouter(RouterConfig{
+			ArtifactHandler:            handler,
+			ArtifactPermissionResolver: fakePermissionResolver{granted: []string{artifactPermissionView}},
+		})
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+	})
 }

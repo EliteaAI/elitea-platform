@@ -11,7 +11,6 @@ import forwardapp "github.com/EliteaAI/elitea-platform/services/elitea-main/inte
 // Each future Go route owner should take over its entry when that route moves.
 func CurrentMainRoutePublicRules() []forwardapp.PublicRule {
 	return []forwardapp.PublicRule{
-		uriRule("current.artifacts.s3", `^/artifacts/s3/.*$`),
 		uriRule("current.admin_ui.assets", `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`),
 		uriRule("current.elitea_core.socket_io", `^/socket\.io/.*$`),
 		uriRule("current.elitea_core.robots", `^/robots\.txt$`),
