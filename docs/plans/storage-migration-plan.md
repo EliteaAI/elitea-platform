@@ -109,8 +109,10 @@ compatible). The old `Backend` interface and all its callers stay untouched and
 compiling.** S3 makes each remote backend implement `ObjectStore` *alongside*
 its existing `Backend` methods — the `s3`, `azure`, and `gcs` packages gain a
 second interface satisfaction without losing the first. Handlers migrate one at
-a time in S8, S9, S10. The old `Backend` interface, the filesystem package, and
-`pg_repo.go` are deleted at the end of S10, when nothing references them.
+a time in S8, S9, S10 — `pg_repo.go` is deleted in S8, the moment its
+replacement lands, not held until the end. The old `Backend` interface and the
+filesystem package are deleted at the end of S10, when nothing references them
+anymore.
 
 ---
 
@@ -134,9 +136,9 @@ a time in S8, S9, S10. The old `Backend` interface, the filesystem package, and
 | S14 | Retention ledger and sweeper | S6, S8, S9 | Medium |
 | S15 | Presigned transfer grants | S3, S6, S11 | Medium |
 | S16 | Native multipart upload | S3, S15 | Medium |
-| S17 | Deployment: Helm, compose, secrets, workload identity | S5 | Medium |
-| S18 | Observability: metrics, tracing, audit | S11, S15 | Low |
-| S19 | API conformance suite in `tests/contract/` | S10, S11, S15 | Medium |
+| S17 | Deployment: Helm, compose, secrets, workload identity | S2, S5, S12 | Medium |
+| S18 | Observability: metrics, tracing, audit | S11, S14, S15 | Low |
+| S19 | API conformance suite in `tests/contract/` | S10, S11, S15, S4 | Medium |
 | S20 | Adjacent planes: chat attachments, icons, result-artifact attestation | S9, S11, S15; **S20c also blocked on spec §6 open question 2 being answered** | High |
 
 S1, S2, S3, S5, S6, S7, S8, S9, S10, S11 are the critical path. S4
@@ -677,9 +679,20 @@ exactly one caller, `main()`.
   asserts `newObjectStore` dispatches to the right constructor per
   `cfg.Backend` and errors on an unrecognised one. It does not need real
   network reachability — asserting the returned concrete type (or the error for
-  the unknown case) is enough.
+  the unknown case) is enough, **for `s3` and `azure`**. `gcs.New` dials for
+  live GCP default credentials at construction time unless S2's
+  `Endpoint`/`WithoutAuthentication` support already landed (S5 depends on S3,
+  which depends on S2, so by the time this stage runs it always has) — if
+  you're implementing out of order for any reason, the `gcs` leg of this test
+  needs S2's constructor to assert a concrete type instead of tolerating a
+  credential error.
 - `grep -rn 'ARTIFACTS_DATA_DIR' --include='*.go' services/elitea-main/` finds nothing.
-- `grep -rn 'os.Getenv' services/elitea-main/internal/infra/storage/ services/elitea-main/cmd/elitea-main/` finds nothing.
+- `grep -n 'os.Getenv' services/elitea-main/internal/infra/storage/config.go services/elitea-main/cmd/elitea-main/storage_factory.go` finds nothing.
+  (Scoped to the two files this stage writes — the wider directories contain
+  pre-existing, out-of-scope `os.Getenv` calls, e.g. in
+  `postgres_secret_vault_integration_test.go` and `main.go`'s unrelated
+  `AUTH_DEV_MODE` lookup, which this stage does not touch and a broader grep
+  would never let pass.)
 - `go build ./...` exits 0 (this is the actual test for the import-cycle
   constraint above — a cycle fails the build with `import cycle not allowed`,
   not a grep).
@@ -782,13 +795,29 @@ first for the house style.
 
 Methods: `ListBuckets`, `GetBucket`, `CreateBucket` (mapping unique violation
 `23505` to `ErrAlreadyExists`), `UpdateBucketRetention`, `SetBucketPinned`,
-`SoftDeleteBucket`, `UpsertObject`, `ListObjects`, `DeleteObjects`,
-`SumBucketBytes`, and `CountBucketObjects` — both a single aggregate query
-(`SUM`/`COUNT`), never a full object listing. S8's bucket response needs both.
+`UpdateBucketTags`, `SoftDeleteBucket`, `UpsertObject`, `ListObjects`,
+`DeleteObjects`, `SumBucketBytes`, and `CountBucketObjects` — the last two are
+single aggregate queries (`SUM`/`COUNT`), never a full object listing. S8's
+bucket response needs both, and `UpdateBucketTags` closes a real gap: S19's
+conformance suite exercises "patch (pin, tags, retention)" end to end, but
+without this method there is no way to persist a tag update at all — say so
+explicitly in S8 too, when you get there, not just here.
 
 **Acceptance criteria:** every method has a `*_postgres_integration_test.go`
 following the existing pattern. Unique-violation and no-rows paths map to the S1
-sentinels.
+sentinels. **Every test function in this package is named with a `TestArtifact`
+prefix** (e.g. `TestArtifactBucketsRepositoryRejectsDuplicateName`,
+`TestArtifactCountBucketObjectsExcludesSoftDeleted`) — **this is a hard
+requirement, not a suggestion.** The existing repositories in this directory
+are named by behavior (`TestListPendingIndexIngestIDsIsCapabilityAndStreamScoped`
+and similar — none of the 317 test functions in this package follow a
+domain-noun-prefix convention), and this stage's own Verify command filters on
+`-run Artifact`, which matches against the Go function name only, not the file
+name. A correctly implemented, correctly named-by-behavior test that happens
+not to contain the literal substring "Artifact" is silently excluded from the
+run — not reported as a skip, simply absent from the output — while the
+command still exits 0. Follow the neighbouring repositories' construction and
+error style; do not follow their naming style for these specific functions.
 
 **Note on the verify command:** every `*_postgres_integration_test.go` in that
 package calls `newPostgresIntegrationPool`, which **skips** when the integration
@@ -797,7 +826,7 @@ therefore exits 0 with every new test skipped. Either add a `postgres:16`
 service and the DSN to the ci-go test job as part of this stage, or accept that
 the suite is local-only and gate on the explicit run below.
 
-**Verify:** `cd services/elitea-main && go test ./internal/infra/db/repos/ -race -run Artifact -v 2>&1 | tee /tmp/s6.log && grep -qc -- '--- PASS' /tmp/s6.log && ! grep -q -- '--- SKIP' /tmp/s6.log`
+**Verify:** `cd services/elitea-main && go test ./internal/infra/db/repos/ -race -run TestArtifact -v 2>&1 | tee /tmp/s6.log && grep -qc -- '--- PASS' /tmp/s6.log && ! grep -q -- '--- SKIP' /tmp/s6.log`
 
 ---
 
@@ -1008,6 +1037,12 @@ Response bodies:
 `CountBucketObjects` (S6) — both single-aggregate queries, never a full object
 listing. Both fields are integers; formatting is the client's job.
 
+**`PATCH` accepts `is_pinned`, `retention_days`, and `tags`, all optional and
+independently settable.** Route `tags` through S6's `UpdateBucketTags` — S19's
+conformance suite exercises "patch (pin, tags, retention)" as one combined
+capability, and there is no method anywhere else in this plan that persists a
+tag update; this is the only place it happens.
+
 **Retention is an explicit `retention_days` integer.** Do not port legacy's
 `(expiration_measure, expiration_value)` pair or its `relativedelta` calendar
 arithmetic. A client that wants "one year" sends `365`. Reject with 403 and
@@ -1136,7 +1171,8 @@ or re-specifying it belongs to the SDK rework issue.
 **Preconditions:** S8, S9.
 **Read first:** `internal/infra/storage/storage.go`,
 `internal/infra/storage/{s3,azure,gcs}/backend.go`,
-`internal/api/router_security_test.go`.
+`internal/api/router_security_test.go`,
+`internal/api/oapiserver/conformance_matcher_test.go`.
 
 Everything in this stage is deletion. There is no S3-proxy rewrite: ADR-0016 §7
 retires the surface rather than porting it.
@@ -1181,6 +1217,18 @@ which incidentally fails; add the raw `..` form, which actually escapes, and
 assert 400 with `code: InvalidKey` now that the handler constructs `ObjectRef`
 before any store call.
 
+**`internal/api/oapiserver/conformance_matcher_test.go` also needs a one-line
+fix, unrelated to conformance itself.** `TestMatcherProbeE_MidPatternWildcardDoesNotSwallow`
+hardcodes its positive control against the literal route
+`/artifacts/s3/{bucket}/deep/object/key` — a route this stage deletes. Repoint
+that probe (and its assertion message) at the S7-registered
+`/api/v2/artifacts/objects/{projectID}/{bucket}/*` instead; it exercises the
+identical trailing-wildcard behavior and is, if anything, a better example
+since it is the actual reason this plan uses that pattern. Left unfixed, this
+test fails the moment the `/artifacts/s3/*` registrations are gone —
+`go test ./internal/api/oapiserver/...` genuinely reds — even though the file
+has nothing to do with artifact storage.
+
 Deleting the S3 surface also deletes the only reason to build SigV4, the S3
 credential API, the XML dialect, and the sub-resource dispatch table. If a stage
 ever seems to need one of those, the surface has been reintroduced by mistake.
@@ -1190,9 +1238,16 @@ ever seems to need one of those, the surface has been reintroduced by mistake.
 - `grep -rn 'infra/storage/filesystem' --include='*.go' services/` finds nothing.
 - `grep -rn 'storage_meta\|bucket_metadata' --include='*.go' services/` finds nothing.
 - `grep -rn 'NewInMemoryHandler\|memRepo\|S3Handler\|mountArtifactS3Routes' --include='*.go' services/` finds nothing.
-- `grep -rn 'artifacts/s3' services/elitea-main/ --include='*.go'` finds nothing.
-  (`.yaml` is deliberately excluded — S7 already cleared `/artifacts/s3` from
-  `v2.yaml` and this stage doesn't touch that file again.)
+- `grep -rn 'artifacts/s3' services/elitea-main/internal/api/router.go services/elitea-main/internal/api/router_security_test.go services/elitea-main/internal/api/v2/artifacts/ services/elitea-main/internal/api/oapiserver/` finds nothing.
+  **Scoped deliberately to what this stage owns.** `internal/api/main_public_rules.go`,
+  `main_public_rules_test.go`, and `production_router_test.go` also contain the
+  literal string `artifacts/s3` at this point — removing it there is S11's job,
+  paired with a specific test re-anchor, and S11 runs strictly after this
+  stage. A broader `grep -rn 'artifacts/s3' services/elitea-main/` is
+  **unsatisfiable at the end of S10 as a standalone check** — it can only pass
+  once S11 has also run. Do not widen this grep; check S11's own acceptance
+  criteria for that file instead. (`.yaml` is excluded for the same reason S7
+  already cleared `/artifacts/s3` from `v2.yaml`.)
 - `grep -rn 'storage\.Backend\b\|storage\.BucketInfo\b' services/elitea-main/internal/infra/storage/` finds nothing.
 - A raw `..` key returns 400, not 200 and not 404.
 
@@ -1283,15 +1338,32 @@ walks the prototype router. One shared mount function satisfies both.
   `project_storage_policy.max_total_bytes` compared with `SumBucketBytes` across
   the project, returning 413.
 
+**The `http.Server{ReadTimeout, WriteTimeout}` edit lives in `cmd/elitea-main/main.go`
+(`package main`), which nothing under `internal/api/v2/artifacts` can import —
+not just by convention, but as a genuine Go import cycle
+(`artifacts → ... → cmd/elitea-main → internal/api → internal/api/v2/artifacts`).
+This stage's own Verify command, as scoped, cannot exercise that edit at all**
+— a fully correct-looking `-run 'Limit|Quota|Deadline'` pass in that package
+proves nothing about whether `ReadTimeout`/`WriteTimeout` were actually
+touched. Extract the server construction into a small, testable, same-package
+helper — `func newHTTPServer(handler http.Handler) *http.Server` in
+`cmd/elitea-main/` — and add `cmd/elitea-main/http_server_test.go` asserting
+`ReadHeaderTimeout` is set and `ReadTimeout`/`WriteTimeout` are zero. This is
+the only way the ceiling change is checked by anything, since no later stage
+touches `cmd/elitea-main` either.
+
 **Acceptance criteria:** a 200 MiB upload returns 413 with a JSON error body,
 not a truncated stream or a connection reset; a 100 MiB upload over a 30-second
-body succeeds; a 300-second download of a large object completes.
+body succeeds; `newHTTPServer`'s returned config has `ReadHeaderTimeout` set
+and `ReadTimeout`/`WriteTimeout` unset — this is what actually stands in for
+"a 300-second download completes," since nothing in this stage's own test
+scope can drive a real 300-second HTTP round trip.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run 'Limit|Quota|Deadline'`
+**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ ./cmd/elitea-main/... -race -run 'Limit|Quota|Deadline|Timeout'`
 
 ---
 
-## S13 — Project-creation bucket bootstrap
+## S13 — Project-creation bucket bootstrap function (unwired)
 
 **Preconditions:** S6, S8.
 
@@ -1300,15 +1372,53 @@ creation and deletes both on project deletion. Without this, every project
 created by the Go service has no system buckets — and the legacy on-disk tree
 confirms both exist for every project.
 
-Hook the project-creation path to insert both rows into
-`elitea_storage.buckets`, and the deletion path to soft-delete them and purge
-their objects.
+**There is no project-creation or project-deletion path to hook, anywhere in
+this Go service, today.** Verified: no `CreateProject`/`DeleteProject`
+handler exists (`internal/api/v2/projects/handler.go` implements only
+`GetProject`, `GetCurrentProjectList`, `GroupList`, `PutProjectGroups`); no
+`internal/application/projects`-shaped package exists at all; and the
+`projects` table itself has no `CREATE TABLE` in any migration under this
+service — it is owned and written by something outside `elitea-main`
+entirely. S6 and S8 build no such hook either. This stage's original framing
+("hook the project-creation path") describes a mechanism that does not exist
+in this codebase, and no stage before it creates one.
 
-**Acceptance criteria:** a newly created project lists exactly `reports` and
-`tasks`, both with `bucket_type='system'`; deleting the project removes both and
-leaves no objects.
+**Scope this stage down accordingly: build the bootstrap and teardown logic
+as an idempotent, directly callable, fully-tested function — do not claim it
+is wired into production, because it cannot be.**
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ ./internal/application/... -race -run 'Bootstrap|SystemBucket'`
+```go
+func BootstrapProjectBuckets(ctx context.Context, projectID string) error
+func TeardownProjectBuckets(ctx context.Context, projectID string) error
+```
+
+`BootstrapProjectBuckets` creates `reports` and `tasks` with
+`bucket_type='system'`, idempotently (a second call is a no-op, not an
+error). `TeardownProjectBuckets` soft-deletes both and purges their objects.
+Unit-test both directly against the S6 repository — no HTTP layer, no
+project-lifecycle integration, because none exists to integrate with.
+
+**Leave an explicit, visible gap, not a silent one.** Add a code comment on
+`BootstrapProjectBuckets` stating it is not called from anywhere yet, and
+record the open question this raises: an owner needs to identify the actual
+project-creation and project-deletion trigger — a legacy webhook, an event
+this service should subscribe to, a database trigger, or something not yet
+designed — before this function does anything in a running system. Until
+that's answered, every project created after this migration ships has no
+system buckets, exactly as today.
+
+**Acceptance criteria:** `BootstrapProjectBuckets` called twice for the same
+project creates exactly one `reports` and one `tasks` bucket, both
+`bucket_type='system'`; `TeardownProjectBuckets` removes both and leaves no
+objects. **The criterion is scoped to the function's own behavior in
+isolation** — this stage does not and cannot assert "a newly created project
+lists exactly reports and tasks" in the running service, because nothing
+creates a project through this service yet. **Name every test function in
+this package with a `TestArtifact` prefix** (e.g.
+`TestArtifactBootstrapCreatesReportsAndTasksIdempotently`) — see the naming
+rule in S6, which this stage's Verify command relies on for the same reason.
+
+**Verify:** `cd services/elitea-main && go test ./internal/application/artifactbootstrap/... -race -run TestArtifact -v`
 
 ---
 
@@ -1420,11 +1530,23 @@ facade; a part call with another project's grant returns 403.
 
 ## S17 — Deployment
 
-**Preconditions:** S5.
+**Preconditions:** S2, S5, S12 — the env var names this stage wires into the
+chart come from all three: `S3_ENDPOINT_URL`/credentials from S5,
+`AZURE_STORAGE_ENDPOINT`/`GCS_ENDPOINT` from S2, `ARTIFACT_MAX_OBJECT_BYTES`
+from S12. Confirm all three actually landed before starting — this stage is
+naturally one of the last to run, not "right after S5."
 
-- `deploy/helm/elitea-main/values.yaml`: add the storage environment block and a
-  `secretRef` for `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `AZURE_STORAGE_KEY`. The
-  chart currently delivers only `envFrom: configMapRef` and has no secret path.
+- `deploy/helm/elitea-main/values.yaml` and `templates/deployment.yaml`: add
+  the storage environment block. **Render `S3_ACCESS_KEY`, `S3_SECRET_KEY`,
+  and `AZURE_STORAGE_KEY` as individual `env:` entries with
+  `valueFrom.secretKeyRef`, not a chart-managed `envFrom: secretRef` gated
+  behind a `create` toggle.** Both shapes are common Helm idiom, but only the
+  former renders the literal key names `helm template` output — and this
+  stage's own Verify command greps for exactly that. A `create`-gated
+  `envFrom` secret defaults to off and never spells out `S3_ACCESS_KEY` in
+  rendered output at all, so the Verify command fails even on an otherwise
+  reasonable implementation. The chart currently delivers only
+  `envFrom: configMapRef` and has no secret path of either shape.
 - `deploy/helm/elitea-main/templates/serviceaccount.yaml`: add an `annotations`
   block so IRSA and Azure Workload Identity can be configured. It has none
   today, which is why credentials must be static.
@@ -1433,27 +1555,29 @@ facade; a part call with another project's grant returns 403.
   scaling from 2 to 10 replicas becomes correct rather than accidentally so.
 - Remove the storage variables from
   `deploy/helm/elitea-main/env-drift-allowlist.txt` now that they are wired, and
-  add the new names introduced by S5 and S12.
+  add the new names introduced by S2, S5, and S12.
 - Remove `ARTIFACTS_DATA_DIR` and the artifact bind mount from
   `deploy/docker-compose.staging.yml`.
 - Add a Helm chart for `pylon-indexer` and `elitea-worker-python`, or record
   explicitly that they are out of scope for R1.
 
-**Verify:** `helm template deploy/helm/elitea-main > /tmp/rendered.yaml && grep -q 'S3_ACCESS_KEY' /tmp/rendered.yaml && ! grep -qE 'persistentVolumeClaim|emptyDir' /tmp/rendered.yaml`
+**Verify:** `helm lint deploy/helm/elitea-main && helm template deploy/helm/elitea-main > /tmp/rendered.yaml && grep -q 'S3_ACCESS_KEY' /tmp/rendered.yaml && ! grep -qE 'persistentVolumeClaim|emptyDir' /tmp/rendered.yaml`
 
 ---
 
 ## S18 — Observability
 
 **Preconditions:** S11, **S15** — auditing "every grant issuance" requires the
-grant-creation code S15 adds; it does not exist right after S11.
+grant-creation code S15 adds; it does not exist right after S11. **S14** — the
+byte-usage gauge below is sourced from S14's sweeper tick, which is a sibling
+branch off S6/S8/S9, not something S11 or S15 transitively guarantees.
 
 Instrument every `ObjectStore` method with the existing OTel setup — read
 `internal/api/middleware/otel.go` for the house pattern. Operation duration
 histogram, error counter by sentinel type, bytes-in and bytes-out counters, all
 labelled by backend and operation but **never** by project identifier or key,
 which would explode cardinality. Add a per-project byte-usage gauge sourced from
-the metadata table on the sweeper tick, not per request.
+the metadata table on the sweeper tick (S14), not per request.
 
 Emit an audit record for every delete and every grant issuance.
 
@@ -1464,7 +1588,10 @@ Emit an audit record for every delete and every grant issuance.
 ## S19 — API conformance suite
 
 **Preconditions:** S10, S11, **S15** — grant/presign coverage below needs the
-real handlers S15 wires in, not the S7 stub.
+real handlers S15 wires in, not the S7 stub. **S4** — this stage needs the
+RustFS/Azurite/fake-gcs-server emulator wiring S4 builds, and S4 is deferrable
+relative to S1-S11 (it has no critical-path dependents until now), so check it
+was actually done before starting this stage rather than assuming it was.
 
 `services/elitea-main/tests/contract/` and `.github/workflows/ci-contract.yml`
 already exist and run weekly. The workflow accepts a `legacy_url` input and was
@@ -1494,9 +1621,14 @@ Cover, end to end through the real router with real auth:
 - Cross-project access returns 403.
 
 **Acceptance criteria:** the suite fails if any response is not the documented
-shape; `ci-contract.yml` no longer references a legacy base URL.
+shape; `ci-contract.yml` no longer references a legacy base URL. **Name every
+test function with a `TestArtifact` prefix**, for the same reason S6 requires
+it: `-run Artifact` matches Go function names, not file names or behavior, and
+a correctly-implemented test named by what it checks rather than by
+containing the literal word "Artifact" is silently excluded from this
+command's run with no failure or skip reported.
 
-**Verify:** `cd services/elitea-main && go test ./tests/contract/ -race -run Artifact`
+**Verify:** `cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v`
 
 ---
 
