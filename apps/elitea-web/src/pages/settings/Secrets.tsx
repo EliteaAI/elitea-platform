@@ -42,7 +42,7 @@ import {
   useHideSecretMutation,
   showSecret,
 } from '@/entities/secret';
-import type { SecretRow, SecretMutations } from '@/entities/secret';
+import type { SecretRow, SecretMutations, Secret } from '@/entities/secret';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { secretsFeature } from '@/features/settings';
@@ -54,6 +54,25 @@ import type { Permission } from '@/shared/api/generated/model';
 
 const { SecretsTable } = secretsFeature;
 import { t } from '@/shared/i18n';
+
+/**
+ * A stable empty-array fallback for `useListSecretsQuery`'s `data`.
+ *
+ * BUG FIX: a destructuring default (`const { data: secrets = [] } = …`)
+ * allocates a BRAND NEW `[]` literal on every render in which `data` is
+ * `undefined` — which is exactly the state the query sits in for as long
+ * as it stays disabled (no project selected) or never resolves (API
+ * client unconfigured / erroring). That fresh reference then feeds the
+ * `useEffect` below as a dependency: React sees a "changed" dep on every
+ * render, re-runs the effect, calls `setRows` with a new array reference
+ * every time (even though the effective contents never change), which
+ * triggers a re-render — which allocates a fresh `[]` again — forever.
+ * Reading `data` directly and falling back to this module-level constant
+ * keeps the reference identical across renders whenever `data` is
+ * genuinely absent, so the effect's dependency is only ever "changed"
+ * when the query actually produces a new result.
+ */
+const EMPTY_SECRETS: Secret[] = [];
 
 export interface SecretsContentProps {
   /** Whether `?createSecret=1` is in the URL. */
@@ -106,9 +125,10 @@ export const SecretsContent = memo(function SecretsContent({
   const canUnsecret = checkPermission(PERMISSIONS.secrets.unsecret);
 
   /* ── API query ────────────────────────────────────────────────────── */
-  const { data: secrets = [], isFetching, isError, error } = useListSecretsQuery(projectId, {
+  const { data, isFetching, isError, error } = useListSecretsQuery(projectId, {
     enabled: !!projectId && canList,
   });
+  const secrets = data ?? EMPTY_SECRETS;
 
   /* ── API mutations ────────────────────────────────────────────────── */
   const createMutation = useCreateSecretMutation(projectId);
