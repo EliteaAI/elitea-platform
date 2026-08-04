@@ -58,7 +58,7 @@ describe('useAgentMCPToolsStatusMonitor', () => {
     expect(onToolsChange).not.toHaveBeenCalled();
   });
 
-  it('applies the event when projectId is undefined (no gating possible yet)', () => {
+  it("ignores the event when the hook's own projectId is undefined (baseline: strict projectId === project_id fails, nothing is patched)", () => {
     const client = createTestSocketClient();
     const onToolsChange = vi.fn();
     renderHook(
@@ -68,7 +68,20 @@ describe('useAgentMCPToolsStatusMonitor', () => {
 
     client.simulateServerEvent('mcp_status', { type: 'mcp', connected: false, project_id: 'proj-1' });
 
-    expect(onToolsChange).toHaveBeenCalledWith([{ ...MCP_TOOL, online: false }]);
+    expect(onToolsChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores the event when the event itself carries no project_id (`project_id` is optional on the wire schema)', () => {
+    const client = createTestSocketClient();
+    const onToolsChange = vi.fn();
+    renderHook(
+      () => useAgentMCPToolsStatusMonitor({ tools: [MCP_TOOL], projectId: 'proj-1', onToolsChange }),
+      { wrapper: withSocket(client) },
+    );
+
+    client.simulateServerEvent('mcp_status', { type: 'mcp', connected: true });
+
+    expect(onToolsChange).not.toHaveBeenCalled();
   });
 
   it('unsubscribes on unmount', () => {

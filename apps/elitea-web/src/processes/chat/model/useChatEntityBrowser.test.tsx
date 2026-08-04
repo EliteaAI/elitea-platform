@@ -40,7 +40,14 @@ beforeEach(() => {
       const agentsType = new URL(request.url).searchParams.get('agents_type');
       return HttpResponse.json({ rows: [applicationRow(agentsType === 'pipeline' ? 'p1' : 'a1', agentsType)], total: 1 });
     }),
-    http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, () => HttpResponse.json({ rows: [], total: 0 })),
+    http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, () =>
+      HttpResponse.json({
+        rows: [
+          { id: 'public-pipeline-1', name: 'Public Pipeline', agent_type: 'pipeline', is_forked: false, meta: null, has_interrupt: false },
+        ],
+        total: 1,
+      }),
+    ),
     http.get(`${BASE}/elitea_core/tools/prompt_lib/7`, () =>
       HttpResponse.json({
         rows: [
@@ -85,6 +92,19 @@ describe('useChatEntityBrowser', () => {
 
     expect(result.current.toolkits.items.map((i) => i.data['id'])).toEqual(['tk-1']);
     expect(result.current.mcps.items.map((i) => i.data['id'])).toEqual(['tk-2']);
+  });
+
+  it('excludes public/marketplace pipelines from the pipelines bucket, matching the baseline (private-only submenu source)', async () => {
+    const { wrapper } = createWrapper();
+    const { result } = renderHook(
+      () => useChatEntityBrowser({ projectId: '7', publicProjectId: '1', canListPublicAgents: false }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.pipelines.isFetching).toBe(false));
+
+    expect(result.current.pipelines.items.map((i) => i.data['id'])).toEqual(['p1']);
+    expect(result.current.pipelines.items.every((i) => !i.isPublic)).toBe(true);
   });
 
   it('skip disables every fetch', () => {

@@ -7,15 +7,13 @@
  * ParticipantsWrapper.jsx` (old-app). The wrapper:
  *  1. Receives the active conversation from the consumer.
  *  2. Derives permission-based flags (e.g., `disabledAdd` from
- *     `useCheckPermission(PERMISSIONS.users.view)`).
+ *     `checkPermission(PERMISSIONS.users.view)`, via the inlined
+ *     `useCheckPermission` below).
  *  3. Feeds `participants` into `ParticipantDetailsProvider` so the detail
  *     cache fetches entity data for non-user participants.
  *  4. Renders a MUI `<Grid>` with responsive sizing.
  *
  * Cross-cutting gaps:
- *  - `useCheckPermission` — the wrapper reads `PERMISSIONS.users.view` to
- *    gate add-capability. This hook is a feature-local hook; if the
- *    permission model changes, this is the single update site.
  *  - `ContextBudgetUI` is NOT rendered here — it is a slot prop passed
  *    through to `Participants`'s `renderContextBudget`.
  *  - `ParticipantStatusRunner` children (MCP token change listener,
@@ -23,17 +21,52 @@
  *    slot injection (see `ParticipantDetailsProvider`'s doc comment).
  */
 
-import React, { useCallback, useEffect, memo, useMemo } from 'react';
+import React, { useCallback, useEffect, useState, memo, useMemo } from 'react';
 
 import Grid from '@mui/material/Grid';
 import { useTheme } from '@mui/material/styles';
 
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
+import type { Permission } from '@/shared/api/generated/model';
+import { PERMISSIONS } from '@/shared/lib/permissions';
+
+import { useSelectedProjectId } from '../api/useSelectedProjectId';
+import { getChatParticipantUniqueId } from '../lib/helpers';
 import { ParticipantDetailsProvider } from '../lib/context/ParticipantDetailsContext';
 import { Participants } from './Participants';
 import type { ParticipantsProps } from './Participants.types';
-import { chatParticipantUniqueId } from '@/entities/participant';
 import { MIN_LARGE_WINDOW_WIDTH } from '@/shared/lib/layout';
 import { derivePaddingLeft, deriveWrapperStyleParams, useWrapperGridSizes, wrapperSx } from './ParticipantsWrapper.styles';
+
+/**
+ * Inlined local duplicate of `useCheckPermission` — mirrors the same
+ * "local, feature-owned, no shared primitive exists" pattern already
+ * established by `features/chat-input/lib/hooks/useCheckPermission.hooks.ts`
+ * and `features/agents/lib/useHasPermission.ts` (both carry the identical
+ * disclosure). `no-sideways-features` forbids importing the chat-input copy
+ * directly, so this feature gets its own byte-for-byte-equivalent copy.
+ *
+ * Fixes adversarial review C5-wrapper #5: `disabledAdd` was previously
+ * derived from playback state alone, dropping the old app's
+ * `!checkPermission(PERMISSIONS.users.view)` gate entirely.
+ */
+function useCheckPermission(): { readonly checkPermission: (permission: string) => boolean } {
+  const projectId = useSelectedProjectId();
+  const query = usePermissionList(projectId ?? '', { query: { enabled: projectId !== undefined } });
+
+  const permissions = useMemo(() => {
+    const list = query.data?.data as Permission[] | undefined;
+    if (!list) return new Set<string>();
+    return new Set(list.filter((entry) => entry.enabled).map((entry) => entry.name));
+  }, [query.data]);
+
+  const checkPermission = useCallback(
+    (permission: string) => (permission ? permissions.has(permission) : true),
+    [permissions],
+  );
+
+  return { checkPermission };
+}
 
 /**
  * Inlined local duplicate of `useIsSmallWindow` — the pipelines and
@@ -136,6 +169,14 @@ export interface ParticipantsWrapperProps {
   readonly editingToolkit?: string;
   /** Maximum visible users in the users row before overflow. */
   readonly maxVisibleUsers?: number;
+  /**
+   * Id of the toolkit participant currently acting as the active
+   * conversation's attachment manager.
+   * @see ParticipantsProps.selectedManager
+   */
+  readonly selectedManager?: string;
+  /** Same as `selectedManager`, but for a conversation still being composed (not yet persisted). */
+  readonly newConversationSelectedManager?: string;
 }
 
 /**
@@ -171,7 +212,7 @@ export interface ParticipantsWrapperProps {
  */
 export const ParticipantsWrapper = memo(
   ({
-    _hidden = false,
+    hidden = false,
     collapsed = false,
     panelWidth = 320,
     activeConversation,
@@ -186,9 +227,12 @@ export const ParticipantsWrapper = memo(
     isMcpVisible,
     editingToolkit,
     maxVisibleUsers = 5,
+    selectedManager,
+    newConversationSelectedManager,
   }: ParticipantsWrapperProps) => {
     const theme = useTheme();
     const { isSmallWindow } = useIsSmallWindow();
+    const { checkPermission } = useCheckPermission();
     const derived = useParticipantsDerived(activeConversation, activeParticipant);
     const responsive = useResponsiveSizes(collapsed, isSmallWindow, panelWidth);
     const contextSlot = useContextBudgetSlot(
@@ -198,6 +242,20 @@ export const ParticipantsWrapper = memo(
       derived.conversationInstructions,
       derived.persona,
     );
+
+    // Fixes adversarial review C5-wrapper #5: old-app `disabledAdd` gates on
+    // BOTH playback state and `users.view` permission, not playback alone.
+    const disabledAdd = useMemo(
+      () => derived.isPlayback || !checkPermission(PERMISSIONS.users.view),
+      [derived.isPlayback, checkPermission],
+    );
+
+    // Fixes adversarial review C5-wrapper #6: `hidden` was previously
+    // destructured as `_hidden` (never matching the actual prop name) and
+    // never checked at all — the panel could no longer be hidden. All hooks
+    // above run unconditionally first; the early return comes after, same as
+    // old-app `ParticipantsWrapper.jsx`'s `if (hidden) return null;`.
+    if (hidden) return null;
 
     return (
       <Grid
@@ -211,7 +269,7 @@ export const ParticipantsWrapper = memo(
             collapsed={collapsed}
             onCollapsed={onCollapsed}
             disabledEdit={derived.isPlayback}
-            disabledAdd={derived.isPlayback}
+            disabledAdd={disabledAdd}
             activeParticipantId={derived.activeParticipantId}
             onSelectParticipant={onSelectParticipant}
             onDeleteParticipant={onDeleteParticipant}
@@ -222,6 +280,9 @@ export const ParticipantsWrapper = memo(
             isMcpVisible={isMcpVisible}
             renderContextBudget={contextSlot}
             maxVisibleUsers={maxVisibleUsers}
+            isSmallWindow={isSmallWindow}
+            selectedManager={selectedManager}
+            newConversationSelectedManager={newConversationSelectedManager}
           />
         </ParticipantDetailsProvider>
       </Grid>
@@ -246,8 +307,11 @@ function useParticipantsDerived(
       },
       [activeConversation],
     ),
+    // `getChatParticipantUniqueId` (`../lib/helpers`), not `@/entities/participant`'s
+    // camelCase-keyed `chatParticipantUniqueId` — the latter always misses on this
+    // feature's snake_case shape and returns the same id for every participant.
     activeParticipantId: useMemo(
-      () => activeParticipant ? chatParticipantUniqueId(activeParticipant) : undefined,
+      () => activeParticipant ? getChatParticipantUniqueId(activeParticipant) : undefined,
       [activeParticipant],
     ),
     contextStrategy: useMemo(
@@ -267,7 +331,7 @@ function useParticipantsDerived(
 
 function useResponsiveSizes(collapsed: boolean, isSmallWindow: boolean, panelWidth: number) {
   const { xsSize, lgSize } = useWrapperGridSizes(collapsed);
-  const styleParams = deriveWrapperStyleParams(isSmallWindow, panelWidth);
+  const styleParams = deriveWrapperStyleParams(isSmallWindow, panelWidth, collapsed);
   const paddingLeft = derivePaddingLeft(collapsed);
   return { xsSize, lgSize, styleParams, paddingLeft };
 }

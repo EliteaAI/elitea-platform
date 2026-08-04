@@ -16,18 +16,22 @@
  * inside its label slot).
  *
  * `AIAssistantInput` is this unit's already-landed sibling
- * (`../AIAssistantInput`, unit A2a) — its promoted API has no `onInput`/
- * `onChange` prop at all (only `value` + `fieldBinding.{onChange,onInput}`,
- * fired from the AI Assistant modal's own apply/blur handlers, verified:
- * `ui/AIAssistantInput.tsx`'s `AIAssistantInputProps` interface declares no
- * change callback). `fieldBinding.onInput` is wired to this node's existing
- * `handleConditionFilling`, so AI-generated/edited condition text still
- * writes back into the YAML — but, as currently promoted, this component
- * cannot fire that handler from typing directly into the base field either
- * (no forwarded `onChange` reaches the underlying `InputBase`/`TextField` —
- * confirmed by reading `buildInputBaseProps` in that file, which forwards
- * only `value`/`label`/`disabled`/`name`/`id`). Disclosed, not silently
- * reinterpreted: not this sub-unit's file to change (A2a, already landed).
+ * (`../AIAssistantInput`, unit A2a). It previously forwarded no `onChange`/
+ * `onInput` to its own base field at all (only `fieldBinding.{onChange,
+ * onInput}`, fired from the AI Assistant modal's own apply/blur handlers),
+ * which was reported and CONFIRMED as an adversarial-review blocker: users
+ * could no longer type directly into this Condition field (or the
+ * equivalent Description/system/task/user_message fields on
+ * Legacy/NormalDecisionNode and LLMNode/HITLNode), only edit it through the
+ * separate AI Assistant modal. `AIAssistantInput.tsx`'s own module doc
+ * comment ("FIX (confirmed adversarial-review finding #1, this file:60)")
+ * now records the real fix, made there (that file, unit A2a, is outside
+ * this cluster's `ui/nodes/` scope and is not touched here): its
+ * `buildInputBaseProps` now forwards a real `onChange` that routes through
+ * `fieldBinding.onChange`/`onInput` on every keystroke, not just on modal
+ * apply/blur. This call site needed no further change once that landed —
+ * `fieldBinding.onInput: handleConditionFilling` below now fires from
+ * direct typing too, in addition to the AI Assistant modal's apply/close.
  */
 import type { ReactNode } from 'react';
 import { memo, useCallback, useContext, useMemo } from 'react';

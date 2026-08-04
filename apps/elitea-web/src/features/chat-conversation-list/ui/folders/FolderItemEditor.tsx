@@ -56,6 +56,20 @@ export interface FolderItemEditorProps {
  * wrapped in a `<span>` (not a bare disabled `IconButton`) so the `Tooltip`
  * still receives pointer events while the button itself is disabled — MUI's
  * own documented workaround for "tooltip on a disabled control".
+ *
+ * `actions={{ enabled: false }}` on `StyledInputEnhancer` — required,
+ * disclosed gap fix: `StyledInputEnhancer`'s own defaults
+ * (`actions.enabled`/`forceShow` default `true`, `showFullScreen` hardcoded
+ * `true` — see its own doc comment) are built for its "full-screen escape
+ * hatch" use case, not this single-line, always-focused folder-name field.
+ * Left un-overridden, they render a hover-independent Copy + full-screen-edit
+ * toolbar absolutely positioned inside this row's `3.125rem` height, on top
+ * of the real Confirm/Cancel `IconButton`s below — something the baseline
+ * field (`FolderItem.jsx:298-309`, plain `Input.StyledInputEnhancer` with no
+ * `hasActionsToolBar`) never had (old `InputBase.jsx`'s toolbar defaults
+ * `hasActionsToolBar` to `false`). `enabled: false` short-circuits
+ * `InputBase`'s `showToolbar = resolved.enabled && (...)` regardless of
+ * `forceShow`/`showFullScreen`, restoring the baseline's zero-actions field.
  */
 export function FolderItemEditor({ folderName, isFolderNameValid, onChangeFolderName, onKeyDown, onConfirm, onCancel }: FolderItemEditorProps): ReactNode {
   const theme = useTheme();
@@ -79,6 +93,7 @@ export function FolderItemEditor({ folderName, isFolderNameValid, onChangeFolder
         onChange={onChangeFolderName}
         onKeyDown={onKeyDown}
         containerSx={editorInputContainerSx}
+        actions={{ enabled: false }}
       />
       <Tooltip
         title={isFolderNameValid ? '' : FolderNameWarningMessage}

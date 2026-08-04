@@ -31,7 +31,12 @@ import type { AgentToolVariable } from '../lib/types';
  * `onChange={(event) => …}` handler (reading `event.target.value`) instead
  * of the baseline's `onInput`/`hasActionsToolBar`/`fieldName` prop trio —
  * ported behaviourally (fires on every keystroke, passes the field's
- * current text back to the caller), not prop-for-prop.
+ * current text back to the caller), not prop-for-prop. The baseline's
+ * `showexpandicon="true" multiline collapseContent` trio (`AgentVariables.jsx:23-25`,
+ * spread through `VariableList`'s `...restProps` into every row) becomes
+ * this port's `expand` option object — same values the sibling
+ * `ApplicationVariables.tsx` already uses for its own, analogous
+ * variable-row case.
  */
 export interface AgentVariablesProps {
   readonly variables: readonly AgentToolVariable[] | undefined;
@@ -52,6 +57,7 @@ function VariableRow({ variable, onChangeVariable }: { readonly variable: AgentT
         label={variable.name}
         value={variable.value}
         onChange={handleChange}
+        expand={{ minRows: 1, maxRows: 15, collapsed: true }}
       />
     </Box>
   );

@@ -4,6 +4,8 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 
+import { getConfig } from '@/shared/config';
+
 import {
   CODE_EXAMPLE_TYPES,
 } from './codeExamples';
@@ -37,10 +39,17 @@ export function useCodePreview(model: Record<string, unknown> | null, projectId:
 
   const baseApiUrl = useMemo(() => {
     if (!projectId) return '';
-    // Build base URL from the current origin — the LLM endpoint is behind
-    // the same host as the app (the old app replaced `/api/v2` to get the
-    // server root, then appended `/llm/v1`).
-    const baseUrl = window.location.origin;
+    // Old app priority: `user.api_url || VITE_SERVER_URL?.replace('/api/v2', '')
+    // || window.location.origin` (`useCodePreview.hooks.js:20-23`) — this app
+    // has no per-user `api_url` equivalent yet (not modeled anywhere in the
+    // ported user/auth entities), so this falls back to the deployment-level
+    // `VITE_SERVER_URL` config, then `window.location.origin` as the old
+    // app's own last resort. This is the fallback the old app relies on for
+    // deployments where the API is served from a different host/subdomain
+    // than the frontend.
+    const result = getConfig();
+    const serverUrl = result.status === 'ok' ? result.config.vite_server_url : '';
+    const baseUrl = (serverUrl && serverUrl.replace('/api/v2', '')) || window.location.origin;
     return `${baseUrl}/llm/v1`;
   }, [projectId]);
 

@@ -6,6 +6,7 @@ import {
   getDeleteApplicationToolQueryOptions,
   getUpdateApplicationRelationQueryOptions,
 } from '@/shared/api/generated/applications/applications';
+import { t } from '@/shared/i18n';
 
 import { useSelectedProjectId } from '../../api/useSelectedProjectId';
 import type { AgentToolAssociation } from '../types';
@@ -81,6 +82,18 @@ import { useSetRefetchDetails } from './useRefetchAgentDetails.hooks';
  *     already calls `setRefetch()` (deviation 6) immediately after, which
  *     is this slice's own, already-landed mechanism for exactly this
  *     "avoid a real refetch fighting the form's local edits" situation.
+ *     The SAME recovery path also drops the baseline's
+ *     `toastInfo('Tool reference was outdated. Page has been refreshed
+ *     with current state.')` — no toast infrastructure exists in this app
+ *     yet (same precedent as `features/mcps/model/useMcpAuthCheck.ts`'s
+ *     "`useToast` is replaced with an `onError` callback", and
+ *     `api/useAgentPipelineAssociation.tsx`'s own gap-3 doc comment).
+ *     Restored as an optional injected `onStaleVersionReference?: (message:
+ *     string) => void` param (`DisassociateToolkitFormActions`), called
+ *     with the same i18n'd message text right where `setRefetch()` already
+ *     fires — the caller decides how (or whether) to surface it, same as
+ *     every other optional callback this hook already exposes
+ *     (`onToolRemovedFromFlow`/`onPipelineAutoSave`).
  *  6. `useSetRefetchDetails` (`@/[fsd]/features/agent/lib/hooks/
  *     useRefetchAgentDetails.hooks`) -> this sub-unit's own already-ported
  *     `useRefetchAgentDetails.hooks.ts` (intra-slice, no deviation).
@@ -93,6 +106,21 @@ import { useSetRefetchDetails } from './useRefetchAgentDetails.hooks';
  *     helper (`clearTools(tools, currentUserId)`, strips per-user transient
  *     fields before an auto-save); moved inside `onPipelineAutoSave`'s
  *     responsibility for the same reason as deviation 7.
+ *  9. `handleApplicationRelationRemoval`'s baseline
+ *     (`useDisassociateToolkit.hooks.js:189-223`) has NO precondition guard
+ *     on `applicationId`/`versionId`/`projectId`/`tool.settings?.
+ *     application_id`/`application_version_id` — it always calls
+ *     `updateApplicationRelation(...)` and lets a request built from
+ *     missing ids fail server-side, landing in its own `catch` ->
+ *     `toastError(...)` branch. The generated
+ *     `getUpdateApplicationRelationQueryOptions` requires concrete
+ *     `string`/`number` arguments (no `undefined` overload), so a
+ *     precondition check is unavoidable here for type-safety — but it must
+ *     produce the SAME user-visible outcome as the baseline (a surfaced
+ *     failure), not silently return. It therefore sets
+ *     `isDisassociateError`/`disassociateError` directly — the same error
+ *     state the `catch` branch below sets — instead of returning with no
+ *     signal at all.
  */
 
 export interface DisassociateToolkitFormState {
@@ -121,6 +149,8 @@ export interface DisassociateToolkitFormActions {
     readonly isAttachmentToolkit: boolean;
   }) => void | Promise<void>;
   readonly isFromPipeline?: boolean;
+  /** See module doc comment, deviation 5 — baseline's `toastInfo(...)` on the stale-version-reference recovery path. Called with an already-i18n'd message, right where `setRefetch()` fires. */
+  readonly onStaleVersionReference?: (message: string) => void;
 }
 
 export interface UseDisassociateToolkitParams extends DisassociateToolkitFormState, DisassociateToolkitFormActions {
@@ -242,6 +272,19 @@ export function useDisassociateToolkit(params: UseDisassociateToolkitParams): Us
         tool.settings?.application_id === undefined ||
         tool.settings.application_version_id === undefined
       ) {
+        // See module doc comment, deviation 9: the baseline has no equivalent guard and always
+        // makes the call, letting a request built from missing ids fail server-side and surface
+        // through the SAME catch branch below. Matching that user-visible outcome (a surfaced
+        // failure, not a silent no-op) without an actual type-unsafe call.
+        setIsDisassociateError(true);
+        setDisassociateError(
+          new Error(
+            t(
+              'features.agents.useDisassociateToolkit.missingRelationReference',
+              'Failed to update application relation: missing application or version reference.',
+            ),
+          ),
+        );
         return;
       }
       try {
@@ -261,6 +304,12 @@ export function useDisassociateToolkit(params: UseDisassociateToolkitParams): Us
       } catch (error) {
         if (isStaleVersionReferenceError(error)) {
           setRefetch();
+          paramsRef.current.onStaleVersionReference?.(
+            t(
+              'features.agents.useDisassociateToolkit.staleVersionReference',
+              'Tool reference was outdated. Page has been refreshed with current state.',
+            ),
+          );
         } else {
           setIsDisassociateError(true);
           setDisassociateError(error);

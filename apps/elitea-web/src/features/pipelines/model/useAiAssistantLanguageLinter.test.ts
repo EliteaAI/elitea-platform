@@ -88,6 +88,18 @@ describe('useAiAssistantLanguageLinter', () => {
     await waitFor(() => expect(result.current.extensions).toEqual([]));
   });
 
+  it('routes "python" (the Code node\'s AI-Assistant `language` override) to the same no-highlight bucket as "text"', async () => {
+    const { result } = renderHook(() => useAiAssistantLanguageLinter('python', null, false));
+    expect(result.current.language).toBe('python');
+    // Text-linter only (no syntax-highlighting extension) — real Python highlighting
+    // needs `@codemirror/lang-python`, not an installed dependency; see the hook's
+    // own header doc comment.
+    await waitFor(() => expect(result.current.extensions.length).toBe(1));
+
+    const { result: textResult } = renderHook(() => useAiAssistantLanguageLinter('text', null, false));
+    await waitFor(() => expect(textResult.current.extensions.length).toBe(result.current.extensions.length));
+  });
+
   it('onChangeLanguage updates language and persists to storage', () => {
     const { result } = renderHook(() => useAiAssistantLanguageLinter('text', null, false));
     result.current.onChangeLanguage('jinja');

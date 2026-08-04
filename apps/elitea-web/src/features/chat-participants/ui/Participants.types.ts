@@ -7,14 +7,28 @@
  * `Participants.tsx` and `ParticipantsLayout.tsx`.
  */
 import type { TransformedParticipant } from '../model/types';
+import { ChatParticipantType } from '../model/constants';
 
-/** Order in which participant types appear in the expanded list. */
+/**
+ * Order in which non-user participant types appear as sections below the
+ * users row. Fixed from capitalized display labels ('Users', 'Applications',
+ * 'Pipelines', 'Toolkits') to the real lowercase `ChatParticipantType` wire
+ * values (adversarial review C5-wrapper #2) — `groupedByType` in
+ * `Participants.tsx` keys its groups by `entity_name`/derived type, which are
+ * always lowercase, so a capitalized order list never matched any group.
+ *
+ * `Users` is intentionally NOT included here: users are rendered via their
+ * own dedicated row (`userParticipants`/`usersToDisplay` in `Participants.tsx`),
+ * matching old-app `ExpandedParticipantsList.jsx`'s `ENTITY_SECTIONS`, which
+ * also excludes Users for the same reason. Including it here would double-
+ * render the users group (once as the row, once as a redundant "Users"
+ * section).
+ */
 export const ENTITY_ORDER: string[] = [
-  'Users',
-  'Applications',
-  'Pipelines',
-  'Toolkits',
-  'mcp',
+  ChatParticipantType.Applications,
+  ChatParticipantType.Pipelines,
+  ChatParticipantType.Toolkits,
+  ChatParticipantType.MCP,
 ];
 
 export interface ParticipantsProps {
@@ -72,4 +86,20 @@ export interface ParticipantsProps {
    * before adding a count indicator. Defaults to `5`.
    */
   readonly maxVisibleUsers?: number;
+  /**
+   * True when the viewport itself is narrow (mirrors old-app `useIsSmallWindow`).
+   * Overrides `collapsed` for both the header title and the collapsed
+   * icon-strip switch — on a small window the full section list always
+   * shows (with title), even if `collapsed` is true. Defaults to `false`.
+   */
+  readonly isSmallWindow?: boolean;
+  /**
+   * Id of the toolkit participant currently acting as the active
+   * conversation's attachment manager. Compared against each participant's
+   * `entity_meta.id` to flag the "this toolkit is the attachment manager"
+   * indicator (`ParticipantItem`'s `isAttachment`).
+   */
+  readonly selectedManager?: string;
+  /** Same as `selectedManager`, but for a conversation still being composed (not yet persisted). */
+  readonly newConversationSelectedManager?: string;
 }

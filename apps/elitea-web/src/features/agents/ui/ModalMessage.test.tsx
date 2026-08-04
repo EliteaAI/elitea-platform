@@ -76,4 +76,29 @@ describe('ModalMessage', () => {
     await vi.waitFor(() => expect(onCopied).toHaveBeenCalled());
     expect(writeText).toHaveBeenCalledWith('content to copy');
   });
+
+  it('calls onCopyFailed (not onCopied) when the clipboard write genuinely fails', async () => {
+    // Restored parity target: the baseline's `onCopy` gets a REAL
+    // success/failure result from a direct `navigator.clipboard.writeText`
+    // call (`ModalMessage.jsx:18-25`) — this asserts the new port's
+    // `onCopyFailed` channel is actually wired to a real rejection, not a
+    // dead callback that can never fire (see this file's own module doc
+    // comment).
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    const onCopied = vi.fn();
+    const onCopyFailed = vi.fn();
+    renderWithProviders(
+      <ModalMessage
+        title="assistant"
+        message="content to copy"
+        onCopied={onCopied}
+        onCopyFailed={onCopyFailed}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { hidden: true }));
+    await vi.waitFor(() => expect(onCopyFailed).toHaveBeenCalled());
+    expect(onCopied).not.toHaveBeenCalled();
+  });
 });

@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
-import { useCallback, useState } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -36,8 +36,26 @@ import { useToggleSet } from './useToggleSet';
  * cross-cutting promotion decision outside this sub-unit's ownership
  * fence) would just be dead generality. Every state/step the baseline's
  * `GenerateEntityModal` implements (`input` → `loading` → `review`,
- * abort-on-close, back-to-prompt) is preserved verbatim, inlined into this
+ * abort-on-close, back-to-prompt) is preserved, inlined into this
  * agent-specific component instead of a separate generic wrapper.
+ *
+ * **abort-on-close, one disclosed deviation.** The baseline's
+ * `generatePromiseRef.current.abort()` cancels the underlying RTK Query
+ * mutation-trigger promise itself. `../../api/generateAgentDraft.ts`'s
+ * `useGenerateAgentDraftMutation` (outside this sub-unit's file scope) wraps
+ * a bare `queryClient.fetchQuery` and exposes no abort/cancel handle, so a
+ * literal network-level abort is not reachable from this component today —
+ * see that file for the real fix (thread an `AbortController`/expose a
+ * cancel fn, or call `queryClient.cancelQueries` against the query key
+ * `getGenerateAgentDraftQueryOptions` produces). What IS implemented here,
+ * inside this file's own scope: `handleClose` bumps `generationTokenRef`,
+ * and `handleGenerate` captures the token before awaiting and checks it
+ * after — so a generate request that resolves after the modal was closed
+ * is discarded silently (no stale `draft`/`step`/error write-back), which
+ * is the user-visible half of "abort-on-close" (closing never reopens the
+ * modal into content from a request you already walked away from), even
+ * though the HTTP request itself keeps running to completion in the
+ * background.
  *
  * **REAL, CONFIRMED BACKEND GAP — the "generate agent draft" endpoint
  * returns a generic chat completion, not a structured draft. See
@@ -93,6 +111,11 @@ export function GenerateAgentModal({
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_AGENT_DRAFT);
   const [isDraftValid, setIsDraftValid] = useState(true);
 
+  // Bumped by `handleClose`; `handleGenerate` captures the value before
+  // awaiting `generateDraft` and compares it after — see the module doc
+  // comment's "abort-on-close, one disclosed deviation" section.
+  const generationTokenRef = useRef(0);
+
   const toolkits = useToggleSet<number | string>();
   const mcp = useToggleSet<number | string>();
   const pipelines = useToggleSet<number | string>();
@@ -108,6 +131,10 @@ export function GenerateAgentModal({
   }, [toolkits, mcp, pipelines, agents, skills]);
 
   const handleClose = useCallback(() => {
+    // Invalidate any in-flight `handleGenerate` call so its continuation is a
+    // no-op once it resolves — see the module doc comment's "abort-on-close,
+    // one disclosed deviation" section.
+    generationTokenRef.current += 1;
     setStep('input');
     setDescription('');
     setDraft(EMPTY_AGENT_DRAFT);
@@ -119,10 +146,18 @@ export function GenerateAgentModal({
   const handleGenerate = useCallback(async () => {
     if (!description.trim() || projectId === undefined) return;
 
+    const requestToken = ++generationTokenRef.current;
     setStep('loading');
     resetGenerateError();
 
     const response = await generateDraft({ projectId, user_description: description });
+    if (requestToken !== generationTokenRef.current) {
+      // The modal was closed while this request was in flight — discard the
+      // stale result (success or error) instead of writing it into state.
+      resetGenerateError();
+      return;
+    }
+
     if (response === undefined) {
       setStep('input');
       return;
@@ -132,6 +167,36 @@ export function GenerateAgentModal({
     resetSelections();
     setStep('review');
   }, [description, projectId, generateDraft, resetGenerateError, resetSelections]);
+
+  const handleDescriptionKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        void handleGenerate();
+      }
+    },
+    [handleGenerate],
+  );
+
+  // Baseline: `autoFocus` on the `STEPS.INPUT` `TextField`, focusing it as
+  // soon as it appears. Imperative focus-on-attach via the `inputRef`
+  // callback, not the JSX `autoFocus` prop (`jsx-a11y/no-autofocus`, R-C1,
+  // bans it outright with no per-file waiver; same fix already applied
+  // throughout this codebase, e.g. `FolderItemEditor.tsx`'s own doc comment)
+  // and not a `useEffect` keyed on mount (this component never unmounts —
+  // `GenerateAgentButton` always renders it, gated only by the `open` prop
+  // passed to `BaseModal`'s `Dialog` — so a mount-only effect wouldn't
+  // re-focus on every reopen or on "Back to prompt"; a ref-based
+  // `open`/`step`-keyed effect was tried first, but MUI's `TextareaAutosize`
+  // (the multiline `TextField`'s actual input) attaches its DOM ref during a
+  // deferred internal render pass that lands AFTER this component's own
+  // effects flush, leaving the ref `null` when such an effect would fire —
+  // focusing directly in the `inputRef` callback, which necessarily runs at
+  // the exact moment the node attaches, sidesteps that ordering hazard and
+  // naturally re-fires on every fresh mount of this field).
+  const focusDescriptionField = useCallback((element: HTMLTextAreaElement | HTMLInputElement | null) => {
+    element?.focus();
+  }, []);
 
   const handleBack = useCallback(() => {
     setStep('input');
@@ -188,6 +253,8 @@ export function GenerateAgentModal({
           )}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
+          onKeyDown={handleDescriptionKeyDown}
+          inputRef={focusDescriptionField}
           variant="standard"
           slotProps={{ input: { disableUnderline: true } }}
         />

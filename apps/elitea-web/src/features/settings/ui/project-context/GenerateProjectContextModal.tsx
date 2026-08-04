@@ -19,6 +19,7 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { BaseModal } from '@/shared/ui/BaseModal';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 
 import { useGenerateProjectContextDraftMutation } from '@/entities/project';
 
@@ -29,6 +30,29 @@ import {
 } from './GenerateProjectContextReviewForm';
 
 type Step = 'input' | 'loading' | 'review';
+
+/**
+ * Surfaces the backend's own error detail instead of a fixed generic
+ * string — old-app parity: `entities/generate-entity-with-ai/ui/
+ * GenerateEntityModal.jsx:142-151`'s
+ * `generateError?.data?.error || generateError?.data?.detail || fallback`.
+ * This transport's equivalent of the old RTK-Query `.data` envelope is
+ * `EliteaApiError.failure.body` (`shared/api/generated/mutator.ts`'s
+ * `HttpFailure` — the parsed JSON response body of an HTTP failure); the
+ * documented backend convention is a flat `{"error": "message"}`, but
+ * `detail` is checked too to mirror the old app's exact fallback chain.
+ */
+function generateErrorMessage(error: unknown): string {
+  if (error instanceof EliteaApiError && error.failure.kind === 'http') {
+    const body = error.failure.body;
+    if (body && typeof body === 'object') {
+      const { error: errorField, detail } = body as { error?: unknown; detail?: unknown };
+      if (typeof errorField === 'string' && errorField.trim()) return errorField;
+      if (typeof detail === 'string' && detail.trim()) return detail;
+    }
+  }
+  return t('entities.projectContext.generateModal.generateFailed', 'Failed to generate. Please try again.');
+}
 
 export interface GenerateProjectContextModalProps {
   readonly open: boolean;
@@ -151,9 +175,9 @@ export function GenerateProjectContextModal({
           variant="standard"
           slotProps={{ input: { disableUnderline: true } }}
         />
-        {generateError !== undefined && (
+        {generateError && (
           <Alert severity="error" sx={{ marginTop: '0.5rem' }}>
-            {t('entities.projectContext.generateModal.generateFailed', 'Failed to generate. Please try again.')}
+            {generateErrorMessage(generateError)}
           </Alert>
         )}
       </Box>
@@ -178,14 +202,22 @@ export function GenerateProjectContextModal({
         </BaseBtn>
       </>
     ) : (
-      <BaseBtn
-        variant="contained"
-        color="primary"
-        disabled={!description.trim()}
-        onClick={() => void handleGenerate()}
-      >
-        {t('entities.projectContext.generateModal.generate', 'Generate')}
-      </BaseBtn>
+      <>
+        <BaseBtn
+          variant="secondary"
+          onClick={handleClose}
+        >
+          {t('entities.projectContext.generateModal.cancel', 'Cancel')}
+        </BaseBtn>
+        <BaseBtn
+          variant="contained"
+          color="primary"
+          disabled={!description.trim()}
+          onClick={() => void handleGenerate()}
+        >
+          {t('entities.projectContext.generateModal.generate', 'Generate')}
+        </BaseBtn>
+      </>
     );
 
   return (

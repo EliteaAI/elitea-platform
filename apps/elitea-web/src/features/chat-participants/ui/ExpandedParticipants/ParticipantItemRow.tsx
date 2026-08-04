@@ -5,8 +5,9 @@ import { useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import { useParticipantEntityIcon } from '../../lib/hooks/useParticipantEntityIcon';
-import { useParticipantName } from '../../lib/hooks/useParticipantName';
+import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import type { SocialAuthorProfile } from '@/shared/api/generated/model';
+import { t } from '@/shared/ui/lib/t';
 
 import type { TransformedParticipant } from '../../model/types';
 
@@ -21,11 +22,82 @@ export interface ParticipantItemRowProps {
   readonly onClickItem: (participant: TransformedParticipant) => void;
 }
 
+interface RowState {
+  readonly name: string;
+  readonly isOtherUser: boolean;
+  readonly avatarUrl: string | undefined;
+  readonly participantId: string;
+}
+
+/**
+ * Current user's id, resolved via `useGetCurrentAuthor` — same established
+ * pattern as `chat-conversation-list/ui/folders/FolderItem.tsx`'s own
+ * `useCurrentUserId` (kept local/duplicated here rather than imported: that
+ * file lives outside this cluster's edit scope).
+ */
+function useCurrentUserId(): string | undefined {
+  const query = useGetCurrentAuthor();
+  return (query.data?.data as SocialAuthorProfile | undefined)?.id;
+}
+
+/**
+ * Derives this row's display name, self-exclusion, and avatar from the real
+ * (snake_case) wire shape.
+ *
+ * - `name`: `entity_meta.name` first, then `meta.user_name` — matches old
+ *   app's `getParticipantName` (`participants.helpers.js:23-44`, Users
+ *   branch) and this directory's own `UserParticipantItem.tsx`. Deliberately
+ *   NOT delegated to `lib/hooks/useParticipantName` — that hook's
+ *   `participantDisplayName` (`entities/participant`) reads CAMELCASE fields
+ *   never populated on this feature's snake_case `TransformedParticipant`,
+ *   so it always resolves to `''` and then throws on an unimported
+ *   `DEFAULT_PARTICIPANT_NAME` (wave-2 C5 adversarial-review finding #2).
+ *   Fixing that hook is outside this cluster's file scope
+ *   (`lib/hooks/useParticipantName.ts`).
+ * - `isOtherUser`: parity with old app's `user?.id != participant_user_id`
+ *   (`UserParticipantItem.jsx:20`) — loose-equality semantics preserved: while
+ *   the current user id hasn't loaded yet, default to "other user" so the
+ *   row stays clickable rather than silently inert.
+ * - `avatarUrl`: `meta.user_avatar`, what old app's `UserAvatar
+ *   avatar={user_avatar}` actually rendered — NOT `useParticipantEntityIcon`'s
+ *   `entity_settings.icon_meta` chain, which is never populated for a
+ *   Users-type participant (wave-2 C5 adversarial-review finding #11).
+ */
+function computeRowState(participant: TransformedParticipant, currentUserId: string | undefined): RowState {
+  const entityMeta = participant.entity_meta;
+  const meta = participant.meta;
+
+  const name =
+    entityMeta?.name ||
+    (meta?.user_name as string | undefined) ||
+    t('chat-participants.row.defaultUserName', 'User');
+
+  const participantId = entityMeta?.id ?? '';
+  const isOtherUser = currentUserId === undefined || String(currentUserId) !== String(participantId);
+  const avatarUrl = meta?.user_avatar as string | undefined;
+
+  return { name, isOtherUser, avatarUrl, participantId };
+}
+
+/** `default` for your own row (self-mention is a no-op) or while inactive-and-selected; `pointer` otherwise. */
+function resolveCursor(isOtherUser: boolean, isActive: boolean): 'default' | 'pointer' {
+  if (!isOtherUser) return 'default';
+  return isActive ? 'default' : 'pointer';
+}
+
 const ParticipantItemRow = memo(
   ({ participant, isActive, onClickItem }: ParticipantItemRowProps) => {
     const theme = useTheme();
-    const name = useParticipantName(participant);
-    const iconResult = useParticipantEntityIcon(participant);
+    const currentUserId = useCurrentUserId();
+
+    const { name, isOtherUser, avatarUrl, participantId } = computeRowState(participant, currentUserId);
+    const cursor = resolveCursor(isOtherUser, isActive);
+
+    // Old app's `UserParticipantItem.jsx:26-28`: clicking your own avatar is a
+    // deliberate no-op — you can't @-mention yourself.
+    const handleClick = () => {
+      if (isOtherUser) onClickItem(participant);
+    };
 
     return (
       <Box
@@ -37,7 +109,7 @@ const ParticipantItemRow = memo(
           gap: 1,
           background: 'transparent',
           border: 'none',
-          cursor: isActive ? 'default' : 'pointer',
+          cursor,
           padding: '0.25rem 0.5rem',
           borderRadius: 'var(--el-shape-radiusSm, 4px)',
           opacity: isActive ? 1 : 0.85,
@@ -46,19 +118,18 @@ const ParticipantItemRow = memo(
             backgroundColor: 'action.hover',
           },
         }}
-        onClick={() => onClickItem(participant)}
-        aria-label={`Select participant: ${name}`}
-        data-testid={`participant-item-${participant.entity_meta?.id ?? ''}`}
+        onClick={handleClick}
+        aria-label={isOtherUser ? t('chat-participants.row.mention', `Mention ${name}`) : name}
+        data-testid={`participant-item-${participantId}`}
       >
-        {iconResult.url && (
+        {avatarUrl ? (
           <Box
             component="img"
-            src={iconResult.url}
+            src={avatarUrl}
             alt={name}
             sx={{ width: 20, height: 20, borderRadius: 'var(--el-shape-radiusSm, 4px)' }}
           />
-        )}
-        {!iconResult.url && (
+        ) : (
           <Box
             sx={{
               width: 20,

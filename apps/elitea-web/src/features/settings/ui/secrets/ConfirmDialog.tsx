@@ -2,16 +2,27 @@
  * ConfirmDialog — inline confirmation dialog for hide / delete actions.
  *
  * Receives all dialog state from the parent via props to avoid extra hooks.
+ *
+ * Delete requires the user to retype the secret's exact name before the
+ * confirm button enables — ported from the baseline's `Modal
+ * .DeleteEntityModal` + `shouldRequestInputName` (`apps/elitea-ui/src/
+ * [fsd]/shared/ui/modal/DeleteEntityModal.jsx`, wired with
+ * `shouldRequestInputName` at `SecretsTable.jsx:590-596`). Hide does not
+ * require retyping — it renders as a plain confirm, matching the
+ * baseline's `AlertDialog` used for the hide path (`SecretsTable.jsx:
+ * 597-607`).
  */
+import { useEffect, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import CloseIcon from '@mui/icons-material/Close';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -24,11 +35,24 @@ export interface ConfirmDialogProps {
 export function ConfirmDialog({
   open,
   alertType,
+  rowName,
   onClose,
   onConfirm,
 }: ConfirmDialogProps) {
   const theme = useTheme();
+  const [inputName, setInputName] = useState('');
+
+  useEffect(() => {
+    if (!open) setInputName('');
+  }, [open]);
+
   if (!open || !alertType) return null;
+
+  const isDelete = alertType === 'delete';
+  // Ported from the baseline's `isConfirmDisabled`
+  // (`DeleteEntityModal.jsx`): confirm stays disabled until the typed name
+  // matches exactly — only for delete, and only once a name is known.
+  const isConfirmDisabled = isDelete && Boolean(rowName) && inputName !== rowName;
 
   return (
     <Box
@@ -63,15 +87,31 @@ export function ConfirmDialog({
         }}
       >
         <Typography variant="headingSmall" sx={{ marginBottom: '1rem' }}>
-          {alertType === 'hide'
-            ? t('entities.secret.dialog.hideTitle', 'Hide secret?')
-            : t('entities.secret.dialog.deleteTitle', 'Delete secret?')}
+          {isDelete
+            ? t('entities.secret.dialog.deleteTitle', 'Delete secret?')
+            : t('entities.secret.dialog.hideTitle', 'Hide secret?')}
         </Typography>
-        <Typography variant="bodyMedium" color="text.secondary" sx={{ marginBottom: '1.5rem' }}>
-          {alertType === 'hide'
-            ? t('entities.secret.dialog.hideContent', 'Are you sure you want to hide this secret? It will no longer be visible.')
-            : t('entities.secret.dialog.deleteContent', 'Are you sure you want to delete this secret? This action cannot be undone.')}
+        <Typography variant="bodyMedium" color="text.secondary" sx={{ marginBottom: isDelete ? '0.5rem' : '1.5rem' }}>
+          {isDelete
+            ? t('entities.secret.dialog.deleteContent', 'Are you sure you want to delete the secret {{name}}? This action cannot be undone.', { name: rowName })
+            : t('entities.secret.dialog.hideContent', 'Are you sure you want to hide the secret {{name}}? It will no longer be visible.', { name: rowName })}
         </Typography>
+        {isDelete && (
+          <>
+            <Typography variant="bodySmall" color="text.secondary" sx={{ marginBottom: '0.5rem' }}>
+              {t('entities.secret.dialog.deleteConfirmHint', 'Enter the name to confirm.')}
+            </Typography>
+            <TextField
+              fullWidth
+              autoComplete="off"
+              variant="standard"
+              label={t('entities.secret.dialog.deleteInputLabel', 'Name')}
+              value={inputName}
+              onChange={(event) => setInputName(event.target.value)}
+              sx={{ marginBottom: '1.5rem' }}
+            />
+          </>
+        )}
         <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
           <IconButton onClick={onClose} size="small">
             <CloseIcon fontSize="small" />
@@ -80,10 +120,11 @@ export function ConfirmDialog({
             onClick={onConfirm}
             size="small"
             color="error"
+            disabled={isConfirmDisabled}
           >
-            {alertType === 'hide'
-              ? t('entities.secret.dialog.hideConfirm', 'Hide')
-              : t('entities.secret.dialog.deleteConfirm', 'Delete')}
+            {isDelete
+              ? t('entities.secret.dialog.deleteConfirm', 'Delete')
+              : t('entities.secret.dialog.hideConfirm', 'Hide')}
           </IconButton>
         </Box>
       </Box>

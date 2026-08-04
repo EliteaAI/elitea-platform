@@ -10,6 +10,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import type { Toolkit } from '@/entities/toolkit';
 import { getGetApplicationQueryKey, useGetApplication, useListApplications } from '@/shared/api/generated/applications/applications';
 import type { Application, ApplicationDetail } from '@/shared/api/generated/model';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
 import { SearchParams } from '@/shared/lib/params';
 
@@ -45,13 +46,31 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  * see the "known integration gap" paragraph below.
  *
  * **REAL GAPS, disclosed (not invented around):**
- *  - No generated toolkit-association/assign endpoint exists at all
+ *  - No ORVAL-GENERATED wrapper exists for the toolkit-association endpoint
  *    (grepped `shared/api/generated/toolkits/toolkits.ts` — only
- *    `listToolkits`/`listToolkitInstances`). The Toolkit/MCP dropdowns list
- *    real toolkit instances (`useListToolkitInstances`) but the actual
- *    "attach" action is injected via `onAttachToolkit`/`onAttachMcp` rather
- *    than invented; with neither supplied, selecting an item just closes
- *    the menu.
+ *    `listToolkits`/`listToolkitInstances`). The endpoint itself IS real,
+ *    though: `services/elitea-main/internal/api/router.go`'s toolkit-instance
+ *    route group wires `r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}",
+ *    toolkitHandler.Update)`, and `internal/api/v2/toolkits/handler.go`'s
+ *    `Update`/`updateToolRelation` inserts a row into `entity_tool_mapping`
+ *    and returns `201 {"message": "ok"}` (no `tool_id` — the same "echo, no
+ *    constructed row" response shape `useAgentPipelineAssociation.tsx`'s own
+ *    doc comment documents for `updateApplicationRelation`). The baseline's
+ *    own `apps/elitea-ui/src/hooks/application/useLibraryToolkits.js`'s
+ *    `useAssociateToolkit` called this exact route with this exact body
+ *    shape (`entity_type` hardcoded to `'agent'` regardless of
+ *    agent-vs-pipeline — verified directly against that file, not a porting
+ *    guess). `associateToolkitInstance` (below) calls it directly via
+ *    `eliteaFetch`, the SAME primitive every generated hook calls
+ *    internally — the established precedent for a route the generated
+ *    client is missing (`features/toolkits/ui/ExportToolkitButton.tsx`'s own
+ *    module doc comment sets this exact pattern for `export_toolkit/
+ *    prompt_lib`). `onAttachToolkit`/`onAttachMcp` are no longer the attach
+ *    MECHANISM — they are optional OBSERVER callbacks this component still
+ *    fires after ITS OWN real attach call succeeds, for a caller that wants
+ *    to know (e.g. a future GA-tracking or toast integration); selecting a
+ *    Toolkit/MCP row always attaches it now, matching the baseline, with or
+ *    without either callback supplied.
  *  - `ListToolkitInstancesParams` only has `limit`/`offset` — no
  *    server-side search, so the toolkit/MCP search box filters the already-
  *    fetched page client-side (same tolerant-degradation style
@@ -65,15 +84,15 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  *    `has_swarm`/`icon_meta` fields — the baseline's swarm-agent list
  *    filter and rich per-entry icon are both dropped; `Application.icon`
  *    (a plain URL string) is passed to `EntityIcon` instead.
- *  - Known integration gap: `updateApplicationRelation`'s response carries
- *    no `tool_id` (see `useAgentPipelineAssociation.tsx`'s own doc
- *    comment) — after a successful agent/pipeline attach, this component
- *    invalidates its OWN `getGetApplicationQueryOptions` cache entry (so
- *    its internal "already added" / "unsaved" state stays correct) and
- *    calls `onToolsChanged`, but has no way to push the new tool into a
- *    SEPARATE `tools` list a parent component (e.g. the real
- *    `ApplicationTools`) owns — that parent must refetch its own copy on
- *    `onToolsChanged` too.
+ *  - Known integration gap: neither `updateApplicationRelation`'s response
+ *    (agent/pipeline attach) nor `associateToolkitInstance`'s (toolkit/MCP
+ *    attach, see the bullet above) carries a `tool_id`/constructed tool row
+ *    — after ANY successful attach, this component invalidates its OWN
+ *    `getGetApplicationQueryOptions` cache entry (so its internal "already
+ *    added" / "unsaved" state stays correct) and calls `onToolsChanged`, but
+ *    has no way to push the new tool into a SEPARATE `tools` list a parent
+ *    component (e.g. the real `ApplicationTools`) owns — that parent must
+ *    refetch its own copy on `onToolsChanged` too.
  *
  * **"Create new toolkit" round trip — inbound half (baseline's
  * `handleAddNewlyCreatedToolkit`/its `newToolkitId` watcher-effect,
@@ -85,8 +104,9 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  * specific route — `ApplicationTools.tsx` mounts it on both the agent and
  * pipeline editors) reads a returned `?newToolkitId=`/`?mcp=` pair, matches
  * it against the already-fetched `useToolkitInstanceRows` page, and — if
- * found — calls `onAttachToolkit`/`onAttachMcp` (the same injected callback
- * a manual dropdown click uses) before clearing all four round-trip params
+ * found — calls `attachToolkit`/`attachMcp` (the same real-attach path a
+ * manual dropdown click uses, `onAttachToolkit`/`onAttachMcp` fired only as
+ * their post-success observer) before clearing all four round-trip params
  * from the URL. Two real, disclosed limits on this, not invented around:
  *  - No get-single-toolkit-by-id endpoint exists (only `listToolkitInstances`,
  *    `limit`/`offset`, no id filter — same gap the "no server-side search"
@@ -107,10 +127,11 @@ import { EntityAddSection, InstanceAddSection, useEntityAssociationItems, useToo
  */
 export interface ToolMenuProps {
   readonly applicationId?: number | string | undefined;
-  /** Called after a successful agent/pipeline attach — see the module doc comment's "known integration gap" paragraph. */
+  /** Called after any successful attach (agent/pipeline/toolkit/MCP) — see the module doc comment's "known integration gap" paragraph. */
   readonly onToolsChanged?: (() => void) | undefined;
-  /** Injected — see the module doc comment; no generated endpoint exists to call directly. */
+  /** Optional observer, fired after this component's OWN real toolkit-attach call succeeds — see the module doc comment's "REAL GAPS" bullet. Not required for attaching to work. */
   readonly onAttachToolkit?: ((toolkit: Toolkit) => void) | undefined;
+  /** Same as `onAttachToolkit`, for the MCP dropdown. */
   readonly onAttachMcp?: ((toolkit: Toolkit) => void) | undefined;
 }
 
@@ -133,6 +154,29 @@ function computeAddedToolkitIds(currentTools: readonly AgentToolAssociation[]): 
 
 function resolveEntityLabel(agentType: string | undefined): 'agent' | 'pipeline' {
   return agentType === 'pipeline' ? 'pipeline' : 'agent';
+}
+
+/**
+ * `PATCH /elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}` — attaches a toolkit instance
+ * as a tool on the given version. See this module's own doc comment ("REAL GAPS" bullet) for
+ * the full evidence trail (real Go route, no orval wrapper, baseline's exact body shape).
+ * Resolves `true` on success, `false` on any failure — this file's other association path
+ * (`associateAsAgent`/`associateAsPipeline`, via `useAgentPipelineAssociation`) also swallows
+ * failures without surfacing an error (no toast infrastructure exists in this app yet, per that
+ * hook's own doc comment); this mirrors the same silent-on-failure shape rather than inventing
+ * error UI this file doesn't otherwise have.
+ */
+async function associateToolkitInstance(projectId: string, applicationId: number, versionId: number, toolkitId: string | number): Promise<boolean> {
+  try {
+    await eliteaFetch(`/elitea_core/tool/prompt_lib/${projectId}/${toolkitId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_version_id: versionId, entity_id: applicationId, entity_type: 'agent', has_relation: true }),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* ── the application/version this ToolMenu is attached to ─────────────────── */
@@ -205,6 +249,23 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
     [associateAgent, currentTools, onAssociated],
   );
 
+  // Performs the REAL toolkit/MCP attach (see this module's own doc comment, "REAL GAPS"
+  // bullet) — `notify` is the caller-supplied `onAttachToolkit`/`onAttachMcp` observer, fired
+  // only after the attach actually succeeds, never instead of it.
+  const attachToolkitInstance = useCallback(
+    (toolkit: Toolkit, notify: ((toolkit: Toolkit) => void) | undefined) => {
+      if (projectId === undefined || numericApplicationId === undefined || versionId === undefined) return;
+      void associateToolkitInstance(projectId, numericApplicationId, versionId, toolkit.id).then((ok) => {
+        if (!ok) return;
+        void onAssociated();
+        notify?.(toolkit);
+      });
+    },
+    [projectId, numericApplicationId, versionId, onAssociated],
+  );
+  const attachToolkit = useCallback((toolkit: Toolkit) => attachToolkitInstance(toolkit, onAttachToolkit), [attachToolkitInstance, onAttachToolkit]);
+  const attachMcp = useCallback((toolkit: Toolkit) => attachToolkitInstance(toolkit, onAttachMcp), [attachToolkitInstance, onAttachMcp]);
+
   const [instanceLimit, setInstanceLimit] = useState(20);
   const loadMoreInstances = useCallback(() => setInstanceLimit((prev) => prev + 20), []);
   const { rows: instanceRows, isFetching: instancesFetching } = useToolkitInstanceRows(projectId, instanceLimit);
@@ -223,7 +284,7 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
     const matched = instanceRows.find((row) => String(row.id) === newToolkitId);
     if (matched !== undefined) {
       const isMcpReturn = returnSearch[SearchParams.IsMCP] === 'true' || returnSearch[SearchParams.IsMCP] === '1';
-      (isMcpReturn ? onAttachMcp : onAttachToolkit)?.(matched);
+      (isMcpReturn ? attachMcp : attachToolkit)(matched);
     }
 
     void navigate({
@@ -238,7 +299,7 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
       },
       replace: true,
     });
-  }, [returnSearch, isEntityUnsaved, instancesFetching, instanceRows, onAttachToolkit, onAttachMcp, navigate]);
+  }, [returnSearch, isEntityUnsaved, instancesFetching, instanceRows, attachToolkit, attachMcp, navigate]);
 
   const [agentAnchor, setAgentAnchor] = useState<HTMLElement | null>(null);
   const [agentSearch, setAgentSearch] = useState('');
@@ -261,7 +322,13 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
   const agentItems = useEntityAssociationItems(agentRows, numericApplicationId, filterAgents, 'agent', associateAsAgent);
   const pipelineItems = useEntityAssociationItems(pipelineRows, numericApplicationId, filterPipelines, 'pipeline', associateAsPipeline);
 
-  const savedFirstTooltip = t('agents.toolMenu.saveFirst', 'Save the {{entity}} first, then add tools', { entity: entityLabel });
+  // One distinct tooltip per button (baseline: `ToolMenu.jsx:564-650`, four separate `Tooltip`
+  // titles) — NOT one shared string reused across all four, which would blur "add toolkits" vs
+  // "add mcps" vs "add agents" vs "add pipelines" into the same generic copy.
+  const saveFirstToolkitTooltip = t('agents.toolMenu.saveFirstToolkit', 'Save the {{entity}} first, then add toolkits', { entity: entityLabel });
+  const saveFirstMcpTooltip = t('agents.toolMenu.saveFirstMcp', 'Save the {{entity}} first, then add mcps', { entity: entityLabel });
+  const saveFirstAgentTooltip = t('agents.toolMenu.saveFirstAgent', 'Save the {{entity}} first, then add agents', { entity: entityLabel });
+  const saveFirstPipelineTooltip = t('agents.toolMenu.saveFirstPipeline', 'Save the {{entity}} first, then add pipelines', { entity: entityLabel });
 
   return (
     <Box sx={containerSx}>
@@ -269,12 +336,12 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
         copy={{ label: t('agents.toolMenu.toolkit', 'Toolkit'), searchPlaceholder: t('agents.toolMenu.searchToolkits', 'Search toolkits...'), emptyMessage: t('agents.toolMenu.noToolkits', 'No toolkits available') }}
         testId="agent-add-toolkit-button"
         isEntityUnsaved={isEntityUnsaved}
-        tooltip={savedFirstTooltip}
+        tooltip={saveFirstToolkitTooltip}
         isMcp={false}
         rows={instanceRows}
         addedToolkitIds={addedToolkitIds}
         isFetching={instancesFetching}
-        onAttach={onAttachToolkit}
+        onAttach={attachToolkit}
         onLoadMore={loadMoreInstances}
         createRoute="/toolkits/create"
         sourceApplicationId={numericApplicationId}
@@ -284,12 +351,12 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
         <InstanceAddSection
           copy={{ label: t('agents.toolMenu.mcp', 'MCP'), searchPlaceholder: t('agents.toolMenu.searchMcps', 'Search mcps...'), emptyMessage: t('agents.toolMenu.noMcps', 'No mcps available') }}
           isEntityUnsaved={isEntityUnsaved}
-          tooltip={savedFirstTooltip}
+          tooltip={saveFirstMcpTooltip}
           isMcp={true}
           rows={instanceRows}
           addedToolkitIds={addedToolkitIds}
           isFetching={instancesFetching}
-          onAttach={onAttachMcp}
+          onAttach={attachMcp}
           onLoadMore={loadMoreInstances}
           createRoute="/mcps/create"
           sourceApplicationId={numericApplicationId}
@@ -299,7 +366,7 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
       <EntityAddSection
         copy={{ label: t('agents.toolMenu.agent', 'Agent'), searchPlaceholder: t('agents.toolMenu.searchAgents', 'Search agents...'), emptyMessage: t('agents.toolMenu.noAgents', 'No agents available') }}
         isEntityUnsaved={isEntityUnsaved}
-        tooltip={savedFirstTooltip}
+        tooltip={saveFirstAgentTooltip}
         items={agentItems}
         isFetching={agentsQuery.isFetching}
         search={agentSearch}
@@ -312,7 +379,7 @@ export function ToolMenu({ applicationId, onToolsChanged, onAttachToolkit, onAtt
       <EntityAddSection
         copy={{ label: t('agents.toolMenu.pipeline', 'Pipeline'), searchPlaceholder: t('agents.toolMenu.searchPipelines', 'Search pipelines...'), emptyMessage: t('agents.toolMenu.noPipelines', 'No pipelines available') }}
         isEntityUnsaved={isEntityUnsaved}
-        tooltip={savedFirstTooltip}
+        tooltip={saveFirstPipelineTooltip}
         items={pipelineItems}
         isFetching={pipelinesQuery.isFetching}
         search={pipelineSearch}

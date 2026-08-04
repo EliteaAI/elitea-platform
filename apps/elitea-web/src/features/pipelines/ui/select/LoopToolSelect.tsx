@@ -34,16 +34,35 @@ import type { PipelineToolEntry } from './pipelineToolEntry.types';
  * tool-name discovery for a toolkit with no explicit `selected_tools`).
  * No generated endpoint for this exists -- confirmed against
  * `shared/api/generated/toolkits/toolkits.ts`'s full export list
- * (`useListToolkits`/`useListToolkitInstances` only), the SAME gap
- * `useFunctionInputMapping.ts`'s own header documents in full for its
- * `dynamicToolNames`. This component's "Tool" dropdown is therefore
- * populated ONLY from `selectedToolkit.settings.selected_tools` when
- * present; a toolkit relying on the baseline's dynamic MCP tool-name
- * fetch shows no tool options here today.
+ * (`useListToolkits`/`useListToolkitInstances` only) and
+ * `shared/api/endpoints.manifest.json` (no `toolkit_available_tools`/
+ * `available_tools` operation anywhere), the SAME gap
+ * `useFunctionInputMapping.ts`'s own header and `ui/nodes/deprecated/
+ * useToolNodeEditing.ts`'s own header document in full for their own
+ * `dynamicToolNames`/`functionOptions`. **This is a backend/codegen gap,
+ * not a file this pass can fix by editing within this app** -- the fix
+ * routes to whoever owns turning `toolkit_available_tools` into a real
+ * generated (or `usePipelineTrigger.ts`-style hand-wrapped) endpoint.
+ *
+ * **Partial, in-scope mitigation (this pass):** without that fetch, the
+ * component used to gate the entire "Tool"/"Loop tool" dropdown on
+ * `functionOptions.length > 0` -- so a toolkit relying on dynamic
+ * discovery (no `selected_tools`) rendered NO dropdown at all, hiding a
+ * `yamlNode`'s own already-configured `tool` value entirely (not just
+ * "no more options to pick from", but genuinely invisible and
+ * unrecoverable from this UI). `functionOptions` now also synthesises a
+ * single-entry fallback option for the node's CURRENT `tool` value when
+ * it isn't already covered by `selected_tools`, the same "value present
+ * but absent from the known options list" pattern
+ * `PipelineMultiSelect.tsx`'s own `canDelete` synthesis and
+ * `InputSelect.tsx`'s `realInputOptions` already use. This does not
+ * restore the full dynamically-discovered picker (still blocked on the
+ * gap above) -- it only ensures the dropdown renders and the
+ * already-configured value stays visible and clearable.
  *
  * `useLoopToolSelection` bundles every derived-options computation into
  * one hook purely to keep this component's own cyclomatic complexity under
- * the §3.5 budget (12); no behaviour change.
+ * the §3.5 budget (12); no other behaviour change.
  */
 export interface LoopToolSelectProps {
   readonly yamlNode?: YamlPipelineNode | undefined;
@@ -70,7 +89,13 @@ interface LoopToolSelection {
   readonly functionOptions: readonly SingleSelectOption[];
 }
 
-function useLoopToolSelection(yamlNode: YamlPipelineNode | undefined, toolkitField: string, toolField: string, versionTools: readonly PipelineToolEntry[]): LoopToolSelection {
+function useLoopToolSelection(
+  yamlNode: YamlPipelineNode | undefined,
+  toolkitField: string,
+  toolField: string,
+  versionTools: readonly PipelineToolEntry[],
+  selectedTool: string,
+): LoopToolSelection {
   const projectId = useSelectedProjectId();
   const { toolkitTypeSchemas } = useToolkitTypeSchemas(projectId);
   const { getToolkitNameFromSchema } = useGetToolkitNameFromSchema(toolkitTypeSchemas);
@@ -78,7 +103,7 @@ function useLoopToolSelection(yamlNode: YamlPipelineNode | undefined, toolkitFie
   const toolkits = useMemo<ToolkitOption[]>(
     () =>
       versionTools.map((tool): ToolkitOption => {
-        const name = tool.type === 'application' ? (tool.name ?? '') : (tool.toolkit_name ?? getToolkitNameFromSchema(tool));
+        const name = tool.type === 'application' ? (tool.name ?? '') : (tool.toolkit_name || getToolkitNameFromSchema(tool));
         return { label: name, value: name, icon: <EntityOptionIcon entityType={resolvePipelineToolEntityType(tool)} />, originalTool: tool };
       }),
     [getToolkitNameFromSchema, versionTools],
@@ -96,11 +121,20 @@ function useLoopToolSelection(yamlNode: YamlPipelineNode | undefined, toolkitFie
 
   // Real, disclosed gap (see module doc comment): no dynamic MCP tool-name
   // fetch exists, so only an explicit `selected_tools` list ever populates
-  // this dropdown.
+  // this dropdown from the backend. The node's OWN currently-configured
+  // `selectedTool` is still added as a fallback single-entry option when
+  // it isn't already one of `selected_tools` -- this is the partial
+  // mitigation the module doc comment describes: it keeps an
+  // already-configured value visible/clearable even for a dynamic-only
+  // toolkit, without inventing the missing fetch.
   const functionOptions = useMemo<SingleSelectOption[]>(() => {
     const enabledTools = selectedToolkit?.settings?.selected_tools ?? [];
-    return enabledTools.map(item => ({ label: getToolName(item), value: getToolName(item) }));
-  }, [selectedToolkit?.settings?.selected_tools]);
+    const options = enabledTools.map(item => ({ label: getToolName(item), value: getToolName(item) }));
+    if (selectedTool && !options.some(option => option.value === selectedTool)) {
+      options.push({ label: selectedTool, value: selectedTool });
+    }
+    return options;
+  }, [selectedToolkit?.settings?.selected_tools, selectedTool]);
 
   return { toolkits, toolkit, functionOptions };
 }
@@ -118,7 +152,7 @@ export function LoopToolSelect(props: LoopToolSelectProps): ReactNode {
   } = props;
 
   const selectedTool = useMemo(() => (yamlNode ? ((yamlNode[toolField] as string | undefined) ?? '') : ''), [toolField, yamlNode]);
-  const { toolkits, toolkit, functionOptions } = useLoopToolSelection(yamlNode, toolkitField, toolField, versionTools);
+  const { toolkits, toolkit, functionOptions } = useLoopToolSelection(yamlNode, toolkitField, toolField, versionTools, selectedTool);
 
   const handleToolkitChange = useCallback((newValue: string) => onChangeToolkit(newValue), [onChangeToolkit]);
   const onClear = useCallback(() => onChangeToolkit(null), [onChangeToolkit]);

@@ -27,8 +27,18 @@ export interface NewChatInputHandle extends UserInputHandle {
  * The real `SendButton`/stop-button and `HighlightedText` (units C6/C4)
  * cannot be imported here either (`no-sideways-features`) — these two
  * slots are pure pass-throughs down to `UserInput`'s own identically-named
- * slots, unchanged, so a future composition-root unit supplies them once
- * for both layers.
+ * slots, unchanged, so the composition root that renders this component
+ * (`widgets/chat-box`, unit C6) supplies them once for both layers.
+ *
+ * **Open gap, as of this writing**: `widgets/chat-box/ui/ChatBoxInputSlots
+ * .tsx`'s `buildChatBoxInputSlots()` does not yet set either of these two
+ * fields, even though the real `SendButton` (`widgets/chat/ui/chat-button
+ * /SendButton.tsx`) and `HighlightedText` (`features/chat-messages/ui
+ * /highlighted-text/HighlightedText.tsx`) both already exist. Until that
+ * composition-root wiring lands, the composer renders with no visible send
+ * control and no slash/mention highlight overlay. Do NOT close this gap by
+ * importing either component here — that would reintroduce the exact
+ * `no-sideways-features` violation this slot exists to avoid.
  */
 export interface NewChatInputSlots {
   readonly sendControl?: ((props: UserInputSendControlSlotProps) => ReactNode) | undefined;
@@ -36,8 +46,8 @@ export interface NewChatInputSlots {
   /**
    * Baseline: `PlusChatButton` (fromTheChat) / `ChatButton.AttachmentButton`
    * (unit C6, genuine `no-sideways-features` cross-unit import either way).
-   * A future composition-root unit renders whichever flavour it needs and
-   * wires `refs.attachmentButtonRef` (see `NewChatInputRefs`) to it.
+   * The composition root renders whichever flavour it needs and wires
+   * `refs.attachmentButtonRef` (see `NewChatInputRefs`) to it.
    */
   readonly attachmentButton?: ReactNode | undefined;
   /** Baseline: `ChatButton.ChatInternalToolsConfigButton` (unit C6). */
@@ -56,6 +66,18 @@ export interface NewChatInputSlots {
  * drop/paste validation to the real attachment button) without importing
  * either concrete component. See this file's module doc for the full
  * disclosure of this design choice.
+ *
+ * **Open gap, as of this writing**: `widgets/chat-box/ui/ChatBox.tsx`
+ * passes `refs={{}}` — it creates neither ref nor attaches either one to
+ * the `AttachmentButton`/`VoiceButton` it builds in `ChatBoxInputSlots
+ * .tsx`. Both target components are already `forwardRef`-based and export
+ * `AttachmentButtonHandle`/`VoiceButtonHandle` (structurally identical to
+ * this file's own copies below) for exactly this purpose — closing this
+ * gap is composition-root wiring only, not a type or contract change.
+ * Without it, drop/paste-to-attach and mic-auto-stop-on-send/conversation-
+ * change are silent no-ops (matches this hook's own guarded fallback, see
+ * `useNewChatInputAttachmentBridge`/`useStopVoiceOnConversationChange` in
+ * `../lib/hooks/useNewChatInputController.hooks.ts`).
  */
 export interface NewChatInputRefs {
   readonly attachmentButtonRef?: RefObject<AttachmentButtonHandle | null> | undefined;

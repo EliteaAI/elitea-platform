@@ -147,7 +147,11 @@ export const extractPipelineNodeTypes = (instructions: string | null | undefined
     let totalNodeCount = 0;
 
     parsedNodes.forEach(node => {
-      if (node.type) {
+      // `node?.type` — the parsed YAML `nodes` array is cast, not validated; a `null` entry
+      // (`nodes: [null, ...]`) is a real possibility and `node.type` would throw inside this
+      // `try`, discarding the whole histogram instead of just skipping that one entry. Matches
+      // baseline `parsePipeline.helpers.js:670`'s `node?.type`.
+      if (node?.type) {
         nodeTypeCounts[node.type] = (nodeTypeCounts[node.type] ?? 0) + 1;
         totalNodeCount++;
       }

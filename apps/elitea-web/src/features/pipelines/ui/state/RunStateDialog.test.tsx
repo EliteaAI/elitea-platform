@@ -103,6 +103,46 @@ describe('RunStateDialog', () => {
     expect(screen.getByText('Timeline step:').nextSibling).toHaveTextContent('start');
   });
 
+  it('keys timeline steps by position so a re-executed node (repeated id, e.g. a loop) stays independently selectable', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    renderWithTheme(
+      <RunStateDialog
+        data={baseData({
+          timeline: [
+            { id: 'start', status: 'Completed', created_at: '2024-01-01T00:00:00.000Z', state: { counter: 0 } },
+            { id: 'loop-node', status: 'Completed', created_at: '2024-01-01T00:00:05.000Z', state: { counter: 1 } },
+            { id: 'loop-node', status: 'Completed', created_at: '2024-01-01T00:00:10.000Z', state: { counter: 2 } },
+          ],
+        })}
+        state={{}}
+        open
+        onClose={vi.fn()}
+        onStop={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    // React logs a dev warning when sibling elements in a list share a key
+    // (`key={step.id}` collides here since both loop entries share the id
+    // "loop-node"). No such warning should fire once steps are keyed by
+    // their stable position instead.
+    const duplicateKeyWarning = consoleError.mock.calls.some(([message]) =>
+      typeof message === 'string' && message.includes('same key'),
+    );
+    expect(duplicateKeyWarning).toBe(false);
+
+    // Both re-executions of the same node render as distinct, independently
+    // selectable steps rather than being collapsed into one.
+    const loopButtons = screen.getAllByRole('button', { name: 'loop-node' });
+    expect(loopButtons).toHaveLength(2);
+
+    fireEvent.click(loopButtons[1] as HTMLElement);
+    expect(screen.getByText('Timeline step:').nextSibling).toHaveTextContent('loop-node');
+
+    consoleError.mockRestore();
+  });
+
   it('opens the fullscreen state value modal from a variable accordion', () => {
     renderWithTheme(
       <RunStateDialog

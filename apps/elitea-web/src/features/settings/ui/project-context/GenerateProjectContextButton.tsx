@@ -6,13 +6,16 @@
  * `features/agents/ui/generate-agent-modal/GenerateAgentButton.tsx`.
  */
 import type { ReactNode } from 'react';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { AiSparkleIcon } from '@/shared/ui/icons/ai-sparkle-icon';
+import { PERMISSIONS } from '@/shared/lib/permissions';
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
+import type { Permission } from '@/shared/api/generated/model';
 
 import { GenerateProjectContextModal } from './GenerateProjectContextModal';
 
@@ -25,15 +28,41 @@ export interface GenerateProjectContextButtonProps {
   onApply: (content: string) => void;
 }
 
+/**
+ * Own, independent permission gate — old-app parity:
+ * `entities/generate-entity-with-ai/ui/GenerateEntityButton.jsx:10-15`
+ * (`if (!checkPermission(permission)) return null;`, called with
+ * `permission={PERMISSIONS.projectContext.edit}`). Deliberately does not
+ * rely solely on the parent only mounting this component when it thinks
+ * edit is allowed — this button must hide itself even if a future caller
+ * gets that wiring wrong.
+ *
+ * Inlined rather than imported from `widgets/sidebar`'s `usePermissionSet`:
+ * `features/` sits below `widgets/` in the layer order (spec §3.2), so that
+ * import would be upward-illegal — same reasoning as
+ * `features/agents/lib/useHasPermission.ts`'s own doc comment.
+ */
+function useHasEditPermission(projectId: string): boolean {
+  const query = usePermissionList(projectId, { query: { enabled: !!projectId } });
+  return useMemo(() => {
+    const list = query.data?.data as Permission[] | undefined;
+    if (!list) return false;
+    return list.some((entry) => entry.enabled && entry.name === PERMISSIONS.projectContext.edit);
+  }, [query.data]);
+}
+
 export function GenerateProjectContextButton({
   projectId,
   existingContent,
   onApply,
 }: GenerateProjectContextButtonProps): ReactNode {
+  const hasEditPermission = useHasEditPermission(projectId);
   const [isOpen, setIsOpen] = useState(false);
 
   const handleOpen = useCallback(() => setIsOpen(true), []);
   const handleClose = useCallback(() => setIsOpen(false), []);
+
+  if (!hasEditPermission) return null;
 
   return (
     <>

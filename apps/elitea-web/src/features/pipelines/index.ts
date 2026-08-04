@@ -62,3 +62,22 @@ export type { PipelineEditorProps, PipelineEditorHandle } from './ui/PipelineEdi
 
 export { useEditPipeline } from './model/useEditPipeline';
 export { usePipelineCreation } from './model/usePipelineCreation';
+
+/**
+ * `ConfigurationTab` — the composition root tying `GeneralFormPanel` +
+ * `EditorPanel` + `ChatPanel` together for the standalone pipeline-editing
+ * page (`pages/pipelines/EditPipeline.tsx`, Wave-2 unit A2m). Landed by a
+ * later A2 sub-unit than A2m itself (see `ConfigurationTab.tsx`'s own doc
+ * comment) — exported here so that page can reach it at all: `pages/`
+ * may only import a slice through its `index.ts` (`no-deep-slice-import`,
+ * `.dependency-cruiser.cjs`), and `EditPipeline.tsx` previously had no
+ * legal way to import this component even though it already existed on
+ * disk. `ConfigurationTabProps` is exported alongside it (not left as a
+ * structural-only type, unlike `PipelineEditorDeps`) because
+ * `EditPipeline.tsx` needs to build several of its slot/prop values in
+ * dedicated `pages/pipelines/lib/` helper files, where an explicit,
+ * named prop type is clearer than deriving one via `ComponentProps<...>`
+ * at every call site.
+ */
+export { ConfigurationTab } from './ui/ConfigurationTab';
+export type { ConfigurationTabProps } from './ui/ConfigurationTab';

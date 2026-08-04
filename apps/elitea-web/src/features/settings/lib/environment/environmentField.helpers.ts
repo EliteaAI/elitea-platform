@@ -1,5 +1,8 @@
 /**
  * Environment field helpers.
+ *
+ * Ported from `apps/elitea-ui/src/[fsd]/features/settings/lib/helpers/
+ * environmentField.helpers.js`.
  */
 
 export interface EnvironmentFieldDefinition {
@@ -12,80 +15,99 @@ export interface EnvironmentFieldDefinition {
   tooltip?: string | undefined;
 }
 
+/** Fallback labels — used only when the backend schema omits `title`. */
 const FIELD_LABELS: Record<string, string> = {
-  llm_server_url: 'LLM Server URL',
-  auth_token: 'Auth Token',
-  model_name: 'Model Name',
-  llm_model_name: 'LLM Model Name',
-  project_id: 'Project ID',
-  integration_uid: 'Integration UID',
-  verify_ssl: 'Verify SSL',
-  display_type: 'Display Type',
-  debug: 'Debug',
-  default_view_mode: 'Default View Mode',
+  system_sender_name: 'System Sender Name',
+  error_toast_duration: 'Error Toast Duration',
 };
 
+/** Fallback types — used only when the backend schema omits `type`. */
 const FIELD_TYPES: Record<string, string> = {
-  llm_server_url: 'string',
-  auth_token: 'string',
-  model_name: 'string',
-  llm_model_name: 'string',
-  project_id: 'string',
-  integration_uid: 'string',
-  verify_ssl: 'boolean',
-  display_type: 'string',
-  debug: 'boolean',
-  default_view_mode: 'string',
+  system_sender_name: 'string',
+  error_toast_duration: 'integer',
 };
 
-const FIELD_DEFAULTS: Record<string, string | number | boolean> = {
-  llm_server_url: '',
-  auth_token: '',
-  model_name: '',
-  llm_model_name: '',
-  project_id: '',
-  integration_uid: '',
-  verify_ssl: false,
-  display_type: 'split',
-  debug: false,
-  default_view_mode: 'split',
-};
+function resolveType(type: string | undefined): EnvironmentFieldDefinition['type'] {
+  if (type === 'integer' || type === 'number' || type === 'boolean') return type;
+  return 'string';
+}
 
+/** `fieldSchema.title`, falling back to the local label map, then the raw key. */
+function resolveLabel(key: string, fieldSchema: Record<string, unknown> | undefined): string {
+  const schemaTitle = fieldSchema?.title as string | undefined;
+  return schemaTitle ?? FIELD_LABELS[key] ?? key;
+}
+
+/** `fieldSchema.minimum`, falling back to the caller's per-field `defaults`. */
+function resolveMinimum(
+  fieldSchema: Record<string, unknown> | undefined,
+  defaults: { minimum?: number } | undefined,
+): number | undefined {
+  const schemaMinimum = fieldSchema?.minimum as number | undefined;
+  return schemaMinimum ?? defaults?.minimum;
+}
+
+/** `fieldSchema.maximum`, falling back to the caller's per-field `defaults`. */
+function resolveMaximum(
+  fieldSchema: Record<string, unknown> | undefined,
+  defaults: { maximum?: number } | undefined,
+): number | undefined {
+  const schemaMaximum = fieldSchema?.maximum as number | undefined;
+  return schemaMaximum ?? defaults?.maximum;
+}
+
+/**
+ * Build a normalised field definition by merging the backend schema with
+ * frontend fallback defaults.
+ *
+ * `defaultValue` always comes from the backend-provided `fieldSchema.default`
+ * (never a local hardcoded map) — matches the old app's
+ * `buildFieldDefinition` exactly, so "Restore to default" restores to
+ * whatever the server's schema actually declares.
+ *
+ * `minimum`/`maximum` prefer the backend schema's own values, falling back
+ * to `defaults` (the caller's single per-field constraints object, e.g.
+ * `ENVIRONMENT_FIELD_DEFAULTS[key]` — already indexed once by the caller;
+ * this function must NOT index it again).
+ */
 export function buildFieldDefinition(
   key: string,
   fieldSchema: Record<string, unknown> | undefined,
-  schemaConstraints: Record<string, { minimum?: number; maximum?: number }>,
+  defaults: { minimum?: number; maximum?: number } | undefined,
 ): EnvironmentFieldDefinition {
-  const constraints = schemaConstraints[key];
-  const defaultValue = FIELD_DEFAULTS[key];
-  const type = (FIELD_TYPES[key] ?? 'string') as EnvironmentFieldDefinition['type'];
-
-  // Check schema for override types
-  let resolvedType = type;
-  if (fieldSchema?.type) {
-    const schemaType = (fieldSchema.type as string) ?? '';
-    if (schemaType === 'integer' || schemaType === 'number') {
-      resolvedType = schemaType;
-    } else if (schemaType === 'boolean') {
-      resolvedType = 'boolean';
-    } else {
-      resolvedType = 'string';
-    }
-  }
+  const schemaType = fieldSchema?.type as string | undefined;
 
   return {
     key,
-    label: FIELD_LABELS[key] ?? key,
-    type: resolvedType,
-    defaultValue,
-    minimum: constraints?.minimum,
-    maximum: constraints?.maximum,
+    label: resolveLabel(key, fieldSchema),
+    type: resolveType(schemaType ?? FIELD_TYPES[key]),
+    defaultValue: fieldSchema?.default as string | number | boolean | undefined,
+    minimum: resolveMinimum(fieldSchema, defaults),
+    maximum: resolveMaximum(fieldSchema, defaults),
     tooltip: fieldSchema?.description as string | undefined,
   };
 }
 
 export function isNumericType(type: string): boolean {
   return type === 'integer' || type === 'number';
+}
+
+/**
+ * Coerce a raw (always-string) draft value to the field's declared type
+ * before it is persisted or compared against the saved value — mirrors the
+ * old app's `parseFieldValue`
+ * (`apps/elitea-ui/src/[fsd]/features/settings/lib/helpers/
+ * environmentField.helpers.js:1-6`). Without this, numeric/boolean-typed
+ * fields would always be persisted as plain strings.
+ */
+export function parseFieldValue(
+  value: string,
+  type: EnvironmentFieldDefinition['type'],
+): string | number | boolean {
+  if (type === 'integer') return parseInt(value, 10);
+  if (type === 'number') return parseFloat(value);
+  if (type === 'boolean') return value === 'true';
+  return String(value ?? '').trim();
 }
 
 // ---------------------------------------------------------------------------

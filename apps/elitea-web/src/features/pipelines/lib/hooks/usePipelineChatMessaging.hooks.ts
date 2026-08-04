@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import { ROLES } from '@/shared/lib/enums';
 import type { Participant } from '@/entities/participant';
@@ -39,6 +39,21 @@ export interface UsePipelineChatMessagingParams {
 
 export interface UsePipelineChatMessagingResult {
   readonly onSend: (messageData: SendMessageData) => Promise<SendResult>;
+  /**
+   * Tracks the REAL network latency of `adapter.createConversation(...)` inside
+   * `createConversationOnFirstMessage` — true only while that `await` is in flight. Baseline
+   * `usePipelineChat.hooks.js:94` sources its own `isLoadingConversation` from
+   * `useConversationCreateMutation()`'s `isLoading`, i.e. the actual create-conversation request,
+   * NOT from any of the local synchronous "am I about to setState" flags this port also tracks
+   * (`usePipelineChatConversation.hooks.ts`'s `isCreatingConversation`, which — see that file's own
+   * `useInitializeConversationEffect` — sets/unsets its flag synchronously within a single effect
+   * body with no `await` between, so React 18's automatic batching means a consumer NEVER observes
+   * it as `true` across a render; it cannot stand in for real request latency). This flag is the
+   * fix: it flips `true` before the adapter call and `false` in a `finally`, so a caller gating a
+   * send button/spinner on `usePipelineChat`'s returned `isLoadingConversation` (as baseline's
+   * `ChatBox.jsx` did) actually sees it flip during the round-trip.
+   */
+  readonly isLoadingConversation: boolean;
 }
 
 function stampParticipantId(
@@ -62,7 +77,7 @@ function buildCreatedConversationPayload(
   const { attachments_info, mcp_tokens, ignored_mcp_servers } = eventPayload ?? {};
   return {
     user_input: userInput,
-    llm_settings: eventPayload?.llm_settings ?? buildLlmSettingsFallback(pipelineVersionDetails),
+    llm_settings: eventPayload?.llm_settings ?? buildLlmSettingsFallback(pipelineVersionDetails, projectId),
     project_id: projectId,
     conversation_uuid: result.data?.uuid,
     question_id,
@@ -148,6 +163,7 @@ async function createConversationOnFirstMessage(
 
 function sendToExistingConversation(
   pipelineVersionDetails: ChatPipelineVersionDetails | undefined,
+  projectId: string | undefined,
   messageData: SendMessageData,
 ): SendResult {
   const { eventPayload } = messageData;
@@ -157,26 +173,32 @@ function sendToExistingConversation(
     success: true,
     updatedEventPayload: {
       ...eventPayload,
-      llm_settings: eventPayload?.llm_settings ?? buildLlmSettingsFallback(pipelineVersionDetails),
+      llm_settings: eventPayload?.llm_settings ?? buildLlmSettingsFallback(pipelineVersionDetails, projectId),
     },
   };
 }
 
 export function usePipelineChatMessaging(params: UsePipelineChatMessagingParams): UsePipelineChatMessagingResult {
-  const { pipelineVersionDetails, activeConversationId } = params;
+  const { pipelineVersionDetails, projectId, activeConversationId } = params;
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
 
   const onSend = useCallback(
     async (messageData: SendMessageData): Promise<SendResult> => {
       if (messageData.needsConversationCreation && !activeConversationId) {
-        return createConversationOnFirstMessage(params, messageData);
+        setIsLoadingConversation(true);
+        try {
+          return await createConversationOnFirstMessage(params, messageData);
+        } finally {
+          setIsLoadingConversation(false);
+        }
       }
-      return sendToExistingConversation(pipelineVersionDetails, messageData);
+      return sendToExistingConversation(pipelineVersionDetails, projectId, messageData);
     },
     // `params` is a plain object rebuilt every render by the caller (usePipelineChat) from its own
     // already-memoised pieces, so referential identity tracks real changes for this dep array.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeConversationId, pipelineVersionDetails, params],
+    [activeConversationId, pipelineVersionDetails, projectId, params],
   );
 
-  return { onSend };
+  return { onSend, isLoadingConversation };
 }

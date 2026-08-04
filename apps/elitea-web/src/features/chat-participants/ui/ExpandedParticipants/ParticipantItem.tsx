@@ -2,25 +2,27 @@
 /**
  * ParticipantItem — per-participant card (normal or attention/error state).
  * Ported from `[fsd]/features/chat/participants/ui/ExpandedParticipants/ParticipantItem.jsx`.
+ *
+ * Card rendering lives in `./ParticipantItem.cards.tsx` (split to stay under
+ * the 400-line budget, spec §3.5 — same precedent as `ParticipantItem.styles.ts`).
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Box, Typography } from '@mui/material';
+import { Box, Tooltip, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 
-import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import InfoIcon from '@mui/icons-material/Info';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
 
 import { t } from '@/shared/ui/lib/t';
 
 import { ChatParticipantType } from '../../model/constants';
 import { canParticipantBeActiveInChat } from '../../lib/helpers';
 import { useParticipantEntityIcon } from '../../lib/hooks/useParticipantEntityIcon';
-import { useParticipantName } from '../../lib/hooks/useParticipantName';
-import { isSkippedContainerParticipant as isSkippedContainerParticipantEntity } from '@/entities/participant';
+import { DEFAULT_PARTICIPANT_NAME } from '@/entities/participant';
 
-import ParticipantActions from '../ParticipantActions/ParticipantActions';
-import ParticipantWarning from './ParticipantWarning';
+import { hasParticipantErrors, renderAttentionCard, renderNormalCard } from './ParticipantItem.cards';
+import { participantItemStyles } from './ParticipantItem.styles';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -56,6 +58,59 @@ export interface ParticipantItemProps {
   shouldDisableThisItem?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Local, real-wire-value-safe helpers.
+//
+// This feature's own `ChatParticipantType` constant (`model/constants.ts`)
+// previously used plural values ('applications'/'pipelines'/'models'/
+// 'users') that did NOT match the real (singular: 'application'/'pipeline'/
+// 'llm'/'user') backend wire shape — that has since been fixed at the
+// source (wave-2 C5 adversarial-review finding "ENTITY_ORDER wrong casing"/
+// the C5-expanded cluster's own follow-up note); code in this file can use
+// `ChatParticipantType.*` directly again. `entities/participant`'s
+// selectors still read CAMELCASE fields against this feature's snake_case
+// data, though — still out of this cluster's file scope to fix
+// (`entities/participant/model/selectors.ts`). The helpers below read the
+// real wire shape directly so the fixes in this file are actually reachable
+// against live data (wave-2 C5 adversarial-review findings #1/#2).
+// ---------------------------------------------------------------------------
+
+/**
+ * Local port of `getParticipantName` (`participants.helpers.js:23-44`) — NOT
+ * `lib/hooks/useParticipantName`, which always resolves `''` against this
+ * feature's snake_case data and then throws on an unimported
+ * `DEFAULT_PARTICIPANT_NAME` (finding #2). Each old-app per-type branch
+ * reads a mutually-exclusive field, so one fallback chain reproduces the
+ * switch without a type comparison.
+ */
+function resolveParticipantDisplayName(participant: Record<string, unknown> | undefined): string {
+  if (!participant) return DEFAULT_PARTICIPANT_NAME;
+  const entityMeta = participant.entity_meta as Record<string, unknown> | undefined;
+  const meta = participant.meta as Record<string, unknown> | undefined;
+  return (
+    (entityMeta?.name as string | undefined) ||
+    (meta?.name as string | undefined) ||
+    (entityMeta?.model_name as string | undefined) ||
+    (meta?.user_name as string | undefined) ||
+    DEFAULT_PARTICIPANT_NAME
+  );
+}
+
+/**
+ * Local port of `isSkippedContainerParticipant` (`participants.helpers.js:55-62`)
+ * — NOT `entities/participant`'s same-named export, which reads camelCase
+ * `meta.isContainer` against this feature's snake_case `meta.is_container`
+ * and so always resolves `false` against real data.
+ */
+function resolveIsSkippedContainer(participant: Record<string, unknown> | undefined): boolean {
+  const meta = participant?.meta as Record<string, unknown> | undefined;
+  if (meta?.is_container !== true) return false;
+  if (participant?.entity_name !== 'application') return false;
+  const entitySettings = participant?.entity_settings as Record<string, unknown> | undefined;
+  const isPipeline = entitySettings?.agent_type === 'pipeline' || participant?.agent_type === 'pipeline';
+  return !isPipeline;
+}
+
 /**
  * ParticipantItem component — per-participant card (normal or attention state).
  * Memo'd for performance.
@@ -69,10 +124,14 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     collapsed,
     isActive,
     onClickItem,
+    onDelete,
     onEdit,
     editingToolkit,
-    _disableTooltip,
-    _isAttachment,
+    disableTooltip,
+    isAttachment,
+    mcpLoginSlot,
+    mcpLogoutSlot,
+    sharepointLoginSlot,
     hasMisconfigurationErrors,
     someToolsAreUnavailable,
     blockedToolkitNames,
@@ -80,44 +139,56 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     isVersionUnavailable,
     mcpIsDisconnected,
     remoteMcpLoggedOut,
+    hasRemoteMcpLoggedIn,
     spOAuthLoggedOut,
-    _spOAuthLoggedIn,
     spConfig,
     shouldDisableThisItem,
     resolveToolkitIcon,
   } = props;
 
   const nameRef = useRef<HTMLSpanElement>(null);
-  const [_nameIsOverflow, setNameIsOverflow] = useState(false);
+  const [nameIsOverflow, setNameIsOverflow] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
 
   const entityIcon = useParticipantEntityIcon(participant, { resolveToolkitIcon });
-  const displayName = useParticipantName(participant);
+  const displayName = resolveParticipantDisplayName(participant);
 
   const entityMeta = participant.entity_meta as Record<string, unknown> | undefined;
   const entityName = participant.entity_name as ChatParticipantType | undefined;
   const entitySettings = participant.entity_settings as Record<string, unknown> | undefined;
-  const _meta = participant.meta as Record<string, unknown> | undefined;
 
-  // Pipeline detection (agent_type on entity_settings or top-level)
+  // Pipeline detection, now actually applied to icon selection below (was
+  // previously computed but unused, reintroducing bug #4993 — finding #9).
   const agentType = entitySettings?.agent_type as string | undefined;
-  const _isPipelineParticipant = agentType === 'pipeline' || participant.agent_type === 'pipeline';
+  const isPipelineParticipant = agentType === 'pipeline' || participant.agent_type === 'pipeline';
 
   // Skipped container agent (issue #5680)
   const isSkippedContainer = useMemo(
-    () => !isActive && (isSkippedContainerParticipantEntity(participant) || isSkippedContainerParticipantEntity(participant)),
+    () => !isActive && resolveIsSkippedContainer(participant),
     [isActive, participant],
   );
 
   // Being-edited state
   const isBeingEdited = useMemo(() => {
     const isActiveToolKit = entityName === ChatParticipantType.Toolkits;
-    const isMatchingToolkit = isActiveToolKit && editingToolkit?.entity_meta?.id === entityMeta?.id;
-    return isMatchingToolkit;
+    return isActiveToolKit && editingToolkit?.entity_meta?.id === entityMeta?.id;
   }, [entityName, editingToolkit, entityMeta]);
 
   const canBeActive = useMemo(() => canParticipantBeActiveInChat(participant), [participant]);
   const isToolkitParticipant = entityName === ChatParticipantType.Toolkits;
+  const showEditButton = entityName === ChatParticipantType.Toolkits || entityName === ChatParticipantType.Applications;
+
+  // Custom icon_meta image when present, else a distinct icon for pipeline
+  // participants (fixes bug #4993), else the initials fallback.
+  const iconNode = useMemo(() => {
+    if (entityIcon.url) {
+      return <img src={entityIcon.url} alt={displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
+    }
+    if (isPipelineParticipant) {
+      return <AccountTreeIcon fontSize="small" />;
+    }
+    return (displayName[0] ?? '?').toUpperCase();
+  }, [entityIcon.url, displayName, isPipelineParticipant]);
 
   // Version name
   const [versionName, setVersionName] = useState('');
@@ -149,24 +220,29 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
   // Overflow detection
   useEffect(() => {
     if (!isHovering && nameRef.current) {
-      const isOverflowing = nameRef.current.scrollWidth > nameRef.current.clientWidth;
-      setNameIsOverflow(isOverflowing);
+      setNameIsOverflow(nameRef.current.scrollWidth > nameRef.current.clientWidth);
     }
   }, [isHovering]);
 
-  // Container info row (skipped container hint)
+  // Auto-deselect when this active participant becomes misconfigured or its
+  // published agent disappears (previously dropped entirely — finding #12).
+  useEffect(() => {
+    if ((hasMisconfigurationErrors || isPublishedAgentGone) && isActive) {
+      onClickItem?.(undefined);
+    }
+  }, [isActive, onClickItem, hasMisconfigurationErrors, isPublishedAgentGone]);
+
   const containerInfoRow = !collapsed && isSkippedContainer ? (
     <Box sx={s.infoMessageRow}>
       <Box sx={s.infoIcon}>
         <InfoIcon />
       </Box>
       <Typography variant="bodySmall" color="text.secondary" sx={s.attentionMessage}>
-        {t('chat.participants.skippedContainer', 'This container agent is not active as an orchestrator and cannot run tools in adhoc chat.')}
+        {t('chat-participants.warning.skippedContainer', "Uses other agents — runs only as the active agent. Select it to run; it won't be used as a tool.")}
       </Typography>
     </Box>
   ) : null;
 
-  // Determine if we show normal or attention card
   const hasErrors = hasParticipantErrors({
     shouldDisableThisItem,
     hasMisconfigurationErrors,
@@ -178,197 +254,42 @@ const ParticipantItem = memo((props: ParticipantItemProps): React.ReactElement |
     isPublishedAgentGone,
   });
 
-  if (!hasErrors) return renderNormalCard({
-    isActive, collapsed, displayName, entityIcon, entitySettings, versionName, isBeingEdited,
-    s, onClickHandler, onMouseEnter: () => setIsHovering(true), onMouseLeave: () => setIsHovering(false),
-    containerInfoRow,
-  });
+  const onMouseEnter = () => setIsHovering(true);
+  const onMouseLeave = () => setIsHovering(false);
 
-  return renderAttentionCard({
-    isActive, collapsed, displayName, entityIcon, entitySettings, versionName, isBeingEdited, entityMeta,
-    s, onClickHandler, onMouseEnter: () => setIsHovering(true), onMouseLeave: () => setIsHovering(false),
-    containerInfoRow,
-    shouldDisableThisItem, hasMisconfigurationErrors, mcpIsDisconnected,
-    someToolsAreUnavailable, blockedToolkitNames, isVersionUnavailable,
-    isPublishedAgentGone, remoteMcpLoggedOut, spOAuthLoggedOut, spConfig,
-    handleEditClick, isToolkitParticipant,
-  });
+  const content = hasErrors
+    ? renderAttentionCard({
+      isActive, collapsed, displayName, iconNode, isBeingEdited, entityMeta,
+      s, onClickHandler, onMouseEnter, onMouseLeave, containerInfoRow,
+      shouldDisableThisItem, hasMisconfigurationErrors, mcpIsDisconnected,
+      someToolsAreUnavailable, blockedToolkitNames, isVersionUnavailable,
+      isPublishedAgentGone, remoteMcpLoggedOut, spOAuthLoggedOut, spConfig,
+      handleEditClick, isToolkitParticipant, participant, onEdit, onDelete,
+      disabledEdit, showEditButton, hasRemoteMcpLoggedIn, isHovering,
+      mcpLoginSlot, mcpLogoutSlot, sharepointLoginSlot,
+    })
+    : renderNormalCard({
+      isActive, collapsed, displayName, iconNode, entitySettings, versionName, isBeingEdited,
+      s, onClickHandler, onMouseEnter, onMouseLeave, containerInfoRow,
+      participant, onEdit, onDelete, disabledEdit, showEditButton, hasRemoteMcpLoggedIn,
+      isHovering, mcpLoginSlot, mcpLogoutSlot, isAttachment, nameRef,
+    });
+
+  if (disableTooltip) return content;
+
+  // Hover/collapsed-mode tooltip with the full name + version — previously
+  // dropped entirely (finding #13).
+  return (
+    <Tooltip
+      title={collapsed || nameIsOverflow ? `${displayName} - ${versionName}` : ''}
+      placement="left"
+      enterDelay={1000}
+    >
+      {content}
+    </Tooltip>
+  );
 });
 
 ParticipantItem.displayName = 'ParticipantItem';
-
-// ---------------------------------------------------------------------------
-// Helpers — keep the memo component body flat (complexity ≤ 12)
-// ---------------------------------------------------------------------------
-
-interface NormalCardProps {
-  isActive: boolean; collapsed: boolean; displayName: string; entityIcon: { url?: string };
-  entitySettings: Record<string, unknown> | undefined; versionName: string; isBeingEdited: boolean;
-  s: ReturnType<typeof styles>; onClickHandler: () => void; onMouseEnter: () => void; onMouseLeave: () => void;
-  containerInfoRow: React.ReactNode;
-}
-
-function renderNormalCard({
-  isActive, collapsed, displayName, entityIcon, entitySettings, versionName, isBeingEdited,
-  s, onClickHandler, onMouseEnter, onMouseLeave, containerInfoRow,
-}: NormalCardProps): React.ReactElement | null {
-  return (
-    <Box sx={s.normalItemWrapper}>
-      <Box onClick={onClickHandler} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} sx={s.contentWrapper(collapsed, isActive)}>
-        <Box
-          sx={{
-            width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
-            borderRadius: 'var(--el-shape-radiusMd, 8px)', backgroundColor: isActive ? 'action.selected' : 'background.paper',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
-          }}
-        >
-          {entityIcon.url ? (
-            <img src={entityIcon.url} alt={displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            (displayName[0] ?? '?').toUpperCase()
-          )}
-        </Box>
-
-        {!collapsed && (
-          <Box sx={s.nameWrapper}>
-            <Typography variant="bodyMedium" color="text.secondary" sx={s.nameContent}>
-              {displayName}
-              {entitySettings?.version_id && (
-                <Typography
-                  variant="bodyMedium"
-                  color={isBeingEdited ? 'primary.main' : 'text.primary'}
-                  sx={{ flexShrink: 0, maxWidth: '50%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                >
-                  {isBeingEdited ? t('chat-participants.participant.editing', 'Editing...') : versionName}
-                </Typography>
-              )}
-            </Typography>
-          </Box>
-        )}
-
-        {!collapsed && !isBeingEdited && (
-          <ParticipantActions
-            participant={{}}
-            onEdit={() => {}} onDelete={() => {}}
-            disabledEdit showButtons={isHovering}
-            showEditButton={false} hasRemoteMcpLoggedIn
-          />
-        )}
-      </Box>
-      {containerInfoRow}
-    </Box>
-  );
-}
-
-interface AttentionCardProps {
-  isActive: boolean; collapsed: boolean; displayName: string; entityIcon: { url?: string };
-  entitySettings: Record<string, unknown> | undefined; versionName: string; isBeingEdited: boolean;
-  entityMeta: Record<string, unknown> | undefined;
-  s: ReturnType<typeof styles>; onClickHandler: () => void; onMouseEnter: () => void; onMouseLeave: () => void;
-  containerInfoRow: React.ReactNode;
-  shouldDisableThisItem: boolean | undefined; hasMisconfigurationErrors: boolean | undefined;
-  mcpIsDisconnected: boolean | undefined; someToolsAreUnavailable: boolean | undefined;
-  blockedToolkitNames: string[] | undefined; isVersionUnavailable: boolean | undefined;
-  isPublishedAgentGone: boolean | undefined; remoteMcpLoggedOut: boolean | undefined;
-  spOAuthLoggedOut: boolean | undefined; spConfig: unknown;
-  handleEditClick: (e: React.MouseEvent) => void; isToolkitParticipant: boolean;
-}
-
-function renderAttentionCard({
-  isActive, collapsed, displayName, entityIcon, isBeingEdited, entityMeta, s,
-  onClickHandler, onMouseEnter, onMouseLeave, containerInfoRow,
-  shouldDisableThisItem, hasMisconfigurationErrors, mcpIsDisconnected,
-  someToolsAreUnavailable, blockedToolkitNames, isVersionUnavailable,
-  isPublishedAgentGone, remoteMcpLoggedOut, spOAuthLoggedOut, spConfig,
-  handleEditClick, isToolkitParticipant,
-}: AttentionCardProps): React.ReactElement {
-  return (
-    <Box
-      onClick={isActive || isVersionUnavailable ? onClickHandler : undefined}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      sx={s.attentionWrapper(isActive)}
-    >
-      <Box sx={s.attentionHeader}>
-        <Box
-          sx={{
-            width: '1.5rem', height: '1.5rem', minWidth: '1.5rem',
-            borderRadius: 'var(--el-shape-radiusMd, 8px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 'var(--el-font-body2, 0.75rem)', fontWeight: 600, overflow: 'hidden',
-          }}
-        >
-          {entityIcon.url ? (
-            <img src={entityIcon.url} alt={displayName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            (displayName[0] ?? '?').toUpperCase()
-          )}
-        </Box>
-        {!collapsed && (
-          <Box sx={s.attentionNameBox}>
-            <Typography variant="bodyMedium" color="text.secondary" sx={s.attentionDisplayName}>
-              {displayName}
-            </Typography>
-            {isBeingEdited && (
-              <Typography variant="bodyMedium" color="primary.main" sx={s.attentionEditingText}>
-                {entityMeta?.project_id === 'public' ? t('chat-participants.participant.viewing', 'Viewing...') : t('chat-participants.participant.editing', 'Editing...')}
-              </Typography>
-            )}
-          </Box>
-        )}
-      </Box>
-      <Box sx={s.attentionMessageRow}>
-        <Box sx={s.attentionIcon}>
-          <WarningAmberIcon />
-        </Box>
-        <Typography variant="bodySmall" color="text.attention" sx={s.attentionMessage}>
-          <ParticipantWarning
-            isPublishedAgentGone={isPublishedAgentGone}
-            isVersionUnavailable={isVersionUnavailable}
-            hasMisconfigurationErrors={hasMisconfigurationErrors}
-            shouldDisableThisItem={shouldDisableThisItem}
-            mcpIsDisconnected={mcpIsDisconnected}
-            someToolsAreUnavailable={someToolsAreUnavailable}
-            blockedToolkitNames={blockedToolkitNames}
-            remoteMcpLoggedOut={remoteMcpLoggedOut}
-            spOAuthLoggedOut={spOAuthLoggedOut}
-            isSkippedContainer={false}
-            handleEditClick={handleEditClick}
-            isToolkitParticipant={isToolkitParticipant}
-            spConfig={spConfig}
-            mcpLoginSlot={undefined}
-            sharepointLoginSlot={undefined}
-          />
-        </Typography>
-      </Box>
-      {containerInfoRow}
-    </Box>
-  );
-}
-
-function hasParticipantErrors(props: {
-  shouldDisableThisItem?: boolean; hasMisconfigurationErrors?: boolean;
-  mcpIsDisconnected?: boolean; remoteMcpLoggedOut?: boolean;
-  spOAuthLoggedOut?: boolean; someToolsAreUnavailable?: boolean;
-  isVersionUnavailable?: boolean; isPublishedAgentGone?: boolean;
-}): boolean {
-  return Boolean(
-    props.shouldDisableThisItem
-    || props.hasMisconfigurationErrors
-    || props.mcpIsDisconnected
-    || props.remoteMcpLoggedOut
-    || props.spOAuthLoggedOut
-    || props.someToolsAreUnavailable
-    || props.isVersionUnavailable
-    || props.isPublishedAgentGone,
-  );
-}
-
-
-// ---------------------------------------------------------------------------
-// Styles (extracted to keep component ≤ 400 lines)
-// ---------------------------------------------------------------------------
-import { participantItemStyles } from './ParticipantItem.styles';
 
 export default ParticipantItem;

@@ -9,6 +9,7 @@ const HISTORY: readonly CopyableChatMessage[] = [
   { id: 2, message_items: [{ content: 'first' }, { item_details: { content: 'second' } }, { content: '' }] },
   { id: 3, exception: { message: 'boom' } },
   { id: 4 },
+  { id: 5, message_items: [{ content: '', item_details: { content: 'fallback text' } }] },
 ];
 
 describe('useChatCopyToClipboard', () => {
@@ -60,5 +61,14 @@ describe('useChatCopyToClipboard', () => {
   it('resolves false when chatHistory is undefined', async () => {
     const { result } = renderHook(() => useChatCopyToClipboard(undefined));
     await expect(result.current(1)).resolves.toBe(false);
+  });
+
+  it('falls back to item_details.content when item.content is an empty string', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    const { result } = renderHook(() => useChatCopyToClipboard(HISTORY));
+    await result.current(5);
+    expect(writeText).toHaveBeenCalledWith('fallback text');
   });
 });

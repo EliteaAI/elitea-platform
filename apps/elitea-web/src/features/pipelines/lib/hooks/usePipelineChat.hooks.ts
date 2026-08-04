@@ -160,7 +160,7 @@ export function usePipelineChat(params: UsePipelineChatParams): UsePipelineChatR
     onError,
   });
 
-  const { onSend } = usePipelineChatMessaging({
+  const { onSend, isLoadingConversation: isSendingFirstMessage } = usePipelineChatMessaging({
     pipelineName,
     pipelineParticipant: conversation.pipelineParticipant,
     pipelineVersionDetails,
@@ -213,7 +213,7 @@ export function usePipelineChat(params: UsePipelineChatParams): UsePipelineChatR
     },
     [setActiveParticipant],
   );
-  useAutoSwitchPipelineChatVersion(switchVersionInput, onSwitchedVersion);
+  useAutoSwitchPipelineChatVersion(switchVersionInput, onSwitchedVersion, onError);
 
   // Baseline `usePipelineChat.hooks.js:699-704` — reset chat history and clear any
   // in-progress flow-editor run nodes whenever the version being edited changes.
@@ -231,7 +231,14 @@ export function usePipelineChat(params: UsePipelineChatParams): UsePipelineChatR
     activeParticipant: conversation.activeParticipant,
     isCreatingConversation: conversation.isCreatingConversation,
     isStreaming: streaming.isStreaming,
-    isLoadingConversation: conversation.isCreatingConversation || isLoadingRestoredConversation,
+    // `conversation.isCreatingConversation`/`isLoadingRestoredConversation` are kept for parity with
+    // baseline's own `isLoadingConversation || isLoadingRestoredConversation || isRestoringConversation`
+    // (`usePipelineChat.hooks.js:726`), but neither reflects a real in-flight network request on its
+    // own here (see `usePipelineChatMessaging.hooks.ts`'s `isLoadingConversation` doc comment for why
+    // the local `isCreatingConversation` flag can never be observed `true`). `isSendingFirstMessage`
+    // is the fix: it tracks the actual `adapter.createConversation(...)` round-trip baseline's own
+    // `useConversationCreateMutation().isLoading` measured.
+    isLoadingConversation: conversation.isCreatingConversation || isLoadingRestoredConversation || isSendingFirstMessage,
     setChatHistory: conversation.setChatHistory,
     setActiveConversation: conversation.setActiveConversation,
     onDeleteMessage: streaming.onDeleteMessage,

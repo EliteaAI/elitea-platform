@@ -56,18 +56,48 @@ describe('useSaveNewVersion', () => {
     await waitFor(() => expect(result.current.isSavingNewVersion).toBe(false));
   });
 
-  it('gates on the injected onSaveTools — stops before POSTing when it resolves false', async () => {
+  it('POSTs the new version unconditionally even when onSaveTools resolves false — only onSuccess is gated (baseline useSaveNewVersion.js:112-149 parity)', async () => {
+    server.use(getSaveApplicationNewVersionMockHandler(newVersionWire));
     const onSaveTools = vi.fn().mockResolvedValue(false);
-    const { result } = renderHookWithProviders(() => useSaveNewVersion({ onSaveTools }));
+    let onSuccessCalled = false;
+    const { result } = renderHookWithProviders(() =>
+      useSaveNewVersion({
+        onSaveTools,
+        onSuccess: () => {
+          onSuccessCalled = true;
+        },
+      }),
+    );
 
     let created;
     await act(async () => {
       created = await result.current.onCreateNewVersion(baseInput());
     });
 
-    expect(created).toBeUndefined();
+    expect(created).toEqual(expect.objectContaining({ id: '9', name: 'v2', application_id: '3' }));
     expect(onSaveTools).toHaveBeenCalledTimes(1);
+    expect(onSuccessCalled).toBe(false);
     expect(result.current.error).toBeUndefined();
+  });
+
+  it('calls onSuccess when onSaveTools resolves true', async () => {
+    server.use(getSaveApplicationNewVersionMockHandler(newVersionWire));
+    const onSaveTools = vi.fn().mockResolvedValue(true);
+    let onSuccessCalled = false;
+    const { result } = renderHookWithProviders(() =>
+      useSaveNewVersion({
+        onSaveTools,
+        onSuccess: () => {
+          onSuccessCalled = true;
+        },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.onCreateNewVersion(baseInput());
+    });
+
+    expect(onSuccessCalled).toBe(true);
   });
 
   it('sets error/errorMessage and returns undefined on a failed POST', async () => {

@@ -66,11 +66,22 @@ export function WelcomeMessageInput({
   const [inputValue, setInputValue] = useState(welcomeMessage ?? '');
   const { toggleFieldFocus, isFocused } = useFieldFocus();
 
-  // Only sync from the caller's value on reset/discard (version switch), not on every keystroke.
+  // Resync from the caller's value whenever IT changes externally (a version
+  // switch, or a future discard/reset action) — the baseline's own
+  // `components/WelcomeMessage.jsx` effect is `useEffect(() => { if
+  // (welcome_message !== inputValue) setInputValue(welcome_message); },
+  // [welcome_message])`: its dependency is the VALUE itself, not a version
+  // id. `versionId` stays a second dependency (not the baseline's own
+  // signal, but a real one this port already has and a version switch is
+  // exactly the case this guard needs to survive) — the `welcomeMessage !==
+  // inputValue` guard still prevents this from clobbering in-progress typing
+  // on every render triggered by the caller's own state round-trip.
   useEffect(() => {
-    setInputValue(welcomeMessage ?? '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- version-switch resync only, matching the baseline's own dependency list.
-  }, [versionId]);
+    if ((welcomeMessage ?? '') !== inputValue) {
+      setInputValue(welcomeMessage ?? '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `inputValue` deliberately excluded: it's the guard, not a resync trigger (matching the baseline's identical omission).
+  }, [welcomeMessage, versionId]);
 
   const handleInput = useCallback(
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {

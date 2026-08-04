@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef } from 'react';
 
 import { load } from 'js-yaml';
 
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
+import { buildErrorMessage } from '@/shared/lib/http-error';
 import type { SingleSelectOption } from '@/shared/ui/SingleSelect';
 
 import type { UsePipelineTriggerResult } from '../../api/usePipelineTrigger';
 import { FlowEditorConstants } from '../../lib/flow-editor/constants';
+import { pipelineErrorMessage } from '../../lib/hooks/pipelineErrorMessage';
 
 /**
  * Split out of `TriggerTypeSelector.tsx` -- constants, pure functions, and
@@ -128,6 +131,49 @@ export function useAutoResetTriggerOnInteractive(args: {
   }, [hasInteractiveElements, currentTriggerType, projectId, versionId]);
 }
 
+/**
+ * **Confirmed regression fix (this cluster, A2-settings-panels, findings 3
+ * & 4):** every trigger-mutation `catch` below used to report a fixed
+ * generic message with no reference to the caught error at all, discarding
+ * the backend's actual error text the old app surfaced
+ * (`TriggerTypeSelector.jsx`'s `toastError(error?.data?.error || '...')`).
+ *
+ * The real Go backend's error envelope for these operations is the flat
+ * `{"error": "message"}` shape (verified directly: `TriggerTypeSelector.
+ * test.tsx`'s own pre-existing MSW mock, `HttpResponse.json({error: 'boom'},
+ * {status: 400})`) -- `EliteaApiError.message` alone (`mutator.ts`'s
+ * `describeFailure`) does NOT carry that text, only `status`/`url`, so
+ * reading just `.message` (the simpler pattern `pipelineErrorMessage`/
+ * `features/agents/lib/errorMessage.ts`'s `applicationErrorMessage` use for
+ * every OTHER pipelines/agents call site) would still have silently dropped
+ * the real backend text here. `shared/lib/http-error.ts`'s `buildErrorMessage`
+ * already does exactly this envelope's `data.error`/`data.message`/
+ * `data.errors` dispatch (ported for parity with the old app's own
+ * `common/utils.jsx`) -- adapting `EliteaApiError.failure` into the
+ * RTK-Query-shaped input it expects is the SAME established pattern
+ * `features/chat-conversation-list/lib/errorMessage.ts`'s
+ * `conversationListErrorMessage` and `features/notifications/lib/
+ * errorMessage.ts` already use for this exact situation. Duplicated
+ * (adapted locally, not imported) rather than reused from either of those
+ * two -- both are a different feature slice (`no-sideways-features`/R-L3
+ * forbid reaching into another feature's internals), the same established
+ * precedent their own doc comments record for each other.
+ *
+ * Falls through to `pipelineErrorMessage(error) || fallback` for anything
+ * that isn't an `EliteaApiError` with a real `data.error`/`data.message`
+ * text (a non-`http` `HttpFailure` kind, a plain `Error`, or a non-`Error`/
+ * non-`string` rejection) -- honest about when the fallback is actually
+ * reachable, same fix `applicationErrorMessageOrFallback`'s own doc comment
+ * applies for the identical `String(error)`-is-always-truthy gap.
+ */
+function pipelineTriggerErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof EliteaApiError && error.failure.kind === 'http') {
+    const built = buildErrorMessage({ status: error.failure.status, originalStatus: error.failure.status, data: error.failure.body });
+    if (typeof built === 'string' && built) return built;
+  }
+  return error instanceof Error || typeof error === 'string' ? pipelineErrorMessage(error) || fallback : fallback;
+}
+
 export interface TriggerActions {
   readonly handleTriggerTypeChange: (newType: string) => Promise<void>;
   readonly handleScheduleSubmit: (cronExpression: string) => Promise<void>;
@@ -162,8 +208,8 @@ export function useTriggerActions(args: {
           setIsUpdating(true);
           await updateTrigger({ type: TRIGGER_TYPES.webhook, schedule: { webhook_type: currentWebhookType } });
           setIsWebhookModalOpen(true);
-        } catch {
-          onNotifyError?.(t('pipelines.triggerTypeSelector.webhookConfigureFailed', 'Failed to configure webhook'));
+        } catch (error) {
+          onNotifyError?.(pipelineTriggerErrorMessage(error, t('pipelines.triggerTypeSelector.webhookConfigureFailed', 'Failed to configure webhook')));
         } finally {
           setIsUpdating(false);
         }
@@ -173,8 +219,8 @@ export function useTriggerActions(args: {
         setIsUpdating(true);
         await updateTrigger({ type: newType });
         onNotifySuccess?.(t('pipelines.triggerTypeSelector.updatedToChatMessage', 'Trigger updated to Chat Message'));
-      } catch {
-        onNotifyError?.(t('pipelines.triggerTypeSelector.updateFailed', 'Failed to update trigger'));
+      } catch (error) {
+        onNotifyError?.(pipelineTriggerErrorMessage(error, t('pipelines.triggerTypeSelector.updateFailed', 'Failed to update trigger')));
       } finally {
         setIsUpdating(false);
       }
@@ -185,14 +231,17 @@ export function useTriggerActions(args: {
   const handleScheduleSubmit = useCallback(
     async (cronExpression: string) => {
       try {
+        setIsUpdating(true);
         const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
         await updateTrigger({ type: TRIGGER_TYPES.schedule, schedule: { cron: cronExpression, timezone } });
         onNotifySuccess?.(t('pipelines.triggerTypeSelector.scheduleConfigured', 'Schedule configured successfully'));
-      } catch {
-        onNotifyError?.(t('pipelines.triggerTypeSelector.scheduleConfigureFailed', 'Failed to configure schedule'));
+      } catch (error) {
+        onNotifyError?.(pipelineTriggerErrorMessage(error, t('pipelines.triggerTypeSelector.scheduleConfigureFailed', 'Failed to configure schedule')));
+      } finally {
+        setIsUpdating(false);
       }
     },
-    [updateTrigger, onNotifySuccess, onNotifyError],
+    [updateTrigger, setIsUpdating, onNotifySuccess, onNotifyError],
   );
 
   const handleScheduleIconClick = useCallback(() => {
@@ -203,18 +252,22 @@ export function useTriggerActions(args: {
     if (currentTriggerType !== TRIGGER_TYPES.webhook) return;
     if (!secretValue) {
       try {
+        setIsUpdating(true);
         await updateTrigger({ type: TRIGGER_TYPES.webhook, schedule: { webhook_type: currentWebhookType } });
-      } catch {
-        onNotifyError?.(t('pipelines.triggerTypeSelector.loadWebhookFailed', 'Failed to load webhook settings'));
+      } catch (error) {
+        onNotifyError?.(pipelineTriggerErrorMessage(error, t('pipelines.triggerTypeSelector.loadWebhookFailed', 'Failed to load webhook settings')));
         return;
+      } finally {
+        setIsUpdating(false);
       }
     }
     setIsWebhookModalOpen(true);
-  }, [currentTriggerType, currentWebhookType, secretValue, updateTrigger, setIsWebhookModalOpen, onNotifyError]);
+  }, [currentTriggerType, currentWebhookType, secretValue, updateTrigger, setIsUpdating, setIsWebhookModalOpen, onNotifyError]);
 
   const handleWebhookSubmit = useCallback(
     async (webhookType: string, newSecretValue: string | null) => {
       try {
+        setIsUpdating(true);
         const schedule: Record<string, unknown> = { webhook_type: webhookType };
         if (newSecretValue) schedule['webhook_secret_value'] = newSecretValue;
         await updateTrigger({ type: TRIGGER_TYPES.webhook, schedule });
@@ -223,11 +276,13 @@ export function useTriggerActions(args: {
             ? t('pipelines.triggerTypeSelector.webhookConfiguredNewSecret', 'Webhook configured with new secret')
             : t('pipelines.triggerTypeSelector.webhookConfigured', 'Webhook configured successfully'),
         );
-      } catch {
-        onNotifyError?.(t('pipelines.triggerTypeSelector.webhookConfigureFailed', 'Failed to configure webhook'));
+      } catch (error) {
+        onNotifyError?.(pipelineTriggerErrorMessage(error, t('pipelines.triggerTypeSelector.webhookConfigureFailed', 'Failed to configure webhook')));
+      } finally {
+        setIsUpdating(false);
       }
     },
-    [updateTrigger, onNotifySuccess, onNotifyError],
+    [updateTrigger, setIsUpdating, onNotifySuccess, onNotifyError],
   );
 
   return { handleTriggerTypeChange, handleScheduleSubmit, handleScheduleIconClick, handleWebhookIconClick, handleWebhookSubmit };

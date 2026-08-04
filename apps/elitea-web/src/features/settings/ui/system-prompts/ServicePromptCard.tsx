@@ -23,6 +23,7 @@ export interface ServicePromptCardProps {
   item: PromptConfig;
   hasDefault: boolean;
   isBusy: boolean;
+  canEdit: boolean;
   onEdit: (config: PromptConfig) => void;
   onRestore: (config: PromptConfig) => void;
 }
@@ -31,6 +32,7 @@ export function ServicePromptCard({
   item,
   hasDefault,
   isBusy,
+  canEdit,
   onEdit,
   onRestore,
 }: ServicePromptCardProps) {
@@ -56,7 +58,7 @@ export function ServicePromptCard({
               <IconButton
                 color="tertiary"
                 onClick={() => onEdit(item)}
-                disabled={isBusy}
+                disabled={!canEdit || isBusy}
                 aria-label={t('shared.ui.settings.prompts.editAria', `Edit service prompt ${item.key}`)}
                 sx={promptsStyles.editButton}
               >
@@ -75,7 +77,7 @@ export function ServicePromptCard({
               <IconButton
                 color="tertiary"
                 onClick={() => onRestore(item)}
-                disabled={!hasDefault || isBusy}
+                disabled={!canEdit || !hasDefault || isBusy}
                 aria-label={t('shared.ui.settings.prompts.restoreAria', `Restore prompt ${item.key} to default`)}
                 sx={promptsStyles.restoreButton}
               >

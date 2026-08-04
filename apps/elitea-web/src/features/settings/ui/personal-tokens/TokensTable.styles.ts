@@ -23,6 +23,10 @@ export const tokensTableStyles = (theme: Theme): Record<string, SxProps<Theme>> 
   loadingContainer: {
     padding: '1.25rem',
   },
+  emptyContainer: {
+    padding: '1.25rem',
+    textAlign: 'center',
+  },
   skeleton: {
     height: 40,
     marginBottom: '0.5rem',

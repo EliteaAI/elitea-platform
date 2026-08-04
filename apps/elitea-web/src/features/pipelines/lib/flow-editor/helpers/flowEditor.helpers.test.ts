@@ -209,6 +209,12 @@ describe('getToolName', () => {
     expect(getToolName({ path: 'P' })).toBe('P');
     expect(getToolName({})).toBe('');
   });
+
+  it('falls through past an explicit empty-string name/description instead of returning a blank label', () => {
+    expect(getToolName({ name: '', description: 'D', path: 'P' })).toBe('D');
+    expect(getToolName({ name: '', description: '', path: 'P' })).toBe('P');
+    expect(getToolName({ name: '', description: '', path: '' })).toBe('');
+  });
 });
 
 describe('calculatePositionForNewNode', () => {

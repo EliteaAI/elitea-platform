@@ -14,12 +14,23 @@ import type { NewChatInputSlots } from './NewChatInput.types';
  * §3.5 complexity-budget reason as `UserInput.tsx`'s own sub-components.
  * Baseline: `NewChatInput.jsx`'s `slots.footer` JSX block.
  *
- * `slots.attachmentButton`/`slots.internalToolsConfig` are rendered
- * unconditionally (no `fromTheChat`/`hideAttachments`/`isAgentsPage` gate
- * on this side) — those baseline conditions decided WHICH C6 component
- * flavour to build; now that the whole area is one injected `ReactNode`
- * slot, that decision belongs entirely to whatever composition-root unit
- * builds the slot's content (passing `undefined` is how it opts out).
+ * `slots.attachmentButton` is rendered unconditionally (no `fromTheChat`/
+ * `hideAttachments` gate on this side) — those two baseline conditions
+ * decide WHICH C6 component flavour to build (`PlusChatButton` vs. plain
+ * `ChatButton.AttachmentButton` vs. nothing); now that the whole area is
+ * one injected `ReactNode` slot, that decision belongs entirely to
+ * whatever composition-root unit builds the slot's content (passing
+ * `undefined` is how it opts out).
+ *
+ * `slots.internalToolsConfig`, by contrast, IS gated here on `isAgentsPage`
+ * (baseline: `!isAgentsPage && !fromTheChat`) — unlike `fromTheChat`,
+ * `isAgentsPage` is already data this cluster owns end-to-end (threaded
+ * through `agentEditor.isAgentsPage` and used for the `AgentEditorPanel`/
+ * `modelSelector` branch below too), so there is no reason to make the
+ * composition root re-derive a rule this component can already enforce
+ * directly. The composition root remains responsible for additionally
+ * withholding this slot when `fromTheChat` is set (passing `undefined`),
+ * exactly like `attachmentButton`.
  * `AgentEditorPanel` vs. `slots.modelSelector` is the one branch THIS
  * cluster still owns — see this component's own `isAgentsPage` prop.
  */
@@ -44,7 +55,7 @@ export function NewChatInputFooterContent(props: NewChatInputFooterContentProps)
     <Box sx={rowSx}>
       <Box sx={leftSx}>
         {slots.attachmentButton}
-        {slots.internalToolsConfig}
+        {!isAgentsPage && slots.internalToolsConfig}
       </Box>
       <Box sx={rightSx}>
         {showAgentEditorPanel && <AgentEditorPanel {...agentEditorProps} />}

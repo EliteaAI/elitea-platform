@@ -65,6 +65,7 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
         {activeTab === 0 && configurationsBySection ? (
           <ConfigurationsPanel
             configurationsBySection={configurationsBySection as unknown as Record<string, Record<string, unknown>[]>}
+            projectId={projectId}
             isLoading={isLoading}
           />
         ) : activeTab === 0 && !configurationsBySection && isLoading ? (

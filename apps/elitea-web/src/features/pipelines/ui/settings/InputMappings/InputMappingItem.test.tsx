@@ -132,6 +132,35 @@ describe('InputMappingItem', () => {
     expect(onChangeMapping).toHaveBeenCalledWith('mode', { type: 'fixed', value: 'b', enum: ['a', 'b'] }, 'string');
   });
 
+  it('reports the native (non-string) enum value when a boolean/number enum option is selected', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByRole, findByRole } = renderWithTheme(
+      <InputMappingItem
+        variableName="Enabled"
+        type="fixed"
+        dataType="boolean"
+        value={false}
+        enumList={[true, false]}
+        variable="enabled"
+        onChangeMapping={onChangeMapping}
+        defaultValues={{}}
+        mappingInfo={{}}
+      />,
+    );
+    const combos = getByRole('combobox', { name: /select one option/i });
+    await user.click(combos);
+    await user.click(await findByRole('option', { name: 'true' }));
+    // The stringified display option "true" must round-trip back to the
+    // real boolean `true`, not the string "true" — see
+    // `resolveEnumValue`'s doc comment.
+    expect(onChangeMapping).toHaveBeenCalledWith(
+      'enabled',
+      { type: 'fixed', value: true, enum: [true, false] },
+      'boolean',
+    );
+  });
+
   it('renders a multi-value enum select for an array dataType and reports the selection', async () => {
     const user = userEvent.setup();
     const onChangeMapping = vi.fn();
@@ -156,6 +185,32 @@ describe('InputMappingItem', () => {
     await user.click(multiSelect);
     await user.click(await findByRole('option', { name: 'b' }));
     expect(onChangeMapping).toHaveBeenCalledWith('tags', { type: 'fixed', value: ['a', 'b'], enum: ['a', 'b'] }, 'array');
+  });
+
+  it('reports native (non-string) enum values from the multi-value enum select', async () => {
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getAllByRole, findByRole } = renderWithTheme(
+      <InputMappingItem
+        variableName="Levels"
+        type="fixed"
+        dataType="array"
+        value={[1]}
+        enumList={[1, 2, 3]}
+        variable="levels"
+        onChangeMapping={onChangeMapping}
+        defaultValues={{}}
+        mappingInfo={{}}
+      />,
+    );
+    const comboboxes = getAllByRole('combobox');
+    const multiSelect = comboboxes[1];
+    if (!multiSelect) throw new Error('multi-select combobox not found');
+    await user.click(multiSelect);
+    await user.click(await findByRole('option', { name: '2' }));
+    // Each stringified chip value ("1", "2") must round-trip back to its
+    // real number, not the string form.
+    expect(onChangeMapping).toHaveBeenCalledWith('levels', { type: 'fixed', value: [1, 2], enum: [1, 2, 3] }, 'array');
   });
 
   it('falls back to a state-variable select when the type is "variable" with no enum', async () => {

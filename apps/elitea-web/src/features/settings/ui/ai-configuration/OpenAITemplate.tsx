@@ -15,10 +15,12 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 
 import { t } from '@/shared/ui/lib/t';
+import { isPublicProject } from '@/entities/project';
+import { getConfig } from '@/shared/config';
 
 import CodePreview from './CodePreview';
 import { useCodePreview } from '@/features/settings/lib/ai-configuration/useCodePreview';
-import { useConfigurationsBySection } from '@/features/settings/lib/ai-configuration/useConfigurationsBySection';
+import { useModelsQuery } from '@/features/settings/api/ai-configuration/api';
 import { removeDuplicateModels } from '@/features/settings/lib/ai-configuration/modelConfiguration.helpers';
 import { useModelConfiguration } from '@/features/settings/lib/ai-configuration/useModelConfiguration';
 import type { ModelInfo } from '@/entities/credential';
@@ -32,30 +34,31 @@ export default function OpenAITemplate({ projectId }: OpenAITemplateProps) {
   const theme = useTheme();
   const styles = getStyles(theme);
 
-  /* Fetch all sections; we only need the LLM models for code preview */
-  const { data: configSections } = useConfigurationsBySection(projectId);
-  const llmConfigs = configSections?.['llm'] ?? [];
+  /* `include_shared: projectId != PUBLIC_PROJECT_ID` — old app:
+     `OpenAITemplate.jsx:31`. */
+  const includeShared = (() => {
+    const result = getConfig();
+    if (result.status !== 'ok') return true;
+    return !isPublicProject(projectId, result.config.vite_public_project_id);
+  })();
 
-  /* Convert ConfigurationItem[] → ModelInfo-compatible array — computed directly
-     because llmConfigs comes from a hook that may return a new reference each render. */
-  const models = llmConfigs.map((cfg) => ({
-    id: cfg.id,
-    name: cfg.elitea_title || cfg.label || cfg.type || '',
-    display_name: cfg.elitea_title || cfg.label || '',
-    type: cfg.type || '',
-    label: cfg.label || cfg.elitea_title || cfg.type || '',
-    project_id: cfg.project_id || '',
-    default: false,
-    integration_name: cfg.data?.integration_name as string | undefined,
-  }));
+  /* Source models straight from the models-with-defaults endpoint (old app:
+     `useListModelsQuery({ section: 'llm', ... })`, `OpenAITemplate.jsx:19-33`)
+     — NOT the general configurations-list endpoint, which carries no real
+     `default` flag. `ModelInfo.default` here is the actual backend value. */
+  const { data: modelsData } = useModelsQuery(projectId, 'llm', includeShared);
 
   /* Remove duplicates — old app pattern */
-  const uniqueConfigurations = removeDuplicateModels(models);
+  const uniqueConfigurations = removeDuplicateModels(
+    modelsData ? [...modelsData.items] : ([] as ModelInfo[]),
+  );
 
-  /* Model state management */
+  /* Model state management — real `projectId` (not `null`) re-enables the
+     project-scoped "auto-select default on initial load" effect inside
+     `useModelConfiguration`. */
   const { model, selectedModelFromConfigurations, onChangeModel } = useModelConfiguration({
-    projectId: null,
-    configurations: uniqueConfigurations as unknown as ModelInfo[],
+    projectId,
+    configurations: uniqueConfigurations,
   });
 
   /* Code preview */

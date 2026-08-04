@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -81,5 +82,49 @@ describe('useEditPipelineData', () => {
 
     await waitFor(() => expect(result.current.activeVersion?.id).toBe('1'));
     expect(result.current.isFetching).toBe(false);
+  });
+
+  it('isDetailNotFound is true when the detail fetch 404s', async () => {
+    server.use(
+      http.get('*/elitea_core/application/prompt_lib/:projectId/:applicationId', () =>
+        HttpResponse.json({ error: 'not found' }, { status: 404 }),
+      ),
+    );
+    const { result } = renderHook(() => useEditPipelineData('9', 42, undefined), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.isDetailNotFound).toBe(true);
+  });
+
+  it('isDetailNotFound is true when the detail fetch 400s', async () => {
+    server.use(
+      http.get('*/elitea_core/application/prompt_lib/:projectId/:applicationId', () =>
+        HttpResponse.json({ error: 'bad request' }, { status: 400 }),
+      ),
+    );
+    const { result } = renderHook(() => useEditPipelineData('9', 42, undefined), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.isDetailNotFound).toBe(true);
+  });
+
+  it('isDetailNotFound stays false for a non-404/400 detail-fetch error (e.g. 500)', async () => {
+    server.use(
+      http.get('*/elitea_core/application/prompt_lib/:projectId/:applicationId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    const { result } = renderHook(() => useEditPipelineData('9', 42, undefined), { wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.isDetailNotFound).toBe(false);
+  });
+
+  it('isDetailNotFound stays false once the detail fetch succeeds', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const { result } = renderHook(() => useEditPipelineData('9', 42, undefined), { wrapper });
+
+    await waitFor(() => expect(result.current.detail?.name).toBe('My Pipeline'));
+    expect(result.current.isDetailNotFound).toBe(false);
   });
 });

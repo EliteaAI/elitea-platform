@@ -40,6 +40,16 @@ describe('AgentVariables', () => {
     expect(getByLabelText('REGION')).toHaveValue('us-east-1');
   });
 
+  it('renders each variable row as a multiline, collapsible field (not a single-line input)', () => {
+    const { getByLabelText } = renderWithTheme(
+      <AgentVariables
+        variables={[{ name: 'API_KEY', value: 'abc' }]}
+        onChangeVariable={vi.fn()}
+      />,
+    );
+    expect(getByLabelText('API_KEY').tagName).toBe('TEXTAREA');
+  });
+
   it('calls onChangeVariable with the variable name and new value on edit', async () => {
     const user = userEvent.setup();
     const onChangeVariable = vi.fn();

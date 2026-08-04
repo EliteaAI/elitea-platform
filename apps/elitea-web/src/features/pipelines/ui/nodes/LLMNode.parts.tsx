@@ -110,6 +110,33 @@ export interface LLMNodeModel {
 }
 
 /**
+ * `useLLMInputMapping`'s own `defaultValues` factory
+ * (`../../lib/flow-editor/hooks/useLLMInputMapping.ts`'s `getDefaultLLMInputMapping`)
+ * returns the full `{type, value}` *entry* pairs used to seed the YAML
+ * `input_mapping` itself, NOT the flat `{variable: rawValue}` shape
+ * `SimpleLLMInputs`'s own `defaultValues` prop expects (`../settings/
+ * SimpleLLMInputs.tsx`'s `defaultValues[key]` reads, used both as the
+ * field's fallback `value` and — critically — as `SimpleLLMInputItem.tsx`'s
+ * `onChange`'s `defaultValue` written straight into YAML on every Type
+ * dropdown change: `onChangeMapping(variable, { type: newValue, value:
+ * shouldPreserveValue ? value : defaultValue })`). Calling `defaultValues()`
+ * and handing the *entry* object straight through (as this file previously
+ * did — `defaultValues: defaultValues()`) fed e.g. `{ type: 'fixed', value:
+ * '' }` into that slot, so switching a field's Type away from fstring/fixed
+ * wrote the wrapper object itself into `input_mapping[key].value`,
+ * corrupting the prompt once re-read as a stringified JSON blob
+ * (`SimpleLLMInputItem.tsx`'s `resolvedValue = typeof value !== 'string' ?
+ * JSON.stringify(value) : value`). Unwrapped to each entry's own `.value`
+ * here, matching the already-landed sibling pattern
+ * `lib/flow-editor/hooks/useCodeInputMapping.ts`/`usePrinterInputMapping.ts`
+ * both already use ("Return only the value part for defaultValues, not the
+ * entire object").
+ */
+function toFlatDefaultValues(entryDefaults: LLMInputMapping): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(Object.entries(entryDefaults).map(([key, entry]) => [key, entry.value]));
+}
+
+/**
  * Every piece of `LLMNode`'s own derived state/handlers, gathered behind
  * one custom hook — see `./HITLNode.parts.tsx`'s `useHITLNodeModel` doc
  * comment for the full complexity-budget rationale this mirrors.
@@ -162,7 +189,7 @@ export function useLLMNodeModel(args: UseLLMNodeModelArgs): LLMNodeModel {
     resolvedLlmSettings,
     inputMappings,
     inputMappingValues: yamlNode?.input_mapping ?? EMPTY_INPUT_MAPPING,
-    defaultValues: defaultValues(),
+    defaultValues: toFlatDefaultValues(defaultValues()),
     handleSimpleLLMChange,
     toolkitToolRows,
   };

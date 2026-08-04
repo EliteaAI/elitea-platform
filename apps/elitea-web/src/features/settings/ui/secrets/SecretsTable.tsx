@@ -34,7 +34,7 @@ import { SecretRowComponent } from './SecretRow';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SecretActionsMenu } from './SecretActionsMenu';
 import { tableStyles } from './SecretsTable.styles';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 /* ── pagination config ────────────────────────────────────────────────── */
 
@@ -53,6 +53,8 @@ export interface SecretsTableProps {
 
   /* Visibility state */
   isShowSecretMap: Record<string, boolean>;
+  /** Whether the current user may reveal/hide plaintext values (`PERMISSIONS.secrets.unsecret`). */
+  canUnsecret: boolean;
 
   /* Validation */
   validationErrors: Record<string, boolean>;
@@ -64,7 +66,11 @@ export interface SecretsTableProps {
     onCancel: (rowId: string) => () => void;
     onShowSecret: (rowId: string) => () => Promise<void>;
     onHideSecret: (rowId: string) => void;
-    onCopyVisible: (rowId: string) => () => Promise<void>;
+    onCopySecretValue: (rowId: string) => () => Promise<void>;
+    onActionsMenuClick: (rowId: string) => (event: React.MouseEvent) => void;
+    onEdit: (rowId: string) => () => Promise<void>;
+    onHide: (rowId: string) => () => void;
+    onDelete: (rowId: string) => () => void;
     onCloseAlert: () => () => void;
     onConfirmAlert: (rowId: string) => () => void;
   };
@@ -123,6 +129,7 @@ export const SecretsTable = memo(function SecretsTable({
   setRowModesModel,
   isFetching,
   isShowSecretMap,
+  canUnsecret,
   validationErrors,
   onValidationChange,
   actions,
@@ -180,20 +187,23 @@ export const SecretsTable = memo(function SecretsTable({
         rowModesModel={rowModesModel}
         validationErrors={validationErrors}
         isShowSecretMap={isShowSecretMap}
+        canUnsecret={canUnsecret}
         setRows={setRows}
         setRowModesModel={setRowModesModel}
         onValidationChange={onValidationChange}
         actions={actions}
       />
     ),
-    [rowModesModel, validationErrors, isShowSecretMap, onValidationChange, actions, setRows, setRowModesModel],
+    [rowModesModel, validationErrors, isShowSecretMap, canUnsecret, onValidationChange, actions, setRows, setRowModesModel],
   );
 
-  const columnsWithCell = [
-    { ...COLUMNS[0], renderCell: renderRowCell } as GridColDef,
-    { ...COLUMNS[1] } as GridColDef,
-    { ...COLUMNS[2] } as GridColDef,
-  ] as GridColDef[];
+  // Every column shares the same cell renderer — `SecretRowComponent`
+  // switches on `params.field` to render only that column's slice of
+  // content (name / value / actions). Overriding only the 'name' column
+  // (as a prior version of this file did) left 'secretValue' and 'actions'
+  // on their placeholder `renderCell: () => null`, so those columns always
+  // rendered blank.
+  const columnsWithCell = COLUMNS.map((col) => ({ ...col, renderCell: renderRowCell }) as GridColDef);
 
   /* ── loading state ────────────────────────────────────────────────── */
 
@@ -265,24 +275,28 @@ export const SecretsTable = memo(function SecretsTable({
       </Box>
 
       {/* Actions menu for the active row */}
-      {menu.anchorRowId && (
-        <SecretActionsMenu
-          rowId={menu.anchorRowId}
-          isNew={(rows.find((r) => r.id === menu.anchorRowId)?.isNew) ?? true}
-          isDefault={(rows.find((r) => r.id === menu.anchorRowId)?.isDefault) ?? false}
-          anchorEl={menu.anchorEl}
-          onClose={menu.onCloseMenu}
-          onEdit={() => {}}
-          onHide={() => {}}
-          onDelete={() => {}}
-        />
-      )}
+      {(() => {
+        const { anchorRowId } = menu;
+        if (!anchorRowId) return null;
+        return (
+          <SecretActionsMenu
+            rowId={anchorRowId}
+            isNew={(rows.find((r) => r.id === anchorRowId)?.isNew) ?? true}
+            isDefault={(rows.find((r) => r.id === anchorRowId)?.isDefault) ?? false}
+            anchorEl={menu.anchorEl}
+            onClose={menu.onCloseMenu}
+            onEdit={() => { void actions.onEdit(anchorRowId)(); }}
+            onHide={actions.onHide(anchorRowId)}
+            onDelete={actions.onDelete(anchorRowId)}
+          />
+        );
+      })()}
 
       {/* Confirm dialog */}
       <ConfirmDialog
         open={!!dialog.openAlert}
         alertType={dialog.openAlertType}
-        rowName={dialog.openAlert ?? ''}
+        rowName={rows.find((r) => r.id === dialog.openAlert)?.name ?? ''}
         onClose={() => { actions.onCloseAlert()(); }}
         onConfirm={() => { actions.onConfirmAlert(dialog.openAlert ?? '')(); }}
       />

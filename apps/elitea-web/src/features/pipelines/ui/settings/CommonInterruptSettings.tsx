@@ -131,6 +131,29 @@ interface InterruptSettingsContext {
   readonly realInterruptAfter: readonly string[];
 }
 
+/**
+ * Baseline's `Array.isArray(yamlJsonObject?.interrupt_before) ?
+ * yamlJsonObject?.interrupt_before : []` (`CommonInterruptSettings.jsx:27-34`)
+ * -- a malformed (non-array) `interrupt_before`/`interrupt_after` value in
+ * the YAML degrades to an empty list instead of flowing straight into
+ * `.includes()`/the spread in `useInterruptToggleHandler` above.
+ *
+ * The explicitly-typed intermediate `list: readonly string[]` binding
+ * (rather than `return Array.isArray(value) ? value : []` directly, or an
+ * unannotated `const list = ...`) is required, not stylistic:
+ * `Array.isArray`'s `arg is any[]` predicate widens the narrowed value to
+ * `any[]`, tripping `no-unsafe-return` on a direct/unannotated return --
+ * the same gap `parsePipelineTraversal.helpers.ts:138-139`'s identical
+ * `interrupt_before`/`interrupt_after` guard and `yamlUpdate.helpers.ts`'s
+ * own doc comment both already document for this exact narrowing pattern;
+ * the explicit annotation here is what those two call sites didn't need
+ * (neither one ever `return`s the narrowed value directly).
+ */
+function toInterruptList(value: readonly string[] | undefined): readonly string[] {
+  const list: readonly string[] = Array.isArray(value) ? value : [];
+  return list;
+}
+
 /** Every `FlowEditorContext` read plus derived entry-point/end-transition flags for this node -- see this file's own doc comment. */
 function useInterruptSettingsContext(id: string, type: string | undefined): InterruptSettingsContext {
   const context = useContext(FlowEditorContext);
@@ -145,8 +168,8 @@ function useInterruptSettingsContext(id: string, type: string | undefined): Inte
     yamlNode,
     isEntryPoint: yamlJsonObject?.entry_point === id,
     isEndTransition: yamlNode?.transition === FlowEditorConstants.PipelineNodeTypes.End,
-    realInterruptBefore: yamlJsonObject?.interrupt_before ?? [],
-    realInterruptAfter: yamlJsonObject?.interrupt_after ?? [],
+    realInterruptBefore: toInterruptList(yamlJsonObject?.interrupt_before),
+    realInterruptAfter: toInterruptList(yamlJsonObject?.interrupt_after),
   };
 }
 

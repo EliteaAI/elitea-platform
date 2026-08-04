@@ -59,6 +59,13 @@ function renderForm(props: Partial<ComponentProps<typeof ApplicationEditForm>> =
 }
 
 describe('ApplicationEditForm', () => {
+  it('wraps its content in the titled, collapsible "General" accordion', async () => {
+    renderForm();
+    await screen.findByTestId('agent-name-input');
+    expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'General' })).toBeInTheDocument();
+  });
+
   it('renders the name and description fields seeded from props', async () => {
     renderForm();
     expect(await screen.findByTestId('agent-name-input')).toHaveValue('My Agent');
@@ -162,6 +169,16 @@ describe('ApplicationEditForm', () => {
     await user.type(input, '!!!invalid!!!{Enter}');
     // Invalid entries are filtered out entirely -> resolved to an empty tag list.
     expect(onTagsChange).toHaveBeenCalledWith([]);
+  });
+
+  it('accepts a freeSolo-typed tag name containing a comma, matching the old app’s NormalTagNameInputRegExp', async () => {
+    const onTagsChange = vi.fn();
+    renderForm({ tags: [], onTagsChange });
+    const input = await screen.findByLabelText('Tags');
+    const user = userEvent.setup();
+    await user.type(input, 'a,b{Enter}');
+    const lastCallTags = onTagsChange.mock.calls.at(-1)?.[0] as { name: string }[];
+    expect(lastCallTags.map((tag) => tag.name)).toEqual(['a,b']);
   });
 
   it('clears the description focus (and its characters-left hint) on blur', async () => {

@@ -125,4 +125,30 @@ describe('useAutoSwitchApplicationChatVersion', () => {
     await waitFor(() => expect(calls).toBe(1));
     await waitFor(() => expect(switchedWith).toBeDefined());
   });
+
+  it('still calls onSwitched with the locally-built entity settings when the PUT fails (baseline useApplicationChatSwitchVersion.js:18-43 updates local state unconditionally, only toasts an error)', async () => {
+    server.use(
+      http.put('*/elitea_core/entity_settings/prompt_lib/:projectId/:conversationId/:participantId', () =>
+        HttpResponse.json({ error: 'invalid settings' }, { status: 400 }),
+      ),
+    );
+    let switchedWith: unknown;
+    const { rerender } = renderHookWithProviders(
+      (props: { versionId: number }) =>
+        useAutoSwitchApplicationChatVersion(baseInput({ versionId: props.versionId }), (settings) => (switchedWith = settings)),
+      undefined,
+      { initialProps: { versionId: 42 } },
+    );
+
+    rerender({ versionId: 43 });
+
+    await waitFor(() => expect(switchedWith).toBeDefined());
+    expect(switchedWith).toEqual({
+      foo: 'bar',
+      version_id: 43,
+      variables: [{ name: 'x', value: '1' }],
+      llm_settings: { model_name: 'gpt' },
+      icon_meta: { url: 'icon.png' },
+    });
+  });
 });

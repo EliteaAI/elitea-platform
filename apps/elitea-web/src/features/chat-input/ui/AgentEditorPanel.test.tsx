@@ -191,6 +191,30 @@ describe('AgentEditorPanel', () => {
     expect(onSwitchToModel).toHaveBeenCalledTimes(1);
   });
 
+  it('disables the entity-switch, version-selector, and variables-editor buttons (not just settings) via the ButtonGroup disabled cascade, matching the baseline streaming-lock behaviour', async () => {
+    server.use(getPermissionListMockHandler([{ name: PERMISSIONS.applications.update, enabled: true }]));
+    renderPanel(
+      <AgentEditorPanel
+        {...baseProps({
+          disabled: true,
+          variablesEditor: { variables: [{ key: 'x', value: '1' }], onChange: vi.fn() },
+        })}
+      />,
+      { projectId: 'proj-1' },
+    );
+    await waitFor(() => expect(screen.getByText('My Agent')).toBeInTheDocument());
+    // Disabled buttons can't fire the hover/focus events Tooltip normally
+    // listens for, so MUI's Tooltip falls back to setting its title as the
+    // trigger's own `aria-label` — hence "Switch Agent" (the tooltip text),
+    // not "My Agent" (the button's own visible text), is this button's
+    // accessible name once disabled. Same MUI mechanism the baseline relies
+    // on for its own identically-structured `Tooltip`-wrapped `Button`.
+    expect(screen.getByRole('button', { name: 'Switch Agent' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'version selector menu' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'variables selector menu' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'agent settings menu' })).toBeDisabled();
+  });
+
   it('calls onSelect (and onCloseAgentEditor) when a version is chosen with no dirty editor guard', async () => {
     server.use(getPermissionListMockHandler([{ name: PERMISSIONS.applications.update, enabled: true }]));
     const onSelect = vi.fn();

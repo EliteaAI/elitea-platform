@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
 
 import { getCreateApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
@@ -8,6 +9,18 @@ import { server } from '@/test/setup';
 
 import { CreateApplication } from './CreateApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
+
+/** Fills the required Name/Description fields so Save becomes enabled, then clicks it. */
+async function fillAndSave(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  const saveButton = await screen.findByTestId('agent-save-button');
+  await waitFor(() => expect(saveButton).toBeDisabled());
+
+  await user.type(screen.getByTestId('agent-name-input'), 'My Agent');
+  await user.type(screen.getByTestId('agent-description-input'), 'A description');
+  await waitFor(() => expect(saveButton).not.toBeDisabled());
+
+  await user.click(saveButton);
+}
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
@@ -72,5 +85,64 @@ describe('CreateApplication', () => {
 
     expect(router.state.location.pathname).toBe('/agents/create');
     expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it('shows a generic error message when create fails with a non-field-shaped error body', async () => {
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await fillAndSave(user);
+
+    expect(await screen.findByText('Failed to create the agent.')).toBeInTheDocument();
+  });
+
+  it('attributes a duplicate-name conflict to the Name field instead of showing one generic message — old app: useCreateApplication.jsx:85-107\'s formik.setFieldError', async () => {
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>
+        HttpResponse.json([{ loc: ['body', 'name'], msg: 'An agent with this name already exists.' }], {
+          status: 400,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await fillAndSave(user);
+
+    expect(await screen.findByText('Name: An agent with this name already exists.')).toBeInTheDocument();
+    expect(screen.queryByText('Failed to create the agent.')).not.toBeInTheDocument();
+  });
+
+  it('clears the create-error banner once a subsequent save succeeds', async () => {
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await fillAndSave(user);
+    await screen.findByText('Failed to create the agent.');
+
+    server.use(
+      getCreateApplicationMockHandler({
+        id: '1',
+        name: 'My Agent',
+        description: 'A description',
+        type: 'interface',
+        icon: '',
+        owner_id: 'user-1',
+        created_at: '2026-01-01T00:00:00Z',
+      }),
+    );
+    await user.click(screen.getByTestId('agent-save-button'));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents/latest/1'));
   });
 });

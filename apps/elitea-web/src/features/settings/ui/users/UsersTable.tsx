@@ -23,21 +23,32 @@ import { EditUsersButton } from '@/shared/ui/settings/EditUsersButton';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
 import { t } from '@/shared/ui/lib/t';
 
-export interface UsersTableProps {
-  users: { id: string; email: string; name: string; roles: readonly string[] }[];
+export interface UsersTablePaginationProps {
   total?: number;
   rowsPerPage?: number;
   page?: number;
-  selectedUsers: { id: string }[];
   onSelectPage?: (selected: boolean) => void;
-  onSelectRow?: (user: { id: string }, selected: boolean) => void;
+}
+
+export interface UsersTableSortingProps {
   onSort?: (field: string, direction: 'asc' | 'desc') => void;
   sortField?: string;
   sortDirection?: 'asc' | 'desc';
+}
+
+export interface UsersTableProps {
+  users: { id: string; email: string; name: string; roles: readonly string[] }[];
+  /** Not consumed by this component (the DataGrid renders exactly `users`, unpaginated) — kept for the caller's own pagination UI outside this table. */
+  pagination?: UsersTablePaginationProps;
+  selectedUsers: { id: string }[];
+  onSelectRow?: (user: { id: string }, selected: boolean) => void;
+  sorting?: UsersTableSortingProps;
   actions: {
     edit: EditUsersButtonProps | null;
     delete: Record<string, unknown>;
   };
+  /** Old-app parity: `UsersTable.jsx`'s `renderActions` wraps the per-row edit button in `checkPermission(PERMISSIONS.users.edit)`. */
+  canEdit: boolean;
   isLoading?: boolean;
 }
 
@@ -50,18 +61,14 @@ export interface UsersTableProps {
 
 export const UsersTable = memo(function UsersTable({
   users,
-  total: _total,
-  rowsPerPage: _rowsPerPage,
-  page: _page,
   selectedUsers,
-  onSelectPage: _onSelectPage,
   onSelectRow,
-  onSort,
-  sortField,
-  sortDirection,
+  sorting,
   actions,
+  canEdit,
   isLoading,
 }: UsersTableProps) {
+  const { onSort, sortField, sortDirection } = sorting ?? {};
   const theme = useTheme();
 
   const selectedIds = useMemo(
@@ -201,6 +208,8 @@ export const UsersTable = memo(function UsersTable({
         sortable: false,
         disableColumnMenu: true,
         renderCell: (params: GridRenderCellParams) => {
+          if (!canEdit) return null;
+
           const rowId = String((params.row as { id: string }).id);
           const rowUser = users.find((u) => u.id === rowId);
           if (!rowUser) return null;
@@ -229,7 +238,7 @@ export const UsersTable = memo(function UsersTable({
         },
       },
     ],
-    [actions, users, theme.vars.palette.text.primary, theme.vars.palette.text.secondary, theme.typography.headingSmall.fontSize],
+    [actions, canEdit, users, theme.vars.palette.text.primary, theme.vars.palette.text.secondary, theme.typography.headingSmall.fontSize],
   );
 
   /* ── loading state ────────────────────────────────────────────────── */

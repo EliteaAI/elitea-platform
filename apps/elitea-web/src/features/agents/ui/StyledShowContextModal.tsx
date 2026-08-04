@@ -29,6 +29,15 @@ import { ModalMessage } from './ModalMessage';
  * `ModalMessage.tsx` and `shared/ui/BaseModal.tsx` (no `CopyIcon`/`CloseIcon`
  * port in `shared/ui/icons`).
  *
+ * `onCopy`'s success/failure signal — same restoration, same reasoning, as
+ * sibling `ModalMessage.tsx`'s own doc comment: the baseline
+ * (`StyledShowContextModal.jsx:42-50`) wraps a direct
+ * `navigator.clipboard.writeText` call in try/catch for a REAL
+ * success/failure result (`toastInfo`/`toastError`); `shared/lib/clipboard`'s
+ * `handleCopy` deliberately never rejects, so this calls the Clipboard API
+ * directly (falling back to `handleCopy` only when it's absent) instead of
+ * routing every copy through the swallow-everything helper.
+ *
  * `renderContextAsMermaid` real, documented gap: `parseYamlToMermaid`
  * (`../lib/helpers/parseYamlToMermaid.helpers.ts`, this sub-unit's own
  * sibling A1b/A1e-adjacent port — landed in this worktree, reused here
@@ -62,6 +71,10 @@ export interface StyledShowContextModalProps {
   readonly isLoading?: boolean;
   /** `apps/elitea-ui/src/common/constants.js` `ROLES.User` — injected rather than imported, `common/constants.js` is not this sub-unit's owned surface. */
   readonly userRole?: string;
+  /** Fires once the "copy to clipboard" action genuinely succeeds — the callback equivalent of the baseline's `toastInfo('The content has been copied to the clipboard')`. */
+  readonly onCopied?: () => void;
+  /** Fires once the "copy to clipboard" action genuinely fails — the callback equivalent of the baseline's `toastError('Failed to copy the content!')`. */
+  readonly onCopyFailed?: () => void;
 }
 
 interface ModalHeaderProps {
@@ -162,12 +175,18 @@ export function StyledShowContextModal({
   renderInMarkdown = true,
   isLoading = false,
   userRole = 'user',
+  onCopied,
+  onCopyFailed,
 }: StyledShowContextModalProps): ReactNode {
   const mermaidDefinition = renderContextAsMermaid ? parseYamlToMermaid(context) : '';
 
   const onCopy = useCallback(() => {
-    void handleCopy(context);
-  }, [context]);
+    if (typeof navigator.clipboard?.writeText === 'function') {
+      void navigator.clipboard.writeText(context).then(() => onCopied?.(), () => onCopyFailed?.());
+      return;
+    }
+    void handleCopy(context).then(() => onCopied?.());
+  }, [context, onCopied, onCopyFailed]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {

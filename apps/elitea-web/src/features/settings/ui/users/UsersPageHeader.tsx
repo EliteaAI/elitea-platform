@@ -20,7 +20,7 @@ import { t } from '@/shared/ui/lib/t';
 
 export function UsersPageHeader({
   usersPageStyles, searchText, onSearchChange,
-  actions, selectedUsers, onSetInviteOpen,
+  actions, selectedUsers, onSetInviteOpen, permissions,
 }: {
   usersPageStyles: typeof import('./UsersPage.styles').usersPageStyles;
   searchText: string;
@@ -28,6 +28,8 @@ export function UsersPageHeader({
   actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
   selectedUsers: UserRecord[];
   onSetInviteOpen: (open: boolean) => void;
+  /** RBAC gates ported from the old app's `checkPermission(PERMISSIONS.users.*)` calls (spec §9.3). */
+  permissions: { canView: boolean; canCreate: boolean; canEdit: boolean; canDelete: boolean };
 }) {
   const theme = useTheme();
   const searchIconSize = 18;
@@ -49,44 +51,52 @@ export function UsersPageHeader({
         {t('shared.ui.settings.users.title', 'Users')}
       </Typography>
       <Box sx={usersPageStyles.toolbar}>
-        <TextField
-          size="small"
-          placeholder={t('shared.ui.settings.users.search', 'Search users…')}
-          value={searchText}
-          onChange={onSearchChange}
-          sx={{ width: 260 }}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon sx={{ color: 'text.disabled', fontSize: searchIconSize }} />
-                </InputAdornment>
-              ),
-              sx: searchInputStyles,
-            },
-          }}
-        />
+        {permissions.canView && (
+          <TextField
+            size="small"
+            placeholder={t('shared.ui.settings.users.search', 'Search users…')}
+            value={searchText}
+            onChange={onSearchChange}
+            sx={{ width: 260 }}
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon sx={{ color: 'text.disabled', fontSize: searchIconSize }} />
+                  </InputAdornment>
+                ),
+                sx: searchInputStyles,
+              },
+            }}
+          />
+        )}
         {actions && selectedUsers.length >= 1 && (
           <>
-            {actions.edit && <EditUsersButton {...actions.edit} sx={usersPageStyles.actionButton} />}
-            {actions.delete && <DeleteUserButton {...actions.delete} sx={usersPageStyles.actionButton} />}
+            {permissions.canEdit && actions.edit && (
+              <EditUsersButton {...actions.edit} sx={usersPageStyles.actionButton} />
+            )}
+            {permissions.canDelete && actions.delete && (
+              <DeleteUserButton {...actions.delete} sx={usersPageStyles.actionButton} />
+            )}
           </>
         )}
-        <Box sx={usersPageStyles.actionButton}>
-          <IconButton
-            color="primary"
-            onClick={() => onSetInviteOpen(true)}
-            title={t('shared.ui.settings.users.inviteTooltip', 'Invite users')}
-            sx={inviteButtonStyles}
-          >
-            <Typography
-              variant="bodyMedium"
-              sx={{ fontWeight: 600, fontSize: inviteFontSize, lineHeight: 1 }}
+        {permissions.canCreate && (
+          <Box sx={usersPageStyles.actionButton}>
+            <IconButton
+              color="primary"
+              onClick={() => onSetInviteOpen(true)}
+              title={t('shared.ui.settings.users.inviteTooltip', 'Invite users')}
+              sx={inviteButtonStyles}
             >
-              {t('shared.ui.settings.users.invite', 'Invite')}
-            </Typography>
-          </IconButton>
-        </Box>
+              <Typography
+                variant="bodyMedium"
+                sx={{ fontWeight: 600, fontSize: inviteFontSize, lineHeight: 1 }}
+              >
+                {t('shared.ui.settings.users.invite', 'Invite')}
+              </Typography>
+            </IconButton>
+          </Box>
+        )}
       </Box>
     </Box>
   );

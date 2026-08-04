@@ -5,7 +5,9 @@
  *
  * Prop budget (≤ 12 §3.5) maintained via grouped interfaces.
  */
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
+import Snackbar from '@mui/material/Snackbar';
 
 import type { PromptConfig } from './ServicePrompts.types';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
@@ -33,8 +35,8 @@ interface EditorState {
   allowedKeys: string[];
   usedKeysRef: React.RefObject<Set<string>>;
   modeRef: React.RefObject<'create' | 'edit' | null>;
-  draftKeyRef: React.RefObject<string>;
-  draftPromptRef: React.RefObject<string>;
+  draftKey: string;
+  draftPrompt: string;
   onDraftKeyChange: (val: string) => void;
   onDraftPromptChange: (val: string) => void;
   onRestoreInModal: () => void;
@@ -46,6 +48,7 @@ interface PromptActions {
   handleDiscard: () => void;
   handleSave: () => Promise<void>;
   handleRestoreToDefault: (config: PromptConfig) => Promise<void>;
+  onDismissError: () => void;
 }
 
 interface EditorFlags {
@@ -53,6 +56,8 @@ interface EditorFlags {
   hasAvailableKeys: boolean;
   hasDefault: boolean;
   hasChanges: boolean;
+  canEdit: boolean;
+  errorMessage: string | null;
 }
 
 interface ServicePromptsBodyProps {
@@ -78,7 +83,7 @@ export function ServicePromptsBody({
         slotProps={{
           addButton: {
             onAdd: actions.handleOpenCreate,
-            disabled: !flags.hasAvailableKeys || flags.isBusy,
+            disabled: !flags.canEdit || !flags.hasAvailableKeys || flags.isBusy,
             tooltip: header.createTooltip,
           },
         }}
@@ -91,6 +96,7 @@ export function ServicePromptsBody({
               item={item}
               hasDefault={promptData.hasDefaultPrompt(item.key)}
               isBusy={flags.isBusy}
+              canEdit={flags.canEdit}
               onEdit={(config) => actions.handleOpenEdit(config)}
               onRestore={() => {
                 void actions.handleRestoreToDefault(
@@ -109,12 +115,13 @@ export function ServicePromptsBody({
             isBusy: flags.isBusy,
             hasDefault: flags.hasDefault,
             hasChanges: flags.hasChanges,
+            readOnly: !flags.canEdit,
             onDiscard: actions.handleDiscard,
             onSave: () => void actions.handleSave(),
             onRestore: editor.onRestoreInModal,
             mode: editor.modeRef.current,
-            draftKey: editor.draftKeyRef.current,
-            draftPrompt: editor.draftPromptRef.current,
+            draftKey: editor.draftKey,
+            draftPrompt: editor.draftPrompt,
             allowedKeys: editor.allowedKeys,
             usedKeys: editor.usedKeysRef.current,
             onDraftKeyChange: editor.onDraftKeyChange,
@@ -123,6 +130,17 @@ export function ServicePromptsBody({
           }} />
         )}
       </Box>
+
+      <Snackbar
+        open={Boolean(flags.errorMessage)}
+        autoHideDuration={5000}
+        onClose={actions.onDismissError}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={actions.onDismissError} severity="error" variant="filled">
+          {flags.errorMessage}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

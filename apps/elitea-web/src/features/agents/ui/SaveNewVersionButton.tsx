@@ -1,4 +1,13 @@
-import { type ChangeEvent, type ReactNode, useCallback, useImperativeHandle, useState, forwardRef } from 'react';
+import {
+  type ChangeEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  forwardRef,
+} from 'react';
 
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -11,6 +20,7 @@ import TextField from '@mui/material/TextField';
 
 import { t } from '@/shared/i18n';
 import type { ApplicationVersionDetail, VersionWriteRequest } from '@/shared/api/generated/model';
+import { MAX_VERSION_LENGTH } from '@/shared/lib/limits';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 
 import type { SaveNewVersionInput } from '../model/useSaveNewVersion';
@@ -54,10 +64,25 @@ export interface SaveNewVersionButtonProps {
  *    the name-entry dialog is rebuilt inline here on plain MUI `Dialog`
  *    components, matching the sibling `VersionReplacementModal.tsx`'s own
  *    house style for an agent-domain modal (`Dialog`/`DialogTitle`/
- *    `DialogContent`/`DialogActions`, not `shared/ui/BaseModal`).
+ *    `DialogContent`/`DialogActions`, not `shared/ui/BaseModal`). The
+ *    version-name field keeps the baseline's `MAX_VERSION_LENGTH` client-side
+ *    cap (`InputVersionDialog.jsx:212`, `common/constants.js:72` — 20) via
+ *    `shared/lib/limits`'s already-ported `MAX_VERSION_LENGTH`.
  *  - `useToast()` replaced with `onError` receiving the already-resolved
  *    message string (via `useSaveNewVersion`'s `errorMessage`), matching
- *    every other button in this sub-unit.
+ *    every other button in this sub-unit. `onError` is invoked from a
+ *    `pendingSaveRef`-gated `useEffect` on the hook's live `error`/
+ *    `errorMessage` state — not from inside the `onCreateNewVersion(...)
+ *    .then()` continuation — because that continuation's closure captures
+ *    `errorMessage` as of the moment the button was clicked (before
+ *    `useSaveNewVersion`'s internal `setError` from THIS attempt has had a
+ *    chance to flush a re-render), which either misses the very first
+ *    failure entirely or reports the PREVIOUS attempt's message on later
+ *    ones. `pendingSaveRef` (set the moment a save is kicked off, cleared
+ *    once handled) makes the effect fire exactly once per attempt, reading
+ *    the error at RENDER time — the same way the old app's `useToast`-driven
+ *    `toastError(buildErrorMessage(error))` always reflected the CURRENT
+ *    mutation's error rather than one captured ahead of it resolving.
  */
 export const SaveNewVersionButton = forwardRef<SaveNewVersionButtonHandle, SaveNewVersionButtonProps>(
   function SaveNewVersionButton(
@@ -88,15 +113,27 @@ export const SaveNewVersionButton = forwardRef<SaveNewVersionButtonHandle, SaveN
       setDuplicateNameError(false);
     }, []);
 
+    /** Set the moment a save is kicked off, cleared once its outcome (success or error) has been handled — see the module doc comment for why `onError` is driven off this instead of the `onCreateNewVersion(...).then()` continuation. */
+    const pendingSaveRef = useRef(false);
+
     const handleSuccess = useCallback(
       (data: ApplicationVersionDetail) => {
+        pendingSaveRef.current = false;
         setShowInputVersion(false);
         onSuccess?.(data);
       },
       [onSuccess],
     );
 
-    const { onCreateNewVersion, isSavingNewVersion, errorMessage } = useSaveNewVersion({ onSuccess: handleSuccess });
+    const { onCreateNewVersion, isSavingNewVersion, error, errorMessage } = useSaveNewVersion({
+      onSuccess: handleSuccess,
+    });
+
+    useEffect(() => {
+      if (!pendingSaveRef.current || error === undefined) return;
+      pendingSaveRef.current = false;
+      if (errorMessage !== undefined) onError?.(errorMessage);
+    }, [error, errorMessage, onError]);
 
     const onInputVersion = useCallback((event: ChangeEvent<HTMLInputElement>) => {
       setNewVersion(event.target.value);
@@ -112,10 +149,9 @@ export const SaveNewVersionButton = forwardRef<SaveNewVersionButtonHandle, SaveN
       }
       if (projectId === undefined) return;
       const input: SaveNewVersionInput = { projectId, applicationId: Number(applicationId), name: trimmed, version };
-      void onCreateNewVersion(input).then((created) => {
-        if (created === undefined && errorMessage !== undefined) onError?.(errorMessage);
-      });
-    }, [newVersion, existingVersionNames, projectId, applicationId, version, onCreateNewVersion, errorMessage, onError]);
+      pendingSaveRef.current = true;
+      void onCreateNewVersion(input);
+    }, [newVersion, existingVersionNames, projectId, applicationId, version, onCreateNewVersion]);
 
     return (
       <>
@@ -150,6 +186,7 @@ export const SaveNewVersionButton = forwardRef<SaveNewVersionButtonHandle, SaveN
                       )
                     : undefined
                 }
+                slotProps={{ htmlInput: { maxLength: MAX_VERSION_LENGTH } }}
               />
             </Box>
           </DialogContent>

@@ -29,8 +29,43 @@ export interface ToolNodeState {
   readonly toolValue: string;
 }
 
+// `||`, not `??` (baseline: `yamlNode?.toolkit_name || yamlNode?.tool || id`,
+// `ToolNode.jsx:32`) -- an empty-string `toolkit_name`/`tool` must fall
+// through to the next candidate the same way baseline's `||` chain does;
+// `??` would keep `''` as the resolved toolkit identity instead.
 function resolveToolkit(toolkitName: string | undefined, tool: string | undefined, id: string): string {
-  return toolkitName ?? tool ?? id;
+  return toolkitName || tool || id;
+}
+
+/**
+ * `tool.toolkit_name` if present, else `tool` with `toolkit_name` filled in
+ * via `getToolkitNameFromSchema` (baseline: `ToolNode.jsx:100-112`'s
+ * `.map()` step). Needed so a `versionTools` entry whose canonical
+ * `toolkit_name` only exists via schema (no literal `toolkit_name` field)
+ * still carries a comparable `toolkit_name` into {@link findSelectedToolkit}'s
+ * `.find()` below.
+ */
+function withDerivedToolkitName(tool: PipelineToolEntry, getToolkitNameFromSchema: (toolkit: PipelineToolEntry) => string): PipelineToolEntry {
+  return tool.toolkit_name ? tool : { ...tool, toolkit_name: getToolkitNameFromSchema(tool) };
+}
+
+/**
+ * `ToolNode.jsx:100-112`'s `selectedToolkit` derivation, exactly:
+ * schema-derive every entry's `toolkit_name` first (see
+ * {@link withDerivedToolkitName}), THEN find by `toolkit_name === toolkit ||
+ * name === toolkit` -- the `|| name === toolkit` fallback applies
+ * regardless of which branch derived `toolkit_name`, so it is kept
+ * unconditional here too (unlike the superficially similar
+ * `useLoopNodeEditing.ts`/`useLoopToolNodeEditing.ts` `getSelectedToolkit`,
+ * which only falls back to `name`/schema when `toolkit_name` is itself
+ * absent -- that is *their* baseline's own, different rule, not this one's).
+ */
+function findSelectedToolkit(
+  versionTools: readonly PipelineToolEntry[],
+  toolkit: string,
+  getToolkitNameFromSchema: (toolkit: PipelineToolEntry) => string,
+): PipelineToolEntry | undefined {
+  return versionTools.map(tool => withDerivedToolkitName(tool, getToolkitNameFromSchema)).find(tool => tool.toolkit_name === toolkit || tool.name === toolkit);
 }
 
 /**
@@ -38,12 +73,17 @@ function resolveToolkit(toolkitName: string | undefined, tool: string | undefine
  * (baseline: `ToolNode.jsx:22-33,138-140`), split out for the same
  * `complexity`-budget reason as `useToolNodeEditing` above.
  */
-export function useToolNodeState(id: string, yamlJsonObject: YamlPipelineDocument | undefined, versionTools: readonly PipelineToolEntry[]): ToolNodeState {
+export function useToolNodeState(
+  id: string,
+  yamlJsonObject: YamlPipelineDocument | undefined,
+  versionTools: readonly PipelineToolEntry[],
+  getToolkitNameFromSchema: (toolkit: PipelineToolEntry) => string,
+): ToolNodeState {
   const yamlNode = useMemo(() => yamlJsonObject?.nodes?.find(node => node.id === id), [id, yamlJsonObject?.nodes]);
   const toolkit = useMemo(() => resolveToolkit(yamlNode?.toolkit_name, yamlNode?.tool, id), [id, yamlNode?.tool, yamlNode?.toolkit_name]);
   const selectedToolkit = useMemo(
-    () => versionTools.find(tool => tool.toolkit_name === toolkit || tool.name === toolkit),
-    [toolkit, versionTools],
+    () => findSelectedToolkit(versionTools, toolkit, getToolkitNameFromSchema),
+    [getToolkitNameFromSchema, toolkit, versionTools],
   );
 
   return { yamlNode, toolkit, selectedToolkit, taskValue: yamlNode?.task ?? '', toolValue: yamlNode?.tool ?? '' };
@@ -70,9 +110,13 @@ export interface UseToolNodeEditingResult {
   readonly functionOptions: readonly ToolOption[];
 }
 
+// `||`, not `??` (baseline: `newToolkit.toolkit_name || getToolkitNameFromSchema(newToolkit)`,
+// `ToolNode.jsx:56`) -- an empty-string `toolkit_name` on the picked
+// toolkit must fall through to the schema-derived name, same rationale as
+// `resolveToolkit` above.
 function resolveToolkitName(newToolkit: PipelineToolEntry, getToolkitNameFromSchema: (tool: PipelineToolEntry) => string): string | undefined {
   if (newToolkit.type === 'application') return undefined;
-  return newToolkit.toolkit_name ?? getToolkitNameFromSchema(newToolkit);
+  return newToolkit.toolkit_name || getToolkitNameFromSchema(newToolkit);
 }
 
 function resolveExplicitTool(newToolkit: PipelineToolEntry): string | undefined {

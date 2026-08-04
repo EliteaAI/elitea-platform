@@ -38,6 +38,15 @@ interface NodeFieldInputProps {
   readonly enableFStringAutocomplete: boolean;
   readonly stateVariableOptions: readonly SingleSelectOption[];
   readonly modelConfig?: AiAssistantLlmSettings | null;
+  /**
+   * Forced content-type for the AI-Assistant editor (baseline's `code`-field
+   * `language = 'python'` override — see `SimpleLLMInputItem`'s
+   * `codeFieldLanguage` for the restored computation). Forwarded only to
+   * `AIAssistantInput`; the plain `StyledInputEnhancer` branch has no such
+   * prop (see this file's top doc comment on dropped CodeMirror highlighting
+   * for that branch).
+   */
+  readonly language?: string;
 }
 
 /**
@@ -46,24 +55,29 @@ interface NodeFieldInputProps {
  * unit A2a) or `shared/ui/StyledInputEnhancer` (unit S1-F), matching the
  * baseline's `shouldEnableAIAssistant` branch.
  *
- * **DISCLOSED REDESIGN, forced by the already-landed `AIAssistantInput`'s
- * real prop surface** (`../AIAssistantInput.tsx`, read directly): the
- * baseline spreads ~20 flat props (`onBlur`/`onClick`/`onFocus`/`onKeyDown`/
- * `onKeyUp`/`containerProps`/`inputRef`/`language`/...) onto BOTH branches,
- * wiring the SAME `useFStringInputAutocomplete` cursor-tracking directly
- * onto the AI-Assistant-enabled field too. This app's `AIAssistantInput`
- * accepts only `value`/`label`/`fieldName`/`language`/`disabled`/
- * `projectId`/`modelConfig`/`fieldBinding`/`fStringAutocomplete`/
- * `pipelineContext` -- its underlying base field has NO `onChange` wired
- * at all (verified by reading `AIAssistantInput.tsx`'s `buildInputBaseProps`
- * directly: only `value`/`label`/`disabled`/`name`/`id` are forwarded to
- * `InputBase`), so editing happens exclusively through the AI Assistant
- * modal (`fieldBinding.onInput` fires from the modal's `handleApply`/
- * `handleBlur`, not per keystroke on the base field) -- an intentional,
- * already-landed architecture change, not something this file can restore.
- * Consequently the F-string autocomplete popper + live cursor tracking
- * this file wires via `useFStringInputAutocomplete` only applies to the
- * plain `StyledInputEnhancer` branch; the AI-Assistant branch forwards
+ * **FORMERLY A CONFIRMED REGRESSION (finding #2 of this cluster,
+ * A2-settings-panels), now fixed one file over:** `../AIAssistantInput.tsx`'s
+ * `buildInputBaseProps` used to forward only `value`/`label`/`disabled`/
+ * `name`/`id` onto `InputBase`, with no `onChange` at all, so typing
+ * directly into an AI-Assistant-enabled field's visible (collapsed) input
+ * was silently swallowed — editing only worked through the AI Assistant
+ * modal. `AIAssistantInput.tsx` now wires a real `onChange` (its own
+ * `dispatchInlineFieldChange`, fixed there as that file's own finding #1) that
+ * routes to `fieldBinding.onInput` — the exact same handler this file already
+ * threads in below (`fieldBinding={{ name: 'value', id: ..., onInput }}`,
+ * the identical function backing the plain branch's `onChange={handleChange}`
+ * further down). Nothing in THIS file needed to change for the fix to take
+ * effect — recorded here (and covered by a `SimpleLLMInputItem.test.tsx`
+ * integration test) only because this doc comment previously — incorrectly —
+ * described the gap as permanent and unfixable from either file.
+ *
+ * Separately, disclosed and NOT a regression — forced by the already-landed
+ * `AIAssistantInput`'s reduced prop surface (`value`/`label`/`fieldName`/
+ * `language`/`disabled`/`projectId`/`modelConfig`/`fieldBinding`/
+ * `fStringAutocomplete`/`pipelineContext` only, vs. the baseline's ~20 flat
+ * props): the F-string autocomplete popper + live cursor tracking this file
+ * wires via `useFStringInputAutocomplete` only applies to the plain
+ * `StyledInputEnhancer` branch; the AI-Assistant branch forwards
  * `fStringAutocomplete` straight to `AIAssistantInput`, which threads it
  * into its own modal (already-landed behaviour, not duplicated here).
  *
@@ -72,7 +86,7 @@ interface NodeFieldInputProps {
  * ("none of which exist in `shared/ui` yet").
  */
 function NodeFieldInput(props: NodeFieldInputProps): ReactNode {
-  const { shouldEnableAIAssistant, variable, value, disabled = false, onInput, variableName, enableFStringAutocomplete, stateVariableOptions, modelConfig = null } = props;
+  const { shouldEnableAIAssistant, variable, value, disabled = false, onInput, variableName, enableFStringAutocomplete, stateVariableOptions, modelConfig = null, language } = props;
 
   const {
     closeAutocomplete,
@@ -123,6 +137,7 @@ function NodeFieldInput(props: NodeFieldInputProps): ReactNode {
           modelConfig={modelConfig}
           fieldBinding={{ name: 'value', id: `${variable}-value`, onInput }}
           fStringAutocomplete={{ enabled: enableFStringAutocomplete, stateVariableOptions }}
+          {...(language !== undefined ? { language } : {})}
         />
       ) : (
         <StyledInputEnhancer
@@ -156,6 +171,35 @@ function NodeFieldInput(props: NodeFieldInputProps): ReactNode {
 /** `filteredOptions.length > 0 && autocompleteState.isOpen` in the baseline -- collapsed here into a helper so `NodeFieldInput`'s JSX does not read `autocompleteState` directly (that hook value is already folded into `filteredOptions` staying empty when closed; kept as a named helper purely for readability parity with the baseline condition). */
 function autocompleteIsOpen(shouldEnableAIAssistant: boolean, filteredCount: number): boolean {
   return !shouldEnableAIAssistant && filteredCount > 0;
+}
+
+/**
+ * Baseline: `apps/elitea-ui/…/settings/SimpleLLMInputItem.jsx:126-127` —
+ * `(type === 'fstring' || type === 'fixed') && variableName.toLowerCase() === 'code'
+ * ? 'python' : undefined`. Forces the Code node's AI-Assistant editor to open
+ * pre-set to Python instead of falling back to `AIAssistantInput`'s own
+ * `detectContentType` heuristic (`../../lib/aiAssistantLanguage.ts`), which can
+ * easily guess "text" for a short/empty code snippet. This was dropped during
+ * the initial port (a real regression, not a disclosed trim) — restored here.
+ * Extracted to a standalone function (rather than inlined in
+ * `SimpleLLMInputItem`'s body) purely to keep that component's own
+ * cyclomatic complexity under the §3.5 budget (12) — same technique
+ * {@link autocompleteIsOpen} above uses.
+ *
+ * Restoring this does NOT by itself turn on real Python CodeMirror syntax
+ * highlighting: `../../model/useAiAssistantLanguageLinter.ts`'s
+ * `getExtensionsForLanguage` still routes `'python'` to the same no-highlight
+ * bucket as `'text'`, because `@codemirror/lang-python` is not an installed
+ * dependency (see that file's header doc comment). Adding that package is a
+ * `package.json` edit — a shared, cross-cutting file this sub-unit (owns only
+ * `src/features/pipelines/`) should not change unilaterally in a worktree
+ * shared with sibling units. What this restores is the correct initial
+ * content-type selection (pre-set to "Python" in the dropdown, matching
+ * baseline) and persisted/detected-language bookkeeping; real highlighting is
+ * a follow-up that needs the dependency added elsewhere.
+ */
+function resolveCodeFieldLanguage(type: string, variableName: string): string | undefined {
+  return (type === 'fstring' || type === 'fixed') && variableName.toLowerCase() === 'code' ? 'python' : undefined;
 }
 
 export interface SimpleLLMInputItemProps {
@@ -236,6 +280,8 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
 
   const isStringType = type === 'string' || type === 'fstring' || type === 'fixed';
 
+  const codeFieldLanguage = resolveCodeFieldLanguage(type, variableName);
+
   return (
     <Box sx={containerSx}>
       <HeadingChip label={capitalizeFirstChar(variableName.replaceAll('_', ' '))} />
@@ -263,6 +309,7 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
               enableFStringAutocomplete={enableFStringAutocomplete}
               stateVariableOptions={stateVariableOptions}
               modelConfig={modelConfig}
+              {...(codeFieldLanguage !== undefined ? { language: codeFieldLanguage } : {})}
             />
           ) : (
             <SingleSelect

@@ -2,6 +2,7 @@ import { ThemeProvider } from '@mui/material/styles';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory, createRoute, createRootRoute, createRouter } from '@tanstack/react-router';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
@@ -93,11 +94,28 @@ function renderToolMenu(
   return { ...result, queryClient, router };
 }
 
+/**
+ * `PATCH /elitea_core/tool/prompt_lib/{projectId}/{toolkitId}` — the real toolkit/MCP attach
+ * endpoint `ToolMenu.tsx`'s `associateToolkitInstance` now calls directly (no orval-generated
+ * wrapper exists for it — see that file's own module doc comment). No generated msw mock exists
+ * either, so this is a hand-written `http.patch` handler, matching the wildcard-prefixed
+ * matcher shape every generated msw handler already uses (e.g. `getGetApplicationMockHandler`'s
+ * own leading-wildcard-then-`/elitea_core/application/prompt_lib/:projectId/:applicationId`
+ * path matcher).
+ */
+function toolkitAttachMockHandler(onRequest?: (body: unknown, params: Readonly<Record<string, string | readonly string[] | undefined>>) => void) {
+  return http.patch('*/elitea_core/tool/prompt_lib/:projectId/:toolkitId', async ({ request, params }) => {
+    onRequest?.(await request.json(), params);
+    return HttpResponse.json({ message: 'ok' }, { status: 201 });
+  });
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(getGetPlatformSettingsMockHandler(platformSettings(true)));
   server.use(getListToolkitInstancesMockHandler({ rows: [], total: 0 }));
   server.use(getListApplicationsMockHandler({ rows: [], total: 0, page: 0, page_size: 20, total_pages: 0 }));
+  server.use(toolkitAttachMockHandler());
 });
 
 afterEach(() => {
@@ -111,6 +129,16 @@ describe('ToolMenu — unsaved entity', () => {
     expect(screen.getByTestId('agent-add-toolkit-button')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Agent' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Pipeline' })).toBeDisabled();
+  });
+
+  it('gives each disabled add button its OWN "save first" tooltip text instead of one generic string shared by all four (baseline: `ToolMenu.jsx:564-650`, one distinct Tooltip title per button)', async () => {
+    renderToolMenu({ applicationId: undefined });
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).toBeInTheDocument());
+
+    expect(screen.getByTestId('agent-add-toolkit-button')).toHaveAttribute('title', 'Save the agent first, then add toolkits');
+    expect(screen.getByRole('button', { name: 'MCP' })).toHaveAttribute('title', 'Save the agent first, then add mcps');
+    expect(screen.getByRole('button', { name: 'Agent' })).toHaveAttribute('title', 'Save the agent first, then add agents');
+    expect(screen.getByRole('button', { name: 'Pipeline' })).toHaveAttribute('title', 'Save the agent first, then add pipelines');
   });
 });
 
@@ -221,7 +249,7 @@ describe('ToolMenu — saved entity', () => {
     expect(await screen.findByText('Remote MCP Server')).toBeInTheDocument();
   });
 
-  it('calls onAttachToolkit (injected — no generated association endpoint exists) when a toolkit row is clicked', async () => {
+  it('performs the real toolkit attach (PATCH /elitea_core/tool/prompt_lib) when a toolkit row is clicked, then notifies onAttachToolkit and onToolsChanged', async () => {
     server.use(getGetApplicationMockHandler(applicationDetail()));
     server.use(
       getListToolkitInstancesMockHandler({
@@ -229,14 +257,46 @@ describe('ToolMenu — saved entity', () => {
         total: 1,
       }),
     );
+    let patchBody: unknown;
+    let patchParams: Readonly<Record<string, string | readonly string[] | undefined>> | undefined;
+    server.use(toolkitAttachMockHandler((body, params) => { patchBody = body; patchParams = params; }));
 
     let attached: unknown;
-    renderToolMenu({ applicationId: 42, onAttachToolkit: (toolkit) => (attached = toolkit) });
+    let onToolsChangedCalls = 0;
+    renderToolMenu({ applicationId: 42, onAttachToolkit: (toolkit) => (attached = toolkit), onToolsChanged: () => (onToolsChangedCalls += 1) });
     await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
     fireEvent.click(await screen.findByText('GitHub'));
 
-    expect(attached).toMatchObject({ id: 'tk-1', name: 'GitHub' });
+    // Reverted-bug guard: without this fix's own `associateToolkitInstance` call, no PATCH
+    // request is ever made at all — selecting a toolkit silently closed the menu and attached
+    // nothing (the confirmed regression this fix addresses).
+    await waitFor(() => expect(patchBody).toMatchObject({ entity_version_id: 100, entity_id: 42, entity_type: 'agent', has_relation: true }));
+    expect(patchParams).toMatchObject({ projectId: 'proj-1', toolkitId: 'tk-1' });
+    await waitFor(() => expect(attached).toMatchObject({ id: 'tk-1', name: 'GitHub' }));
+    expect(onToolsChangedCalls).toBe(1);
+  });
+
+  it('does not call onAttachToolkit when the real attach request fails', async () => {
+    server.use(getGetApplicationMockHandler(applicationDetail()));
+    server.use(
+      getListToolkitInstancesMockHandler({
+        rows: [{ id: 'tk-1', type: 'github', name: 'GitHub', description: '', settings: {}, meta: {}, created_at: '2026-01-01T00:00:00Z', author_id: 1 }],
+        total: 1,
+      }),
+    );
+    server.use(http.patch('*/elitea_core/tool/prompt_lib/:projectId/:toolkitId', () => HttpResponse.json({ error: 'Cannot change tools on a published version. Unpublish first.' }, { status: 400 })));
+
+    let attachedCalls = 0;
+    let onToolsChangedCalls = 0;
+    renderToolMenu({ applicationId: 42, onAttachToolkit: () => (attachedCalls += 1), onToolsChanged: () => (onToolsChangedCalls += 1) });
+    await waitFor(() => expect(screen.getByTestId('agent-add-toolkit-button')).not.toBeDisabled());
+    fireEvent.click(screen.getByTestId('agent-add-toolkit-button'));
+    fireEvent.click(await screen.findByText('GitHub'));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(attachedCalls).toBe(0);
+    expect(onToolsChangedCalls).toBe(0);
   });
 
   it('"Create new" navigates to the toolkit-creation route with return_url/source_application_id wired for the auto-attach round trip', async () => {

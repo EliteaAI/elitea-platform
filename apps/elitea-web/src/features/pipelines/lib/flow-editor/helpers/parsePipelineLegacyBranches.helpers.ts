@@ -51,8 +51,12 @@ export const handleConditionNode = ({
     orientation,
   });
   checkAndAddEdge({ edges, edgeId: `${EDGE_PREFIX}${id}---${conditionNodeId}`, source: id, target: conditionNodeId });
+  // `conditional_outputs?.` — the destructure default above only substitutes `[]` when the
+  // YAML field is `undefined`; an explicit YAML `null` (`conditional_outputs: null`) survives
+  // it and reaches here as `null`, which has no `.filter`. Matches baseline
+  // `parsePipeline.helpers.js:113-114`'s `conditional_outputs?.filter(...)`.
   conditional_outputs
-    .filter(item => !!item)
+    ?.filter(item => !!item)
     .forEach(branch => {
       checkAndAddEdge({
         edges,
@@ -75,8 +79,15 @@ export const handleConditionNode = ({
       },
     });
   }
+  // `?? []` — same explicit-`null` guard as above, required because spreading `null` throws
+  // (`conditional_outputs` may be `null` here despite the destructure default). Matches
+  // baseline `parsePipeline.helpers.js:149`'s `Array.isArray(...) ? ... : []`; `??` is used
+  // here instead of `Array.isArray` because the latter's `arg is any[]` predicate widens the
+  // narrowed type to `any` under this app's type-aware lint (see `yamlUpdate.helpers.ts`'s
+  // doc comment on the same gap) — `??` guards the identical explicit-null runtime case
+  // without that fallout.
   return {
-    branches: [...conditional_outputs, default_output].filter((branch): branch is string => Boolean(branch)),
+    branches: [...(conditional_outputs ?? []), default_output].filter((branch): branch is string => Boolean(branch)),
   };
 };
 
@@ -100,8 +111,10 @@ export const handleDecisionNode = ({
     orientation,
   });
   checkAndAddEdge({ edges, edgeId: `${EDGE_PREFIX}${id}---${decisionNodeId}`, source: id, target: decisionNodeId });
+  // `decisional_outputs?.` — same explicit-YAML-`null` guard as `handleConditionNode` above.
+  // Matches baseline `parsePipeline.helpers.js:302-303`.
   decisional_outputs
-    .filter(item => !!item)
+    ?.filter(item => !!item)
     .forEach(branch => {
       checkAndAddEdge({
         edges,
@@ -124,7 +137,9 @@ export const handleDecisionNode = ({
       },
     });
   }
+  // Same explicit-`null` spread guard as `handleConditionNode` above; matches baseline
+  // `parsePipeline.helpers.js:338`.
   return {
-    branches: [...decisional_outputs, default_output].filter((branch): branch is string => Boolean(branch)),
+    branches: [...(decisional_outputs ?? []), default_output].filter((branch): branch is string => Boolean(branch)),
   };
 };

@@ -1,3 +1,4 @@
+import { within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -103,6 +104,53 @@ describe('PipelineMultiSelect', () => {
       />,
     );
     expect(getByText('stale')).toBeInTheDocument();
+  });
+
+  it('renders a delete affordance instead of the checkmark for a canDelete row, and calls onDeleteOption when clicked', async () => {
+    // Regression test for the dropped in-dropdown "delete instead of
+    // checkmark" affordance: a `canDelete` option row must render a
+    // delete control (not the plain selected-checkmark) whenever
+    // `onDeleteOption` is supplied, and clicking it must call
+    // `onDeleteOption` with that option's value -- without toggling the
+    // option's own selection via the underlying MUI `Select`.
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    const onDeleteOption = vi.fn();
+    const { getByRole, queryByRole } = renderWithTheme(
+      <PipelineMultiSelect
+        value={['stale']}
+        onValueChange={onValueChange}
+        options={[{ value: 'stale', label: 'stale', canDelete: true }, ...OPTIONS]}
+        onDeleteOption={onDeleteOption}
+      />,
+    );
+
+    await user.click(getByRole('combobox'));
+    const staleRow = getByRole('option', { name: /stale/ });
+    expect(within(staleRow).getByRole('button', { name: /remove/i })).toBeInTheDocument();
+    // The checkmark never renders on a canDelete row, even though it's selected.
+    expect(within(staleRow).queryByTestId('CheckIcon')).not.toBeInTheDocument();
+
+    await user.click(within(staleRow).getByRole('button', { name: /remove/i }));
+    expect(onDeleteOption).toHaveBeenCalledWith('stale');
+    expect(onValueChange).not.toHaveBeenCalled();
+    // A genuinely selected, non-canDelete row still gets the checkmark.
+    expect(queryByRole('option', { name: 'input' })).not.toBeNull();
+  });
+
+  it('falls back to the plain checkmark for a canDelete option when no onDeleteOption is supplied', async () => {
+    const user = userEvent.setup();
+    const { getByRole } = renderWithTheme(
+      <PipelineMultiSelect
+        value={['stale']}
+        onValueChange={vi.fn()}
+        options={[{ value: 'stale', label: 'stale', canDelete: true }, ...OPTIONS]}
+      />,
+    );
+
+    await user.click(getByRole('combobox'));
+    const staleRow = getByRole('option', { name: 'stale' });
+    expect(within(staleRow).queryByRole('button', { name: /remove/i })).not.toBeInTheDocument();
   });
 
   it('applies the disabled state', () => {

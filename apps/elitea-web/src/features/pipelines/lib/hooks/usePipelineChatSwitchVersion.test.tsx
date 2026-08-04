@@ -133,4 +133,78 @@ describe('useAutoSwitchPipelineChatVersion', () => {
     await waitFor(() => expect(calls).toBe(1));
     await waitFor(() => expect(switchedWith).toBeDefined());
   });
+
+  it('still calls onSwitched with the new version settings AND fires onError when the PUT fails (baseline `useApplicationChatSwitchVersion.js:18-43`\'s always-applied optimistic update)', async () => {
+    server.use(
+      http.put('*/elitea_core/entity_settings/prompt_lib/:projectId/:conversationId/:participantId', () =>
+        HttpResponse.json({ error: 'invalid settings' }, { status: 400 }),
+      ),
+    );
+    let switchedWith: Readonly<Record<string, unknown>> | undefined;
+    let calls = 0;
+    const onError = () => {
+      calls += 1;
+    };
+    const { rerender } = renderHook(
+      (props: { versionId: number }) =>
+        useAutoSwitchPipelineChatVersion(
+          baseInput({ versionId: props.versionId }),
+          (settings) => (switchedWith = settings),
+          onError,
+        ),
+      { wrapper: createWrapper(), initialProps: { versionId: 42 } },
+    );
+
+    rerender({ versionId: 43 });
+
+    // The failed PUT must NOT leave entitySettings stuck on the old version's values.
+    await waitFor(() => expect(switchedWith).toMatchObject({ version_id: 43 }));
+    await waitFor(() => expect(calls).toBe(1));
+  });
+
+  it('does not fire (no PUT, no onSwitched, no onError) when versionId transitions to undefined, matching the "undefined means not ready" contract instead of treating it as a real switch', async () => {
+    let calls = 0;
+    server.use(
+      getReplaceParticipantSettingsMockHandler(() => {
+        calls += 1;
+        return { entity_settings: {} };
+      }),
+    );
+    let switchedWith: unknown;
+    let errorCalls = 0;
+    const initialProps: { versionId: number | undefined } = { versionId: 42 };
+    const { rerender } = renderHook(
+      (props: { versionId: number | undefined }) =>
+        useAutoSwitchPipelineChatVersion(
+          baseInput({ versionId: props.versionId }),
+          (settings) => (switchedWith = settings),
+          () => {
+            errorCalls += 1;
+          },
+        ),
+      { wrapper: createWrapper(), initialProps },
+    );
+
+    // Simulates `usePipelineChatConversation.hooks.ts`'s chat-history-reset effect clearing
+    // `activeConversation.id`, which drops `pipelineChat.helpers.ts`'s `switchVersionId` back to
+    // `undefined` on the same version-id change -- NOT a real "switch to no version".
+    rerender({ versionId: undefined });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toBe(0);
+    expect(switchedWith).toBeUndefined();
+    expect(errorCalls).toBe(0);
+
+    // Once the conversation reset settles and the real version id resolves again, this must be
+    // treated like the very first mount -- no switch fired for the version already active.
+    rerender({ versionId: 43 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toBe(0);
+    expect(switchedWith).toBeUndefined();
+
+    // A genuine subsequent switch still works correctly after all this.
+    rerender({ versionId: 44 });
+    await waitFor(() => expect(calls).toBe(1));
+    await waitFor(() => expect(switchedWith).toMatchObject({ version_id: 44 }));
+  });
 });

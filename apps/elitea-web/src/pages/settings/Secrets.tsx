@@ -10,6 +10,7 @@
  *  - Creating new secret rows (button + `?createSecret=1` flag)
  *  - Wiring API mutations to the actions hook
  *  - Error toasts on API failures
+ *  - Permission gating (`PERMISSIONS.secrets.list` / `.unsecret`)
  *
  * Deviations from the baseline:
  *  - No Redux (sidebar state → dropped)
@@ -17,11 +18,19 @@
  *  - Uses `DrawerPageHeader` from shared UI
  *  - Uses `useSelectedProjectStore` for project ID
  *  - Pagination state is lifted into SecretsTable (self-contained)
+ *  - Permission check is inlined here (local `usePermissionList` read)
+ *    rather than a shared `useCheckPermission()` hook — this codebase's
+ *    established convention is a per-slice local copy of that hook (see
+ *    `features/chat-input/lib/hooks/useCheckPermission.hooks.ts`'s own doc
+ *    comment on `no-sideways-features`); inlining here avoids adding a new
+ *    file outside this unit's file scope for a two-line computation.
  */
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
+import Snackbar from '@mui/material/Snackbar';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import {
@@ -33,13 +42,18 @@ import {
   useHideSecretMutation,
   showSecret,
 } from '@/entities/secret';
-import type { SecretRow } from '@/entities/secret';
+import type { SecretRow, SecretMutations } from '@/entities/secret';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { secretsFeature } from '@/features/settings';
+import { handleCopy } from '@/shared/lib/clipboard';
+import { PERMISSIONS } from '@/shared/lib/permissions';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
+import type { Permission } from '@/shared/api/generated/model';
 
 const { SecretsTable } = secretsFeature;
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export interface SecretsContentProps {
   /** Whether `?createSecret=1` is in the URL. */
@@ -50,6 +64,25 @@ export interface SecretsContentProps {
   onSearchChange: (value: string) => void;
 }
 
+interface ToastState {
+  readonly severity: 'success' | 'error';
+  readonly message: string;
+}
+
+/** `EliteaApiError`'s 403 case — mirrors the baseline's `error?.status === 403` special-casing (`SecretsContent.jsx:105`, `SecretsTable.jsx:328`). */
+function isForbiddenError(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError)) return false;
+  const { failure } = error;
+  return (failure.kind === 'http' || failure.kind === 'auth') && failure.status === 403;
+}
+
+/** Split out purely to keep `SecretsContent`'s own `useEffect` count within the §3.5 budget (3) — syncs the memoized mutations wrapper into the actions hook whenever either reference changes. */
+function useSyncSecretMutations(setMutations: (m: SecretMutations) => void, mutationsWrapper: SecretMutations): void {
+  useEffect(() => {
+    setMutations(mutationsWrapper);
+  }, [setMutations, mutationsWrapper]);
+}
+
 export const SecretsContent = memo(function SecretsContent({
   shouldCreate,
   search,
@@ -58,9 +91,23 @@ export const SecretsContent = memo(function SecretsContent({
   /* ── project context ──────────────────────────────────────────────── */
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
 
+  /* ── permissions ───────────────────────────────────────────────────── */
+  const permissionQuery = usePermissionList(projectId, { query: { enabled: !!projectId } });
+  const permissions = useMemo(() => {
+    const list = permissionQuery.data?.data as Permission[] | undefined;
+    if (!list) return new Set<string>();
+    return new Set(list.filter((entry) => entry.enabled).map((entry) => entry.name));
+  }, [permissionQuery.data]);
+  const checkPermission = useCallback(
+    (permission: string) => (permission ? permissions.has(permission) : true),
+    [permissions],
+  );
+  const canList = checkPermission(PERMISSIONS.secrets.list);
+  const canUnsecret = checkPermission(PERMISSIONS.secrets.unsecret);
+
   /* ── API query ────────────────────────────────────────────────────── */
-  const { data: secrets = [], isFetching } = useListSecretsQuery(projectId, {
-    enabled: !!projectId,
+  const { data: secrets = [], isFetching, isError, error } = useListSecretsQuery(projectId, {
+    enabled: !!projectId && canList,
   });
 
   /* ── API mutations ────────────────────────────────────────────────── */
@@ -69,10 +116,31 @@ export const SecretsContent = memo(function SecretsContent({
   const deleteMutation = useDeleteSecretMutation(projectId);
   const hideMutation = useHideSecretMutation(projectId);
 
-  /* ── local rows state ─────────────────────────────────────────────── */
-  const [rows, setRows] = useState<SecretRow[]>([]);
+  /* ── toast ─────────────────────────────────────────────────────────── */
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const closeToast = useCallback(() => setToast(null), []);
 
-  // Sync API data into local rows (preserve temporary new-secret rows)
+  useEffect(() => {
+    if (isError) {
+      setToast({
+        severity: 'error',
+        message: isForbiddenError(error)
+          ? t('entities.secret.error.forbidden', 'The access is not allowed')
+          : t('entities.secret.error.listFailed', 'Failed to load secrets'),
+      });
+    }
+  }, [isError, error]);
+
+  /* ── row state — the actions hook's own `rows`/`setRows` is the single
+   * source of truth, since its handlers (onSave/onEdit/onShowSecret/…)
+   * read/write via an internal `rowsRef` seeded ONLY by this state. A
+   * separate local `useState` here (as a prior version of this file had)
+   * left that ref permanently empty — every handler wired through
+   * `actions` would silently no-op on a row lookup that always misses. ── */
+  const actions = useSecretsActions();
+  const { rows, setRows } = actions;
+
+  // Sync API data into rows (preserve temporary new-secret rows)
   useEffect(() => {
     if (!isFetching) {
       setRows((prev) => {
@@ -88,7 +156,7 @@ export const SecretsContent = memo(function SecretsContent({
         return [...newRows, ...mapped];
       });
     }
-  }, [secrets, isFetching]);
+  }, [secrets, isFetching, setRows]);
 
   // Handle ?createSecret=1 URL flag
   useEffect(() => {
@@ -104,7 +172,7 @@ export const SecretsContent = memo(function SecretsContent({
       };
       setRows((prev) => [newRow, ...prev]);
     }
-  }, [shouldCreate, projectId]);
+  }, [shouldCreate, projectId, setRows]);
 
   // Filtered rows — client-side search filter (matches old-app pattern)
   const filteredRows = useMemo(() => {
@@ -113,8 +181,10 @@ export const SecretsContent = memo(function SecretsContent({
     return rows.filter((r) => r.name.toLowerCase().includes(needle));
   }, [rows, search]);
 
-  /* ── actions hook ─────────────────────────────────────────────────── */
-  const actions = useSecretsActions();
+  // Fall back to an empty row set on a list-fetch error rather than
+  // showing stale data (matches the baseline's `rows={isError ? [] :
+  // secretRows}`, `SecretsContent.jsx:167`).
+  const tableRows = isError ? [] : filteredRows;
 
   // Wire mutations to the hook
   const setMutations = actions.setMutations;
@@ -123,10 +193,34 @@ export const SecretsContent = memo(function SecretsContent({
   const mutationsWrapper = useMemo(
     () => ({
       createSecret: (name: string, value: string) => {
-        createMutation.mutate({ name, value });
+        createMutation.mutate(
+          { name, value },
+          {
+            onError: (err: unknown) => {
+              setToast({
+                severity: 'error',
+                message: isForbiddenError(err)
+                  ? t('entities.secret.error.forbidden', 'The access is not allowed')
+                  : t('entities.secret.error.createFailed', 'Failed to create secret'),
+              });
+            },
+          },
+        );
       },
       updateSecret: (oldName: string, name: string, value: string) => {
-        updateMutation.mutate({ name: oldName, params: { name, value } });
+        updateMutation.mutate(
+          { name: oldName, params: { name, value } },
+          {
+            onError: (err: unknown) => {
+              setToast({
+                severity: 'error',
+                message: isForbiddenError(err)
+                  ? t('entities.secret.error.forbidden', 'The access is not allowed')
+                  : t('entities.secret.error.updateFailed', 'Failed to update secret'),
+              });
+            },
+          },
+        );
       },
       deleteSecret: (name: string) => {
         deleteMutation.mutate(name);
@@ -140,9 +234,41 @@ export const SecretsContent = memo(function SecretsContent({
     [projectId, createMutation.mutate, updateMutation.mutate, deleteMutation.mutate, hideMutation.mutate],
   );
 
-  useEffect(() => {
-    setMutations(mutationsWrapper);
-  }, [setMutations, mutationsWrapper]);
+  useSyncSecretMutations(setMutations, mutationsWrapper);
+
+  /* ── edit: fetch-then-blank wrapper ───────────────────────────────── *
+   * Ported from the baseline's `handleEditClick` wrapper
+   * (`SecretsTable.jsx:220-245`): `actions.onEdit` fetches the plaintext
+   * and stores it on the row so `EditSecretInputGridTable` has something
+   * to seed the edit session's diff from, but the edit *input* must start
+   * empty, not pre-filled with the live secret. */
+  const handleEditClick = useCallback(
+    (rowId: string) => async () => {
+      await actions.onEdit(rowId)();
+      setRows((prev) => prev.map((r) => (r.id === rowId && !r.isNew ? { ...r, secretValue: '' } : r)));
+    },
+    [actions, setRows],
+  );
+
+  /* ── copy: always fetch the live plaintext ────────────────────────── *
+   * Ported from the baseline's `handleDirectCopy`
+   * (`SecretValueCell.jsx:15-31`): copy always re-fetches the secret via
+   * the show endpoint and copies the real value, regardless of whether
+   * the row is currently revealed in the UI. */
+  const onCopySecretValue = useCallback(
+    (rowId: string) => async () => {
+      const row = rows.find((r) => r.id === rowId);
+      if (!row?.name) return;
+      try {
+        const revealed = await showSecret(projectId, row.name);
+        await handleCopy(revealed.value);
+        setToast({ severity: 'success', message: t('entities.secret.copySuccess', 'The secret has been copied to the clipboard') });
+      } catch {
+        setToast({ severity: 'error', message: t('entities.secret.error.copyFailed', 'Failed to copy to clipboard') });
+      }
+    },
+    [rows, projectId],
+  );
 
   /* ── styles ───────────────────────────────────────────────────────── */
   const styles = getStyles();
@@ -179,12 +305,13 @@ export const SecretsContent = memo(function SecretsContent({
       />
       <Box sx={styles.content}>
         <SecretsTable
-          rows={filteredRows}
+          rows={tableRows}
           setRows={setRows}
           rowModesModel={actions.rowModesModel}
           setRowModesModel={actions.setRowModesModel}
           isFetching={isFetching}
           isShowSecretMap={actions.isShowSecretMap}
+          canUnsecret={canUnsecret}
           validationErrors={actions.validationErrors}
           onValidationChange={actions.onValidationChange}
           actions={{
@@ -192,7 +319,11 @@ export const SecretsContent = memo(function SecretsContent({
             onCancel: actions.onCancel,
             onShowSecret: actions.onShowSecret,
             onHideSecret: actions.onHideSecret,
-            onCopyVisible: actions.onCopyVisible,
+            onCopySecretValue,
+            onActionsMenuClick: actions.onActionsMenuClick,
+            onEdit: handleEditClick,
+            onHide: actions.onHide,
+            onDelete: actions.onDelete,
             onCloseAlert: actions.onCloseAlert,
             onConfirmAlert: actions.onConfirmAlert,
           }}
@@ -207,6 +338,18 @@ export const SecretsContent = memo(function SecretsContent({
           }}
         />
       </Box>
+      <Snackbar
+        open={toast !== null}
+        autoHideDuration={3000}
+        onClose={closeToast}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        {toast ? (
+          <Alert onClose={closeToast} severity={toast.severity} variant="filled">
+            {toast.message}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
     </Paper>
   );
 });

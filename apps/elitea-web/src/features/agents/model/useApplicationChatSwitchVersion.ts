@@ -147,6 +147,17 @@ export function useApplicationChatSwitchVersion(): UseApplicationChatSwitchVersi
  *
  * `onSwitched` replaces the baseline's `setActiveParticipant(updatedParticipant)`
  * call — same "caller owns its own state" redesign as `useCreateApplication.ts`.
+ *
+ * **`onSwitched` fires whether the PUT succeeds or fails — matching
+ * `useApplicationChatSwitchVersion.js:18-43` exactly.** The baseline builds
+ * `updatedParticipant` up front, awaits `updateParticipantSettings`, and
+ * calls `setActiveParticipant(updatedParticipant)` UNCONDITIONALLY at line
+ * 43 — a failed PUT only produces `toastError(...)` (line 40), it does not
+ * skip the local-state update. So the locally-intended entity settings
+ * (computed by `buildEntitySettings`, the same object the PUT attempted to
+ * persist) are always handed to `onSwitched`, even on failure; `error`/
+ * `errorMessage` (from the underlying `useApplicationChatSwitchVersion()`
+ * call) still carry the failure for a caller that wants to surface it.
  */
 export function useAutoSwitchApplicationChatVersion(
   input: ApplicationChatSwitchVersionInput,
@@ -176,8 +187,12 @@ export function useAutoSwitchApplicationChatVersion(
       return;
     }
     if (prevVersionId !== input.versionId) {
-      void updateRef.current(inputRef.current).then((entitySettings) => {
-        if (entitySettings !== undefined) onSwitchedRef.current(entitySettings);
+      // Computed up front (mirrors the baseline's `updatedParticipant`
+      // being built before the PUT) so `onSwitched` gets the same object
+      // regardless of whether the PUT below succeeds or fails.
+      const attemptedSettings = buildEntitySettings(inputRef.current);
+      void updateRef.current(inputRef.current).finally(() => {
+        onSwitchedRef.current(attemptedSettings);
       });
       setPrevVersionId(input.versionId);
     }

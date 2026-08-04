@@ -13,7 +13,7 @@ import { server } from '../../../../test/setup';
 
 import { usePipelineChat } from './usePipelineChat.hooks';
 import type { ChatConversationAdapter } from './usePipelineChat.hooks';
-import type { UsePipelineChatParams } from './pipelineChat.types';
+import type { CreateConversationAdapterResult, UsePipelineChatParams } from './pipelineChat.types';
 
 const BASE = '/api/v2';
 
@@ -106,6 +106,49 @@ describe('usePipelineChat', () => {
     await waitFor(() => expect(client.getEmitted('chat_enter_room').length).toBeGreaterThan(0));
   });
 
+  it('isLoadingConversation flips true for the real network round-trip of creating a conversation on the first message, then back to false', async () => {
+    const client = createTestSocketClient();
+    let resolveCreate!: (value: CreateConversationAdapterResult) => void;
+    const adapter = stubAdapter({
+      createConversation: vi.fn(
+        () =>
+          new Promise<CreateConversationAdapterResult>((resolve) => {
+            resolveCreate = resolve;
+          }),
+      ),
+    });
+    const { result } = renderHook((p: UsePipelineChatParams) => usePipelineChat(p), {
+      wrapper: createWrapper(client),
+      initialProps: baseParams({ adapter }),
+    });
+    await waitFor(() => expect(result.current.activeConversation).not.toBeNull());
+    expect(result.current.isLoadingConversation).toBe(false);
+
+    let sendPromise!: Promise<unknown>;
+    act(() => {
+      sendPromise = result.current.onSend({ needsConversationCreation: true, newMessages: [], eventPayload: {} });
+    });
+
+    // This is the real fix under test: a consumer gating a send button/spinner on
+    // `isLoadingConversation` (as baseline's `ChatBox.jsx` did) now sees it flip `true` while the
+    // adapter's `createConversation(...)` promise is genuinely in flight.
+    expect(result.current.isLoadingConversation).toBe(true);
+
+    await act(async () => {
+      resolveCreate({
+        data: {
+          id: 99,
+          uuid: 'uuid-99',
+          chat_history: [],
+          participants: [{ id: '2', entityName: 'application', entityMeta: {}, entitySettings: {} }],
+        },
+      });
+      await sendPromise;
+    });
+
+    expect(result.current.isLoadingConversation).toBe(false);
+  });
+
   it('onChangeParticipantSettings writes llm_settings fields via setFieldValue', async () => {
     const client = createTestSocketClient();
     const setFieldValue = vi.fn();
@@ -189,7 +232,7 @@ describe('usePipelineChat', () => {
     expect(deleteAllRunNodes).toHaveBeenCalledTimes(2);
   });
 
-  it('sets error/errorMessage through useAutoSwitchPipelineChatVersion when a version switch PUT fails, without throwing', async () => {
+  it('surfaces a failed version-switch PUT through onError instead of swallowing it silently', async () => {
     server.use(
       http.put('*/elitea_core/entity_settings/prompt_lib/:projectId/:conversationId/:participantId', () =>
         HttpResponse.json({ error: 'nope' }, { status: 400 }),
@@ -210,7 +253,15 @@ describe('usePipelineChat', () => {
 
     rerender(baseParams({ onError, pipelineVersionDetails: { id: 7, welcome_message: 'Hi' } }));
 
-    // Does not throw — the failure is swallowed by `usePipelineChatSwitchVersion`'s own error state, not surfaced through `onError`/`onSend`.
+    // Does not throw, AND is no longer silent: `onError` is now called with a real user-facing
+    // message (previously nothing at all was wired for this failure path). The stronger claim —
+    // that `entitySettings` always gets the new version applied, success or failure — is covered
+    // precisely, without this integration test's own unrelated confound (switching
+    // `pipelineVersionDetails.id` here ALSO fires `usePipelineChatConversation.hooks.ts`'s
+    // reset-on-version-change effect, which is a separate, real behaviour that legitimately
+    // clears the conversation id afterwards), by `usePipelineChatSwitchVersion.test.tsx`'s own
+    // `useAutoSwitchPipelineChatVersion` describe block.
     expect(result.current.activeConversation).not.toBeNull();
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('Failed to switch pipeline version'));
   });
 });

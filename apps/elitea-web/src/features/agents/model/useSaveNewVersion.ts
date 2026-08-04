@@ -48,9 +48,24 @@ import { applicationErrorMessage } from '../lib/errorMessage';
  * no Formik, no pipeline-editor coupling (caller resolves `instructions` to
  * compiled YAML before calling this hook — see `useCreateApplication.ts`
  * point 3), no navigation/nav-blocker (see `useCreateApplication.ts` point
- * 4), and the same `onSaveTools` gate `useSaveVersion.ts` uses (tool
- * changes save first; see `useSaveChangedTools.ts` for why that gate cannot
- * actually persist a `selected_tools` change today).
+ * 4).
+ *
+ * **`onSaveTools` gates `onSuccess` only, not the POST — matching
+ * `useSaveNewVersion.js:112-149` exactly, not `useSaveVersion.js`'s
+ * position.** The baseline fires `saveNewVersion(...)` (the version-create
+ * mutation) UNCONDITIONALLY, before even checking `onSaveTools`; only when
+ * `onSaveTools` resolves `false` does it skip `onSuccessHandler` (the
+ * navigation trigger) — the new version is always created on the backend
+ * regardless. `onSuccess` here is this hook's stand-in for that navigation
+ * trigger (see the "no navigation" point above), so it is gated the same
+ * way; the created version itself is always returned once the POST
+ * succeeds, since (unlike the baseline, which also has a separate
+ * `isSavingNewVersionSuccess`-driven toast independent of this function's
+ * return value) this hook's return value is the only channel a caller has
+ * for "the version was created" — withholding it on a tool-save hiccup
+ * would hide a real, persisted creation. See `useSaveChangedTools.ts` for
+ * why that gate cannot actually persist a `selected_tools` change today
+ * (and therefore never actually resolves `false` in practice).
  */
 
 export interface SaveNewVersionInput {
@@ -81,10 +96,6 @@ export function useSaveNewVersion(options: UseSaveNewVersionOptions = {}): UseSa
 
   const onCreateNewVersion = useCallback(
     async (input: SaveNewVersionInput): Promise<ApplicationVersionDetail | undefined> => {
-      if (onSaveTools !== undefined && !(await onSaveTools())) {
-        return undefined;
-      }
-
       setIsSavingNewVersion(true);
       setError(undefined);
       try {
@@ -92,6 +103,14 @@ export function useSaveNewVersion(options: UseSaveNewVersionOptions = {}): UseSa
         const queryOptions = getSaveApplicationNewVersionQueryOptions(input.projectId, input.applicationId, body);
         const response = await queryClient.fetchQuery(queryOptions);
         const created = (response as { data: ApplicationVersionDetail }).data;
+
+        // Matches `useSaveNewVersion.js:144-147`: the version is already
+        // created above regardless of this gate; only the success/
+        // navigation trigger is conditional on it.
+        if (onSaveTools !== undefined && !(await onSaveTools())) {
+          return created;
+        }
+
         onSuccess?.(created);
         return created;
       } catch (caught) {

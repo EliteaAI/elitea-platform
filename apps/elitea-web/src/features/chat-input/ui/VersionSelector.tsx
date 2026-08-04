@@ -174,6 +174,8 @@ export function VersionSelector(props: VersionSelectorProps): ReactNode {
       >
         <Button
           size="small"
+          variant="elitea"
+          color="secondary"
           aria-expanded={menuOpen ? 'true' : undefined}
           aria-label={t('chatInput.versionSelector.menuLabel', 'version selector menu')}
           aria-haspopup="menu"

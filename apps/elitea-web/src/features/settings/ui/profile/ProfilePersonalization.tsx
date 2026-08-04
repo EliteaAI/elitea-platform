@@ -4,12 +4,12 @@
 import { useCallback, useMemo } from 'react';
 
 import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
 
 import { AccordionConstants } from '@/shared/lib/constants';
 import { InfoLabelWithTooltip } from '@/shared/ui/InfoLabelWithTooltip';
 import { InputBase } from '@/shared/ui/InputBase';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
+import ThemeModeToggle from '@/shared/ui/ThemeModeToggle';
 import { useFormikContext } from 'formik';
 
 import { t } from '@/shared/ui/lib/t';
@@ -69,9 +69,7 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
             <Box sx={styles.section}>
               <InfoLabelWithTooltip label="Theme" tooltip="Choose between light and dark theme" />
               <Box sx={styles.themeToggleContainer}>
-                <Typography variant="bodySmall" color="text.secondary">
-                  {t('settings.controlledBySystem', 'Controlled by system settings')}
-                </Typography>
+                <ThemeModeToggle />
               </Box>
             </Box>
           </Box>

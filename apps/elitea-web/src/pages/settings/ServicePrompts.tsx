@@ -25,6 +25,9 @@ import {
   useGetConfigurationsListQuery,
   useUpdateConfigurationMutation,
 } from '@/shared/api/configurationsApi';
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
+import type { Permission } from '@/shared/api/generated/model';
+import { PERMISSIONS } from '@/shared/lib/permissions';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { t } from '@/shared/ui/lib/t';
 import type { PromptConfig } from '@/features/settings';
@@ -48,6 +51,12 @@ function deriveLabelFromKey(key: string): string {
     .join(' ');
 }
 
+/** Extract a human-readable message from a thrown error (`EliteaApiError` or otherwise). */
+function extractErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 /* ── component ────────────────────────────────────────────────────────── */
 export const ServicePrompts = memo(function ServicePrompts() {
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
@@ -60,9 +69,18 @@ export const ServicePrompts = memo(function ServicePrompts() {
   );
 
   const { data: availableTypes } = useGetAvailableConfigurationsTypeQuery(
-    { section: 'service_prompt' },
+    { section: 'service_prompts' },
     { enabled },
   );
+
+  const permissionsQuery = usePermissionList(projectId, { query: { enabled } });
+  const canEdit = useMemo(() => {
+    const list = permissionsQuery.data?.data as Permission[] | undefined;
+    if (!list) return false;
+    return list.some((entry) => entry.enabled && entry.name === PERMISSIONS.configuration.update);
+  }, [permissionsQuery.data]);
+  /** Combines section-active + permission gates into one flag (keeps handler complexity low). */
+  const canManage = useMemo(() => enabled && canEdit, [enabled, canEdit]);
 
   const createMutation = useCreateConfigurationMutation(projectId);
   const updateMutation = useUpdateConfigurationMutation(projectId);
@@ -131,8 +149,9 @@ export const ServicePrompts = memo(function ServicePrompts() {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedConfig, setSelectedConfig] = useState<PromptConfig | null>(null);
   const modeRef = useRef<'create' | 'edit' | null>(null);
-  const draftKeyRef = useRef('');
-  const draftPromptRef = useRef('');
+  const [draftKey, setDraftKey] = useState('');
+  const [draftPrompt, setDraftPrompt] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hasAvailableKeys = availableKeys.length > 0;
   const availableKeysRef = useRef(availableKeys);
   availableKeysRef.current = availableKeys;
@@ -140,19 +159,21 @@ export const ServicePrompts = memo(function ServicePrompts() {
   usedKeysRef.current = usedKeys;
 
   const handleOpenCreate = useCallback(() => {
-    if (!enabled) return;
+    if (!canManage) return;
     modeRef.current = 'create';
     setSelectedConfig(null);
-    draftKeyRef.current = availableKeysRef.current[0] ?? '';
-    draftPromptRef.current = '';
+    setDraftKey(availableKeysRef.current[0] ?? '');
+    setDraftPrompt('');
+    setErrorMessage(null);
     setIsOpen(true);
-  }, [enabled]);
+  }, [canManage]);
 
   const handleOpenEdit = useCallback((config: PromptConfig) => {
     modeRef.current = 'edit';
     setSelectedConfig(config);
-    draftKeyRef.current = config.key;
-    draftPromptRef.current = config.prompt;
+    setDraftKey(config.key);
+    setDraftPrompt(config.prompt);
+    setErrorMessage(null);
     setIsOpen(true);
   }, []);
 
@@ -160,8 +181,8 @@ export const ServicePrompts = memo(function ServicePrompts() {
     setIsOpen(false);
     modeRef.current = null;
     setSelectedConfig(null);
-    draftKeyRef.current = '';
-    draftPromptRef.current = '';
+    setDraftKey('');
+    setDraftPrompt('');
   }, []);
 
   /* ── validate key (caches deps) ────────────────────────────────────── */
@@ -208,43 +229,68 @@ export const ServicePrompts = memo(function ServicePrompts() {
     [],
   );
 
+  /** Surfaces a `validateKey` failure message (falls back to a generic message). */
+  const reportValidationError = useCallback((message: string | undefined) => {
+    setErrorMessage(message ?? t('shared.ui.settings.prompts.keyInvalid', 'Key must contain only letters, numbers, underscores, or dashes'));
+  }, []);
+
+  /** Bundled so `handleSave`'s deps stay within the §3.5 hook-deps budget. */
+  const saveMutations = useMemo(() => ({ createMutation, updateMutation }), [createMutation, updateMutation]);
+  const saveHelpers = useMemo(
+    () => ({ buildEditBody, buildCreateBody, reportValidationError }),
+    [buildEditBody, buildCreateBody, reportValidationError],
+  );
+
   const handleSave = useCallback(async () => {
-    if (!enabled) return;
+    if (!canManage) return;
 
-    const promptText = String(draftPromptRef.current || '').trim();
-    if (!promptText) return;
+    const promptText = String(draftPrompt || '').trim();
+    if (!promptText) {
+      setErrorMessage(t('shared.ui.settings.prompts.promptEmptyError', 'Prompt cannot be empty'));
+      return;
+    }
 
-    const keyValidation = validateKey(draftKeyRef.current);
-    if (!keyValidation.ok) return;
+    const keyValidation = validateKey(draftKey);
+    if (!keyValidation.ok) {
+      saveHelpers.reportValidationError(keyValidation.message);
+      return;
+    }
 
-    const key = keyValidation.key ?? String(draftKeyRef.current || '').trim();
+    const key = keyValidation.key ?? String(draftKey || '').trim();
 
     try {
       if (modeRef.current === 'edit' && selectedConfig) {
-        await updateMutation.mutateAsync({
+        await saveMutations.updateMutation.mutateAsync({
           configId: String(selectedConfig.id),
-          body: buildEditBody(selectedConfig, key, promptText),
+          body: saveHelpers.buildEditBody(selectedConfig, key, promptText),
         });
       } else {
-        const createKeyValidation = validateKey(draftKeyRef.current, { disallowUsed: true });
-        if (!createKeyValidation.ok) return;
+        const createKeyValidation = validateKey(draftKey, { disallowUsed: true });
+        if (!createKeyValidation.ok) {
+          saveHelpers.reportValidationError(createKeyValidation.message);
+          return;
+        }
 
-        await createMutation.mutateAsync(
-          buildCreateBody(createKeyValidation.key ?? draftKeyRef.current, promptText),
+        await saveMutations.createMutation.mutateAsync(
+          saveHelpers.buildCreateBody(createKeyValidation.key ?? draftKey, promptText),
         );
       }
+      setErrorMessage(null);
       handleDiscard();
-    } catch {
-      // TODO: show toast error
+    } catch (err) {
+      setErrorMessage(extractErrorMessage(err, t('shared.ui.settings.prompts.saveError', 'Failed to save prompt')));
     }
-  }, [enabled, selectedConfig, validateKey, createMutation, updateMutation, handleDiscard, buildEditBody, buildCreateBody]);
+  }, [canManage, draftKey, draftPrompt, selectedConfig, validateKey, saveMutations, handleDiscard, saveHelpers]);
 
   /* ── restore ───────────────────────────────────────────────────────── */
   const handleRestoreToDefault = useCallback(
     async (config: PromptConfig) => {
-      if (!enabled || !config.id) return;
+      if (!canManage || !config.id) return;
       const defaultPromptValue = getDefaultPrompt(config.key);
-      if (!defaultPromptValue) return;
+      if (!defaultPromptValue) {
+        setErrorMessage(t('shared.ui.settings.prompts.noDefaultError', 'No default prompt is available for this key'));
+        return;
+      }
 
       try {
         await updateMutation.mutateAsync({
@@ -255,28 +301,31 @@ export const ServicePrompts = memo(function ServicePrompts() {
             data: { key: config.key, prompt: defaultPromptValue },
           },
         });
-      } catch {
-        // TODO: show toast error
+        setErrorMessage(null);
+      } catch (err) {
+        setErrorMessage(extractErrorMessage(err, t('shared.ui.settings.prompts.restoreError', 'Failed to restore prompt')));
       }
     },
-    [enabled, getDefaultPrompt, updateMutation],
+    [canManage, getDefaultPrompt, updateMutation],
   );
 
   const handleRestoreInModal = useCallback(() => {
     if (!selectedConfig) return;
     const defaultPromptValue = getDefaultPrompt(selectedConfig.key);
-    if (defaultPromptValue) draftPromptRef.current = defaultPromptValue;
+    if (defaultPromptValue) setDraftPrompt(defaultPromptValue);
   }, [selectedConfig, getDefaultPrompt]);
+
+  const handleDismissError = useCallback(() => setErrorMessage(null), []);
 
   const hasDefaultPrompt = useCallback((key: string) => Boolean(getDefaultPrompt(key)), [getDefaultPrompt]);
 
   const hasChanges = useMemo(() => {
-    if (modeRef.current === 'create') return draftPromptRef.current.trim().length > 0;
+    if (modeRef.current === 'create') return draftPrompt.trim().length > 0;
     if (modeRef.current === 'edit' && selectedConfig) {
-      return draftKeyRef.current !== selectedConfig.key || draftPromptRef.current !== selectedConfig.prompt;
+      return draftKey !== selectedConfig.key || draftPrompt !== selectedConfig.prompt;
     }
     return false;
-  }, [selectedConfig]);
+  }, [draftKey, draftPrompt, selectedConfig]);
 
   /* ── render ────────────────────────────────────────────────────────── */
   if (!enabled) return null;
@@ -287,7 +336,7 @@ export const ServicePrompts = memo(function ServicePrompts() {
 
   const modalTitle = modeRef.current === 'create'
     ? t('shared.ui.settings.prompts.newPromptTitle', 'New Service Prompt')
-    : (selectedConfig?.label ?? draftKeyRef.current ?? t('shared.ui.settings.prompts.editPromptTitle', 'Edit Service Prompt'));
+    : (selectedConfig?.label ?? draftKey ?? t('shared.ui.settings.prompts.editPromptTitle', 'Edit Service Prompt'));
 
   return (
     <ServicePromptsBody
@@ -298,14 +347,14 @@ export const ServicePrompts = memo(function ServicePrompts() {
         allowedKeys,
         usedKeysRef,
         modeRef,
-        draftKeyRef,
-        draftPromptRef,
-        onDraftKeyChange: (val) => { draftKeyRef.current = val; },
-        onDraftPromptChange: (val) => { draftPromptRef.current = val; },
+        draftKey,
+        draftPrompt,
+        onDraftKeyChange: setDraftKey,
+        onDraftPromptChange: setDraftPrompt,
         onRestoreInModal: handleRestoreInModal,
       }}
-      actions={{ handleOpenCreate, handleOpenEdit, handleDiscard, handleSave, handleRestoreToDefault }}
-      flags={{ isBusy, hasAvailableKeys, hasDefault: hasDefaultPrompt(draftKeyRef.current), hasChanges }}
+      actions={{ handleOpenCreate, handleOpenEdit, handleDiscard, handleSave, handleRestoreToDefault, onDismissError: handleDismissError }}
+      flags={{ isBusy, hasAvailableKeys, hasDefault: hasDefaultPrompt(draftKey), hasChanges, canEdit, errorMessage }}
     />
   );
 });

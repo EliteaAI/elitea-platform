@@ -27,3 +27,29 @@
 export function applicationErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * `applicationErrorMessage(error) || fallback` — but honest about WHEN a
+ * shape is genuinely parseable, unlike `applicationErrorMessage` alone.
+ *
+ * **Confirmed regression fix (A1-application-chat cluster, finding 3):**
+ * `useApplicationChatStreaming.hooks.ts`'s `onDeleteMessage`/
+ * `onDeleteAllMessages` port `useApplicationChat.hooks.js:627,669`'s
+ * `buildErrorMessage(result.error) || 'Failed to delete the message, please
+ * try again.'` — a pattern that only works if the left side can actually
+ * come back falsy for a shape it can't meaningfully describe. Baseline's
+ * `buildErrorMessage` (the old RTK-Query/pydantic-envelope parser) does that
+ * for an unrecognised shape; `applicationErrorMessage` does NOT — for any
+ * non-`Error`, non-`string` rejection (e.g. a plain object) it falls through
+ * to `String(error)`, which degrades to the literal `"[object Object]"`
+ * (always truthy), so the `||` never reaches the friendly fallback and the
+ * user sees that literal string. This helper restores the baseline's actual
+ * fallback behaviour without changing `applicationErrorMessage`'s own
+ * documented, tested, "stringify anything" contract (used elsewhere for
+ * genuinely-always-real-Error `EliteaApiError` rejections): only an `Error`
+ * instance or a `string` counts as "parseable" here; anything else means
+ * `fallback`.
+ */
+export function applicationErrorMessageOrFallback(error: unknown, fallback: string): string {
+  return error instanceof Error || typeof error === 'string' ? applicationErrorMessage(error) || fallback : fallback;
+}

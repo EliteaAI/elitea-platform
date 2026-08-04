@@ -47,10 +47,18 @@ export interface ParticipantWarningProps {
 // Warning text resolvers — each handles one condition (complexity ≤ 3)
 // ---------------------------------------------------------------------------
 
+/**
+ * Old app (`ParticipantWarning.jsx:37-38`): "Uses other agents — runs only
+ * as the active agent. Select it to run; it won't be used as a tool." — the
+ * new-app port previously shipped different wording for this exact,
+ * previously-deliberate copy (issue #5680) — wave-2 C5 adversarial-review
+ * finding #8. `ParticipantItem.tsx`'s inline `containerInfoRow` copy carries
+ * the same key/fallback so the two call sites can't drift apart again.
+ */
 function resolveSkippedContainer(): ReactNode {
   return t(
     'chat-participants.warning.skippedContainer',
-    'This container agent is not active as an orchestrator and cannot run tools in adhoc chat.',
+    "Uses other agents — runs only as the active agent. Select it to run; it won't be used as a tool.",
   );
 }
 
@@ -68,22 +76,23 @@ function resolveVersionUnavailable(): ReactNode {
   );
 }
 
-function resolveMcpDisconnected(
-  mcpLoginSlot: ReactNode | undefined,
-  remoteMcpLoggedOut: boolean,
-): ReactNode {
-  if (remoteMcpLoggedOut && mcpLoginSlot) {
-    return (
-      <>
-        {t('chat-participants.warning.mcpDisconnected', 'MCP server disconnected. ')}
-        <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={() => {}}>
-          {t('chat-participants.warning.reconnect', 'Reconnect')}
-        </Typography>{' '}
-        {t('chat-participants.warning.restoreConnection', 'to restore connection.')}
-      </>
-    );
-  }
-  return t('chat-participants.warning.mcpDisconnected', 'MCP server is currently disconnected.');
+/**
+ * Old app (`ParticipantWarning.jsx`): `` `The ${originalDetails.name} mcp
+ * server is disconnected. Reconnect it to use.` `` — unconditional, no
+ * login slot. The new-app port previously never referenced any server name
+ * here (wave-2 C5 adversarial-review finding #7c); `participant.entity_meta.name`
+ * is this component's equivalent of old app's `originalDetails.name` (the
+ * richer context-fetched details object has no equivalent prop on this
+ * component today).
+ */
+function resolveMcpDisconnected(participant: Record<string, unknown> | undefined): ReactNode {
+  const entityMeta = participant?.entity_meta as Record<string, unknown> | undefined;
+  const name = (entityMeta?.name as string | undefined) ?? '';
+  return t(
+    'chat-participants.warning.mcpDisconnected',
+    'The {{name}} mcp server is disconnected. Reconnect it to use.',
+    { name },
+  );
 }
 
 function resolveRemoteMcpExpired(mcpLoginSlot: ReactNode | undefined): ReactNode {
@@ -116,18 +125,49 @@ function resolveSpOAuthExpired(sharepointLoginSlot: ReactNode | undefined): Reac
   return t('chat-participants.warning.sharepointExpired', 'SharePoint OAuth session expired.');
 }
 
-function resolveConfigIssues(handleEditClick: (() => void) | undefined): ReactNode {
+/**
+ * Old app (`ParticipantWarning.jsx:44-67`): the "Check the {type}" link text
+ * is type-specific — 'agent' for a non-pipeline application, 'toolkit' for a
+ * toolkit participant, 'pipeline' otherwise. The new-app port previously
+ * always showed a generic message with no per-type text at all (wave-2 C5
+ * adversarial-review finding #7b).
+ *
+ * Real wire value for an agent/pipeline participant is `'application'` —
+ * this feature's own `ChatParticipantType.Applications` constant now
+ * matches that value too (a previous plural/singular mismatch in
+ * `model/constants.ts` was fixed), but this file has `@ts-nocheck` so the
+ * literal is left as-is rather than adding an import purely for style.
+ */
+function getParticipantTypeText(participant: Record<string, unknown> | undefined, isToolkitParticipant: boolean | undefined): string {
+  const entitySettings = participant?.entity_settings as Record<string, unknown> | undefined;
+  const isPipelineAgent = entitySettings?.agent_type === 'pipeline' || participant?.agent_type === 'pipeline';
+
+  if (participant?.entity_name === 'application' && !isPipelineAgent) {
+    return t('chat-participants.warning.typeAgent', 'agent');
+  }
+  return isToolkitParticipant
+    ? t('chat-participants.warning.typeToolkit', 'toolkit')
+    : t('chat-participants.warning.typePipeline', 'pipeline');
+}
+
+function resolveConfigIssues(
+  participant: Record<string, unknown> | undefined,
+  isToolkitParticipant: boolean | undefined,
+  handleEditClick: ((event: React.MouseEvent) => void) | undefined,
+): ReactNode {
   if (handleEditClick) {
+    const typeText = getParticipantTypeText(participant, isToolkitParticipant);
     return (
       <>
-        {t('chat-participants.warning.configIssues', 'This participant has configuration issues. ')}
+        {t('chat-participants.warning.misconfigured', 'Misconfiguration errors found. ')}
         <Typography component="span" sx={{ cursor: 'pointer', color: 'primary.main', textDecoration: 'underline' }} onClick={handleEditClick}>
-          {t('chat-participants.warning.fixConfiguration', 'Fix configuration')}
+          {t('chat-participants.warning.checkThe', `Check the ${typeText}`, { type: typeText })}
         </Typography>
+        .
       </>
     );
   }
-  return t('chat-participants.warning.configIssues', 'This participant has configuration issues.');
+  return t('chat-participants.warning.misconfigured', 'Misconfiguration errors found.');
 }
 
 function resolveToolsUnavailable(): ReactNode {
@@ -144,11 +184,18 @@ function resolveBlockedToolkitNames(blockedToolkitNames: string[]): ReactNode {
   ).concat(blockedToolkitNames.join(', '), '.');
 }
 
-function resolveCannotBeAdded(): ReactNode {
-  return t(
-    'chat-participants.warning.cannotBeAdded',
-    'This participant cannot be added to the chat.',
-  );
+/**
+ * Old app (`ParticipantWarning.jsx:69-73`): type-gated — only an
+ * `Applications`-type participant shows a message ('Please configure agent
+ * chat settings'); every other type shows nothing (`''`). The new-app port
+ * previously always returned a non-empty generic message regardless of
+ * participant type (wave-2 C5 adversarial-review finding #7d).
+ */
+function resolveCannotBeAdded(participant: Record<string, unknown> | undefined): ReactNode {
+  if (participant?.entity_name === 'application') {
+    return t('chat-participants.warning.cannotBeAdded', 'Please configure agent chat settings');
+  }
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +205,14 @@ function resolveCannotBeAdded(): ReactNode {
 /**
  * Computes the warning text for a participant based on its error conditions.
  * Ported from `ParticipantWarning.jsx` (the entire component's rendering logic).
+ *
+ * Check order matches old app exactly (wave-2 C5 adversarial-review finding
+ * #7a): skippedContainer -> publishedAgentGone -> versionUnavailable ->
+ * hasMisconfigurationErrors -> shouldDisableThisItem -> mcpIsDisconnected ->
+ * blockedToolkitNames -> someToolsAreUnavailable -> remoteMcpLoggedOut ->
+ * spOAuthLoggedOut. The new-app port previously checked these in a
+ * different order, so a participant with multiple simultaneous error flags
+ * could show a different (wrong-priority) message than old app.
  */
 function getWarningText(props: ParticipantWarningProps): ReactNode {
   const {
@@ -176,27 +231,27 @@ function getWarningText(props: ParticipantWarningProps): ReactNode {
     handleEditClick,
     mcpLoginSlot,
     sharepointLoginSlot,
+    participant,
   } = props;
 
   if (isSkippedContainer) return resolveSkippedContainer();
   if (isPublishedAgentGone) return resolvePublishedAgentGone();
   if (isVersionUnavailable) return resolveVersionUnavailable();
+  if (hasMisconfigurationErrors) return resolveConfigIssues(participant, isToolkitParticipant, handleEditClick);
+  if (shouldDisableThisItem) return resolveCannotBeAdded(participant);
 
   // MCP checks — extract combined condition to avoid && in if
   if (checkMcpDisconnected(mcpIsDisconnected, isToolkitParticipant)) {
-    return resolveMcpDisconnected(mcpLoginSlot, remoteMcpLoggedOut);
+    return resolveMcpDisconnected(participant);
   }
+  if (blockedToolkitNames?.length) return resolveBlockedToolkitNames(blockedToolkitNames);
+  if (someToolsAreUnavailable) return resolveToolsUnavailable();
   if (checkRemoteMcpLoggedOut(remoteMcpLoggedOut, isToolkitParticipant)) {
     return resolveRemoteMcpExpired(mcpLoginSlot);
   }
   if (checkSpOAuthExpired(spOAuthLoggedOut, spConfig)) {
     return resolveSpOAuthExpired(sharepointLoginSlot);
   }
-
-  if (hasMisconfigurationErrors) return resolveConfigIssues(handleEditClick);
-  if (someToolsAreUnavailable) return resolveToolsUnavailable();
-  if (blockedToolkitNames?.length) return resolveBlockedToolkitNames(blockedToolkitNames);
-  if (shouldDisableThisItem) return resolveCannotBeAdded();
 
   return null;
 }

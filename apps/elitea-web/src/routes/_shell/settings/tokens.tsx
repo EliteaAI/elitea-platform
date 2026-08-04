@@ -15,6 +15,10 @@
  *  - No Redux (no sidebar state)
  *  - Fetches model configuration via `useListModelsQuery` for IDE settings
  *  - Uses `useNavigate` from TanStack Router for nav to create-personal-token
+ *  - Token-list fetch gates on the user's `personal_project_id` (TanStack
+ *    Router context), not the currently-selected project (Warning #11) —
+ *    personal tokens are not project-scoped (`/auth/token/` takes no
+ *    project param)
  */
 import { useCallback, useMemo, useState } from 'react';
 
@@ -27,16 +31,18 @@ import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, useNavigate, useRouteContext } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
-import { useListModelsQuery } from '@/shared/api/configurationsApi';
+import { useListModelsQuery, type ConfigModel } from '@/shared/api/configurationsApi';
 import { TokensSection } from '@/features/settings/ui/personal-tokens/TokensSection';
 import { SettingsPreview } from '@/features/settings/ui/personal-tokens/SettingsPreview';
 import { t } from '@/shared/ui/lib/t';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
+import { getConfig } from '@/shared/config';
+import { isPublicProject } from '@/entities/project';
 
 export const Route = createFileRoute('/_shell/settings/tokens')({
   pendingComponent: RoutePending,
@@ -44,13 +50,68 @@ export const Route = createFileRoute('/_shell/settings/tokens')({
   component: PersonalTokensPage,
 });
 
+/**
+ * `personal_project_id` from the TanStack Router root context's
+ * `auth.getUser()` (`src/app/router-context.ts`'s `AuthUser.
+ * personal_project_id` — outside this cluster's file scope, read
+ * structurally rather than imported, per `no-upward-from-features`; the
+ * same seam `features/settings/ui/personal-tokens/TokensTable.tsx`
+ * duplicates independently, per that pattern's own established
+ * "no shared primitive yet, each call site copies the couple of lines"
+ * convention).
+ */
+interface PersonalProjectIdContext {
+  readonly auth?: {
+    readonly getUser?: () => { readonly personal_project_id?: string } | undefined;
+  };
+}
+
+function isPersonalProjectIdContext(value: unknown): value is PersonalProjectIdContext {
+  return typeof value === 'object' && value !== null;
+}
+
+function selectPersonalProjectId(context: unknown): string | undefined {
+  if (!isPersonalProjectIdContext(context)) return undefined;
+  return context.auth?.getUser?.()?.personal_project_id;
+}
+
+/**
+ * old-app: prefers a model marked default FOR the selected project, then
+ * any model belonging to the selected project, then any default model,
+ * then the first item (Warning #6) — project-scoping always wins over a
+ * generic `default` flag, since `include_shared: true` can surface a
+ * `default` model from an unrelated shared project. Extracted to a pure
+ * function (rather than inlined in the component) to keep
+ * `PersonalTokensPage`'s cyclomatic complexity under the project's gate.
+ */
+function selectDefaultModel(
+  configurations: readonly ConfigModel[],
+  projectId: string,
+): ConfigModel | undefined {
+  return (
+    configurations.find((m) => m.default === true && m.project_id === projectId) ??
+    configurations.find((m) => m.project_id === projectId) ??
+    configurations.find((m) => m.default === true) ??
+    configurations[0]
+  );
+}
+
+/** old-app: `selectedProjectId !== PUBLIC_PROJECT_ID` (Warning #5), extracted for the same complexity reason as `selectDefaultModel` above. */
+function selectIsPublicProject(projectId: string): boolean {
+  const config = getConfig();
+  if (config.status !== 'ok') return false;
+  return isPublicProject(projectId, config.config.vite_public_project_id);
+}
+
 export function PersonalTokensPage() {
   const navigate = useNavigate();
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
+  const routeContext: unknown = useRouteContext({ strict: false });
+  const personalProjectId = selectPersonalProjectId(routeContext);
   const { data: tokens = [], isFetching } = useListTokensQuery({
-    enabled: !!projectId,
+    enabled: !!personalProjectId,
   });
-  const { data: modelsData } = useListModelsQuery(
+  const { data: modelsData, isFetching: isFetchingModels } = useListModelsQuery(
     { projectId, include_shared: true },
     { skip: !projectId },
   );
@@ -59,33 +120,23 @@ export function PersonalTokensPage() {
     [modelsData?.items],
   );
 
+  const isPublicProjectSelected = useMemo(() => selectIsPublicProject(projectId), [projectId]);
+
   const [search, setSearch] = useState('');
   const theme = useTheme();
   const styles = getStyles(theme);
 
   /* ── model configuration for IDE settings (Warning #11) ────────────── */
 
-  const [modelConfiguration, setModelConfiguration] = useState<{
-    id: string | number;
-    name: string;
-  } | null>(null);
-
-  // Set default model when configurations are loaded
-  if (!modelConfiguration && configurations.length > 0) {
-    const defaultModel =
-      configurations.find((m) => m.default === true) ?? configurations[0];
-    if (defaultModel) {
-      setModelConfiguration({
-        id: defaultModel.id ?? '',
-        name: defaultModel.name,
-      });
-    }
-  }
-
-  // Clear model config if no configurations
-  if (configurations.length === 0) {
-    setModelConfiguration(null);
-  }
+  // Derived (not `useState` + setState-during-render): recomputes whenever
+  // `configurations`/`projectId` change, matching the old app's own effect
+  // dependency list (`[isSuccess, configurations, selectedProjectId]`).
+  // `selectDefaultModel` above carries the Warning #6 selection rationale.
+  const modelConfiguration = useMemo(() => {
+    const defaultModel = selectDefaultModel(configurations, projectId);
+    if (!defaultModel) return null;
+    return { id: defaultModel.id ?? '', name: defaultModel.name };
+  }, [configurations, projectId]);
 
   /* ── navigation to create page ──────────────────────────────────────── */
 
@@ -96,12 +147,21 @@ export function PersonalTokensPage() {
   /* ── preview callback (Blocker #2) ─────────────────────────────────── */
 
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewToken, setPreviewToken] = useState<string | null>(null);
+  const [previewToken, setPreviewToken] = useState('');
 
   const handlePreview = useCallback((token: { uuid: string; name: string; token: string }) => {
     setPreviewToken(token.token);
     setPreviewOpen(true);
   }, []);
+
+  const isAddButtonDisabled = useMemo(
+    () => isFetchingModels || configurations.length === 0,
+    [isFetchingModels, configurations.length],
+  );
+  const showTokenPreview = useMemo(
+    () => !!modelConfiguration?.id && !isPublicProjectSelected,
+    [modelConfiguration?.id, isPublicProjectSelected],
+  );
 
   /* ── empty state ────────────────────────────────────────────────────── */
 
@@ -159,15 +219,15 @@ export function PersonalTokensPage() {
           },
           addButton: {
             onAdd: onAddPersonalToken,
+            disabled: isAddButtonDisabled,
             tooltip: t('entities.token.addTooltip', 'Generate new token'),
           },
         }}
       />
       <Box sx={styles.content}>
         <TokensSection
-          projectId={projectId}
           search={search}
-          showPreview
+          showPreview={showTokenPreview}
           onPreviewToken={handlePreview}
         />
       </Box>
@@ -183,7 +243,7 @@ export function PersonalTokensPage() {
           <SettingsPreview
             open={previewOpen}
             onClose={() => setPreviewOpen(false)}
-            token={previewToken ?? ''}
+            token={previewToken}
             model={modelConfiguration}
             projectId={projectId}
           />

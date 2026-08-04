@@ -32,12 +32,22 @@ export interface UseEditFolderResult {
  * RTK-Query mutation-trigger option — but RTK Query mutation TRIGGER
  * functions (unlike query hooks) don't actually support a `skip` option;
  * passing one has no documented effect on whether the network call fires,
- * so the baseline's own gate is ambiguous-to-actively-broken. This port
- * instead mirrors the SAME file's other, unambiguous gate —
+ * so the baseline's own gate is ambiguous-to-actively-broken: a
+ * permission-denied `onEditFolder` in the baseline still fires the real PUT,
+ * and when the backend also rejects it with a 403 the baseline's own
+ * `isError`/`error` `useEffect` (its lines 64-68) calls
+ * `toastError(buildErrorMessage(error))`, surfacing a toast. This port
+ * mirrors the SAME file's other, unambiguous gate —
  * `onPinFolder`'s `if (!checkPermission(...)) return;`, a real early return
  * that blocks the entire action, network call and local-state update
- * alike — and applies that same shape to `onEditFolder` too, rather than
- * porting a no-op.
+ * alike — for the SHAPE of the gate (skip the network round trip rather
+ * than porting an ambiguous no-op), but — regression fixed here (found by
+ * adversarial verify) — `onEditFolder`'s gate additionally calls
+ * `toastError` before returning, so a permission-denied rename still
+ * surfaces the same user-visible feedback the baseline's real network round
+ * trip produced. `onPinFolder`'s own gate is left as a true silent no-op:
+ * its baseline early return really was unambiguous and never fired a
+ * request, so there is no baseline toast to preserve parity with.
  *
  * **`meta` dropped from the PUT body, disclosed.** The baseline sends
  * `{projectId, id, name: folder.name, meta: folder.meta}`. This codebase's
@@ -57,7 +67,11 @@ export function useEditFolder(params: UseEditFolderParams): UseEditFolderResult 
 
   const onEditFolder = useCallback(
     async (folder: FolderListItem): Promise<void> => {
-      if (projectId === undefined || !hasUpdatePermission) return;
+      if (projectId === undefined) return;
+      if (!hasUpdatePermission) {
+        toastError('You do not have permission to edit folders');
+        return;
+      }
 
       if (!folder.isPlayback) {
         try {
@@ -78,7 +92,7 @@ export function useEditFolder(params: UseEditFolderParams): UseEditFolderResult 
       if (activeFolder !== undefined && folder.id === activeFolder.id) setActiveFolder(folder);
       setFolders((prev) => prev.map((item) => (item.id === folder.id ? folder : item)));
     },
-    [projectId, hasUpdatePermission, activeFolder, setActiveFolder, setFolders, queryClient],
+    [projectId, hasUpdatePermission, activeFolder, setActiveFolder, setFolders, queryClient, toastError],
   );
 
   const onPinFolder = useCallback(

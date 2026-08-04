@@ -53,6 +53,13 @@ function renderInfo(props: Partial<ComponentProps<typeof ApplicationInformation>
 }
 
 describe('ApplicationInformation', () => {
+  it('wraps its content in the titled, collapsible "Information" accordion', async () => {
+    renderInfo();
+    expect(await screen.findByTestId('agent-information-section')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Information' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Information' })).toBeInTheDocument();
+  });
+
   it('shows the agent id and copy affordance', async () => {
     renderInfo();
     expect(await screen.findByTestId('copy-id')).toBeInTheDocument();

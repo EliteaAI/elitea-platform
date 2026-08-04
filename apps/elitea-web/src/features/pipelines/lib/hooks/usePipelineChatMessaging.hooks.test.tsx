@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Participant } from '@/entities/participant';
 
 import { usePipelineChatMessaging } from './usePipelineChatMessaging.hooks';
-import type { ChatConversationAdapter } from './pipelineChat.types';
+import type { ChatConversationAdapter, CreateConversationAdapterResult } from './pipelineChat.types';
 
 const PARTICIPANT: Participant = { id: '2', entityName: 'application', entityMeta: { id: '2' }, entitySettings: {} };
 
@@ -37,6 +37,25 @@ describe('usePipelineChatMessaging', () => {
     const response = await result.current.onSend({ needsConversationCreation: false, eventPayload: {} });
     expect(response.success).toBe(true);
     expect(response.updatedEventPayload?.['llm_settings']).toMatchObject({ model_name: 'gpt-4' });
+  });
+
+  it('sendToExistingConversation branch: falls back model_project_id to the current projectId when the version has none', async () => {
+    const { result } = renderHook(() =>
+      usePipelineChatMessaging({
+        pipelineName: 'My Pipeline',
+        pipelineParticipant: PARTICIPANT,
+        pipelineVersionDetails: { llm_settings: { model_name: 'gpt-4' } },
+        projectId: 'proj-current',
+        source: 'pipeline',
+        adapter: baseAdapter(),
+        activeConversationId: 1,
+        setActiveConversation: () => {},
+        setActiveParticipant: () => {},
+      }),
+    );
+
+    const response = await result.current.onSend({ needsConversationCreation: false, eventPayload: {} });
+    expect(response.updatedEventPayload?.['llm_settings']).toMatchObject({ model_project_id: 'proj-current' });
   });
 
   it('sendToExistingConversation branch: leaves the payload untouched when llm_settings.model_name is already set', async () => {
@@ -147,6 +166,69 @@ describe('usePipelineChatMessaging', () => {
     const response = await result.current.onSend({ needsConversationCreation: true, newMessages: [] });
     expect(response).toEqual({ success: false });
     expect(onError).toHaveBeenCalledWith('Failed to create conversation');
+  });
+
+  it('createConversationOnFirstMessage: falls back llm_settings.model_project_id to the current projectId when the version has none', async () => {
+    const createConversation = vi.fn().mockResolvedValue({
+      data: { id: 99, uuid: 'uuid-99', participants: [{ ...PARTICIPANT, id: '999' }] },
+    });
+
+    const { result } = renderHook(() =>
+      usePipelineChatMessaging({
+        pipelineName: 'My Pipeline',
+        pipelineParticipant: PARTICIPANT,
+        pipelineVersionDetails: undefined,
+        projectId: 'proj-current',
+        source: 'pipeline',
+        adapter: baseAdapter({ createConversation }),
+        activeConversationId: undefined,
+        setActiveConversation: () => {},
+        setActiveParticipant: () => {},
+      }),
+    );
+
+    const response = await result.current.onSend({ needsConversationCreation: true, newMessages: [], eventPayload: {} });
+    expect(response.updatedEventPayload?.['llm_settings']).toMatchObject({ model_project_id: 'proj-current' });
+  });
+
+  it('isLoadingConversation reflects the real in-flight adapter.createConversation(...) round-trip, and settles back to false afterwards', async () => {
+    let resolveCreate!: (value: CreateConversationAdapterResult) => void;
+    const createConversation = vi.fn(
+      () =>
+        new Promise<CreateConversationAdapterResult>((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() =>
+      usePipelineChatMessaging({
+        pipelineName: 'My Pipeline',
+        pipelineParticipant: PARTICIPANT,
+        pipelineVersionDetails: undefined,
+        projectId: 'p1',
+        source: 'pipeline',
+        adapter: baseAdapter({ createConversation }),
+        activeConversationId: undefined,
+        setActiveConversation: () => {},
+        setActiveParticipant: () => {},
+      }),
+    );
+
+    expect(result.current.isLoadingConversation).toBe(false);
+
+    let sendPromise!: Promise<unknown>;
+    act(() => {
+      sendPromise = result.current.onSend({ needsConversationCreation: true, newMessages: [], eventPayload: {} });
+    });
+
+    expect(result.current.isLoadingConversation).toBe(true);
+
+    await act(async () => {
+      resolveCreate({ data: { id: 99, uuid: 'uuid-99', chat_history: [], participants: [{ ...PARTICIPANT, id: '999' }] } });
+      await sendPromise;
+    });
+
+    expect(result.current.isLoadingConversation).toBe(false);
   });
 
   it('createConversationOnFirstMessage: catches a thrown error from the adapter and reports it via onError', async () => {

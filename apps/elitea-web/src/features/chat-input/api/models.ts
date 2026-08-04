@@ -66,8 +66,13 @@ interface ModelListWire {
   readonly default_model_project_id?: string;
 }
 
+// Deliberately NOT `row.project_id ?? ''`: the baseline
+// (`configurations.js:434-438`) builds this id via bare template-literal
+// coercion of `i.project_id`, so a missing `project_id` yields the literal
+// string `"undefined_<name>"`, not an empty-prefixed `"_<name>"`. Matched
+// here for byte-for-byte parity even though it reads oddly.
 function withModelId(row: ModelListItemWire): ModelListItem {
-  return { ...row, id: `${row.project_id ?? ''}_${row.name}` };
+  return { ...row, id: `${row.project_id}_${row.name}` };
 }
 
 export interface ListModelsParams {

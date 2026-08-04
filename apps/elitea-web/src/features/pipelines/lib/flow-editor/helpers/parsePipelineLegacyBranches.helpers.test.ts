@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { handleConditionNode, handleDecisionNode } from './parsePipelineLegacyBranches.helpers';
-import type { FlowGraphEdge, FlowGraphNode } from './pipelineFlow.types';
+import type { FlowGraphEdge, FlowGraphNode, YamlConditionSpec, YamlDecisionSpec } from './pipelineFlow.types';
 
 describe('handleConditionNode', () => {
   it('adds the synthetic condition node, an edge into it, edges to every branch + default_output, and returns them', () => {
@@ -48,6 +48,23 @@ describe('handleConditionNode', () => {
     });
     expect(result.branches).toEqual(['B']);
   });
+
+  it('does not throw when conditional_outputs is an explicit YAML `null` (regression)', () => {
+    // A pipeline's stored YAML is untyped at runtime — `conditional_outputs: null` is a real,
+    // reachable shape (js-yaml parses a bare `conditional_outputs:` key to `null`) even though
+    // `YamlConditionSpec`'s type says `readonly string[] | undefined`.
+    const condition = { conditional_outputs: null, default_output: 'C' } as unknown as YamlConditionSpec;
+    const edges: FlowGraphEdge[] = [];
+    const result = handleConditionNode({
+      interrupt_before: [],
+      interrupt_after: [],
+      currentJsonNode: { id: 'A', condition },
+      nodes: [],
+      edges,
+    });
+    expect(result.branches).toEqual(['C']);
+    expect(edges.map(e => `${e.source}->${e.target}`)).toEqual(['A->A~~~ConditionNode', 'A~~~ConditionNode->C']);
+  });
 });
 
 describe('handleDecisionNode', () => {
@@ -63,5 +80,17 @@ describe('handleDecisionNode', () => {
     });
     expect(nodes[0]).toMatchObject({ id: 'A~~~DecisionNode', type: 'decision', data: { label: 'Decision(deprecated inline decision)' } });
     expect(result.branches).toEqual(['B', 'C']);
+  });
+
+  it('does not throw when decision.nodes is an explicit YAML `null` (regression)', () => {
+    const decision = { nodes: null, default_output: 'C' } as unknown as YamlDecisionSpec;
+    const result = handleDecisionNode({
+      interrupt_before: [],
+      interrupt_after: [],
+      currentJsonNode: { id: 'A', decision },
+      nodes: [],
+      edges: [],
+    });
+    expect(result.branches).toEqual(['C']);
   });
 });

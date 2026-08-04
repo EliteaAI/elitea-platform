@@ -2,6 +2,7 @@ import {
   useGetApplication,
   useGetApplicationVersionDetail,
 } from '@/shared/api/generated/applications/applications';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 
 /** Stable empty array — `detail?.versions ?? []` would otherwise create a fresh array reference every render (`react-hooks/exhaustive-deps`: a `useMemo` depending on it would never actually memoize). */
@@ -13,6 +14,27 @@ export interface EditApplicationData {
   readonly activeVersion: ApplicationVersionDetail | undefined;
   readonly isFetching: boolean;
   readonly isError: boolean;
+  /**
+   * `true` when the application-DETAIL fetch itself (not the optional
+   * explicit-version fetch) failed with a 404 or 400 — old app:
+   * `isNotFoundError` (`common/utils.jsx:143`,
+   * `err?.status === 404 || err?.status === 400`), read by
+   * `EditApplication.jsx:63` as `shouldShowNotFoundPage = (isError &&
+   * isNotFoundError(error)) || isVersionNotFound`. This app's transport
+   * throws `EliteaApiError` (`shared/api/generated/mutator.ts`) instead of
+   * resolving with an RTK-Query-shaped `{status}` object — same status-code
+   * check, adapted to the real thrown shape (`error.failure.kind ===
+   * 'http'`), same "duck-typed against EliteaApiError" convention
+   * `useSharepointCheckConnection.hooks.ts`'s `isEliteaApiErrorLike`/
+   * `pages/settings/Secrets.tsx`'s `isForbiddenError` already establish.
+   */
+  readonly isDetailNotFound: boolean;
+}
+
+/** Split out purely to keep `useEditApplicationData`'s own branch count under the oxlint complexity budget — see `EditApplicationData.isDetailNotFound`'s own doc comment for the full citation trail. */
+function isNotFoundApiError(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') return false;
+  return error.failure.status === 404 || error.failure.status === 400;
 }
 
 /** Split out purely to keep `useEditApplicationData`'s own branch count under the oxlint complexity budget. */
@@ -94,5 +116,6 @@ export function useEditApplicationData(
     activeVersion: pickActiveVersion(needsExplicit, explicitVersion, defaultVersion),
     isFetching: combineQueryFlag(detailQuery.isFetching, needsExplicit, versionQuery.isFetching),
     isError: combineQueryFlag(detailQuery.isError, needsExplicit, versionQuery.isError),
+    isDetailNotFound: isNotFoundApiError(detailQuery.error),
   };
 }

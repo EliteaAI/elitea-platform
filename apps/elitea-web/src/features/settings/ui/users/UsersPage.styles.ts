@@ -67,4 +67,11 @@ export const usersPageStyles = {
     borderRadius: 'var(--el-shape-radiusSm, 4px)',
     backgroundColor: 'background.paper',
   } as CSSProperties,
+  paginationButtons: {
+    display: 'flex',
+    flexDirection: 'row' as const,
+    alignItems: 'center',
+    gap: '0.25rem',
+    marginLeft: '0.75rem',
+  },
 } as const;

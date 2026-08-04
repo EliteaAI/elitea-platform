@@ -212,8 +212,16 @@ describe('useApplicationChatMessaging — createConversationOnFirstMessage', () 
     expect(onError).toHaveBeenCalledWith('Failed to create conversation');
   });
 
-  it('catches a thrown Error and reports its message via onError', async () => {
+  // A1-application-chat cluster, finding 3: baseline (`useApplicationChat.hooks.js:374-380`) ALWAYS
+  // shows the fixed 'Failed to create conversation' message on a catch, regardless of what was
+  // thrown — the real error only ever reaches `console.error`, never the user. These three tests
+  // (Error / string / plain-object rejection) all assert that same fixed message; previously this
+  // catch surfaced the raw `applicationErrorMessage(caught)` text instead, which leaked internal
+  // error text for a real Error/string and degraded to the literal "[object Object]" for anything
+  // else (the untested edge case the finding flagged).
+  it('catches a thrown Error and reports the fixed, sanitized message via onError (not the raw error text)', async () => {
     const onError = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const adapter = {
       createConversation: vi.fn().mockRejectedValue(new Error('network down')),
       deleteMessage: vi.fn().mockResolvedValue({}),
@@ -228,11 +236,14 @@ describe('useApplicationChatMessaging — createConversationOnFirstMessage', () 
     });
 
     expect(response).toEqual({ success: false });
-    expect(onError).toHaveBeenCalledWith('network down');
+    expect(onError).toHaveBeenCalledWith('Failed to create conversation');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to create conversation:', expect.any(Error));
+    consoleErrorSpy.mockRestore();
   });
 
-  it('catches a thrown non-Error value and stringifies it via onError', async () => {
+  it('catches a thrown string value and still reports the fixed message via onError', async () => {
     const onError = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const adapter = {
       createConversation: vi.fn().mockRejectedValue('boom'),
       deleteMessage: vi.fn().mockResolvedValue({}),
@@ -245,7 +256,28 @@ describe('useApplicationChatMessaging — createConversationOnFirstMessage', () 
       await result.current.onSend({ needsConversationCreation: true });
     });
 
-    expect(onError).toHaveBeenCalledWith('boom');
+    expect(onError).toHaveBeenCalledWith('Failed to create conversation');
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('catches a thrown plain-object rejection and reports the fixed message, not the literal "[object Object]"', async () => {
+    const onError = vi.fn();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const adapter = {
+      createConversation: vi.fn().mockRejectedValue({ some: 'shape' }),
+      deleteMessage: vi.fn().mockResolvedValue({}),
+      deleteAllMessages: vi.fn().mockResolvedValue({}),
+      stopChatTask: vi.fn().mockResolvedValue(undefined),
+    };
+    const { result } = setup({ adapter, onError });
+
+    await act(async () => {
+      await result.current.onSend({ needsConversationCreation: true });
+    });
+
+    expect(onError).toHaveBeenCalledWith('Failed to create conversation');
+    expect(onError).not.toHaveBeenCalledWith('[object Object]');
+    consoleErrorSpy.mockRestore();
   });
 
   it('does not create a new conversation when needsConversationCreation is true but activeConversationId is already set', async () => {

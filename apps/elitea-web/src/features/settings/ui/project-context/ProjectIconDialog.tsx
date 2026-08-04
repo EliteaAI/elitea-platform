@@ -47,22 +47,45 @@ interface UploadFileParams {
   file: File;
   uploadMutation: { mutateAsync: (args: { file: File; width: number; height: number }) => Promise<void> };
   onClose: () => void;
-  fileInputRef: React.RefObject<HTMLInputElement>;
 }
 
-function uploadFile({ file, uploadMutation, onClose, fileInputRef: _fileInputRef }: UploadFileParams): Promise<void> {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const image = new Image();
-    image.onload = async () => {
-      const w = image.width > 64 ? 64 : image.width;
-      const h = image.height > 64 ? 64 : image.height;
-      await uploadMutation.mutateAsync({ file, width: w, height: h });
-      onClose();
+/**
+ * Decodes `file` through `Image()` to get its real (capped-at-64) pixel
+ * dimensions. Never called for TIFF — see `uploadFile`'s own comment:
+ * browsers cannot decode TIFF via `Image()`, so `image.onload` would never
+ * fire for it.
+ */
+function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const image = new Image();
+      image.onload = () => {
+        resolve({
+          width: image.width > 64 ? 64 : image.width,
+          height: image.height > 64 ? 64 : image.height,
+        });
+      };
+      image.onerror = () => {
+        reject(new Error(`uploadFile: failed to decode image "${file.name}"`));
+      };
+      image.src = (e.target?.result as string) ?? '';
     };
-    image.src = (e.target?.result as string) ?? '';
-  };
-  reader.readAsDataURL(file);
+    reader.onerror = () => {
+      reject(new Error(`uploadFile: failed to read file "${file.name}"`));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadFile({ file, uploadMutation, onClose }: UploadFileParams): Promise<void> {
+  // TIFF cannot be decoded via `Image()` in browsers — `image.onload` never
+  // fires for it, so skip dimension detection and use fixed 64x64 dims
+  // (old-app parity: SelectProjectIconDialog.jsx's `file.type === 'image/tiff'` branch).
+  const { width, height } =
+    file.type === 'image/tiff' ? { width: 64, height: 64 } : await readImageDimensions(file);
+  await uploadMutation.mutateAsync({ file, width, height });
+  onClose();
 }
 
 export function ProjectIconDialog({
@@ -113,7 +136,6 @@ export function ProjectIconDialog({
         file,
         uploadMutation,
         onClose,
-        fileInputRef,
       }).finally(() => {
         setIsUploading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -126,13 +148,18 @@ export function ProjectIconDialog({
     async (name: string) => {
       try {
         await deleteMutation.mutateAsync(name);
-        onIconSelect?.(selectedIcon?.name ?? null);
-        onClose();
+        // Only reset the selection (to null, never the just-deleted name)
+        // when the deleted icon was the currently-selected one — and leave
+        // the dialog open either way (old-app parity: SelectProjectIconDialog.jsx:75-88
+        // never calls onClose() from onDeleteIcon).
+        if (selectedIcon?.name === name) {
+          onIconSelect?.(null);
+        }
       } catch {
         // Error toast handled by mutation.
       }
     },
-    [deleteMutation, onIconSelect, onClose, selectedIcon],
+    [deleteMutation, onIconSelect, selectedIcon],
   );
 
   /* ── render ────────────────────────────────────────────────────────── */

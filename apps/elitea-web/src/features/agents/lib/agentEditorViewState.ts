@@ -39,3 +39,34 @@ export function agentViewMode(canEditIt: boolean): 'Owner' | 'Public' {
 export function agentDisplayName(agent: AgentEditorAgentLike | null | undefined, fallback = ''): string {
   return agent?.meta?.name || agent?.name || fallback;
 }
+
+/**
+ * `isPublic && onConversationLlmOverride ? onConversationLlmOverride : undefined`
+ * (`AgentEditor.jsx:348-349`) — a per-conversation LLM override only ever
+ * applies to a PUBLIC agent; gating it here (rather than inline in
+ * `AgentEditor.tsx`) keeps that file's own per-function complexity down,
+ * same reason every other export in this module exists.
+ */
+export function publicLlmOverride<T>(isPublic: boolean, onConversationLlmOverride: T | undefined): T | undefined {
+  return isPublic ? onConversationLlmOverride : undefined;
+}
+
+/** `canEditIt || !!onPublicLlmOverride` (`AgentEditor.jsx:62`) — the model selector is editable when the viewer can edit the whole agent, or a caller opted into a per-conversation override for it. */
+export function canEditModel(canEditIt: boolean, hasConversationLlmOverride: boolean): boolean {
+  return canEditIt || hasConversationLlmOverride;
+}
+
+/**
+ * `entityProjectId || projectId` (`AgentEditor.jsx:68`) — the agent's own
+ * owning project, used as-is whenever truthy regardless of its type,
+ * falling back to the globally-selected project only when the agent
+ * doesn't carry one (create mode, or a legacy/public agent with no
+ * `entity_meta.project_id`). Stringified since `ApplicationValidator`
+ * wants a `string`, whatever `entityProjectId`'s own runtime type.
+ */
+export function resolveValidateProjectId(
+  entityProjectId: string | number | undefined,
+  projectId: string | undefined,
+): string | undefined {
+  return entityProjectId ? String(entityProjectId) : projectId;
+}

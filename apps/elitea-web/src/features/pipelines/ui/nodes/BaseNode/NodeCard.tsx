@@ -16,6 +16,41 @@
  *    `toastError`, see its own header) need something to supply them, and
  *    `NodeCard` is the only baseline layer between `NodeCardHeader` and its
  *    eventual pipeline-editor-form caller.
+ *
+ * FIX (confirmed adversarial-review finding #2, this file:50): grepped
+ * across the whole `src` tree, no node component anywhere in the pipelines
+ * feature ever actually supplies `toolNames`/`onDuplicateName` to `NodeCard`
+ * -- both silently default (`toolNames` to `[]` inside `NodeCardHeader`,
+ * `onDuplicateName` to `undefined`). Two different-severity problems, only
+ * the second fixable inside this file's own scope:
+ *  - `toolNames` genuinely cannot be populated here: it needs the whole
+ *    pipeline's `version_details.tools` list, which only the not-yet-built
+ *    react-hook-form-backed pipeline-editor form (see this file's own
+ *    deviation note above) has -- `FlowEditorContextValue` (`../../../lib/
+ *    flow-editor/flowEditorContext.ts`, transcribed verbatim from the
+ *    baseline provider, not invented) carries no such field, and every
+ *    `<NodeCard>` call site (`AgentNode.tsx`, `RouterNode.tsx`,
+ *    `StateModifierNode.tsx`, `PrinterNode.tsx`, `CodeNode.tsx`,
+ *    `BaseToolNode.tsx`, `HITLNode.tsx`, `DefaultNode.tsx`, ...) is a node
+ *    component scoped to its OWN node, with no pipeline-wide toolkit-name
+ *    list to hand down either. Genuinely out of this cluster's scope --
+ *    routed to whichever sub-unit builds that form.
+ *  - `onDuplicateName` being `undefined` made the existing node-id-collision
+ *    revert (`NodeCardHeader.tsx`'s `onBlur`, still correctly detected
+ *    internally) silent: no toast, no message, the user's rename just
+ *    reverted with no explanation -- a real behaviour loss versus the
+ *    baseline's `toastError`. THIS is fixable inside `NodeCard` alone: when
+ *    no caller supplies `onDuplicateName`, `NodeCard` now falls back to its
+ *    own `handleInternalDuplicateName`, surfaced as a local `Snackbar`+
+ *    `Alert` (severity="error", auto-hiding) -- the same "no app-wide
+ *    `useToast()` exists yet, render `Snackbar`+`Alert` locally instead"
+ *    pattern already established by `features/settings/ui/system-prompts/
+ *    ServicePromptsBody.tsx` and `pages/settings/Secrets.tsx` (grepped:
+ *    both real, landed files, not invented precedent). A caller that DOES
+ *    supply its own `onDuplicateName` is unaffected -- the local fallback
+ *    only engages when the prop is absent, so this never double-surfaces
+ *    the message once a real app-wide toast system and a real
+ *    `toolNames`-supplying caller both land.
  *  - `triggerProps` (everything the real, landed `TriggerTypeSelector`
  *    (unit A2h) needs beyond `disabled`: `projectId`/`versionId`/
  *    `versionInstructions`/`onNotifySuccess`/`onNotifyError`, all of that
@@ -27,7 +62,9 @@
 import type { ReactNode } from 'react';
 import { memo, useCallback, useContext, useEffect, useState } from 'react';
 
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
+import Snackbar from '@mui/material/Snackbar';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { FlowEditorContext, NodeCardContext, type FlowEditorContextValue } from '../../../lib/flow-editor/flowEditorContext';
@@ -53,6 +90,14 @@ export interface NodeCardProps {
   /** Forwarded to `TriggerTypeSelector` (rendered only when `isEntrypoint`) alongside this component's own computed `disabled` -- see module doc comment. */
   readonly triggerProps?: Omit<TriggerTypeSelectorProps, 'disabled'>;
 }
+
+/**
+ * Auto-hide duration for the `onDuplicateName`-not-supplied fallback
+ * `Snackbar` (see this file's module doc comment, "FIX" paragraph) --
+ * matches `ServicePromptsBody.tsx`'s own local `Snackbar` precedent
+ * (`autoHideDuration={5000}`).
+ */
+const DUPLICATE_NAME_FALLBACK_AUTO_HIDE_MS = 5000;
 
 interface NodeCardStyles {
   readonly container: SxProps<Theme>;
@@ -171,6 +216,7 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
     triggerProps,
   } = props;
   const [isExpanded, setIsExpanded] = useState(true);
+  const [fallbackDuplicateMessage, setFallbackDuplicateMessage] = useState<string | null>(null);
   const flowEditorContext = useContext(FlowEditorContext);
   const isRunningPipeline = flowEditorContext?.isRunningPipeline;
   const expandAll = flowEditorContext?.expandAll;
@@ -183,6 +229,22 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
   useEffect(() => {
     setIsExpanded(Boolean(expandAll));
   }, [expandAll]);
+
+  /**
+   * Engages only when the caller supplies no `onDuplicateName` of its own
+   * (see module doc comment, "FIX" paragraph) -- surfaces the exact same
+   * duplicate-name message `NodeCardHeader.tsx`'s `onBlur` already builds,
+   * instead of the silent revert this cluster's adversarial review found.
+   */
+  const handleInternalDuplicateName = useCallback((message: string) => {
+    setFallbackDuplicateMessage(message);
+  }, []);
+
+  const handleFallbackAlertClose = useCallback(() => {
+    setFallbackDuplicateMessage(null);
+  }, []);
+
+  const effectiveOnDuplicateName = onDuplicateName ?? handleInternalDuplicateName;
 
   const styles = nodeCardStyles(isExpanded, isPerforming, isRunningPipeline, selected, type);
 
@@ -205,7 +267,7 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
             flowEditorContext={flowEditorContext}
             isRunningPipeline={isRunningPipeline}
             toolNames={toolNames}
-            onDuplicateName={onDuplicateName}
+            onDuplicateName={effectiveOnDuplicateName}
           />
         </Box>
         <NodeBodyContainer display={isExpanded ? 'flex' : 'none'}>
@@ -219,6 +281,22 @@ export const NodeCard = memo(function NodeCard(props: NodeCardProps): ReactNode 
         </NodeBodyContainer>
         {handles?.(isExpanded)}
       </Box>
+      {!onDuplicateName && (
+        <Snackbar
+          open={Boolean(fallbackDuplicateMessage)}
+          autoHideDuration={DUPLICATE_NAME_FALLBACK_AUTO_HIDE_MS}
+          onClose={handleFallbackAlertClose}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        >
+          <Alert
+            onClose={handleFallbackAlertClose}
+            severity="error"
+            variant="filled"
+          >
+            {fallbackDuplicateMessage}
+          </Alert>
+        </Snackbar>
+      )}
     </NodeCardContext.Provider>
   );
 });

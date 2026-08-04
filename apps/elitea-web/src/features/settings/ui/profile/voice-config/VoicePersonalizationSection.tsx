@@ -1,8 +1,9 @@
 /**
  * VoicePersonalizationSection — local port of the voice personalization panel.
  */
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
+import { useQuery } from '@tanstack/react-query';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
@@ -13,12 +14,40 @@ import { DiscreteSlider } from '@/shared/ui/DiscreteSlider';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { createStorage } from '@/shared/lib/storage';
 import { useListModelsQuery } from '@/shared/api/configurationsApi';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
+import { SocketClientContext } from '@/shared/api/socket/client';
 
 interface VoiceConfig {
   voiceName: string | null;
   voiceId: string | null;
   rate: number;
   volume: number;
+}
+
+/** One server-side TTS voice — mirrors `features/chat-input/api/ttsVoices.ts`'s `TtsVoice`. */
+interface SettingsTtsVoice {
+  readonly id?: string;
+  readonly name: string;
+}
+
+/**
+ * `GET /configurations/tts_voices/{projectId}?model_name=...` — local,
+ * disclosed near-duplicate of `features/chat-input/api/ttsVoices.ts`'s
+ * `getTtsVoices` (same route/shape that file's own doc comment already
+ * discloses duplicating from `features/credentials`). `no-sideways-features`
+ * (`.dependency-cruiser.cjs`) forbids `features/settings` importing either
+ * feature-private module, so this is copied rather than reached into.
+ */
+async function fetchSettingsTtsVoices(
+  projectId: string,
+  modelName: string | undefined,
+): Promise<readonly SettingsTtsVoice[]> {
+  const search = new URLSearchParams();
+  if (modelName !== undefined) search.append('model_name', modelName);
+  const envelope = await eliteaFetch<{ data?: { voices?: readonly SettingsTtsVoice[] } }>(
+    `/configurations/tts_voices/${projectId}?${search.toString()}`,
+  );
+  return envelope.data?.voices ?? [];
 }
 
 const STORAGE_KEY = 'chat-input.voice-config';
@@ -66,6 +95,8 @@ export const VoicePersonalizationSection = memo(({ projectId }: VoicePersonaliza
   const [config, setConfigState] = useState<VoiceConfig>(loadStored);
   const [browserVoices, setBrowserVoices] = useState<Array<{ name: string; localService: boolean }>>([]);
 
+  const socket = useContext(SocketClientContext);
+
   const { data: ttsModelsData } = useListModelsQuery(
     { projectId, include_shared: true },
     { enabled: !!projectId },
@@ -84,10 +115,20 @@ export const VoicePersonalizationSection = memo(({ projectId }: VoicePersonaliza
     [ttsModelsData],
   );
 
-  const hasModelTTS = !!ttsModel;
+  // Matches the old app / the sibling `features/chat-input` port
+  // (`hasModelTTS = !!(ttsModel && socket)`): model-backed TTS needs a live
+  // socket connection, not just a resolved model — otherwise there is
+  // nothing to actually stream audio back from.
+  const hasModelTTS = !!(ttsModel && socket);
 
-  const displayVoices = hasModelTTS
-    ? (ttsModelsData?.items as unknown as Array<{ name: string; localService: boolean }> ?? [])
+  const { data: ttsVoicesData } = useQuery({
+    queryKey: ['settings', 'tts-voices', ttsModel?.project_id ?? projectId, ttsModel?.name],
+    queryFn: () => fetchSettingsTtsVoices(ttsModel?.project_id ?? projectId, ttsModel?.name),
+    enabled: hasModelTTS,
+  });
+
+  const displayVoices: readonly (SettingsTtsVoice | { name: string; localService: boolean })[] = hasModelTTS
+    ? (ttsVoicesData ?? [])
     : browserVoices;
 
   const handleConfigChange = useCallback((updates: Partial<VoiceConfig>) => {
@@ -118,11 +159,12 @@ export const VoicePersonalizationSection = memo(({ projectId }: VoicePersonaliza
   const selectedVoiceValue = hasModelTTS ? (config.voiceId ?? '') : (config.voiceName ?? '');
 
   const voiceOptions = displayVoices.map((v) => {
-    const name = typeof v === 'object' && v !== null && 'name' in v ? (v as { name: string }).name : '';
-    const localService = typeof v === 'object' && v !== null && 'localService' in v ? (v as { localService: boolean }).localService : false;
-    return hasModelTTS
-      ? { value: name, label: name }
-      : { value: name, label: `${name}${localService ? '' : ' (online)'}` };
+    if (hasModelTTS) {
+      const voice = v as SettingsTtsVoice;
+      return { value: voice.id ?? voice.name, label: voice.name };
+    }
+    const voice = v as { name: string; localService: boolean };
+    return { value: voice.name, label: `${voice.name}${voice.localService ? '' : ' (online)'}` };
   }).filter((v) => v.value !== '');
 
   const previewVoiceConfig = useMemo(
@@ -135,6 +177,18 @@ export const VoicePersonalizationSection = memo(({ projectId }: VoicePersonaliza
 
   const [isPlaying, setIsPlaying] = useState(false);
   const handlePreview = useCallback(() => {
+    if (hasModelTTS) {
+      // Model-backed preview needs the socket + Web Audio TTS engine
+      // (`features/chat-input/lib/hooks/useTextToSpeech.hooks.ts` +
+      // `useModelTtsEngine.hooks.ts`). That engine is feature-private to
+      // `features/chat-input`; `no-sideways-features` forbids importing it
+      // from here, and duplicating its socket protocol / audio scheduling
+      // is out of this fix's scope — it needs a shared-home promotion first
+      // (the same path `ThemeModeToggle` took to `shared/ui` for this exact
+      // page). No-op rather than silently playing the wrong (browser) voice
+      // under the configured model voice's label.
+      return;
+    }
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     const utterance = new SpeechSynthesisUtterance(VOICE_PREVIEW_TEXT);
     utterance.rate = previewVoiceConfig.rate ?? 1.0;
@@ -143,7 +197,7 @@ export const VoicePersonalizationSection = memo(({ projectId }: VoicePersonaliza
     utterance.onend = () => setIsPlaying(false);
     utterance.onerror = () => setIsPlaying(false);
     window.speechSynthesis.speak(utterance);
-  }, [previewVoiceConfig]);
+  }, [hasModelTTS, previewVoiceConfig]);
 
   return (
     <BasicAccordion

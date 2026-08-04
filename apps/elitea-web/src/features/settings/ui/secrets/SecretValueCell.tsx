@@ -2,9 +2,13 @@
  * Secret value display cell with show/hide toggle and copy button.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/
- * SecretValueCell.jsx`.  The old app fetched the plaintext on-click via
- * RTK Query's `useLazySecretShowQuery`; the new version uses the
- * `showSecret` API directly (caller manages the mutation/query lifecycle).
+ * SecretValueCell.jsx`.  The old app always fetched the plaintext fresh
+ * on copy-click via RTK Query's `useLazySecretShowQuery`, regardless of
+ * whether the value was currently shown/masked — this component preserves
+ * that: it never copies its own local `displayText`, it only calls the
+ * caller-supplied `onCopy`, which is responsible for fetching the live
+ * plaintext and performing the actual clipboard write (see
+ * `pages/settings/Secrets.tsx`'s `onCopySecretValue`).
  *
  * Deviation: the old app dispatched a toast after copy.  Toasts are a
  * page-level concern — this component only performs the copy and calls
@@ -22,8 +26,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { handleCopy } from '@/shared/lib/clipboard';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
 export interface SecretValueCellProps {
   /** Masked / placeholder display text. */
@@ -32,10 +35,12 @@ export interface SecretValueCellProps {
   value: string;
   /** Whether the plaintext is currently shown. */
   isVisible: boolean;
-  /** Copy plaintext to clipboard — caller triggers toast. */
+  /** Fetches the live plaintext and copies it to the clipboard — caller manages the fetch/mutation lifecycle and any toast. */
   onCopy: () => Promise<void>;
   /** Toggle visibility — caller manages state. */
   onToggleVisibility: () => void;
+  /** Gates the show/hide toggle behind `PERMISSIONS.secrets.unsecret` — omit the button entirely when the caller lacks that permission (matches the baseline's `checkPermission(PERMISSIONS.secrets.unsecret)` guard, `SecretsTable.jsx:492`). */
+  canToggleVisibility: boolean;
 }
 
 export const SecretValueCell = memo(function SecretValueCell({
@@ -44,17 +49,17 @@ export const SecretValueCell = memo(function SecretValueCell({
   isVisible,
   onCopy,
   onToggleVisibility,
+  canToggleVisibility,
 }: SecretValueCellProps) {
   const displayText = isVisible ? value : label;
 
   const handleCopyValue = useCallback(async () => {
     try {
-      await handleCopy(displayText);
       await onCopy();
     } catch {
       // Copy failed — caller provides toast
     }
-  }, [displayText, onCopy]);
+  }, [onCopy]);
 
   return (
     <Box sx={styles.container}>
@@ -66,16 +71,18 @@ export const SecretValueCell = memo(function SecretValueCell({
       >
         {displayText || '-'}
       </Typography>
-      <Tooltip title={isVisible ? t('entities.secret.value.hide', 'Hide') : t('entities.secret.value.show', 'Show')}>
-        <IconButton
-          size="small"
-          color="tertiary"
-          onClick={onToggleVisibility}
-          sx={styles.icon}
-        >
-          {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-        </IconButton>
-      </Tooltip>
+      {canToggleVisibility && (
+        <Tooltip title={isVisible ? t('entities.secret.value.hide', 'Hide') : t('entities.secret.value.show', 'Show')}>
+          <IconButton
+            size="small"
+            color="tertiary"
+            onClick={onToggleVisibility}
+            sx={styles.icon}
+          >
+            {isVisible ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+          </IconButton>
+        </Tooltip>
+      )}
       <Tooltip title={t('entities.secret.value.copy', 'Copy')}>
         <IconButton
           size="small"

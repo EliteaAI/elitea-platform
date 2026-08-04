@@ -57,6 +57,27 @@ function toStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(toDisplayString) : [];
 }
 
+/**
+ * Reverses `toDisplayString` on a value the user picked through the
+ * enum-backed `SingleSelect`/`EnumMultiSelectField` controls below — both
+ * are string-only (`SingleSelect.value`/`onChange` are typed `string`;
+ * `shared/ui/SingleSelect.tsx`'s own doc comment: "keeps the single-value
+ * case only"), so the option a user clicks always arrives here as a
+ * `string`. Looks up the ORIGINAL `enumList` entry whose `toDisplayString`
+ * matches, so a boolean/number-valued enum option round-trips back to its
+ * native JSON type instead of writing the stringified display value into
+ * the mapping. Falls back to the raw string only if no `enumList` entry
+ * matches, which should not happen: every option offered to the user is
+ * itself built from `toEnumOptions(enumList)`.
+ */
+function resolveEnumValue(displayValue: string, enumList: readonly unknown[] | undefined): unknown {
+  return enumList?.find((item) => toDisplayString(item) === displayValue) ?? displayValue;
+}
+
+function resolveEnumValues(displayValues: readonly string[], enumList: readonly unknown[] | undefined): unknown[] {
+  return displayValues.map((displayValue) => resolveEnumValue(displayValue, enumList));
+}
+
 interface ValueControlProps {
   readonly hasEnum: boolean;
   readonly isArrayEnum: boolean;
@@ -227,13 +248,27 @@ export function InputMappingItem({
   const hasEnum = Boolean(enumList?.length);
   const isArrayEnum = dataType === 'array' && type !== 'variable';
 
+  const onChangeEnumValue = useCallback(
+    (newValue: string) => {
+      onChangeValue(resolveEnumValue(newValue, enumList));
+    },
+    [onChangeValue, enumList],
+  );
+
+  const onChangeEnumValues = useCallback(
+    (newValues: string[]) => {
+      onChangeValue(resolveEnumValues(newValues, enumList));
+    },
+    [onChangeValue, enumList],
+  );
+
   const enumSingleSelect = (
     <Box className="nopan nodrag">
       <SingleSelect
         sx={selectSx}
         label={selectOneOptionLabel}
         value={stringValue}
-        onChange={onChangeValue}
+        onChange={onChangeEnumValue}
         options={enumOptions}
         {...disabledProp}
       />
@@ -246,7 +281,7 @@ export function InputMappingItem({
         label={<LabelWithTooltip tooltip={t('pipelines.inputMapping.selectOptions', 'Select options')} />}
         value={toStringArray(value)}
         options={enumOptions}
-        onChange={onChangeValue}
+        onChange={onChangeEnumValues}
       />
     </Box>
   );

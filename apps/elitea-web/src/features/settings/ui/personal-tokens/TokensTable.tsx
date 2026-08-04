@@ -8,14 +8,27 @@
  * Key deviations from the baseline:
  *  - No Redux (no sidebar/collapsed state tracking)
  *  - No tour IDs
- *  - No `GridTableContainer` (old-app entity) — uses MUI `Table` directly
+ *  - No `GridTableContainer` (old-app entity) — uses MUI `Table` directly;
+ *    its `emptyMessage="No tokens"` is reproduced as a plain message box
+ *    (Warning #8) so a search that matches nothing still shows feedback
+ *    instead of rendering blank
  *  - Uses RTK Query hooks from `entities/token/api/tokenApi`
  *  - Uses selectors from `entities/token/model/selectors` for masking/sorting
  *  - Delete confirmation uses `DeleteEntityModal` from `shared/ui`
  *  - Uses `OpenEyeIcon` from `shared/ui/icons`
  *  - Accepts `search` prop for filtering tokens by name
+ *  - Gates its own token-list fetch on the user's `personal_project_id`
+ *    (TanStack Router context, same seam
+ *    `features/toolkits/sharepoint/lib/hooks/
+ *    useResolvedSharepointConfig.hooks.ts` reads — no shared `shared/`
+ *    primitive for it exists yet, so this is a local copy per that file's
+ *    own documented convention), NOT the currently-selected project
+ *    (Warning #11) — personal tokens are not project-scoped
+ *    (`/auth/token/` takes no project param)
  */
 import { memo, useCallback, useMemo, useState } from 'react';
+
+import { useRouteContext } from '@tanstack/react-router';
 
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
@@ -29,7 +42,7 @@ import TableSortLabel from '@mui/material/TableSortLabel';
 import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import {
   maskedTokenValue,
   sortTokensByName,
@@ -39,6 +52,28 @@ import {
 import type { PersonalAccessToken } from '@/entities/token';
 import { ExpiryCell, ActionsCell } from './TokenRow';
 import { tokensTableStyles } from './TokensTable.styles';
+
+/**
+ * `personal_project_id` from the TanStack Router root context's
+ * `auth.getUser()` (`src/app/router-context.ts`'s `AuthUser.
+ * personal_project_id` — outside this cluster's file scope, read
+ * structurally rather than imported, per `no-upward-from-features`).
+ */
+interface PersonalProjectIdContext {
+  readonly auth?: {
+    readonly getUser?: () => { readonly personal_project_id?: string } | undefined;
+  };
+}
+
+function isPersonalProjectIdContext(value: unknown): value is PersonalProjectIdContext {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Pure extraction, mirrors `useResolvedSharepointConfig.hooks.ts`'s `selectPersonalProjectId`. */
+function selectPersonalProjectId(context: unknown): string | undefined {
+  if (!isPersonalProjectIdContext(context)) return undefined;
+  return context.auth?.getUser?.()?.personal_project_id;
+}
 
 /* ── column definitions ────────────────────────────────────────────────── */
 
@@ -58,8 +93,6 @@ const COLUMNS: ColumnDef[] = [
 /* ── main table ────────────────────────────────────────────────────────── */
 
 export interface TokensTableProps {
-  /** Currently-selected project id — threaded down from the route. */
-  projectId: string;
   /** Search query to filter token names. */
   search?: string;
   /** Whether the "preview settings" button should appear in actions. */
@@ -69,13 +102,14 @@ export interface TokensTableProps {
 }
 
 export const TokensTable = memo(function TokensTable({
-  projectId,
   search = '',
   showPreview = false,
   onPreviewToken,
 }: TokensTableProps) {
+  const routeContext: unknown = useRouteContext({ strict: false });
+  const personalProjectId = selectPersonalProjectId(routeContext);
   const { data: tokens = [], isFetching } = useListTokensQuery({
-    enabled: !!projectId,
+    enabled: !!personalProjectId,
   });
   const deleteMutation = useDeleteTokenMutation();
   const theme = useTheme();
@@ -165,7 +199,7 @@ export const TokensTable = memo(function TokensTable({
     (row: PersonalAccessToken) => (
       <ActionsCell
         token={row}
-        onDelete={(uuid) => deleteMutation.mutate(uuid)}
+        onDelete={(uuid) => deleteMutation.mutateAsync(uuid)}
         onPreview={onPreviewToken ?? (() => {})}
         showPreview={showPreview}
       />
@@ -188,7 +222,16 @@ export const TokensTable = memo(function TokensTable({
   /* ── table ────────────────────────────────────────────────────────── */
 
   if (sortedTokens.length === 0) {
-    return null;
+    return (
+      <Box sx={styles.emptyContainer}>
+        <Typography
+          variant="bodyMedium"
+          color="text.secondary"
+        >
+          {t('entities.token.table.empty', 'No tokens')}
+        </Typography>
+      </Box>
+    );
   }
 
   return (

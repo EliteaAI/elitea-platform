@@ -14,6 +14,21 @@ function getContent(container: HTMLElement): HTMLElement {
   return content;
 }
 
+/**
+ * Every `<style>` element's text, concatenated — the real, rendered CSS
+ * output. Same pattern as `src/app/providers/BrandThemeProvider.test.tsx`'s
+ * `renderedStyleText()`: jsdom's `getComputedStyle` does not evaluate
+ * descendant-combinator rules (verified empirically — a rule like
+ * `.css-x .error_yaml_code { border-left: ... }` never shows up via
+ * `getComputedStyle(mark).borderLeft` in this test environment even though
+ * the rule is genuinely present and correct), so asserting on the emitted
+ * stylesheet text is the real, reliable way to test an `sx`-driven nested
+ * selector here.
+ */
+function renderedStyleText(): string {
+  return [...document.querySelectorAll('style')].map((style) => style.textContent ?? '').join('\n');
+}
+
 describe('YamlCodeEditor', () => {
   it('renders the initial code', () => {
     const { container } = renderWithTheme(<YamlCodeEditor code="a: b" onChangeCode={vi.fn()} />);
@@ -93,5 +108,46 @@ describe('YamlCodeEditor', () => {
     const { getByTestId } = renderWithTheme(<YamlCodeEditor code="a: b" onChangeCode={vi.fn()} />);
     const wrapper = getByTestId('pipeline-yaml-editor');
     expect(wrapper).toHaveClass('nopan', 'nodrag', 'nowheel');
+  });
+
+  it('colourises a mapping key distinctly from a comment and from an untagged plain value (the YAML language extension is actually installed)', () => {
+    const { container } = renderWithTheme(<YamlCodeEditor code={'name: value\n# a comment'} onChangeCode={vi.fn()} />);
+    const content = getContent(container);
+    const spans = [...content.querySelectorAll('span')];
+
+    const keySpan = spans.find((span) => span.textContent === 'name');
+    if (!keySpan) throw new Error('expected a highlighted span for the "name" key');
+    // Matches `CodeMirrorEditor.tsx`'s `highlightStyle` rule for
+    // `tags.propertyName`: bold, `text.primary`.
+    expect(getComputedStyle(keySpan).fontWeight).toBe('600');
+    expect(getComputedStyle(keySpan).color).toBe('var(--el-palette-text-primary)');
+
+    const commentSpan = spans.find((span) => span.textContent === '# a comment');
+    if (!commentSpan) throw new Error('expected a highlighted span for the comment');
+    // Matches the `tags.comment` rule: italic, `text.secondary`.
+    expect(getComputedStyle(commentSpan).fontStyle).toBe('italic');
+    expect(getComputedStyle(commentSpan).color).toBe('var(--el-palette-text-secondary)');
+
+    // The unquoted scalar value carries no language tag, so — unlike the
+    // key and the comment — it is never wrapped in its own highlighted span.
+    expect(spans.some((span) => span.textContent === 'value')).toBe(false);
+  });
+
+  it('pairs the error-mark background with a `border.error`-coloured left border, restoring a strong visual signal for an invalid-YAML line', async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithTheme(<YamlCodeEditor code="a: [" onChangeCode={vi.fn()} />);
+    const styleText = renderedStyleText();
+    expect(styleText).toContain('.error_yaml_code{');
+    expect(styleText).toMatch(
+      /\.error_yaml_code\{[^}]*border-left:0\.1875rem solid var\(--el-palette-border-error\)/,
+    );
+    // Sanity: the rule is actually reachable by the diagnostic mark CM6
+    // renders once the linter flags this invalid document, not just present
+    // somewhere unrelated in the stylesheet.
+    await user.click(getContent(container));
+    await user.keyboard('{End} ');
+    await vi.waitFor(() => {
+      expect(container.querySelector('.error_yaml_code')).not.toBeNull();
+    });
   });
 });

@@ -288,8 +288,14 @@ export const getAllowedNodeTypes = (): readonly string[] =>
     )
     .map(key => PipelineNodeTypes[key]);
 
+/**
+ * Uses `||`, not `??`, deliberately: a tool object with an explicit
+ * empty-string `name` (or `description`) must still fall through to the
+ * next candidate, or the tool renders with a blank label instead of its
+ * description/path.
+ */
 export const getToolName = (tool: string | { readonly name?: string; readonly description?: string; readonly path?: string }): string =>
-  typeof tool === 'string' ? tool : (tool.name ?? tool.description ?? tool.path ?? '');
+  typeof tool === 'string' ? tool : (tool.name || tool.description || tool.path || '');
 
 export const calculatePositionForNewNode = (
   xStartPos: number,

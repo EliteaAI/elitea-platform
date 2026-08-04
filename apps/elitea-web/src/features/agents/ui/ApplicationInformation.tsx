@@ -8,6 +8,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useGetApplication, useGetPipelineTrigger } from '@/shared/api/generated/applications/applications';
 import type { ApplicationDetail } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
+import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 import { CopyToClipboardButton } from '@/shared/ui/CopyToClipboardButton';
 
 import { useSelectedProjectId } from '../api/useSelectedProjectId';
@@ -29,13 +30,10 @@ const WEBHOOK_TYPE_LABELS: Readonly<Record<string, string>> = {
 const LAST_RUN_FORMAT_OPTIONS: Readonly<Intl.DateTimeFormatOptions> = { dateStyle: 'short', timeStyle: 'short' };
 
 /**
- * `entities/pipeline`'s `PipelineTrigger` models exactly `versionId`/
- * `enabled`/`schedule`/`type` — `schedule` is a confirmed opaque jsonb
- * passthrough (its own doc comment: "the Go side never types it").
- * `cron`/`timezone`/`last_run`/`webhook_type` (baseline:
- * `ApplicationInformation.jsx:100-134`) live inside that opaque bag; read
- * defensively here, same `isRecord`+`typeof` guard `useAppDetail.ts`'s
- * `readMetaString` already established for an equally-opaque `meta` bag.
+ * `entities/pipeline`'s `PipelineTrigger.schedule` is a confirmed opaque
+ * jsonb passthrough; `cron`/`timezone`/`last_run`/`webhook_type` (baseline:
+ * `ApplicationInformation.jsx:100-134`) live inside it — read defensively,
+ * same `isRecord`+`typeof` guard `useAppDetail.ts`'s `readMetaString` uses.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -226,10 +224,9 @@ interface ApplicationInformationRowsProps {
   readonly forkedApplicationError: unknown;
   readonly showPipeline: boolean;
   readonly onShowPipeline: () => void;
-  readonly style: SxProps<Theme> | undefined;
 }
 
-/** The whole "Information" content box — split out of `ApplicationInformation` purely to stay under the §3.5 complexity budget (12); that function keeps only data-fetching/state, this one only renders. */
+/** The whole "Information" accordion content — split out of `ApplicationInformation` purely to stay under the §3.5 complexity budget (12); that function keeps only data-fetching/state, this one only renders. */
 function ApplicationInformationRows({
   idLabel,
   id,
@@ -242,38 +239,27 @@ function ApplicationInformationRows({
   forkedApplicationError,
   showPipeline,
   onShowPipeline,
-  style,
 }: ApplicationInformationRowsProps): ReactNode {
   return (
-    <Box sx={style}>
-      <Box sx={contentContainerSx}>
+    <Box sx={contentContainerSx}>
+      <CopyToClipboardButton
+        label={idLabel}
+        value={id ?? ''}
+        tooltip={t('agents.applicationInformation.copyIdTooltip', 'Copy ID')}
+        data-testid="copy-id"
+      />
+      {versionId !== undefined && (
         <CopyToClipboardButton
-          label={idLabel}
-          value={id ?? ''}
-          tooltip={t('agents.applicationInformation.copyIdTooltip', 'Copy ID')}
-          data-testid="copy-id"
+          label={t('agents.applicationInformation.versionIdLabel', 'Version ID:')}
+          value={versionId}
+          tooltip={t('agents.applicationInformation.copyVersionIdTooltip', 'Copy version ID')}
         />
-        {versionId !== undefined && (
-          <CopyToClipboardButton
-            label={t('agents.applicationInformation.versionIdLabel', 'Version ID:')}
-            value={versionId}
-            tooltip={t('agents.applicationInformation.copyVersionIdTooltip', 'Copy version ID')}
-          />
-        )}
-        {isPipeline && (
-          <PipelineTriggerRows
-            triggerType={triggerType}
-            schedule={schedule}
-          />
-        )}
-        {isForked && (
-          <ForkedFromRow
-            originalApplicationName={originalApplicationName}
-            error={forkedApplicationError}
-          />
-        )}
-        {showPipeline && <PipelineShowRow onShow={onShowPipeline} />}
-      </Box>
+      )}
+      {isPipeline && (
+        <PipelineTriggerRows triggerType={triggerType} schedule={schedule} />
+      )}
+      {isForked && <ForkedFromRow originalApplicationName={originalApplicationName} error={forkedApplicationError} />}
+      {showPipeline && <PipelineShowRow onShow={onShowPipeline} />}
     </Box>
   );
 }
@@ -322,6 +308,9 @@ export interface ApplicationInformationProps {
  *    render function branches on 7+ independent conditions, same "split to
  *    shrink complexity, not to change behaviour" move `InputBase.tsx`/
  *    `BasicAccordion.tsx` already document for this codebase.
+ *  - Wraps content in `BasicAccordion` (`data-testid="agent-information-section"`,
+ *    title `'Information'`), matching baseline `ApplicationInformation.jsx:191-199`;
+ *    `style` now targets `slotSx.root` instead of the inner content box.
  */
 export function ApplicationInformation({
   id,
@@ -348,21 +337,29 @@ export function ApplicationInformation({
     ? t('agents.applicationInformation.pipelineIdLabel', 'Pipeline ID:')
     : t('agents.applicationInformation.agentIdLabel', 'Agent ID:');
 
+  const informationContent = (
+    <ApplicationInformationRows
+      idLabel={idLabel}
+      id={id}
+      versionId={versionId}
+      isPipeline={isPipeline}
+      triggerType={trigger.type}
+      schedule={scheduleDetails}
+      isForked={isForked}
+      originalApplicationName={forkedApplication.name}
+      forkedApplicationError={forkedApplication.error}
+      showPipeline={showPipeline}
+      onShowPipeline={onShowPipelineModal}
+    />
+  );
+
   return (
     <>
-      <ApplicationInformationRows
-        idLabel={idLabel}
-        id={id}
-        versionId={versionId}
-        isPipeline={isPipeline}
-        triggerType={trigger.type}
-        schedule={scheduleDetails}
-        isForked={isForked}
-        originalApplicationName={forkedApplication.name}
-        forkedApplicationError={forkedApplication.error}
-        showPipeline={showPipeline}
-        onShowPipeline={onShowPipelineModal}
-        style={style}
+      <BasicAccordion
+        data-testid="agent-information-section"
+        showMode="left"
+        slotSx={{ accordion: accordionSx, ...(style !== undefined ? { root: style } : {}) }}
+        items={[{ title: t('agents.applicationInformation.title', 'Information'), content: informationContent }]}
       />
       {showPipeline && (
         <StyledShowContextModal
@@ -376,6 +373,8 @@ export function ApplicationInformation({
     </>
   );
 }
+
+const accordionSx: SxProps<Theme> = (theme: Theme) => ({ background: theme.vars.palette.background.tabPanel });
 
 const contentContainerSx: SxProps<Theme> = {
   display: 'flex',

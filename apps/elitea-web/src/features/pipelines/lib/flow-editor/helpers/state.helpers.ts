@@ -234,7 +234,10 @@ export const formatStateVariablesForPrompt = (
   // Format each variable as: name (type)
   const formattedVars = entries
     .map(([name, config]) => {
-      const type = config?.type ?? 'str';
+      // `||`, not `??` — a state variable with an explicit empty-string `type` (`{ type: '' }`)
+      // must also normalize to 'str'; `??` only substitutes on `null`/`undefined` and would
+      // list a blank type instead. Matches baseline `state.helpers.js:206`'s `config?.type || 'str'`.
+      const type = config?.type || 'str';
       const readableType = typeMap[type] ?? type;
       return `\`${name}\` (${readableType})`;
     })

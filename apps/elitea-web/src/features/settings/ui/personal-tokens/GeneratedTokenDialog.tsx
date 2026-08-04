@@ -50,6 +50,8 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
   );
   const styles = getStyles();
 
+  const isCopyDisabled = copyLabel === t('entities.token.generated.copied', 'Copied!');
+
   const handleCopy = useCallback(() => {
     void navigator.clipboard.writeText(token);
     setCopyLabel(t('entities.token.generated.copied', 'Copied!'));
@@ -61,12 +63,15 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Enter' && !isCopyDisabled) {
+        e.preventDefault();
+        handleCopy();
+      } else if (e.key === 'Escape') {
         e.preventDefault();
         onClose();
       }
     },
-    [onClose],
+    [isCopyDisabled, handleCopy, onClose],
   );
 
   return (
@@ -130,7 +135,7 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
           variant="elitea"
           color="primary"
           onClick={handleCopy}
-          disabled={copyLabel === t('entities.token.generated.copied', 'Copied!')}
+          disabled={isCopyDisabled}
         >
           {copyLabel}
         </Button>

@@ -70,4 +70,61 @@ describe('usePipelineEditorCreate', () => {
       versions: [expect.objectContaining({ agent_type: 'pipeline' })],
     });
   });
+
+  it('submit defaults meta.internal_tools to ["internal_mcp"] (the "Elitea MCP Tools" toggle stays enabled by default, matching entities/application-form/model/initialValues.ts)', async () => {
+    let capturedBody: unknown;
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedBody = await info.request.json();
+        return {
+          id: '42',
+          name: 'My Pipeline',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result } = renderHookWithProviders(() => usePipelineEditorCreate('p1'));
+
+    act(() => result.current.onFieldChange('name', 'My Pipeline'));
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(capturedBody).toMatchObject({
+      versions: [{ meta: { internal_tools: ['internal_mcp'] } }],
+    });
+  });
+
+  it('submit respects an explicit meta.internal_tools override over the default', async () => {
+    let capturedBody: unknown;
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedBody = await info.request.json();
+        return {
+          id: '42',
+          name: 'My Pipeline',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result } = renderHookWithProviders(() => usePipelineEditorCreate('p1'));
+
+    act(() => result.current.onFieldChange('name', 'My Pipeline'));
+    act(() => result.current.onFieldChange('version_details.meta.internal_tools', []));
+    await act(async () => {
+      await result.current.submit();
+    });
+
+    expect(capturedBody).toMatchObject({
+      versions: [{ meta: { internal_tools: [] } }],
+    });
+  });
 });

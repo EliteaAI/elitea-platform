@@ -24,7 +24,7 @@ import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { ImportIcon } from '@/shared/ui/icons/import-icon';
 
 import { ImageAttachmentViewerModal } from './ImageAttachmentViewerModal';
-import { attachmentDeleteKey, planAttachmentDownload } from './imageAttachment.helpers';
+import { attachmentDeleteKey, planAttachmentDownload, viewerModalArtifactProps } from './imageAttachment.helpers';
 
 const ACTIONS_CLASS = 'chat-input-image-attachment-actions';
 
@@ -158,7 +158,12 @@ function DeleteConfirmContent({ checked, onChange }: DeleteConfirmContentProps):
  * flows it opens. Full port of `apps/elitea-ui/src/[fsd]/features/chat/ui/
  * chat-attachment/ImageAttachment.jsx` (and its sibling `ViewImageAttachmentModal
  * .jsx`, folded in — see `./ImageAttachmentViewerModal.tsx`'s own doc
- * comment for that file's disclosed scope cuts).
+ * comment for that file's one remaining disclosed scope cut). This
+ * component computes `planAttachmentDownload(attachment)` once and forwards
+ * its `'artifact-storage'` `filepath` (as `artifactFilepath`) plus
+ * `projectId` to `ImageAttachmentViewerModal`, which uses them to fetch the
+ * true full-resolution original on open — full parity with the baseline's
+ * `fetchArtifactBlobUrl` swap.
  *
  * DISCLOSED DEVIATIONS FROM THE BASELINE:
  *  - Single delete-confirmation dialog, not two. The baseline renders
@@ -318,6 +323,7 @@ export function ImageAttachment({
         onClose={toggleViewer}
         onDownload={handleDownload}
         onRequestDelete={openDelete}
+        {...viewerModalArtifactProps(attachment, projectId)}
       />
       <DeleteEntityModal
         open={openDeleteConfirm}

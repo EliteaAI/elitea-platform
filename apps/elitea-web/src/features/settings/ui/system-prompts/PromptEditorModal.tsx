@@ -38,7 +38,7 @@ export const PromptEditorModal = ({ config }: { config: PromptsModalConfig }): R
               <IconButton
                 color="tertiary"
                 onClick={config.onRestore}
-                disabled={!config.hasDefault || config.isBusy}
+                disabled={!config.hasDefault || config.isBusy || config.readOnly}
                 aria-label={t('shared.ui.settings.prompts.restoreInModalAria', 'Restore to default')}
               >
                 <RestoreOutlinedIcon fontSize="small" />
@@ -55,7 +55,7 @@ export const PromptEditorModal = ({ config }: { config: PromptsModalConfig }): R
           <Button
             variant="contained"
             onClick={config.onSave}
-            disabled={config.isBusy || !config.hasChanges}
+            disabled={config.isBusy || !config.hasChanges || config.readOnly}
           >
             {t('shared.ui.settings.prompts.save', 'Save')}
           </Button>
@@ -87,7 +87,7 @@ export const PromptEditorModal = ({ config }: { config: PromptsModalConfig }): R
           </Box>
           <Box sx={config.styles.editorContainer}>
             <CodeMirrorEditor
-              readOnly
+              readOnly={config.readOnly}
               value={config.draftPrompt}
               onChange={config.onDraftPromptChange}
               height="100%"

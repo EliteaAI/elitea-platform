@@ -29,6 +29,12 @@ import { useSelectedProjectId } from '../../api/useSelectedProjectId';
  * dropped: `AgentEditorPanel.jsx` only ever calls the singular
  * `checkPermission`, and no other file in this cluster needs the batch
  * form — YAGNI, disclosed.
+ *
+ * Default-allow preserved: the baseline's singular `checkPermission`
+ * (`useCheckPermission.js:11-22`) returns `true` unconditionally for a
+ * falsy/empty `permission` argument ("no permission required" reads as
+ * always-allowed) and only consults the permission list once `permission`
+ * is truthy. Mirrored below rather than dropped.
  */
 export function useCheckPermission(): { readonly checkPermission: (permission: string) => boolean } {
   const projectId = useSelectedProjectId();
@@ -43,7 +49,10 @@ export function useCheckPermission(): { readonly checkPermission: (permission: s
     return new Set(list.filter((entry) => entry.enabled).map((entry) => entry.name));
   }, [query.data]);
 
-  const checkPermission = useCallback((permission: string) => permissions.has(permission), [permissions]);
+  const checkPermission = useCallback(
+    (permission: string) => (permission ? permissions.has(permission) : true),
+    [permissions],
+  );
 
   return { checkPermission };
 }

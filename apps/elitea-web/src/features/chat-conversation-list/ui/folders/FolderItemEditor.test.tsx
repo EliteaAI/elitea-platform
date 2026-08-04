@@ -118,4 +118,25 @@ describe('FolderItemEditor', () => {
     await user.keyboard('{Enter}');
     expect(onKeyDown).toHaveBeenCalled();
   });
+
+  it('never renders the input actions toolbar (Copy / full-screen-edit) — baseline parity, disclosed gap fix', () => {
+    // `StyledInputEnhancer`'s own defaults (`actions.enabled`/`forceShow`
+    // default `true`, `showFullScreen` hardcoded `true`) are for its
+    // "full-screen escape hatch" use case, not this baseline-zero-actions
+    // folder-name field (`FolderItem.jsx:298-309` never sets
+    // `hasActionsToolBar`) — regression test for the `actions={{ enabled:
+    // false }}` override.
+    const { queryByRole } = renderWithProviders(
+      <FolderItemEditor
+        folderName="My Folder"
+        isFolderNameValid
+        onChangeFolderName={noopChange}
+        onKeyDown={noopKeyDown}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(queryByRole('button', { name: 'Copy to clipboard' })).not.toBeInTheDocument();
+    expect(queryByRole('button', { name: 'Full screen view' })).not.toBeInTheDocument();
+  });
 });

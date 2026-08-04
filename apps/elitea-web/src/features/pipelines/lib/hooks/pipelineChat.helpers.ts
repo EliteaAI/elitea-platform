@@ -68,13 +68,27 @@ export function buildPipelineParticipant(
   };
 }
 
-/** The `llm_settings` object both `handleCreateConversationOnFirstMessage` and `handleMessage` fall back to when the caller's `eventPayload` doesn't already carry one. */
+/**
+ * The `llm_settings` object both `handleCreateConversationOnFirstMessage` and `handleMessage` fall
+ * back to when the caller's `eventPayload` doesn't already carry one.
+ *
+ * **Bugfix against a naive port:** baseline `usePipelineChat.hooks.js:331-334`/`393-395` ends
+ * `model_project_id`'s fallback chain with `|| projectId` (`pipelineVersionDetails?.llm_settings?.
+ * model_project_id || currentLLMSettings.model_project_id || projectId`) — a message is NEVER sent
+ * with `model_project_id: undefined` as long as a project is selected. The (unported, Formik-sourced
+ * `currentLLMSettings`) middle link is intentionally absent here per this file's own established
+ * "no Formik/global state dependency" shape, but the FINAL `|| projectId` fallback is real baseline
+ * behaviour, not baseline-specific plumbing, and must survive: it's the difference between "always
+ * resolves to the current project" and "silently sends `undefined` down the wire". Dropping it was
+ * caught by this file's own `pipelineChat.helpers.test.ts`.
+ */
 export function buildLlmSettingsFallback(
   pipelineVersionDetails: ChatPipelineVersionDetails | undefined,
+  projectId: string | undefined,
 ): Readonly<Record<string, unknown>> {
   return {
     model_name: pipelineVersionDetails?.llm_settings?.model_name,
-    model_project_id: pipelineVersionDetails?.llm_settings?.model_project_id,
+    model_project_id: pipelineVersionDetails?.llm_settings?.model_project_id || projectId,
     max_tokens: pipelineVersionDetails?.llm_settings?.max_tokens,
     temperature: pipelineVersionDetails?.llm_settings?.temperature,
     reasoning_effort: pipelineVersionDetails?.llm_settings?.reasoning_effort,
@@ -128,6 +142,29 @@ function switchVersionId(
  * count under this codebase's gate. `versionId` stays `undefined` (no-op)
  * until BOTH a conversation and its pipeline participant are resolved, so
  * the FIRST version is never mistaken for a "switch".
+ *
+ * **KNOWN GAP, NOT ONE OF the A2-pipeline-chat cluster's 3 confirmed findings, NOT fixed here —
+ * routing note for a later pass:** this `conversationReady` gate also means `versionId` flips back
+ * to `undefined` (a second, spurious "switch") immediately after a genuine version switch, because
+ * changing `pipelineVersionDetails.id` ALSO fires `usePipelineChatConversation.hooks.ts`'s own
+ * reset-on-version-change effect (`usePipelineChat.hooks.js:699-704` parity), which clears
+ * `activeConversation.id`/`uuid` back to `undefined` once the chat history is non-empty —
+ * `conversationReady` above then reads `false` again on the very next render. Reproduced directly
+ * against this file's real sibling hooks (not a hypothetical): render `usePipelineChat`, establish
+ * a conversation via `onSend`, then change `pipelineVersionDetails.id` — `useAutoSwitchPipelineChatVersion`
+ * fires twice, the second time with `versionId: undefined`, and (after this cluster's finding-2 fix,
+ * which now always applies `onSwitched`) the second, spurious firing's `attemptedSettings` — built
+ * from a `versionId: undefined` input — overwrites the first (real) switch's correctly-applied
+ * `entitySettings.version_id`. Baseline's own `useApplicationChatSwitchVersion.js:63-72` has no
+ * such gate (it watches `applicationVersionDetails?.id` directly, unconditionally), so it has no
+ * equivalent spurious second firing; this port's `conversationReady` gate is a genuine, disclosed
+ * deviation (see this function's own top paragraph) that trades one bug (mistaking the first
+ * version for a switch) for this different one. Not fixed here because it is not one of this
+ * cluster's 3 confirmed findings and reworking the gate risks reintroducing the bug it was added to
+ * prevent; whoever picks this up should make `switchVersionId` also treat a `activeConversation?.id`
+ * transition to `undefined` (i.e. a conversation being reset by version change, not by page
+ * unload/absence) as a no-op rather than as `versionId: undefined`, e.g. by having it ignore the
+ * transition when `pipelineVersionDetails` itself didn't change.
  */
 export function buildSwitchVersionInput(
   projectId: string | undefined,

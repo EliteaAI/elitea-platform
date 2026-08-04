@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { memo, useCallback, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
@@ -36,6 +36,26 @@ import type { AiAssistantLlmSettings } from '../api/aiAssistantPredict';
  *     have no equivalent on this app's ported `shared/ui/InputBase` (unit
  *     S1-F) — see this file's own trigger-button rendering below, same
  *     rationale as the previous revision of this doc comment.
+ *
+ * FIX (confirmed adversarial-review finding #1, this file:60): the inline
+ * (collapsed, non-modal) `InputBase` rendered below used to receive `value`
+ * with no change handler at all — React resets a controlled `value` on
+ * every re-render, so typing directly into the field was silently discarded
+ * and the AI Assistant modal's own apply/close handlers (which DO call
+ * `fieldBinding.onInput`/`onChange`, see `AIAssistantModal.tsx`'s
+ * `dispatchFieldChange`) were the ONLY way to ever change the value.
+ * `buildInputBaseProps` now forwards a real `onChange` that routes through
+ * the same `hasOnChangeCallback ? onChange : onInput` logic via
+ * `dispatchInlineFieldChange` below — duplicated locally rather than
+ * imported because `AIAssistantModal.tsx`'s `dispatchFieldChange` is
+ * deliberately unexported (that file's own "Not exported" doc comment) and
+ * is outside this fix's file scope. This resolves the gap every downstream
+ * caller's own doc comment discloses as "rooted in this file, not this
+ * sub-unit's file to change" (`nodes/RouterNode.tsx`, `nodes/
+ * StateModifierNode.tsx`, `nodes/PrinterNode.tsx`,
+ * `settings/SimpleLLMInputItem.tsx`) — those callers need no further
+ * change, but their doc comments describing this as a live, deferred gap
+ * are now stale and should be trimmed by whoever next touches those files.
  */
 export interface AIAssistantInputProps {
   readonly value: string;
@@ -57,6 +77,41 @@ const triggerButtonSx: SxProps<Theme> = (theme) => ({
   zIndex: 1,
 });
 
+/**
+ * Minimal duck-typed change-event shape `AiAssistantFieldBinding.onChange`/
+ * `onInput` accept — structurally mirrors `AIAssistantModal.tsx`'s own
+ * (non-exported) `AiAssistantChangeEvent`, reproduced here rather than
+ * imported (see this file's module doc comment, "FIX" paragraph).
+ */
+interface InlineFieldChangeEvent {
+  readonly preventDefault: () => void;
+  readonly target: { readonly value: string; readonly name?: string; readonly id?: string };
+}
+
+/**
+ * Routes the inline field's native `onChange` into `fieldBinding.onChange`/
+ * `onInput` — the same `hasOnChangeCallback` branch `AIAssistantModal.tsx`'s
+ * `dispatchFieldChange` uses for its apply/blur paths, duplicated locally
+ * (see this file's module doc comment, "FIX" paragraph, for why it is not
+ * imported instead).
+ */
+function dispatchInlineFieldChange(fieldBinding: AiAssistantFieldBinding | undefined, value: string): void {
+  if (!fieldBinding) return;
+  const event: InlineFieldChangeEvent = {
+    preventDefault: () => {},
+    target: {
+      value,
+      ...(fieldBinding.name !== undefined ? { name: fieldBinding.name } : {}),
+      ...(fieldBinding.id !== undefined ? { id: fieldBinding.id } : {}),
+    },
+  };
+  if (fieldBinding.hasOnChangeCallback) {
+    fieldBinding.onChange?.(event);
+  } else {
+    fieldBinding.onInput?.(event);
+  }
+}
+
 /** Collapses the `InputBase` prop-forwarding ternaries into one call — extracted to keep the component's own cyclomatic complexity under the §3.5 budget (12), same technique `../ui/AIAssistantModal.tsx`'s `resolveAiAssistantModalOptions` uses. */
 function buildInputBaseProps(
   value: string,
@@ -70,6 +125,9 @@ function buildInputBaseProps(
     ...(disabled !== undefined ? { disabled } : {}),
     ...(fieldBinding?.name !== undefined ? { name: fieldBinding.name } : {}),
     ...(fieldBinding?.id !== undefined ? { id: fieldBinding.id } : {}),
+    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      dispatchInlineFieldChange(fieldBinding, event.target.value);
+    },
   };
 }
 

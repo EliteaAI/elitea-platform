@@ -5,6 +5,7 @@ import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
 import { buildFlowEditorContextValue } from '../../__tests__/testUtils';
 import { FlowEditorContext } from '../../lib/flow-editor/flowEditorContext';
+import type { YamlPipelineDocument } from '../../lib/flow-editor/helpers/pipelineFlow.types';
 import type { SetFlowEdges } from '../../lib/flow-editor/reactFlowTypes';
 import { CommonInterruptSettings } from './CommonInterruptSettings';
 
@@ -118,6 +119,42 @@ describe('CommonInterruptSettings', () => {
     expect(setYamlJsonObject).toHaveBeenCalledWith(
       expect.objectContaining({ nodes: [expect.objectContaining({ id: 'Tool 1', structured_output: true })] }),
     );
+  });
+
+  // Regression coverage (confirmed finding 5): a malformed (non-array)
+  // `interrupt_before`/`interrupt_after` in the YAML used to flow straight
+  // into `.includes()`/the toggle handler's spread instead of degrading to
+  // an empty list, same as `parsePipelineTraversal.helpers.test.ts`'s own
+  // `interrupt_before: 'not-an-array'` fixture for the identical malformed
+  // shape.
+  it('degrades a malformed (non-array) interrupt_before/interrupt_after to an empty list instead of throwing', async () => {
+    const user = userEvent.setup();
+    const setYamlJsonObject = vi.fn();
+    const malformedYamlJsonObject = {
+      nodes: [{ id: 'Tool 1' }],
+      interrupt_before: 'not-an-array',
+      interrupt_after: { also: 'not-an-array' },
+    } as unknown as YamlPipelineDocument;
+    const contextValue = buildFlowEditorContextValue({
+      yamlJsonObject: malformedYamlJsonObject,
+      setYamlJsonObject,
+    });
+
+    const { getByRole } = renderWithTheme(
+      <FlowEditorContext.Provider value={contextValue}>
+        <CommonInterruptSettings
+          id="Tool 1"
+          type="tool"
+        />
+      </FlowEditorContext.Provider>,
+    );
+
+    expect(getByRole('switch', { name: 'Interrupt before' })).not.toBeChecked();
+    expect(getByRole('switch', { name: 'Interrupt after' })).not.toBeChecked();
+
+    await user.click(getByRole('switch', { name: 'Interrupt before' }));
+
+    expect(setYamlJsonObject).toHaveBeenCalledWith(expect.objectContaining({ interrupt_before: ['Tool 1'] }));
   });
 
   it('does not throw with no FlowEditorContext ancestor', () => {

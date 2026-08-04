@@ -156,4 +156,78 @@ describe('GenerateAgentModal', () => {
     // validation effect runs post-mount — wait for it rather than asserting synchronously.
     await waitFor(() => expect(screen.getByText('Create Agent').closest('button')).toBeDisabled());
   });
+
+  it('autofocuses the description field when the modal opens', () => {
+    renderModal();
+    expect(screen.getByPlaceholderText(/Describe your agent/)).toHaveFocus();
+  });
+
+  it('pressing Enter in the description field triggers Generate', async () => {
+    server.use(getGenerateAgentDraftMockHandler({ message_group_uid: 'm1', content: 'From Enter', is_streaming: false }));
+    renderModal();
+
+    const textarea = screen.getByPlaceholderText(/Describe your agent/);
+    fireEvent.change(textarea, { target: { value: 'A support bot' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByDisplayValue('From Enter')).toBeInTheDocument());
+  });
+
+  it('Shift+Enter in the description field inserts a newline instead of triggering Generate', () => {
+    renderModal();
+
+    const textarea = screen.getByPlaceholderText(/Describe your agent/);
+    fireEvent.change(textarea, { target: { value: 'A support bot' } });
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true });
+
+    expect(screen.queryByText(/Generating agent draft/)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Describe your agent/)).toBeInTheDocument();
+  });
+
+  it('closing the modal while a generate request is in flight discards the response instead of reopening into a stale review step', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    let resolveResponse: (() => void) | undefined;
+    const responseGate = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+    server.use(
+      http.post('*/elitea_core/generate_application_draft/prompt_lib/:projectId', async () => {
+        await responseGate;
+        return HttpResponse.json({ message_group_uid: 'm1', content: 'Stale draft text', is_streaming: false });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const props: GenerateAgentModalProps = { open: true, onClose, projectId: 'p1', onAgentCreated: vi.fn() };
+    const { rerender } = renderWithTheme(
+      (<QueryClientProvider client={queryClient}><GenerateAgentModal {...props} /></QueryClientProvider>) as ReactElement,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe your agent/), { target: { value: 'A support bot' } });
+    fireEvent.click(screen.getByText('Generate'));
+    await waitFor(() => expect(screen.getByText(/Generating agent draft/)).toBeInTheDocument());
+
+    // Close mid-flight — the X button, Escape, and backdrop all wire to the same `handleClose`.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // Simulate the parent (`GenerateAgentButton`) reacting to `onClose` by hiding the dialog.
+    rerender(
+      (<QueryClientProvider client={queryClient}><GenerateAgentModal {...props} open={false} /></QueryClientProvider>) as ReactElement,
+    );
+
+    // Let the in-flight request resolve only now, after close.
+    resolveResponse?.();
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    // Reopen — must land on a fresh input step, not the stale review step with the
+    // just-arrived (unrequested-by-then) draft content.
+    rerender(
+      (<QueryClientProvider client={queryClient}><GenerateAgentModal {...props} open /></QueryClientProvider>) as ReactElement,
+    );
+
+    expect(screen.getByPlaceholderText(/Describe your agent/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Stale draft text')).not.toBeInTheDocument();
+    expect(screen.queryByText('Create Agent')).not.toBeInTheDocument();
+  });
 });

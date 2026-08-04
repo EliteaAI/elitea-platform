@@ -14,9 +14,10 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SxProps, Theme } from '@mui/material/styles';
 import TextField from '@mui/material/TextField';
 
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 
-const MAX_SECRET_LENGTH = 1000;
+/** Matches the baseline's `MAX_VARIABLES_LENGTH` (`common/constants.js:69`). */
+const MAX_SECRET_LENGTH = 768;
 const NAME_PATTERN = /^[a-zA-Z0-9_-]*$/;
 
 export interface EditSecretInputGridTableProps {
@@ -97,7 +98,11 @@ export const EditSecretInputGridTable = memo(function EditSecretInputGridTable({
   );
 
   /* ── render ───────────────────────────────────────────────────────── */
-  const helperText = validationError || (isAtLimit ? `${MAX_SECRET_LENGTH}` : undefined);
+  const helperText =
+    validationError ||
+    (isAtLimit
+      ? t('entities.secret.validation.maxLength', 'Maximum {{count}} characters reached', { count: MAX_SECRET_LENGTH })
+      : undefined);
 
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
   useEffect(() => {

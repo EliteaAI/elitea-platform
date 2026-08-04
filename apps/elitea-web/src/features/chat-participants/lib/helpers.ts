@@ -3,16 +3,99 @@
  * AddParticipants helpers — ported from
  * `apps/elitea-ui/src/[fsd]/features/chat/participants/lib/helpers/addParticipants.helpers.js`.
  *
- * IMPORTANT: `getChatParticipantUniqueId`/`getParticipantName` imports are
- * redirected to `entities/participant` (unit C1 port) — do NOT re-port
- * `participants.helpers.js` into this unit.
+ * CORRECTION (was: "getChatParticipantUniqueId/getParticipantName imports are
+ * redirected to entities/participant — do NOT re-port participants.helpers.js
+ * into this unit"): that redirect was wrong and is reverted below.
+ * `entities/participant`'s `chatParticipantUniqueId`/`participantDisplayName`
+ * key off the camelCase `Participant` domain shape (`entityName`/
+ * `entityMeta`, produced by that slice's own wire normaliser). Every caller
+ * in THIS cluster — `ParticipantItem.tsx`, `transformParticipant` below,
+ * `useAddNewParticipants.ts` — works on the raw snake_case wire shape
+ * (`entity_name`/`entity_meta`) instead, so calling the camelCase-keyed
+ * selectors with a snake_case object always misses their lookup tables
+ * (`NAME_RESOLVERS[undefined]`) and silently returns `''`/an identical
+ * `"undefined__"` id for every participant. `getParticipantName` and
+ * `getChatParticipantUniqueId` below are `participants.helpers.js:3-44`
+ * ported directly on the snake_case shape instead, exactly as old-app did.
  */
 import { ChatParticipantType } from '../model/constants';
 
-import { chatParticipantUniqueId } from '@/entities/participant';
 import type { TransformedParticipant } from '../model/types';
 
 const { Models } = ChatParticipantType;
+
+// ---------------------------------------------------------------------------
+// getChatParticipantUniqueId — ported from participants.helpers.js:3-21
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a stable identity string for a participant on the raw snake_case
+ * wire shape. Models have no stable top-level id, so they're keyed by
+ * `model_name`-`integration_uid`; every other type is keyed by
+ * `entity_meta.id`. An `applications` participant whose
+ * `entity_settings.agent_type` is `'pipelines'` is keyed as a pipeline
+ * (Applications/Pipelines share an underlying entity type).
+ */
+export function getChatParticipantUniqueId(participant: Record<string, unknown> | undefined): string {
+  if (!participant) return '';
+  const entityMeta = (participant.entity_meta as Record<string, unknown> | undefined) ?? {};
+  const entitySettings = participant.entity_settings as Record<string, unknown> | undefined;
+  const entityName =
+    participant.entity_name === ChatParticipantType.Applications &&
+    entitySettings?.agent_type === ChatParticipantType.Pipelines
+      ? ChatParticipantType.Pipelines
+      : participant.entity_name;
+  const body =
+    participant.entity_name === Models
+      ? `${(entityMeta.model_name as string) ?? ''}-${(entityMeta.integration_uid as string) ?? ''}`
+      : ((entityMeta.id as string) ?? '');
+  return `${String(entityName)}_${body}_${(entityMeta.project_id as string) ?? ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// getParticipantName — ported from participants.helpers.js:23-44
+// ---------------------------------------------------------------------------
+
+function nameFromEntityMetaOrMeta(entityMeta: Record<string, unknown> | undefined, meta: Record<string, unknown> | undefined): string {
+  return (entityMeta?.name as string) || (meta?.name as string) || '';
+}
+
+type NameResolver = (
+  entityMeta: Record<string, unknown> | undefined,
+  meta: Record<string, unknown> | undefined,
+  systemSenderName: string,
+) => string;
+
+/**
+ * `participants.helpers.js:23-44`'s per-`entity_name` dispatch, as a lookup
+ * table rather than a `switch` — behaviourally identical, but keeps
+ * `getParticipantName` itself under the complexity budget (a `switch` with
+ * this many cases plus per-case fallback chains does not fit under 12) —
+ * same technique `entities/participant/model/selectors.ts`'s own
+ * `NAME_RESOLVERS` already uses for the camelCase equivalent.
+ */
+const NAME_RESOLVERS: Readonly<Record<string, NameResolver>> = {
+  [ChatParticipantType.Applications]: nameFromEntityMetaOrMeta,
+  [ChatParticipantType.Pipelines]: nameFromEntityMetaOrMeta,
+  [ChatParticipantType.Toolkits]: nameFromEntityMetaOrMeta,
+  [Models]: (entityMeta) => (entityMeta?.model_name as string) || '',
+  [ChatParticipantType.Users]: (_entityMeta, meta) => (meta?.user_name as string) || '',
+  [ChatParticipantType.Dummy]: (_entityMeta, _meta, systemSenderName) => systemSenderName,
+};
+
+/**
+ * Resolves a participant's display name on the raw snake_case wire shape.
+ * Ported from `participants.helpers.js:23-44` via `NAME_RESOLVERS` above.
+ */
+export function getParticipantName(
+  participant: Record<string, unknown> | undefined,
+  systemSenderName: string,
+): string {
+  const entityName = participant?.entity_name as string | undefined;
+  const resolve = entityName ? NAME_RESOLVERS[entityName] : undefined;
+  if (!resolve) return '';
+  return resolve(participant?.entity_meta as Record<string, unknown> | undefined, participant?.meta as Record<string, unknown> | undefined, systemSenderName);
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -253,9 +336,7 @@ export function isParticipantsEqual(
   }
 
   // For all other types, use unique IDs to distinguish between public and custom entities
-  // @ts-expect-error — missing properties from type 'Participant'
-  const aId = chatParticipantUniqueId(a);
-  // @ts-expect-error — missing properties from type 'Participant'
-  const bId = chatParticipantUniqueId(b);
+  const aId = getChatParticipantUniqueId(a);
+  const bId = getChatParticipantUniqueId(b);
   return aId === bId;
 }

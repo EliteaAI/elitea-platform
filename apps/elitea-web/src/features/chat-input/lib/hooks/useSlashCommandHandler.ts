@@ -231,8 +231,12 @@ export function useSlashCommandHandler({ setInputContent }: UseSlashCommandHandl
 
   /**
    * Commits the current mention.
-   * `toolName: null | undefined` → mention the entire toolkit (LLM picks the tool).
-   * `toolName: string` → mention a specific tool.
+   * `toolName: null | undefined | ''` → mention the entire toolkit (LLM picks the tool).
+   * `toolName: string` (non-empty) → mention a specific tool.
+   *
+   * Falsy check (not nullish) on purpose — `useSlashCommandHandler.hooks.js:563`'s
+   * `commitMention` normalizes with `toolName || null`, so an empty-string
+   * `toolName` is coerced to "whole toolkit" the same as `null`/`undefined`.
    */
   const commitMention = useCallback(
     (toolName?: string | null) => {
@@ -244,7 +248,7 @@ export function useSlashCommandHandler({ setInputContent }: UseSlashCommandHandl
           toolkitName: selectedToolkit.name,
           toolkitType: selectedToolkit.type,
           ...(selectedToolkit.settings !== undefined ? { toolkitSettings: selectedToolkit.settings } : {}),
-          toolName: toolName ?? null,
+          toolName: toolName || null,
         }),
       );
       doResetSlash();

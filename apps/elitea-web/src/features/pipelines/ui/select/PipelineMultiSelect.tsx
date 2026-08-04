@@ -2,9 +2,16 @@ import type { ReactNode } from 'react';
 import { useCallback, useId } from 'react';
 
 import CheckIcon from '@mui/icons-material/Check';
+// `RemoveIcon` (baseline: `@/assets/remove-icon.svg?react`, a custom SVG,
+// not part of S2's ported `shared/ui/icons/` set) -> `@mui/icons-material`'s
+// `DeleteOutlined`, the SAME already-established interim substitute
+// `ui/nodes/BaseNode/NodeCardHeader.tsx`/`ui/state/StateVariableItemActions.tsx`
+// already document for this exact gap.
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import FormControl from '@mui/material/FormControl';
+import IconButton from '@mui/material/IconButton';
 import InputLabel from '@mui/material/InputLabel';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
@@ -126,10 +133,36 @@ function renderChips(
 interface PipelineMultiSelectMenuItemProps extends Omit<MenuItemProps, 'children'> {
   readonly option: PipelineMultiSelectOption;
   readonly isSelected: boolean;
+  /** Row-level "delete instead of checkmark" affordance (baseline: `onDeleteOption`, `SingleSelectMenuItem.jsx:127-136`) -- only rendered when the option is `canDelete` AND a handler is supplied, see {@link PipelineMultiSelectMenuItem}'s own doc comment. */
+  readonly onDelete?: (value: string) => void;
 }
 
+const deleteButtonSx: SxProps<Theme> = (theme: Theme) => ({ padding: theme.spacing(0.25), marginLeft: '0.5rem' });
+
 /**
- * One dropdown row: optional icon, label, trailing checkmark when selected.
+ * One dropdown row: optional icon, label, trailing checkmark when selected
+ * -- OR, when the option is a synthesised "stale/canDelete" entry (a value
+ * present in `PipelineMultiSelect`'s `value` but absent from its `options`
+ * list, e.g. `InputSelect.tsx`'s own `realInputOptions`), a delete
+ * affordance in that same trailing slot instead of the checkmark
+ * (baseline: `SingleSelectMenuItem.jsx:127-136`, `option.canDelete &&
+ * onDeleteOption ? <delete icon> : isSelected && <checkmark icon>` --
+ * ported verbatim as the `onDelete`-gated branch below; this row previously
+ * had no such branch at all, always falling through to the plain checkmark
+ * case regardless of `option.canDelete`).
+ *
+ * The delete icon is a real `IconButton` (a `<button>`), not a bare
+ * `ListItemIcon` with an `onClick` the way the baseline's own
+ * `RemoveIcon`-wrapping `ListItemIcon` was -- this app's `jsx-a11y` gates
+ * (`no-static-element-interactions`/`click-events-have-key-events`, both
+ * `"error"` in `.oxlintrc.json`) forbid attaching a click handler to a
+ * non-interactive element, the same class of fix
+ * `ui/state/RunStateDialog.parts.tsx`'s `ProcessStepIcon` doc comment
+ * documents for its own `<button>`-over-`role="button"` swap.
+ * `stopPropagation` (unchanged from baseline) keeps the click from also
+ * bubbling into `MenuItem`'s own `onClick` (which would otherwise toggle
+ * the option's selection via MUI `Select`'s `multiple` handling).
+ *
  * Split out to keep {@link PipelineMultiSelect} under the §3.5 complexity
  * budget.
  *
@@ -148,7 +181,9 @@ interface PipelineMultiSelectMenuItemProps extends Omit<MenuItemProps, 'children
  * for its own `onClick`/`selected` forwarding (that component IS the
  * direct child, so it does not hit this extra `value`-visibility wrinkle).
  */
-function PipelineMultiSelectMenuItem({ option, isSelected, value, ...rest }: PipelineMultiSelectMenuItemProps): ReactNode {
+function PipelineMultiSelectMenuItem({ option, isSelected, onDelete, value, ...rest }: PipelineMultiSelectMenuItemProps): ReactNode {
+  const canDelete = option.canDelete === true && onDelete !== undefined;
+
   return (
     <MenuItem
       value={value}
@@ -156,10 +191,24 @@ function PipelineMultiSelectMenuItem({ option, isSelected, value, ...rest }: Pip
     >
       {option.icon && <ListItemIcon>{option.icon}</ListItemIcon>}
       <ListItemText primary={option.label} />
-      {isSelected && (
-        <ListItemIcon sx={{ minWidth: 'auto', marginLeft: '0.5rem' }}>
-          <CheckIcon fontSize="small" />
-        </ListItemIcon>
+      {canDelete ? (
+        <IconButton
+          size="small"
+          sx={deleteButtonSx}
+          aria-label={t('pipelines.select.removeOption', 'Remove {{label}}', { label: option.label })}
+          onClick={event => {
+            event.stopPropagation();
+            onDelete(option.value);
+          }}
+        >
+          <DeleteOutlineIcon fontSize="small" />
+        </IconButton>
+      ) : (
+        isSelected && (
+          <ListItemIcon sx={{ minWidth: 'auto', marginLeft: '0.5rem' }}>
+            <CheckIcon fontSize="small" />
+          </ListItemIcon>
+        )
       )}
     </MenuItem>
   );
@@ -171,7 +220,12 @@ function PipelineMultiSelectMenuItem({ option, isSelected, value, ...rest }: Pip
  * chip, via the caller synthesising a `canDelete: true` option entry --
  * see `InputSelect.tsx`/`OutputSelect.tsx`/`RouteSelect.tsx`'s own
  * `realInputOptions`/`realNodeOptions` computation, ported verbatim from
- * the baseline's identical pattern).
+ * the baseline's identical pattern) -- AND, now, as an in-dropdown row with
+ * a delete affordance in place of the checkmark
+ * ({@link PipelineMultiSelectMenuItem}'s `onDelete`-gated branch), matching
+ * the baseline's `SingleSelectMenuItem.jsx:127-136`. `onDeleteOption` is
+ * only threaded down to option rows here (not to the "no options" empty
+ * row) -- `canDelete` never appears on that synthetic row.
  */
 export function PipelineMultiSelect(props: PipelineMultiSelectProps): ReactNode {
   const { label, value, onValueChange, options, disabled, onDeleteOption, className, sx, ...rest } = props;
@@ -242,6 +296,7 @@ export function PipelineMultiSelect(props: PipelineMultiSelectProps): ReactNode 
               value={option.value}
               option={option}
               isSelected={value.includes(option.value)}
+              {...(onDeleteOption ? { onDelete: onDeleteOption } : {})}
             />
           ))
         )}

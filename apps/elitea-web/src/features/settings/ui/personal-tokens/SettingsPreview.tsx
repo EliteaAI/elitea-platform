@@ -11,6 +11,13 @@
  *  - Simpler copy/download UX — direct clipboard/file ops (no toast in shared/ui)
  *  - Uses `openEyeIcon` and `RemoveIcon` (existing in shared/ui/icons)
  *  - Close button uses "✕" text (close-icon doesn't exist)
+ *  - Server URL resolves via `getConfig().config.vite_server_url` (falling
+ *    back to `window.location.origin`) — old-app parity for tiers 2/3 of
+ *    `user.api_url || VITE_SERVER_URL?.replace('/api/v2','') ||
+ *    window.location.origin`. Tier 1, `user.api_url`, has no equivalent in
+ *    this app's `AuthUser` context (`src/app/router-context.ts`, outside
+ *    this cluster's file scope) and is dropped — needs a follow-up there
+ *    (adding `api_url` to `AuthUser` and reading it here) for full parity.
  */
 import { memo, useCallback, useMemo, useState } from 'react';
 
@@ -27,6 +34,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { RemoveIcon } from '@/shared/ui/icons/remove-icon';
 import { OpenEyeIcon } from '@/shared/ui/icons/open-eye-icon';
 import { t } from '@/shared/ui/lib/t';
+import { getConfig } from '@/shared/config';
 import { SETTINGS_PREVIEW_LABELS, SETTINGS_PREVIEW_TYPES } from '@/entities/token';
 
 export interface SettingsPreviewProps {
@@ -43,11 +51,16 @@ export interface SettingsPreviewProps {
 }
 
 /** Generate VSCode settings JSON for the given values. */
-function generateVSCodeSettings(token: string, model: SettingsPreviewProps['model'], projectId: string): string {
+function generateVSCodeSettings(
+  token: string,
+  model: SettingsPreviewProps['model'],
+  projectId: string,
+  serverUrl: string,
+): string {
   return JSON.stringify(
     {
-      'eliteacode.providerServerURL': '',
-      'eliteacode.LLMServerUrl': '',
+      'eliteacode.providerServerURL': serverUrl,
+      'eliteacode.LLMServerUrl': serverUrl,
       'eliteacode.modelName': model?.name ?? '',
       'eliteacode.LLMModelName': model?.name ?? '',
       'eliteacode.authToken': token || 'Your_Personal_Token',
@@ -65,7 +78,11 @@ function generateVSCodeSettings(token: string, model: SettingsPreviewProps['mode
 }
 
 /** Generate JetBrains .idea settings XML for the given values. */
-function generateJetBrainsSettings(model: SettingsPreviewProps['model'], projectId: string): string {
+function generateJetBrainsSettings(
+  model: SettingsPreviewProps['model'],
+  projectId: string,
+  serverUrl: string,
+): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="EliteASettings">
@@ -74,7 +91,7 @@ function generateJetBrainsSettings(model: SettingsPreviewProps['model'], project
     <option name="integrationUid" value="${model?.id ?? ''}" />
     <option name="llmCustomModelEnabled" value="true" />
     <option name="llmCustomModelName" value="${model?.name ?? ''}" />
-    <option name="llmServerUrl" value="" />
+    <option name="llmServerUrl" value="${serverUrl}" />
     <option name="projectId" value="${projectId ?? ''}" />
     <option name="provider" value="ELITEA_EYE" />
   </component>
@@ -103,12 +120,19 @@ export const SettingsPreview = memo(function SettingsPreview({
 
   const [selectedIDE, setSelectedIDE] = useState<'vscode' | 'jetbrains'>('vscode');
 
+  /** old-app: `user.api_url || VITE_SERVER_URL?.replace('/api/v2','') || window.location.origin` — see file-header deviation note for the dropped first tier. */
+  const serverUrl = useMemo(() => {
+    const config = getConfig();
+    const viteServerUrl = config.status === 'ok' ? config.config.vite_server_url : undefined;
+    return viteServerUrl?.replace('/api/v2', '') || window.location.origin;
+  }, []);
+
   const settingsContent = useMemo(() => {
     if (selectedIDE === 'vscode') {
-      return generateVSCodeSettings(token, model, projectId ?? '');
+      return generateVSCodeSettings(token, model, projectId ?? '', serverUrl);
     }
-    return generateJetBrainsSettings(model, projectId ?? '');
-  }, [selectedIDE, token, model, projectId]);
+    return generateJetBrainsSettings(model, projectId ?? '', serverUrl);
+  }, [selectedIDE, token, model, projectId, serverUrl]);
 
   const handleCopy = useCallback(async () => {
     try {

@@ -34,8 +34,11 @@ export const parseState = (yamlJson: YamlPipelineDocument | undefined): FlowGrap
         id: key,
         name: key,
         // for old state, the format is variable: type; for new state, the format is variable: { type: str, value: 'str value' }
-        type: typeof value === 'string' ? value : (value?.type ?? 'str'),
-        value: typeof value === 'object' ? (value.value ?? '') : undefined,
+        type: typeof value === 'string' ? value : (value?.type || 'str'),
+        // `value?.value` — `typeof null === 'object'` in JS, so an explicit YAML `null` entry
+        // (`state: { input: null }`) takes this branch with `value` itself `null`; `value.value`
+        // would throw. Matches baseline `parsePipeline.helpers.js:25`'s `value?.value || ''`.
+        value: typeof value === 'object' ? (value?.value ?? '') : undefined,
         enabled: true,
       }));
     const leftVariables: StateNodeVariable[] = Object.entries(yamlJson.state)
@@ -43,8 +46,10 @@ export const parseState = (yamlJson: YamlPipelineDocument | undefined): FlowGrap
       .map(([key, value]) => ({
         id: key,
         name: key,
-        type: typeof value === 'string' ? value : (value?.type ?? 'str'),
-        value: typeof value === 'object' ? (value.value ?? '') : undefined,
+        type: typeof value === 'string' ? value : (value?.type || 'str'),
+        // `value?.value` — same explicit-YAML-`null` guard as the `firstTwoDefaultVariables`
+        // map above.
+        value: typeof value === 'object' ? (value?.value ?? '') : undefined,
       }));
     return {
       id: PIPELINE_STATE,

@@ -273,6 +273,27 @@ describe('useApplicationChat', () => {
     expect(result.current.activeConversation).toMatchObject({ source: 'pipeline' });
   });
 
+  // A1-application-chat cluster, finding 1: this hook cannot call `useStreamingNavBlocker` itself
+  // (`processes/chat` sits above `features/` — see the module doc comment's deviation 12), so
+  // `isStreaming` must be a correct, live seam a page/widget-level caller wires into that hook
+  // (`useStreamingNavBlocker(isStreaming, 'prompt')`) to restore the baseline's navigate-away
+  // warning. This asserts the seam itself actually reflects an in-flight message.
+  it('exposes isStreaming reflecting an in-flight message in chat_history', async () => {
+    const client = createTestSocketClient();
+    const { result } = renderHook((p: UseApplicationChatParams) => useApplicationChat(p), {
+      wrapper: createWrapper(client),
+      initialProps: baseParams(),
+    });
+    await waitFor(() => expect(result.current.activeConversation).not.toBeNull());
+    expect(result.current.isStreaming).toBe(false);
+
+    act(() => {
+      result.current.setChatHistory((prev) => [...prev, { id: 'm1', role: 'assistant', isStreaming: true }]);
+    });
+
+    expect(result.current.isStreaming).toBe(true);
+  });
+
   it('exposes attachments plumbing wired through from useApplicationChatConversation', async () => {
     const client = createTestSocketClient();
     const { result } = renderHook((p: UseApplicationChatParams) => useApplicationChat(p), {

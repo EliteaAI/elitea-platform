@@ -310,6 +310,70 @@ describe('usePipelineVersionSync', () => {
     );
     expect(usePipelineYamlStore.getState().yamlCode).toBe('');
   });
+
+  it("forwards THIS pipeline's own pipeline_settings.layout_version into the store, not left at the store's stale/initial value", () => {
+    const instructions = 'nodes:\n  - id: entry_point\n    type: entry_point\n';
+    renderHookWithProviders(() =>
+      usePipelineVersionSync({
+        isCreateMode: false,
+        versionDetails: makeVersionDetail({ id: '7', instructions, pipeline_settings: { layout_version: '1.0' } }),
+        versionId: 7,
+      }),
+    );
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('1.0');
+  });
+
+  it('defaults layoutVersion to "" (never-equal, always-migrate sentinel) when pipeline_settings.layout_version is missing or non-string', () => {
+    const instructions = 'nodes:\n  - id: entry_point\n    type: entry_point\n';
+    renderHookWithProviders(() =>
+      usePipelineVersionSync({
+        isCreateMode: false,
+        versionDetails: makeVersionDetail({ id: '7', instructions, pipeline_settings: { layout_version: 42 as unknown as never } }),
+        versionId: 7,
+      }),
+    );
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('');
+  });
+
+  it("regression: a stale second pipeline opened after an up-to-date one does not inherit the FIRST pipeline's layoutVersion (the session-global-leak bug)", () => {
+    const upToDateInstructions = 'nodes:\n  - id: entry_point\n    type: entry_point\n';
+    const { rerender } = renderHookWithProviders(
+      ({ vd, versionId }: { vd: ApplicationVersionDetail; versionId: number }) => usePipelineVersionSync({ isCreateMode: false, versionDetails: vd, versionId }),
+      undefined,
+      {
+        initialProps: {
+          vd: makeVersionDetail({ id: '7', instructions: upToDateInstructions, pipeline_settings: { layout_version: '1.0' } }),
+          versionId: 7,
+        },
+      },
+    );
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('1.0');
+
+    // A DIFFERENT (stale, no saved layout_version) pipeline loads next, in the same session/store.
+    const staleInstructions = 'nodes:\n  - id: entry_point\n    type: entry_point\n    extra: true\n';
+    rerender({ vd: makeVersionDetail({ id: '8', instructions: staleInstructions }), versionId: 8 });
+
+    // Must reflect the NEW pipeline's own (missing) layout_version, not the previous pipeline's '1.0'.
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('');
+  });
+
+  it('does not re-run (and so does not touch layoutVersion) when versionDetails.instructions is unchanged on rerender', () => {
+    const instructions = 'nodes:\n  - id: entry_point\n    type: entry_point\n';
+    const versionDetails = makeVersionDetail({ id: '7', instructions, pipeline_settings: { layout_version: '1.0' } });
+
+    const { rerender } = renderHookWithProviders(
+      ({ vd }: { vd: ApplicationVersionDetail }) => usePipelineVersionSync({ isCreateMode: false, versionDetails: vd, versionId: 7 }),
+      undefined,
+      { initialProps: { vd: versionDetails } },
+    );
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('1.0');
+
+    usePipelineYamlStore.getState().setLayoutVersion('manually-set');
+    rerender({ vd: { ...versionDetails } });
+
+    // Same `instructions` string -> guarded, so the manually-set value survives untouched.
+    expect(usePipelineYamlStore.getState().layoutVersion).toBe('manually-set');
+  });
 });
 
 describe('usePipelineEditorHandle', () => {

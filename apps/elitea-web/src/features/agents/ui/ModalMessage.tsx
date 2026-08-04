@@ -22,10 +22,25 @@ import { HumanIcon } from '@/shared/ui/icons/human-icon';
  * directly: `features/` code copying this codebase's own established DI
  * convention for the same situation (`shared/ui/CopyToClipboardButton.tsx`'s
  * own "DEPENDENCY-INJECTION DEVIATION" doc comment: "the baseline calls
- * `useToast()`... this takes an `onCopied?` callback instead"). Uses
- * `shared/lib/clipboard`'s `handleCopy` (unit S3) instead of a raw
- * `navigator.clipboard.writeText` call, matching every other copy call site
- * in this app.
+ * `useToast()`... this takes an `onCopied?` callback instead").
+ *
+ * **Success/failure signal, restored:** the baseline's own `onCopy`
+ * (`ModalMessage.jsx:18-25`) wraps a direct `navigator.clipboard.writeText`
+ * call in try/catch and gets a REAL success-or-failure result from it —
+ * unlike `shared/lib/clipboard`'s `handleCopy` (unit S3), which
+ * deliberately never rejects (byte-for-byte parity with the OLD APP's
+ * SEPARATE, widely-shared `utils.jsx` `handleCopy` helper — a different
+ * function this component's baseline never actually called). Routing this
+ * component's `onCopy` through that swallow-everything helper would make
+ * `onCopied` fire unconditionally, with no way to ever detect a real
+ * failure (confirmed: its own module doc comment documents the final
+ * fallback retry as "fire-and-forget... becomes an unhandled promise
+ * rejection rather than surfacing from `handleCopy` itself"). This calls
+ * `navigator.clipboard.writeText` directly when the Clipboard API is
+ * present — genuinely observable success/failure, exactly like the baseline
+ * — and only falls back to the shared `handleCopy` (optimistic success, no
+ * failure signal available) when it is not, which the baseline never
+ * exercised either.
  *
  * Icon substitutions (no `shared/ui/icons` port of the baseline's exact
  * `components/Icons/{CopyIcon,CloseIcon,UserIcon,EliteAIcon}` exists —
@@ -44,12 +59,18 @@ export interface ModalMessageProps {
   readonly message: string;
   readonly renderInMarkdown?: boolean;
   readonly onCopied?: () => void;
+  /** Fires when the clipboard write genuinely failed — the callback equivalent of the baseline's `toastError('Failed to copy the content!')`. */
+  readonly onCopyFailed?: () => void;
 }
 
-export function ModalMessage({ title, isUserMessage = false, message, renderInMarkdown = true, onCopied }: ModalMessageProps): ReactNode {
+export function ModalMessage({ title, isUserMessage = false, message, renderInMarkdown = true, onCopied, onCopyFailed }: ModalMessageProps): ReactNode {
   const onCopy = useCallback(() => {
+    if (typeof navigator.clipboard?.writeText === 'function') {
+      void navigator.clipboard.writeText(message).then(() => onCopied?.(), () => onCopyFailed?.());
+      return;
+    }
     void handleCopy(message).then(() => onCopied?.());
-  }, [message, onCopied]);
+  }, [message, onCopied, onCopyFailed]);
 
   return (
     <Box sx={messageContainerSx}>

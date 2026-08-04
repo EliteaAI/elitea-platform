@@ -88,6 +88,23 @@ export type { NewChatInputHandle, NewChatInputProps } from './NewChatInput.types
  * both `onDrop`/`handleFilePaste` there too; there is no unvalidated
  * fallback path in the original).
  *
+ * **`VoiceButton`'s `inputRef` — open gap, as of this writing**: baseline
+ * wires the SAME ref object to both `<UserInput ref={userInputRef}>` and
+ * `<ChatButton.VoiceButton inputRef={userInputRef}>`, so recognized speech
+ * writes directly into the composer. `userInputRef` (`useNewChatInputRefs()`
+ * below) is created and consumed entirely inside this component, but the
+ * imperative handle THIS component itself exposes on its own forwarded
+ * `ref` (`useNewChatInputImperativeHandle`, `NewChatInputHandle`) is already
+ * structurally identical to what `VoiceButton`'s `inputRef` needs
+ * (`getInputContent`/`getCursorPosition`/`setValue`/`focus`) — so the
+ * composition root does not need a new slot or prop here at all. It only
+ * needs to pass the SAME ref it already holds from `<NewChatInput ref=
+ * {chatInputRef}>` (`widgets/chat-box/ui/ChatBox.tsx`) into `slots
+ * .voiceButton`'s `<VoiceButton inputRef={chatInputRef}>`. As of this
+ * writing `widgets/chat-box/ui/ChatBoxInputSlots.tsx` never receives
+ * `chatInputRef`, so it builds `<VoiceButton inputRef={undefined}>` —
+ * dictation transcribes but never writes into the input at all.
+ *
  * **`isRecording` — disclosed judgment call**: the baseline owned a local
  * `isRecording` `useState`, flipped by `VoiceButton`'s own `onRecordingChange`
  * callback (which ALSO auto-exited speaking mode:
