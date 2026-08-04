@@ -252,7 +252,37 @@ export function flattenChatBoxProps(props: {
 
 type NewChatInputAgentEditorProps = ComponentProps<typeof NewChatInput>['agentEditor'];
 
-/** Builds `NewChatInput`'s `agentEditor` prop group — extracted to keep `ChatBox`'s own complexity down. */
+/** `ChatBoxProps.editorCallbacks`'s shape — re-declared here (not imported) purely so this file's own exported builder function stays self-contained; `ChatBox.tsx` imports the canonical `ChatEditorCallbacks` type from `@/pages/chat` for its own prop declaration (structurally identical, checked, not duplicated logic). */
+export interface ChatBoxEditorCallbacks {
+  readonly onShowAgentEditor?: (participant: Participant) => void;
+  readonly onShowPipelineEditor?: (participant: Participant) => void;
+  readonly onCloseAgentEditor?: () => void;
+  readonly onClosePipelineEditor?: () => void;
+}
+
+function noop(): void {}
+
+/** Resolves `editorCallbacks`' 4 optional fields down to real-or-noop, extracted purely to keep `buildAgentEditorProps`'s own cyclomatic complexity under the oxlint budget (12) — 4 more `??` branches inline would have pushed it to 13. */
+function resolveEditorCallbacks(editorCallbacks: ChatBoxEditorCallbacks | undefined): Required<ChatBoxEditorCallbacks> {
+  return {
+    onShowAgentEditor: editorCallbacks?.onShowAgentEditor ?? noop,
+    onShowPipelineEditor: editorCallbacks?.onShowPipelineEditor ?? noop,
+    onCloseAgentEditor: editorCallbacks?.onCloseAgentEditor ?? noop,
+    onClosePipelineEditor: editorCallbacks?.onClosePipelineEditor ?? noop,
+  };
+}
+
+/**
+ * Builds `NewChatInput`'s `agentEditor` prop group — extracted to keep
+ * `ChatBox`'s own complexity down. `onShowAgentEditor`/`onShowPipelineEditor`/
+ * `onCloseAgentEditor`/`onClosePipelineEditor` fall back to their previous
+ * literal no-ops when `editorCallbacks` (or an individual field within it)
+ * isn't supplied — this keeps every existing `ChatBox` consumer/test working
+ * unchanged (these were never required props) while routing to the real
+ * `processes/chat/ui/ChatWithEditors.tsx`-supplied handlers once a caller
+ * wires them. See that file's own module doc comment for the composition
+ * root that actually supplies non-no-op callbacks.
+ */
 export function buildAgentEditorProps(params: {
   readonly participantForEditor: Participant | undefined;
   readonly activeParticipantDetails: NewChatInputAgentEditorProps['activeParticipantDetails'];
@@ -260,8 +290,10 @@ export function buildAgentEditorProps(params: {
   readonly selectSavedOrDefaultModel: NewChatInputAgentEditorProps['selectSavedOrDefaultModel'];
   readonly onShowParticipantsList: NewChatInputAgentEditorProps['onShowParticipantsList'];
   readonly onSelectVersion: NewChatInputAgentEditorProps['onSelectVersion'];
+  readonly editorCallbacks: ChatBoxEditorCallbacks | undefined;
 }): NewChatInputAgentEditorProps {
   const versionId = params.participantForEditor?.entitySettings?.versionId;
+  const editorCallbacks = resolveEditorCallbacks(params.editorCallbacks);
   return {
     activeParticipant: params.participantForEditor,
     activeParticipantDetails: params.activeParticipantDetails,
@@ -273,10 +305,7 @@ export function buildAgentEditorProps(params: {
     onSelectVersion: params.onSelectVersion,
     variables: [],
     onChangeVariables: () => {},
-    onShowAgentEditor: () => {},
-    onShowPipelineEditor: () => {},
-    onCloseAgentEditor: () => {},
-    onClosePipelineEditor: () => {},
+    ...editorCallbacks,
   };
 }
 

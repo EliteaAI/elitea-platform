@@ -41,7 +41,8 @@ import {
   pickIdAndUuid,
   resolveConversationStarters,
 } from './ChatBox.helpers';
-import type { ChatBoxActiveConversation } from './ChatBox.helpers';
+import type { ChatBoxActiveConversation, ChatBoxEditorCallbacks } from './ChatBox.helpers';
+import type { ChatBoxHandle } from './ChatBox.types';
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
 import { ChatBoxPopups } from './ChatBoxPopups';
 import { useChatBoxData } from './hooks/useChatBoxData';
@@ -71,8 +72,8 @@ export interface ChatBoxProps {
   readonly projectId?: string | number;
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of three). */
   readonly user?: { readonly id?: string; readonly name?: string; readonly avatar?: string };
-  readonly activeParticipant?: unknown;
-  readonly onChangeParticipant?: (participant: unknown) => void;
+  /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
+  readonly participant?: { readonly active?: unknown; readonly onChange?: (participant: unknown) => void };
   readonly setChatHistory?: React.Dispatch<React.SetStateAction<readonly unknown[]>>;
   readonly conversationStarters?: readonly { id: string; text: string }[];
   readonly isAgentsPage?: boolean;
@@ -81,14 +82,11 @@ export interface ChatBoxProps {
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly onDelete?: { readonly answer?: (messageId: string) => void; readonly all?: () => void };
+  /** Agent/pipeline editor open/close callbacks — see `ChatBox.helpers.ts`'s `buildAgentEditorProps`. Optional; falls back to the pre-existing no-ops. */
+  readonly editorCallbacks?: ChatBoxEditorCallbacks;
 }
 
-/** @public Imperative handle proxied from ChatBox. */
-export interface ChatBoxHandle {
-  readonly onClear: () => void;
-  readonly mentionUser: (content: string) => void;
-  readonly stopAll: () => void;
-}
+export type { ChatBoxHandle };
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                           */
@@ -99,15 +97,16 @@ const ChatBoxInner = memo(function ChatBox({
   hidden = false,
   projectId,
   user,
-  activeParticipant,
-  onChangeParticipant,
+  participant,
   setChatHistory,
   conversationStarters,
   isAgentsPage,
   isLoadingConversation,
   llm,
   onDelete,
+  editorCallbacks,
 }: ChatBoxProps) {
+  const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
@@ -367,6 +366,7 @@ const ChatBoxInner = memo(function ChatBox({
             selectSavedOrDefaultModel: data.selectSavedOrDefaultModel,
             onShowParticipantsList: () => state.setShowRecommendationList(!state.showRecommendationList),
             onSelectVersion: (version) => { void handleSelectVersion(version); },
+            editorCallbacks,
           })}
           mentions={{ users: state.users, onMentionChange: handleMentionChange }}
           voice={{ isSpeakingMode: state.isSpeakingMode, onSpeakingModeToggle: () => state.setIsSpeakingMode(!state.isSpeakingMode), isTTSPlaying: readAloud.isPlaying }}

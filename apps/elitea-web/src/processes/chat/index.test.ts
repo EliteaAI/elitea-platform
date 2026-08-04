@@ -14,14 +14,14 @@ const PUBLIC_SURFACE = [
   'useCloseEditorAlert',
   'useStreamingNavBlocker',
   'useChatCopyToClipboard',
-  'useInteractionUUID',
-  'useCopyDownloadHandlers',
+  'copyEventHooks',
   'useChatInteractionUUID',
   'useLoadMoreMessages',
   'useInternalToolsConfig',
   'useRefetchAgentVersionDetailsOnClose',
   'useChatEntityBrowser',
   'syncVariableKeys',
+  'ChatWithEditors',
 ] as const;
 
 describe('processes/chat public surface', () => {

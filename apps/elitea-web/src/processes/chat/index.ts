@@ -25,6 +25,19 @@
  * one and finds this budget's ceiling in the way — the same escape hatch
  * `entities/canvas/index.ts`'s own header documents for its own dropped
  * param-type exports.
+ *
+ * **`ChatWithEditors` landing (the real `app/`-level-equivalent consumer
+ * this header above already anticipated — `src/routes/_shell/chat.tsx`,
+ * unconstrained by any dependency-cruiser layer regex, renders it in
+ * `pages/chat`'s place).** Already at 20/20 with no consumer anywhere yet
+ * (verified: `grep -rln "from '@/processes/chat'" src` — zero hits before
+ * this landing), so `useInteractionUUID`/`useCopyDownloadHandlers`
+ * (`./model/useCopyEventHandlers.ts`, both already-independent one-file
+ * hooks) are bundled into one `copyEventHooks` object export — the same
+ * "bundle into one object export" technique `agentEditorHooks`/
+ * `toolkitEditorHooks` already establish — freeing exactly the 1 slot
+ * `ChatWithEditors` needs (19/20 → 20/20). Zero-blast-radius: no call site
+ * anywhere imported either name from this barrel before this change.
  */
 
 // ── Editor mutex + dirty-editor confirm (`useMutuallyExclusiveEditors.js`/`useCloseEditorAlert.js`) ──
@@ -39,7 +52,7 @@ export { useStreamingNavBlocker } from './model/useStreamingNavBlocker';
 // ── Copy-to-clipboard + interaction-id hooks (`useChatCopyToClipboard.js`/`useCopyEventHandlers.js`/`useChatInteractionUUID.js`) ──
 export { useChatCopyToClipboard } from './model/useChatCopyToClipboard';
 export type { CopyableChatMessage } from './model/useChatCopyToClipboard';
-export { useInteractionUUID, useCopyDownloadHandlers } from './model/useCopyEventHandlers';
+export { copyEventHooks } from './model/useCopyEventHandlers';
 export { useChatInteractionUUID } from './model/useChatInteractionUUID';
 
 // ── Message pagination (`useLoadMoreMessages.js`) ──
@@ -59,3 +72,6 @@ export type { ChatEntityBucket } from './model/useChatEntityBrowser';
 
 // ── Agent<->participant variable sync (`utils/variableSync.js`) ──
 export { syncVariableKeys } from './model/variableSync';
+
+// ── Chat editor composition root (`src/routes/_shell/chat.tsx`'s real consumer — see `ui/ChatWithEditors.tsx`'s own module doc comment) ──
+export { ChatWithEditors } from './ui/ChatWithEditors';

@@ -14,10 +14,21 @@
  * not two exclusive screens, so this always renders its own content plus
  * `<Outlet/>` (no `ExclusiveOutlet` needed, unlike the tab-list/detail
  * families below).
+ *
+ * Renders `processes/chat`'s `ChatWithEditors` (NOT `pages/chat`'s
+ * `ChatPage` directly) — `ChatWithEditors` itself renders `<ChatPage>` as
+ * its main child, PLUS the agent/pipeline/toolkit editors gated on
+ * `shared/lib/editorState`'s flags. `src/routes/` is unconstrained by
+ * `.dependency-cruiser.cjs`'s layer regexes (none of its four `from`
+ * patterns match `^src/routes/`), so this file — unlike `pages/`/
+ * `widgets/` — may import a `processes/` slice directly; see
+ * `ChatWithEditors.tsx`'s own module doc comment for the full architectural
+ * reasoning (this is the intended composition point `PipelineEditor.tsx`'s
+ * own "STILL UNREACHABLE from the live app" doc comment named).
  */
 import { createFileRoute, Outlet } from '@tanstack/react-router';
 
-import ChatPage from '@/pages/chat';
+import { ChatWithEditors } from '@/processes/chat';
 
 import { requireChatPermission } from '../-guards/requirePermission';
 import { RouteError, RoutePending } from '../-ui/RouteStatus';
@@ -34,7 +45,7 @@ export const Route = createFileRoute('/_shell/chat')({
 function ChatWrapperShell() {
   return (
     <>
-      <ChatPage />
+      <ChatWithEditors />
       <Outlet />
     </>
   );

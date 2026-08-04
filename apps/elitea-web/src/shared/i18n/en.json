@@ -717,5 +717,18 @@
   "shared.ui.settings.environment.restoreError": "Failed to restore configuration",
   "shared.ui.settings.users.userEdited": "The user has been edited successfully",
   "shared.ui.settings.users.prevPage": "Previous page",
-  "shared.ui.settings.users.nextPage": "Next page"
+  "shared.ui.settings.users.nextPage": "Next page",
+  "processes.chat.chatWithEditors.navBlockWarning": "You have unsaved changes in the editor. Are you sure you want to leave?",
+  "processes.chat.chatWithEditors.queueConfirmCancel": "Cancel",
+  "processes.chat.chatWithEditors.queueConfirmConfirm": "Discard & Continue",
+  "processes.chat.chatWithEditors.queueConfirmContent": "Discard the changes in the current editor and open the one you selected instead?",
+  "processes.chat.chatWithEditors.queueConfirmTitle": "Another editor is open",
+  "processes.chat.editorShell.closeAriaLabel": "Close editor",
+  "processes.chat.editorShell.discardButtonLabel": "Discard",
+  "processes.chat.editorShell.discardDialogCancel": "Cancel",
+  "processes.chat.editorShell.discardDialogConfirm": "Confirm",
+  "processes.chat.editorShell.discardDialogContent": "You are editing now. Do you want to discard current changes and continue?",
+  "processes.chat.editorShell.discardDialogTitle": "Warning",
+  "processes.chat.editorShell.loadErrorFallback": "Failed to load configuration",
+  "processes.chat.editorShell.publicBadgeLabel": "Public"
 }

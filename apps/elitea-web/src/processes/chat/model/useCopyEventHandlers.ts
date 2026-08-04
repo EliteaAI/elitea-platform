@@ -79,3 +79,6 @@ export function useCopyDownloadHandlers(params: UseCopyDownloadHandlersParams): 
 
   return { onClickCopy, onClickDownload };
 }
+
+/** Bundle: consumes exactly 1 slot in `processes/chat/index.ts`'s §3.5 barrel budget — see that file's own doc comment for why these two independent hooks are grouped rather than exported individually. */
+export const copyEventHooks = { useInteractionUUID, useCopyDownloadHandlers };

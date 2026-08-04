@@ -22,10 +22,21 @@
  * of a brand-new chat the way the old app's `changeUrlByConversation` did.
  * Fixing that requires extending `ChatBoxProps` itself (a C6 contract
  * change) — flagged, not silently worked around here.
+ *
+ * `editorCallbacks` (unit A2/A4/C6-editor-composition follow-up): an
+ * OPTIONAL prop bundle — same "group related props into one slot" §3.5
+ * convention `widgets/chat-box/ui/ChatBox.tsx`'s own `user`/`llm`/`onDelete`
+ * props already use — forwarded straight through to `ChatBox`'s matching
+ * optional prop. Backward-compatible additive change: `ChatPage` took zero
+ * props before this, so every existing `<ChatPage />` call site (just
+ * `src/routes/_shell/chat.tsx`, until `processes/chat/ui/ChatWithEditors.tsx`
+ * landed) keeps compiling unchanged. See `ChatWithEditors.tsx`'s own module
+ * doc comment for who actually supplies real (non-no-op) callbacks here.
  */
 import { memo, useEffect, useState } from 'react';
 import { useParams } from '@tanstack/react-router';
 
+import type { Participant } from '@/entities/participant';
 import { useLocalActiveParticipant } from '@/features/chat-participants';
 import { ChatBox } from '@/widgets/chat-box';
 
@@ -36,7 +47,20 @@ function findParticipantById(participants: readonly unknown[] | undefined, id: s
   return participants?.find((p) => (p as { readonly id?: string } | null)?.id === id);
 }
 
-const ChatPage = memo(() => {
+/** @public The agent/pipeline editor open/close callbacks `ChatPage` forwards to `ChatBox` — see this module's own doc comment. */
+export interface ChatEditorCallbacks {
+  readonly onShowAgentEditor?: (participant: Participant) => void;
+  readonly onShowPipelineEditor?: (participant: Participant) => void;
+  readonly onCloseAgentEditor?: () => void;
+  readonly onClosePipelineEditor?: () => void;
+}
+
+/** @public */
+export interface ChatPageProps {
+  readonly editorCallbacks?: ChatEditorCallbacks;
+}
+
+const ChatPage = memo(({ editorCallbacks }: ChatPageProps) => {
   const { conversationId } = useParams({ strict: false }) as { conversationId?: string };
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
   const { getLocalActiveParticipant, setLocalActiveParticipant } = useLocalActiveParticipant();
@@ -68,9 +92,9 @@ const ChatPage = memo(() => {
       {...(activeConversation ? { activeConversation } : {})}
       {...(projectId !== undefined ? { projectId } : {})}
       {...(user ? { user } : {})}
-      activeParticipant={activeParticipant}
-      onChangeParticipant={handleChangeParticipant}
+      participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
       isLoadingConversation={isLoadingConversation}
+      {...(editorCallbacks ? { editorCallbacks } : {})}
     />
   );
 });
