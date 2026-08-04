@@ -161,6 +161,10 @@ describe('formatStateVariablesForPrompt', () => {
     expect(formatStateVariablesForPrompt(undefined)).toBe('');
     expect(formatStateVariablesForPrompt({})).toBe('');
   });
+
+  it('normalizes an explicit empty-string `type` to "str" instead of listing it blank (regression)', () => {
+    expect(formatStateVariablesForPrompt({ input: { type: '' } })).toBe('Available pipeline state variables: `input` (str)');
+  });
 });
 
 describe('formatAvailableNodesForPrompt', () => {

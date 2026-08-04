@@ -27,6 +27,19 @@ describe('handleRouterNode', () => {
     handleRouterNode({ interrupt_before: [], interrupt_after: [], currentJsonNode: { id: 'A', routes: ['B'] }, nodes: [], edges });
     expect(edges.find(e => e.sourceHandle?.endsWith('default_output'))?.target).toBe('END');
   });
+
+  it('does not throw when routes is an explicit YAML `null` (regression)', () => {
+    // A pipeline's stored YAML is untyped at runtime — `routes: null` is a real, reachable
+    // shape (js-yaml parses a bare `routes:` key to `null`) even though `RouterJsonNode`'s
+    // type says `readonly string[] | undefined`.
+    const currentJsonNode = { id: 'A', routes: null, default_output: 'D' } as unknown as Parameters<
+      typeof handleRouterNode
+    >[0]['currentJsonNode'];
+    const edges: FlowGraphEdge[] = [];
+    const result = handleRouterNode({ interrupt_before: [], interrupt_after: [], currentJsonNode, nodes: [], edges });
+    expect(result.branches).toEqual(['D']);
+    expect(edges.map(e => e.target)).toEqual(['D']);
+  });
 });
 
 describe('handleHitlNode', () => {
@@ -78,5 +91,19 @@ describe('handleNewDecisionNode', () => {
     expect(nodes[0]?.id).toBe('A');
     expect(nodes[0]?.type).toBe('decision');
     expect(result.branches).toEqual(['B', 'C']);
+  });
+
+  it('does not throw when nodes is an explicit YAML `null` (regression)', () => {
+    const currentJsonNode = { id: 'A', nodes: null, default_output: 'C' } as unknown as Parameters<
+      typeof handleNewDecisionNode
+    >[0]['currentJsonNode'];
+    const result = handleNewDecisionNode({
+      interrupt_before: [],
+      interrupt_after: [],
+      currentJsonNode,
+      nodes: [],
+      edges: [],
+    });
+    expect(result.branches).toEqual(['C']);
   });
 });

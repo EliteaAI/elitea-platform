@@ -74,6 +74,32 @@ describe('ToolSelect', () => {
     expect(onSelectTool).toHaveBeenCalled();
   });
 
+  it('resolves the toolkit label/value from the schema when toolkit_name is an explicit empty string', async () => {
+    // Regression test for the `||` -> `??` fallback finding: an explicit
+    // empty-string `toolkit_name` must still fall back to the
+    // schema-derived name (baseline JS `||` falsy semantics), for BOTH
+    // the option label and the value onSelectTool receives -- not stay
+    // `''` the way a nullish-only `??` fallback would leave it.
+    const user = userEvent.setup();
+    const onSelectTool = vi.fn();
+    const tool = { type: 'github', name: 'fallback-name', toolkit_name: '' };
+
+    const { findByRole, getByRole } = renderWithRouterAndProject(
+      <ToolSelect
+        versionTools={[tool]}
+        onSelectTool={onSelectTool}
+      />,
+      PROJECT_ID,
+    );
+
+    await user.click(await findByRole('combobox'));
+    const option = getByRole('option', { name: 'fallback-name' });
+    expect(option).toBeInTheDocument();
+
+    await user.click(option);
+    expect(onSelectTool).toHaveBeenCalledWith(tool);
+  });
+
   it('applies a custom filterTypes predicate', async () => {
     const filterTypes = vi.fn((tool: { readonly type?: string }) => tool.type === 'github');
 

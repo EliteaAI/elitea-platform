@@ -139,7 +139,7 @@ describe('useConditionNodeEditing onDeleteOption', () => {
     expect(nextDoc.nodes?.[0]?.condition).toMatchObject({ condition_input: ['input'] });
   });
 
-  it('filters out non-string entries from conditionInput before comparing', () => {
+  it('preserves a non-string entry in conditionInput when deleting an unrelated value (regression: must not silently drop it)', () => {
     const setYamlJsonObject = vi.fn();
     const args = buildArgs({ conditionInput: ['input', { nested: true }, 'extra'], setYamlJsonObject });
     const { result } = renderHook(() => useConditionNodeEditing(args));
@@ -147,7 +147,22 @@ describe('useConditionNodeEditing onDeleteOption', () => {
     result.current.onDeleteOption('extra');
 
     const [nextDoc] = setYamlJsonObject.mock.calls[0] as [YamlPipelineDocument];
-    expect(nextDoc.nodes?.[0]?.condition).toMatchObject({ condition_input: ['input'] });
+    // Baseline (`ConditionNode.jsx:201-206`) filters the RAW array, so only
+    // the deleted value is removed -- the non-string `{ nested: true }`
+    // entry, unrelated to this delete, must survive untouched.
+    expect(nextDoc.nodes?.[0]?.condition).toMatchObject({ condition_input: ['input', { nested: true }] });
+  });
+
+  it('deletes a non-string entry by identity, leaving the rest of the raw array untouched', () => {
+    const setYamlJsonObject = vi.fn();
+    const malformed = { nested: true };
+    const args = buildArgs({ conditionInput: ['input', malformed], setYamlJsonObject });
+    const { result } = renderHook(() => useConditionNodeEditing(args));
+
+    result.current.onDeleteOption('input');
+
+    const [nextDoc] = setYamlJsonObject.mock.calls[0] as [YamlPipelineDocument];
+    expect(nextDoc.nodes?.[0]?.condition).toMatchObject({ condition_input: [malformed] });
   });
 });
 
@@ -173,5 +188,23 @@ describe('useConditionNodeEditing realInputOptions', () => {
     const { result } = renderHook(() => useConditionNodeEditing(args));
 
     expect(result.current.realInputOptions).toEqual([{ label: 'input', value: 'input' }]);
+  });
+
+  it('excludes a non-string condition_input entry from the option list (typed multi-select requires string label/value) without losing it from the underlying data', () => {
+    const setYamlJsonObject = vi.fn();
+    const malformed = { nested: true };
+    const args = buildArgs({
+      conditionInput: ['input', malformed],
+      inputOptions: [{ label: 'input', value: 'input' }] as readonly NodeOption[],
+      setYamlJsonObject,
+    });
+    const { result } = renderHook(() => useConditionNodeEditing(args));
+
+    expect(result.current.realInputOptions).toEqual([{ label: 'input', value: 'input' }]);
+
+    // The entry excluded from display above still survives an unrelated edit.
+    result.current.onDeleteOption('some-other-value');
+    const [nextDoc] = setYamlJsonObject.mock.calls[0] as [YamlPipelineDocument];
+    expect(nextDoc.nodes?.[0]?.condition).toMatchObject({ condition_input: ['input', malformed] });
   });
 });

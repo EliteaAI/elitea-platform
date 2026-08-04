@@ -42,8 +42,11 @@ export const handleRouterNode = ({
 }: BranchHandlerArgs<RouterJsonNode>): { readonly branches: readonly string[] } => {
   const { id } = currentJsonNode;
   const { routes = [], default_output = '' } = currentJsonNode;
+  // `routes?.` — the destructure default only substitutes `[]` when the YAML field is
+  // `undefined`; an explicit YAML `null` (`routes: null`) survives it and reaches here as
+  // `null`, which has no `.filter`. Matches baseline `parsePipeline.helpers.js:174-175`.
   routes
-    .filter(item => !!item)
+    ?.filter(item => !!item)
     .forEach(route => {
       checkAndAddEdge({
         edges,
@@ -73,7 +76,12 @@ export const handleRouterNode = ({
     });
   }
 
-  return { branches: [...routes, default_output].filter((branch): branch is string => Boolean(branch)) };
+  // `?? []` — same explicit-`null` spread guard as above (see `handleConditionNode` in
+  // `parsePipelineLegacyBranches.helpers.ts` for why `??`, not baseline
+  // `parsePipeline.helpers.js:209`'s `Array.isArray`, is used here).
+  return {
+    branches: [...(routes ?? []), default_output].filter((branch): branch is string => Boolean(branch)),
+  };
 };
 
 interface HitlJsonNode {
@@ -165,8 +173,10 @@ export const handleNewDecisionNode = ({
     data: { decision: { ...(currentJsonNode.decision as Record<string, unknown> | undefined) } },
     orientation,
   });
+  // `decisional_outputs?.` — same explicit-YAML-`null` guard as `handleRouterNode` above.
+  // Matches baseline `parsePipeline.helpers.js:361-362`.
   decisional_outputs
-    .filter(item => !!item)
+    ?.filter(item => !!item)
     .forEach(branch => {
       checkAndAddEdge({
         edges,
@@ -189,7 +199,9 @@ export const handleNewDecisionNode = ({
       },
     });
   }
+  // Same explicit-`null` spread guard as `handleRouterNode` above; matches baseline
+  // `parsePipeline.helpers.js:404`.
   return {
-    branches: [...decisional_outputs, default_output].filter((branch): branch is string => Boolean(branch)),
+    branches: [...(decisional_outputs ?? []), default_output].filter((branch): branch is string => Boolean(branch)),
   };
 };

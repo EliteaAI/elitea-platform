@@ -433,6 +433,77 @@ describe('useFunctionInputMapping', () => {
     expect(latest?.inputMappings).toHaveProperty('foo');
   });
 
+  it('treats a toolkit as MCP-like via its own top-level meta.mcp flag (not settings.meta.mcp), matching entities/toolkit\'s isMcpToolkit', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'MetaFlaggedNode', tool: 'my_mcp_tool', toolkit_name: 'my_meta_flagged_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [
+      {
+        // Deliberately NOT type: 'mcp' / 'mcp_*' -- only the top-level meta.mcp flag
+        // identifies this toolkit as MCP-like, exercising the previously-broken read path.
+        type: 'custom',
+        name: 'my_meta_flagged_toolkit',
+        toolkit_name: 'my_meta_flagged_toolkit',
+        meta: { mcp: true },
+        settings: {
+          available_mcp_tools: [
+            { value: 'my_mcp_tool', args_schema: { properties: { foo: { type: 'string' } }, required: ['foo'] } },
+          ],
+        },
+      },
+    ];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="MetaFlaggedNode"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    // Required inputs must resolve from mcpArgsSchemas (available_mcp_tools), not the
+    // always-empty dynamicArgsSchemas -- would be [] before the meta.mcp path fix.
+    await waitFor(() => expect(latest?.requiredInputs).toEqual(['foo']));
+    expect(latest?.isSchemaResolved).toBe(true);
+    await waitFor(() => expect(latest?.inputMappings).toHaveProperty('foo'));
+
+    const written = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    expect(written.nodes?.find(node => node.id === 'MetaFlaggedNode')?.input_mapping).toHaveProperty('foo');
+  });
+
+  it('isSchemaResolved is false for a non-MCP toolkit whose type has no static schema (the disclosed dynamic-fetch gap)', async () => {
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'Node1', tool: 'my_tool', toolkit_name: 'custom_toolkit' }],
+    };
+    const setYamlJsonObject = vi.fn();
+    const versionTools = [{ type: 'custom', name: 'custom_toolkit', toolkit_name: 'custom_toolkit' }];
+
+    let latest: UseFunctionInputMappingResult | undefined;
+    renderWithRouterAndProject(
+      <HookProbe
+        id="Node1"
+        yamlJsonObject={yamlJsonObject}
+        setYamlJsonObject={setYamlJsonObject}
+        versionTools={versionTools}
+        onResult={result => {
+          latest = result;
+        }}
+      />,
+      PROJECT_ID,
+    );
+
+    await waitFor(() => expect(latest?.selectedToolkit).toBeDefined());
+    expect(latest?.isSchemaResolved).toBe(false);
+  });
+
   it('onChangeTool on an MCP-like toolkit resolves the new tool\'s schema via mcpArgsSchemas (not the always-empty dynamicArgsSchemas)', async () => {
     const yamlJsonObject: YamlPipelineDocument = {
       nodes: [{ id: 'McpNode', tool: 'my_mcp_tool', toolkit_name: 'my_mcp_toolkit' }],

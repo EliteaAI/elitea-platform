@@ -14,6 +14,8 @@ import type { AnyRouter } from '@tanstack/react-router';
 import { render } from '@testing-library/react';
 import type { RenderResult } from '@testing-library/react';
 
+import { SocketClientContext } from '@/shared/api/socket/client';
+import { createTestSocketClient } from '@/shared/api/socket/testing';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 
 /**
@@ -24,8 +26,34 @@ import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/sh
  * `/pipelines/$tab/$agentId`, `/pipelines/create`), NOT `src/routes/**`
  * (outside this unit's ownership fence).
  */
-function buildTestRouter(initialPath: string, content: ReactElement, projectId: string | undefined): AnyRouter {
-  const rootRoute = createRootRoute({ component: () => <Outlet /> });
+function buildTestRouter(
+  initialPath: string,
+  content: ReactElement,
+  projectId: string | undefined,
+  withSocket: boolean,
+): AnyRouter {
+  const rootRoute = createRootRoute({
+    // `EditPipeline`'s real `<ConfigurationTab>` mount (adversarial-review
+    // fix) reads `useSocketClient()` several layers down
+    // (`usePipelineChat`/`usePipelineMCPToolsStatusMonitor`) — same
+    // in-memory double `pages/toolkits/__tests__/testRouter.tsx` already
+    // wraps its own tree with, for the identical reason. `withSocket=false`
+    // (`renderPipelinesRouteWithoutSocket`) deliberately reproduces this
+    // app's real, current, un-fixed gap instead — no
+    // `SocketClientContext.Provider` exists anywhere in the real app tree
+    // yet (verified: `grep -rn "SocketClientContext.Provider" src
+    // --include=*.tsx | grep -v test` — zero hits) — so
+    // `EditPipeline.test.tsx` can assert `PipelineConfigurationTabBoundary`'s
+    // fallback actually fires instead of crashing the page.
+    component: () =>
+      withSocket ? (
+        <SocketClientContext.Provider value={createTestSocketClient()}>
+          <Outlet />
+        </SocketClientContext.Provider>
+      ) : (
+        <Outlet />
+      ),
+  });
 
   const tabRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -91,13 +119,14 @@ export interface RenderPipelinesRouteResult extends RenderResult {
   readonly queryClient: QueryClient;
 }
 
-export function renderPipelinesRoute(
+function renderWithTestRouter(
   content: ReactElement,
-  initialPath = '/pipelines/latest',
-  options: { queryClient?: QueryClient; projectId?: string } = {},
+  initialPath: string,
+  options: { queryClient?: QueryClient; projectId?: string },
+  withSocket: boolean,
 ): RenderPipelinesRouteResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
-  const router = buildTestRouter(initialPath, content, options.projectId);
+  const router = buildTestRouter(initialPath, content, options.projectId, withSocket);
 
   const view = render(
     <QueryClientProvider client={queryClient}>
@@ -111,4 +140,26 @@ export function renderPipelinesRoute(
   );
 
   return { ...view, router, queryClient };
+}
+
+export function renderPipelinesRoute(
+  content: ReactElement,
+  initialPath = '/pipelines/latest',
+  options: { queryClient?: QueryClient; projectId?: string } = {},
+): RenderPipelinesRouteResult {
+  return renderWithTestRouter(content, initialPath, options, true);
+}
+
+/**
+ * Same as `renderPipelinesRoute`, but WITHOUT a `SocketClientContext.Provider`
+ * — reproduces this app's real, current, un-fixed gap (see `buildTestRouter`'s
+ * own doc comment) so a test can assert `PipelineConfigurationTabBoundary`'s
+ * fallback fires instead of the page crashing.
+ */
+export function renderPipelinesRouteWithoutSocket(
+  content: ReactElement,
+  initialPath = '/pipelines/latest',
+  options: { queryClient?: QueryClient; projectId?: string } = {},
+): RenderPipelinesRouteResult {
+  return renderWithTestRouter(content, initialPath, options, false);
 }

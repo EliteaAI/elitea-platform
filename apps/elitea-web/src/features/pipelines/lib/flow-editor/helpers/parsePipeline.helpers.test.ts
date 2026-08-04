@@ -94,4 +94,9 @@ describe('extractPipelineNodeTypes', () => {
     const yaml = 'nodes:\n  - id: A\n  - id: B\n    type: tool\n';
     expect(extractPipelineNodeTypes(yaml)).toEqual({ nodeTypes: { tool: 1 }, totalNodeCount: 1 });
   });
+
+  it('skips a `null` entry in the nodes array instead of discarding the whole histogram (regression)', () => {
+    const yaml = 'nodes:\n  - null\n  - id: B\n    type: tool\n';
+    expect(extractPipelineNodeTypes(yaml)).toEqual({ nodeTypes: { tool: 1 }, totalNodeCount: 1 });
+  });
 });

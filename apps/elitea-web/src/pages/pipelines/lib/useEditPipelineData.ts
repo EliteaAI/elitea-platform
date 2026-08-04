@@ -1,4 +1,5 @@
 import { useGetApplication, useGetApplicationVersionDetail } from '@/shared/api/generated/applications/applications';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import type { ApplicationDetail, ApplicationVersionDetail, ApplicationVersionSummary } from '@/shared/api/generated/model';
 
 /** Stable empty array — `detail?.versions ?? []` would otherwise create a fresh array reference every render (`react-hooks/exhaustive-deps`: a `useMemo` depending on it would never actually memoize). */
@@ -10,6 +11,28 @@ export interface EditPipelineData {
   readonly activeVersion: ApplicationVersionDetail | undefined;
   readonly isFetching: boolean;
   readonly isError: boolean;
+  /**
+   * `true` when the application-DETAIL fetch itself (not the optional
+   * explicit-version fetch) failed with a 404 or 400 — old app:
+   * `isNotFoundError` (`common/utils.jsx:143`,
+   * `err?.status === 404 || err?.status === 400`), read by
+   * `EditPipeline.jsx`'s `shouldShowNotFoundPage = (isError &&
+   * isNotFoundError(error)) || isVersionNotFound`. Reproduced verbatim from
+   * `pages/agents/lib/useEditApplicationData.ts`'s own `isDetailNotFound`
+   * (Wave-2 unit A1g) — a Pipeline literally IS an Application row, so the
+   * same `EliteaApiError`/`error.failure.kind === 'http'` duck-typed check
+   * applies unchanged. Adversarial-review fix: a 404/400 detail fetch
+   * previously fell through to the normal edit shell with only an inline
+   * error banner, leaving the Save/Cancel tab bar and an empty
+   * configuration panel visible for a deleted/invalid pipeline id.
+   */
+  readonly isDetailNotFound: boolean;
+}
+
+/** Split out purely to keep `useEditPipelineData`'s own branch count under the oxlint complexity budget — see `EditPipelineData.isDetailNotFound`'s own doc comment for the full citation trail. */
+function isNotFoundApiError(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') return false;
+  return error.failure.status === 404 || error.failure.status === 400;
 }
 
 /** Split out purely to keep `useEditPipelineData`'s own branch count under the oxlint complexity budget. */
@@ -92,5 +115,6 @@ export function useEditPipelineData(
     activeVersion: pickActiveVersion(needsExplicit, explicitVersion, defaultVersion),
     isFetching: combineQueryFlag(detailQuery.isFetching, needsExplicit, versionQuery.isFetching),
     isError: combineQueryFlag(detailQuery.isError, needsExplicit, versionQuery.isError),
+    isDetailNotFound: isNotFoundApiError(detailQuery.error),
   };
 }

@@ -44,6 +44,20 @@ function isMcpToolkitLike(tool: PipelineToolEntry): boolean {
  *     own "DISCLOSED SIMPLIFICATION" doc comment.
  *  3. `useIsMcpVisible` -> this slice's own local duplicate
  *     (`../../api/useIsMcpVisible.ts`, `no-sideways-features`).
+ *
+ * **Fix (was a `??`/`||` regression):** the toolkit-name fallback below
+ * reads `tool.toolkit_name || getToolkitNameFromSchema(tool)` -- baseline
+ * (`ToolSelect.jsx:40,44`) uses JS `||`, a FALSY fallback, so an explicit
+ * empty-string `toolkit_name` still falls through to the schema-derived
+ * name. An earlier port pass here (and in `LoopToolSelect.tsx`) had
+ * narrowed this to `??` (nullish-only), which stops falling back on `''`
+ * -- silently corrupting BOTH the rendered label and the persisted
+ * `value` (both computed from the same `name`) for any toolkit entry
+ * carrying `toolkit_name: ''`. `ToolkitsSelect.tsx:62,81` (same sub-unit,
+ * out of this pass's own file scope) has the identical `??` regression on
+ * its `label` computation and needs the same one-token fix; its `value`
+ * is unaffected since it's always compiled from `getToolkitNameFromSchema`
+ * directly, never from `tool.toolkit_name`.
  */
 export interface ToolSelectProps {
   readonly disabled?: boolean | undefined;
@@ -83,7 +97,7 @@ export function ToolSelect(props: ToolSelectProps): ReactNode {
         .filter(filterTypes)
         .filter(tool => isMcpVisible || !isMcpToolkitLike(tool))
         .map((tool): ToolOption => {
-          const name = tool.type === 'application' ? (tool.name ?? '') : (tool.toolkit_name ?? getToolkitNameFromSchema(tool));
+          const name = tool.type === 'application' ? (tool.name ?? '') : (tool.toolkit_name || getToolkitNameFromSchema(tool));
           return {
             label: name,
             value: name,

@@ -134,6 +134,23 @@ describe('handleAgentToolStart', () => {
     expect(ctx.activeNodeIdRef.current).toBe('MyToolkit');
   });
 
+  it('falls through past an explicit empty-string metadata.toolkit_name/toolkit_name instead of using it as the id', () => {
+    const ctx = makeCtx({
+      isRunningPipeline: true,
+      event: {
+        type: 'agent_tool_start',
+        response_metadata: {
+          tool_name: 'github___create_issue',
+          toolkit_name: '',
+          tool_run_id: 'r6',
+          metadata: { toolkit_name: '' },
+        },
+      },
+    });
+    handleAgentToolStart(ctx);
+    expect(timelineOf(ctx)[0]).toMatchObject({ id: 'github', status: PipelineStatus.InProgress, tool_run_id: 'r6' });
+  });
+
   it('resolves a pyodide-sandbox node via metadata.langgraph_node instead of the raw tool name', () => {
     const nodes: RunEventNode[] = [{ id: 'Code 1' }];
     const ctx = makeCtx({

@@ -47,6 +47,26 @@ describe('createPipelineYamlStore', () => {
     expect(store.getState().initYamlJsonObject).toEqual({ state: {} });
   });
 
+  it('initPipelineYaml also sets resetFlag (baseline initThePipeline reducer parity — every version load/reload must re-sync the flow-editor canvas, matching resetPipelineYaml)', () => {
+    const store = createPipelineYamlStore();
+    expect(store.getState().resetFlag).toBe(false);
+
+    store.getState().initPipelineYaml({ yamlCode: 'state: {}', yamlJsonObject: { state: {} } });
+
+    expect(store.getState().resetFlag).toBe(true);
+  });
+
+  it('initPipelineYaml sets resetFlag even on a RELOAD (a second call while the editor stayed mounted across a version switch)', () => {
+    const store = createPipelineYamlStore();
+    store.getState().initPipelineYaml({ yamlCode: 'a: 1', yamlJsonObject: { a: 1 } });
+    store.getState().clearResetFlag();
+    expect(store.getState().resetFlag).toBe(false);
+
+    store.getState().initPipelineYaml({ yamlCode: 'b: 2', yamlJsonObject: { b: 2 } });
+
+    expect(store.getState().resetFlag).toBe(true);
+  });
+
   it('markYamlCodeSaved copies the CURRENT yamlCode into initYamlCode without touching yamlJsonObject/initYamlJsonObject', () => {
     const store = createPipelineYamlStore();
     store.getState().initPipelineYaml({ yamlCode: 'a: 1', yamlJsonObject: { a: 1 } });

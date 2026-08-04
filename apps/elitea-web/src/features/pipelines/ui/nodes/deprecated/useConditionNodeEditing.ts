@@ -103,11 +103,50 @@ export function useConditionNodeEditing(args: UseConditionNodeEditingArgs): UseC
     [conditionOutput, id, persistCondition, setFlowEdges],
   );
 
+  /**
+   * Baseline (`ConditionNode.jsx:201-206`): `onChangeInput(conditionInput.filter(item
+   * => item !== value))` — filters the RAW, unfiltered `condition_input`
+   * array and writes the result straight back. Filtering through
+   * {@link stringConditionInput} first (as `onChangeInput(stringConditionInput(...)
+   * .filter(...))` would) silently drops any non-string entry a
+   * legacy/malformed pipeline's `condition_input` still carries on the very
+   * next delete, even though that entry has nothing to do with the one
+   * being removed. Writing straight to {@link persistCondition} (rather
+   * than through the public `onChangeInput`, which is typed `readonly
+   * string[]` for the multi-select's own `onValueChange` contract) keeps
+   * every untouched entry -- string or not -- intact, matching baseline.
+   */
   const onDeleteOption = useCallback(
-    (value: string) => onChangeInput(stringConditionInput(conditionInput).filter(item => item !== value)),
-    [conditionInput, onChangeInput],
+    (value: string) => persistCondition({ condition_input: conditionInput.filter(item => item !== value) }),
+    [conditionInput, persistCondition],
   );
 
+  /**
+   * Baseline (`ConditionNode.jsx:189-199`) maps the RAW `condition_input`
+   * array directly into `{label: item, value: item, ...}` option objects.
+   * This app's `ConditionOption`/`PipelineMultiSelectOption` (unlike
+   * baseline's untyped JS) require `label`/`value: string`, so a non-string
+   * entry cannot be represented here without an unsafe cast -- filtered via
+   * {@link stringConditionInput} instead, a real, verified constraint of
+   * this typed multi-select, not a behavioural choice.
+   *
+   * This does NOT reintroduce the data-loss `onDeleteOption` above fixes:
+   * a non-string entry is simply never offered a chip here, but it still
+   * round-trips through `condition_input` untouched on every edit, since
+   * `onDeleteOption` (and `persistCondition` generally) now operate on the
+   * raw array, not this filtered display list.
+   *
+   * Residual, OUT-OF-SCOPE gap for a later pass: `ConditionNode.tsx` (this
+   * cluster's own file, but not named in this fix's confirmed-findings
+   * list) independently computes its own string-filtered `value` prop for
+   * `PipelineMultiSelect` from `conditionInput` rather than reading it from
+   * this hook, so even a string-safe non-string representation added here
+   * could never render as a selected chip regardless of what this function
+   * returns -- fully restoring baseline's raw-array chip display (as
+   * opposed to just data preservation, which is what this fix guarantees)
+   * would additionally require changing that prop's source in
+   * `ConditionNode.tsx`.
+   */
   const realInputOptions = useMemo<readonly ConditionOption[]>(() => {
     const notInState = t('pipelines.flowEditor.deprecated.conditionNode.notInState', 'Not in state');
     const optionsNotInState = stringConditionInput(conditionInput)

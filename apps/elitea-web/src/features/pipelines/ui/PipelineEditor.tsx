@@ -39,6 +39,49 @@ export type { PipelineEditorDeps, PipelineEditorShellProps, PipelineCreateFormSl
  * three of `PipelineEditor`/`useEditPipeline`/`usePipelineCreation` are the
  * hard requirement, per the mission preamble).
  *
+ * **STILL UNREACHABLE from the live app — confirmed, and OUT OF THIS
+ * CLUSTER'S (A2-editor-composition) file scope to fix; exact routing for
+ * whoever picks this up:**
+ *  - Nothing calls `<PipelineEditor>`/`useEditPipeline()`/
+ *    `usePipelineCreation()` anywhere outside this slice (verified: `grep
+ *    -rn "<PipelineEditor\b" src | grep -v test` — only this file's own
+ *    definition; `grep -rln "useEditPipeline\b\|usePipelineCreation\b" src`
+ *    — only this slice's own files/tests).
+ *  - The intended composition root, `processes/chat/model/useEditorMutex.ts`
+ *    (`onShowPipelineEditor`/`onEditPipeline`/`onShowPipelineEditorCreator`
+ *    params), is itself never CALLED anywhere (verified: `grep -rn
+ *    "useEditorMutex(" src` — zero call sites outside its own file/tests).
+ *    This is not pipeline-specific: the identical gap blocks
+ *    `features/agents`' `AgentEditor` (also unreachable — `grep -rn
+ *    "<AgentEditor\b" src | grep -v test` — same result) and, presumably,
+ *    the toolkit/canvas/artifact editors `useEditorMutex` also orchestrates.
+ *  - `widgets/chat-box/ui/ChatBox.helpers.ts`'s `buildAgentEditorProps`
+ *    (consumed by `ChatBox.tsx`, fed into `features/chat-input`'s
+ *    `NewChatInput`) wires `onShowAgentEditor: () => {}` /
+ *    `onShowPipelineEditor: () => {}` — literal no-ops — instead of real
+ *    handlers built from `useEditorMutex`/`useEditPipeline`/`useEditAgent`.
+ *    `ChatBox.tsx` itself never mounts `<AgentEditor>` or `<PipelineEditor>`
+ *    anywhere in its render tree.
+ *  - Fixing this for real means: (1) `ChatBox.tsx` (or a new child it owns)
+ *    calls `useEditPipeline`/`usePipelineCreation` (this slice, already
+ *    exported) and `useEditAgent`/`useAgentCreation` (`features/agents`,
+ *    check that slice's own export status) and `useEditorMutex`
+ *    (`processes/chat`); (2) it renders `<PipelineEditor deps={...}>` /
+ *    `<AgentEditor deps={...}>` somewhere in its tree, gated on
+ *    `isEditingPipeline`/`isEditingAgent`; (3) `buildAgentEditorProps`'s
+ *    no-op `onShowAgentEditor`/`onShowPipelineEditor` get replaced with the
+ *    real `onEditAgent`/`onEditPipeline` from `useEditorMutex`. ALL of that
+ *    is `widgets/chat-box`/`processes/chat` file scope — a different
+ *    Wave-2 unit (C6) than this cluster, and per this mission's own
+ *    tracking, C6 was already verified+clean in an earlier pass (so this is
+ *    a REGRESSION-FROM-SCOPE gap, not something C6 missed by accident —
+ *    C6's remit at the time didn't include wiring editors that hadn't
+ *    landed yet). Not fixed here: touching `widgets/chat-box`/
+ *    `processes/chat` is outside this cluster's file scope, and
+ *    `PipelineEditor`/`useEditPipeline`/`usePipelineCreation` themselves
+ *    have substantial real test coverage proving they work correctly in
+ *    isolation — the gap is purely "nobody mounts them yet".
+ *
  * **Real, load-bearing redesign, not a porting shortcut — read before
  * wiring this up.** This app has no Formik (react-hook-form + zod instead —
  * `features/agents/ui/AgentEditor.tsx`'s own doc comment establishes this

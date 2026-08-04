@@ -21,16 +21,41 @@
  * 4. `useSelectedProjectId` -> `./useSelectedProjectId.ts` (local
  *    duplicate of `features/apps/api/useSelectedProjectId.ts`).
  * 5. **Real, disclosed backend gap, not papered over:** the baseline's
- *    `useToolkitAvailableToolsQuery` (dynamic MCP tool arg-schema fetch,
- *    `api/toolkits.js:515`) has NO generated equivalent — checked directly
- *    against `src/shared/api/generated/toolkits/toolkits.ts`'s full export
- *    list (only `useListToolkits`/`useListToolkitInstances`). `dynamic
- *    ArgsSchemas`/`dynamicToolNames` are therefore always empty here
- *    (`shouldFetchDynamicSchemas` stays permanently unresolved) — a
- *    dynamic (non-statically-schema'd) MCP tool cannot get real
- *    input-mapping defaults from this hook alone today. Static schemas
- *    (`toolkitTypes[...].properties.selected_tools.args_schemas`) and the
- *    application-as-tool path both still work.
+ *    `useToolkitAvailableToolsQuery` (dynamic, non-MCP tool arg-schema fetch,
+ *    `api/toolkits.js:478-486`, `GET {apiSlicePath}/toolkit_available_tools/
+ *    prompt_lib/{projectId}/{toolkitId}`) has NO generated equivalent —
+ *    checked directly against `src/shared/api/generated/toolkits/
+ *    toolkits.ts`'s full export list (only `useListToolkits`/
+ *    `useListToolkitInstances`). `dynamicArgsSchemas`/`dynamicToolNames`
+ *    are therefore always empty here (`shouldFetchDynamicSchemas` stays
+ *    permanently unresolved) — a dynamic (non-statically-schema'd, non-MCP)
+ *    tool cannot get real input-mapping defaults from this hook alone
+ *    today. Static schemas (`toolkitTypes[...].properties.selected_tools.
+ *    args_schemas`) and the MCP `available_mcp_tools` path both still work;
+ *    `isSchemaResolved` (below) keeps this from silently wiping an
+ *    already-saved `input_mapping` to `{}` while unresolved, but it cannot
+ *    populate one for the first time. Two other Wave-2 units hit the
+ *    identical missing endpoint independently — `features/toolkits/ui/
+ *    test-tools/useGetSelectedToolSchema.ts` and `TestToolSettings.tsx`'s
+ *    own doc comments — confirming this is one real, pre-existing,
+ *    cross-cutting backend/codegen gap, not a bug local to this file.
+ *
+ *    **Exact fix, routed out of this cluster's scope (`features/pipelines/
+ *    lib/flow-editor/**` only):** (a) add a `toolkit_available_tools`-
+ *    shaped operation to the OpenAPI spec elitea-main serves and regenerate
+ *    `src/shared/api/generated/toolkits/toolkits.ts` (owned by the shared
+ *    codegen pipeline, not this feature) so it exports a
+ *    `useToolkitAvailableTools`-equivalent hook; (b) back in this file,
+ *    replace the `EMPTY_DYNAMIC_ARGS_SCHEMAS`/`EMPTY_DYNAMIC_TOOL_NAMES`
+ *    constants below with that hook's `args_schemas`/`tools`, gated the
+ *    same way the baseline's `shouldFetchDynamicSchemas` was (only fetch
+ *    when `projectId` + `selectedToolkit.id` exist AND no static schema
+ *    covers this toolkit type); (c) once real data can flow, a later pass
+ *    on the consuming node/select components (`ui/nodes/BaseToolNode.tsx`,
+ *    `ui/select/*` — a different A2 sub-cluster, out of this file's scope)
+ *    should surface `isSchemaResolved` (already returned below) to warn a
+ *    user when a tool's required fields could not be auto-populated,
+ *    instead of silently rendering none.
  *
  * `isMcpToolkit` is inlined rather than imported from `entities/toolkit`:
  * that export's parameter type (`Toolkit`) requires `id`/`name` fields this
@@ -52,15 +77,24 @@ export interface VersionTool {
   readonly type?: string;
   readonly name?: string;
   readonly toolkit_name?: string;
+  readonly meta?: { readonly mcp?: boolean };
   readonly settings?: Readonly<Record<string, unknown>> & {
     readonly available_mcp_tools?: readonly { readonly value?: string; readonly label?: string; readonly args_schema?: unknown }[];
   };
 }
 
+/**
+ * `shared/lib/helpers/mcp.helpers.js:7-14` / `entities/toolkit/model/
+ * selectors.ts`'s `isMcpToolkit` — the flag lives on the toolkit's own
+ * top-level `meta.mcp`, NOT nested under `settings`. Must stay aligned with
+ * this exact same predicate re-declared (for its own, differently-shaped
+ * `ToolkitLike` parameter) as `isMcpToolkit` in the sibling
+ * `../helpers/flowEditorInputMapping.helpers.ts` this hook calls into.
+ */
 function isMcpToolkitLike(toolkit: VersionTool | undefined): boolean {
   if (!toolkit?.type) return false;
   if (toolkit.type === 'mcp' || toolkit.type.startsWith('mcp_')) return true;
-  return (toolkit.settings as { readonly meta?: { readonly mcp?: boolean } } | undefined)?.meta?.mcp === true;
+  return toolkit.meta?.mcp === true;
 }
 
 export interface UseFunctionInputMappingArgs {
@@ -83,6 +117,15 @@ export interface UseFunctionInputMappingResult {
   readonly dynamicArgsSchemas: Readonly<Record<string, unknown>>;
   readonly selectedTool: string;
   readonly toolkit: string | undefined;
+  /**
+   * Whether a real tool schema was found for `selectedTool` (an MCP
+   * toolkit's `available_mcp_tools`) — `false` for a static-schema'd
+   * toolkit type does NOT mean "no inputs needed", it means this hook
+   * could not resolve one; see file header item 5's disclosed backend gap.
+   * Exposed so a future pass on the consuming node/select UI (out of this
+   * file's scope) can warn instead of rendering an empty input list.
+   */
+  readonly isSchemaResolved: boolean;
 }
 
 const TOOLKIT_NODE_TYPES = new Set(['agent', 'toolkit', 'mcp']);
@@ -137,6 +180,16 @@ function filterRequiredOrNonEmpty(mapping: Record<string, unknown>, requiredInpu
   }, {});
 }
 
+/**
+ * Real, disclosed gap (see file header, item 5): no generated endpoint
+ * exists for a dynamic (non-static, non-MCP) tool's arg-schemas, so these
+ * are always empty — module-level constants (not per-render `useMemo`
+ * calls) to say so plainly: this is a permanent, structural absence of
+ * data, not a reactive value that could change once dependencies settle.
+ */
+const EMPTY_DYNAMIC_ARGS_SCHEMAS: Readonly<Record<string, unknown>> = {};
+const EMPTY_DYNAMIC_TOOL_NAMES: readonly string[] = [];
+
 export function useFunctionInputMapping({ id, yamlJsonObject, setYamlJsonObject, versionTools }: UseFunctionInputMappingArgs): UseFunctionInputMappingResult {
   const projectId = useSelectedProjectId();
   const { toolkitTypeSchemas: toolkitTypes } = useToolkitTypeSchemas(projectId);
@@ -157,10 +210,8 @@ export function useFunctionInputMapping({ id, yamlJsonObject, setYamlJsonObject,
     [getToolkitNameFromSchema, toolkit, versionTools],
   );
 
-  // Real, disclosed gap (see file header, item 5): no generated endpoint exists
-  // for a dynamic MCP tool's arg-schemas, so this is always empty.
-  const dynamicArgsSchemas: Readonly<Record<string, unknown>> = useMemo(() => ({}), []);
-  const dynamicToolNames: readonly string[] = useMemo(() => [], []);
+  const dynamicArgsSchemas: Readonly<Record<string, unknown>> = EMPTY_DYNAMIC_ARGS_SCHEMAS;
+  const dynamicToolNames: readonly string[] = EMPTY_DYNAMIC_TOOL_NAMES;
 
   const mcpArgsSchemas = useMemo(() => {
     const acc: Record<string, unknown> = {};
@@ -275,5 +326,6 @@ export function useFunctionInputMapping({ id, yamlJsonObject, setYamlJsonObject,
     dynamicArgsSchemas,
     selectedTool,
     toolkit,
+    isSchemaResolved,
   };
 }

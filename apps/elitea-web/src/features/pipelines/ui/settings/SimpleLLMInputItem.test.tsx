@@ -179,6 +179,37 @@ describe('SimpleLLMInputItem', () => {
     expect(getByLabelText('AI Assistant')).toBeInTheDocument();
   });
 
+  // Regression coverage: `NodeFieldInput`'s doc comment above records this
+  // as a formerly-confirmed cluster finding (#2, A2-settings-panels) — the
+  // AI-Assistant-enabled field's visible input used to silently discard
+  // direct keystrokes because `../AIAssistantInput.tsx` never wired an
+  // `onChange` onto its base `InputBase` (fixed there since). This test
+  // exercises the full integration through THIS component, not just
+  // `AIAssistantInput.tsx`'s own unit test.
+  it('reports edits typed directly into an AI-Assistant-enabled field, not just through the modal', async () => {
+    server.use(
+      http.get('/api/v2/configurations/available/', () => HttpResponse.json([])),
+      http.get('/api/v2/configurations/configurations/7', () => HttpResponse.json({ items: [], total: 0 })),
+    );
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+
+    const user = userEvent.setup();
+    const onChangeMapping = vi.fn();
+    const { getByLabelText } = renderItem({
+      variableName: 'system',
+      variable: 'system',
+      type: 'fixed',
+      value: 'hi',
+      defaultValue: '',
+      onChangeMapping,
+      enableAIAssistant: true,
+    });
+
+    await user.type(getByLabelText('Value'), '!');
+
+    expect(onChangeMapping).toHaveBeenCalledWith('system', { type: 'fixed', value: 'hi!' });
+  });
+
   it('does not enable AI Assistant for an ineligible variable name', () => {
     const { queryByText } = renderItem({
       variableName: 'not_eligible',
@@ -190,5 +221,57 @@ describe('SimpleLLMInputItem', () => {
       enableAIAssistant: true,
     });
     expect(queryByText('AI Assistant')).not.toBeInTheDocument();
+  });
+
+  describe('the code field AI-Assistant editor pre-sets content type to Python', () => {
+    function stubForModal(): void {
+      server.use(
+        http.get('/api/v2/configurations/available/', () => HttpResponse.json([])),
+        http.get('/api/v2/configurations/configurations/7', () => HttpResponse.json({ items: [], total: 0 })),
+      );
+      configureGeneratedClient({ baseUrl: '/api/v2' });
+    }
+
+    it('opens the AI Assistant editor with "Python" pre-selected for the `code` variable (baseline `language` override)', async () => {
+      stubForModal();
+      const user = userEvent.setup();
+
+      // 'x = 1' does not match any of `detectContentType`'s python keyword markers
+      // (def/class/import/from/print(/if __name__/elif/self.), so without the
+      // restored override this would auto-detect as "Text", not "Python" —
+      // this is what would have caught the regression.
+      const { getByRole } = renderItem({
+        variableName: 'code',
+        variable: 'code',
+        type: 'fixed',
+        value: 'x = 1',
+        defaultValue: '',
+        onChangeMapping: vi.fn(),
+        enableAIAssistant: true,
+      });
+
+      await user.click(getByRole('button', { name: 'AI Assistant' }));
+
+      expect(getByRole('combobox', { name: 'Content type' })).toHaveTextContent('Python');
+    });
+
+    it('does not force Python for a non-`code` eligible variable (auto-detected instead)', async () => {
+      stubForModal();
+      const user = userEvent.setup();
+
+      const { getByRole } = renderItem({
+        variableName: 'system',
+        variable: 'system',
+        type: 'fixed',
+        value: 'hi',
+        defaultValue: '',
+        onChangeMapping: vi.fn(),
+        enableAIAssistant: true,
+      });
+
+      await user.click(getByRole('button', { name: 'AI Assistant' }));
+
+      expect(getByRole('combobox', { name: 'Content type' })).not.toHaveTextContent('Python');
+    });
   });
 });

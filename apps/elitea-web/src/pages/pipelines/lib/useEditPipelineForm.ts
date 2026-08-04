@@ -16,6 +16,23 @@ export interface EditPipelineFormState {
   readonly form: ReturnType<typeof useForm<ApplicationCreationInput>>;
   readonly handleSave: () => void;
   readonly isSaving: boolean;
+  /**
+   * The most recent save attempt's failure, if any — old app:
+   * `useSaveVersion.js:113-116`'s `if (error) { toastError(buildErrorMessage(error)); return false; }`,
+   * called from `SaveApplicationButton.jsx`'s `handleSave` on every failed
+   * save (network error, validation error, permission error, conflict).
+   * Reproduced verbatim from `pages/agents/lib/useEditApplicationForm.ts`'s
+   * own `saveError` (Wave-2 unit A1g) — this app has no toast
+   * infrastructure (same disclosed gap `SaveToolkitButton.tsx`/
+   * `SaveNewVersionButton.tsx` already establish); `useSaveApplicationVersion`'s
+   * own `error` state is threaded straight through instead, so the caller
+   * (`EditPipeline.tsx`) can render an inline `role="alert"` banner — the
+   * same pattern that file already uses for its detail-fetch error.
+   * Adversarial-review fix: previously discarded entirely, so a failed save
+   * gave the user zero feedback. Cleared automatically at the start of the
+   * next save attempt (`useSaveApplicationVersion`'s own `setError(undefined)`).
+   */
+  readonly saveError: unknown;
 }
 
 /**
@@ -45,7 +62,7 @@ export function useEditPipelineForm(
   });
 
   const versionId = activeVersion ? Number(activeVersion.id) : undefined;
-  const { save, isSaving } = useSaveApplicationVersion(projectId, applicationId, versionId);
+  const { save, isSaving, error: saveError } = useSaveApplicationVersion(projectId, applicationId, versionId);
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
@@ -57,5 +74,5 @@ export function useEditPipelineForm(
     })();
   }, [form, save, activeVersion]);
 
-  return { form, handleSave, isSaving };
+  return { form, handleSave, isSaving, saveError };
 }

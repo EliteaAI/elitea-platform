@@ -26,11 +26,18 @@ export const YAML_ERROR_MARK_CLASS = 'error_yaml_code';
  * this worktree is shared with 28 concurrent Wave-2 sub-units, and
  * `CodeMirrorEditor.tsx` (unit S1-E)'s own doc comment already set the
  * precedent of dropping a baseline feature that needs an uninstalled
- * package (`@uiw/codemirror-theme-vscode`) rather than adding one. YAML
- * text in `YamlCodeEditor` therefore renders unhighlighted (plain text,
- * still readable via `CodeMirrorEditor`'s own `highlightStyle` base
- * colours) but is still linted with the same error messages and the same
- * red-highlight `markClass` the baseline used.
+ * package (`@uiw/codemirror-theme-vscode`) rather than adding one.
+ *
+ * UPDATE (adversarial-review fix, A2-fstring-yaml cluster): "unhighlighted"
+ * turned out to be a real, confirmed regression, not an acceptable gap —
+ * `YamlCodeEditor.tsx` now also installs `./yamlLanguage.ts`'s
+ * `createYamlLanguage()` alongside this linter, a hand-rolled
+ * `StreamLanguage` built from only already-installed `@codemirror/language`
+ * primitives (no new dependency, so the constraint above still holds).
+ * `YamlCodeEditor` YAML text is therefore colourised again (keys, quoted/
+ * plain scalars, comments, booleans/null, numbers, list markers, anchors/
+ * aliases/tags, document markers) and still linted with the same error
+ * messages and the same red-highlight `markClass` the baseline used.
  *
  * `js-yaml` itself IS an installed dependency (`package.json`, `5.2.2` —
  * verified against the baseline's `js-yaml` import) with the same

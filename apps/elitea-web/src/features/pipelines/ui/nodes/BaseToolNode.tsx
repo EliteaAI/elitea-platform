@@ -31,7 +31,7 @@ import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { ToolTypes } from '@/entities/toolkit';
 
 import { FlowEditorContext, type FlowEditorContextValue } from '../../lib/flow-editor/flowEditorContext';
-import { batchUpdateYamlNode, getDefaultInputMappingOfTool } from '../../lib/flow-editor/helpers/flowEditor.helpers';
+import { batchUpdateYamlNode, getDefaultInputMappingOfTool, getToolName } from '../../lib/flow-editor/helpers/flowEditor.helpers';
 import { useFunctionInputMapping } from '../../lib/flow-editor/hooks/useFunctionInputMapping';
 import { useGetToolkitNameFromSchema } from '../../lib/flow-editor/hooks/useGetToolkitNameFromSchema';
 import { useToolkitTypeSchemas } from '../../lib/flow-editor/hooks/useToolkitTypeSchemas';
@@ -53,29 +53,63 @@ interface FunctionOption {
   readonly value: string;
 }
 
+/** One `settings.selected_tools[]` entry -- either a bare tool name, or the object shape `{name, description, path}` `getToolName` exists to normalize (real, documented shape; the same union `../../lib/flow-editor/helpers/flowEditor.helpers.ts`'s `getToolName` itself, and `deprecated/useToolNodeEditing.ts`/`select/LoopToolSelect.tsx`/`DefaultNode.tsx`'s own `computeFunctionOptions`-equivalents, already handle). */
+type SelectedToolEntry = string | { readonly name?: string; readonly description?: string; readonly path?: string };
+
 /**
  * `BaseToolNode.jsx:52-75` -- the selected toolkit's enabled tool names,
  * sorted for the "Tool" select. Split out purely to keep the component
  * under the §3.5 complexity ceiling.
+ *
+ * FIX (confirmed adversarial-review finding #3, this file:61): entries were
+ * previously treated as plain strings with no `getToolName` normalization
+ * (baseline: `BaseToolNode.jsx:57,63,68-69` calls `FlowEditorHelpers.
+ * getToolName(tool)` in both the `.filter(...).includes(...)` intersection
+ * check AND the final `.map(...)` label/value -- this port had dropped
+ * both calls). Object-shaped entries would either never survive the
+ * intersection (`{...} !== 'the_same_string'` in `availableTools.
+ * includes(...)`) or render literal `"[object Object]"` as both the
+ * option's label and value once coerced to a string by JSX/string
+ * concatenation. `getToolName` is called at both sites now, matching every
+ * sibling caller.
+ *
+ * ROUTING NOTE (not fixed here, out of this file's scope): `../select/
+ * pipelineToolEntry.types.ts`'s `PipelineToolEntry.settings.selected_tools`
+ * is typed `readonly string[]` -- narrower than the real runtime shape this
+ * fix (and its sibling callers above) defend against. That file belongs to
+ * a different sub-unit (A2h, per its own header) and is outside this
+ * cluster's scope; it should be widened to `readonly SelectedToolEntry[]`
+ * (or equivalent) so a real component-level regression test can construct
+ * an object-shaped `versionTools` fixture without a cast -- today only a
+ * direct unit test of `computeFunctionOptions` (below, exported for that
+ * reason) can exercise the object-shaped path, because this function's own
+ * local parameter type is intentionally loose (`Record<string, unknown>`)
+ * while the public `BaseToolNodeProps.versionTools: readonly
+ * PipelineToolEntry[]` is not.
  */
-function computeFunctionOptions(
+export function computeFunctionOptions(
   selectedToolkit: { readonly settings?: Readonly<Record<string, unknown>>; readonly type?: string } | undefined,
   getSelectedTools: (type: string) => readonly string[],
   dynamicToolNames: readonly string[],
 ): readonly FunctionOption[] {
-  const explicitSelected = selectedToolkit?.settings?.['selected_tools'] as readonly string[] | undefined;
+  const explicitSelected = selectedToolkit?.settings?.['selected_tools'] as readonly SelectedToolEntry[] | undefined;
   const hasExplicitSelection = Array.isArray(explicitSelected) && explicitSelected.length > 0;
   const availableTools = getSelectedTools(selectedToolkit?.type ?? '');
   const hasAvailableCheck = Array.isArray(availableTools) && availableTools.length > 0;
 
-  const enabledTools: readonly string[] =
+  const enabledTools: readonly SelectedToolEntry[] =
     hasExplicitSelection && hasAvailableCheck
-      ? explicitSelected.filter(tool => availableTools.includes(tool))
+      ? explicitSelected.filter((tool: SelectedToolEntry) => availableTools.includes(getToolName(tool)))
       : hasExplicitSelection
         ? explicitSelected
         : dynamicToolNames;
 
-  return enabledTools.map(item => ({ label: item, value: item })).sort((a, b) => a.label.localeCompare(b.label));
+  return enabledTools
+    .map(item => {
+      const name = getToolName(item);
+      return { label: name, value: name };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 interface ApplyToolkitSelectionArgs {

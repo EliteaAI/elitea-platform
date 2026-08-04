@@ -206,8 +206,17 @@ export function RunStateDialog(props: RunStateDialogProps): ReactNode {
                 connector={<ProcessConnector isError={isError} />}
               >
                 {timeline.map((step, index) => (
+                  // Keyed by position, matching the baseline
+                  // (`RunStateDialog.jsx:380`, `key={index}`) exactly — NOT
+                  // `step.id`. A pipeline node re-executing (e.g. inside a
+                  // loop) produces multiple timeline entries with the same
+                  // `id`; keying by `id` collides React's list reconciliation
+                  // (duplicate keys), corrupting which entry's highlight/
+                  // tooltip/DOM node is shown. `timeline` is append-only and
+                  // rendered in that same fixed order, so the array index is
+                  // a stable per-entry identity here.
                   <Step
-                    key={String(step.id ?? index)}
+                    key={index}
                     sx={stepSx}
                   >
                     <ProcessStepIcon

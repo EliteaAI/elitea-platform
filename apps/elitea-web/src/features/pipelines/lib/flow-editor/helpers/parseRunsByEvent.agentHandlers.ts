@@ -52,11 +52,19 @@ export const handleAgentLlmEnd = (ctx: RunEventCtx): void => {
   if (foundProcessNode) foundProcessNode.status = PipelineStatus.Completed;
 };
 
-/** Resolves the tool name from either the old `toolkit___tool` wire format or the new clean-name format. */
+/**
+ * Resolves the tool name from either the old `toolkit___tool` wire format or
+ * the new clean-name format.
+ *
+ * Uses `||`, not `??`, deliberately: an upstream field that is *present but
+ * an empty string* (a real shape seen on the wire) must still fall through
+ * to the next candidate, or the run-state timeline entry for that event gets
+ * silently dropped/misattributed under an empty-string id.
+ */
 const resolveToolName = (ctx: RunEventCtx): string => {
   const { metadata, tool_name, toolkit_name } = ctx.event.response_metadata;
   const toolNameRaw = tool_name ?? '';
-  return metadata?.toolkit_name ?? toolkit_name ?? toolkitNameFromRawToolName(toolNameRaw);
+  return metadata?.toolkit_name || toolkit_name || toolkitNameFromRawToolName(toolNameRaw);
 };
 
 /**

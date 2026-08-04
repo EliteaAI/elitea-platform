@@ -91,11 +91,11 @@ export const ToolNode = memo(function ToolNode(props: ToolNodeProps): ReactNode 
   const runningOrDisabled = Boolean(isRunningPipeline) || Boolean(disabled);
   const isPerforming = Boolean(data.isPerforming);
 
-  const { toolkit, selectedToolkit, taskValue, toolValue } = useToolNodeState(id, yamlJsonObject, versionTools);
-
   const projectId = useSelectedProjectId();
   const { toolkitTypeSchemas } = useToolkitTypeSchemas(projectId);
   const { getToolkitNameFromSchema, getSelectedTools } = useGetToolkitNameFromSchema(toolkitTypeSchemas);
+
+  const { toolkit, selectedToolkit, taskValue, toolValue } = useToolNodeState(id, yamlJsonObject, versionTools, getToolkitNameFromSchema);
 
   const { onSelectToolkit, handleSetTask, handleSetTool, functionOptions } = useToolNodeEditing({
     id,

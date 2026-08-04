@@ -17,6 +17,7 @@ const PUBLIC_SURFACE = [
   'PipelineEditor',
   'useEditPipeline',
   'usePipelineCreation',
+  'ConfigurationTab',
 ] as const;
 
 describe('features/pipelines public surface', () => {

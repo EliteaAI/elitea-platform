@@ -39,14 +39,23 @@ import { createStorage } from '@/shared/lib/storage';
  *   - `jinja` — the baseline's own `jinjaLinter` ported verbatim below
  *     (pure regex balance-checking of `{{ }}`/`{% %}`/`{# #}` — zero
  *     package dependency in the baseline either).
- *   - everything else (`text`, `python`, `code`, unknown values, …) — a
- *     no-op linter (baseline's own `textLinter`) and no syntax
- *     highlighting extension. The editor still works as a plain text
- *     editor for these; it just does not get language-aware
- *     highlighting/lint markers the missing package would have provided.
- * Any caller wiring a genuinely different language back in later should
- * extend `getExtensionsForLanguage` below, not silently widen this
- * doc-comment's claim.
+ *   - everything else — `text`, `python` (named explicitly in
+ *     `getExtensionsForLanguage` below rather than left as an implicit
+ *     fallthrough; it is `SimpleLLMInputItem.tsx`'s restored
+ *     `codeFieldLanguage` override for the Code node's AI-Assistant editor),
+ *     and any other unknown value — a no-op linter (baseline's own
+ *     `textLinter`) and no syntax highlighting extension. The editor still
+ *     works as a plain text editor for these; it just does not get
+ *     language-aware highlighting/lint markers the missing package would
+ *     have provided.
+ * ROUTING FOR A LATER PASS (real Python highlighting): add
+ * `"@codemirror/lang-python"` to `package.json` (outside this sub-unit's
+ * `src/features/pipelines/`-only scope), `import { python } from
+ * '@codemirror/lang-python'` here, and give `'python'` its own branch in
+ * `getExtensionsForLanguage` (same shape as the `'json'` branch) instead of
+ * the shared no-op fallthrough. Any caller wiring a genuinely different
+ * language back in later should extend `getExtensionsForLanguage` below,
+ * not silently widen this doc-comment's claim.
  */
 
 /**
@@ -134,6 +143,16 @@ interface LanguageExtensionBucket {
   readonly extensionWithoutLinter: Extension[];
 }
 
+/**
+ * `'python'` — the Code node's AI-Assistant `language` override
+ * (`SimpleLLMInputItem.tsx`'s `codeFieldLanguage`) — is intentionally routed
+ * through this same bucket as `'text'` and any other unrecognized value: it
+ * does NOT get real Python syntax highlighting, because `@codemirror/lang-python`
+ * is not an installed dependency (see this file's header doc comment's
+ * "ROUTING FOR A LATER PASS" note for the out-of-scope `package.json` change
+ * that would add it). Named here explicitly rather than left as a silent
+ * fallthrough so this is legible as a disclosed limitation, not an oversight.
+ */
 function getExtensionsForLanguage(language: string): LanguageExtensionBucket {
   if (language === 'json') {
     return { extensionWithoutLinter: [json()], extensionWithLinter: [json(), linter(jsonParseLinter())] };

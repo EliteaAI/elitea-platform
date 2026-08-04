@@ -104,6 +104,14 @@ export function createPipelineYamlStore(): PipelineYamlStore {
         yamlJsonObject: { ...yamlJsonObject },
         initYamlCode: yamlCode,
         initYamlJsonObject: { ...yamlJsonObject },
+        // Baseline `initThePipeline` reducer also sets `state.resetFlag = true`
+        // (`slices/pipeline.js`) — every load/reload of a pipeline version must
+        // re-sync the flow-editor canvas, exactly like `resetPipelineYaml`
+        // already does below. Missing this meant `EditorPanel`/`FlowEditor`
+        // could silently keep showing STALE canvas content across a version
+        // reload whenever they stayed mounted (`usePipelineVersionSync`'s own
+        // call site — switching versions without unmounting the editor).
+        resetFlag: true,
       }),
     markYamlCodeSaved: () => set({ initYamlCode: get().yamlCode }),
     resetPipelineYaml: () => {

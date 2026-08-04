@@ -3,7 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { server } from '../../../test/setup';
 import { installWebStorageShim } from '../../../test/webstorage';
@@ -76,5 +76,31 @@ describe('AIAssistantInput', () => {
 
     await userEvent.click(ui.getByLabelText('Close'));
     expect(ui.queryByPlaceholderText('Describe your idea to generate or rewrite the value.')).toBeNull();
+  });
+
+  // Regression coverage for confirmed adversarial-review finding #1
+  // (`AIAssistantInput.tsx:60`): typing directly into the inline field used
+  // to be silently discarded because `buildInputBaseProps` forwarded no
+  // change handler at all.
+  it('forwards a typed keystroke to fieldBinding.onInput (the primary, non-AI editing path)', async () => {
+    const onInput = vi.fn();
+    const ui = renderInput({ value: 'draft', fieldBinding: { onInput } });
+
+    await userEvent.type(ui.getByDisplayValue('draft'), '!');
+
+    expect(onInput).toHaveBeenCalled();
+    const lastEvent = onInput.mock.calls.at(-1)?.[0] as { target: { value: string } };
+    expect(lastEvent.target.value).toBe('draft!');
+  });
+
+  it('routes typed keystrokes to fieldBinding.onChange instead of onInput when hasOnChangeCallback is set', async () => {
+    const onChange = vi.fn();
+    const onInput = vi.fn();
+    const ui = renderInput({ value: 'draft', fieldBinding: { hasOnChangeCallback: true, onChange, onInput } });
+
+    await userEvent.type(ui.getByDisplayValue('draft'), '!');
+
+    expect(onChange).toHaveBeenCalled();
+    expect(onInput).not.toHaveBeenCalled();
   });
 });

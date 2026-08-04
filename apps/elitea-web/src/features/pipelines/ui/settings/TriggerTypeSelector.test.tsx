@@ -97,7 +97,11 @@ describe('TriggerTypeSelector', () => {
     expect(await findByText('Webhook settings')).toBeInTheDocument();
   });
 
-  it('surfaces onNotifyError when switching to Chat Message fails', async () => {
+  it('surfaces the backend error text (not a fixed generic message) when switching to Chat Message fails', async () => {
+    // Regression coverage (confirmed finding 3): this used to always report
+    // the fixed 'Failed to update trigger' string regardless of what the
+    // backend actually returned -- discarding the real `{"error": "boom"}`
+    // envelope's message.
     server.use(
       http.get(TRIGGER_URL, () => HttpResponse.json({ version_id: String(VERSION_ID), type: 'schedule', schedule: { cron: '0 0 * * 6' } })),
       http.put(TRIGGER_URL, () => HttpResponse.json({ error: 'boom' }, { status: 400 })),
@@ -117,7 +121,7 @@ describe('TriggerTypeSelector', () => {
     await user.click(await findByRole('combobox'));
     await user.click(getByRole('option', { name: 'Chat Message' }));
 
-    await waitFor(() => expect(onNotifyError).toHaveBeenCalledWith('Failed to update trigger'));
+    await waitFor(() => expect(onNotifyError).toHaveBeenCalledWith('boom'));
   });
 
   it('does not throw when projectId/versionId are undefined', async () => {

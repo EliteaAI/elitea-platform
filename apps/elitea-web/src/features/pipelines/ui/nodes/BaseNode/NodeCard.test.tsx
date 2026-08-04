@@ -168,6 +168,46 @@ describe('NodeCard', () => {
     );
   });
 
+  // Regression coverage for confirmed adversarial-review finding #2
+  // (`NodeCard.tsx:50`): no node component anywhere in the pipelines
+  // feature actually supplies `onDuplicateName`, which used to make a
+  // detected node-id-collision revert completely silent.
+  it('shows its own fallback Snackbar/Alert with the duplicate-name message when onDuplicateName is not supplied (regression: previously silent)', async () => {
+    const flowEditorValue = buildFlowEditorContextValue({
+      expandAll: true,
+      yamlJsonObject: { nodes: [{ id: 'Node1' }, { id: 'OtherNode' }] },
+    });
+    const { getByText, getByRole, findByText } = renderNodeCard({ id: 'Node1' }, flowEditorValue);
+    await waitFor(() => expect(getByText('Node1')).toBeInTheDocument());
+
+    fireEvent.doubleClick(getByText('Node1'));
+    const input = getByRole('textbox', { hidden: true });
+    fireEvent.change(input, { target: { value: 'OtherNode' } });
+    fireEvent.blur(input);
+
+    expect(await findByText('The name has been used by other nodes, please input a new name!')).toBeInTheDocument();
+    // The rename itself still reverts in the header's own displayed name.
+    expect(getByText('Node1')).toBeInTheDocument();
+  });
+
+  it('does not render its own fallback Snackbar when the caller supplies onDuplicateName (no double-surfacing)', async () => {
+    const flowEditorValue = buildFlowEditorContextValue({
+      expandAll: true,
+      yamlJsonObject: { nodes: [{ id: 'Node1' }, { id: 'OtherNode' }] },
+    });
+    const onDuplicateName = vi.fn();
+    const { getByText, getByRole, queryByText } = renderNodeCard({ id: 'Node1', onDuplicateName }, flowEditorValue);
+    await waitFor(() => expect(getByText('Node1')).toBeInTheDocument());
+
+    fireEvent.doubleClick(getByText('Node1'));
+    const input = getByRole('textbox', { hidden: true });
+    fireEvent.change(input, { target: { value: 'OtherNode' } });
+    fireEvent.blur(input);
+
+    expect(onDuplicateName).toHaveBeenCalledWith('The name has been used by other nodes, please input a new name!');
+    expect(queryByText('The name has been used by other nodes, please input a new name!')).not.toBeInTheDocument();
+  });
+
   it('forwards a defined isConditionNode prop through to NodeCardHeader without throwing (NodeCardHeader itself never reads it -- forwarded for baseline parity only)', async () => {
     const flowEditorValue = buildFlowEditorContextValue({ expandAll: true });
     const { getByText } = renderNodeCard({ isConditionNode: true }, flowEditorValue);

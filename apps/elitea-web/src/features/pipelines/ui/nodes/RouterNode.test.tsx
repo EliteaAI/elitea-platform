@@ -89,7 +89,38 @@ describe('RouterNode', () => {
     expect(getByDisplayValue('x > 1')).toBeInTheDocument();
   });
 
-  it("handleConditionFilling writes the AI Assistant modal's content back onto condition when the modal is closed (the base field forwards no onChange -- see this file's own doc comment)", async () => {
+  it('typing directly into the Condition field writes the new value onto condition (regression coverage for the adversarial-review-confirmed AIAssistantInput bug documented in this file\'s own module doc comment -- its base field used to forward no onChange at all)', async () => {
+    const user = userEvent.setup();
+    const setYamlJsonObject = vi.fn();
+    const yamlJsonObject: YamlPipelineDocument = {
+      nodes: [{ id: 'Node1', condition: 'x > 1' as unknown as YamlConditionSpec }],
+    };
+    const flowEditorValue = buildFlowEditorContextValue({ yamlJsonObject, setYamlJsonObject });
+
+    // Mounted directly (not via `nodeTypes`/an actual `<ReactFlow>` node) --
+    // same rationale as the "handleConditionFilling ... modal" test below:
+    // the Condition field has no `nopan nodrag` shield, so a real `<ReactFlow>`
+    // canvas bubbles its mousedown into d3-drag's node-drag-start handler.
+    const { findByText, getByDisplayValue } = renderWithRouterAndProject(
+      <ReactFlowProvider>
+        <FlowEditorContext.Provider value={flowEditorValue}>
+          <RouterNode {...minimalRouterNodeProps} />
+        </FlowEditorContext.Provider>
+      </ReactFlowProvider>,
+      PROJECT_ID,
+    );
+    await findByText('Condition');
+
+    const conditionField = getByDisplayValue('x > 1');
+    await user.type(conditionField, '0');
+
+    expect(setYamlJsonObject).toHaveBeenCalled();
+    const lastCall = setYamlJsonObject.mock.calls.at(-1)?.[0] as YamlPipelineDocument;
+    const updatedNode = lastCall?.nodes?.find(node => node.id === 'Node1');
+    expect(updatedNode?.condition).toBe('x > 10');
+  });
+
+  it("handleConditionFilling writes the AI Assistant modal's content back onto condition when the modal is closed", async () => {
     const user = userEvent.setup();
     const setYamlJsonObject = vi.fn();
     const yamlJsonObject: YamlPipelineDocument = {

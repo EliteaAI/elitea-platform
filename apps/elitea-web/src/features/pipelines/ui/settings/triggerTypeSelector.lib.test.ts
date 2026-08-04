@@ -267,12 +267,22 @@ describe('useTriggerActions', () => {
       expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
 
-    it('reports an error and does not open the webhook modal when the webhook update fails', async () => {
-      const updateTrigger = vi.fn().mockRejectedValue(new Error('nope'));
+    it('reports the backend error text (not a fixed generic message) and does not open the webhook modal when the webhook update fails', async () => {
+      // Regression coverage (confirmed finding 3): this used to always
+      // report the fixed 'Failed to configure webhook' string, discarding
+      // whatever `updateTrigger` actually rejected with.
+      const updateTrigger = vi.fn().mockRejectedValue(new Error('webhook quota exceeded'));
       const { result, setIsWebhookModalOpen, onNotifyError } = setup({ updateTrigger });
       await result.current.handleTriggerTypeChange(TRIGGER_TYPES.webhook);
-      expect(onNotifyError).toHaveBeenCalledWith('Failed to configure webhook');
+      expect(onNotifyError).toHaveBeenCalledWith('webhook quota exceeded');
       expect(setIsWebhookModalOpen).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the generic webhook-configure message for a non-Error/non-string rejection', async () => {
+      const updateTrigger = vi.fn().mockRejectedValue({ some: 'object' });
+      const { result, onNotifyError } = setup({ updateTrigger });
+      await result.current.handleTriggerTypeChange(TRIGGER_TYPES.webhook);
+      expect(onNotifyError).toHaveBeenCalledWith('Failed to configure webhook');
     });
 
     it('updates to chat_message and reports success (the default branch)', async () => {
@@ -282,29 +292,35 @@ describe('useTriggerActions', () => {
       expect(onNotifySuccess).toHaveBeenCalledWith('Trigger updated to Chat Message');
     });
 
-    it('reports an error for the default branch when the update fails', async () => {
-      const updateTrigger = vi.fn().mockRejectedValue(new Error('nope'));
+    it('reports the backend error text for the default branch when the update fails', async () => {
+      const updateTrigger = vi.fn().mockRejectedValue(new Error('version is locked'));
       const { result, onNotifyError } = setup({ currentTriggerType: TRIGGER_TYPES.schedule, updateTrigger });
       await result.current.handleTriggerTypeChange(TRIGGER_TYPES.chat_message);
-      expect(onNotifyError).toHaveBeenCalledWith('Failed to update trigger');
+      expect(onNotifyError).toHaveBeenCalledWith('version is locked');
     });
   });
 
   describe('handleScheduleSubmit', () => {
-    it('updates the trigger with the cron expression + timezone and reports success', async () => {
-      const { result, updateTrigger, onNotifySuccess } = setup();
+    it('updates the trigger with the cron expression + timezone, reports success, and tracks isUpdating', async () => {
+      const { result, updateTrigger, setIsUpdating, onNotifySuccess } = setup();
       await result.current.handleScheduleSubmit('0 9 * * 1');
       const call = updateTrigger.mock.calls[0]?.[0] as { type: string; schedule: { cron: string; timezone: string } };
       expect(call.type).toBe(TRIGGER_TYPES.schedule);
       expect(call.schedule.cron).toBe('0 9 * * 1');
       expect(onNotifySuccess).toHaveBeenCalledWith('Schedule configured successfully');
+      // Regression coverage (confirmed finding 4): `handleScheduleSubmit`
+      // used to never toggle `isUpdating` at all.
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
 
-    it('reports an error when the schedule update fails', async () => {
-      const updateTrigger = vi.fn().mockRejectedValue(new Error('nope'));
-      const { result, onNotifyError } = setup({ updateTrigger });
+    it('reports the backend error text when the schedule update fails, and still clears isUpdating', async () => {
+      const updateTrigger = vi.fn().mockRejectedValue(new Error('invalid cron expression'));
+      const { result, setIsUpdating, onNotifyError } = setup({ updateTrigger });
       await result.current.handleScheduleSubmit('0 9 * * 1');
-      expect(onNotifyError).toHaveBeenCalledWith('Failed to configure schedule');
+      expect(onNotifyError).toHaveBeenCalledWith('invalid cron expression');
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
   });
 
@@ -337,8 +353,8 @@ describe('useTriggerActions', () => {
       expect(setIsWebhookModalOpen).toHaveBeenCalledWith(true);
     });
 
-    it('fetches the webhook settings then opens the modal when no secretValue is known yet', async () => {
-      const { result, updateTrigger, setIsWebhookModalOpen } = setup({
+    it('fetches the webhook settings, opens the modal, and tracks isUpdating when no secretValue is known yet', async () => {
+      const { result, updateTrigger, setIsUpdating, setIsWebhookModalOpen } = setup({
         currentTriggerType: TRIGGER_TYPES.webhook,
         currentWebhookType: 'custom',
         secretValue: undefined,
@@ -346,30 +362,40 @@ describe('useTriggerActions', () => {
       await result.current.handleWebhookIconClick();
       expect(updateTrigger).toHaveBeenCalledWith({ type: TRIGGER_TYPES.webhook, schedule: { webhook_type: 'custom' } });
       expect(setIsWebhookModalOpen).toHaveBeenCalledWith(true);
+      // Regression coverage (confirmed finding 4): this implicit
+      // secret-generation save used to never toggle `isUpdating` at all.
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
 
-    it('reports an error and does not open the modal when the fetch fails', async () => {
-      const updateTrigger = vi.fn().mockRejectedValue(new Error('nope'));
-      const { result, setIsWebhookModalOpen, onNotifyError } = setup({
+    it('reports the backend error text and does not open the modal when the fetch fails, but still clears isUpdating', async () => {
+      const updateTrigger = vi.fn().mockRejectedValue(new Error('secret generation failed'));
+      const { result, setIsUpdating, setIsWebhookModalOpen, onNotifyError } = setup({
         currentTriggerType: TRIGGER_TYPES.webhook,
         secretValue: undefined,
         updateTrigger,
       });
       await result.current.handleWebhookIconClick();
-      expect(onNotifyError).toHaveBeenCalledWith('Failed to load webhook settings');
+      expect(onNotifyError).toHaveBeenCalledWith('secret generation failed');
       expect(setIsWebhookModalOpen).not.toHaveBeenCalled();
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
   });
 
   describe('handleWebhookSubmit', () => {
-    it('sends webhook_secret_value and reports the "new secret" message when a new secret is supplied', async () => {
-      const { result, updateTrigger, onNotifySuccess } = setup();
+    it('sends webhook_secret_value, reports the "new secret" message, and tracks isUpdating when a new secret is supplied', async () => {
+      const { result, updateTrigger, setIsUpdating, onNotifySuccess } = setup();
       await result.current.handleWebhookSubmit('gitlab', 'new-secret');
       expect(updateTrigger).toHaveBeenCalledWith({
         type: TRIGGER_TYPES.webhook,
         schedule: { webhook_type: 'gitlab', webhook_secret_value: 'new-secret' },
       });
       expect(onNotifySuccess).toHaveBeenCalledWith('Webhook configured with new secret');
+      // Regression coverage (confirmed finding 4): `handleWebhookSubmit`
+      // used to never toggle `isUpdating` at all.
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
 
     it('omits the secret field and reports the plain success message when newSecretValue is null', async () => {
@@ -379,11 +405,13 @@ describe('useTriggerActions', () => {
       expect(onNotifySuccess).toHaveBeenCalledWith('Webhook configured successfully');
     });
 
-    it('reports an error when the webhook submit fails', async () => {
-      const updateTrigger = vi.fn().mockRejectedValue(new Error('nope'));
-      const { result, onNotifyError } = setup({ updateTrigger });
+    it('reports the backend error text (not a fixed generic message) when the webhook submit fails', async () => {
+      const updateTrigger = vi.fn().mockRejectedValue(new Error('webhook URL unreachable'));
+      const { result, setIsUpdating, onNotifyError } = setup({ updateTrigger });
       await result.current.handleWebhookSubmit('github', null);
-      expect(onNotifyError).toHaveBeenCalledWith('Failed to configure webhook');
+      expect(onNotifyError).toHaveBeenCalledWith('webhook URL unreachable');
+      expect(setIsUpdating).toHaveBeenCalledWith(true);
+      expect(setIsUpdating).toHaveBeenLastCalledWith(false);
     });
   });
 });

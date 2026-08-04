@@ -26,12 +26,56 @@ import { usePipelineYamlStore } from '../model/pipelineYamlStore';
  * useEditPipelineData.ts`, unit A2m's split of `EditPipeline.tsx`'s fetch
  * logic). See `PipelineEditor.tsx`'s own module doc comment for the
  * zustand-store ownership rationale these hooks write into.
+ *
+ * **Adversarial-review fix (Wave-2 A2 cluster `A2-flow-editor-core-ui`):**
+ * `usePipelineVersionSync` previously called `initPipelineYaml` without ever
+ * calling `setLayoutVersion`, leaving `pipelineYamlStore`'s `layoutVersion`
+ * field at whatever the PREVIOUS pipeline opened in this browser session left
+ * it (or its module-level initial `undefined` for the first pipeline of the
+ * session) — a session-global leak, not a per-pipeline value. Two concrete
+ * bugs followed: the first pipeline opened per session was always
+ * force-relaid-out (silently discarding its saved node positions) even when
+ * its OWN `layout_version` already matched `FlowEditorConstants.
+ * LAYOUT_VERSION`; and a genuinely-stale second pipeline opened afterward
+ * would skip the migration entirely because it inherited the first
+ * pipeline's now-current `layoutVersion`. Fixed by calling `setLayoutVersion
+ * (readSavedLayoutVersion(versionDetails.pipeline_settings))` in the SAME
+ * effect/guard as `initPipelineYaml`, so the store's `layoutVersion` always
+ * reflects the pipeline actually being loaded. See `readSavedLayoutVersion`'s
+ * own doc comment for the baseline citation.
  */
 
 /** `pipeline_settings.nodes` — a permissive `Record<string, unknown>` on the wire (`PipelineSettings` zod schema). Narrowed defensively (array check only) since it is only ever fed to `doLayout`'s optional "previously measured heights" hint, which itself falls back safely per-node when a match isn't found. */
 function readSavedNodes(pipelineSettings: Readonly<Record<string, unknown>> | undefined): readonly FlowNode[] {
   const nodes = pipelineSettings?.nodes;
   return Array.isArray(nodes) ? (nodes as readonly FlowNode[]) : [];
+}
+
+/**
+ * `pipeline_settings.layout_version` — same permissive wire shape as
+ * {@link readSavedNodes}, narrowed to a string. Baseline (`pages/NewChat/
+ * PipelineEditor.jsx:390-392`) extracts this SAME field
+ * (`versionDetails.version_details?.pipeline_settings?.layout_version ||
+ * versionDetails.pipeline_settings?.layout_version`, no further fallback —
+ * `undefined` when missing) and threads it straight into the SAME
+ * `initThePipeline` dispatch this function's own `initPipelineYaml`/
+ * `setLayoutVersion` calls replace (`slices/pipeline.js:28-35`:
+ * `state.layout_version = layout_version`). `setLayoutVersion`'s signature
+ * (`../model/pipelineYamlStore.ts`, sibling unit A2n, outside this file's
+ * scope) is `(version: string) => void`, not `string | undefined` — `''` is
+ * used here instead of forwarding `undefined` verbatim. This is a
+ * same-behaviour substitution, not a deviation: `pipelineYamlStore.ts`'s own
+ * doc comment establishes `''`/`undefined` as already-interchangeable
+ * "unset" sentinels for this exact field ("matching the baseline's `''`
+ * initial value (never equal to a real version string, so the first
+ * auto-relayout always fires)"), and the migration-effect check this value
+ * ultimately feeds (`useFlowEditorLayoutVersionSync`'s `layoutVersion ===
+ * currentLayoutVersion`) treats both identically — neither ever equals a
+ * real version string like `FlowEditorConstants.LAYOUT_VERSION`.
+ */
+function readSavedLayoutVersion(pipelineSettings: Readonly<Record<string, unknown>> | undefined): string {
+  const layoutVersion = pipelineSettings?.layout_version;
+  return typeof layoutVersion === 'string' ? layoutVersion : '';
 }
 
 export interface UsePipelineVersionQueryArgs {
@@ -153,6 +197,11 @@ export function usePipelineVersionSync({ isCreateMode, versionDetails, versionId
       yamlCode: instructions,
       yamlJsonObject: parsedYamlJson ?? {},
     });
+    // Forward THIS pipeline's own saved layout version on every load — the store is a
+    // session-wide singleton, so without this the migration effect it feeds
+    // (`useFlowEditorLayoutVersionSync`) would compare against whatever the PREVIOUSLY
+    // opened pipeline (if any) left behind, instead of this pipeline's real value.
+    usePipelineYamlStore.getState().setLayoutVersion(readSavedLayoutVersion(versionDetails.pipeline_settings));
     usePipelineEditorStore.getState().resetPipelineEditor();
     usePipelineEditorStore.getState().setNodes(nodes);
     usePipelineEditorStore.getState().setEdges(edges);

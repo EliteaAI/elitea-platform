@@ -65,17 +65,30 @@ describe('buildPipelineParticipant', () => {
 });
 
 describe('buildLlmSettingsFallback', () => {
-  it('reads through to llm_settings fields, defaulting to undefined when missing', () => {
-    expect(buildLlmSettingsFallback(undefined)).toEqual({
+  it('reads through to llm_settings fields, defaulting to undefined when missing (and no projectId to fall back to)', () => {
+    expect(buildLlmSettingsFallback(undefined, undefined)).toEqual({
       model_name: undefined,
       model_project_id: undefined,
       max_tokens: undefined,
       temperature: undefined,
       reasoning_effort: undefined,
     });
-    expect(buildLlmSettingsFallback({ llm_settings: { model_name: 'gpt-4', temperature: 0.5 } })).toMatchObject({
+    expect(buildLlmSettingsFallback({ llm_settings: { model_name: 'gpt-4', temperature: 0.5 } }, undefined)).toMatchObject({
       model_name: 'gpt-4',
       temperature: 0.5,
+    });
+  });
+
+  it('falls back model_project_id to the current projectId when the version has none (baseline `usePipelineChat.hooks.js:331-334`\'s final `|| projectId` link)', () => {
+    expect(buildLlmSettingsFallback(undefined, 'proj-1')).toMatchObject({ model_project_id: 'proj-1' });
+    expect(buildLlmSettingsFallback({ llm_settings: { model_name: 'gpt-4' } }, 'proj-1')).toMatchObject({
+      model_project_id: 'proj-1',
+    });
+  });
+
+  it('prefers the version-level model_project_id over projectId when both are present', () => {
+    expect(buildLlmSettingsFallback({ llm_settings: { model_project_id: 'version-proj' } }, 'proj-1')).toMatchObject({
+      model_project_id: 'version-proj',
     });
   });
 });

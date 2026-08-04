@@ -298,6 +298,20 @@ describe('useLLMNodeModel', () => {
     await vi.waitFor(() => expect(result.current.resolvedLlmSettings).toBeNull());
   });
 
+  it('defaultValues is the flat {variable: rawValue} shape SimpleLLMInputs expects, not the raw {type,value} entry pairs (regression: switching a field\'s Type away from fstring/fixed must write a plain string/array, never the wrapper object, into input_mapping)', async () => {
+    const contextValue: FlowEditorContextValue = {
+      yamlJsonObject: { nodes: [{ id: 'Node1' }] },
+      setYamlJsonObject: vi.fn(),
+      setFlowNodes: vi.fn(),
+      setFlowEdges: vi.fn(),
+    };
+    const { result } = renderUseLLMNodeModel({ id: 'Node1', versionTools: undefined, llmSettings: null }, contextValue);
+
+    await vi.waitFor(() => expect(result.current.inputMappings.system).toBeDefined());
+
+    expect(result.current.defaultValues).toEqual({ system: '', task: '', chat_history: [] });
+  });
+
   it('resolvedLlmSettings passes a real settings object through unchanged', async () => {
     const contextValue: FlowEditorContextValue = {
       yamlJsonObject: { nodes: [{ id: 'Node1' }] },
