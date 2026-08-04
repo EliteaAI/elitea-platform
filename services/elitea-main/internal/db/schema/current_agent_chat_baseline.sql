@@ -66,6 +66,14 @@ CREATE TABLE chat_messages_text (
     content text NOT NULL
 );
 
+-- Existing current-schema support-assistant context projection. This is a
+-- SQLC compiler input only, not a migration or a replacement schema.
+CREATE TABLE chat_messages_context (
+    context_data jsonb NOT NULL,
+    context_type text,
+    id integer PRIMARY KEY REFERENCES chat_message_items(id) ON DELETE CASCADE
+);
+
 -- Current application/tool ownership projection used only to keep admission
 -- queries type-checked. The tenant schema lifecycle continues to own this
 -- already-existing table; this compiler input is not a migration.

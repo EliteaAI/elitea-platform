@@ -18,20 +18,22 @@ const agentRequestDigestDomain = "elitea.agent.execution.admission.v1\x00"
 var ErrInvalidAgentAdmission = errors.New("invalid agent execution admission")
 
 type SubmitRequest struct {
-	Identity        executionapp.AdmissionIdentity
-	IdempotencyKey  string
-	CapabilityID    string
-	ClientStreamID  string
-	ClientMessageID string
-	SIOEvent        string
-	Input           *runtimev1.AgentExecutionInputV1
-	CurrentTurn     *CurrentApplicationTurn
+	Identity         executionapp.AdmissionIdentity
+	IdempotencyKey   string
+	CapabilityID     string
+	ClientStreamID   string
+	ClientMessageID  string
+	SIOEvent         string
+	Input            *runtimev1.AgentExecutionInputV1
+	CurrentTurn      *CurrentApplicationTurn
+	CurrentAdhocTurn *CurrentAdhocTurn
 }
 
 type Admission struct {
-	Record      executiondomain.Admission
-	Binding     executiondomain.AgentExecutionBinding
-	CurrentTurn *CurrentApplicationTurn
+	Record           executiondomain.Admission
+	Binding          executiondomain.AgentExecutionBinding
+	CurrentTurn      *CurrentApplicationTurn
+	CurrentAdhocTurn *CurrentAdhocTurn
 }
 
 type AtomicAdmissionStore interface {
@@ -126,11 +128,21 @@ func (s *AdmissionService) Submit(
 			return executionapp.AdmissionOutcome{}, ErrInvalidAgentAdmission
 		}
 	}
+	if request.CurrentAdhocTurn != nil {
+		if request.CurrentTurn != nil || request.CapabilityID != executiondomain.AgentAdhocCapability ||
+			request.CurrentAdhocTurn.Validate() != nil ||
+			request.CurrentAdhocTurn.ResponseMessageID != request.ClientMessageID ||
+			request.CurrentAdhocTurn.ConversationUUID != request.ClientStreamID ||
+			request.CurrentAdhocTurn.QuestionID != binding.ClientExecutionGeneration {
+			return executionapp.AdmissionOutcome{}, ErrInvalidAgentAdmission
+		}
+	}
 
 	outcome, err := s.store.AdmitAgentExecution(ctx, Admission{
-		Record:      record,
-		Binding:     binding,
-		CurrentTurn: request.CurrentTurn.Clone(),
+		Record:           record,
+		Binding:          binding,
+		CurrentTurn:      request.CurrentTurn.Clone(),
+		CurrentAdhocTurn: request.CurrentAdhocTurn.Clone(),
 	})
 	if err != nil {
 		return executionapp.AdmissionOutcome{}, fmt.Errorf("admit agent execution: %w", err)

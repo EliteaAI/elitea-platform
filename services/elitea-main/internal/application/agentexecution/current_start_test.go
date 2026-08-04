@@ -16,10 +16,13 @@ import (
 )
 
 type currentApplicationResolverStub struct {
-	target  CurrentApplicationTarget
-	targets []CurrentApplicationTarget
-	err     error
-	calls   int
+	target        CurrentApplicationTarget
+	targets       []CurrentApplicationTarget
+	adhocTarget   CurrentAdhocTarget
+	err           error
+	calls         int
+	adhocCalls    int
+	adhocRequests []CurrentAdhocStartRequest
 }
 
 type currentApplicationVersionFreezerStub struct {
@@ -62,6 +65,16 @@ func (stub *currentApplicationResolverStub) ResolveCurrentApplication(
 	return stub.target, stub.err
 }
 
+func (stub *currentApplicationResolverStub) ResolveCurrentAdhoc(
+	_ context.Context,
+	request CurrentAdhocStartRequest,
+) (CurrentAdhocTarget, error) {
+	stub.adhocCalls++
+	request.LLMSettings = bytes.Clone(request.LLMSettings)
+	stub.adhocRequests = append(stub.adhocRequests, request)
+	return stub.adhocTarget, stub.err
+}
+
 type currentApplicationAdmissionStub struct {
 	requests []SubmitRequest
 	outcome  executionapp.AdmissionOutcome
@@ -74,6 +87,7 @@ func (stub *currentApplicationAdmissionStub) Submit(
 ) (executionapp.AdmissionOutcome, error) {
 	request.Input = proto.Clone(request.Input).(*runtimeAgentInput)
 	request.CurrentTurn = request.CurrentTurn.Clone()
+	request.CurrentAdhocTurn = request.CurrentAdhocTurn.Clone()
 	stub.requests = append(stub.requests, request)
 	return stub.outcome, stub.err
 }
@@ -95,7 +109,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	freezer := &currentApplicationVersionFreezerStub{}
-	service, err := NewCurrentApplicationStartService(resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,6 +187,7 @@ func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testin
 	}}
 	service, err := NewCurrentApplicationStartService(
 		resolver,
+		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)
@@ -212,6 +227,7 @@ func TestCurrentApplicationStartKeepsStableThreadAndProjectsHistoryAcrossDistinc
 		Deadline:   time.Date(2026, 8, 3, 12, 1, 0, 0, time.UTC),
 	}}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
 		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,
@@ -261,6 +277,7 @@ func TestCurrentApplicationStartRejectsUnsupportedTargetBeforeAdmission(t *testi
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
+		resolver,
 		resolver,
 		&currentApplicationVersionFreezerStub{},
 		admissions,

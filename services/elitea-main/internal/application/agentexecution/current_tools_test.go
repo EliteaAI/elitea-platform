@@ -169,3 +169,49 @@ func TestCurrentApplicationToolSnapshotValidatesConstruction(t *testing.T) {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
 }
+
+func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing.T) {
+	tests := []struct {
+		name              string
+		supportsReasoning bool
+		wantMaxTokens     int64
+	}{
+		{name: "ordinary model", wantMaxTokens: currentAgentDefaultMaxTokens},
+		{name: "reasoning model", supportsReasoning: true, wantMaxTokens: currentAgentReasoningDefaultMaxTokens},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compatible := true
+			models := &currentAgentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
+				Items: []configurationapp.CurrentModelCatalogItem{{
+					Name: "model", ProjectID: 7, OpenAICompatible: &compatible,
+					SupportsReasoning: &test.supportsReasoning,
+				}},
+			}}
+			service, err := NewCurrentApplicationToolSnapshotService(
+				&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, 1,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.FreezeCurrentApplicationVersion(
+				context.Background(), CurrentApplicationVersionFreezeRequest{
+					ProjectID: 7, ActorUserID: 11,
+					VersionDetails: json.RawMessage(`{"llm_settings":{"model_name":"model","max_tokens":-1},"tools":[]}`),
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := decodeCurrentApplicationVersion(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := version["llm_settings"].(map[string]any)
+			maxTokens, valid := positiveCurrentAgentJSONInteger(settings["max_tokens"])
+			if !valid || maxTokens != test.wantMaxTokens {
+				t.Fatalf("max_tokens=%v, want %d", settings["max_tokens"], test.wantMaxTokens)
+			}
+		})
+	}
+}

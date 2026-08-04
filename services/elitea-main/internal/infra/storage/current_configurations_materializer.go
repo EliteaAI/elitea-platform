@@ -55,7 +55,8 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if authorization.CapabilityID == executiondomain.AgentApplicationCapability {
+	if authorization.CapabilityID == executiondomain.AgentApplicationCapability ||
+		authorization.CapabilityID == executiondomain.AgentAdhocCapability {
 		projectID, ok := positiveCurrentMaterializationID(authorization.ResourceProjectID)
 		if !ok {
 			return nil, ErrContentRejected
@@ -66,12 +67,18 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 		if authorization.SemanticRole != executiondomain.AgentExecutionRequestRole {
 			return nil, ErrContentRejected
 		}
-		return m.materializeAgentApplication(ctx, projectID, source, maxBytes)
+		return m.materializeAgentExecution(
+			ctx,
+			projectID,
+			authorization.CapabilityID,
+			source,
+			maxBytes,
+		)
 	}
 	if authorization.CapabilityID != executiondomain.IndexIngestCapability {
-		// The shared content listener also serves validation and ad-hoc agent
-		// inputs. Those bytes have no frozen configured-toolkit references and
-		// remain byte-for-byte stable.
+		// The shared content listener also serves validation inputs. Those bytes
+		// have no frozen configured-toolkit references and remain byte-for-byte
+		// stable.
 		return source, nil
 	}
 
@@ -105,9 +112,10 @@ func (m *CurrentConfigurationsMaterializer) MaterializeContent(
 	}
 }
 
-func (m *CurrentConfigurationsMaterializer) materializeAgentApplication(
+func (m *CurrentConfigurationsMaterializer) materializeAgentExecution(
 	ctx context.Context,
 	projectID int32,
+	capabilityID string,
 	source []byte,
 	maxBytes int64,
 ) ([]byte, error) {
@@ -122,47 +130,80 @@ func (m *CurrentConfigurationsMaterializer) materializeAgentApplication(
 	}
 	clearContentBytes(canonical)
 
-	application, err := decodeCurrentMaterializationObject(request.GetApplication())
-	if err != nil {
-		return nil, ErrContentRejected
-	}
-	version, ok := application["version_details"].(map[string]any)
-	if !ok || version == nil {
-		return nil, ErrContentRejected
-	}
-	tools, ok := version["tools"].([]any)
-	if !ok {
-		return nil, ErrContentRejected
-	}
 	walker := currentFrozenConfigurationWalker{unsecreter: m.unsecreter}
-	for index, value := range tools {
-		tool, ok := value.(map[string]any)
+	switch capabilityID {
+	case executiondomain.AgentApplicationCapability:
+		application, decodeErr := decodeCurrentMaterializationObject(request.GetApplication())
+		if decodeErr != nil {
+			return nil, ErrContentRejected
+		}
+		version, ok := application["version_details"].(map[string]any)
+		if !ok || version == nil {
+			return nil, ErrContentRejected
+		}
+		tools, ok := version["tools"].([]any)
 		if !ok {
 			return nil, ErrContentRejected
 		}
-		settings, ok := tool["settings"].(map[string]any)
-		if !ok || settings == nil {
-			return nil, ErrContentRejected
-		}
-		materialized, err := walker.materializeOwnedMap(ctx, projectID, settings, 0, true)
-		if err != nil {
+		if err := materializeCurrentAgentTools(ctx, projectID, tools, &walker); err != nil {
 			return nil, currentMaterializationError(ctx, err)
 		}
-		tool["settings"] = materialized
-		tools[index] = tool
+		version["tools"] = tools
+		application["version_details"] = version
+		request.Application, err = encodeCurrentMaterializationObject(application, maxBytes)
+		if err != nil {
+			return nil, err
+		}
+	case executiondomain.AgentAdhocCapability:
+		tools, decodeErr := decodeCurrentMaterializationArray(request.GetTools())
+		if decodeErr != nil {
+			return nil, ErrContentRejected
+		}
+		if err := materializeCurrentAgentTools(ctx, projectID, tools, &walker); err != nil {
+			return nil, currentMaterializationError(ctx, err)
+		}
+		request.Tools, err = encodeCurrentMaterializationArray(tools, maxBytes)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, ErrContentRejected
 	}
-	version["tools"] = tools
-	application["version_details"] = version
-	request.Application, err = encodeCurrentMaterializationObject(application, maxBytes)
-	if err != nil {
-		return nil, err
-	}
+
 	result, err := proto.MarshalOptions{Deterministic: true}.Marshal(&request)
 	if err != nil || len(result) == 0 || int64(len(result)) > maxBytes {
 		clearContentBytes(result)
 		return nil, ErrContentRejected
 	}
 	return result, nil
+}
+
+func materializeCurrentAgentTools(
+	ctx context.Context,
+	projectID int32,
+	tools []any,
+	walker *currentFrozenConfigurationWalker,
+) error {
+	if walker == nil {
+		return errInvalidCurrentFrozenConfiguration
+	}
+	for index, value := range tools {
+		tool, ok := value.(map[string]any)
+		if !ok {
+			return errInvalidCurrentFrozenConfiguration
+		}
+		settings, ok := tool["settings"].(map[string]any)
+		if !ok || settings == nil {
+			return errInvalidCurrentFrozenConfiguration
+		}
+		materialized, err := walker.materializeOwnedMap(ctx, projectID, settings, 0, true)
+		if err != nil {
+			return err
+		}
+		tool["settings"] = materialized
+		tools[index] = tool
+	}
+	return nil
 }
 
 func (m *CurrentConfigurationsMaterializer) materializeToolkit(
@@ -478,8 +519,31 @@ func decodeCurrentMaterializationObject(source []byte) (map[string]any, error) {
 	return object, nil
 }
 
+func decodeCurrentMaterializationArray(source []byte) ([]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(source))
+	decoder.UseNumber()
+	var array []any
+	if err := decoder.Decode(&array); err != nil || array == nil {
+		return nil, ErrContentRejected
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, ErrContentRejected
+	}
+	return array, nil
+}
+
 func encodeCurrentMaterializationObject(object map[string]any, maxBytes int64) ([]byte, error) {
 	encoded, err := json.Marshal(object)
+	if err != nil || len(encoded) == 0 || int64(len(encoded)) > maxBytes {
+		clearContentBytes(encoded)
+		return nil, ErrContentRejected
+	}
+	return encoded, nil
+}
+
+func encodeCurrentMaterializationArray(array []any, maxBytes int64) ([]byte, error) {
+	encoded, err := json.Marshal(array)
 	if err != nil || len(encoded) == 0 || int64(len(encoded)) > maxBytes {
 		clearContentBytes(encoded)
 		return nil, ErrContentRejected

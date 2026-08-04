@@ -63,6 +63,13 @@ func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation
 		firstResponse,
 		"first response",
 	)
+	insertPostgresSupportContext(
+		t,
+		tx,
+		"20000000-0000-4000-8000-000000000031",
+		11,
+		1,
+	)
 	resolve.QuestionID = mustCurrentPGUUID(
 		t,
 		"50000000-0000-4000-8000-000000000031",
@@ -159,6 +166,95 @@ LEFT JOIN chat_messages_text AS text
 	}
 }
 
+func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	resolve := sqlcgen.ResolveCurrentAdhocTurnParams{
+		ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+		QuestionID:       mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000032"),
+		ConversationUuid: conversationID,
+	}
+	first, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TargetParticipantID != 23 || first.Instructions != "Conversation instructions\n\nUser defaults" ||
+		first.LlmSettingsJson != `{"max_tokens": 1024, "model_name": "saved", "model_project_id": 1}` ||
+		first.ChatHistoryJson != "[]" {
+		t.Fatalf("first target=%+v", first)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(first.ToolsJson), &tools); err != nil || len(tools) != 1 ||
+		tools[0]["id"] != float64(51) || tools[0]["project_id"] != float64(1) ||
+		tools[0]["type"] != "aha" {
+		t.Fatalf("tools=%s error=%v", first.ToolsJson, err)
+	}
+
+	firstResponse := insertPostgresCurrentAdhocTurn(
+		t, queries, conversationID,
+		"20000000-0000-4000-8000-000000000032",
+		"30000000-0000-4000-8000-000000000032",
+		"40000000-0000-4000-8000-000000000032",
+		"first ad-hoc turn", "execution-adhoc-turn-1",
+	)
+	completePostgresCurrentApplicationTurn(t, tx, firstResponse, "first ad-hoc response")
+	insertPostgresSupportContext(
+		t,
+		tx,
+		"20000000-0000-4000-8000-000000000032",
+		11,
+		1,
+	)
+	resolve.QuestionID = mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000032")
+	second, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var history []map[string]any
+	if err := json.Unmarshal([]byte(second.ChatHistoryJson), &history); err != nil || len(history) != 2 {
+		t.Fatalf("history=%s error=%v", second.ChatHistoryJson, err)
+	}
+	secondResponse := insertPostgresCurrentAdhocTurn(
+		t, queries, conversationID,
+		"50000000-0000-4000-8000-000000000032",
+		"60000000-0000-4000-8000-000000000032",
+		"70000000-0000-4000-8000-000000000032",
+		"second ad-hoc turn", "execution-adhoc-turn-2",
+	)
+	if firstResponse == secondResponse {
+		t.Fatal("distinct ad-hoc turns reused one response message identity")
+	}
+	_, err = queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID:          mustCurrentPGUUID(t, "80000000-0000-4000-8000-000000000032"),
+			QuestionMeta:        []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "90000000-0000-4000-8000-000000000032"),
+			UserInput:           "overlap",
+			ResponseMessageID:   mustCurrentPGUUID(t, "a0000000-0000-4000-8000-000000000032"),
+			ExecutionGeneration: "80000000-0000-4000-8000-000000000032",
+			ExecutionID:         "execution-adhoc-overlap",
+		},
+	)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("overlapping ad-hoc turn error=%v", err)
+	}
+}
+
 func completePostgresCurrentApplicationTurn(
 	t *testing.T,
 	tx pgx.Tx,
@@ -184,6 +280,33 @@ WITH response_group AS (
 INSERT INTO chat_messages_text (id, content)
 SELECT response_item.id, $2
 FROM response_item`, responseID, content); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertPostgresSupportContext(
+	t *testing.T,
+	tx pgx.Tx,
+	questionID string,
+	userID,
+	projectID int64,
+) {
+	t.Helper()
+	if _, err := tx.Exec(t.Context(), `
+WITH context_item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    SELECT gen_random_uuid(), 'context_message', -1, '{}'::jsonb, message_group.id
+    FROM chat_message_group AS message_group
+    WHERE message_group.uuid = $1::uuid
+    RETURNING id
+)
+INSERT INTO chat_messages_context (id, context_data, context_type)
+SELECT context_item.id,
+       jsonb_build_object('user_id', $2::bigint, 'project_id', $3::bigint),
+       'support_assistant_context'
+FROM context_item`, questionID, userID, projectID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -221,6 +344,34 @@ func insertPostgresCurrentApplicationTurn(
 			QuestionItemID: questionItemID, UserInput: input,
 			ResponseMessageID: responseID, ExecutionGeneration: questionIDRaw,
 			ExecutionID: executionID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return row.ResponseMessageID
+}
+
+func insertPostgresCurrentAdhocTurn(
+	t *testing.T,
+	queries *sqlcgen.Queries,
+	conversationID pgtype.UUID,
+	questionIDRaw,
+	questionItemIDRaw,
+	responseIDRaw,
+	input,
+	executionID string,
+) pgtype.UUID {
+	t.Helper()
+	row, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: mustCurrentPGUUID(t, questionIDRaw), QuestionMeta: []byte(`{}`),
+			QuestionItemID: mustCurrentPGUUID(t, questionItemIDRaw), UserInput: input,
+			ResponseMessageID:   mustCurrentPGUUID(t, responseIDRaw),
+			ExecutionGeneration: questionIDRaw, ExecutionID: executionID,
 		},
 	)
 	if err != nil {
@@ -291,6 +442,10 @@ CREATE TABLE p_1.chat_message_items (
 CREATE TABLE p_1.chat_messages_text (
     id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id), content TEXT NOT NULL
 );
+CREATE TABLE p_1.chat_messages_context (
+    context_data JSONB NOT NULL, context_type TEXT,
+    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE
+);
 INSERT INTO p_1.application_versions (
     id, application_id, name, status, author_id, uuid, llm_settings, instructions,
     conversation_starters, welcome_message, agent_type, meta, pipeline_settings
@@ -300,8 +455,11 @@ INSERT INTO p_1.application_versions (
     '{}'::jsonb, '{}'::jsonb
 );
 INSERT INTO p_1.chat_conversations (
-    id, uuid, name, author_id, source
-) VALUES (1, '10000000-0000-4000-8000-000000000031', 'continuation', 11, 'agent');
+    id, uuid, name, author_id, source, meta
+) VALUES (
+    1, '10000000-0000-4000-8000-000000000031', 'continuation', 11, 'agent',
+    '{"internal_tools":["internal_mcp"]}'::jsonb
+);
 INSERT INTO p_1.chat_participants (id, uuid, entity_name, entity_meta) VALUES
     (20, '90000000-0000-4000-8000-000000000031', 'user', '{"id":11}'::jsonb),
     (21, 'a0000000-0000-4000-8000-000000000031', 'application', '{"id":31,"project_id":1}'::jsonb);
@@ -309,7 +467,29 @@ INSERT INTO p_1.chat_participant_mapping (
     conversation_id, participant_id, entity_settings
 ) VALUES
     (1, 20, '{}'::jsonb),
-    (1, 21, '{"version_id":41,"variables":[]}'::jsonb);`); err != nil {
+    (1, 21, '{"version_id":41,"variables":[]}'::jsonb);
+INSERT INTO p_1.elitea_tools (
+    id, type, name, description, settings, author_id, meta
+) VALUES (
+    51, 'aha', 'product', 'Aha product access',
+    '{"selected_tools":["list_products"]}'::jsonb, 11, '{}'::jsonb
+);
+INSERT INTO p_1.chat_conversations (
+    id, uuid, name, author_id, source, instructions, meta
+) VALUES (
+    2, '10000000-0000-4000-8000-000000000032', 'ad-hoc continuation', 11, 'elitea',
+    'Conversation instructions',
+    '{"default_instructions":"User defaults","persona":"qa","steps_limit":12,"internal_tools":["internal_mcp"]}'::jsonb
+);
+INSERT INTO p_1.chat_participants (id, uuid, entity_name, entity_meta, meta) VALUES
+    (23, 'a0000000-0000-4000-8000-000000000032', 'dummy', '{}'::jsonb, '{"name":"EliteA"}'::json),
+    (24, 'b0000000-0000-4000-8000-000000000032', 'toolkit', '{"id":51,"project_id":1}'::jsonb, '{"name":"product"}'::json);
+INSERT INTO p_1.chat_participant_mapping (
+    conversation_id, participant_id, entity_settings
+) VALUES
+    (2, 20, '{"llm_settings":{"model_name":"saved","model_project_id":1,"max_tokens":1024}}'::jsonb),
+    (2, 23, '{}'::jsonb),
+    (2, 24, '{}'::jsonb);`); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -30,6 +30,7 @@ WHERE job.execution_id = sqlc.arg(execution_id)::text
   AND job.capability_id IN (
       'configuration.validate.v1',
       'index.ingest.v1',
-      'agent.execute.application.v1'
+      'agent.execute.application.v1',
+      'agent.execute.adhoc.v1'
   )
   AND project.suspended = FALSE;

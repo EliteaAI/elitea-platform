@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
@@ -32,11 +33,18 @@ func newCurrentAgentStartRepository(projects projectStore) (*CurrentAgentStartRe
 	return &CurrentAgentStartRepository{projects: projects}, nil
 }
 
-type currentAgentStartQuerier interface {
+type currentApplicationStartQuerier interface {
 	ResolveCurrentApplicationTurn(
 		context.Context,
 		sqlcgen.ResolveCurrentApplicationTurnParams,
 	) (sqlcgen.ResolveCurrentApplicationTurnRow, error)
+}
+
+type currentAdhocStartQuerier interface {
+	ResolveCurrentAdhocTurn(
+		context.Context,
+		sqlcgen.ResolveCurrentAdhocTurnParams,
+	) (sqlcgen.ResolveCurrentAdhocTurnRow, error)
 }
 
 func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
@@ -65,7 +73,7 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 		request.ProjectID,
 		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly},
 		func(tx sqlExecutor) error {
-			queries, ok := tx.(currentAgentStartQuerier)
+			queries, ok := tx.(currentApplicationStartQuerier)
 			if !ok {
 				return errors.New("current agent start query is unavailable")
 			}
@@ -110,6 +118,72 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 	return target, nil
 }
 
+func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
+	ctx context.Context,
+	request agentexecutionapp.CurrentAdhocStartRequest,
+) (agentexecutionapp.CurrentAdhocTarget, error) {
+	if err := request.Validate(); err != nil {
+		return agentexecutionapp.CurrentAdhocTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	projectID, projectIDValid := currentAgentDatabaseID(request.ProjectID)
+	if !projectIDValid || request.TargetParticipantID > math.MaxInt32 {
+		return agentexecutionapp.CurrentAdhocTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	conversationUUID, err := currentPGUUID(request.ConversationUUID)
+	if err != nil {
+		return agentexecutionapp.CurrentAdhocTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	questionID, err := currentPGUUID(request.QuestionID)
+	if err != nil {
+		return agentexecutionapp.CurrentAdhocTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	var target agentexecutionapp.CurrentAdhocTarget
+	err = repository.projects.WithinProjectTx(
+		ctx,
+		request.ProjectID,
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly},
+		func(tx sqlExecutor) error {
+			queries, ok := tx.(currentAdhocStartQuerier)
+			if !ok {
+				return errors.New("current agent start query is unavailable")
+			}
+			row, queryErr := queries.ResolveCurrentAdhocTurn(
+				ctx,
+				sqlcgen.ResolveCurrentAdhocTurnParams{
+					ActorUserID: request.ActorUserID, TargetParticipantID: int32(request.TargetParticipantID),
+					ProjectID: projectID, QuestionID: questionID, ConversationUuid: conversationUUID,
+				},
+			)
+			if errors.Is(queryErr, pgx.ErrNoRows) {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			if queryErr != nil {
+				return fmt.Errorf("resolve current ad-hoc turn: %w", queryErr)
+			}
+			llmSettings := json.RawMessage(row.LlmSettingsJson)
+			tools := json.RawMessage(row.ToolsJson)
+			chatHistory := json.RawMessage(row.ChatHistoryJson)
+			conversationMeta := json.RawMessage(row.ConversationMetaJson)
+			if row.TargetParticipantID <= 0 ||
+				(request.TargetParticipantID > 0 && int64(row.TargetParticipantID) != request.TargetParticipantID) ||
+				!json.Valid(llmSettings) || !json.Valid(tools) || !json.Valid(chatHistory) ||
+				!json.Valid(conversationMeta) {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			target = agentexecutionapp.CurrentAdhocTarget{
+				TargetParticipantID: int64(row.TargetParticipantID),
+				LLMSettings:         llmSettings, Instructions: row.Instructions,
+				Tools: tools, ChatHistory: chatHistory, ConversationMeta: conversationMeta,
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return agentexecutionapp.CurrentAdhocTarget{}, err
+	}
+	return target, nil
+}
+
 func currentPGUUID(value string) (pgtype.UUID, error) {
 	var result pgtype.UUID
 	if err := result.Scan(value); err != nil || !result.Valid {
@@ -117,3 +191,6 @@ func currentPGUUID(value string) (pgtype.UUID, error) {
 	}
 	return result, nil
 }
+
+var _ currentApplicationStartQuerier = pgxExecutor{}
+var _ currentAdhocStartQuerier = pgxExecutor{}

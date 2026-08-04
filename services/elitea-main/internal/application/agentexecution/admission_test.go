@@ -8,6 +8,7 @@ import (
 
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"google.golang.org/protobuf/proto"
 )
 
 type recordingAdmissionStore struct {
@@ -131,6 +132,34 @@ func TestAdmissionServiceRejectsCurrentTurnGenerationDriftBeforeStorage(t *testi
 	}
 	if store.admission.Record.Job.ID != "" {
 		t.Fatal("current-turn generation drift reached durable storage")
+	}
+}
+
+func TestAdmissionServiceAcceptsBoundCurrentAdhocTurn(t *testing.T) {
+	store := successfulRecordingStore()
+	service := testAdmissionService(t, store)
+	questionID := "ee92ccbd-3312-4c72-b20b-fddf224e7c0e"
+	conversationID := "8bc66e50-46c4-4e2c-94ec-daec6c596ac0"
+	responseID := "061e2c58-2e09-5853-a006-532b082a0433"
+	input := validAgentInput()
+	input.ExecutionGeneration = proto.String(questionID)
+	request := validSubmitRequest()
+	request.ClientStreamID = conversationID
+	request.ClientMessageID = responseID
+	request.Input = input
+	request.CurrentAdhocTurn = &CurrentAdhocTurn{
+		ProjectID: 7, ActorUserID: 11, ConversationUUID: conversationID,
+		TargetParticipantID: 21, QuestionID: questionID,
+		QuestionItemID:    "3d3f33b7-e629-4db7-b4ee-c2914067897a",
+		ResponseMessageID: responseID, QuestionMeta: []byte(`{}`), UserInput: "hello",
+	}
+
+	if _, err := service.Submit(context.Background(), request); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	if store.admission.CurrentTurn != nil || store.admission.CurrentAdhocTurn == nil ||
+		store.admission.Record.Job.CapabilityID != executiondomain.AgentAdhocCapability {
+		t.Fatalf("admission=%+v", store.admission)
 	}
 }
 
