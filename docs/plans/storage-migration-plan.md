@@ -86,23 +86,31 @@ non-zero with no output and would otherwise pass trivially.
   `postgres_content.go`, `postgres_secret_vault.go`, or any `current_*.go` file
   in `internal/infra/storage/`. Those serve execution input content and
   configuration state, not artifacts.
-- Follow `AGENTS.md`. Preserve public HTTP paths and SDK behaviour except where
-  this plan or ADR-0016 explicitly corrects a security defect.
+- Follow `AGENTS.md`'s other guardrails. Its default of preserving public HTTP
+  paths and SDK behaviour does **not** apply to `/api/v2/artifacts/*` or
+  `/artifacts/s3/*`: ADR-0016 §7 and this plan's Posture section replace every
+  legacy artifact path deliberately, for API-design reasons, not only to fix a
+  security defect. That replacement — the full S7-S11 route redesign — is the
+  explicit goal of this plan, not an exception to flag.
 
 ### Why the sequencing looks the way it does
 
 The existing `storage.Backend` interface has callers in three handler files
-(`internal/api/v2/artifacts/{s3handler,handler,pg_repo}.go`) and one backend
-package (`internal/infra/storage/filesystem/`). Rewriting `Backend` in place
-breaks all four immediately, and they are not replaced until much later — six
-consecutive stages would fail the global gate.
+(`internal/api/v2/artifacts/{s3handler,handler,pg_repo}.go`) and is implemented
+by all four backend packages (`internal/infra/storage/{s3,azure,gcs,filesystem}/`,
+each with a `var _ storage.Backend = (*Backend)(nil)` compile-time assertion).
+Rewriting `Backend`'s method set in place breaks all seven sites immediately,
+and they are not replaced until much later — six consecutive stages would fail
+the global gate.
 
 So: **S1 introduces the new interface under a new name, `ObjectStore`, in new
-files. The old `Backend` interface and all its callers stay untouched and
+files (plus the small additive `ObjectInfo` edit above, which is backward
+compatible). The old `Backend` interface and all its callers stay untouched and
 compiling.** S3 makes each remote backend implement `ObjectStore` *alongside*
-its existing methods. Handlers migrate one at a time in S8, S9, S10. The old
-`Backend` interface, the filesystem package, and `pg_repo.go` are deleted at the
-end of S10, when nothing references them.
+its existing `Backend` methods — the `s3`, `azure`, and `gcs` packages gain a
+second interface satisfaction without losing the first. Handlers migrate one at
+a time in S8, S9, S10. The old `Backend` interface, the filesystem package, and
+`pg_repo.go` are deleted at the end of S10, when nothing references them.
 
 ---
 
@@ -118,20 +126,22 @@ end of S10, when nothing references them.
 | S6 | Metadata schema and repositories | S1 | Medium |
 | S7 | OpenAPI contract: define the new artifact API | S6 | Medium |
 | S8 | Bucket-plane handlers; delete `pg_repo.go` | S5, S6, S7 | Medium |
-| S9 | Object-plane handlers: download, HEAD, streaming upload, batch delete | S5, S6, S7 | High |
+| S9 | Object-plane handlers: download, HEAD, streaming upload, batch delete | S5, S6, S7, S8 | High |
 | S10 | Retire `/artifacts/s3`; delete `Backend`, `filesystem/`, `oapiserver/artifacts.go` | S8, S9 | High |
 | S11 | Production mount, auth, RBAC, public-rule removal | S10 | High |
 | S12 | Limits: body caps, read and write deadlines, quota | S6, S11 | Medium |
 | S13 | Project-creation bucket bootstrap | S6, S8 | Low |
-| S14 | Retention ledger and sweeper | S6, S8 | Medium |
+| S14 | Retention ledger and sweeper | S6, S8, S9 | Medium |
 | S15 | Presigned transfer grants | S3, S6, S11 | Medium |
 | S16 | Native multipart upload | S3, S15 | Medium |
 | S17 | Deployment: Helm, compose, secrets, workload identity | S5 | Medium |
-| S18 | Observability: metrics, tracing, audit | S11 | Low |
+| S18 | Observability: metrics, tracing, audit | S11, S15 | Low |
 | S19 | API conformance suite in `tests/contract/` | S10, S11 | Medium |
-| S20 | Adjacent planes: chat attachments, icons, result-artifact attestation | S9, S11, S15 | High |
+| S20 | Adjacent planes: chat attachments, icons, result-artifact attestation | S9, S11, S15; **S20c also blocked on spec §6 open question 2 being answered** | High |
 
-S1 through S11 are the critical path.
+S1, S2, S3, S5, S6, S7, S8, S9, S10, S11 are the critical path. S4
+(conformance suite) can run any time after S2/S3 — nothing on the path to S11
+depends on it, so it is not itself "critical path" in the blocking sense.
 
 There is **no data-migration stage**. Legacy artifact bytes, `centry.storage_meta`,
 and the on-disk `libcloud` tree are out of scope per ADR-0016 §8.
@@ -143,8 +153,20 @@ and the on-disk `libcloud` tree are out of scope per ADR-0016 §8.
 **Preconditions:** none.
 **Read first:** `internal/infra/storage/storage.go`, `config.go`, `client.go`.
 
-This stage **only adds files**. It does not modify `storage.go`, does not delete
-`Backend`, and does not touch any backend or handler.
+This stage **adds new files and makes one small, additive edit to `storage.go`**.
+It does not delete `Backend`, does not remove or rename any existing field, and
+does not touch any handler or backend implementation.
+
+**Edit `internal/infra/storage/storage.go`:** add two fields to the existing
+`ObjectInfo` struct — `ETag string` and `DigestSHA256 []byte`. Every current
+construction of `storage.ObjectInfo{...}` in the four backend packages uses
+keyed field literals (verified: `storage.ObjectInfo{Key: ..., Size: ...}`
+throughout `s3/`, `azure/`, `gcs/`, `filesystem/`), so adding fields is
+non-breaking — no existing call site needs to change. **Do not declare a second
+`ObjectInfo` type in a new file.** `objectstore.go` and `storage.go` are the
+same Go package; a duplicate type declaration is a compile error
+(`ObjectInfo redeclared in this block`), not a style choice, and it would break
+`go build ./...` for every stage from here through S10.
 
 **Create `internal/infra/storage/errors.go`:**
 
@@ -201,22 +223,15 @@ value; do not reuse one validator for both.
 prefix.
 
 **Create `internal/infra/storage/objectstore.go`** with the new interface and
-its supporting types. Every type the interface references must be declared here —
-an agent that omits one produces a file with undefined identifiers.
+its supporting types — **everything except `ObjectInfo`**, which now lives in
+`storage.go` per the edit above. Every type the interface references must be
+declared somewhere in the package — an agent that omits one produces a file
+with undefined identifiers.
 
 ```go
 type UploadID string
 type Part struct{ Number int32; ETag string; Size int64 }
 type BatchError struct{ Key string; Err error }
-
-type ObjectInfo struct {
-    Key          string
-    Size         int64
-    LastModified time.Time
-    ContentType  string
-    ETag         string   // may be empty; GCS does not supply one on the Get path
-    DigestSHA256 []byte   // nil when the backend did not compute one
-}
 
 type PutOptions struct {
     ContentType   string
@@ -290,7 +305,8 @@ conformance suite has one source of truth:
 - `ValidateKeyPrefix` **accepts** `""`, `folder/`, and `a/b/`, and rejects
   `../`, `/a`, `a//b`.
 - Valid refs produce the exact expected `StorageKey` with and without a prefix.
-- The tree still builds unchanged: nothing was deleted.
+- The tree still builds: `storage.go`'s `ObjectInfo` gained two fields; nothing
+  else changed and nothing was deleted.
 
 **Verify:** `cd services/elitea-main && go test ./internal/infra/storage/ -race -run 'ObjectRef|KeyPrefix|StorageKey' -v && go build ./...`
 
@@ -376,11 +392,15 @@ Add `var _ storage.ObjectStore = (*Backend)(nil)` to each package.
 cd services/elitea-main && go get github.com/aws/aws-sdk-go-v2/feature/s3/manager@v1.22.34
 ```
 
-`@latest` upgrades 19 modules including the core SDK and smithy-go. `v1.22.34`
-is the newest release whose own `go.mod` matches the pinned core; it bumps
-`service/s3` from `v1.105.0` to `v1.105.2` and nothing else. The module carries
-a deprecation notice pointing at `feature/s3/transfermanager`; note in the
-commit message why the successor is not being used yet.
+`@latest` upgrades 19 modules including the core SDK and smithy-go — do not use
+it. `v1.22.34` is a much smaller bump: it moves `service/s3` from `v1.105.0` to
+`v1.105.2` plus six same-family modules by one patch each (`config`,
+`credentials`, `service/{signin,sso,ssooidc,sts}`), and leaves the core SDK
+(`aws-sdk-go-v2`) and `smithy-go` untouched. Run `go mod tidy` and inspect
+`git diff go.mod` before committing — the exact patch set can drift as new
+releases land — and record what actually moved in the commit message. The
+module carries a deprecation notice pointing at `feature/s3/transfermanager`;
+note in the same commit message why the successor is not being used yet.
 
 ### S3 backend
 
@@ -551,9 +571,9 @@ in CI; gated skips print their reason; the suite skips cleanly with no emulator.
 
 ```go
 type Config struct {
-    Backend   string // "s3" | "azure" | "gcs" — required
-    Container string // physical bucket or container name — required
-    KeyPrefix string // optional
+    Backend   string // "s3" | "azure" | "gcs" — required, env STORAGE_BACKEND
+    Container string // physical bucket or container name — required, env STORAGE_CONTAINER
+    KeyPrefix string // optional, empty by default, env STORAGE_KEY_PREFIX
     S3    S3Config
     Azure AzureConfig
     GCS   GCSConfig
@@ -566,12 +586,23 @@ Take a lookup function, matching the convention in `cmd/elitea-main/*_config.go`
 Return an error — never a default — when `STORAGE_BACKEND` is unset, empty, or
 not one of the three; when `STORAGE_CONTAINER` is unset; when the selected
 backend's required credentials are absent; or when GCS has both an endpoint and
-a credentials file. `ARTIFACTS_DATA_DIR` is no longer read.
+a credentials file. `ARTIFACTS_DATA_DIR` is no longer read. `STORAGE_CONTAINER`
+is the single physical bucket/container name used regardless of backend — the
+per-backend `Config` structs (`S3Config`, `AzureConfig`, `GCSConfig`) take it as
+their container/bucket field; there is no separate per-backend container-name
+env var (the old prototype's `AZURE_STORAGE_CONTAINER` and `GCS_BUCKET` are
+retired along with the rest of `config.go`).
 
-**Use the lookup function, not `os.Getenv`.** `deploy/helm/elitea-main` runs an
-env-drift check that fails when code reads a variable via `os.Getenv("X")` that
-the chart neither sets nor allowlists. S17 owns the chart and runs later, so
-`os.Getenv` here would red the build in the interim.
+**Use the lookup function, not `os.Getenv`, as a matter of convention — not
+because CI enforces it yet.** `scripts/env-drift-check.sh` fails when code
+reads a variable via `os.Getenv("X")` that the chart neither sets nor
+allowlists, but it is invoked only from `.github/workflows/ci-gateway.yml`,
+whose `paths:` trigger is scoped to `services/elitea-llm-gateway/**` — it will
+not run at all on a PR touching only `services/elitea-main`. There is no
+`golangci-lint` rule banning `os.Getenv` either. So nothing in this repo's CI
+actually blocks a stray `os.Getenv` here today; follow the lookup-function
+convention anyway, since S17 (which owns the Helm chart) runs later and the
+check may be widened to cover `elitea-main` before then.
 
 **Create `internal/infra/storage/factory.go`:**
 
@@ -743,19 +774,19 @@ contract**, so the count rises rather than falls:
 
 | Method | Path | operationId |
 | --- | --- | --- |
-| GET | `/artifacts/buckets/{projectId}` | `listBuckets` |
-| POST | `/artifacts/buckets/{projectId}` | `createBucket` |
-| GET | `/artifacts/buckets/{projectId}/{bucket}` | `getBucket` |
-| PATCH | `/artifacts/buckets/{projectId}/{bucket}` | `updateBucket` |
-| DELETE | `/artifacts/buckets/{projectId}/{bucket}` | `deleteBucket` |
-| GET | `/artifacts/objects/{projectId}/{bucket}` | `listObjects` |
-| POST | `/artifacts/objects/{projectId}/{bucket}` | `uploadObject` |
-| POST | `/artifacts/objects/{projectId}/{bucket}:batchDelete` | `batchDeleteObjects` |
-| GET | `/artifacts/objects/{projectId}/{bucket}/{key}` | `downloadObject` |
-| HEAD | `/artifacts/objects/{projectId}/{bucket}/{key}` | `statObject` |
-| DELETE | `/artifacts/objects/{projectId}/{bucket}/{key}` | `deleteObject` |
-| POST | `/artifacts/grants/{projectId}/{bucket}` | `createTransferGrant` |
-| POST | `/artifacts/grants/{projectId}/{grantId}:commit` | `commitTransferGrant` |
+| GET | `/artifacts/buckets/{projectID}` | `listBuckets` |
+| POST | `/artifacts/buckets/{projectID}` | `createBucket` |
+| GET | `/artifacts/buckets/{projectID}/{bucket}` | `getBucket` |
+| PATCH | `/artifacts/buckets/{projectID}/{bucket}` | `updateBucket` |
+| DELETE | `/artifacts/buckets/{projectID}/{bucket}` | `deleteBucket` |
+| GET | `/artifacts/objects/{projectID}/{bucket}` | `listObjects` |
+| POST | `/artifacts/objects/{projectID}/{bucket}` | `uploadObject` |
+| POST | `/artifacts/objects/{projectID}/{bucket}:batchDelete` | `batchDeleteObjects` |
+| GET | `/artifacts/objects/{projectID}/{bucket}/{key}` | `downloadObject` |
+| HEAD | `/artifacts/objects/{projectID}/{bucket}/{key}` | `statObject` |
+| DELETE | `/artifacts/objects/{projectID}/{bucket}/{key}` | `deleteObject` |
+| POST | `/artifacts/grants/{projectID}/{bucket}` | `createTransferGrant` |
+| POST | `/artifacts/grants/{projectID}/{grantID}:commit` | `commitTransferGrant` |
 
 The old paths — `/artifacts/buckets/default/{project_id}`,
 `/artifacts/artifacts/default/{project_id}/{bucket}`, `/artifacts/artifact/...`,
@@ -814,7 +845,7 @@ package does not compile:**
 Response bodies:
 
 ```jsonc
-// GET /artifacts/buckets/{projectId}
+// GET /artifacts/buckets/{projectID}
 {"buckets": [{"name": "reports", "type": "system", "is_pinned": false,
               "tags": {}, "retention_days": 365, "expires_at": "…",
               "size_bytes": 10485760, "object_count": 42,
@@ -853,19 +884,34 @@ a retention value above the project limit produces 403 with the typed code;
 
 ## S9 — Object-plane handlers
 
-**Preconditions:** S5, S6, S7.
+**Preconditions:** S5, S6, S7, **S8** — this stage's fake store and the
+`NewHandler(fakeRepo, fakeStore)` constructor its own acceptance tests depend
+on are introduced by S8, not created here.
 
 This stage closes the highest-impact gap: object download and stat are
 implemented in every backend and routed nowhere.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/artifacts/objects/{projectId}/{bucket}` | List. `prefix`, `delimiter`, `limit`, `cursor` |
-| POST | `/artifacts/objects/{projectId}/{bucket}` | Streaming multipart upload, field `file` |
-| POST | `/artifacts/objects/{projectId}/{bucket}:batchDelete` | Body `{"keys": [...]}`, per-key results |
-| GET | `/artifacts/objects/{projectId}/{bucket}/{key...}` | Streams bytes, `Range` supported |
-| HEAD | `/artifacts/objects/{projectId}/{bucket}/{key...}` | Metadata as headers |
-| DELETE | `/artifacts/objects/{projectId}/{bucket}/{key...}` | Delete one object |
+| GET | `/artifacts/objects/{projectID}/{bucket}` | List. `prefix`, `delimiter`, `limit`, `cursor` |
+| POST | `/artifacts/objects/{projectID}/{bucket}` | Streaming multipart upload, field `file` |
+| POST | `/artifacts/objects/{projectID}/{bucket}:batchDelete` | Body `{"keys": [...]}`, per-key results |
+| GET | `/artifacts/objects/{projectID}/{bucket}/*` | Streams bytes, `Range` supported |
+| HEAD | `/artifacts/objects/{projectID}/{bucket}/*` | Metadata as headers |
+| DELETE | `/artifacts/objects/{projectID}/{bucket}/*` | Delete one object |
+
+**The key is the chi wildcard, not a named param.** chi v5.1.0 has no
+`{name...}` syntax — it parses that literally as a single-segment param named
+`key...`, which 404s the instant a key contains an internal `/` (verified: a
+route registered as `.../{key...}` matches `.../flat.png` but not
+`.../a/b.png`). Since S1's own key grammar explicitly allows multi-segment keys
+and folder listing is a required capability, this is not an edge case — it is
+the common case. Register the route as `r.Get("/artifacts/objects/{projectID}/{bucket}/*", handler)`
+and extract the key with `strings.TrimPrefix(chi.URLParam(r, "*"), "/")`,
+exactly the pattern already used by the routes this stage replaces
+(`internal/api/v2/artifacts/{handler,s3handler}.go` both do this today). The
+OpenAPI table in S7 may keep the documentation-level `{key}` placeholder; only
+the chi registration needs the wildcard form.
 
 Response bodies:
 
@@ -921,7 +967,13 @@ or re-specifying it belongs to the SDK rework issue.
   precedes the final write to the pipe. Do **not** use `runtime.ReadMemStats` —
   GC timing and `-race` make the delta meaningless, and the test body is
   allocated in the same process.
-- Download, HEAD, and range tests pass against the fake store.
+- Download, HEAD, and range tests pass against the fake store, using the
+  `NewHandler(fakeRepo, fakeStore)` constructor and fake store S8 introduces.
+- **A key containing an internal `/` round-trips through the real chi router**,
+  not just the fake store — e.g. upload to `a/b/c.png`, then GET, HEAD, and
+  DELETE the same key through the mounted route and confirm each resolves the
+  full key rather than 404ing on the first segment. This is the case the
+  `/*` wildcard fix above exists to cover.
 - A key containing `..` returns 400 with `code: InvalidKey`.
 
 **Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race`
@@ -1042,7 +1094,9 @@ walks the prototype router. One shared mount function satisfies both.
 - **Do the same for the write side.** `WriteTimeout: 120 * time.Second` on the
   same lines caps every *download* at 120 seconds regardless of object size,
   which S9 has just made a live route. Set per-request write deadlines with
-  `http.ResponseController.SetWriteDeadline` on the download and S3-GET routes.
+  `http.ResponseController.SetWriteDeadline` on the download route
+  (`GET /artifacts/objects/{projectID}/{bucket}/*`, S9). There is no S3-GET
+  route by this stage — S10 already retired `/artifacts/s3`.
 - `ResponseController` walks `Unwrap()`. The OTel middleware's recorder
   implements it; the shadow middleware's does not — which is why S11 keeps the
   artifact routes off the shadow path.
@@ -1081,7 +1135,9 @@ leaves no objects.
 
 ## S14 — Retention ledger and sweeper
 
-**Preconditions:** S6, S8.
+**Preconditions:** S6, S8, **S9** — stamping `expires_at` on written objects
+means editing the upload path, which S9 introduces; it does not exist after S8
+alone.
 
 - On bucket create and retention update, compute `expires_at` for the bucket and
   stamp `expires_at` on objects written into it.
@@ -1189,7 +1245,8 @@ facade; a part call with another project's grant returns 403.
 
 ## S18 — Observability
 
-**Preconditions:** S11.
+**Preconditions:** S11, **S15** — auditing "every grant issuance" requires the
+grant-creation code S15 adds; it does not exist right after S11.
 
 Instrument every `ObjectStore` method with the existing OTel setup — read
 `internal/api/middleware/otel.go` for the house pattern. Operation duration
@@ -1243,6 +1300,10 @@ shape; `ci-contract.yml` no longer references a legacy base URL.
 ## S20 — Adjacent planes
 
 **Preconditions:** S9, S11, **S15** — S20c needs the grant and commit machinery.
+**S20c is additionally blocked on spec-artifact-storage.mdx §6 open question 2**
+("does the attestation plane share this `ObjectStore`?") being answered by an
+owner — that gate is prose, not a stage number, so check it explicitly before
+starting S20c even once S9/S11/S15 are done.
 
 Three separate pieces of work, each with its own design step. Do not merge them.
 
@@ -1301,7 +1362,11 @@ Do not implement, and reject review requests that add them without a new ADR:
   answered.
 - Virus scanning and quarantine. Required by `spec-security-verification` but
   needs its own design and an external scanner dependency.
-- Cross-region replication, object versioning, object lock, soft delete.
+- Cross-region replication, object versioning, object lock, and *provider-native*
+  soft delete/undelete (Azure Blob soft delete, GCS soft-delete). This is a
+  different thing from the S6 `buckets.deleted_at` metadata tombstone that
+  `SoftDeleteBucket` writes in S8/S13 — that one is in scope; it is an internal
+  DB flag, not a provider recovery feature, and nothing here forbids it.
 
 ## Reference
 
