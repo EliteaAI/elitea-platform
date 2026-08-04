@@ -32,16 +32,18 @@ export type { PipelineEditorModeValue } from './flowWrapperStyles';
  * is threaded straight through here, unmodified.
  *
  * `versionTools`/`llmSettings` (`FlowEditorProps`, "REAL PLUMBING GAP CLOSED
- * HERE" per that file's own doc comment) have no real threading path from
- * either of `EditorPanel`'s two confirmed real call sites
- * (`PipelineEditor.tsx`/`PipelineEditorParts.tsx`, sibling unit A2l — both
- * call `<EditorPanel ref setYamlDirty disabled stopRun />`, no
- * tools/llm-settings prop; this sub-unit's own `ConfigurationTab.tsx`
- * likewise has no live "current version's tools/llm_settings" data reaching
- * `EditorPanel`, since it is itself now slot-based for the same real reasons
- * `ChatPanel.tsx`'s own doc comment discloses). Left `undefined` — both are
- * declared optional on `FlowEditorProps` for exactly this "not always
- * available" case, not fabricated.
+ * HERE" per that file's own doc comment) are forwarded verbatim from this
+ * file's own props, unchanged from the expansion above. The GAP this
+ * comment used to document (no real threading path from either of
+ * `EditorPanel`'s two callers) is CLOSED: `EditorPanel.tsx` now declares
+ * both as real props and forwards them here; `ConfigurationTab.tsx` and
+ * `PipelineEditorParts.tsx`'s `PipelineEditorBody` each derive them from
+ * their own in-scope `versionDetails` via `../lib/hooks/
+ * useFlowEditorVersionInputs.ts` (wire `tools`/`llm_settings` -> this file's
+ * `PipelineToolEntry[]`/`AiAssistantLlmSettings`, per
+ * `../lib/flowEditorVersionInputs.helpers.ts`) and pass the result straight
+ * through. Still declared optional here (both remain `undefined` for
+ * create-mode, where no version exists yet to source them from).
  *
  * The `sx` computation itself lives in `./flowWrapperStyles.ts` — see that
  * file's own doc comment for why (unit-testability against a real, verified,

@@ -18,6 +18,7 @@ import { TabGroupButton } from '@/shared/ui/TabGroupButton';
 import type { TabGroupButtonItem } from '@/shared/ui/TabGroupButton';
 import { combineSx } from '@/shared/ui/lib/combineSx';
 
+import type { AiAssistantLlmSettings } from '../api/aiAssistantPredict';
 import { dumpYaml } from '../lib/dumpYaml.helpers';
 import { useIsPipelineYamlCodeDirty, isChatPath } from '../lib/hooks/useIsPipelineYamlCodeDirty';
 import { useIsSmallWindow } from '../lib/hooks/useIsSmallWindow';
@@ -29,6 +30,7 @@ import { usePipelineYamlStore } from '../model/pipelineYamlStore';
 import { AddNodeMenu } from './AddNodeMenu';
 import type { PipelineNodeType } from '../lib/flow-editor/constants/flowEditor.constants';
 import type { FlowEditorHandle } from './FlowEditor';
+import type { PipelineToolEntry } from './select/pipelineToolEntry.types';
 import { YamlCodeEditor } from './YamlCodeEditor';
 import type { PipelineEditorModeValue } from './FlowWrapper';
 
@@ -92,6 +94,8 @@ export interface EditorPanelProps {
   readonly display?: string | undefined;
   readonly sx?: SxProps<Theme> | undefined;
   readonly disabled?: boolean | undefined;
+  readonly versionTools?: readonly PipelineToolEntry[] | undefined;
+  readonly llmSettings?: AiAssistantLlmSettings | null | undefined;
 }
 
 /** Baseline `EditorPanel.jsx`'s local `areYamlObjectsEqual` — a fast-path reference check plus a `JSON.stringify` deep comparison, acceptable for this size of document (same baseline rationale, preserved). */
@@ -202,7 +206,7 @@ const yamlEditorContainerSx = (isFromChat: boolean, isSmallWindow: boolean): SxP
 });
 
 export const EditorPanel = forwardRef<EditorPanelHandle, EditorPanelProps>(function EditorPanel(props, ref): ReactNode {
-  const { setYamlDirty, stopRun, display, sx, disabled } = props;
+  const { setYamlDirty, stopRun, display, sx, disabled, versionTools, llmSettings } = props;
   const { isSmallWindow } = useIsSmallWindow();
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const isFromChat = isChatPath(pathname);
@@ -376,6 +380,8 @@ export const EditorPanel = forwardRef<EditorPanelHandle, EditorPanelProps>(funct
               onLayoutVersionChange={setLayoutVersion}
               noBorder={isFromChat}
               disabled={disabled}
+              versionTools={versionTools}
+              llmSettings={llmSettings}
             />
           </Suspense>
         </FlowEditorErrorBoundary>

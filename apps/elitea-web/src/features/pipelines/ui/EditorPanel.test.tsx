@@ -155,6 +155,15 @@ describe('EditorPanel', () => {
     expect(await screen.findByRole('button', { name: 'Add node' })).toBeDisabled();
   });
 
+  it('accepts versionTools/llmSettings without crashing (still shows the error-boundary fallback for the flow pane — see this file\'s own module doc comment: the lazy FlowWrapper/FlowEditor chain has a real, unrelated broken transitive dependency, so a value-level assertion that these two reach FlowEditor itself is not possible from this test)', async () => {
+    renderEditorPanel({
+      versionTools: [{ id: '1', type: 'toolkit', name: 'search' }],
+      llmSettings: { model_name: 'gpt-4o', temperature: 0.7, max_tokens: 1024 },
+    });
+    expect(await screen.findByRole('button', { name: 'Add node' })).toBeInTheDocument();
+    expect(await screen.findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
+  }, 10000);
+
   it('typing in the YAML editor commits the raw code to the store (onChangeCode)', async () => {
     const user = userEvent.setup();
     renderEditorPanel();

@@ -5,11 +5,13 @@ import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
 
 import { ApplicationConfigurationLayout, ApplicationSaveButton, ApplicationValidator } from '@/entities/application-form';
+import type { ApplicationVersionDetail } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
 import { FlowIcon } from '@/shared/ui/icons/flow-icon';
 import { GearIcon } from '@/shared/ui/icons/gear-icon';
 
 import { EditorPanel, type EditorPanelHandle } from './EditorPanel';
+import { useFlowEditorVersionInputs } from '../lib/hooks/useFlowEditorVersionInputs';
 import { useValidatePipelineVersion } from '../lib/useValidatePipelineVersion';
 
 export type { EditorPanelHandle } from './EditorPanel';
@@ -229,6 +231,16 @@ export interface PipelineEditorBodyProps {
   readonly onAttachmentToolChange: () => void;
   readonly editorPanelRef: { current: EditorPanelHandle | null };
   readonly deps: PipelineEditorDeps;
+  /**
+   * `usePipelineEditorLifecycle.ts`'s own `usePipelineVersionQuery` result,
+   * threaded down from `PipelineEditor.tsx` so this component's own
+   * `<EditorPanel>` call site can supply the `versionTools`/`llmSettings`
+   * `FlowWrapper.tsx`'s module doc comment names as real but unreachable
+   * from here — see `../lib/flowEditorVersionInputs.helpers.ts` for the
+   * wire -> `FlowWrapperProps` mapping (same one `ConfigurationTab.tsx`
+   * uses for its own, sibling `<EditorPanel>` call site).
+   */
+  readonly versionDetails: ApplicationVersionDetail | undefined;
 }
 
 /** The validator + create-form-or-configuration-tab + flow-editor-tab body. */
@@ -244,8 +256,10 @@ export function PipelineEditorBody({
   onAttachmentToolChange,
   editorPanelRef,
   deps,
+  versionDetails,
 }: PipelineEditorBodyProps): ReactNode {
   const { pipelineId, projectId, entityProjectId, validateProjectId, versionId } = identity;
+  const { versionTools, llmSettings } = useFlowEditorVersionInputs(versionDetails);
   return (
     <>
       <ApplicationValidator
@@ -277,6 +291,8 @@ export function PipelineEditorBody({
           setYamlDirty={setIsYamlDirty}
           disabled={viewMode !== 'Owner'}
           stopRun={() => onStopRun(true)}
+          versionTools={versionTools}
+          llmSettings={llmSettings}
         />
       )}
 
