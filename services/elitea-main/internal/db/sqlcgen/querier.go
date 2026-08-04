@@ -34,13 +34,17 @@ type Querier interface {
 	CompareAndSwapCurrentConfigurationRenameToolkit(ctx context.Context, arg CompareAndSwapCurrentConfigurationRenameToolkitParams) (int64, error)
 	CompleteScheduledOccurrence(ctx context.Context, arg CompleteScheduledOccurrenceParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
+	CountArtifactBucketObjects(ctx context.Context, bucketID int64) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
 	CountCurrentNotifications(ctx context.Context, arg CountCurrentNotificationsParams) (int64, error)
 	CountCurrentSharedConfigurations(ctx context.Context, arg CountCurrentSharedConfigurationsParams) (int64, error)
+	CreateArtifactBucket(ctx context.Context, arg CreateArtifactBucketParams) (EliteaStorageBucket, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
+	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
+	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
@@ -61,6 +65,8 @@ type Querier interface {
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
 	GetAgentExecutionAdmissionByIdempotency(ctx context.Context, arg GetAgentExecutionAdmissionByIdempotencyParams) (GetAgentExecutionAdmissionByIdempotencyRow, error)
 	GetAgentExecutionTerminalNodeEvent(ctx context.Context, arg GetAgentExecutionTerminalNodeEventParams) (GetAgentExecutionTerminalNodeEventRow, error)
+	GetArtifactBucket(ctx context.Context, arg GetArtifactBucketParams) (EliteaStorageBucket, error)
+	GetArtifactProjectStoragePolicy(ctx context.Context, projectID int64) (EliteaStorageProjectStoragePolicy, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
@@ -108,6 +114,9 @@ type Querier interface {
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
 	ListActiveIndexIngestTarget(ctx context.Context, arg ListActiveIndexIngestTargetParams) ([]string, error)
+	ListArtifactBuckets(ctx context.Context, projectID int64) ([]EliteaStorageBucket, error)
+	ListArtifactBucketsNeedingExpiryNotice(ctx context.Context, arg ListArtifactBucketsNeedingExpiryNoticeParams) ([]EliteaStorageBucket, error)
+	ListArtifactObjects(ctx context.Context, arg ListArtifactObjectsParams) ([]EliteaStorageObject, error)
 	ListClaimableScheduledOccurrences(ctx context.Context, arg ListClaimableScheduledOccurrencesParams) ([]ListClaimableScheduledOccurrencesRow, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current
@@ -137,6 +146,7 @@ type Querier interface {
 	ListCurrentToolkitTypes(ctx context.Context, arg ListCurrentToolkitTypesParams) ([]string, error)
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
+	ListExpiredArtifactObjects(ctx context.Context, arg ListExpiredArtifactObjectsParams) ([]EliteaStorageObject, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	ListPendingAgentExecutionIDs(ctx context.Context, arg ListPendingAgentExecutionIDsParams) ([]string, error)
 	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)
@@ -156,6 +166,7 @@ type Querier interface {
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
 	MarkAgentExecutionDispatched(ctx context.Context, arg MarkAgentExecutionDispatchedParams) (int64, error)
 	MarkAgentExecutionPublished(ctx context.Context, arg MarkAgentExecutionPublishedParams) (int64, error)
+	MarkArtifactBucketNotified(ctx context.Context, id int64) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
@@ -179,14 +190,21 @@ type Querier interface {
 	ResolveInitialCurrentApplicationTurn(ctx context.Context, arg ResolveInitialCurrentApplicationTurnParams) (ResolveInitialCurrentApplicationTurnRow, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
+	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
 	// intentional: every such statement runs inside an authorized project
 	// transaction whose local search_path is p_<project_id>.
 	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
+	SoftDeleteArtifactBucket(ctx context.Context, id int64) (int64, error)
 	StorePreparedAgentExecutionEnvelope(ctx context.Context, arg StorePreparedAgentExecutionEnvelopeParams) (int64, error)
+	SumArtifactBucketBytes(ctx context.Context, bucketID int64) (int64, error)
+	SumArtifactProjectBytes(ctx context.Context, projectID int64) (int64, error)
 	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error)
+	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
+	UpsertArtifactObject(ctx context.Context, arg UpsertArtifactObjectParams) (EliteaStorageObject, error)
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap
 	// configuration is never copied into this tenant row: only the current vault
