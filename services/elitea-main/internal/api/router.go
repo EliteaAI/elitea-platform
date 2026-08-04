@@ -104,8 +104,14 @@ type RouterConfig struct {
 	CutoverRouter      *cutover.Router
 	AdminUI            *adminui.Config
 	Storage            storage.Backend
-	BudgetAlertStore   *gateway.BudgetAlertStore
-	SessionSecret      string
+	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
+	// docs/plans/storage-migration-plan.md). Assigning it here does not, by
+	// itself, put it on any request path — it is unread until S11 mounts the
+	// new artifact routes, the same caveat Storage above already has via
+	// newPrototypeCompatibilityRouter/prototypeCompatibilityRequested.
+	ObjectStore      storage.ObjectStore
+	BudgetAlertStore *gateway.BudgetAlertStore
+	SessionSecret    string
 	// InternalAdminToken is a disabled-by-default transitional control for
 	// shadow/cutover operations, not production workload identity. Empty leaves
 	// those routes unmounted.

@@ -3,6 +3,15 @@
 // for. Each backend's subtest skips cleanly when its emulator env vars are
 // absent, so `go test ./...` is green on a laptop with no containers and
 // exhaustive in CI (see deploy/docker-compose.storage-test.yml).
+//
+// This package deliberately does NOT go through storage.ConfigFromEnv (S5):
+// that function selects and validates exactly one backend for production use
+// (STORAGE_BACKEND, required STORAGE_CONTAINER, etc.), but this suite needs
+// to stand up all three backends independently, side by side, against three
+// different emulators in the same run — a different problem with different
+// config needs. It reads the same S3_*/AZURE_STORAGE_*/GCS_* variable names
+// directly instead, and owns its own fixed physical bucket name
+// (conformanceBucket) rather than depending on STORAGE_CONTAINER.
 package conformance
 
 import (
@@ -10,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -38,45 +48,48 @@ const conformanceBucket = "elitea-conformance-test"
 const conformanceProjectID = "999000001"
 
 func TestArtifactConformance(t *testing.T) {
-	cfg := storage.ConfigFromEnv()
 	ctx := context.Background()
 
 	t.Run("s3", func(t *testing.T) {
-		store := setupS3(t, ctx, cfg)
+		store := setupS3(t, ctx)
 		runCases(t, store)
 	})
 
 	t.Run("azure", func(t *testing.T) {
-		store := setupAzure(t, ctx, cfg)
+		store := setupAzure(t, ctx)
 		runCases(t, store)
 	})
 
 	t.Run("gcs", func(t *testing.T) {
-		store := setupGCS(t, ctx, cfg)
+		store := setupGCS(t, ctx)
 		runCases(t, store)
 	})
 }
 
-func setupS3(t *testing.T, ctx context.Context, cfg storage.Config) storage.ObjectStore {
+func setupS3(t *testing.T, ctx context.Context) storage.ObjectStore {
 	t.Helper()
-	if cfg.S3Endpoint == "" {
+	endpoint := os.Getenv("S3_ENDPOINT_URL")
+	if endpoint == "" {
 		t.Skip("S3_ENDPOINT_URL not set; skipping S3 conformance (see deploy/docker-compose.storage-test.yml)")
 	}
-
-	region := cfg.S3Region
+	accessKey := os.Getenv("S3_ACCESS_KEY")
+	secretKey := os.Getenv("S3_SECRET_KEY")
+	region := os.Getenv("S3_REGION")
 	if region == "" {
 		region = "us-east-1"
 	}
+	forcePathStyle := os.Getenv("S3_FORCE_PATH_STYLE") == "true"
+
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(region),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, "")),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
 		t.Fatalf("s3 conformance setup: load aws config: %v", err)
 	}
 	raw := s3sdk.NewFromConfig(awsCfg, func(o *s3sdk.Options) {
-		o.BaseEndpoint = aws.String(cfg.S3Endpoint)
-		o.UsePathStyle = cfg.S3ForcePathStyle
+		o.BaseEndpoint = aws.String(endpoint)
+		o.UsePathStyle = forcePathStyle
 	})
 	if _, err := raw.CreateBucket(ctx, &s3sdk.CreateBucketInput{Bucket: aws.String(conformanceBucket)}); err != nil {
 		var alreadyOwned *s3types.BucketAlreadyOwnedByYou
@@ -87,11 +100,11 @@ func setupS3(t *testing.T, ctx context.Context, cfg storage.Config) storage.Obje
 	}
 
 	backend, err := s3.New(ctx, s3.Config{
-		Endpoint:       cfg.S3Endpoint,
-		AccessKey:      cfg.S3AccessKey,
-		SecretKey:      cfg.S3SecretKey,
+		Endpoint:       endpoint,
+		AccessKey:      accessKey,
+		SecretKey:      secretKey,
 		Region:         region,
-		ForcePathStyle: cfg.S3ForcePathStyle,
+		ForcePathStyle: forcePathStyle,
 		Bucket:         conformanceBucket,
 	})
 	if err != nil {
@@ -100,20 +113,23 @@ func setupS3(t *testing.T, ctx context.Context, cfg storage.Config) storage.Obje
 	return backend
 }
 
-func setupAzure(t *testing.T, ctx context.Context, cfg storage.Config) storage.ObjectStore {
+func setupAzure(t *testing.T, ctx context.Context) storage.ObjectStore {
 	t.Helper()
+	endpoint := os.Getenv("AZURE_STORAGE_ENDPOINT")
+	account := os.Getenv("AZURE_STORAGE_ACCOUNT")
+	key := os.Getenv("AZURE_STORAGE_KEY")
 	// Azurite (this suite's Azure emulator) is shared-key only — running
 	// without a key would fail every operation, not only the Presign case,
 	// so the whole leg skips unless all three are set.
-	if cfg.AzureEndpoint == "" || cfg.AzureAccount == "" || cfg.AzureKey == "" {
+	if endpoint == "" || account == "" || key == "" {
 		t.Skip("AZURE_STORAGE_ENDPOINT / AZURE_STORAGE_ACCOUNT / AZURE_STORAGE_KEY not set; skipping Azure conformance")
 	}
 
-	cred, err := azblob.NewSharedKeyCredential(cfg.AzureAccount, cfg.AzureKey)
+	cred, err := azblob.NewSharedKeyCredential(account, key)
 	if err != nil {
 		t.Fatalf("azure conformance setup: shared key credential: %v", err)
 	}
-	rawClient, err := azblob.NewClientWithSharedKeyCredential(cfg.AzureEndpoint, cred, nil)
+	rawClient, err := azblob.NewClientWithSharedKeyCredential(endpoint, cred, nil)
 	if err != nil {
 		t.Fatalf("azure conformance setup: raw client: %v", err)
 	}
@@ -124,10 +140,10 @@ func setupAzure(t *testing.T, ctx context.Context, cfg storage.Config) storage.O
 	}
 
 	backend, err := azure.New(ctx, azure.Config{
-		Account:       cfg.AzureAccount,
-		Key:           cfg.AzureKey,
+		Account:       account,
+		Key:           key,
 		ContainerName: conformanceBucket,
-		Endpoint:      cfg.AzureEndpoint,
+		Endpoint:      endpoint,
 	})
 	if err != nil {
 		t.Fatalf("azure.New: %v", err)
@@ -135,9 +151,10 @@ func setupAzure(t *testing.T, ctx context.Context, cfg storage.Config) storage.O
 	return backend
 }
 
-func setupGCS(t *testing.T, ctx context.Context, cfg storage.Config) storage.ObjectStore {
+func setupGCS(t *testing.T, ctx context.Context) storage.ObjectStore {
 	t.Helper()
-	if cfg.GCSEndpoint == "" {
+	endpoint := os.Getenv("GCS_ENDPOINT")
+	if endpoint == "" {
 		t.Skip("GCS_ENDPOINT not set; skipping GCS conformance")
 	}
 
@@ -145,7 +162,7 @@ func setupGCS(t *testing.T, ctx context.Context, cfg storage.Config) storage.Obj
 	// JSON API's bucket-create endpoint and accepts unauthenticated calls,
 	// so a plain HTTP POST is enough to provision the physical bucket —
 	// no service-account credentials are needed for this step.
-	createURL := fmt.Sprintf("%sb?project=elitea-conformance", cfg.GCSEndpoint)
+	createURL := fmt.Sprintf("%sb?project=elitea-conformance", endpoint)
 	resp, err := http.Post(createURL, "application/json",
 		strings.NewReader(fmt.Sprintf(`{"name":%q}`, conformanceBucket)))
 	if err != nil {
@@ -158,7 +175,7 @@ func setupGCS(t *testing.T, ctx context.Context, cfg storage.Config) storage.Obj
 
 	backend, err := gcs.New(ctx, gcs.Config{
 		Bucket:   conformanceBucket,
-		Endpoint: cfg.GCSEndpoint,
+		Endpoint: endpoint,
 	})
 	if err != nil {
 		t.Fatalf("gcs.New: %v", err)

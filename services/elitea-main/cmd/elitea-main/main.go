@@ -35,6 +35,7 @@ import (
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -81,6 +82,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("create database pool: %w", err)
 	}
 	defer pool.Close()
+
+	// Object store. The service does not start without a working one — there
+	// is no filesystem fallback in the target architecture.
+	storageCfg, err := storage.ConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load storage configuration: %w", err)
+	}
+	objectStore, err := newObjectStore(ctx, storageCfg)
+	if err != nil {
+		return fmt.Errorf("create object store: %w", err)
+	}
+	if err := objectStoreReadinessProbe(ctx, objectStore); err != nil {
+		return fmt.Errorf("object store readiness probe: %w", err)
+	}
 
 	// The unversioned legacy bootstrap exists only for an empty local developer
 	// database. Production shared/tenant histories are owned by elitea-migrate.
@@ -656,6 +671,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,
+		ObjectStore:                   objectStore,
 	})
 
 	srv := &http.Server{
@@ -792,6 +808,21 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// objectStoreReadinessProbe issues one Stat against a sentinel key that is
+// never expected to exist. ErrNotFound therefore means the backend is
+// reachable and authenticated; any other error (access denied, a transport
+// failure) means it is not, and the service should not start.
+func objectStoreReadinessProbe(ctx context.Context, store storage.ObjectStore) error {
+	ref, err := storage.NewObjectRef("1", "elitea-system", "readiness-probe")
+	if err != nil {
+		return err
+	}
+	if _, err := store.Stat(ctx, ref); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 type poolChecker struct {

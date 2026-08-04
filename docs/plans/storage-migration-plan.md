@@ -611,7 +611,23 @@ in CI; gated skips print their reason; the suite skips cleanly with no emulator.
 
 ## S5 — Factory and wiring
 
-**Preconditions:** S3.
+**Preconditions:** S3. **If S4 has also already run** (it's listed as
+running any time after S2/S3, independently of S5), **this stage breaks
+`internal/infra/storage/conformance/conformance_test.go`'s build.** S4's
+suite calls the old flat `storage.ConfigFromEnv()` (no arguments, no error
+return) to read `S3_ENDPOINT_URL` and the rest for all three backends at
+once; this stage's rewrite makes it `ConfigFromEnv(lookup) (Config, error)`,
+single-backend-selecting via a required `STORAGE_BACKEND`. Do not route the
+conformance suite through the new `ConfigFromEnv` to fix this — it is a
+different consumer with a different job (stand up all three backends side by
+side against three emulators in one run, not select and validate one for
+production) and forcing it through would mean inventing a fake
+`STORAGE_BACKEND` override per subtest and requiring `STORAGE_CONTAINER` to
+be set just to satisfy validation the suite doesn't otherwise need. Instead,
+edit the suite's three `setupS3`/`setupAzure`/`setupGCS` functions to read
+`os.Getenv` directly for the handful of variables they need — they mostly
+already did per-backend presence checks individually; this only removes
+their shared call to the now-incompatible `ConfigFromEnv()`.
 
 **Rewrite `internal/infra/storage/config.go`:**
 
@@ -708,7 +724,14 @@ exactly one caller, `main()`.
   you're implementing out of order for any reason, the `gcs` leg of this test
   needs S2's constructor to assert a concrete type instead of tolerating a
   credential error.
-- `grep -rn 'ARTIFACTS_DATA_DIR' --include='*.go' services/elitea-main/` finds nothing.
+- `grep -n 'ARTIFACTS_DATA_DIR' services/elitea-main/internal/infra/storage/config.go` finds
+  nothing. **Scoped to the one file this stage rewrites — not the whole
+  `services/elitea-main/` tree.** `internal/api/router_security_test.go` also
+  reads `ARTIFACTS_DATA_DIR` (it builds a filesystem-backed fixture for the
+  legacy `/artifacts/s3` proxy) and legitimately keeps doing so until S10
+  deletes that proxy and repoints the fixture at S8's fake store — S10's own
+  text says so explicitly. A tree-wide grep here is unsatisfiable at this
+  stage regardless of implementation quality; do not widen it.
 - `grep -n 'os.Getenv' services/elitea-main/internal/infra/storage/config.go services/elitea-main/cmd/elitea-main/storage_factory.go` finds nothing.
   (Scoped to the two files this stage writes — the wider directories contain
   pre-existing, out-of-scope `os.Getenv` calls, e.g. in
