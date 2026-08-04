@@ -625,19 +625,37 @@ actually blocks a stray `os.Getenv` here today; follow the lookup-function
 convention anyway, since S17 (which owns the Helm chart) runs later and the
 check may be widened to cover `elitea-main` before then.
 
-**Create `internal/infra/storage/factory.go`:**
+**The factory does NOT live in `internal/infra/storage/`.** `s3`, `azure`, and
+`gcs` each already import package `storage` (for `ObjectRef`, `ObjectInfo`,
+`PutOptions`, and the rest of S1's types — required by S3's
+`var _ storage.ObjectStore = (*Backend)(nil)` assertions). A factory inside
+package `storage` that constructs `s3.Backend` / `azure.Backend` / `gcs.Backend`
+would need `storage` to import `s3`, `azure`, and `gcs` — `storage → s3 →
+storage` is a direct Go import cycle, not a style choice. This is exactly the
+constraint the file this stage deletes documents: `internal/infra/storage/client.go`
+says the factory "lives in `cmd/elitea-main/main.go` to avoid import cycles
+(backends import this package for the interface types; this package cannot
+import them back)". That was correct. Keep it true.
+
+**Delete `internal/infra/storage/client.go`** — supersede its comment with the
+real thing, in the place it already said the real thing belongs.
+
+**Create `cmd/elitea-main/storage_factory.go`** (package `main`, which can
+safely import `internal/infra/storage`, `internal/infra/storage/s3`,
+`internal/infra/storage/azure`, and `internal/infra/storage/gcs` — none of
+those import `main`, so there is no cycle):
 
 ```go
-func NewObjectStore(ctx context.Context, cfg Config) (ObjectStore, error)
+func newObjectStore(ctx context.Context, cfg storage.Config) (storage.ObjectStore, error)
 ```
 
-A `switch` over `cfg.Backend` returning the matching implementation, and an
-error for anything else. **Delete `internal/infra/storage/client.go`** — its
-entire content is a comment describing a factory that does not exist.
+A `switch` over `cfg.Backend` calling `s3.New`, `azure.New`, or `gcs.New` with
+the matching sub-config, and an error for anything else. Unexported — it has
+exactly one caller, `main()`.
 
 **Edit `cmd/elitea-main/main.go`:**
 
-- Call `storage.ConfigFromEnv(os.LookupEnv)` and `storage.NewObjectStore`.
+- Call `storage.ConfigFromEnv(os.LookupEnv)` and the new `newObjectStore`.
 - On error, log and exit non-zero. The service does not start without a working
   object store.
 - Add a startup readiness probe issuing one `Stat` against a sentinel key,
@@ -654,10 +672,18 @@ entire content is a comment describing a factory that does not exist.
   `STORAGE_BACKEND=filesystem`, `STORAGE_BACKEND=nonsense`, `s3` with no
   container, `azure` with no account, `gcs` with both endpoint and credentials
   file.
+- A separate table-driven test in `cmd/elitea-main/storage_factory_test.go`
+  asserts `newObjectStore` dispatches to the right constructor per
+  `cfg.Backend` and errors on an unrecognised one. It does not need real
+  network reachability — asserting the returned concrete type (or the error for
+  the unknown case) is enough.
 - `grep -rn 'ARTIFACTS_DATA_DIR' --include='*.go' services/elitea-main/` finds nothing.
-- `grep -rn 'os.Getenv' services/elitea-main/internal/infra/storage/` finds nothing.
+- `grep -rn 'os.Getenv' services/elitea-main/internal/infra/storage/ services/elitea-main/cmd/elitea-main/` finds nothing.
+- `go build ./...` exits 0 (this is the actual test for the import-cycle
+  constraint above — a cycle fails the build with `import cycle not allowed`,
+  not a grep).
 
-**Verify:** `cd services/elitea-main && go test ./internal/infra/storage/ -race && task build`
+**Verify:** `cd services/elitea-main && go build ./... && go test ./internal/infra/storage/... ./cmd/elitea-main/... -race`
 
 ---
 
@@ -833,9 +859,58 @@ updates. `apps/elitea-web/src/shared/api/endpoints.manifest.json` is generated
 from the same source — regenerating it is fine, but **do not** edit web UI
 source to match; that is the tracked UI rework issue.
 
+**The conformance test checks one direction only, and editing the spec alone
+fails it.** `every_spec_operation_resolves_to_a_route` requires every spec
+`operationId` to resolve to *some* registered router pattern — it does not
+require the reverse. So after this edit, the 13 new paths have no route to
+resolve to until something registers them, and the test fails with all 13
+unresolved. **This stage must also register a minimal stub route for each of
+the 13 new paths**, so the shape resolves; the *behaviour* is filled in by
+S8/S9. Do this in `internal/api/router.go`, inside
+`newPrototypeCompatibilityRouter`: replace the existing
+`r.Route("/artifacts", func(r chi.Router) { ... })` block (currently ~11
+registrations built on `v2artifacts.NewInMemoryHandler()`, around line 670)
+with the 13 new paths from the table above, each pointing at one shared
+placeholder:
+
+```go
+func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusNotImplemented)
+    _, _ = w.Write([]byte(`{"error":{"code":"NotImplemented","message":"pending S8/S9"}}`))
+}
+```
+
+**Register the three key-bearing routes** (`downloadObject`, `statObject`,
+`deleteObject`) **as a chi wildcard, not the literal `{key}` from the table.**
+chi v5.1.0 has no multi-segment named-param syntax — a literal `{key}` matches
+only one path segment and 404s on any key containing `/`, which S1's own key
+grammar explicitly allows. Register these three as
+`r.Get("/artifacts/objects/{projectID}/{bucket}/*", notImplementedArtifact)`
+(and `r.Head`, `r.Delete` for the other two) instead. This is safe for the
+conformance check specifically: `segmentsMatch` in
+`internal/api/oapiserver/conformance.go` treats a **trailing** `*` as matching
+any remainder of the spec path, unconditionally — confirmed by reading
+`conformance.go:308-339`, which returns `true` the instant it reaches a
+trailing `*` in the router pattern, before comparing further segments. So a
+router pattern ending in `/*` still resolves the spec's `.../{key}` operation.
+The other ten paths use ordinary `{projectID}`/`{bucket}`/`{grantID}` chi
+params, matching the table's placeholders directly.
+
+This removes the `artifactHandler := v2artifacts.NewInMemoryHandler()` line
+and its 11 call sites from `router.go`. `NewInMemoryHandler` and `memRepo`
+themselves stay — `internal/api/v2/artifacts/handler_test.go` still calls
+`NewInMemoryHandler()` at seven places, so they remain live until S8 deletes
+them there, per S8's own instructions. S8 and S9 do not add new registrations
+at these paths and do not need to touch the wildcard pattern again; they
+**replace** `notImplementedArtifact` at each path with the real handler,
+editing the same 13 lines this stage adds.
+
 **Acceptance criteria:** the spec declares at least 75 operations after the
-swap; `go test ./internal/api/oapiserver/ -race` passes against the still-prototype
-routes; no path under `/artifacts/s3` remains in `v2.yaml`.
+swap; `go test ./internal/api/oapiserver/ -race` passes — genuinely, because
+all 13 new paths now resolve to the stub; no path under `/artifacts/s3` remains
+in `v2.yaml`; every route the stub replaced now returns 501 with the typed
+error envelope instead of 404.
 
 **Verify:** `cd services/elitea-main && task openapi && go test ./internal/api/oapiserver/ -race && ! grep -q 'artifacts/s3' api/openapi/v2.yaml`
 
@@ -845,7 +920,8 @@ routes; no path under `/artifacts/s3` remains in `v2.yaml`.
 
 **Preconditions:** S5, S6, S7.
 **Read first:** `internal/api/v2/artifacts/handler.go`, `pg_repo.go`,
-`handler_test.go`, `internal/api/router.go` lines 665 to 690.
+`handler_test.go`, and the 13-path stub block S7 added to
+`newPrototypeCompatibilityRouter` in `internal/api/router.go`.
 
 Rewrite the bucket half of `internal/api/v2/artifacts/handler.go` against the S6
 repositories and the S1 `ObjectStore`, serving the S7 contract.
@@ -855,13 +931,18 @@ repositories and the S1 `ObjectStore`, serving the S7 contract.
 no Go migration creates and which is not migrated), `NewInMemoryHandler`, and
 `memRepo`.
 
-**Both of those have live callers that must change in the same commit or the
-package does not compile:**
+**Wire the five bucket-plane routes.** S7 already registered
+`GET/POST /artifacts/buckets/{projectID}` and
+`GET/PATCH/DELETE /artifacts/buckets/{projectID}/{bucket}` against
+`notImplementedArtifact`. **Replace that placeholder at those five lines** with
+`NewHandler(realRepo, realStore).{ListBuckets,CreateBucket,GetBucket,UpdateBucket,DeleteBucket}`
+— do not add a second registration at the same path; chi panics on that. The
+object-plane paths stay on the S7 stub until S9.
 
-- `internal/api/router.go:672` calls `NewInMemoryHandler()`.
-- `internal/api/v2/artifacts/handler_test.go` calls it at seven places. Replace
-  each with `NewHandler(fakeRepo, fakeStore)` over an in-test fake added in this
-  stage as `internal/api/v2/artifacts/fake_store_test.go`.
+**`NewInMemoryHandler` has one remaining live caller after S7's edit:**
+`internal/api/v2/artifacts/handler_test.go`, at seven places. Replace each with
+`NewHandler(fakeRepo, fakeStore)` over an in-test fake added in this stage as
+`internal/api/v2/artifacts/fake_store_test.go`.
 
 Response bodies:
 
@@ -922,17 +1003,18 @@ implemented in every backend and routed nowhere.
 | DELETE | `/artifacts/objects/{projectID}/{bucket}/*` | Delete one object |
 
 **The key is the chi wildcard, not a named param.** chi v5.1.0 has no
-`{name...}` syntax — it parses that literally as a single-segment param named
-`key...`, which 404s the instant a key contains an internal `/` (verified: a
-route registered as `.../{key...}` matches `.../flat.png` but not
-`.../a/b.png`). Since S1's own key grammar explicitly allows multi-segment keys
-and folder listing is a required capability, this is not an edge case — it is
-the common case. Register the route as `r.Get("/artifacts/objects/{projectID}/{bucket}/*", handler)`
-and extract the key with `strings.TrimPrefix(chi.URLParam(r, "*"), "/")`,
-exactly the pattern already used by the routes this stage replaces
-(`internal/api/v2/artifacts/{handler,s3handler}.go` both do this today). The
-OpenAPI table in S7 may keep the documentation-level `{key}` placeholder; only
-the chi registration needs the wildcard form.
+`{name...}` syntax; a literal `{key}` matches only one path segment and 404s
+the instant a key contains an internal `/`. Since S1's own key grammar
+explicitly allows multi-segment keys and folder listing is a required
+capability, this is not an edge case — it is the common case. S7 already
+registered all six of these paths against the `notImplementedArtifact` stub,
+with the three key-bearing routes on the correct `/*` wildcard pattern (not the
+table's `{key}` placeholder) for exactly this reason. **Replace the stub at
+each of the six lines with the real handler — do not add a second registration
+at the same path** (chi panics on that) and do not change the pattern again.
+Extract the key with `strings.TrimPrefix(chi.URLParam(r, "*"), "/")`, exactly
+the pattern already used by the routes this stage retires
+(`internal/api/v2/artifacts/{handler,s3handler}.go` both do this today).
 
 Response bodies:
 
