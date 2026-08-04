@@ -118,4 +118,33 @@ describe('UserPublicPage', () => {
     renderPage({ tab: 'agents' });
     await waitFor(() => expect(screen.getByText('Ada has not created agent yet.')).toBeInTheDocument());
   });
+
+  it('renders no tabs and never fetches applications for a visitor with no permissions (logged-out gate)', async () => {
+    // Regression guard for the adversarial-review finding (cluster A12-ui,
+    // finding 1): `computeDisplayedTabs` maps every tab, INCLUDING 'all', to
+    // `false` when `permissions.length === 0` (`lib/displayed-tabs.ts`), so
+    // no tab should ever be "active" here. The old `activeTab =
+    // visibleTabs[activeIndex] ?? 'all'` fallback nonetheless treated 'all'
+    // as active and mounted `AllStuffPanel`, which fetches real
+    // project-application data — exactly the population this permission
+    // gate exists to lock out.
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    let applicationsFetchCount = 0;
+    server.use(
+      getListApplicationsMockHandler(() => {
+        applicationsFetchCount += 1;
+        return { rows: [], total: 0, page: 1, page_size: 20, total_pages: 0 };
+      }),
+    );
+    renderPage({}, { getSelectedProjectId: () => 'proj-1', getUser: () => ({ permissions: [] }) });
+
+    // The status filter (unrelated to tab visibility — it only depends on
+    // `isPublicProject`) still renders regardless; waiting for it gives an
+    // incorrectly-mounted `AllStuffPanel` a tick to have fired its fetch
+    // before the assertions below run.
+    await screen.findByRole('combobox');
+
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    expect(applicationsFetchCount).toBe(0);
+  });
 });

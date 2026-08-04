@@ -23,5 +23,6 @@ export function mapApplicationToListItem(application: Application): UserPublicLi
     status: application.status,
     authorNames: (application.authors ?? []).map((author) => authorDisplayName(author)),
     createdAt: application.created_at,
+    kind: isPipelineApplication(application) ? 'pipeline' : 'agent',
   };
 }

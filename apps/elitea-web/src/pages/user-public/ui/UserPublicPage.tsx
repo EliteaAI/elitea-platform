@@ -66,7 +66,33 @@ export function UserPublicPage({
     const found = visibleTabs.indexOf(tab);
     return found === -1 ? 0 : found;
   }, [visibleTabs, tab]);
-  const activeTab: UserPublicTabValue = visibleTabs[activeIndex] ?? 'all';
+  /**
+   * Adversarial-review fix (cluster A12-ui, finding 1): this used to fall
+   * back to the LITERAL string `'all'` whenever `visibleTabs[activeIndex]`
+   * was `undefined` — which, critically, is not just "the requested `tab`
+   * isn't visible, so land on the first visible one instead" (the case
+   * `activeIndex`'s own `found === -1 ? 0` fallback exists for). It is ALSO
+   * what happens when `visibleTabs` is empty altogether — the parity
+   * target's own "no permissions" case (`lib/displayed-tabs.ts`'s doc
+   * comment: `permissions.length === 0` maps every tab, including `'all'`,
+   * to `false`). In that case `visibleTabs[0]` is `undefined` too, and the
+   * old `?? 'all'` fallback manufactured an "active" tab value that was
+   * NEVER a member of `displayedTabs`/`visibleTabs` — so `activeTab ===
+   * 'all'` below still matched and rendered `AllStuffPanel` (real
+   * project-application fetch) for exactly the logged-out/no-permission
+   * visitor this gate exists to lock out, even though no tab was ever
+   * showing for them to click.
+   *
+   * `undefined` here (not a manufactured tab value) restores parity with
+   * the baseline (`UserPublic.jsx`'s own `tabs.filter(i =>
+   * displayedTabs[i.label])` + `tabs[currentTabValue]`, `UserPublic.jsx:
+   * 243,298-301`): when nothing is visible, `tabs` is `[]`, `currentTabValue`
+   * is `0`, and `tabs[0]` is `undefined` — the baseline's `StickyTabs`
+   * renders no tab strip and no panel content for that `undefined`, the
+   * same nothing-renders outcome every `activeTab === <value>` check below
+   * now produces once `activeTab` is `undefined` instead of a fake `'all'`.
+   */
+  const activeTab: UserPublicTabValue | undefined = visibleTabs[activeIndex];
 
   const tabLabels: Readonly<Record<UserPublicTabValue, string>> = {
     all: t('userPublic.tabAll', 'All'),

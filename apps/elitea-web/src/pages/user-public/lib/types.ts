@@ -15,6 +15,21 @@
  * report. This local, minimal type sidesteps the gap entirely for this
  * page's own rendering needs.
  */
+/**
+ * Which of ROUTE-041's four entity domains an item is — added for the
+ * A12-ui adversarial-review fix (`EntityListPanel`'s cards were fully
+ * inert, no way to reach an item's own detail page). `AllStuffPanel` merges
+ * agents and pipelines into one list (`lib/merge-and-sort.ts`), so a single
+ * list item's own kind has to travel WITH it for the composition root to
+ * know which of the four `/user-public/{agents,pipelines,toolkits,mcps}/$id`
+ * routes (`src/routes/_shell/user-public/*.tsx`, ROUTE-042..045) to send a
+ * click to. `'toolkit'`/`'MCP'` are part of the union for completeness (the
+ * type every panel reads is shared) even though no mapper in this unit
+ * produces them yet — see `UnavailablePanel`'s doc for why those two tabs
+ * have no data source.
+ */
+export type EntityKind = 'agent' | 'pipeline' | 'toolkit' | 'MCP';
+
 export interface UserPublicListItem {
   readonly id: string;
   readonly name: string;
@@ -22,4 +37,5 @@ export interface UserPublicListItem {
   readonly status: string | undefined;
   readonly authorNames: readonly string[];
   readonly createdAt: string;
+  readonly kind: EntityKind;
 }

@@ -73,9 +73,36 @@ export function useCurrentUserPermissions(): readonly string[] {
  * resolution is cached for good; `resetConfigForTests()` is deliberately not
  * re-exported from `shared/config`'s public barrel, so no consumer outside
  * that unit can safely reset it between tests).
+ *
+ * `projectId === undefined` -> `true` (adversarial-review fix, cluster
+ * A12-api-model, finding 1). `projectId` is `undefined` whenever the router
+ * root context has no selected project — the shape produced both by a
+ * genuinely anonymous/logged-out visitor and by `UserPublicPage.tsx`'s own
+ * `projectId === '' ? undefined : projectId` normalisation of "nothing
+ * selected yet". This page's whole purpose is showing an author's PUBLIC
+ * profile to exactly that audience, so "no project" must default to "yes,
+ * this is the public catalog" — the same safe default the old app applies
+ * when it has no project to scope owner-only queries to: every owner-scoped
+ * query in `apps/elitea-ui/src/pages/UserPublic/UserPublic.jsx:92,107,121,136`
+ * is guarded with `skip: !projectId || ...`, so a falsy `projectId` there
+ * always short-circuits to "no data fetched", never to a false "empty"
+ * result. Returning `false` here (the previous behaviour) inverted that:
+ * `AllStuffPanel`/`ApplicationsPanel` (`ui/AllStuffPanel.tsx`,
+ * `ui/ApplicationsPanel.tsx`) treat `isPublicProject === false` as "render
+ * the owner-scoped list", so they'd call `useOwnerApplications` with
+ * `projectId: ''` — a no-op query (`useOwnerApplications.ts`'s own
+ * `projectId !== ''` enable-guard) — and then render `EntityListPanel`'s
+ * `allStuffEmptyMessage`/`applicationsEmptyMessage` copy
+ * ("`${authorName} has not created anything yet.`", `lib/empty-copy.ts`) —
+ * a factual claim about the author's content that this viewer has no basis
+ * to make. Defaulting to `true` instead routes both panels to
+ * `UnavailablePanel`'s disclosed-safe message ("the public catalog's
+ * response does not include author information, so items cannot be
+ * narrowed to one author's profile here") — an honest "can't show this
+ * here" instead of a misleading "there's nothing here".
  */
 export function isPublicProjectId(projectId: string | undefined, config: ConfigResult): boolean {
-  if (projectId === undefined) return false;
+  if (projectId === undefined) return true;
   return config.status === 'ok' && config.config.vite_public_project_id === projectId;
 }
 

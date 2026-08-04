@@ -46,6 +46,7 @@ describe('mapApplicationToListItem', () => {
       status: 'published',
       authorNames: ['Ada'],
       createdAt: '2026-01-01T00:00:00Z',
+      kind: 'agent',
     });
   });
 
@@ -57,5 +58,13 @@ describe('mapApplicationToListItem', () => {
     const result = mapApplicationToListItem(makeApplication());
     expect(result.description).toBe('');
     expect(result.authorNames).toEqual([]);
+  });
+
+  it('maps kind to "agent" for a plain classic application', () => {
+    expect(mapApplicationToListItem(makeApplication({ agent_type: 'classic' })).kind).toBe('agent');
+  });
+
+  it('maps kind to "pipeline" when agent_type is "pipeline"', () => {
+    expect(mapApplicationToListItem(makeApplication({ agent_type: 'pipeline' })).kind).toBe('pipeline');
   });
 });

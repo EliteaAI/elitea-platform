@@ -58,11 +58,12 @@ describe('isPublicProjectId (pure)', () => {
     expect(isPublicProjectId('other-project', ok)).toBe(false);
   });
 
-  it('is false when projectId is undefined', () => {
-    expect(isPublicProjectId(undefined, ok)).toBe(false);
+  it('is true when projectId is undefined (adversarial-review fix, cluster A12-api-model finding 1): an anonymous/no-selected-project visitor must default to the disclosed-safe public-catalog placeholder, not the misleading "author has created nothing" empty state', () => {
+    expect(isPublicProjectId(undefined, ok)).toBe(true);
+    expect(isPublicProjectId(undefined, missing)).toBe(true);
   });
 
-  it('is false when the config is missing', () => {
+  it('is false when the config is missing but a concrete projectId was supplied', () => {
     expect(isPublicProjectId('pub-1', missing)).toBe(false);
   });
 });
