@@ -170,6 +170,7 @@ type Querier interface {
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
+	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
@@ -177,6 +178,7 @@ type Querier interface {
 	// assignment; the system-user email fallback is considered only when that
 	// named project does not exist.
 	ResolveCurrentPersonalProjectID(ctx context.Context, userID int32) (int32, error)
+	ResolveCurrentRegeneration(ctx context.Context, arg ResolveCurrentRegenerationParams) (ResolveCurrentRegenerationRow, error)
 	ResolveCurrentTenantContext(ctx context.Context, arg ResolveCurrentTenantContextParams) (ResolveCurrentTenantContextRow, error)
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)

@@ -9,6 +9,7 @@ import (
 
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,6 +46,13 @@ type currentAdhocStartQuerier interface {
 		context.Context,
 		sqlcgen.ResolveCurrentAdhocTurnParams,
 	) (sqlcgen.ResolveCurrentAdhocTurnRow, error)
+}
+
+type currentRegenerationQuerier interface {
+	ResolveCurrentRegeneration(
+		context.Context,
+		sqlcgen.ResolveCurrentRegenerationParams,
+	) (sqlcgen.ResolveCurrentRegenerationRow, error)
 }
 
 func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
@@ -184,6 +192,62 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentAdhoc(
 	return target, nil
 }
 
+func (repository *CurrentAgentStartRepository) ResolveCurrentRegeneration(
+	ctx context.Context,
+	request agentexecutionapp.CurrentRegenerationResolveRequest,
+) (agentexecutionapp.CurrentRegenerationTarget, error) {
+	if err := request.Validate(); err != nil {
+		return agentexecutionapp.CurrentRegenerationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	projectID, projectIDValid := currentAgentDatabaseID(request.ProjectID)
+	if !projectIDValid {
+		return agentexecutionapp.CurrentRegenerationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	responseMessageID, err := currentPGUUID(request.ResponseMessageID)
+	if err != nil {
+		return agentexecutionapp.CurrentRegenerationTarget{}, agentexecutionapp.ErrInvalidCurrentAgentStart
+	}
+	var target agentexecutionapp.CurrentRegenerationTarget
+	err = repository.projects.WithinProjectTx(
+		ctx,
+		request.ProjectID,
+		pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly},
+		func(tx sqlExecutor) error {
+			queries, ok := tx.(currentRegenerationQuerier)
+			if !ok {
+				return errors.New("current agent regeneration query is unavailable")
+			}
+			row, queryErr := queries.ResolveCurrentRegeneration(
+				ctx,
+				sqlcgen.ResolveCurrentRegenerationParams{
+					ActorUserID: request.ActorUserID, ProjectID: projectID,
+					ResponseMessageID: responseMessageID,
+				},
+			)
+			if errors.Is(queryErr, pgx.ErrNoRows) {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			if queryErr != nil {
+				return fmt.Errorf("resolve current agent regeneration: %w", queryErr)
+			}
+			target = agentexecutionapp.CurrentRegenerationTarget{
+				Kind:                agentexecutionapp.CurrentRegenerationKind(row.RegenerationKind),
+				ConversationUUID:    uuid.UUID(row.ConversationUuid.Bytes).String(),
+				TargetParticipantID: int64(row.TargetParticipantID),
+				QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(), UserInput: row.UserInput,
+			}
+			if err := target.Validate(); err != nil {
+				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return agentexecutionapp.CurrentRegenerationTarget{}, err
+	}
+	return target, nil
+}
+
 func currentPGUUID(value string) (pgtype.UUID, error) {
 	var result pgtype.UUID
 	if err := result.Scan(value); err != nil || !result.Valid {
@@ -194,3 +258,4 @@ func currentPGUUID(value string) (pgtype.UUID, error) {
 
 var _ currentApplicationStartQuerier = pgxExecutor{}
 var _ currentAdhocStartQuerier = pgxExecutor{}
+var _ currentRegenerationQuerier = pgxExecutor{}

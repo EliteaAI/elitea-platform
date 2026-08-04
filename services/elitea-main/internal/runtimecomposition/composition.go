@@ -467,6 +467,7 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
 			agentTargets,
 			agentTargets,
+			agentTargets,
 			agentVersions,
 			agentAdmissions,
 		)

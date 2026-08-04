@@ -255,6 +255,102 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	}
 }
 
+func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000031"
+	responseID := "40000000-0000-4000-8000-000000000031"
+	response := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000031", responseID,
+		"regenerate this", "execution-original",
+	)
+	completePostgresCurrentApplicationTurn(t, tx, response, "discarded answer")
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO chat_message_trace_step (
+    id, message_group_id, kind, run_id, is_error, has_visible_content
+)
+SELECT 1, id, 'tool_call', 'discarded-run', FALSE, TRUE
+FROM chat_message_group
+WHERE uuid = $1`, response); err != nil {
+		t.Fatal(err)
+	}
+
+	binding, err := queries.ResolveCurrentRegeneration(
+		t.Context(),
+		sqlcgen.ResolveCurrentRegenerationParams{
+			ActorUserID: 11, ProjectID: 1, ResponseMessageID: response,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.RegenerationKind != "application" || binding.TargetParticipantID != 21 ||
+		binding.QuestionID != mustCurrentPGUUID(t, questionID) ||
+		binding.ConversationUuid != conversationID || binding.UserInput != "regenerate this" {
+		t.Fatalf("binding=%+v", binding)
+	}
+	if _, err := queries.ResolveCurrentRegeneration(
+		t.Context(),
+		sqlcgen.ResolveCurrentRegenerationParams{
+			ActorUserID: 12, ProjectID: 1, ResponseMessageID: response,
+		},
+	); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-user resolution error=%v", err)
+	}
+
+	generation := "50000000-0000-4000-8000-000000000031"
+	reset, err := queries.ResetCurrentAgentResponse(
+		t.Context(),
+		sqlcgen.ResetCurrentAgentResponseParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+			ResponseMessageID: response, RegenerationKind: "application",
+			ApplicationID: 31, ApplicationVersionID: 41,
+			ExecutionGeneration: generation, ExecutionID: "execution-regenerated",
+			ProjectID: 1,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.ResponseMessageID != response {
+		t.Fatalf("reset=%+v", reset)
+	}
+	var isStreaming bool
+	var taskID, storedGeneration string
+	var items, traces int
+	if err := tx.QueryRow(t.Context(), `
+SELECT response.is_streaming,
+       response.task_id,
+       response.meta ->> 'execution_generation',
+       (SELECT count(*) FROM chat_message_items WHERE message_group_id = response.id),
+       (SELECT count(*) FROM chat_message_trace_step WHERE message_group_id = response.id)
+FROM chat_message_group AS response
+WHERE response.uuid = $1`, response).Scan(
+		&isStreaming, &taskID, &storedGeneration, &items, &traces,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-regenerated" || storedGeneration != generation ||
+		items != 0 || traces != 0 {
+		t.Fatalf("streaming=%v task=%q generation=%q items=%d traces=%d",
+			isStreaming, taskID, storedGeneration, items, traces)
+	}
+}
+
 func completePostgresCurrentApplicationTurn(
 	t *testing.T,
 	tx pgx.Tx,
@@ -440,7 +536,18 @@ CREATE TABLE p_1.chat_message_items (
     message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id)
 );
 CREATE TABLE p_1.chat_messages_text (
-    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id), content TEXT NOT NULL
+    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE,
+    content TEXT NOT NULL
+);
+CREATE TABLE p_1.chat_message_trace_step (
+    id BIGINT PRIMARY KEY,
+    message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL, run_id TEXT, parent_agent_name TEXT, parent_agent_call_id TEXT,
+    started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
+    is_error BOOLEAN NOT NULL DEFAULT FALSE,
+    has_visible_content BOOLEAN NOT NULL DEFAULT TRUE,
+    tool_name TEXT, tool_inputs JSONB, tool_output TEXT, finish_reason TEXT,
+    step_type TEXT, text TEXT, thinking TEXT, model_name TEXT, attrs JSONB
 );
 CREATE TABLE p_1.chat_messages_context (
     context_data JSONB NOT NULL, context_type TEXT,
