@@ -4,7 +4,18 @@
  * Ported from `apps/elitea-ui/src/[fsd]/shared/lib/hooks/useSoundNotification.hooks.js`
  * and `apps/elitea-ui/src/[fsd]/shared/lib/utils/soundNotification.utils.js`.
  *
- * Persists `{ enabled, volume }` to localStorage under key `el.sound_notifications`.
+ * Persists `{ enabled, volume }` to localStorage under key `el.notifications.sound-config`.
+ *
+ * **Storage key fix (was `sound_notifications`):** this hook backs the
+ * Settings > Profile "Play sound when tasks complete" toggle, but the actual
+ * sound-playing call sites — `features/notifications/lib/soundNotification.ts`,
+ * `features/pipelines/lib/flow-editor/helpers/pipelineCompletionSound.local.ts`,
+ * and `features/toolkits/indexes/lib/helpers/soundNotification.local.ts` — all
+ * read/write `notifications.sound-config`. Using a different key here meant
+ * toggling the Settings switch off never actually silenced those sounds.
+ * Aligning on the shared key is a one-time reset of this preference for any
+ * user who had already stored a value under the old key (a boolean + volume
+ * slider, not user content) — no migration is performed.
  */
 import { useCallback, useState } from 'react';
 
@@ -15,7 +26,7 @@ interface SoundConfig {
   volume: number;
 }
 
-const STORAGE_KEY = 'sound_notifications';
+const STORAGE_KEY = 'notifications.sound-config';
 const DEFAULT_CONFIG: SoundConfig = { enabled: true, volume: 0.5 };
 
 function loadSoundConfig(): SoundConfig {
