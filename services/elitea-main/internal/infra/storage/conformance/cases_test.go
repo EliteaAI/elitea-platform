@@ -169,7 +169,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 			t.Fatalf("Get(range): %v", err)
 		}
 		got, err := io.ReadAll(body)
-		body.Close()
+		_ = body.Close()
 		if err != nil {
 			t.Fatalf("read range body: %v", err)
 		}
@@ -262,7 +262,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 			t.Fatalf("Get: %v", err)
 		}
 		got, err := io.ReadAll(body)
-		body.Close()
+		_ = body.Close()
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
@@ -285,7 +285,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 			t.Fatalf("Get: %v", err)
 		}
 		got, err := io.ReadAll(body)
-		body.Close()
+		_ = body.Close()
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
@@ -317,7 +317,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 			t.Fatalf("unauthenticated GET of presigned URL: %v", err)
 		}
 		got, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("presigned GET before TTL expiry: status %d, want 200", resp.StatusCode)
 		}
@@ -330,7 +330,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 		if err != nil {
 			t.Fatalf("unauthenticated GET of expired presigned URL: %v", err)
 		}
-		resp2.Body.Close()
+		_ = resp2.Body.Close()
 		if resp2.StatusCode != http.StatusForbidden {
 			t.Fatalf("presigned GET after TTL expiry: status %d, want 403", resp2.StatusCode)
 		}
@@ -379,7 +379,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 			t.Fatalf("Get after CompleteMultipart: %v", err)
 		}
 		got, err := io.ReadAll(body)
-		body.Close()
+		_ = body.Close()
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
@@ -412,6 +412,40 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 
 		if _, _, err := store.Get(ctx, ref, nil); !errors.Is(err, storage.ErrNotFound) {
 			t.Fatalf("Get after AbortMultipart err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("NonSeekableBodyRoundTripsMatchingDigest", func(t *testing.T) {
+		// S9's real HTTP upload handler passes Put a *multipart.Part, which
+		// is not an io.ReadSeeker — io.NopCloser here strips any Seek method
+		// the underlying bytes.Reader has, forcing the same non-seekable
+		// path in the s3 backend, which (unlike azure/gcs) branches on
+		// io.ReadSeeker and routes non-seekable bodies through a multipart
+		// uploader instead of a single PutObject (see s3/backend.go's Put).
+		content := randomBytes(t, 5<<20)
+		wantSum := sha256.Sum256(content)
+
+		ref := ref(t, "case16", "non-seekable.bin")
+		body := io.NopCloser(bytes.NewReader(content))
+		if _, ok := body.(io.ReadSeeker); ok {
+			t.Fatal("io.NopCloser body unexpectedly still satisfies io.ReadSeeker")
+		}
+		if _, err := store.Put(ctx, ref, body, storage.PutOptions{ContentLength: int64(len(content))}); err != nil {
+			t.Fatalf("Put(non-seekable body): %v", err)
+		}
+
+		got, _, err := store.Get(ctx, ref, nil)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		gotBytes, err := io.ReadAll(got)
+		_ = got.Close()
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		gotSum := sha256.Sum256(gotBytes)
+		if gotSum != wantSum {
+			t.Fatalf("round-tripped SHA-256 mismatch (lengths equal=%v): got %x want %x", len(gotBytes) == len(content), gotSum, wantSum)
 		}
 	})
 
@@ -485,7 +519,7 @@ func httpPutBytes(url string, body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("PUT %s: status %d: %s", url, resp.StatusCode, b)

@@ -168,7 +168,7 @@ func setupGCS(t *testing.T, ctx context.Context) storage.ObjectStore {
 	if err != nil {
 		t.Fatalf("gcs conformance setup: create bucket: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
 		t.Fatalf("gcs conformance setup: create bucket: unexpected status %d", resp.StatusCode)
 	}

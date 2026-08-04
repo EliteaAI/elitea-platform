@@ -62,7 +62,7 @@ func clientOptions(cfg Config) ([]option.ClientOption, error) {
 	var opts []option.ClientOption
 	switch {
 	case cfg.CredentialsFile != "":
-		opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile))
+		opts = append(opts, option.WithAuthCredentialsFile(option.ServiceAccount, cfg.CredentialsFile))
 	case cfg.Endpoint != "":
 		opts = append(opts, option.WithEndpoint(cfg.Endpoint), option.WithoutAuthentication())
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithy "github.com/aws/smithy-go"
@@ -44,7 +44,8 @@ type Config struct {
 // MinIO, RustFS). Every object lives in one physical bucket (Config.Bucket),
 // namespaced by ObjectRef.StorageKey.
 type Backend struct {
-	client *s3.Client
+	client   *s3.Client
+	uploader *transfermanager.Client // non-seekable-body Put path only; see Put
 
 	bucket    string
 	keyPrefix string
@@ -80,7 +81,12 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	}
 
 	client := s3.NewFromConfig(awsCfg, clientOpts...)
-	return &Backend{client: client, bucket: cfg.Bucket, keyPrefix: cfg.KeyPrefix}, nil
+	return &Backend{
+		client:    client,
+		uploader:  transfermanager.New(client),
+		bucket:    cfg.Bucket,
+		keyPrefix: cfg.KeyPrefix,
+	}, nil
 }
 
 func (b *Backend) Capabilities() storage.Capabilities {
@@ -125,19 +131,20 @@ func (b *Backend) Put(ctx context.Context, ref storage.ObjectRef, body io.Reader
 
 	// Non-seekable bodies (S9 passes a *multipart.Part) fail SigV4's
 	// RewindStream before the request reaches the network, over plain HTTP —
-	// route them through the multipart uploader instead of PutObject.
-	input := &s3.PutObjectInput{
+	// route them through the transfer manager's multipart uploader instead
+	// of PutObject.
+	uploadInput := &transfermanager.UploadObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(key),
 		Body:   body,
 	}
 	if opts.ContentType != "" {
-		input.ContentType = aws.String(opts.ContentType)
+		uploadInput.ContentType = aws.String(opts.ContentType)
 	}
 	if len(opts.Metadata) > 0 {
-		input.Metadata = opts.Metadata
+		uploadInput.Metadata = opts.Metadata
 	}
-	out, err := manager.NewUploader(b.client).Upload(ctx, input)
+	out, err := b.uploader.UploadObject(ctx, uploadInput)
 	if err != nil {
 		return storage.ObjectInfo{}, mapS3Error(err, "upload object")
 	}
