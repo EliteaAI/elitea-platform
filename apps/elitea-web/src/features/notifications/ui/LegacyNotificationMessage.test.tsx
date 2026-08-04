@@ -120,6 +120,73 @@ describe('LegacyNotificationMessage', () => {
     expect(link.getAttribute('href')).toContain('/7/toolkits/indexes/t1');
   });
 
+  it('index_data_changed with a link: substitutes the link for the {INDEX_LINK} placeholder mid-sentence instead of leaking the literal (LegacyNotificationMessage.jsx:120-142)', () => {
+    const meta: FullNotificationMeta = { toolkitId: 't1', indexName: 'idx', indexed: 5 };
+    const { container } = renderWithTheme(
+      <LegacyNotificationMessage
+        eventType="index_data_changed"
+        meta={meta}
+        projectId="7"
+        textVariant="bodySmall"
+        textColor="inherit"
+      />,
+    );
+    // formatIndexMessage(meta, true) -> 'Index {INDEX_LINK} is successfully created: { "indexed": 5 }'
+    // — the placeholder literal must never reach the rendered text, and the
+    // link ('idx') must land exactly where {INDEX_LINK} was, not appended
+    // after the whole sentence.
+    expect(container.textContent).not.toContain('{INDEX_LINK}');
+    expect(container.textContent).toBe('Index idx is successfully created: { "indexed": 5 }');
+    const link = screen.getByRole('link', { name: 'idx' });
+    expect(link.getAttribute('href')).toContain('/7/toolkits/indexes/t1');
+  });
+
+  it('index_data_changed with a link: renders the full, untruncated index name (needTrim=false parity, LegacyNotificationMessage.jsx:134)', () => {
+    const longName = 'a'.repeat(40);
+    const meta: FullNotificationMeta = { toolkitId: 't1', indexName: longName };
+    renderWithTheme(
+      <LegacyNotificationMessage
+        eventType="index_data_changed"
+        meta={meta}
+        projectId="7"
+        textVariant="bodySmall"
+        textColor="inherit"
+      />,
+    );
+    expect(screen.getByRole('link', { name: longName })).toBeInTheDocument();
+  });
+
+  it('index_data_changed with an error: still splices the link into the {INDEX_LINK} placeholder position', () => {
+    const meta: FullNotificationMeta = { toolkitId: 't1', indexName: 'idx', error: 'boom' };
+    const { container } = renderWithTheme(
+      <LegacyNotificationMessage
+        eventType="index_data_changed"
+        meta={meta}
+        projectId="7"
+        textVariant="bodySmall"
+        textColor="inherit"
+      />,
+    );
+    expect(container.textContent).not.toContain('{INDEX_LINK}');
+    expect(container.textContent).toBe('Index idx is failed.');
+  });
+
+  it('index_data_changed without a toolkitId: renders plain leading text with no link and no placeholder leak', () => {
+    const meta: FullNotificationMeta = { indexName: 'idx', indexed: 2 };
+    const { container } = renderWithTheme(
+      <LegacyNotificationMessage
+        eventType="index_data_changed"
+        meta={meta}
+        projectId="7"
+        textVariant="bodySmall"
+        textColor="inherit"
+      />,
+    );
+    expect(container.textContent).not.toContain('{INDEX_LINK}');
+    expect(container.textContent).toBe('Index idx is successfully created: { "indexed": 2 }');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
   it('calls onCloseNotificationList when a new-tab link is clicked', () => {
     const onClose = vi.fn();
     const meta: FullNotificationMeta = { toolkitId: 't1', indexName: 'idx' };

@@ -78,6 +78,16 @@ describe('resolveNotificationHref', () => {
     expect(resolveNotificationHref('agent_unpublished', meta, '7')).toBe(`${base()}/99/agents/all/a1/v1?viewMode=owner`);
   });
 
+  it('agent_unpublished: null when appId or versionId is an empty string (truthy-check parity, notification.helpers.js:45)', () => {
+    expect(resolveNotificationHref('agent_unpublished', { sourceApplicationId: '', sourceVersionId: 'v1' }, '7')).toBeNull();
+    expect(resolveNotificationHref('agent_unpublished', { sourceApplicationId: 'a1', sourceVersionId: '' }, '7')).toBeNull();
+  });
+
+  it('agent_unpublished: falls back to the notification project id when meta.projectId is an empty string (`||` parity, notification.helpers.js:44)', () => {
+    const meta: FullNotificationMeta = { sourceApplicationId: 'a1', sourceVersionId: 'v1', projectId: '' };
+    expect(resolveNotificationHref('agent_unpublished', meta, '7')).toBe(`${base()}/7/agents/all/a1/v1?viewMode=owner`);
+  });
+
   it('returns null for an unmapped event type (default branch)', () => {
     expect(resolveNotificationHref('rates', undefined, '7')).toBeNull();
     expect(resolveNotificationHref('comments', undefined, '7')).toBeNull();

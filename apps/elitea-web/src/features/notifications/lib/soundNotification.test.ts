@@ -49,6 +49,16 @@ describe('loadSoundConfig', () => {
     expect(window.localStorage.getItem('elitea_ui.sound_notifications')).toBeNull();
     expect(window.localStorage.getItem('el.notifications.sound-config')).not.toBeNull();
   });
+
+  it('reads only its own key, not the Settings duplicate\'s key (regression guard — documents the confirmed cross-duplicate mismatch: see module doc comment)', () => {
+    // `shared/lib/hooks/useSoundNotification.ts` — the Settings > Profile
+    // "Play sound when tasks complete" toggle's actual implementation —
+    // persists under this different raw key today. A disabled preference
+    // written there must not leak into (or be silently picked up by) this
+    // module's own config; this module scopes strictly to its own key.
+    window.localStorage.setItem('el.sound_notifications', JSON.stringify({ enabled: false, volume: 0 }));
+    expect(loadSoundConfig()).toEqual({ enabled: true, volume: 0.5 });
+  });
 });
 
 describe('playCompletionSound / playErrorSound', () => {

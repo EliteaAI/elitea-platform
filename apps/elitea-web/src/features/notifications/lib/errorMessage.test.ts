@@ -20,6 +20,21 @@ describe('notificationErrorMessage', () => {
     expect(notificationErrorMessage(error)).toBe(JSON.stringify({ nested: true }));
   });
 
+  it('kind: http, status 403 — falls back to the generic project message when no projectContext is supplied', () => {
+    const error = new EliteaApiError({ kind: 'http', status: 403, url: '/x', body: undefined });
+    expect(notificationErrorMessage(error)).toBe('Insufficient permissions to perform this action\non this project.');
+  });
+
+  it('kind: http, status 403 — substitutes the real project name when projectContext is supplied', () => {
+    const error = new EliteaApiError({ kind: 'http', status: 403, url: '/x', body: undefined });
+    expect(notificationErrorMessage(error, { projectName: 'MyProject' })).toBe('Insufficient permissions to perform this action\non MyProject project.');
+  });
+
+  it('kind: http, status 403 — falls back to "Private" for the personal project when there is no name', () => {
+    const error = new EliteaApiError({ kind: 'http', status: 403, url: '/x', body: undefined });
+    expect(notificationErrorMessage(error, { hasPersonalProject: true })).toBe('Insufficient permissions to perform this action\non Private project.');
+  });
+
   it('kind: auth — a short, honest, non-baseline message', () => {
     const error = new EliteaApiError({ kind: 'auth', status: 401, url: '/x' });
     expect(notificationErrorMessage(error)).toBe('Authentication is required to complete this action.');

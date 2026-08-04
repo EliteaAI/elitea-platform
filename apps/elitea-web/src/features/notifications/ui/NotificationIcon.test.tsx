@@ -130,17 +130,43 @@ describe('NotificationIcon', () => {
     }
   });
 
-  it('renders nothing for rates/comments/reward_new_level (icon missing from shared/ui/icons — see module doc comment)', () => {
-    for (const eventType of ['rates', 'comments', 'reward_new_level'] as const) {
-      const { container } = renderWithTheme(
-        <NotificationIcon
-          eventType={eventType}
-          meta={undefined}
-          theme={theme}
-        />,
-      );
-      expect(container.querySelector('svg')).toBeNull();
-    }
+  it('renders HeartIcon for rates, colored with icon.fill.tips (getIcon.helpers.jsx Rates case)', () => {
+    const { container } = renderWithTheme(
+      <NotificationIcon
+        eventType="rates"
+        meta={undefined}
+        theme={theme}
+      />,
+    );
+    const svg = container.querySelector('svg');
+    expect(svg).not.toBeNull();
+    expect(svg?.style.color).toBe(theme.vars.palette.icon.fill.tips);
+  });
+
+  it('renders CommentIcon for comments, colored with icon.fill.tips (getIcon.helpers.jsx Comments case)', () => {
+    const { container } = renderWithTheme(
+      <NotificationIcon
+        eventType="comments"
+        meta={undefined}
+        theme={theme}
+      />,
+    );
+    const svg = container.querySelector('svg');
+    expect(svg).not.toBeNull();
+    expect(svg?.style.color).toBe(theme.vars.palette.icon.fill.tips);
+  });
+
+  it('renders MedalIcon for reward_new_level, colored with status.published (getIcon.helpers.jsx RewardNewLevel case)', () => {
+    const { container } = renderWithTheme(
+      <NotificationIcon
+        eventType="reward_new_level"
+        meta={undefined}
+        theme={theme}
+      />,
+    );
+    const svg = container.querySelector('svg');
+    expect(svg).not.toBeNull();
+    expect(svg?.style.color).toBe(theme.vars.palette.status.published);
   });
 
   it('renders nothing for contributor_request_for_publish_approve and unrecognised event types (default branch)', () => {

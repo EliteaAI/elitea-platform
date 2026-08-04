@@ -23,7 +23,7 @@
  * surfaces the failure somewhere rather than swallowing it silently.
  */
 import { EliteaApiError } from '@/shared/api/generated/mutator';
-import { buildErrorMessage } from '@/shared/lib/http-error';
+import { buildErrorMessage, type ProjectContextForErrorMessage } from '@/shared/lib/http-error';
 
 /**
  * Mirrors `common/utils.jsx:145-183`'s message selection as closely as the
@@ -38,13 +38,32 @@ import { buildErrorMessage } from '@/shared/lib/http-error';
  * report) so they get a short, honest, non-baseline message rather than
  * being forced through `buildErrorMessage`'s `data.*` branches with an
  * empty body.
+ *
+ * **`projectContext`, disclosed (regression fixed here — confirmed
+ * adversarial-review finding).** `buildErrorMessage`'s 403 branch
+ * (`forbiddenProjectMessage`) substitutes the real project name into the
+ * message only when a `ProjectContextForErrorMessage` is supplied — its own
+ * doc comment: "Omitting `projectContext` reproduces the old app's own
+ * 'nothing loaded yet' fallback." This function used to never forward ANY
+ * `projectContext`, so every 403 surfaced from this feature (a failed
+ * mark-seen/delete call, etc.) was stuck on the generic "…on this project."
+ * fallback even when a caller had the real project name on hand. The second
+ * parameter is optional — a caller with no project data available still gets
+ * the same honest fallback as before, matching `buildErrorMessage`'s own
+ * contract. Mirrors the identical fix already applied to this codebase's
+ * sibling duplicate, `features/chat-conversation-list/lib/errorMessage.ts`'s
+ * `conversationListErrorMessage`. None of this slice's current
+ * `api/useNotifications.ts` call sites have a real project name plumbed in
+ * yet (no `entities/project` data reaches this feature) — supplying one is a
+ * follow-up for whichever layer composes this feature with real project
+ * data, not something fakeable from here.
  */
-export function notificationErrorMessage(error: unknown): string {
+export function notificationErrorMessage(error: unknown, projectContext?: ProjectContextForErrorMessage): string {
   if (error instanceof EliteaApiError) {
     const { failure } = error;
     switch (failure.kind) {
       case 'http': {
-        const built = buildErrorMessage({ status: failure.status, originalStatus: failure.status, data: failure.body });
+        const built = buildErrorMessage({ status: failure.status, originalStatus: failure.status, data: failure.body }, projectContext);
         return typeof built === 'string' ? built : JSON.stringify(built);
       }
       case 'auth':

@@ -34,6 +34,20 @@
  * raw key — a fresh preference default for any user who had sound settings
  * under the old app, not a data-loss bug (the value is a single boolean +
  * volume slider, not user content).
+ *
+ * **This key is the de-facto cross-feature canonical one — confirmed
+ * adversarial-review finding, disclosed:** `features/pipelines/lib/
+ * flow-editor/helpers/pipelineCompletionSound.local.ts` and
+ * `features/toolkits/indexes/lib/helpers/soundNotification.local.ts` both
+ * deliberately read/write this exact key so a user's preference is honoured
+ * everywhere a completion tone can fire. The one live outlier —
+ * `shared/lib/hooks/useSoundNotification.ts`, the Settings > Profile "Play
+ * sound when tasks complete" toggle's actual implementation — persists under
+ * a DIFFERENT raw key (`sound_notifications`), so toggling that switch off
+ * does not silence the sounds this key's readers actually play. Full
+ * writeup + the precise external fix needed (a file outside this cluster's
+ * `features/notifications/lib/` scope) is in `./useSoundNotification.ts`'s
+ * module doc comment.
  */
 import { createStorage } from '@/shared/lib/storage';
 

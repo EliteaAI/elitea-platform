@@ -100,11 +100,26 @@ function bucketHref(base: string, meta: FullNotificationMeta | undefined, projec
   return bucketName === undefined ? route : `${route}?${SP_BUCKET}=${encodeURIComponent(bucketName)}`;
 }
 
+/**
+ * `notification.helpers.js:41-49` parity: `if (appId && versionId)` and
+ * `meta?.project_id || projectId` are truthy/`||` checks, not
+ * `undefined`-only ones — an empty string fails both. `FullNotificationMeta`
+ * types every one of these fields `string | undefined`, so `''` is the only
+ * falsy value besides `undefined` a field can actually hold; these explicit
+ * `=== ''` checks alongside the `=== undefined` ones are therefore the full,
+ * faithful port of that truthy semantics (not a partial substitute) under
+ * this unit's otherwise `??`-preferring style. Getting this wrong silently
+ * turns an empty-string `meta.project_id`/`source_application_id`/
+ * `source_version_id` (baseline: "absent, use the fallback / return null")
+ * into "present", producing a broken href instead of the baseline's
+ * null/fallback.
+ */
 function agentHref(base: string, meta: FullNotificationMeta | undefined, projectId: string | undefined): string | null {
   const appId = meta?.sourceApplicationId;
   const versionId = meta?.sourceVersionId;
-  const agentProjectId = meta?.projectId ?? projectId;
-  if (appId === undefined || versionId === undefined) return null;
+  const metaProjectId = meta?.projectId;
+  const agentProjectId = metaProjectId !== undefined && metaProjectId !== '' ? metaProjectId : projectId;
+  if (appId === undefined || appId === '' || versionId === undefined || versionId === '') return null;
   return buildAgentVersionHref(base, agentProjectId, appId, versionId);
 }
 

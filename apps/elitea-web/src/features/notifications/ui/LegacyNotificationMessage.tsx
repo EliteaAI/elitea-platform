@@ -157,6 +157,60 @@ function AgentUnpublishedMessage(props: AgentUnpublishedMessageProps): ReactElem
   );
 }
 
+interface IndexDataChangedMessageProps {
+  readonly meta: FullNotificationMeta;
+  readonly projectId: string | undefined;
+  readonly onCloseNotificationList?: (() => void) | undefined;
+  readonly textVariant: TypographyProps['variant'];
+  readonly textColor: string;
+  readonly firstLinkInfo: LegacyLinkInfo;
+  readonly leadingTextParam1: string;
+  readonly endingTextParam: string;
+}
+
+/**
+ * `LegacyNotificationMessage.jsx:120-142` parity — the one event type where
+ * the leading text is NOT simply followed by its link. `parseIndexDataChanged`
+ * (`../lib/legacyText.ts`) calls `formatIndexMessage(meta, true)`, which
+ * embeds a literal `'{INDEX_LINK}'` placeholder MID-SENTENCE (e.g. `"Index
+ * {INDEX_LINK} is successfully reindexed..."`) instead of appending it at
+ * the end like every other event type. The baseline special-cases this:
+ * split `leadingTextParam1` on the placeholder and splice the link in at
+ * that exact position, bypassing `leadingText(...)[event_type]` entirely
+ * (for `index_data_changed` that's the identity function `param1 => param1`
+ * anyway, per `legacyText.ts`'s `leadingText` — so reading `leadingTextParam1`
+ * directly here is equivalent, not a shortcut). Getting this wrong either
+ * leaks the `{INDEX_LINK}` literal into the rendered text (if this branch is
+ * skipped) or renders the link in the wrong position (if it's spliced onto
+ * the end instead of mid-sentence). Also note `needTrim={false}` here vs
+ * `needTrim` (true) in {@link StandardLegacyMessage}'s general path — the
+ * baseline does not truncate the index name in this branch.
+ */
+function IndexDataChangedMessage(props: IndexDataChangedMessageProps): ReactElement {
+  const { meta, projectId, onCloseNotificationList, textVariant, textColor, firstLinkInfo, leadingTextParam1, endingTextParam } = props;
+  const parts = leadingTextParam1.split('{INDEX_LINK}');
+  const before = parts[0] ?? '';
+  const after = parts[1] ?? '';
+  return (
+    <Typography
+      variant={textVariant}
+      sx={{ color: textColor }}
+    >
+      {before}
+      <LegacyLink
+        linkInfo={firstLinkInfo}
+        eventType="index_data_changed"
+        meta={meta}
+        projectId={projectId}
+        needTrim={false}
+        onCloseNotificationList={onCloseNotificationList}
+      />
+      {after}
+      {endingText(endingTextParam).index_data_changed}
+    </Typography>
+  );
+}
+
 interface StandardMessageProps {
   readonly eventType: NotificationEventType;
   readonly meta: FullNotificationMeta;
@@ -220,6 +274,22 @@ export function LegacyNotificationMessage(props: LegacyNotificationMessageProps)
       <AgentUnpublishedMessage
         textVariant={textVariant}
         agentUnpublishedMeta={info.agentUnpublishedMeta}
+      />
+    );
+  }
+
+  const leadingTextParam1 = info.leadingTextParam1 ?? '';
+  if (eventType === 'index_data_changed' && info.firstLinkInfo !== undefined && leadingTextParam1.includes('{INDEX_LINK}')) {
+    return (
+      <IndexDataChangedMessage
+        meta={meta}
+        projectId={projectId}
+        onCloseNotificationList={onCloseNotificationList}
+        textVariant={textVariant}
+        textColor={textColor}
+        firstLinkInfo={info.firstLinkInfo}
+        leadingTextParam1={leadingTextParam1}
+        endingTextParam={info.endingTextParam ?? ''}
       />
     );
   }
