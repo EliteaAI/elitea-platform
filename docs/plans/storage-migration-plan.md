@@ -825,6 +825,16 @@ that index exists for, and until now nothing used it),
 (buckets with `expires_at` inside the window and `notified_at` still null),
 and `MarkBucketNotified(ctx, bucketID int64) error`.
 
+**And add `SumProjectBytes(ctx, projectID) (int64, error)`**, the method S12's
+project-quota check needs. `SumBucketBytes` (above) is deliberately
+single-bucket — it feeds one bucket's `size_bytes` response field in S8 — and
+does not compose into a project total; joining across every bucket owned by
+a project is a different query (`SUM(size_bytes) ... JOIN buckets ON
+buckets.id = objects.bucket_id WHERE buckets.project_id = $1 AND buckets.
+deleted_at IS NULL`), not a loop over `SumBucketBytes` calls. S12 is the only
+caller; without this method S12's `project_storage_policy.max_total_bytes`
+check has nothing to compare against.
+
 **Acceptance criteria:** every method has a `*_postgres_integration_test.go`
 following the existing pattern. Unique-violation and no-rows paths map to the S1
 sentinels. **Every test function in this package is named with a `TestArtifact`
@@ -1368,8 +1378,10 @@ walks the prototype router. One shared mount function satisfies both.
   implements it; the shadow middleware's does not — which is why S11 keeps the
   artifact routes off the shadow path.
 - Enforce the project quota on the write path against
-  `project_storage_policy.max_total_bytes` compared with `SumBucketBytes` across
-  the project, returning 413.
+  `project_storage_policy.max_total_bytes` compared with S6's
+  `SumProjectBytes(ctx, projectID)` — **not** `SumBucketBytes`, which is
+  single-bucket and cannot be summed across a project by looping (see S6) —
+  returning 413.
 
 **The `http.Server{ReadTimeout, WriteTimeout}` edit lives in `cmd/elitea-main/main.go`
 (`package main`), which nothing under `internal/api/v2/artifacts` can import —
@@ -1387,12 +1399,27 @@ touches `cmd/elitea-main` either.
 
 **Acceptance criteria:** a 200 MiB upload returns 413 with a JSON error body,
 not a truncated stream or a connection reset; a 100 MiB upload over a 30-second
-body succeeds; `newHTTPServer`'s returned config has `ReadHeaderTimeout` set
-and `ReadTimeout`/`WriteTimeout` unset — this is what actually stands in for
+body succeeds; a write that would push a project's `SumProjectBytes` total
+past `max_total_bytes` returns 413 even though the individual object is under
+`max_object_bytes` — this is a materially different code path from the
+per-object cap and needs its own test, not just a bullet in the requirements;
+`newHTTPServer`'s returned config has `ReadHeaderTimeout` set and
+`ReadTimeout`/`WriteTimeout` unset — this is what actually stands in for
 "a 300-second download completes," since nothing in this stage's own test
 scope can drive a real 300-second HTTP round trip.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ ./cmd/elitea-main/... -race -run 'Limit|Quota|Deadline|Timeout'`
+Name every new test `TestArtifactLimit*` — the current filter
+(`-run 'Limit|Quota|Deadline|Timeout'`) collides with a genuinely unrelated,
+already-passing test, `cmd/elitea-main/main_test.go`'s
+`TestServeApplicationReturnsAtOneSharedDrainDeadline` (a graceful-shutdown
+test, matched via the substring "Deadline"), so the bare command reports a
+full pass today with zero S12 code written. A distinctive prefix removes both
+that collision and the separate zero-match risk.
+
+**Verify:**
+```
+cd services/elitea-main && go test ./internal/api/v2/artifacts/ ./cmd/elitea-main/... -race -run TestArtifactLimit -v > /tmp/s12.log 2>&1; rc=$?; cat /tmp/s12.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s12.log && ! grep -q -- '--- SKIP' /tmp/s12.log
+```
 
 ---
 
@@ -1451,7 +1478,10 @@ this package with a `TestArtifact` prefix** (e.g.
 `TestArtifactBootstrapCreatesReportsAndTasksIdempotently`) — see the naming
 rule in S6, which this stage's Verify command relies on for the same reason.
 
-**Verify:** `cd services/elitea-main && go test ./internal/application/artifactbootstrap/... -race -run TestArtifact -v`
+**Verify:**
+```
+cd services/elitea-main && go test ./internal/application/artifactbootstrap/... -race -run TestArtifact -v > /tmp/s13.log 2>&1; rc=$?; cat /tmp/s13.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s13.log && ! grep -q -- '--- SKIP' /tmp/s13.log
+```
 
 ---
 
@@ -1498,9 +1528,30 @@ exercise all four:
    handler-level Verify command can pass while the route itself is still
    unwired") — the identical failure mode, one layer down, in the scheduler
    instead of the router.
-4. **The notification.** Emit the expiry warning when a bucket has one day
-   remaining, using S6's `ListBucketsNeedingExpiryNotice`, deduplicated by
-   calling `MarkBucketNotified` once sent.
+4. **The notification.** A real, wired notification mechanism already exists —
+   don't invent a new one and don't just log. `internal/infra/db/repos/
+   current_index_schedule_notification.go`'s `InsertCurrentIndexScheduleNotification`
+   writes a row into `centry.notifications` (`uuid`, `is_seen`, `project_id`,
+   `user_id`, `meta`, `event_type`), which `internal/api/v2/notifications/
+   current_events.go` already streams to the browser over the existing
+   `notifications_notify` Socket.IO event — no new transport is needed, only a
+   new writer following that file's construction pattern (a new sqlc query, a
+   new `event_type` value, e.g. `'artifact_bucket_expiring'`). Emit one insert
+   per bucket with one day of `expires_at` remaining, sourced from S6's
+   `ListBucketsNeedingExpiryNotice`, deduplicated by calling
+   `MarkBucketNotified` once sent.
+   **This table's `user_id` column is `NOT NULL`, and every existing read path
+   is scoped `WHERE user_id = ...` — there is no project-wide broadcast row.**
+   `elitea_storage.buckets` (S6) has no owning-user column, only `project_id`,
+   and this plan defines no project→member-list lookup anywhere a bucket
+   notification could iterate over. Do not invent one. Pick one of: (a) look
+   up the bucket-creating user if S8's create handler is changed to record
+   one (a schema change this plan does not currently make), or (b) find and
+   reuse an existing project-membership enumeration elsewhere in the
+   codebase if one exists, and if you cannot find one, treat this as an open
+   question for a human owner and land the sweeper/repository-method work
+   (items 1-3, 5) without the notification insert rather than guessing at a
+   `user_id`.
 5. **Multipart-abort lifecycle rule.** Provider-native lifecycle rules are
    **not** used for per-bucket retention (see item 2). Set one coarse
    provider-native rule aborting incomplete multipart uploads after 7 days —
@@ -1512,7 +1563,14 @@ exercise all four:
 
 - An object with `expires_at` in the past is gone from both the object store
   and the metadata table after one sweeper tick.
-- The notification fires exactly once per bucket per expiry cycle.
+- If the `user_id` open question above is resolved, a `centry.notifications`
+  row with `event_type = 'artifact_bucket_expiring'` is inserted exactly once
+  per bucket per expiry cycle, and is visible through the existing
+  `internal/api/v2/notifications/current_events.go` stream — not just that
+  `MarkBucketNotified` was called, which a no-op stub can also satisfy. If the
+  open question is left unresolved for a human owner, this criterion is
+  dropped for this landing and the open question is recorded instead of
+  silently skipped.
 - **A composition-level test asserts the sweeper `Job` is actually present in
   `composition.go`'s registry** — not just that the standalone `Handler`
   passes its own unit test. This is the check that catches item 3 being
@@ -1530,12 +1588,15 @@ exercise all four:
   execution-history replay, nothing to do with artifact storage) — confirmed:
   that filter alone reports a clean PASS today, before any S14 code exists.
 
-**Verify:**
+**Verify:** both halves must be guarded — a bare `go test` at the end of the
+chain exits 0 on zero matches just like the first half would, and the second
+half is what covers 4 of this stage's 5 work items (everything except item 1).
 ```bash
 cd services/elitea-main && \
-  go test ./internal/runtimecomposition/ -race -run TestArtifactRetention -v > /tmp/s14.log 2>&1; rc=$?; cat /tmp/s14.log; \
-  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s14.log && ! grep -q -- '--- SKIP' /tmp/s14.log && \
-  go test ./internal/api/v2/artifacts/... ./internal/infra/storage/... -race -run TestArtifactRetention -v
+  go test ./internal/runtimecomposition/ -race -run TestArtifactRetention -v > /tmp/s14a.log 2>&1; rc=$?; cat /tmp/s14a.log; \
+  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s14a.log && ! grep -q -- '--- SKIP' /tmp/s14a.log && \
+  go test ./internal/api/v2/artifacts/... ./internal/infra/storage/... -race -run TestArtifactRetention -v > /tmp/s14b.log 2>&1; rc=$?; cat /tmp/s14b.log; \
+  test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s14b.log && ! grep -q -- '--- SKIP' /tmp/s14b.log
 ```
 
 ---
@@ -1657,14 +1718,23 @@ Ownership must be verified on every part and completion call.
 
 **Acceptance criteria:** a 2-part 10 MiB upload against S3 and Azure completes
 with a matching digest; the same request against GCS transparently uses the
-facade; a part call with another project's grant returns 403. **Name every new
-test function with a `TestArtifactMultipart` prefix.** `-run Multipart` alone
-matches zero tests on the unmodified tree (`internal/api/v2/artifacts` has no
-existing test containing that substring) — so an unimplemented S16 also
-reports `ok ... [no tests to run]`, exit 0, indistinguishable from success.
-Require at least one match, the same way S6 does.
+facade; a part call with another project's grant returns 403. That is three
+required, distinct scenarios. **Name every new test function with a
+`TestArtifactMultipart` prefix.** `-run Multipart` alone matches zero tests on
+the unmodified tree (`internal/api/v2/artifacts` has no existing test
+containing that substring) — so an unimplemented S16 also reports
+`ok ... [no tests to run]`, exit 0, indistinguishable from success.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run TestArtifactMultipart -v > /tmp/s16.log 2>&1; rc=$?; cat /tmp/s16.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s16.log`
+A bare "at least one PASS" check is not enough here either: a suite that runs
+only one of the three scenarios and legitimately skips or drops the other two
+(e.g. only the GCS-facade test, if the S3/Azure cases are accidentally gated
+behind an emulator flag) would still satisfy "at least one match." Require at
+least 3 `--- PASS` lines, not just a nonzero count.
+
+**Verify:**
+```
+cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run TestArtifactMultipart -v > /tmp/s16.log 2>&1; rc=$?; cat /tmp/s16.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s16.log)" -ge 3
+```
 
 ---
 
@@ -1701,7 +1771,21 @@ naturally one of the last to run, not "right after S5."
 - Add a Helm chart for `pylon-indexer` and `elitea-worker-python`, or record
   explicitly that they are out of scope for R1.
 
-**Verify:** `helm lint deploy/helm/elitea-main && helm template deploy/helm/elitea-main > /tmp/rendered.yaml && grep -q 'S3_ACCESS_KEY' /tmp/rendered.yaml && ! grep -qE 'persistentVolumeClaim|emptyDir' /tmp/rendered.yaml`
+A bare `grep -q 'S3_ACCESS_KEY'` only proves the literal string appears
+*somewhere* in the rendered output — it passes just as well for a hardcoded
+plaintext `value:` as for a real `valueFrom.secretKeyRef`, and it never checks
+`S3_SECRET_KEY` or `AZURE_STORAGE_KEY` at all. Check all three names are each
+followed by a `secretKeyRef` within the next few lines, not merely present.
+
+**Verify:**
+```bash
+helm lint deploy/helm/elitea-main && \
+helm template deploy/helm/elitea-main > /tmp/rendered.yaml && \
+for VAR in S3_ACCESS_KEY S3_SECRET_KEY AZURE_STORAGE_KEY; do \
+  grep -A3 -- "name: $VAR" /tmp/rendered.yaml | grep -q 'secretKeyRef' || { echo "missing valueFrom.secretKeyRef for $VAR"; exit 1; }; \
+done && \
+! grep -qE 'persistentVolumeClaim|emptyDir' /tmp/rendered.yaml
+```
 
 ---
 
@@ -1747,7 +1831,22 @@ already hollow before any code exists) and, worse, would silently exclude any
 correctly-implemented but behaviorally-named tracing or audit-logging test
 even once one Metrics-named test exists to make the bare command pass.
 
-**Verify:** `cd services/elitea-main && go test ./internal/infra/storage/... -race -run TestArtifactObservability -v > /tmp/s18.log 2>&1; rc=$?; cat /tmp/s18.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s18.log`
+**Acceptance criteria** — four distinct, separately testable behaviors, so "at
+least one PASS" is not enough (a suite that only exercises one of them, e.g.
+only the histogram, would still satisfy a bare nonzero-match check):
+1. An `ObjectStore` call records the operation-duration histogram and the
+   error counter (on a sentinel error), labelled by backend and operation
+   only — assert no `project_id`/key label exists on either.
+2. A write/read records the bytes-in/bytes-out counters.
+3. The per-project byte-usage gauge updates after a sweeper tick (S14), not
+   on a per-request path — assert it does *not* move between ticks.
+4. A delete and a grant issuance each emit the structured `slog` line
+   (`operation`, `bucket`, `key`, `project_id`, `principal`, `outcome`).
+
+**Verify:**
+```
+cd services/elitea-main && go test ./internal/infra/storage/... -race -run TestArtifactObservability -v > /tmp/s18.log 2>&1; rc=$?; cat /tmp/s18.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s18.log)" -ge 4
+```
 
 ---
 
@@ -1817,7 +1916,20 @@ a correctly-implemented test named by what it checks rather than by
 containing the literal word "Artifact" is silently excluded from this
 command's run with no failure or skip reported.
 
-**Verify:** `cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v > /tmp/s19.log 2>&1; rc=$?; cat /tmp/s19.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s19.log && ! grep -q 'CONTRACT_AUTH_TOKEN not set' /tmp/s19.log`
+The "Cover, end to end" list above names 11 distinct scenarios. A bare
+"at least one PASS" check cannot tell a fully-run suite from one where most
+of those scenarios are `t.Skip`-ed because S4's RustFS environment variables
+are only partially set in the run environment — the restructured `TestMain`
+makes that skip legitimate in isolation, but a Verify command that can't
+distinguish "1 passed, 10 skipped" from "11 passed" is not actually verifying
+this stage's coverage. Require at least 11 `--- PASS` lines, not just a
+nonzero count — a real implementation with table-driven subtests (e.g. the
+4-way bucket-name-rejection case) will clear this floor comfortably.
+
+**Verify:**
+```
+cd services/elitea-main && go test ./tests/contract/ -race -run TestArtifact -v > /tmp/s19.log 2>&1; rc=$?; cat /tmp/s19.log; test $rc -eq 0 && test "$(grep -c -- '--- PASS' /tmp/s19.log)" -ge 11 && ! grep -q 'CONTRACT_AUTH_TOKEN not set' /tmp/s19.log
+```
 
 ---
 
@@ -1853,9 +1965,17 @@ cd services/elitea-main && go test ./internal/api/v2/... -race -run TestArtifact
 `/icons/{projectID}/{filename}`, but nothing serves `/icons/*` — no route, no
 Traefik rule, no volume. Every uploaded icon is currently unreachable. Move
 icons onto the object store using the S9 object plane with a reserved system
-bucket, and serve them through the download route. Replace the
-`internal/api/oapiserver/misc.go` stub that returns an empty URL. Once icon
-bytes are written through the object store instead of `ICONS_DATA_DIR`, the
+bucket, and serve them through the download route. **Edit the real,
+production-mounted handler — `internal/api/v2/eliteacore/handler.go`'s
+`UploadIcon`, registered at `internal/api/router.go:619-620` as
+`POST /upload_icon/prompt_lib/{projectID}` — not
+`internal/api/oapiserver/misc.go`'s `UploadApplicationIcon`.** That second
+function looks like the same feature (it also returns an icon-upload URL) but
+belongs to `oapiserver.Server`, which S7 already establishes is never wired
+into production routing — it exists only for the package's own conformance
+tests. Editing it would compile, pass its own package's tests, and leave the
+real, reachable-but-broken icon path completely untouched. Once icon bytes
+are written through the object store instead of `ICONS_DATA_DIR`, the
 pre-existing `TestUploadIconStoresFileWithinConfiguredRoot`,
 `TestUploadIconRejectsTraversalAndSymlinkEscape`, and
 `TestDeleteIconIsConfinedToConfiguredRoot` are testing a code path (filesystem
