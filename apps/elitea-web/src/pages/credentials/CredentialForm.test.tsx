@@ -501,17 +501,14 @@ describe('CredentialForm — edit flow', () => {
       />,
     );
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('one-of-two'));
-    // Re-clicks the trigger on every poll (not just once before waiting):
-    // `CredentialsControls`'s disabled-vs-enabled branches are two
-    // differently-shaped trees (`Tooltip`-wrapped vs bare), so the section
-    // guard settling from its conservative "blocked" default to "allowed"
-    // remounts the open dropdown out from under a menu opened before that
-    // — see this file's own `useDeleteGuard` doc comment for the
-    // out-of-scope fix this needs in `CredentialsControls.tsx`. Clicking
-    // inside the poll re-opens whatever instance is current, so this
-    // assertion is robust to that remount rather than racing it.
+    // The section guard's count query resolves asynchronously (conservative
+    // "blocked" default until it settles), so wait for Delete to become
+    // enabled before opening the menu. `CredentialsControls` now keeps its
+    // Tooltip+Box wrapper tree unconditional across that `canDelete` flip
+    // (see its file-level doc comment), so a single open no longer races a
+    // remount — this used to need a poll-and-reclick workaround.
+    fireEvent.click(screen.getByRole('button', { name: 'Credential actions' }));
     await waitFor(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'Credential actions' }));
       expect(screen.getByRole('menuitem', { name: 'Delete' })).not.toHaveAttribute('aria-disabled', 'true');
     });
     fireEvent.click(screen.getByText('Delete'));

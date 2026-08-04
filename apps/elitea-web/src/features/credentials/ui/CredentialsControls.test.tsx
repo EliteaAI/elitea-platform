@@ -60,4 +60,40 @@ describe('CredentialsControls', () => {
     );
     expect(screen.getByLabelText('Cannot delete the only configuration.')).toBeInTheDocument();
   });
+
+  /**
+   * Regression: `canDelete` is caller-derived and can legitimately flip
+   * after mount (e.g. `pages/credentials/useCredentialDeleteGuard.ts`'s
+   * async section-count query resolving). The render root used to branch
+   * between a `Tooltip`-wrapped tree and a bare tree depending on
+   * `!canDelete && deleteDisabledReason`, so a `canDelete` flip changed the
+   * element tree's *shape*, not just props — React's type-based
+   * reconciliation would unmount and remount `<ControlsDropdown>`, wiping
+   * its internal `anchorEl` state and silently closing any menu the user
+   * had open. This asserts the menu survives that flip.
+   */
+  it('keeps an open menu open when canDelete flips from false to true after mount', () => {
+    const { rerender } = renderWithTheme(
+      <CredentialsControls
+        credentialName="x"
+        canDelete={false}
+        deleteDisabledReason="Cannot delete the only configuration."
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Credential actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
+
+    rerender(
+      <CredentialsControls
+        credentialName="x"
+        canDelete
+        onDelete={vi.fn()}
+      />,
+    );
+
+    const menuItem = screen.getByRole('menuitem', { name: 'Delete' });
+    expect(menuItem).toBeInTheDocument();
+    expect(menuItem).not.toHaveAttribute('aria-disabled', 'true');
+  });
 });

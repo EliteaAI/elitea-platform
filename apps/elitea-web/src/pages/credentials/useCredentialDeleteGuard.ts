@@ -65,23 +65,19 @@ function resolveDeleteGuard(canDeleteFromPermission: boolean, section: string | 
  * `mode.kind === 'edit'` (no protected-section guard applies to a
  * not-yet-created credential).
  *
- * OUT-OF-SCOPE FOLLOW-UP (`features/credentials/ui/CredentialsControls.tsx`,
- * outside this cluster's own file scope — do not edit it from here): that
- * component's render root is `{!canDelete && deleteDisabledReason ?
- * <Tooltip><Box component="span">{menu}</Box></Tooltip> : menu}` — two
- * DIFFERENTLY-SHAPED element trees at the same position. Because `canDelete`
- * now legitimately changes after mount (this guard's query resolving from
- * its conservative "blocked" default once the real section count arrives),
- * React unmounts and remounts the whole `<ControlsDropdown>` subtree
- * whenever that boundary is crossed, destroying any menu that happened to
- * be open (`anchorEl`/`confirmingKey`/`submenu` all reset) — reproduced by
- * `CredentialForm.test.tsx`'s "keeps Delete enabled…" regression test,
- * which has to poll-and-reclick to work around it rather than opening the
- * menu once. The fix belongs in that file: make the wrapper shape
- * unconditional, e.g. always render `<Tooltip title={!canDelete ?
- * (deleteDisabledReason ?? '') : ''}><Box component="span">{menu}
- * </Box></Tooltip>` (MUI's `Tooltip` no-ops on an empty `title`), so
- * `canDelete` toggling only ever changes props, never the tree shape.
+ * RESOLVED (previously an out-of-scope follow-up, fixed separately):
+ * `features/credentials/ui/CredentialsControls.tsx`'s render root used to
+ * be `{!canDelete && deleteDisabledReason ? <Tooltip><Box component="span">
+ * {menu}</Box></Tooltip> : menu}` — two DIFFERENTLY-SHAPED element trees at
+ * the same position. Because `canDelete` legitimately changes after mount
+ * (this guard's query resolving from its conservative "blocked" default
+ * once the real section count arrives), React used to unmount/remount the
+ * whole `<ControlsDropdown>` subtree whenever that boundary was crossed,
+ * destroying any menu that happened to be open. That component's wrapper
+ * is now unconditional (`resolveTooltipTitle` computes an empty string
+ * instead of branching the tree shape), so `canDelete` toggling only ever
+ * changes props — see that file's own doc comment. `CredentialForm.test.tsx`'s
+ * "keeps Delete enabled…" regression test no longer needs to poll-and-reclick.
  */
 export function useCredentialDeleteGuard(isEditMode: boolean, projectId: string, canDeleteFromPermission: boolean, section: string | undefined): DeleteGuard {
   const sectionGuardEnabled = isEditMode && section !== undefined && PROTECTED_DELETE_GUARD_SECTIONS.has(section);

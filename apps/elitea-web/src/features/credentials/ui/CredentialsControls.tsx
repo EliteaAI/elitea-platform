@@ -15,6 +15,16 @@
  * rather than read from a `useCheckPermission()`/RTK-Query hook this slice
  * has no access to yet — see `../lib` for the permission-string constants
  * (`@/shared/lib/permissions`) a caller wires this from.
+ *
+ * The `Tooltip`+`Box`-wrapper around `menu` is rendered UNCONDITIONALLY
+ * (only its `title` prop varies via `resolveTooltipTitle`) rather than
+ * branching between a wrapped and a bare tree. `canDelete` is caller-derived
+ * and, for protected-section credentials, can legitimately flip after mount
+ * (see `pages/credentials/useCredentialDeleteGuard.ts`) — branching the tree
+ * shape on it would make React's type-based reconciliation unmount and
+ * remount `<ControlsDropdown>` on every flip, wiping its open-menu state.
+ * MUI's `Tooltip` no-ops on an empty `title`, so this costs nothing when
+ * there is nothing to disclose.
  */
 import { useState, type ReactNode } from 'react';
 
@@ -58,13 +68,9 @@ export function CredentialsControls({ credentialName, canDelete, isDeleting = fa
 
   return (
     <Box sx={wrapperSx}>
-      {!canDelete && deleteDisabledReason ? (
-        <Tooltip title={deleteDisabledReason}>
-          <Box component="span">{menu}</Box>
-        </Tooltip>
-      ) : (
-        menu
-      )}
+      <Tooltip title={resolveTooltipTitle(canDelete, deleteDisabledReason)}>
+        <Box component="span">{menu}</Box>
+      </Tooltip>
       <DeleteEntityModal
         open={confirmOpen}
         onClose={() => {
@@ -80,6 +86,17 @@ export function CredentialsControls({ credentialName, canDelete, isDeleting = fa
       />
     </Box>
   );
+}
+
+/**
+ * Empty string (rather than `undefined`) when there is nothing to disclose,
+ * both when deletion is allowed and when it isn't but no reason was given
+ * — an empty `title` is exactly what makes MUI's `Tooltip` no-op, which is
+ * how this file keeps the wrapper tree unconditional (see the file-level
+ * doc comment above).
+ */
+function resolveTooltipTitle(canDelete: boolean, deleteDisabledReason: string | undefined): string {
+  return !canDelete && deleteDisabledReason ? deleteDisabledReason : '';
 }
 
 const wrapperSx: SxProps<Theme> = (theme: Theme) => ({
