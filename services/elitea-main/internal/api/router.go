@@ -155,6 +155,17 @@ const (
 	runtimeEventsPath     = "/executions/{projectID}/{executionID}/events"
 )
 
+// notImplementedArtifact is the S7 placeholder for every new artifact route
+// this stage registers but does not yet implement — S8, S9, and S15 each
+// replace it at their own paths. It returns the same typed error envelope
+// (components/schemas/Error in api/openapi/v2.yaml) real artifact handlers
+// use for every other error response, rather than a bare 501.
+func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotImplemented)
+	_, _ = w.Write([]byte(`{"error":{"code":"NotImplemented","message":"pending S8/S9"}}`))
+}
+
 // newPrototypeCompatibilityRouter preserves the broad prototype registration
 // map for parity work. Production composition deliberately does not call it:
 // most of these routes have not yet been assigned an exact legacy route policy.
@@ -675,21 +686,36 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
 
 			// === Artifacts ===
-			artifactHandler := v2artifacts.NewInMemoryHandler()
+			// docs/plans/storage-migration-plan.md S7: the 13 new-contract
+			// paths, all stubbed to notImplementedArtifact for now. S8
+			// (bucket plane), S9 (object plane), and S15 (transfer grants)
+			// each replace their own lines in place — never add a second
+			// registration at the same path, chi panics on that.
 			r.Route("/artifacts", func(r chi.Router) {
-				// Bucket CRUD
-				r.Get("/buckets/default/{projectID}", artifactHandler.ListBuckets)
-				r.Post("/buckets/default/{projectID}", artifactHandler.CreateBucket)
-				r.Put("/buckets/default/{projectID}", artifactHandler.UpdateBucket)
-				r.Patch("/buckets/default/{projectID}", artifactHandler.PatchBucket)
-				r.Delete("/buckets/default/{projectID}", artifactHandler.DeleteBucket)
-				// Artifact CRUD (list + upload + legacy JSON create + delete single + bulk delete)
-				r.Get("/artifacts/default/{projectID}/{bucket}", artifactHandler.ListArtifacts)
-				r.Post("/artifacts/default/{projectID}/{bucket}", artifactHandler.UploadArtifact)
-				r.Delete("/artifacts/default/{projectID}/{bucket}", artifactHandler.DeleteArtifacts)
-				r.Get("/artifact/default/{projectID}/{bucket}", artifactHandler.GetArtifact)
-				r.Post("/artifact/default/{projectID}/{bucket}", artifactHandler.CreateArtifact)
-				r.Delete("/artifact/default/{projectID}/{bucket}", artifactHandler.DeleteArtifact)
+				// Bucket plane — S8 replaces these five.
+				r.Get("/buckets/{projectID}", notImplementedArtifact)
+				r.Post("/buckets/{projectID}", notImplementedArtifact)
+				r.Get("/buckets/{projectID}/{bucket}", notImplementedArtifact)
+				r.Patch("/buckets/{projectID}/{bucket}", notImplementedArtifact)
+				r.Delete("/buckets/{projectID}/{bucket}", notImplementedArtifact)
+
+				// Object plane — S9 replaces these six. The three key-bearing
+				// routes use a trailing chi wildcard, not the spec's literal
+				// {key}: chi v5.1.0 has no multi-segment named-param syntax,
+				// and S1's own key grammar allows `/` inside a key.
+				// conformance.go's segmentsMatch treats a trailing `*` as
+				// matching any remainder unconditionally, so this still
+				// resolves the spec's .../{key} operations.
+				r.Get("/objects/{projectID}/{bucket}", notImplementedArtifact)
+				r.Post("/objects/{projectID}/{bucket}", notImplementedArtifact)
+				r.Post("/objects/{projectID}/{bucket}:batchDelete", notImplementedArtifact)
+				r.Get("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
+				r.Head("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
+				r.Delete("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
+
+				// Transfer grants — S15 replaces these two.
+				r.Post("/grants/{projectID}/{bucket}", notImplementedArtifact)
+				r.Post("/grants/{projectID}/{grantID}:commit", notImplementedArtifact)
 			})
 
 			// === Context Manager ===

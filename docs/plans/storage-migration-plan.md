@@ -973,9 +973,17 @@ Schema rules, applied uniformly:
   with `next_cursor` omitted when exhausted.
 
 Regenerate with `task openapi`. Confirm `internal/api/generated/api.gen.go`
-updates. `apps/elitea-web/src/shared/api/endpoints.manifest.json` is generated
-from the same source — regenerating it is fine, but **do not** edit web UI
-source to match; that is the tracked UI rework issue.
+updates — this is the only file it touches (`Taskfile.yml`'s `openapi` task
+runs one `oapi-codegen` invocation against that one output path).
+**`apps/elitea-web/src/shared/api/endpoints.manifest.json` is not, in the
+current codebase, mechanically regenerated from `v2.yaml` by any command —
+confirmed by reading it and `apps/elitea-web/scripts/check-endpoint-manifest.mjs`.**
+It is a hand-maintained, append-only manifest with its own CI enforcement
+(R-A5) and an explicit "never remove or renumber another unit's entries;
+append only" convention, owned by the separate UI reimplementation program.
+Leave it untouched — this is squarely "do not edit web UI source to match,"
+the same boundary this paragraph already draws, just via a different
+mechanism than "regenerating it" implies.
 
 **The conformance test checks one direction only, and editing the spec alone
 fails it.** `every_spec_operation_resolves_to_a_route` requires every spec
@@ -1061,6 +1069,18 @@ makes an unanchored `grep 'artifacts/s3' api/openapi/v2.yaml` still match after
 a fully correct edit, failing the Verify command on complete, correct work.
 Deleting them removes the last `artifacts/s3` text from the file. The Verify
 grep below is also anchored to the `paths:` keys as defense in depth.
+
+**"The two" undercounts it — replacing all 9 old operations with the 13 new
+ones orphans eight more schemas, not just these two.** `Bucket`,
+`BucketCreateRequest`, `BucketCreatedResponse`, `BucketUpdateRequest`,
+`BucketPinRequest`, `BucketDeletedResponse`, `ArtifactUploadResponse`, and
+`ArtifactDeletedResponse` are each referenced only by one of the 9 retired
+operations too (confirmed by grep — nothing else in the file points at any
+of them). Delete all ten, not two; the "nothing else points at them"
+justification above applies identically to the other eight. The new schema
+block reuses the name `Bucket` for a differently-shaped replacement, which is
+safe only because the old one is deleted in the same edit — leaving both
+would be a duplicate-key YAML error, not a merge.
 
 **Acceptance criteria:** the spec declares at least 75 operations after the
 swap; `go build ./...` and `go test ./internal/api/oapiserver/ -race` pass —
