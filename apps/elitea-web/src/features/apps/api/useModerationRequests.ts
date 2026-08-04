@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 
-import { useQueries, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
+import type { UseMutationResult } from '@tanstack/react-query';
 
 import {
-  getCreateModerationRequestQueryOptions,
+  createModerationRequest,
   getModerationStatusQueryOptions,
 } from '@/shared/api/generated/admin/admin';
 import type { IgnoredRequestBody, ModerationStatusResponse } from '@/shared/api/generated/model';
@@ -51,6 +52,50 @@ function statusFromResponse(response: ModerationStatusResponse | undefined): Req
   return REQUEST_STATUS.NONE;
 }
 
+interface SubmitModerationRequestVariables {
+  readonly projectId: string;
+  readonly type: string;
+  readonly description: string;
+  readonly label: string;
+}
+
+/**
+ * The generated `createModerationRequest` — the raw POST fetcher, NOT
+ * `getCreateModerationRequestQueryOptions`/`useCreateModerationRequest`,
+ * which orval generates query-shaped even for this POST (same class of
+ * generated-shape mismatch documented at `usePinConversation.hooks.ts`'s
+ * `useTogglePinConversation`) — wrapped in a locally-owned `useMutation`.
+ *
+ * `submitRequest` previously ran this POST through
+ * `queryClient.fetchQuery(getCreateModerationRequestQueryOptions(...))`.
+ * That reuses the query machinery's defaults — `retry: 1` and dedup of any
+ * in-flight/cached entry sharing the options' `queryKey` within its
+ * `staleTime` — against what is a non-idempotent create call: a
+ * resubmission with an unchanged reason within that window could silently
+ * return the cached prior response with NO new network request, and a
+ * transient failure could silently auto-replay the POST once via the query
+ * retry. `useMutation` has neither behaviour by default (no cache entry
+ * keyed by input, `retry: 0`), so every call this hook makes through it is
+ * a true one-shot POST.
+ */
+function useCreateModerationRequestMutation(): UseMutationResult<
+  Awaited<ReturnType<typeof createModerationRequest>>,
+  unknown,
+  SubmitModerationRequestVariables
+> {
+  return useMutation({
+    mutationFn: ({ projectId, type, description, label }: SubmitModerationRequestVariables) => {
+      const body: IgnoredRequestBody = {
+        issue_type: label,
+        description,
+        status: REQUEST_STATUS.PENDING,
+        meta: {},
+      };
+      return createModerationRequest(projectId, entityIdForType(type), body);
+    },
+  });
+}
+
 /**
  * Replaces the baseline's `useApplicationRequests`
  * (`features/apps/lib/hooks/useApplicationRequests.hooks.js`). One
@@ -71,6 +116,7 @@ export function useModerationRequests() {
   const projectId = useSelectedProjectId();
   const queryClient = useQueryClient();
   const [submittingType, setSubmittingType] = useState<string | null>(null);
+  const { mutateAsync: createModerationRequestAsync } = useCreateModerationRequestMutation();
 
   const statusQueries = useQueries({
     queries: APPLICATION_CATALOG.map((entry) =>
@@ -102,14 +148,12 @@ export function useModerationRequests() {
       if (projectId === undefined) return;
       setSubmittingType(type);
       try {
-        const body: IgnoredRequestBody = {
-          issue_type: label ?? 'Application Access Request',
+        await createModerationRequestAsync({
+          projectId,
+          type,
           description,
-          status: REQUEST_STATUS.PENDING,
-          meta: {},
-        };
-        const options = getCreateModerationRequestQueryOptions(projectId, entityIdForType(type), body);
-        await queryClient.fetchQuery(options);
+          label: label ?? 'Application Access Request',
+        });
         await queryClient.invalidateQueries({
           queryKey: getModerationStatusQueryOptions(projectId, entityIdForType(type)).queryKey,
         });
@@ -117,7 +161,7 @@ export function useModerationRequests() {
         setSubmittingType(null);
       }
     },
-    [projectId, queryClient],
+    [projectId, queryClient, createModerationRequestAsync],
   );
 
   return {

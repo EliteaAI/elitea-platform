@@ -95,10 +95,10 @@ describe('ApplicationCatalogCard', () => {
     expect(screen.queryByRole('button', { name: 'Request Access' })).not.toBeInTheDocument();
   });
 
-  it('shows neither action when the type is already configured', () => {
+  it('hides Configure but still shows Request Access when the type is already configured but not self-serve creatable (baseline: canRequest ignores isConfigured — model/catalog.ts)', () => {
     renderCard({ application: catalogApp({ configured: true }) });
     expect(screen.queryByRole('button', { name: 'Configure' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Request Access' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Request Access' })).toBeInTheDocument();
   });
 
   it('shows a loading spinner instead of any action while fetching moderation status', () => {

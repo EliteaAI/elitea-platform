@@ -63,6 +63,37 @@ function schemaLabel(schema: Record<string, unknown> | undefined, fallback: stri
  * feeding `ApplicationCatalogCard` through the same generic entity-card
  * shape `ToolkitsList` uses — this port's `ApplicationCatalogCard` is its
  * own component and reads `Icon`/`typeLabel`/`availability` directly).
+ *
+ * **`canRequest` deliberately does NOT mirror the baseline hook's own
+ * `canRequest: !canCreate && !isConfigured` (`useApplicationCatalogState.
+ * hooks.js:83`) — that field is dead in the baseline's real UI.** The
+ * baseline's actual render path, `ApplicationCatalog.jsx:55`, computes its
+ * OWN local `canRequest = !application.canCreate && requestStatus !==
+ * REQUEST_STATUS.PENDING` and passes THAT to `ApplicationCatalogCard`,
+ * shadowing (never reading) the hook's `application.canRequest` entirely.
+ * So an already-configured-but-not-self-serve-creatable entry
+ * (`isConfigured: true`, `canCreate: false`) still gets a real "Request
+ * Access" button in the baseline app, even though its own hook's dead field
+ * says `false`. This port's `ApplicationCatalogCard.tsx` has no such
+ * per-render shadow — it reads `application.canRequest` directly
+ * (`canRequest = application.canRequest && !isPending`) — so THIS field
+ * must encode the baseline's real (`ApplicationCatalog.jsx`) formula, not
+ * its unused hook one, or the port loses the button the old app actually
+ * shows. `isConfigured` is intentionally excluded from the expression below
+ * for that reason (kept as its own separate field for `availability`/badge
+ * use, per `ApplicationAvailability`'s own doc comment).
+ *
+ * **Out-of-scope follow-up for whoever owns `ui/catalog/
+ * ApplicationCatalogCard.tsx`:** that file's own test,
+ * `ApplicationCatalogCard.test.tsx`'s `'shows neither action when the type
+ * is already configured'` (built with `catalogApp({ configured: true })`,
+ * i.e. `canCreate: false`/`isConfigured: true`), asserted the PRE-FIX
+ * (buggy) behaviour — it expects no "Request Access" button, but the
+ * correct/real behaviour (see above) is that one renders. That assertion
+ * needs updating to `expect(screen.getByRole('button', { name: 'Request
+ * Access' })).toBeInTheDocument()` (Configure still correctly absent) once
+ * this fix lands; left unedited here since that file is outside this
+ * cluster's own scope.
  */
 export function buildCatalogApplication(
   entry: ApplicationCatalogEntry,
@@ -79,14 +110,30 @@ export function buildCatalogApplication(
     name: entry.name,
     Icon: entry.Icon,
     shortDescription: entry.shortDescription,
-    description: entry.description,
+    // NOT `entry.description` — mirrors the baseline hook's own field
+    // overwrite (`useApplicationCatalogState.hooks.js:66`, `description:
+    // application.shortDescription`). Baseline's catalogue data ALSO
+    // carries a distinct, longer `description` string per entry
+    // (`applicationCatalog.constants.js`), but that hook clobbers it with
+    // `shortDescription` before the object ever reaches
+    // `ApplicationCatalogCard`, whose title tooltip reads
+    // `application.description` (`ApplicationCatalogCard.jsx:81`) — so the
+    // long-form copy was NEVER actually rendered anywhere in the shipped
+    // baseline app; it sat unused in the constants module. This port's own
+    // `ApplicationCatalogCard.tsx` also reads `application.description` for
+    // that same tooltip, unchanged from baseline, so `description` must be
+    // populated with the short blurb here for tooltip-content parity — using
+    // `entry.description` instead is a regression (the card would show
+    // richer copy the baseline user never saw). `entry.description` itself
+    // is intentionally left unused, exactly as in the baseline.
+    description: entry.shortDescription,
     capabilities: entry.capabilities,
     bestFor: entry.bestFor,
     documentation: entry.documentation,
     typeLabel: schemaLabel(schema, entry.name),
     canCreate,
     isConfigured,
-    canRequest: !canCreate && !isConfigured,
+    canRequest: !canCreate,
     availability: resolveApplicationAvailability(isConfigured, canCreate),
   };
 }

@@ -99,4 +99,31 @@ describe('useApplicationCatalog', () => {
     expect(inventory?.canCreate).toBe(true);
     expect(inventory?.canRequest).toBe(false);
   });
+
+  it('misses a configured type whose only instance is beyond the first page (documented ListApplicationsParams pagination-contract gap — see this hook\'s own doc comment)', async () => {
+    server.use(
+      getListToolkitsMockHandler({}),
+      // Simulates a project where `inventory`'s one configured instance sits
+      // on page 2: `total`/`total_pages` say there is more, but `rows` (all
+      // this hook can ever see — `ListApplicationsParams` has no page/limit/
+      // offset request field) holds only OTHER applications' rows.
+      getListApplicationsMockHandler({
+        rows: [application({ id: '1', type: 'other-app' })],
+        total: 21,
+        page: 1,
+        page_size: 20,
+        total_pages: 2,
+      }),
+    );
+
+    const { result } = renderHookWithRouter(() => useApplicationCatalog(), { projectId: 'proj-1' });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // This assertion pins the CURRENT, documented limitation rather than the
+    // desired end state: it must start failing (and be updated) the day
+    // `ListApplicationsParams` gains real pagination and this hook is
+    // rewritten to fetch every page.
+    const inventory = result.current.applications.find((app) => app.type === 'inventory');
+    expect(inventory?.availability).not.toBe('configured');
+  });
 });

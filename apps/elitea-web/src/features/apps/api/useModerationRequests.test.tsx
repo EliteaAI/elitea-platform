@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, waitFor } from '@testing-library/react';
+import { QueryClient } from '@tanstack/react-query';
+import { HttpResponse, http } from 'msw';
 
 import {
   getCreateModerationRequestMockHandler,
@@ -12,6 +14,32 @@ import { REQUEST_STATUS } from '../lib/constants';
 
 import { entityIdForType, useModerationRequests } from './useModerationRequests';
 import { renderHookWithRouter } from '../__tests__/testUtils';
+
+/**
+ * `../__tests__/testUtils.tsx`'s own `createTestQueryClient()` zeroes out
+ * `gcTime` and forces `retry: false` — deliberately, so unrelated tests
+ * never depend on cache/retry timing. That also means it CANNOT reproduce
+ * the exact regression finding #1 (adversarial-review cluster
+ * `A6-api-model`) describes: `submitRequest` routing its POST through
+ * `queryClient.fetchQuery()` against query-flavoured options picks up
+ * whatever the *app's real* `defaultOptions.queries` are
+ * (`staleTime: 30_000`, `retry: 1` — `src/app/providers/queryClient.ts`'s
+ * `QUERY_DEFAULT_OPTIONS`), not the test harness's zeroed ones. Importing
+ * that module directly here would pull a `features/` test across the FSD
+ * boundary into `app/` (the wrong direction), so the three field values
+ * relevant to this regression are duplicated locally instead — this is the
+ * "local adapter" the repo's porting rules ask for when a sibling/higher
+ * layer's shape is needed but importing it isn't allowed. Keep in sync with
+ * `QUERY_DEFAULT_OPTIONS` if that file's `staleTime`/`retry` ever change.
+ */
+function buildProdParityQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { staleTime: 30_000, retry: 1 },
+      mutations: { retry: 0 },
+    },
+  });
+}
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
@@ -96,5 +124,66 @@ describe('useModerationRequests', () => {
       await result.current.submitRequest('inventory', 'reason');
     });
     expect(result.current.getRequestStatus('inventory')).toBe(REQUEST_STATUS.NONE);
+  });
+
+  it('submitRequest fires a fresh POST on every call, even with identical arguments inside the real 30s staleTime window (regression test — queryClient.fetchQuery() against query-flavoured options would dedup this non-idempotent POST against the QueryClient cache and skip the second network call entirely)', async () => {
+    let postCount = 0;
+    server.use(
+      getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
+      http.post('*/admin/moderation_status/default/:projectId/:entityId', () => {
+        postCount += 1;
+        return HttpResponse.json({ status: REQUEST_STATUS.APPROVED });
+      }),
+    );
+
+    const { result } = renderHookWithRouter(() => useModerationRequests(), {
+      projectId: 'proj-1',
+      queryClient: buildProdParityQueryClient(),
+    });
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+
+    await act(async () => {
+      await result.current.submitRequest('inventory', 'same reason');
+    });
+    expect(postCount).toBe(1);
+
+    // Same type/description/label as the first call — under the old
+    // fetchQuery()-against-query-options implementation this hashes to the
+    // same queryKey and, still inside the 30s staleTime window, resolves
+    // from cache with NO second network request.
+    await act(async () => {
+      await result.current.submitRequest('inventory', 'same reason');
+    });
+    expect(postCount).toBe(2);
+  });
+
+  it('does not auto-retry a failed submitRequest (regression test — queryClient.fetchQuery() picks up the real query default retry: 1, silently replaying the non-idempotent POST once on failure)', async () => {
+    let postCount = 0;
+    server.use(
+      getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
+      http.post('*/admin/moderation_status/default/:projectId/:entityId', () => {
+        postCount += 1;
+        return HttpResponse.json({ error: 'boom' }, { status: 500 });
+      }),
+    );
+
+    const { result } = renderHookWithRouter(() => useModerationRequests(), {
+      projectId: 'proj-1',
+      queryClient: buildProdParityQueryClient(),
+    });
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await result.current.submitRequest('inventory', 'reason');
+      } catch (error) {
+        caught = error;
+      }
+    });
+
+    expect(caught).toBeDefined();
+    expect(postCount).toBe(1);
+    expect(result.current.isSubmitting).toBe(false);
   });
 });

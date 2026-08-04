@@ -74,9 +74,13 @@ describe('buildCatalogApplication', () => {
     expect(result).toMatchObject({
       canCreate: false,
       isConfigured: true,
-      canRequest: false,
       availability: 'configured',
     });
+  });
+
+  it('still marks an already-configured, non-creatable type as requestable, matching the old app\'s real render path (ApplicationCatalog.jsx:55) rather than its own unused hook field (useApplicationCatalogState.hooks.js:83)', () => {
+    const result = buildCatalogApplication(wikisEntry, {}, new Set(['wikis_Wikis']));
+    expect(result.canRequest).toBe(true);
   });
 
   it('marks a type with neither a schema nor a configured instance as requestable', () => {
@@ -94,5 +98,11 @@ describe('buildCatalogApplication', () => {
     const result = buildCatalogApplication(wikisEntry, schemas, new Set());
     expect(result.canCreate).toBe(false);
     expect(result.typeLabel).toBe('Wikis');
+  });
+
+  it('populates the card tooltip field with the short blurb, not the entry\'s own longer description (baseline parity: useApplicationCatalogState.hooks.js:66 overwrote it the same way)', () => {
+    const result = buildCatalogApplication(wikisEntry, {}, new Set());
+    expect(result.description).toBe(wikisEntry.shortDescription);
+    expect(result.description).not.toBe(wikisEntry.description);
   });
 });

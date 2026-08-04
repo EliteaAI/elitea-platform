@@ -22,6 +22,12 @@ export interface CatalogApplication {
   readonly name: string;
   readonly Icon: SvgIconComponent;
   readonly shortDescription: string;
+  /**
+   * The `ApplicationCatalogCard` title-tooltip text. Despite the name, this
+   * is populated from the catalog entry's `shortDescription`, NOT its own
+   * (longer) `description` copy — see `catalog.ts`'s `buildCatalogApplication`
+   * doc comment for the baseline-parity reason.
+   */
   readonly description: string;
   readonly capabilities: readonly string[];
   readonly bestFor: string;
@@ -32,7 +38,14 @@ export interface CatalogApplication {
   readonly canCreate: boolean;
   /** At least one toolkit instance of this type already exists in the project. */
   readonly isConfigured: boolean;
-  /** Not creatable and not yet configured — access must be requested. */
+  /**
+   * Not self-serve creatable — access must be requested. Mirrors the
+   * baseline's real render-path formula (`ApplicationCatalog.jsx:55`,
+   * `!application.canCreate && requestStatus !== PENDING`), which is
+   * `isConfigured`-independent: an already-configured type with no
+   * available creation schema is still requestable in the old app. See
+   * `catalog.ts`'s `buildCatalogApplication` doc comment for why.
+   */
   readonly canRequest: boolean;
   readonly availability: ApplicationAvailability;
 }
