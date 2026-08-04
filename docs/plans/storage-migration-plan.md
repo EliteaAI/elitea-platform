@@ -409,8 +409,9 @@ note in the same commit message why the successor is not being used yet.
   fails before the network with `failed to compute payload hash: failed to seek
   body to start, request stream is not seekable` — the SigV4 middleware's
   `RewindStream`, not the checksum middleware. Setting
-  `RequestChecksumCalculation: WhenRequired` does not help. Since S4 runs MinIO
-  over plain HTTP and S9 passes a `*multipart.Part` straight into `Put`, every
+  `RequestChecksumCalculation: WhenRequired` does not help. Since S4 runs
+  RustFS over plain HTTP and S9 passes a `*multipart.Part` straight into `Put`,
+  every
   upload test would otherwise fail. Use the plain `PutObject` path only when the
   body implements `io.ReadSeeker`.
 - Remove `isErrType`. Use `errors.As` with `*types.NoSuchKey`,
@@ -536,8 +537,28 @@ returns `ErrNotSupported` from all four multipart methods.
 
 **Emulator notes that determine whether this stage works at all:**
 
-- **MinIO** over plain HTTP: `S3_FORCE_PATH_STYLE=true`. Works because S3 routes
-  non-seekable bodies through `manager.Uploader`.
+- **RustFS**, not MinIO — Elitea's chosen S3-compatible service for local dev,
+  CI, and self-hosted deployment (see S17). RustFS is a real, independent
+  S3-API-compatible object store (Apache 2.0, `github.com/rustfs/rustfs`); it
+  is not a code fork or wrapper of MinIO and requires no special-casing in the
+  `storage/s3` backend — it is exercised through the exact same code path as
+  AWS S3, addressed by `S3_ENDPOINT_URL` like any other S3-compatible endpoint.
+  Verified against the project's own `docker-compose-simple.yml` and container
+  docs as of 2026-08: official image `rustfs/rustfs:latest`; S3 API on `9000`,
+  console on `9001`; server-side credentials set via `RUSTFS_ACCESS_KEY` /
+  `RUSTFS_SECRET_KEY` (these configure the RustFS server's root identity — pass
+  the same values through as Elitea's client-side `S3_ACCESS_KEY` /
+  `S3_SECRET_KEY` when pointing the S3 backend at it); the container runs as a
+  non-root user, UID/GID `10001:10001`, and every mounted data path must be
+  writable by that UID or the container fails to start. Run over plain HTTP
+  with `S3_FORCE_PATH_STYLE=true` — RustFS is accessed by host:port rather than
+  a DNS-based virtual-hosted bucket subdomain, so path-style is the safe
+  default; confirm against the current compose file, since RustFS is a young,
+  fast-moving project (public beta, first released mid-2025) and exact
+  defaults can shift between releases. **Copy the actual service definition
+  from `rustfs/rustfs`'s own `docker-compose-simple.yml` rather than
+  hand-rolling one** — re-verify the image tag and env var names against that
+  file at implementation time.
 - **Azurite**: shared key only. It does not issue user-delegation keys, so run
   the Azure leg with `AZURE_STORAGE_KEY` set, or case 12 skips.
 - **fake-gcs-server**: listens on 4443 with HTTPS by default — pass `-scheme http`
@@ -553,8 +574,8 @@ it before the tests. A `services:` block is also acceptable if it proves
 workable in the runner; the acceptance criterion is that the suite runs and
 passes in CI, not the mechanism.
 
-**Edit `deploy/docker-compose.yml`:** add a `minio` service and a bucket-create
-init container so `task up` gives a working local object store.
+**Edit `deploy/docker-compose.yml`:** add a `rustfs` service and a
+bucket-create init container so `task up` gives a working local object store.
 
 **Acceptance criteria:** every non-gated case passes against all three backends
 in CI; gated skips print their reason; the suite skips cleanly with no emulator.
@@ -1270,7 +1291,7 @@ already exist and run weekly. The workflow accepts a `legacy_url` input and was
 built to diff Go against the legacy service — **that comparison is no longer
 meaningful** and the input should be removed. Repurpose the harness as a
 self-contained conformance suite driving the new artifact API against a running
-Go service plus a MinIO emulator.
+Go service plus a RustFS emulator (S4).
 
 Cover, end to end through the real router with real auth:
 
