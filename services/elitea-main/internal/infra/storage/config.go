@@ -19,11 +19,13 @@ type Config struct {
 	// GCS
 	GCSBucket          string
 	GCSCredentialsFile string
+	GCSEndpoint        string
 
 	// Azure Blob
 	AzureAccount   string
 	AzureKey       string
 	AzureContainer string
+	AzureEndpoint  string
 }
 
 // ConfigFromEnv reads storage configuration from environment variables.
@@ -45,10 +47,12 @@ func ConfigFromEnv() Config {
 
 		GCSBucket:          os.Getenv("GCS_BUCKET"),
 		GCSCredentialsFile: os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+		GCSEndpoint:        os.Getenv("GCS_ENDPOINT"),
 
 		AzureAccount:   os.Getenv("AZURE_STORAGE_ACCOUNT"),
 		AzureKey:       os.Getenv("AZURE_STORAGE_KEY"),
 		AzureContainer: envOr("AZURE_STORAGE_CONTAINER", "elitea"),
+		AzureEndpoint:  os.Getenv("AZURE_STORAGE_ENDPOINT"),
 	}
 }
 

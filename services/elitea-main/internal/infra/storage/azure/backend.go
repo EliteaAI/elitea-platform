@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
@@ -18,6 +19,11 @@ type Config struct {
 	Account       string
 	Key           string
 	ContainerName string // single container used as root
+
+	// Endpoint overrides the default public-cloud service URL
+	// (https://{Account}.blob.core.windows.net/) verbatim. Set it to reach
+	// Azurite or a non-public-cloud deployment.
+	Endpoint string
 }
 
 // Backend implements storage.Backend using Azure Blob Storage.
@@ -25,22 +31,47 @@ type Config struct {
 type Backend struct {
 	client        *azblob.Client
 	containerName string
+
+	// usesSharedKey records which credential path New took. blob.Client's
+	// GetSASURL requires a shared key; a token-credential (workload
+	// identity) client must mint a user-delegation SAS instead, which
+	// Azurite does not support. Capabilities().Presign (S3) reads this.
+	usesSharedKey bool
 }
 
 var _ storage.Backend = (*Backend)(nil)
 
-// New creates an Azure Blob Backend.
+// New creates an Azure Blob Backend. When cfg.Key is set it authenticates
+// with a shared-key credential; otherwise it uses DefaultAzureCredential,
+// enabling workload identity.
 func New(_ context.Context, cfg Config) (*Backend, error) {
-	cred, err := azblob.NewSharedKeyCredential(cfg.Account, cfg.Key)
-	if err != nil {
-		return nil, fmt.Errorf("storage/azure: credential: %w", err)
+	serviceURL := cfg.Endpoint
+	if serviceURL == "" {
+		serviceURL = fmt.Sprintf("https://%s.blob.core.windows.net/", cfg.Account)
 	}
-	serviceURL := fmt.Sprintf("https://%s.blob.core.windows.net/", cfg.Account)
-	client, err := azblob.NewClientWithSharedKeyCredential(serviceURL, cred, nil)
-	if err != nil {
-		return nil, fmt.Errorf("storage/azure: client: %w", err)
+
+	usesSharedKey := cfg.Key != ""
+	var client *azblob.Client
+	if usesSharedKey {
+		cred, err := azblob.NewSharedKeyCredential(cfg.Account, cfg.Key)
+		if err != nil {
+			return nil, fmt.Errorf("storage/azure: credential: %w", err)
+		}
+		client, err = azblob.NewClientWithSharedKeyCredential(serviceURL, cred, nil)
+		if err != nil {
+			return nil, fmt.Errorf("storage/azure: client: %w", err)
+		}
+	} else {
+		cred, err := azidentity.NewDefaultAzureCredential(nil)
+		if err != nil {
+			return nil, fmt.Errorf("storage/azure: default credential: %w", err)
+		}
+		client, err = azblob.NewClient(serviceURL, cred, nil)
+		if err != nil {
+			return nil, fmt.Errorf("storage/azure: client: %w", err)
+		}
 	}
-	return &Backend{client: client, containerName: cfg.ContainerName}, nil
+	return &Backend{client: client, containerName: cfg.ContainerName, usesSharedKey: usesSharedKey}, nil
 }
 
 func (b *Backend) prefix(projectID, bucketName string) string {

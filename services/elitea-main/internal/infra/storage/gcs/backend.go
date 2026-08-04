@@ -8,6 +8,7 @@ import (
 
 	gcstorage "cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
@@ -16,6 +17,14 @@ import (
 type Config struct {
 	Bucket          string // single GCS bucket used as root
 	CredentialsFile string // path to service account JSON
+
+	// Endpoint overrides the default public GCS API host for reaching an
+	// emulator (e.g. fake-gcs-server). It must be a full base URL including
+	// the "/storage/v1/" path, for example "http://localhost:4443/storage/v1/"
+	// — this is a complete base-URL override, not a host override, so a bare
+	// host value silently routes every call to the wrong path and 404s on
+	// every Stat, List, and Delete. Mutually exclusive with CredentialsFile.
+	Endpoint string
 }
 
 // Backend implements storage.Backend using Google Cloud Storage.
@@ -27,9 +36,32 @@ type Backend struct {
 
 var _ storage.Backend = (*Backend)(nil)
 
+// clientOptions validates cfg and builds the client.ClientOption slice New
+// passes to gcstorage.NewClient. Split out from New so the validation and
+// option-selection logic can be tested without constructing a real client.
+func clientOptions(cfg Config) ([]option.ClientOption, error) {
+	if cfg.Endpoint != "" && cfg.CredentialsFile != "" {
+		return nil, fmt.Errorf("storage/gcs: GCS_ENDPOINT and GOOGLE_APPLICATION_CREDENTIALS are mutually exclusive")
+	}
+
+	var opts []option.ClientOption
+	switch {
+	case cfg.CredentialsFile != "":
+		opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile))
+	case cfg.Endpoint != "":
+		opts = append(opts, option.WithEndpoint(cfg.Endpoint), option.WithoutAuthentication())
+	}
+	return opts, nil
+}
+
 // New creates a GCS Backend.
 func New(ctx context.Context, cfg Config) (*Backend, error) {
-	client, err := gcstorage.NewClient(ctx)
+	opts, err := clientOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := gcstorage.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("storage/gcs: new client: %w", err)
 	}
