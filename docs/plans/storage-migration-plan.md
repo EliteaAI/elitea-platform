@@ -493,7 +493,13 @@ makes the conformance suite unpassable.
 - `Capabilities()` matches the constructed configuration — a table test asserts
   Azure with no key reports `Presign: false`, and GCS always reports
   `NativeMultipart: false`.
-- `grep -rn 'io.ReadAll' services/elitea-main/internal/infra/storage/` finds nothing.
+- `grep -rn 'io.ReadAll' services/elitea-main/internal/infra/storage/{s3,azure,gcs}/` finds
+  nothing. **Scoped to the three backend packages this stage writes, not the
+  whole `internal/infra/storage/` tree** — that tree also contains pre-existing,
+  out-of-scope code this stage does not touch, e.g. `content_server.go`'s
+  deliberate, documented, small bounded `io.ReadAll` on a validation slice. The
+  wider grep this stage originally specified fails against code no
+  implementation of this stage could ever satisfy.
 - The tree still builds: the old `Backend` methods and their callers are intact.
 
 **Verify:** `cd services/elitea-main && go build ./... && go vet ./internal/infra/storage/...`
