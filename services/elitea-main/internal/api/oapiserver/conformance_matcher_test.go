@@ -101,7 +101,7 @@ func TestMatcherProbeE_MidPatternWildcardDoesNotSwallow(t *testing.T) {
 
 	// Positive control: a genuine TRAILING wildcard still swallows a
 	// multi-segment remainder (S3 object keys contain slashes).
-	if !routes.Resolves("GET", "/artifacts/s3/{bucket}/deep/object/key") {
-		t.Error("trailing-wildcard route /artifacts/s3/{bucket}/* no longer swallows a multi-segment object key")
+	if !routes.Resolves("GET", "/api/v2/artifacts/objects/{projectID}/{bucket}/deep/object/key") {
+		t.Error("trailing-wildcard route /api/v2/artifacts/objects/{projectID}/{bucket}/* no longer swallows a multi-segment object key")
 	}
 }

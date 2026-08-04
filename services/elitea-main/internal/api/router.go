@@ -40,7 +40,6 @@ import (
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
-	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
@@ -104,12 +103,11 @@ type RouterConfig struct {
 	CutoverTracker     *cutover.Tracker
 	CutoverRouter      *cutover.Router
 	AdminUI            *adminui.Config
-	Storage            storage.Backend
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
-	// DELETE cascade, but only inside newPrototypeCompatibilityRouter — like
-	// Storage above, it is not on any production request path until S11
-	// mounts the new artifact routes there.
+	// DELETE cascade, but only inside newPrototypeCompatibilityRouter — it is
+	// not on any production request path until S11 mounts the new artifact
+	// routes there.
 	ObjectStore      storage.ObjectStore
 	BudgetAlertStore *gateway.BudgetAlertStore
 	SessionSecret    string
@@ -283,16 +281,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			r.Get("/auth_oidc/logout", cfg.SessionHandler.Logout)
 		})
 	}
-
-	// Preserve the current-main prototype S3 surface for route compatibility.
-	// The reviewed production router mounts its separately permission-scoped
-	// candidate only when the legacy S3 credential contract is composed.
-	s3Handler := v2artifacts.NewS3Handler(cfg.Storage)
-	r.Get("/artifacts/s3/", s3Handler.ListBuckets)
-	r.Get("/artifacts/s3/{bucket}", s3Handler.ListObjects)
-	r.Get("/artifacts/s3/{bucket}/*", s3Handler.GetObject)
-	r.Put("/artifacts/s3/{bucket}/*", s3Handler.PutObject)
-	r.Delete("/artifacts/s3/{bucket}/*", s3Handler.DeleteObject)
 
 	// Static file serving for application icons (root level like pylon)
 	iconDir := os.Getenv("ICON_DATA_DIR")
@@ -810,42 +798,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	}
 
 	return r
-}
-
-func mountArtifactS3Routes(
-	r chi.Router,
-	handler *v2artifacts.S3Handler,
-	authenticate func(http.Handler) http.Handler,
-	resolver platformauth.PermissionResolver,
-) {
-	projectID := apimw.ProjectIDFromQuery("project_id")
-	view := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.view",
-	)
-	create := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.create",
-	)
-	deleteObject := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.delete",
-	)
-
-	r.Route("/artifacts/s3", func(r chi.Router) {
-		r.Use(authenticate)
-		r.With(view).Get("/", handler.ListBuckets)
-		r.With(view).Get("/{bucket}", handler.ListObjects)
-		r.With(view).Get("/{bucket}/*", handler.GetObject)
-		r.With(create).Put("/{bucket}/*", handler.PutObject)
-		r.With(deleteObject).Delete("/{bucket}/*", handler.DeleteObject)
-	})
 }
 
 func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {

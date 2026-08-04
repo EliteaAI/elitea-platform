@@ -2,232 +2,67 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
-	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/filesystem"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 )
 
-func testArtifactS3Handler() *v2artifacts.S3Handler {
-	return v2artifacts.NewS3Handler(filesystem.New(os.Getenv("ARTIFACTS_DATA_DIR")))
-}
+// TestObjectDownloadRejectsRawTraversalKey proves the new artifact API
+// rejects a raw ".." path segment before it ever reaches the metadata
+// repository. It follows the same lazy-pgxpool pattern as
+// TestArtifactBucketRoutesWireToRealHandlerWhenConfigured and
+// TestArtifactBucketRoutesStayStubbedWithoutObjectStore in
+// artifact_stub_routes_test.go: pgxpool.New against an address nothing
+// listens on succeeds without dialing (pgx v5 connects lazily), so only
+// checks that happen before any repository/store round-trip can be asserted
+// this way. That's exactly what this test needs — DownloadObject must
+// validate the key (storage.NewObjectRef) and reject it with InvalidKey
+// ahead of the requireBucket lookup that would otherwise hang or 500
+// against the unreachable pool.
+func TestObjectDownloadRejectsRawTraversalKey(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
 
-type artifactPermissionResolverFunc func(
-	context.Context,
-	auth.User,
-	string,
-	string,
-) (auth.PermissionResolution, error)
-
-func (f artifactPermissionResolverFunc) ResolvePermissions(
-	ctx context.Context,
-	principal auth.User,
-	mode string,
-	projectID string,
-) (auth.PermissionResolution, error) {
-	return f(ctx, principal, mode, projectID)
-}
-
-func TestArtifactS3RoutesRequireAuthentication(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
-	t.Setenv("ARTIFACTS_DATA_DIR", t.TempDir())
-	router := chi.NewRouter()
-	mountArtifactS3Routes(
-		router,
-		testArtifactS3Handler(),
-		middleware.Auth(middleware.AuthConfig{}),
-		artifactPermissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
-			t.Fatal("permission resolver must not run before authentication")
-			return auth.PermissionResolution{}, nil
-		}),
-	)
-
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/artifacts/s3/?project_id=7", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
+	if err != nil {
+		t.Fatalf("pgxpool.New (lazy, must not dial): %v", err)
 	}
-}
+	defer pool.Close()
 
-func TestLegacyS3CompatibilityRoutesAreNotProductionMounted(t *testing.T) {
-	t.Setenv("AUTH_DEV_MODE", "false")
-	router := NewRouter(RouterConfig{})
-
-	for _, target := range []string{
-		"/artifacts/s3/",
-		"/artifacts/s3/project-bucket",
-		"/artifacts/s3/project-bucket/object.txt",
-	} {
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("GET %s status = %d, want %d until SigV4 and bucket-grant parity", target, rec.Code, http.StatusNotFound)
-		}
-	}
-}
-
-func TestArtifactS3RoutesUseExactLegacyPermissionsAndQueryProject(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("ARTIFACTS_DATA_DIR", root)
-	if err := os.MkdirAll(filepath.Join(root, "7", "bucket"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "7", "bucket", "object.txt"), []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	var granted string
-	resolver := artifactPermissionResolverFunc(func(
-		_ context.Context,
-		principal auth.User,
-		mode string,
-		projectID string,
-	) (auth.PermissionResolution, error) {
-		if principal.UserID != "42" || mode != auth.PermissionModeDefault || projectID != "7" {
-			t.Fatalf("unexpected resolution input: principal=%+v mode=%q project=%q", principal, mode, projectID)
-		}
-		return auth.PermissionResolution{UserID: 42, Permissions: []string{granted}}, nil
+	router := NewRouter(RouterConfig{
+		AppsRepo:    struct{ applications.Repository }{},
+		Pool:        pool,
+		ObjectStore: noopObjectStore{},
 	})
-	authenticate := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := auth.ContextWithAuthenticatedUser(r.Context(), auth.User{ID: "42", UserID: "42"}, auth.AuthenticationSourceToken)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-	router := chi.NewRouter()
-	mountArtifactS3Routes(router, testArtifactS3Handler(), authenticate, resolver)
 
-	for _, test := range []struct {
-		name       string
-		method     string
-		target     string
-		body       string
-		permission string
-		wantStatus int
-	}{
-		{
-			name:       "list buckets view",
-			method:     http.MethodGet,
-			target:     "/artifacts/s3/?project_id=7&format=json",
-			permission: "configuration.artifacts.artifacts.view",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "list objects view",
-			method:     http.MethodGet,
-			target:     "/artifacts/s3/bucket?project_id=7&format=json",
-			permission: "configuration.artifacts.artifacts.view",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "get object view",
-			method:     http.MethodGet,
-			target:     "/artifacts/s3/bucket/object.txt?project_id=7",
-			permission: "configuration.artifacts.artifacts.view",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "put object create",
-			method:     http.MethodPut,
-			target:     "/artifacts/s3/bucket/object.txt?project_id=7",
-			body:       "new",
-			permission: "configuration.artifacts.artifacts.create",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "delete object delete",
-			method:     http.MethodDelete,
-			target:     "/artifacts/s3/bucket/object.txt?project_id=7",
-			permission: "configuration.artifacts.artifacts.delete",
-			wantStatus: http.StatusNoContent,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			granted = test.permission
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(test.method, test.target, strings.NewReader(test.body))
-			router.ServeHTTP(rec, req)
-			if rec.Code != test.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, test.wantStatus, rec.Body.String())
-			}
-		})
-	}
-
-	if err := os.WriteFile(filepath.Join(root, "7", "outside.txt"), []byte("must-not-leak"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	granted = "configuration.artifacts.artifacts.view"
+	req := httptest.NewRequest(http.MethodGet, "/api/v2/artifacts/objects/1/reports/../escape.txt", nil)
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(
-		http.MethodGet,
-		"/artifacts/s3/bucket/%2e%2e/outside.txt?project_id=7",
-		nil,
-	))
-	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "must-not-leak") {
-		t.Fatalf("encoded traversal escaped bucket: status=%d body=%q", rec.Code, rec.Body.String())
-	}
-}
+	router.ServeHTTP(rec, req)
 
-func TestArtifactS3RoutesDoNotExpandPermissionPrefixes(t *testing.T) {
-	t.Setenv("ARTIFACTS_DATA_DIR", t.TempDir())
-	resolver := artifactPermissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
-		return auth.PermissionResolution{
-			UserID:      42,
-			Permissions: []string{"configuration.artifacts.artifacts"},
-		}, nil
-	})
-	authenticate := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(auth.ContextWithUser(r.Context(), auth.User{ID: "42", UserID: "42"})))
-		})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	router := chi.NewRouter()
-	mountArtifactS3Routes(router, testArtifactS3Handler(), authenticate, resolver)
 
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/artifacts/s3/?project_id=7", nil))
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-}
-
-func TestArtifactS3RoutesRequireExplicitProjectQuery(t *testing.T) {
-	t.Setenv("ARTIFACTS_DATA_DIR", t.TempDir())
-	resolver := artifactPermissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
-		t.Fatal("resolver must not run without an explicit positive project_id")
-		return auth.PermissionResolution{}, nil
-	})
-	authenticate := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(w, r.WithContext(auth.ContextWithUser(r.Context(), auth.User{ID: "42", UserID: "42"})))
-		})
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
 	}
-	router := chi.NewRouter()
-	mountArtifactS3Routes(router, testArtifactS3Handler(), authenticate, resolver)
-
-	for _, target := range []string{
-		"/artifacts/s3/",
-		"/artifacts/s3/?project_id=0",
-		"/artifacts/s3/?project_id=01",
-		"/artifacts/s3/?project_id=-1",
-	} {
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("target %q status = %d, want %d", target, rec.Code, http.StatusForbidden)
-		}
+	if envelope.Error.Code != "InvalidKey" {
+		t.Fatalf("error.code = %q, want InvalidKey; body=%s", envelope.Error.Code, rec.Body.String())
 	}
 }
 

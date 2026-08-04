@@ -362,14 +362,15 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucket(w, r, projectID, bucket) {
-		return
-	}
 	key := objectKeyFromRequest(r)
 
 	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
+		return
+	}
+
+	if !h.requireBucket(w, r, projectID, bucket) {
 		return
 	}
 
@@ -413,14 +414,15 @@ func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucketNoBody(w, r, projectID, bucket) {
-		return
-	}
 	key := objectKeyFromRequest(r)
 
 	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if !h.requireBucketNoBody(w, r, projectID, bucket) {
 		return
 	}
 
@@ -456,14 +458,15 @@ func (h *Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 	projectIDStr := chi.URLParam(r, "projectID")
 	bucket := chi.URLParam(r, "bucket")
-	if !h.requireBucket(w, r, projectID, bucket) {
-		return
-	}
 	key := objectKeyFromRequest(r)
 
 	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
+		return
+	}
+
+	if !h.requireBucket(w, r, projectID, bucket) {
 		return
 	}
 
