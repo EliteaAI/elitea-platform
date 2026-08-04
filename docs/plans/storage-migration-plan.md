@@ -1238,6 +1238,18 @@ Overwrite behaviour is an explicit `?overwrite=true|false` query parameter,
 defaulting to `false`; a collision with `overwrite=false` returns 409 and
 `code: AlreadyExists`.
 
+**Do not read the display name via `Part.FileName()`.** Per RFC 7578, Go's
+implementation runs it through `filepath.Base`, silently truncating a
+multi-segment name like `a/b/c.png` to `c.png` — caught empirically by this
+stage's own key-with-slash acceptance test, which failed against the
+uploaded key until fixed. Parse `Content-Disposition` directly
+(`mime.ParseMediaType(part.Header.Get("Content-Disposition"))` and read the
+`filename` param) to recover the raw value. This does not reopen a
+traversal hole: `storage.NewObjectRef`'s `validateKey` (S1) is the actual
+guard against `..` segments, leading/trailing slashes, and empty segments —
+the same class of input `FileName`'s stripping exists to block — and it
+still runs on whatever key this handler passes it.
+
 **Download** streams with `io.Copy`, sets `Content-Type` from stored metadata
 falling back to extension detection, sets `Content-Length`, and supports `Range`
 by passing a `ByteRange` to `ObjectStore.Get` and replying 206.
@@ -1253,7 +1265,12 @@ or re-specifying it belongs to the SDK rework issue.
 
 **Acceptance criteria:**
 
-- `grep -rn 'ParseMultipartForm\|io.ReadAll\|FormValue' services/elitea-main/internal/api/v2/artifacts/` finds nothing.
+- `grep -rn 'ParseMultipartForm\|io.ReadAll\|FormValue' services/elitea-main/internal/api/v2/artifacts/ --include='*.go' | grep -v _test.go`
+  finds nothing. Scoped to non-test files: S8's fake in-memory `ObjectStore`
+  (`fake_store_test.go`) legitimately buffers with `io.ReadAll` in its own
+  `Put` — it is a test double standing in for a real backend, not the
+  handler code this criterion is about, and the unscoped grep would flag it
+  as a false positive.
 - A streaming test proves the handler does not buffer: set
   `t.Setenv("TMPDIR", t.TempDir())` and assert that directory is empty after a
   40 MiB upload; and drive the request body from an `io.Pipe` while the fake

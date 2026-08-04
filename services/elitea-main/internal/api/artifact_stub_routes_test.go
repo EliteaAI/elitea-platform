@@ -145,7 +145,7 @@ func TestArtifactBucketRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
 
 // TestArtifactBucketRoutesStayStubbedWithoutObjectStore proves the other
 // side of the same guard: cfg.Pool alone is not enough to activate the real
-// handlers — newArtifactBucketHandlers requires both.
+// handlers — newArtifactHandler requires both.
 func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 	t.Setenv("AUTH_DEV_MODE", "true")
 
@@ -167,5 +167,61 @@ func TestArtifactBucketRoutesStayStubbedWithoutObjectStore(t *testing.T) {
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want %d (stub) when ObjectStore is unset; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+}
+
+// TestArtifactObjectRoutesWireToRealHandlerWhenConfigured mirrors
+// TestArtifactBucketRoutesWireToRealHandlerWhenConfigured for S9's six
+// object-plane routes — newArtifactHandler backs both planes with the same
+// guard, so this proves that guard flips for the object routes too, not
+// just the bucket ones S8 already covered.
+func TestArtifactObjectRoutesWireToRealHandlerWhenConfigured(t *testing.T) {
+	t.Setenv("AUTH_DEV_MODE", "true")
+
+	pool, err := pgxpool.New(context.Background(), "postgres://nouser:nopass@127.0.0.1:1/nodb")
+	if err != nil {
+		t.Fatalf("pgxpool.New (lazy, must not dial): %v", err)
+	}
+	defer pool.Close()
+
+	router := NewRouter(RouterConfig{
+		AppsRepo:    struct{ applications.Repository }{},
+		Pool:        pool,
+		ObjectStore: noopObjectStore{},
+	})
+
+	cases := []struct{ method, path string }{
+		{http.MethodGet, "/api/v2/artifacts/objects/1/reports"},
+		{http.MethodPost, "/api/v2/artifacts/objects/1/reports"},
+		{http.MethodPost, "/api/v2/artifacts/objects/1/reports:batchDelete"},
+		{http.MethodGet, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
+		{http.MethodHead, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
+		{http.MethodDelete, "/api/v2/artifacts/objects/1/reports/a/b/c.png"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotImplemented {
+				t.Fatalf("still the S7 stub (501) with Pool and ObjectStore configured; body=%s", rec.Body.String())
+			}
+			if tc.method == http.MethodHead {
+				return
+			}
+			var envelope struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("response body is not the typed error envelope: %v (body=%s)", err, rec.Body.String())
+			}
+			if envelope.Error.Code == "NotImplemented" {
+				t.Fatalf("still the S7 stub error code with Pool and ObjectStore configured; body=%s", rec.Body.String())
+			}
+		})
 	}
 }

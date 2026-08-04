@@ -20,6 +20,25 @@ type fakeStore struct {
 	mu      sync.Mutex
 	objects map[string]storage.ObjectInfo
 	data    map[string][]byte
+
+	// firstPutReadAt records when Put's body argument was first read from —
+	// S9's streaming-proof test (objects_test.go) uses this to confirm the
+	// handler passes the multipart part straight through to Put rather than
+	// buffering it first.
+	firstPutReadAt time.Time
+}
+
+// firstReadRecorder wraps an io.Reader and calls onFirstRead exactly once,
+// before the wrapped Reader's first Read returns.
+type firstReadRecorder struct {
+	r           io.Reader
+	once        sync.Once
+	onFirstRead func()
+}
+
+func (f *firstReadRecorder) Read(p []byte) (int, error) {
+	f.once.Do(f.onFirstRead)
+	return f.r.Read(p)
 }
 
 func newFakeStore() *fakeStore {
@@ -49,6 +68,11 @@ func (s *fakeStore) seed(projectID, bucket, key string, size int64) {
 }
 
 func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader, opts storage.PutOptions) (storage.ObjectInfo, error) {
+	body = &firstReadRecorder{r: body, onFirstRead: func() {
+		s.mu.Lock()
+		s.firstPutReadAt = time.Now()
+		s.mu.Unlock()
+	}}
 	data, err := io.ReadAll(body)
 	if err != nil {
 		return storage.ObjectInfo{}, err

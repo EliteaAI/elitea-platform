@@ -170,33 +170,32 @@ func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
 // artifactRepoAdapter satisfies v2artifacts.Repository by embedding both S6
 // repositories — they share no method names, so Go's method promotion does
 // the rest. Neither constructor accepts a nil pool without erroring, unlike
-// most other prototype-router dependencies, so newArtifactBucketHandlers
-// below builds this only when cfg.Pool and cfg.ObjectStore are both set.
+// most other prototype-router dependencies, so newArtifactHandler below
+// builds this only when cfg.Pool and cfg.ObjectStore are both set.
 type artifactRepoAdapter struct {
 	*dbrepos.ArtifactBucketsRepository
 	*dbrepos.ArtifactObjectsRepository
 }
 
-// newArtifactBucketHandlers builds the five real bucket-plane handlers when
-// cfg.Pool and cfg.ObjectStore are both available, falling back to
-// notImplementedArtifact otherwise — the same placeholder S7 registered for
-// every artifact route, so a router built without database/storage config
-// (as most tests do) keeps behaving exactly as it did before S8.
-func newArtifactBucketHandlers(cfg RouterConfig) (list, create, get, update, del http.HandlerFunc) {
-	list, create, get, update, del = notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+// newArtifactHandler builds the S6/S1-backed artifacts.Handler when
+// cfg.Pool and cfg.ObjectStore are both available. ok is false when either
+// is unset or repository construction fails, in which case every artifact
+// route stays on notImplementedArtifact — the same placeholder S7
+// registered for all of them, so a router built without database/storage
+// config (as most tests do) keeps behaving exactly as it did before S8/S9.
+func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 	if cfg.Pool == nil || cfg.ObjectStore == nil {
-		return
+		return nil, false
 	}
 	bucketsRepo, err := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
 	if err != nil {
-		return
+		return nil, false
 	}
 	objectsRepo, err := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
 	if err != nil {
-		return
+		return nil, false
 	}
-	h := v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo}, cfg.ObjectStore)
-	return h.ListBuckets, h.CreateBucket, h.GetBucket, h.UpdateBucket, h.DeleteBucket
+	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo}, cfg.ObjectStore), true
 }
 
 // newPrototypeCompatibilityRouter preserves the broad prototype registration
@@ -725,29 +724,39 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// each replace their own lines in place — never add a second
 			// registration at the same path, chi panics on that.
 			r.Route("/artifacts", func(r chi.Router) {
-				// Bucket plane — S8. newArtifactBucketHandlers falls back to
-				// notImplementedArtifact itself when cfg.Pool/cfg.ObjectStore
-				// are unset, so this stays a single registration per path.
-				listBuckets, createBucket, getBucket, updateBucket, deleteBucket := newArtifactBucketHandlers(cfg)
+				// newArtifactHandler falls back to ok=false when
+				// cfg.Pool/cfg.ObjectStore are unset, so every route below
+				// keeps its notImplementedArtifact default and this stays a
+				// single registration per path.
+				listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+				listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+				if h, ok := newArtifactHandler(cfg); ok {
+					listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
+						h.ListBuckets, h.CreateBucket, h.GetBucket, h.UpdateBucket, h.DeleteBucket
+					listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject =
+						h.ListObjects, h.UploadObject, h.BatchDeleteObjects, h.DownloadObject, h.StatObject, h.DeleteObject
+				}
+
+				// Bucket plane — S8.
 				r.Get("/buckets/{projectID}", listBuckets)
 				r.Post("/buckets/{projectID}", createBucket)
 				r.Get("/buckets/{projectID}/{bucket}", getBucket)
 				r.Patch("/buckets/{projectID}/{bucket}", updateBucket)
 				r.Delete("/buckets/{projectID}/{bucket}", deleteBucket)
 
-				// Object plane — S9 replaces these six. The three key-bearing
-				// routes use a trailing chi wildcard, not the spec's literal
-				// {key}: chi v5.1.0 has no multi-segment named-param syntax,
-				// and S1's own key grammar allows `/` inside a key.
+				// Object plane — S9. The three key-bearing routes use a
+				// trailing chi wildcard, not the spec's literal {key}: chi
+				// v5.1.0 has no multi-segment named-param syntax, and S1's
+				// own key grammar allows `/` inside a key.
 				// conformance.go's segmentsMatch treats a trailing `*` as
 				// matching any remainder unconditionally, so this still
 				// resolves the spec's .../{key} operations.
-				r.Get("/objects/{projectID}/{bucket}", notImplementedArtifact)
-				r.Post("/objects/{projectID}/{bucket}", notImplementedArtifact)
-				r.Post("/objects/{projectID}/{bucket}:batchDelete", notImplementedArtifact)
-				r.Get("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
-				r.Head("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
-				r.Delete("/objects/{projectID}/{bucket}/*", notImplementedArtifact)
+				r.Get("/objects/{projectID}/{bucket}", listObjects)
+				r.Post("/objects/{projectID}/{bucket}", uploadObject)
+				r.Post("/objects/{projectID}/{bucket}:batchDelete", batchDeleteObjects)
+				r.Get("/objects/{projectID}/{bucket}/*", downloadObject)
+				r.Head("/objects/{projectID}/{bucket}/*", statObject)
+				r.Delete("/objects/{projectID}/{bucket}/*", deleteObject)
 
 				// Transfer grants — S15 replaces these two.
 				r.Post("/grants/{projectID}/{bucket}", notImplementedArtifact)
