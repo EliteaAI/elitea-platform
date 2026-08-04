@@ -63,13 +63,6 @@ func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation
 		firstResponse,
 		"first response",
 	)
-	insertPostgresSupportContext(
-		t,
-		tx,
-		"20000000-0000-4000-8000-000000000031",
-		11,
-		1,
-	)
 	resolve.QuestionID = mustCurrentPGUUID(
 		t,
 		"50000000-0000-4000-8000-000000000031",
@@ -163,6 +156,156 @@ LEFT JOIN chat_messages_text AS text
 			responses,
 			contents,
 		)
+	}
+}
+
+func TestPostgresCurrentApplicationTurnRejectsFeaturesMissingFromTheDirectContract(t *testing.T) {
+	pool := newPostgresIntegrationPool(t)
+	applyPostgresIntegrationMigrations(t, pool)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	resolve := sqlcgen.ResolveCurrentApplicationTurnParams{
+		ActorUserID: 11, TargetParticipantID: 21,
+		QuestionID:       mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000039"),
+		ConversationUuid: conversationID, ProjectID: 1,
+	}
+	insert := sqlcgen.InsertCurrentApplicationTurnParams{
+		ActorUserID: 11, TargetParticipantID: 21,
+		ApplicationVersionID: 41, ApplicationID: 31,
+		ConversationUuid: conversationID, ProjectID: 1,
+		QuestionID: resolve.QuestionID, QuestionMeta: []byte(`{}`),
+		QuestionItemID:      mustCurrentPGUUID(t, "30000000-0000-4000-8000-000000000039"),
+		UserInput:           "must fall back",
+		ResponseMessageID:   mustCurrentPGUUID(t, "40000000-0000-4000-8000-000000000039"),
+		ExecutionGeneration: "50000000-0000-4000-8000-000000000039",
+		ExecutionID:         "execution-agent-unsupported",
+	}
+
+	tests := []struct {
+		name    string
+		apply   string
+		restore string
+	}{
+		{
+			name: "conversation internal MCP",
+			apply: `UPDATE chat_conversations
+SET meta = jsonb_set(meta, '{internal_tools}', '["internal_mcp"]'::jsonb)
+WHERE id = 1`,
+			restore: `UPDATE chat_conversations SET meta = meta - 'internal_tools' WHERE id = 1`,
+		},
+		{
+			name: "application internal tools",
+			apply: `UPDATE application_versions
+SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+WHERE id = 41`,
+			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
+		},
+		{
+			name: "project context",
+			apply: `INSERT INTO configuration (
+    id, uuid, project_id, elitea_title, type, section, data, meta,
+    shared, status_ok, source, author_id
+) VALUES (
+    2, '60000000-0000-4000-8000-000000000039', 1, 'project_context_gate',
+    'project_context', 'project', '{"content":"Project instructions"}'::jsonb,
+    '{}'::jsonb, false, true, 'user', 11
+)`,
+			restore: `DELETE FROM configuration WHERE elitea_title = 'project_context_gate'`,
+		},
+		{
+			name: "conversation toolkit",
+			apply: `WITH toolkit AS (
+    INSERT INTO chat_participants (id, uuid, entity_name, entity_meta)
+    VALUES (
+        25, '70000000-0000-4000-8000-000000000039', 'toolkit',
+        '{"id":51,"project_id":1}'::jsonb
+    )
+    RETURNING id
+)
+INSERT INTO chat_participant_mapping (conversation_id, participant_id, entity_settings)
+SELECT 1, toolkit.id, '{}'::jsonb FROM toolkit`,
+			restore: `WITH removed AS (
+    DELETE FROM chat_participant_mapping WHERE conversation_id = 1 AND participant_id = 25
+)
+DELETE FROM chat_participants WHERE id = 25`,
+		},
+		{
+			name: "summarized history",
+			apply: `UPDATE chat_conversations
+SET meta = jsonb_set(
+    meta,
+    '{context_analytics}',
+    '{"last_summarization":{"summary_content":"Earlier context"}}'::jsonb
+)
+WHERE id = 1`,
+			restore: `UPDATE chat_conversations SET meta = meta - 'context_analytics' WHERE id = 1`,
+		},
+		{
+			name: "context message history",
+			apply: `WITH message_group AS (
+    INSERT INTO chat_message_group (
+        uuid, author_participant_id, conversation_id, sent_to_id, meta, is_streaming
+    ) VALUES (
+        '80000000-0000-4000-8000-000000000039', 20, 1, 21, '{}'::jsonb, false
+    )
+    RETURNING id
+), message_item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    SELECT '90000000-0000-4000-8000-000000000039',
+           'context_message', 0, '{}'::jsonb, message_group.id
+    FROM message_group
+    RETURNING id
+)
+INSERT INTO chat_messages_context (id, context_data, context_type)
+SELECT message_item.id, '{"user_id":"11","project_id":"1"}'::jsonb,
+       'support_assistant_context'
+FROM message_item`,
+			restore: `WITH removed_context AS (
+    DELETE FROM chat_messages_context
+    WHERE id = (
+        SELECT id FROM chat_message_items
+        WHERE uuid = '90000000-0000-4000-8000-000000000039'
+    )
+), removed_item AS (
+    DELETE FROM chat_message_items
+    WHERE uuid = '90000000-0000-4000-8000-000000000039'
+)
+DELETE FROM chat_message_group
+WHERE uuid = '80000000-0000-4000-8000-000000000039'`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := tx.Exec(t.Context(), test.apply); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("resolve error=%v", err)
+			}
+			if _, err := queries.InsertCurrentApplicationTurn(t.Context(), insert); !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatalf("insert error=%v", err)
+			}
+			if _, err := tx.Exec(t.Context(), test.restore); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("bounded application turn remained rejected after restoring fixtures: %v", err)
 	}
 }
 
@@ -565,7 +708,7 @@ INSERT INTO p_1.chat_conversations (
     id, uuid, name, author_id, source, meta
 ) VALUES (
     1, '10000000-0000-4000-8000-000000000031', 'continuation', 11, 'agent',
-    '{"internal_tools":["internal_mcp"]}'::jsonb
+    '{}'::jsonb
 );
 INSERT INTO p_1.chat_participants (id, uuid, entity_name, entity_meta) VALUES
     (20, '90000000-0000-4000-8000-000000000031', 'user', '{"id":11}'::jsonb),
