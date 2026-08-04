@@ -124,10 +124,10 @@ a time in S8, S9, S10. The old `Backend` interface, the filesystem package, and
 | S4 | Conformance suite and CI emulators | S2, S3 | Medium |
 | S5 | Factory, fail-closed config, `main.go` wiring | S3 | Low |
 | S6 | Metadata schema and repositories | S1 | Medium |
-| S7 | OpenAPI contract: define the new artifact API | S6 | Medium |
+| S7 | OpenAPI contract; register route stubs; delete `oapiserver/artifacts.go` | S6 | Medium |
 | S8 | Bucket-plane handlers; delete `pg_repo.go` | S5, S6, S7 | Medium |
 | S9 | Object-plane handlers: download, HEAD, streaming upload, batch delete | S5, S6, S7, S8 | High |
-| S10 | Retire `/artifacts/s3`; delete `Backend`, `filesystem/`, `oapiserver/artifacts.go` | S8, S9 | High |
+| S10 | Retire `/artifacts/s3`; delete `Backend`/`filesystem/`; strip old `Backend` methods from `s3`/`azure`/`gcs` | S8, S9 | High |
 | S11 | Production mount, auth, RBAC, public-rule removal | S10 | High |
 | S12 | Limits: body caps, read and write deadlines, quota | S6, S11 | Medium |
 | S13 | Project-creation bucket bootstrap | S6, S8 | Low |
@@ -136,7 +136,7 @@ a time in S8, S9, S10. The old `Backend` interface, the filesystem package, and
 | S16 | Native multipart upload | S3, S15 | Medium |
 | S17 | Deployment: Helm, compose, secrets, workload identity | S5 | Medium |
 | S18 | Observability: metrics, tracing, audit | S11, S15 | Low |
-| S19 | API conformance suite in `tests/contract/` | S10, S11 | Medium |
+| S19 | API conformance suite in `tests/contract/` | S10, S11, S15 | Medium |
 | S20 | Adjacent planes: chat attachments, icons, result-artifact attestation | S9, S11, S15; **S20c also blocked on spec §6 open question 2 being answered** | High |
 
 S1, S2, S3, S5, S6, S7, S8, S9, S10, S11 are the critical path. S4
@@ -569,8 +569,9 @@ returns `ErrNotSupported` from all four multipart methods.
   skip is acceptable.
 
 **Create `deploy/docker-compose.storage-test.yml`** with the three emulators,
-and add a step to the storage job in `.github/workflows/ci-go.yml` that starts
-it before the tests. A `services:` block is also acceptable if it proves
+and add a step to the `test` job in `.github/workflows/ci-go.yml` (its only Go
+test job — there is no separate "storage" job) that starts it before the
+tests. A `services:` block is also acceptable if it proves
 workable in the runner; the acceptance criterion is that the suite runs and
 passes in CI, not the mechanism.
 
@@ -781,8 +782,9 @@ first for the house style.
 
 Methods: `ListBuckets`, `GetBucket`, `CreateBucket` (mapping unique violation
 `23505` to `ErrAlreadyExists`), `UpdateBucketRetention`, `SetBucketPinned`,
-`SoftDeleteBucket`, `UpsertObject`, `ListObjects`, `DeleteObjects`, and
-`SumBucketBytes` — a single `SUM`, never a full object listing.
+`SoftDeleteBucket`, `UpsertObject`, `ListObjects`, `DeleteObjects`,
+`SumBucketBytes`, and `CountBucketObjects` — both a single aggregate query
+(`SUM`/`COUNT`), never a full object listing. S8's bucket response needs both.
 
 **Acceptance criteria:** every method has a `*_postgres_integration_test.go`
 following the existing pattern. Unique-violation and no-rows paths map to the S1
@@ -802,6 +804,9 @@ the suite is local-only and gate on the explicit run below.
 ## S7 — OpenAPI contract: define the new artifact API
 
 **Preconditions:** S6.
+**Read first:** `api/openapi/v2.yaml`, `internal/api/router.go` (the
+`/artifacts` block, ~line 672), `internal/api/oapiserver/artifacts.go`,
+`internal/api/oapiserver/server.go`.
 
 **This stage must land before any route change.**
 `internal/api/oapiserver/conformance_test.go` asserts the forward direction:
@@ -906,13 +911,52 @@ at these paths and do not need to touch the wildcard pattern again; they
 **replace** `notImplementedArtifact` at each path with the real handler,
 editing the same 13 lines this stage adds.
 
-**Acceptance criteria:** the spec declares at least 75 operations after the
-swap; `go test ./internal/api/oapiserver/ -race` passes — genuinely, because
-all 13 new paths now resolve to the stub; no path under `/artifacts/s3` remains
-in `v2.yaml`; every route the stub replaced now returns 501 with the typed
-error envelope instead of 404.
+**Also delete `internal/api/oapiserver/artifacts.go` here, not in S10.**
+Regenerating `api.gen.go` from the new 13-operation spec removes the generated
+param types for the 9 retired operations (`BucketListParams`,
+`ArtifactListParams`, `EditBucketParams`, `DeleteBucketParams`,
+`UpdateBucketPinParams`, `DeleteArtifactParams`, `DeleteArtifactsParams`).
+`internal/api/oapiserver/artifacts.go` is a hand-written `ServerInterface`
+implementation typed directly against those seven structs. Leave it in place
+and `task openapi` produces a spec that compiles fine, but the *file* no longer
+does — seven `undefined: generated.XxxParams` errors, breaking `go build ./...`
+for this stage and, transitively, `task vet`/`task test`/`task build` for S7,
+S8, and S9, since nothing between here and the old S10 deletion point fixes it.
+This is the exact "N consecutive stages fail the global gate" failure mode the
+`Backend`/`ObjectStore` split earlier in this plan exists to avoid — it just
+wasn't applied to this file.
 
-**Verify:** `cd services/elitea-main && task openapi && go test ./internal/api/oapiserver/ -race && ! grep -q 'artifacts/s3' api/openapi/v2.yaml`
+Deleting it here is safe and does not depend on S8 or S9: `oapiserver.Server`
+is never wired into production routing (`oapiserver.New`/`Mount`/`Handler` are
+referenced only by `internal/api/oapiserver/conformance_test.go` and
+`conformance_matcher_test.go`); `internal/api/oapiserver/mount.go` is 19 lines
+and registers nothing artifact-specific, so it needs no edit; and
+`var _ generated.ServerInterface = (*Server)(nil)` (`server.go:68`) stays
+satisfied through the embedded `generated.Unimplemented` (`server.go:17`),
+which supplies a 501 stub for every operation `artifacts.go` used to implement.
+Also drop the now-dead `artifactsDir` field and `ArtifactsDir` config field
+from `server.go` (currently at roughly lines 30, 45, 49–51, 64) in this same
+edit. **S10 no longer has this item on its list** — it was moved here.
+
+**Delete the two now-orphaned response schemas**, `S3BucketListResponse` and
+`S3ObjectListResponse` (`components/schemas`), referenced only by the old
+`bucketList`/`artifactList` paths this stage removes (`$ref` at the old
+`/artifacts/s3` and `/artifacts/s3/{bucket}` blocks). Nothing else points at
+them. Their description prose names `internal/api/v2/artifacts/s3handler.go`,
+which contains the literal substring `artifacts/s3` — leaving them in place
+makes an unanchored `grep 'artifacts/s3' api/openapi/v2.yaml` still match after
+a fully correct edit, failing the Verify command on complete, correct work.
+Deleting them removes the last `artifacts/s3` text from the file. The Verify
+grep below is also anchored to the `paths:` keys as defense in depth.
+
+**Acceptance criteria:** the spec declares at least 75 operations after the
+swap; `go build ./...` and `go test ./internal/api/oapiserver/ -race` pass —
+genuinely, because all 13 new paths now resolve to the stub and
+`oapiserver/artifacts.go` no longer references a removed type; no `/artifacts/s3`
+path key remains in `v2.yaml`; every route the stub replaced now returns 501
+with the typed error envelope instead of 404.
+
+**Verify:** `cd services/elitea-main && task openapi && go build ./... && go test ./internal/api/oapiserver/ -race && ! grep -qE '^  /artifacts/s3' api/openapi/v2.yaml`
 
 ---
 
@@ -941,8 +985,11 @@ object-plane paths stay on the S7 stub until S9.
 
 **`NewInMemoryHandler` has one remaining live caller after S7's edit:**
 `internal/api/v2/artifacts/handler_test.go`, at seven places. Replace each with
-`NewHandler(fakeRepo, fakeStore)` over an in-test fake added in this stage as
-`internal/api/v2/artifacts/fake_store_test.go`.
+`NewHandler(fakeRepo, fakeStore)` over two in-test fakes added in this stage:
+`internal/api/v2/artifacts/fake_store_test.go` (an in-memory `ObjectStore`) and
+`internal/api/v2/artifacts/fake_repo_test.go` (an in-memory implementation of
+the S6 repository interface — nothing before this stage builds one; `fakeRepo`
+is not a pre-existing fixture).
 
 Response bodies:
 
@@ -957,8 +1004,9 @@ Response bodies:
 // DELETE                -> 204, no body
 ```
 
-`size_bytes` comes from `SumBucketBytes` — a single `SUM`, never a full object
-listing. It is an integer; formatting is the client's job.
+`size_bytes` and `object_count` come from `SumBucketBytes` and
+`CountBucketObjects` (S6) — both single-aggregate queries, never a full object
+listing. Both fields are integers; formatting is the client's job.
 
 **Retention is an explicit `retention_days` integer.** Do not port legacy's
 `(expiration_measure, expiration_value)` pair or its `relativedelta` calendar
@@ -1086,6 +1134,9 @@ or re-specifying it belongs to the SDK rework issue.
 ## S10 — Retire `/artifacts/s3`, and the deletions
 
 **Preconditions:** S8, S9.
+**Read first:** `internal/infra/storage/storage.go`,
+`internal/infra/storage/{s3,azure,gcs}/backend.go`,
+`internal/api/router_security_test.go`.
 
 Everything in this stage is deletion. There is no S3-proxy rewrite: ADR-0016 §7
 retires the surface rather than porting it.
@@ -1098,12 +1149,29 @@ retires the surface rather than porting it.
   `mountArtifactS3Routes` together with its block in `router_security_test.go`.
 - `internal/infra/storage/filesystem/` (whole directory).
 - The old `Backend` interface and `BucketInfo` in `internal/infra/storage/storage.go`.
-- `internal/api/oapiserver/artifacts.go`. **No `mount.go` change is needed** —
-  that file is 19 lines and registers nothing; routes come from the generated
-  code. Removal falls back to the embedded `generated.Unimplemented` in
-  `internal/api/oapiserver/server.go:17`, which keeps
-  `var _ generated.ServerInterface = (*Server)(nil)` satisfied. Also drop the
-  now-dead `artifactsDir` and `ArtifactsDir` fields from `server.go`.
+
+`internal/api/oapiserver/artifacts.go` and the dead `artifactsDir`/`ArtifactsDir`
+fields in `server.go` are **not this stage's job** — S7 already deleted them,
+because leaving them until here breaks S7/S8/S9's own builds. If you find them
+still present, S7 was not implemented correctly; fix it there, not here.
+
+**Also strip the old `Backend` method set from the three surviving backends.**
+S3 kept `s3`, `azure`, and `gcs`'s original `Backend`-shaped methods
+(`ListBuckets`, `CreateBucket`, `DeleteBucket`, `RenameBucket`, and the
+old-signature `ListObjects`/`GetObject`/`PutObject`/`DeleteObject`/`StatObject`)
+and their `var _ storage.Backend = (*Backend)(nil)` assertions *alongside* the
+new `ObjectStore` methods, deliberately, so handlers could keep calling the old
+ones through S9. Deleting `Backend`/`BucketInfo` from `storage.go` above, on its
+own, breaks all three: every one of those old methods and the compile-time
+assertion still references `storage.Backend` and `storage.BucketInfo`, which no
+longer exist. This is not hypothetical — `go build ./...` immediately after
+removing `Backend`/`BucketInfo` fails with `undefined: storage.Backend` and
+`undefined: storage.BucketInfo` in all three files. Read and edit
+`internal/infra/storage/{s3,azure,gcs}/backend.go` in this stage: delete the
+old `Backend`-shaped methods and the `var _ storage.Backend = (*Backend)(nil)`
+line from each, keeping only the `ObjectStore` methods S3 added and the
+`var _ storage.ObjectStore = (*Backend)(nil)` assertion. (`filesystem/`'s
+identical breakage is moot — that whole package is deleted above.)
 
 **`internal/api/router_security_test.go` needs care.** It imports the filesystem
 package for its fixture and it contains the traversal test. Repoint the fixture
@@ -1122,7 +1190,10 @@ ever seems to need one of those, the surface has been reintroduced by mistake.
 - `grep -rn 'infra/storage/filesystem' --include='*.go' services/` finds nothing.
 - `grep -rn 'storage_meta\|bucket_metadata' --include='*.go' services/` finds nothing.
 - `grep -rn 'NewInMemoryHandler\|memRepo\|S3Handler\|mountArtifactS3Routes' --include='*.go' services/` finds nothing.
-- `grep -rn 'artifacts/s3' services/elitea-main/ --include='*.go' --include='*.yaml'` finds nothing.
+- `grep -rn 'artifacts/s3' services/elitea-main/ --include='*.go'` finds nothing.
+  (`.yaml` is deliberately excluded — S7 already cleared `/artifacts/s3` from
+  `v2.yaml` and this stage doesn't touch that file again.)
+- `grep -rn 'storage\.Backend\b\|storage\.BucketInfo\b' services/elitea-main/internal/infra/storage/` finds nothing.
 - A raw `..` key returns 400, not 200 and not 404.
 
 **Verify:** `task test && task build`
@@ -1170,8 +1241,13 @@ walks the prototype router. One shared mount function satisfies both.
 
 **Acceptance criteria:**
 
-- Every artifact route returns 401 unauthenticated, 403 with a valid principal
-  lacking the permission, and 2xx with it.
+- Every artifact route returns 401 unauthenticated and 403 with a valid
+  principal lacking the permission. The 11 routes with a real handler by this
+  point (5 from S8, 6 from S9) additionally return 2xx with the right
+  permission. **The two grant routes are excluded from the 2xx check** — S15,
+  which implements them, hasn't run yet, so they correctly still return 501
+  regardless of authorization outcome; only their 401/403 gating is asserted
+  here.
 - A PATCH with only `create` permission returns 403; with `edit` it succeeds.
 - A request for project 8's object with a principal scoped to project 7 returns
   403 — tested end-to-end through the router, not at the store layer.
@@ -1266,6 +1342,23 @@ notification fires exactly once per bucket per expiry cycle.
 
 **Preconditions:** S3, S6, S11.
 
+**Wire the two grant routes.** S7 registered
+`POST /artifacts/grants/{projectID}/{bucket}` (`createTransferGrant`) and
+`POST /artifacts/grants/{projectID}/{grantID}:commit` (`commitTransferGrant`)
+against the `notImplementedArtifact` stub in `internal/api/router.go`, and no
+stage before this one replaces them — S8 and S9 explicitly touched only their
+own 5 and 6 lines. **Replace the placeholder at those two lines with the real
+handlers** — do not add a second registration at the same path (chi panics on
+that). Without this, the two endpoints stay permanently 501 in production; no
+other stage catches the gap, since this package (`internal/api/v2/artifacts`,
+`package artifacts`) cannot reach `internal/api/router.go` (`package api`)
+from its own tests, so a handler-level Verify command can pass while the route
+itself is still unwired. Add a small router-level test in `internal/api/`
+(e.g. `internal/api/grant_routes_test.go`) that builds the router and asserts
+both grant paths resolve to something other than the stub — this is the only
+way to actually exercise the replacement, since `internal/api/v2/artifacts`'s
+own tests exercise the handler directly and never touch the mounted route.
+
 Add `POST /api/v2/artifacts/grants/{projectID}/{bucket}` returning a
 short-lived presigned URL bound to a server-derived key, persisted in
 `elitea_storage.transfer_grants`.
@@ -1290,9 +1383,13 @@ material. Return the facade URL, not an error.
 **Acceptance criteria:** a presigned `PUT` followed by a commit produces a
 listable object; a commit with a mismatched digest returns 409 and the object is
 deleted; a commit with a mismatched media type returns 409; an expired grant URL
-returns 403 from the provider; a second commit on the same grant returns 409.
+returns 403 from the provider; a second commit on the same grant returns 409;
+**both grant endpoints resolve through the real chi router**, not just the
+handler under test — a request to the mounted route returns something other
+than 501 with `code: NotImplemented`, matching the pattern S9 already requires
+for its own routes.
 
-**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run Grant`
+**Verify:** `cd services/elitea-main && go test ./internal/api/v2/artifacts/ -race -run Grant && go test ./internal/api/ -race -run Grant`
 
 ---
 
@@ -1366,7 +1463,8 @@ Emit an audit record for every delete and every grant issuance.
 
 ## S19 — API conformance suite
 
-**Preconditions:** S10, S11.
+**Preconditions:** S10, S11, **S15** — grant/presign coverage below needs the
+real handlers S15 wires in, not the S7 stub.
 
 `services/elitea-main/tests/contract/` and `.github/workflows/ci-contract.yml`
 already exist and run weekly. The workflow accepts a `legacy_url` input and was
@@ -1389,6 +1487,8 @@ Cover, end to end through the real router with real auth:
   result array; an empty `keys` array returns 400.
 - Every error code in the envelope enum is reachable by some request, and no
   response body is plain text.
+- Grant creation followed by a presigned upload and commit produces a listable
+  object; a commit with a mismatched digest or media type returns 409.
 - A key containing `..`, a leading `/`, or a control character returns 400 with
   `code: InvalidKey`.
 - Cross-project access returns 403.
