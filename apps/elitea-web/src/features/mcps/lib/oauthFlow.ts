@@ -98,6 +98,8 @@ function ensureAuthWindow(providedWindow: Window | null | undefined): Window {
 
 interface ClientCredentialsResolution {
   clientId: string;
+  /** The DCR-issued secret, when DCR was used and the server issued one — `undefined` on the caller-provided-`client_id` branch, where there is no DCR-issued secret at all. See `startMcpAuthFlow`'s `resolveEffectiveClientSecret` for how this combines with a caller-supplied secret. */
+  clientSecret: string | undefined;
   usedDCR: boolean;
 }
 
@@ -106,31 +108,36 @@ interface ClientCredentialsResolution {
  * Registration if the server supports it; otherwise the flow cannot
  * proceed.
  *
- * `registerDynamicClient` returns `{clientId, clientSecret}` (a sibling
- * A5 cluster's fix, `registerDynamicClient.ts`'s own header comment —
- * baseline post-`6ebe8ff7`: some servers, e.g. Aha!, issue a
- * `client_secret` alongside the `client_id` even for a `token_endpoint_
- * auth_method: none` request). Only `clientId` is used here — threading
- * the DCR-issued `clientSecret` through `exchangeAuthorizationCode`/
- * `buildTokenPersistenceMetadata` (so THIS flow also stops discarding it)
- * is that same sibling cluster's own documented "OUT-OF-SCOPE FOLLOW-UP"
- * for `oauthFlow.ts`, not one of this cluster's 3 assigned findings —
- * left unwired here deliberately, not silently.
+ * `registerDynamicClient` returns `{clientId, clientSecret}` (baseline
+ * post-`6ebe8ff7` — "fix: [EL-5697] Aha! mcp token issue": some servers,
+ * e.g. Aha!, issue a `client_secret` alongside the `client_id` even for a
+ * `token_endpoint_auth_method: none` request). That DCR-issued secret is
+ * forwarded here and combined with the caller-supplied one in
+ * `startMcpAuthFlow`'s `resolveEffectiveClientSecret` — the DCR-issued
+ * secret wins whenever DCR was used, never a caller-supplied
+ * pre-configured developer-app secret (that belongs to a different OAuth
+ * client and would itself cause "unknown client"), matching the real
+ * upstream commit's own `dcrClientSecret`/`effectiveClientSecret` split.
  */
 async function resolveClientCredentials(
   registrationEndpoint: string | undefined,
   initialClientId: string | undefined,
   projectId: string | number | undefined,
 ): Promise<ClientCredentialsResolution> {
-  if (initialClientId) return { clientId: initialClientId, usedDCR: false };
+  if (initialClientId) return { clientId: initialClientId, clientSecret: undefined, usedDCR: false };
   if (registrationEndpoint) {
     const redirectUri = getRedirectUri();
-    const { clientId } = await registerDynamicClient(registrationEndpoint, redirectUri, projectId);
-    return { clientId, usedDCR: true };
+    const { clientId, clientSecret } = await registerDynamicClient(registrationEndpoint, redirectUri, projectId);
+    return { clientId, clientSecret, usedDCR: true };
   }
   throw new Error(
     `${MCP_OAUTH_ERRORS.MISSING_CLIENT_ID}. Server does not support Dynamic Client Registration. Please register an OAuth application manually and provide client credentials.`,
   );
+}
+
+/** DCR-issued secret wins whenever DCR was used; otherwise the caller-supplied one — never merged/fall-through between the two (see `resolveClientCredentials`'s own doc comment for why). Split out purely to keep `startMcpAuthFlow`'s own cyclomatic complexity under the §3.5 budget. */
+function resolveEffectiveClientSecret(usedDCR: boolean, dcrClientSecret: string | undefined, providedClientSecret: string | undefined): string | undefined {
+  return usedDCR ? dcrClientSecret : providedClientSecret;
 }
 
 interface PkceMaterial {
@@ -319,13 +326,19 @@ export async function startMcpAuthFlow(options: StartMcpAuthFlowOptions): Promis
   const asMetadata = extractAuthServerMetadata(resourceMetadata);
   const { authorization_endpoint: authorizationEndpoint, token_endpoint: tokenEndpoint, registration_endpoint: registrationEndpoint } = asMetadata;
 
-  const { clientId, usedDCR } = await resolveClientCredentials(registrationEndpoint, initialClientId, projectId);
+  const { clientId, clientSecret: dcrClientSecret, usedDCR } = await resolveClientCredentials(registrationEndpoint, initialClientId, projectId);
+  const effectiveClientSecret = resolveEffectiveClientSecret(usedDCR, dcrClientSecret, clientSecret);
 
   const state = randomString(32);
   const nonce = randomString(32);
   const redirectUri = getRedirectUri();
   const isOIDC = isOIDCFlow(asMetadata);
 
+  // Deliberately the ORIGINAL caller-supplied `clientSecret`, not
+  // `effectiveClientSecret` — matches the real upstream commit's own
+  // behaviour (verified by reading its diff): PKCE necessity is judged
+  // against whether the CALLER configured a confidential client, not
+  // against whatever DCR happened to issue.
   const { usePKCE, codeVerifier, codeChallenge } = await resolvePkceMaterial(asMetadata, clientSecret);
   const normalizedScope = normalizeScope(scope, isOIDC);
 
@@ -350,7 +363,7 @@ export async function startMcpAuthFlow(options: StartMcpAuthFlowOptions): Promis
     code,
     redirectUri,
     clientId,
-    clientSecret,
+    clientSecret: effectiveClientSecret,
     usedDCR,
     isPrebuildMcp,
     usePKCE,
@@ -369,7 +382,7 @@ export async function startMcpAuthFlow(options: StartMcpAuthFlowOptions): Promis
     sessionId,
     tokenJson.id_token,
     tokenJson.refresh_token,
-    buildTokenPersistenceMetadata({ tokenEndpoint, clientId, clientSecret, projectId, toolkitId, providedOauthMetadata, usedDCR }),
+    buildTokenPersistenceMetadata({ tokenEndpoint, clientId, clientSecret: effectiveClientSecret, projectId, toolkitId, providedOauthMetadata, usedDCR }),
     toolkitType,
   );
 

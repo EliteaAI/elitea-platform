@@ -15,27 +15,15 @@
  * secret is echoed back. `registerDynamicClient` below now returns both
  * fields, matching that fixed baseline's `{clientId, clientSecret}` shape.
  *
- * OUT-OF-SCOPE FOLLOW-UP (this cluster owns only `lib/registerDynamicClient.ts`
- * + `api/mcpOAuthClient.ts` — NOT `lib/oauthFlow.ts`, so the change below is
- * not fully wired end-to-end yet): `oauthFlow.ts`'s `resolveClientCredentials`
- * (currently returns `{ clientId, usedDCR }`, discarding this function's
- * `clientSecret` entirely) needs to:
- *   1. add `clientSecret: string | undefined` to its `ClientCredentialsResolution`
- *      return type and forward the value returned here;
- *   2. in `startMcpAuthFlow`, use that DCR-issued secret — NOT the caller-
- *      supplied `options.clientSecret` — for `exchangeAuthorizationCode`'s
- *      `clientSecret` param and `buildTokenPersistenceMetadata`'s `clientSecret`
- *      param whenever `usedDCR` is true (never fall back to a pre-configured
- *      developer-app secret there: it belongs to a different OAuth client and
- *      will itself cause "unknown client").
- * This mirrors `mcpAuthFlow.helpers.js`'s own `dcrClientSecret`/
- * `effectiveClientSecret` split from the same upstream commit (verified by
- * reading that commit's full diff, not assumed). `oauthFlow.ts`'s
- * `resolveClientCredentials` (`oauthFlow.ts:120-134`) already compiles
- * against this shape (destructures only `clientId`, deliberately discarding
- * `clientSecret` for now — see that function's own doc comment) — the
- * remaining work is threading the secret through, not a compile break.
- * Tracked via a spawned follow-up task, not silently left unwired.
+ * `oauthFlow.ts`'s `resolveClientCredentials`/`resolveEffectiveClientSecret`
+ * now thread this DCR-issued secret through the actual token exchange and
+ * persisted-token metadata (whenever DCR was used — never falling back to a
+ * caller-supplied pre-configured developer-app secret there, since that
+ * belongs to a different OAuth client and would itself cause "unknown
+ * client"), mirroring `mcpAuthFlow.helpers.js`'s own `dcrClientSecret`/
+ * `effectiveClientSecret` split from the same upstream commit. See
+ * `oauthFlow.ts`'s own doc comments for the full detail — this is no longer
+ * a follow-up, it's wired end-to-end.
  */
 import { EliteaApiError } from '@/shared/api/generated/mutator';
 

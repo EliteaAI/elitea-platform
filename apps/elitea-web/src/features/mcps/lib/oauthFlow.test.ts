@@ -305,6 +305,110 @@ describe('startMcpAuthFlow', () => {
     expect(getTokenInfo('https://mcp-used-dcr.example.com')).toMatchObject({ used_dcr: true });
   });
 
+  it('threads a DCR-issued client_secret through the token exchange and into what gets persisted (upstream commit 6ebe8ff7, "Aha! mcp token issue")', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_dcr_proxy/9', () => HttpResponse.json({ client_id: 'dcr-issued-client', client_secret: 'dcr-issued-secret' })),
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/9', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'issued-access-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://mcp-dcr-secret.example.com',
+      projectId: 9,
+      resourceMetadata: {
+        oauth_authorization_server: {
+          authorization_endpoint: 'https://as.example.com/authorize',
+          token_endpoint: 'https://as.example.com/token',
+          registration_endpoint: 'https://as.example.com/register',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-dcr-secret' }, stateFromPopupUrl(popup));
+
+    await flowPromise;
+    expect(exchangeBody).toMatchObject({ client_id: 'dcr-issued-client', client_secret: 'dcr-issued-secret' });
+    // Persisted for a later refresh — `tokenLifecycle.ts` reads `tokenInfo.client_secret`.
+    expect(getTokenInfo('https://mcp-dcr-secret.example.com')).toMatchObject({ client_id: 'dcr-issued-client', client_secret: 'dcr-issued-secret' });
+  });
+
+  it('does not send a client_secret when DCR issues none (PKCE-only public client)', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_dcr_proxy/9', () => HttpResponse.json({ client_id: 'dcr-no-secret-client' })),
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/9', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'issued-access-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://mcp-dcr-no-secret.example.com',
+      projectId: 9,
+      resourceMetadata: {
+        oauth_authorization_server: {
+          authorization_endpoint: 'https://as.example.com/authorize',
+          token_endpoint: 'https://as.example.com/token',
+          registration_endpoint: 'https://as.example.com/register',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-dcr-no-secret' }, stateFromPopupUrl(popup));
+
+    await flowPromise;
+    expect(exchangeBody).toMatchObject({ client_id: 'dcr-no-secret-client' });
+    expect((exchangeBody as { client_secret?: unknown }).client_secret).toBeUndefined();
+  });
+
+  it('uses the caller-supplied clientSecret unchanged on the non-DCR (caller-provided client_id) path', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: unknown;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/9', async ({ request }) => {
+        exchangeBody = await request.json();
+        return HttpResponse.json({ access_token: 'issued-access-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://mcp-caller-secret.example.com',
+      projectId: 9,
+      clientId: 'caller-client',
+      clientSecret: 'caller-secret',
+      resourceMetadata: {
+        oauth_authorization_server: {
+          authorization_endpoint: 'https://as.example.com/authorize',
+          token_endpoint: 'https://as.example.com/token',
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    deliverAuthResult({ code: 'auth-code-caller-secret' }, stateFromPopupUrl(popup));
+
+    await flowPromise;
+    // No DCR endpoint was even advertised — `usedDCR` is false, so the
+    // caller-supplied secret must pass through unchanged, and `used_dcr`
+    // must NOT be sent (the backend must still be free to fall back to a
+    // DB-configured secret for this non-DCR client, per its own gate).
+    expect(exchangeBody).toMatchObject({ client_id: 'caller-client', client_secret: 'caller-secret' });
+    expect((exchangeBody as { used_dcr?: unknown }).used_dcr).toBeUndefined();
+  });
+
   it('a pre-built MCP (toolkitType) omits its client_id/secret from the exchange UNLESS DCR was used', async () => {
     configureGeneratedClient({ baseUrl: '/api/v2' });
     const { popup } = stubPopup();
