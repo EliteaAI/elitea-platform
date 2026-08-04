@@ -292,6 +292,17 @@ describe('ConfigurationTab', () => {
     expect(() => settings.onRcvAgentEvent({ type: 'x' })).not.toThrow();
   });
 
+  it('derives EditorPanel\'s versionTools/llmSettings from versionDetails.tools/llm_settings without crashing (see flowEditorVersionInputs.helpers.test.ts for the mapping\'s own field-level coverage — EditorPanel\'s lazy FlowWrapper/FlowEditor chain has a real, unrelated broken transitive dependency, so a value-level assertion that these two reach FlowEditor itself is not possible from this composition-root-level test)', async () => {
+    renderConfigurationTab({
+      versionDetails: {
+        id: 5,
+        tools: [{ id: 't1', type: 'toolkit', toolkit_name: 'GitHub' }],
+        llm_settings: { model_name: 'gpt-4o', temperature: 0.8, max_tokens: 2048 },
+      },
+    });
+    expect(await screen.findByTestId('chat-slot')).toBeInTheDocument();
+  });
+
   it('wires usePipelineMCPToolsStatusMonitor: an mcp_status socket event for the version\'s MCP tool writes the updated tools array via setFieldValue', async () => {
     const setFieldValue = vi.fn();
     const mcpTool = { id: 'mcp-1', type: 'mcp', meta: { mcp: true } };

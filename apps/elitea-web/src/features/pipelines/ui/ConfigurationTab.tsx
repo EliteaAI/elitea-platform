@@ -19,6 +19,8 @@ import type {
 import { usePipelineMCPToolsStatusMonitor } from '../lib/hooks/usePipelineMCPToolsStatusMonitor';
 import type { PipelineMcpToolLike } from '../lib/hooks/usePipelineMCPToolsStatusMonitor';
 import { useSelectedProjectId } from '../lib/flow-editor/hooks/useSelectedProjectId';
+import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from '../lib/flowEditorVersionInputs.helpers';
+import { useFlowEditorVersionInputs } from '../lib/hooks/useFlowEditorVersionInputs';
 import { ChatPanel } from './ChatPanel';
 import type { ChatPanelHandle, ChatPanelProps } from './ChatPanel';
 import { EditorPanel } from './EditorPanel';
@@ -27,11 +29,8 @@ import { GeneralFormPanel } from './GeneralFormPanel';
 import type { GeneralFormPanelProps } from './GeneralFormPanel';
 
 // Baseline `@/[fsd]/shared/lib/constants/llmSettings.constants.js` — not ported to `shared/lib/`
-// in this worktree (verified: `grep -rn DEFAULT_MAX_TOKENS src/shared` — zero hits), duplicated
-// locally per this mission's established precedent for a genuinely-needed, not-yet-landed
-// shared dependency (see `dumpYaml.helpers.ts`'s own doc comment for the identical situation).
-const DEFAULT_MAX_TOKENS = -1;
-const DEFAULT_TEMPERATURE = 0.6;
+// in this worktree (verified: `grep -rn DEFAULT_MAX_TOKENS src/shared` — zero hits).
+// `DEFAULT_MAX_TOKENS`/`DEFAULT_TEMPERATURE` now live in `../lib/flowEditorVersionInputs.helpers.ts`.
 const DEFAULT_REASONING_EFFORT = 'medium';
 
 const EMPTY_ARRAY: readonly never[] = [];
@@ -269,6 +268,9 @@ export function ConfigurationTab(props: ConfigurationTabProps): ReactNode {
     deleteAllRunNodes: handleDeleteAllRunNodes,
   });
 
+  // `FlowWrapper.tsx`'s own module doc comment names this component as the real, missing source.
+  const { versionTools, llmSettings: flowEditorLlmSettings } = useFlowEditorVersionInputs(versionDetails);
+
   const handleCollapsedGeneralPane = useCallback((collapsed: boolean) => {
     setIsGeneralPaneCollapsed(collapsed);
     setTimeout(() => editorPanelRef.current?.fitView(), 0);
@@ -337,6 +339,8 @@ export function ConfigurationTab(props: ConfigurationTabProps): ReactNode {
           setYamlDirty={setYamlDirty}
           stopRun={() => chatPanelRef.current?.stopRun()}
           sx={styles.editorPanel}
+          versionTools={versionTools}
+          llmSettings={flowEditorLlmSettings}
         />
         <ChatPanel
           ref={chatPanelRef}

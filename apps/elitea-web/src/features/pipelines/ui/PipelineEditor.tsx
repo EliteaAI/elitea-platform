@@ -373,6 +373,7 @@ const PipelineEditorInner = (
       onAttachmentToolChange={handleAttachmentToolChange}
       editorPanelRef={editorPanelRef}
       deps={deps}
+      versionDetails={versionDetails}
     />
   );
 

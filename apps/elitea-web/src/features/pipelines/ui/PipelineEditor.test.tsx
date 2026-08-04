@@ -1,6 +1,7 @@
 import { createRef } from 'react';
 
-import { act, waitFor } from '@testing-library/react';
+import { act, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -190,4 +191,37 @@ describe('PipelineEditor', () => {
 
     await waitFor(() => expect(capturedError).toBeDefined());
   });
+
+  it('edit mode: threads the fetched versionDetail\'s tools/llm_settings down to PipelineEditorBody\'s EditorPanel (versionTools/llmSettings) without crashing when switching to the Flow editor tab -- see flowEditorVersionInputs.helpers.test.ts for the wire->prop mapping\'s own field-level coverage; EditorPanel\'s lazy FlowWrapper/FlowEditor chain has a real, unrelated broken transitive dependency (see EditorPanel.test.tsx\'s own doc comment), so a value-level assertion that these two reach FlowEditor itself is not possible from this composition-root-level test', async () => {
+    server.use(
+      http.get('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', () =>
+        HttpResponse.json({
+          id: '7',
+          application_id: '42',
+          name: 'v1',
+          status: 'draft',
+          tools: [{ id: 1, type: 'toolkit', name: 'search' }],
+          llm_settings: { model_name: 'gpt-4o', temperature: 0.8, max_tokens: 2048 },
+        }),
+      ),
+    );
+    const deps = buildDeps();
+    const user = userEvent.setup();
+
+    const { findByTestId } = renderWithRouterAndProject(
+      <PipelineEditor
+        pipeline={{ id: 42, entity_meta: { id: 42 }, entity_settings: { version_id: 7 } }}
+        isVisible
+        isCreateMode={false}
+        deps={deps}
+      />,
+      'proj1',
+    );
+
+    const formContent = await findByTestId('shell-form-content');
+    await user.click(within(formContent).getByRole('tab', { name: 'Flow editor' }));
+
+    const bodyContent = await findByTestId('shell-children');
+    expect(await within(bodyContent).findByText('Failed to load the flow editor', {}, { timeout: 5000 })).toBeInTheDocument();
+  }, 10000);
 });
