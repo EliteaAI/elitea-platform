@@ -11,6 +11,10 @@ import Typography from '@mui/material/Typography';
 
 import { SingleSelect } from '@/shared/ui/SingleSelect';
 import { t } from '@/shared/ui/lib/t';
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
+import type { Permission } from '@/shared/api/generated/model';
+import { PERMISSIONS } from '@/shared/lib/permissions';
+import { useConfigurationNavigation } from '@/features/settings/lib/ai-configuration/useConfigurationNavigation';
 
 import ConfigurationCard from './ConfigurationCard';
 
@@ -28,6 +32,10 @@ export interface AdditionalDefaultSetting {
 export interface ConfigurationSectionProps {
   title: string;
   configurations: readonly Record<string, unknown>[];
+  /** Currently-selected project id — gates edit permission
+   * (`PERMISSIONS.configuration.update`) and drives click-to-edit
+   * navigation, same as the old app's `useSelectedProjectId()` read. */
+  projectId: string;
   isLoading?: boolean;
   hasDefaultSetting?: boolean;
   defaultSettingLabel?: React.ReactNode;
@@ -97,18 +105,51 @@ function groupConfigurationsByProvider(
 }
 
 /**
+ * Local per-user edit-permission check — mirrors the old app's
+ * `useCheckPermission().checkPermission(PERMISSIONS.configuration.update)`
+ * (`ConfigurationSection.jsx:64-65`), reimplemented against this app's
+ * `usePermissionList(projectId, ...)` query the same way
+ * `features/pipelines/lib/useHasPermission.ts` / `features/agents/lib/
+ * useHasPermission.ts` / `features/chat-conversation-list/lib/
+ * useHasPermission.ts` already do for their own features. Kept local
+ * (not imported from a sibling feature) — `no-sideways-features` forbids
+ * `features/settings` reaching into another feature's internals.
+ */
+function useCanEditConfiguration(projectId: string): boolean {
+  const query = usePermissionList(projectId, { query: { enabled: !!projectId } });
+
+  const permissions = useMemo(() => {
+    const list = query.data?.data as Permission[] | undefined;
+    if (!list) return new Set<string>();
+    return new Set(list.filter((entry) => entry.enabled).map((entry) => entry.name));
+  }, [query.data]);
+
+  return permissions.has(PERMISSIONS.configuration.update);
+}
+
+/**
  * Renders ConfigurationCards for the given array of configurations.
  * Extracted to keep ConfigurationSection below the complexity budget.
  */
 function ConfigCards({
   configurations,
+  projectId,
+  canEdit,
   defaultSettingValue,
   styles,
 }: {
   configurations: readonly Record<string, unknown>[];
+  projectId: string;
+  canEdit: boolean;
   defaultSettingValue: string;
   styles: ReturnType<typeof getStyles>;
 }) {
+  // Old app: `ConfigurationCard.jsx`'s `handleCardClick` calls
+  // `navigateToConfiguration(configuration.id, locationState)` on click,
+  // routing into the configuration's edit view. Wired here (not passed
+  // down as a prop) since the hook must be called from a component body.
+  const { navigateToConfiguration } = useConfigurationNavigation();
+
   return (
     <Box sx={styles.configurationsContainer}>
       {configurations.map((configuration, index) => {
@@ -118,8 +159,10 @@ function ConfigCards({
           <ConfigurationCard
             key={`${(cfg.id as string) || (cfg.name as string)}-${index}`}
             configuration={configuration}
-            canEdit={true}
+            projectId={projectId}
+            canEdit={canEdit}
             isDefault={defaultSettingValue === `${(d?.name as string) ?? ''}<<>>${(cfg.project_id as string) ?? ''}`}
+            onClick={navigateToConfiguration}
           />
         );
       })}
@@ -130,6 +173,7 @@ function ConfigCards({
 export default memo(function ConfigurationSection({
   title,
   configurations,
+  projectId,
   isLoading,
   hasDefaultSetting,
   defaultSettingLabel,
@@ -141,6 +185,7 @@ export default memo(function ConfigurationSection({
 }: ConfigurationSectionProps) {
   const theme = useTheme();
   const styles = getStyles(theme);
+  const canEdit = useCanEditConfiguration(projectId);
 
   const groupedConfigurations = useMemo(() => {
     if (!groupTheModelsByProvider || !configurations?.length) return null;
@@ -167,61 +212,77 @@ export default memo(function ConfigurationSection({
     <ConfigurationSectionBody
       title={title}
       styles={styles}
-      hasDefaultSetting={hasDefaultSetting}
-      defaultSettingValue={defaultSettingValue}
-      defaultSettingLabel={defaultSettingLabel}
-      defaultSettingOptions={defaultSettingOptions}
-      onChangeDefaultSetting={onChangeDefaultSetting}
-      additionalDefaultSettings={additionalDefaultSettings}
-      groupTheModelsByProvider={groupTheModelsByProvider}
-      groupedConfigurations={groupedConfigurations}
-      sortedConfigurations={sortedConfigurations}
+      projectId={projectId}
+      canEdit={canEdit}
+      defaultSetting={{
+        has: hasDefaultSetting,
+        value: defaultSettingValue,
+        label: defaultSettingLabel,
+        options: defaultSettingOptions,
+        onChange: onChangeDefaultSetting,
+        additional: additionalDefaultSettings,
+      }}
+      grouping={{
+        byProvider: groupTheModelsByProvider,
+        grouped: groupedConfigurations,
+        sorted: sortedConfigurations,
+      }}
     />
   );
 });
 
+interface ConfigurationSectionDefaultSetting {
+  has?: boolean;
+  value: string;
+  label?: React.ReactNode;
+  options?: Array<{ value: string; label: string }>;
+  onChange?: (value: string) => void;
+  additional?: AdditionalDefaultSetting[];
+}
+
+interface ConfigurationSectionGrouping {
+  byProvider?: boolean;
+  grouped?: Record<string, Record<string, unknown>[]> | null;
+  sorted?: readonly Record<string, unknown>[];
+}
+
 function ConfigurationSectionBody({
-  title, styles, hasDefaultSetting, defaultSettingValue,
-  defaultSettingLabel, defaultSettingOptions, onChangeDefaultSetting,
-  additionalDefaultSettings, groupTheModelsByProvider,
-  groupedConfigurations, sortedConfigurations,
+  title, styles, projectId, canEdit, defaultSetting, grouping,
 }: {
   title: string;
   styles: ReturnType<typeof getStyles>;
-  hasDefaultSetting?: boolean;
-  defaultSettingValue: string;
-  defaultSettingLabel?: React.ReactNode;
-  defaultSettingOptions?: Array<{ value: string; label: string }>;
-  onChangeDefaultSetting?: (value: string) => void;
-  additionalDefaultSettings?: AdditionalDefaultSetting[];
-  groupTheModelsByProvider?: boolean;
-  groupedConfigurations?: Record<string, Record<string, unknown>[]> | null;
-  sortedConfigurations?: readonly Record<string, unknown>[];
+  projectId: string;
+  canEdit: boolean;
+  defaultSetting: ConfigurationSectionDefaultSetting;
+  grouping: ConfigurationSectionGrouping;
 }) {
   return (
     <Box sx={styles.container}>
       <Typography variant="headingSmall" sx={styles.title}>{title}</Typography>
 
-      {hasDefaultSetting && (
+      {defaultSetting.has && (
         <DefaultSettingsSelects
-          defaultSettingValue={defaultSettingValue}
-          defaultSettingLabel={defaultSettingLabel}
-          defaultSettingOptions={defaultSettingOptions}
-          onChangeDefaultSetting={onChangeDefaultSetting}
-          additionalDefaultSettings={additionalDefaultSettings}
+          canEdit={canEdit}
+          defaultSettingValue={defaultSetting.value}
+          defaultSettingLabel={defaultSetting.label}
+          defaultSettingOptions={defaultSetting.options}
+          onChangeDefaultSetting={defaultSetting.onChange}
+          additionalDefaultSettings={defaultSetting.additional}
         />
       )}
 
-      {groupTheModelsByProvider && groupedConfigurations ? (
+      {grouping.byProvider && grouping.grouped ? (
         GROUP_ORDER.map((groupLabel) => {
-          const groupConfigs = groupedConfigurations[groupLabel] ?? [];
+          const groupConfigs = grouping.grouped?.[groupLabel] ?? [];
           if (groupConfigs.length === 0) return null;
           return (
             <Box key={groupLabel} sx={styles.groupContainer}>
               <Typography variant="subtitle" color="text.primary">{groupLabel}</Typography>
               <ConfigCards
                 configurations={groupConfigs}
-                defaultSettingValue={defaultSettingValue}
+                projectId={projectId}
+                canEdit={canEdit}
+                defaultSettingValue={defaultSetting.value}
                 styles={styles}
               />
             </Box>
@@ -229,8 +290,10 @@ function ConfigurationSectionBody({
         })
       ) : (
         <ConfigCards
-          configurations={sortedConfigurations ?? []}
-          defaultSettingValue={defaultSettingValue}
+          configurations={grouping.sorted ?? []}
+          projectId={projectId}
+          canEdit={canEdit}
+          defaultSettingValue={defaultSetting.value}
           styles={styles}
         />
       )}
@@ -239,9 +302,10 @@ function ConfigurationSectionBody({
 }
 
 function DefaultSettingsSelects({
-  defaultSettingValue, defaultSettingLabel, defaultSettingOptions,
+  canEdit, defaultSettingValue, defaultSettingLabel, defaultSettingOptions,
   onChangeDefaultSetting, additionalDefaultSettings,
 }: {
+  canEdit: boolean;
   defaultSettingValue: string;
   defaultSettingLabel?: React.ReactNode;
   defaultSettingOptions?: Array<{ value: string; label: string }>;
@@ -255,7 +319,7 @@ function DefaultSettingsSelects({
         value={defaultSettingValue}
         onChange={onChangeDefaultSetting || (() => {})}
         options={defaultSettingOptions ?? []}
-        disabled={false}
+        disabled={!canEdit}
       />
       {additionalDefaultSettings
         ?.filter((s): s is NonNullable<typeof s> => Boolean(s))
@@ -266,7 +330,7 @@ function DefaultSettingsSelects({
             value={setting.value ?? ''}
             onChange={setting.onChange ?? (() => {})}
             options={setting.options ?? []}
-            disabled={false}
+            disabled={!canEdit}
           />
         ))}
     </Box>

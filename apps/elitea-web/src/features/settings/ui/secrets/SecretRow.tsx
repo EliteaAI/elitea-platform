@@ -3,8 +3,14 @@
  *
  * Handles edit mode inline editing (via `EditSecretInputGridTable`) and
  * view-mode cells (value visibility toggle + actions menu).
+ *
+ * The DataGrid calls `renderCell` once per column/row pair — this
+ * component is wired to ALL THREE columns (`name` / `secretValue` /
+ * `actions`, see `SecretsTable.tsx`'s `columnsWithCell`) and renders only
+ * the slice of content matching `params.field`, so each column gets its
+ * own cell content instead of everything being crammed into one column.
  */
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
@@ -20,7 +26,7 @@ import type { GridRenderCellParams } from '@mui/x-data-grid';
 import { GridRowModes } from '@mui/x-data-grid';
 
 import type { SecretRow } from '@/entities/secret';
-import { t } from '@/shared/ui/lib/t';
+import { t } from '@/shared/i18n';
 import { EditSecretInputGridTable } from './EditSecretInputGridTable';
 import { SecretValueCell } from './SecretValueCell';
 import { tableStyles } from './SecretsTable.styles';
@@ -33,6 +39,8 @@ export interface SecretRowProps {
   rowModesModel: Record<string, { mode: string; fieldToFocus?: string; ignoreModifications?: boolean }>;
   validationErrors: Record<string, boolean>;
   isShowSecretMap: Record<string, boolean>;
+  /** Whether the current user may reveal/hide plaintext values (`PERMISSIONS.secrets.unsecret`). */
+  canUnsecret: boolean;
   setRows: React.Dispatch<React.SetStateAction<SecretRow[]>>;
   setRowModesModel: React.Dispatch<React.SetStateAction<Record<string, { mode: string; fieldToFocus?: string; ignoreModifications?: boolean }>>>;
   onValidationChange: (rowId: string, field: string, hasError: boolean) => void;
@@ -41,7 +49,8 @@ export interface SecretRowProps {
     onCancel: (rowId: string) => () => void;
     onShowSecret: (rowId: string) => () => Promise<void>;
     onHideSecret: (rowId: string) => void;
-    onCopyVisible: (rowId: string) => () => Promise<void>;
+    onCopySecretValue: (rowId: string) => () => Promise<void>;
+    onActionsMenuClick: (rowId: string) => (event: React.MouseEvent) => void;
   };
 }
 
@@ -53,6 +62,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
   rowModesModel,
   validationErrors,
   isShowSecretMap,
+  canUnsecret,
   setRows,
   setRowModesModel,
   onValidationChange,
@@ -62,6 +72,8 @@ export const SecretRowComponent = memo(function SecretRowComponent({
   const isEditing = rowModesModel[row.id]?.mode === GridRowModes.Edit;
   const hasValidationErrors = validationErrors[`${row.id}-name`] || validationErrors[`${row.id}-secretValue`];
   const isVisible = !!isShowSecretMap[row.id];
+  /** Bundled so the cell-render callbacks below stay within the §3.5 hook-deps budget — these two state setters are always used as a pair. */
+  const rowMutators = useMemo(() => ({ setRows, setRowModesModel }), [setRows, setRowModesModel]);
 
   /* ── name cell ─────────────────────────────────────────────────────── */
 
@@ -74,17 +86,17 @@ export const SecretRowComponent = memo(function SecretRowComponent({
           value={String(params.value)}
           row={row}
           onChange={(editId, _field, newValue) => {
-            setRows((prev) => prev.map((r) => (r.id === editId ? { ...r, name: newValue } : r)));
+            rowMutators.setRows((prev) => prev.map((r) => (r.id === editId ? { ...r, name: newValue } : r)));
           }}
           onExitEditMode={(editId) => {
-            setRowModesModel((prev) => ({ ...prev, [editId]: { mode: GridRowModes.View } }));
+            rowMutators.setRowModesModel((prev) => ({ ...prev, [editId]: { mode: GridRowModes.View } }));
           }}
           onValidationChange={onValidationChange}
         />
       );
     }
     return valueViewCell(params);
-  }, [isEditing, row, setRows, setRowModesModel, onValidationChange, params]);
+  }, [isEditing, row, rowMutators, onValidationChange, params]);
 
   /* ── value cell ────────────────────────────────────────────────────── */
 
@@ -98,10 +110,10 @@ export const SecretRowComponent = memo(function SecretRowComponent({
           value={String(params.value)}
           row={row}
           onChange={(editId, _field, newValue) => {
-            setRows((prev) => prev.map((r) => (r.id === editId ? { ...r, secretValue: newValue } : r)));
+            rowMutators.setRows((prev) => prev.map((r) => (r.id === editId ? { ...r, secretValue: newValue } : r)));
           }}
           onExitEditMode={(editId) => {
-            setRowModesModel((prev) => ({ ...prev, [editId]: { mode: GridRowModes.View } }));
+            rowMutators.setRowModesModel((prev) => ({ ...prev, [editId]: { mode: GridRowModes.View } }));
           }}
           onValidationChange={onValidationChange}
         />
@@ -112,8 +124,9 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         label={row.secretName}
         value={row.secretValue}
         isVisible={isVisible}
+        canToggleVisibility={canUnsecret}
         onCopy={async () => {
-          await actions.onCopyVisible(row.id)();
+          await actions.onCopySecretValue(row.id)();
         }}
         onToggleVisibility={() => {
           if (isVisible) {
@@ -124,7 +137,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         }}
       />
     );
-  }, [isEditing, row, params.value, onValidationChange, actions, isVisible, setRows, setRowModesModel]);
+  }, [isEditing, row, params.value, onValidationChange, actions, isVisible, canUnsecret, rowMutators]);
 
   /* ── actions cell ──────────────────────────────────────────────────── */
 
@@ -157,7 +170,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
 
     return (
       <Box sx={styles.actionsContainer}>
-        {!row.isNew && (
+        {!row.isNew && canUnsecret && (
           <IconButton
             size="small"
             color="tertiary"
@@ -180,6 +193,7 @@ export const SecretRowComponent = memo(function SecretRowComponent({
           color="tertiary"
           onClick={(e) => {
             e.stopPropagation();
+            actions.onActionsMenuClick(row.id)(e);
           }}
           sx={styles.actionButton}
           aria-label={t('entities.secret.actions.moreActions', 'More actions')}
@@ -188,15 +202,20 @@ export const SecretRowComponent = memo(function SecretRowComponent({
         </IconButton>
       </Box>
     );
-  }, [isEditing, row, hasValidationErrors, styles, actions, isVisible]);
+  }, [isEditing, row, hasValidationErrors, styles, actions, isVisible, canUnsecret]);
 
-  return (
-    <>
-      {renderNameCell()}
-      {renderValueCell()}
-      {renderActionsCell()}
-    </>
-  );
+  /* ── field-scoped render ──────────────────────────────────────────── */
+
+  switch (params.field) {
+    case 'name':
+      return <>{renderNameCell()}</>;
+    case 'secretValue':
+      return <>{renderValueCell()}</>;
+    case 'actions':
+      return <>{renderActionsCell()}</>;
+    default:
+      return null;
+  }
 });
 
 /* ── static cell renderers ─────────────────────────────────────────────── */

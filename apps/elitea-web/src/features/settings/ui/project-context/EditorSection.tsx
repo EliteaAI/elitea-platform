@@ -9,6 +9,8 @@ import { Markdown } from '@/shared/ui/Markdown';
 import { GenerateProjectContextButton } from './GenerateProjectContextButton';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
 import { BaseTab } from '@/shared/ui/BaseTab';
+import { BaseBtn } from '@/shared/ui/BaseBtn';
+import { ImportIcon } from '@/shared/ui/icons/import-icon';
 import { t } from '@/shared/i18n';
 import { projectContextStyles } from './ProjectContext.styles';
 import { memo, useMemo } from 'react';
@@ -28,6 +30,7 @@ export interface EditorSectionProps {
   onFocus: () => void;
   onBlur: (e: React.FocusEvent) => void;
   onAIGenerated: (generatedContent: string) => void;
+  onImportClick: () => void;
 }
 
 export const EditorSection = memo(function EditorSection({
@@ -42,6 +45,7 @@ export const EditorSection = memo(function EditorSection({
   onFocus,
   onBlur,
   onAIGenerated,
+  onImportClick,
 }: EditorSectionProps) {
   const s = projectContextStyles.editor();
   const limitReached = content.length >= MAX_CHARS;
@@ -71,6 +75,14 @@ export const EditorSection = memo(function EditorSection({
               projectId={projectId}
               existingContent={content}
               onApply={onAIGenerated}
+            />
+            <BaseBtn
+              variant="secondary"
+              size="small"
+              startIcon={<ImportIcon />}
+              onClick={onImportClick}
+              title={t('entities.projectContext.content.importTitle', 'Import markdown file')}
+              aria-label={t('entities.projectContext.content.importTitle', 'Import markdown file')}
             />
             <BaseTabs value={mode} onChange={onModeChange}>
               {modeButtons.map((btn) => (

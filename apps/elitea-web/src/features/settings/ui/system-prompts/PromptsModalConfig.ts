@@ -16,6 +16,7 @@ export interface PromptsModalConfig {
   isBusy: boolean;
   hasDefault: boolean;
   hasChanges: boolean;
+  readOnly: boolean;
   onDiscard: () => void;
   onSave: () => void;
   onRestore: () => void;

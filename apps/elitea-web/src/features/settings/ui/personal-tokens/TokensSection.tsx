@@ -8,6 +8,9 @@
  *  - No Redux (no sidebar state)
  *  - No tour IDs
  *  - Passes search prop to TokensTable for filtering (data is fetched there)
+ *  - No `projectId` prop: personal tokens are not project-scoped
+ *    (`/auth/token/` takes no project param) — `TokensTable` resolves the
+ *    user's `personal_project_id` itself (Warning #11)
  */
 import { memo } from 'react';
 
@@ -18,8 +21,6 @@ import { TokensTable } from './TokensTable';
 import type { PersonalAccessToken } from '@/entities/token';
 
 export interface TokensSectionProps {
-  /** Currently-selected project id — threaded down from the route. */
-  projectId: string;
   /** Search query to filter token names. */
   search: string;
   /** Whether to show the "preview settings" button. */
@@ -29,7 +30,6 @@ export interface TokensSectionProps {
 }
 
 export const TokensSection = memo(function TokensSection({
-  projectId,
   search,
   showPreview = false,
   onPreviewToken,
@@ -40,7 +40,6 @@ export const TokensSection = memo(function TokensSection({
     <Box sx={styles.container}>
       <Box sx={styles.tableWrapper}>
         <TokensTable
-          projectId={projectId}
           search={search}
           showPreview={showPreview}
           {...(onPreviewToken ? { onPreviewToken } : {})}

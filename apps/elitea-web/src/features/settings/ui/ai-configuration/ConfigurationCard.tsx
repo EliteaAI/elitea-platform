@@ -73,24 +73,34 @@ ProviderIcon.displayName = 'ProviderIcon';
 
 export interface ConfigurationCardProps {
   configuration: Record<string, unknown>;
+  /** Currently-selected project id — compared against the configuration's
+   * own `project_id` by `isConfigurationEditable` (old app: `useSelectedProjectId()`
+   * read inside `ConfigurationCard.jsx`, not the configuration's own id). */
+  projectId: string;
   canEdit: boolean;
   isDefault: boolean;
   onClick?: (configurationId: string) => void;
 }
 
 export default memo(
-  ({ configuration, canEdit, isDefault, onClick }: ConfigurationCardProps) => {
+  ({ configuration, projectId, canEdit, isDefault, onClick }: ConfigurationCardProps) => {
     const theme = useTheme();
     const styles = getStyles(theme);
     const configData = (configuration.data ?? {}) as Record<string, unknown>;
     const isShared = configuration.shared === true;
 
     const disabled = useMemo(() => {
-      return !isConfigurationEditable(configuration, configuration.project_id as string, canEdit);
-    }, [canEdit, configuration]);
+      return !isConfigurationEditable(configuration, projectId, canEdit);
+    }, [canEdit, configuration, projectId]);
 
     const displayName = useMemo(() => getConfigurationDisplayName(configuration), [configuration]);
-    const statusText = useMemo(() => getConfigurationStatus(configuration.default === true || false, isShared), [configuration, isShared]);
+    // Old app: `getConfigurationStatus(configuration, isShared)` — the whole
+    // (always-truthy) configuration object was passed as `statusOk`, so the
+    // status text is always "OK" • never "In Progress" — regardless of
+    // whether the configuration is the project default. Replicated literally
+    // (not tied to `configuration.default`, which is an unrelated field —
+    // the "Default" badge below already covers that via `isDefault`).
+    const statusText = useMemo(() => getConfigurationStatus(true, isShared), [isShared]);
 
     const handleCardClick = useCallback(() => {
       if (!disabled) {

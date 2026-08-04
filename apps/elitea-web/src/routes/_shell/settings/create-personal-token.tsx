@@ -18,9 +18,16 @@
  *  - Uses `DrawerPageHeader` from shared UI
  *  - Uses `GeneratedTokenDialog` from shared UI
  *  - Uses RTK Query hooks from `entities/token/api/tokenApi`
+ *  - `MAX_TOKEN_NAME_LENGTH` is a LOCAL override (768), not the constant of
+ *    the same name `@/entities/token/model/constants` exports (64) — that
+ *    file is outside this cluster's file scope. old-app parity is
+ *    `MAX_VARIABLES_LENGTH` (apps/elitea-ui/src/common/constants.js:69 = 768);
+ *    the entities constant needs its own follow-up fix for a single source
+ *    of truth.
  */
 import { useCallback, useMemo, useState } from 'react';
 
+import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, useWatch } from 'react-hook-form';
 import * as z from 'zod';
 
@@ -35,9 +42,10 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
+import { DiscardButton } from '@/shared/ui/DiscardButton';
 import { GeneratedTokenDialog } from '@/features/settings/ui/personal-tokens/GeneratedTokenDialog';
-import { t } from '@/shared/ui/lib/t';
-import { TOKEN_NAME_PATTERN, MAX_TOKEN_NAME_LENGTH, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
+import { t } from '@/shared/i18n';
+import { TOKEN_NAME_PATTERN, TOKEN_EXPIRATION_OPTIONS, DEFAULT_TOKEN_EXPIRATION_VALUE } from '@/entities/token/model/constants';
 import { useCreateTokenMutation, useListTokensQuery } from '@/entities/token/api/tokenApi';
 import { useTheme } from '@mui/material/styles';
 
@@ -46,6 +54,9 @@ export const Route = createFileRoute('/_shell/settings/create-personal-token')({
   errorComponent: RouteError,
   component: CreatePersonalTokenPage,
 });
+
+/** old-app parity: `MAX_VARIABLES_LENGTH` — see file-header deviation note. */
+const MAX_TOKEN_NAME_LENGTH = 768;
 
 /* ── zod validation schema ─────────────────────────────────────────────── */
 
@@ -77,8 +88,9 @@ export function CreatePersonalTokenPage() {
   useListTokensQuery({ enabled: false });
   const theme = useTheme();
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const form = useForm<FormValues>({
+    resolver: zodResolver(validationSchema),
+    mode: 'onChange',
     defaultValues: {
       name: '',
       measure: 'days',
@@ -157,14 +169,15 @@ export function CreatePersonalTokenPage() {
                   />
                 )}
               </Button>
-              <Button
-                variant="outlined"
-                color="secondary"
+              <DiscardButton
                 disabled={isGenerating || !hasChanged}
-                onClick={onCancel}
-              >
-                {t('entities.token.form.discard', 'Discard')}
-              </Button>
+                onDiscard={onCancel}
+                title={t('entities.token.form.discard', 'Discard')}
+                alertContent={t(
+                  'entities.token.form.discardConfirm',
+                  'There are unsaved changes. Are you sure you want to discard them?',
+                )}
+              />
             </Box>
           }
         />

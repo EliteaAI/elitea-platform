@@ -6,7 +6,7 @@ import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import type { SxProps, Theme } from '@mui/material/styles';
 import type { ReactNode } from 'react';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import CloseIcon from '@mui/icons-material/Close';
 
@@ -28,19 +28,23 @@ export function UserIconItem({
   children,
 }: UserIconItemProps) {
 
+  const [openAlert, setOpenAlert] = useState(false);
+
   const handleDeleteClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
+      setOpenAlert(true);
     },
     [],
   );
 
   const handleConfirm = useCallback(() => {
     void onDelete?.();
+    setOpenAlert(false);
   }, [onDelete]);
 
   const handleClose = useCallback(() => {
-    // no-op — modal closes via onConfirm or the dialog's built-in escape
+    setOpenAlert(false);
   }, []);
 
   return (
@@ -69,7 +73,7 @@ export function UserIconItem({
         )}
       </Box>
       <BaseModal
-        open={!!onDelete}
+        open={openAlert}
         onClose={handleClose}
         onConfirm={handleConfirm}
         title={t('entities.projectContext.userIconItem.confirmDeleteTitle', 'Warning')}

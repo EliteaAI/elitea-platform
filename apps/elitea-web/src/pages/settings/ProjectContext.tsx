@@ -34,6 +34,8 @@ import {
 import {
   useUpdateProjectInfoMutation,
 } from '@/entities/project';
+import { PERMISSIONS } from '@/shared/lib/permissions';
+import { usePermissionSet } from '@/widgets/sidebar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const { DrawerPage } = drawerPage;
@@ -56,7 +58,9 @@ function deriveShowFlags(canEdit: boolean, enabled: boolean, content: string): P
   return {
     showReadOnlyBanner: !canEdit,
     showDisabledBanner: !enabled && Boolean(content.trim()),
-    showEditorContent: enabled || Boolean(content.trim()),
+    // `|| !canEdit`: a view-only user always sees the (possibly empty,
+    // read-only) editor section — old-app parity, ProjectContextContent.jsx:57.
+    showEditorContent: enabled || Boolean(content.trim()) || !canEdit,
     showEditorControls: enabled && canEdit,
   };
 }
@@ -66,9 +70,17 @@ function deriveShowFlags(canEdit: boolean, enabled: boolean, content: string): P
 export interface ProjectContextProps {
   projectId: string;
   projectName: string;
-  /** Whether the user has `view` permission for project context. */
+  /**
+   * Whether the user has `view` permission for project context. Overrides
+   * the real permission check below when explicitly supplied (e.g. tests);
+   * omit to compute it from `PERMISSIONS.projectContext.view`.
+   */
   canView?: boolean;
-  /** Whether the user has `edit` permission for project context. */
+  /**
+   * Whether the user has `edit` permission for project context. Overrides
+   * the real permission check below when explicitly supplied (e.g. tests);
+   * omit to compute it from `PERMISSIONS.projectContext.edit`.
+   */
   canEdit?: boolean;
 }
 
@@ -77,13 +89,19 @@ export interface ProjectContextProps {
 export function ProjectContext({
   projectId,
   projectName,
-  canView = true,
-  canEdit = true,
+  canView: canViewProp,
+  canEdit: canEditProp,
 }: ProjectContextProps) {
   /* ── hooks (must come before any early return) ───────────────────── */
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
+
+  /* ── permissions (spec §9.3): real check, not a default-true prop ── */
+
+  const permissionSet = usePermissionSet(projectId);
+  const canView = canViewProp ?? permissionSet.has(PERMISSIONS.projectContext.view);
+  const canEdit = canEditProp ?? permissionSet.has(PERMISSIONS.projectContext.edit);
 
   /* ── project context query ──────────────────────────────────────── */
 
@@ -196,6 +214,10 @@ export function ProjectContext({
     }
   }, []);
 
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
   const handleIconChange = useCallback(async (iconName: string | null) => {
     try {
       await updateProjectInfoMutation.mutateAsync(iconName ? { name: iconName } : null);
@@ -247,7 +269,7 @@ export function ProjectContext({
         pageState={{ enabled, showReadOnlyBanner, showDisabledBanner, showEditorContent, content, mode }}
         editorState={{ isEditorFocused, showEditorControls, canEdit, isDirty, isSaving }}
         contentActions={{ handleToggle, handleContentChange, handleModeChange, handleAIGenerated }}
-        editorActions={{ handleEditorBlur, onFocus: () => setIsEditorFocused(true) }}
+        editorActions={{ handleEditorBlur, onFocus: () => setIsEditorFocused(true), onImportClick: handleImportClick }}
         saveActions={{ handleIconChange, handleSave, handleDiscard }}
       />
       <input

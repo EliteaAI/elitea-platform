@@ -57,6 +57,7 @@ interface ContentActions {
 interface EditorActions {
   handleEditorBlur: (e: React.FocusEvent) => void;
   onFocus: () => void;
+  onImportClick: () => void;
 }
 
 interface SaveActions {
@@ -104,6 +105,7 @@ export function ProjectContextBody({
           <ProjectParamsHeader
             projectId={project.projectId}
             projectName={project.projectName}
+            canEdit={editorState.canEdit}
             onIconChange={(iconName: string | null) => void saveActions.handleIconChange(iconName)}
           />
 
@@ -114,7 +116,11 @@ export function ProjectContextBody({
             />
           )}
 
-          <EnableToggleCard enabled={pageState.enabled} onToggle={contentActions.handleToggle} />
+          <EnableToggleCard
+            enabled={pageState.enabled}
+            onToggle={contentActions.handleToggle}
+            disabled={!editorState.canEdit}
+          />
 
           {pageState.showDisabledBanner && (
             <BannerMessage
@@ -136,6 +142,7 @@ export function ProjectContextBody({
               onFocus={editorActions.onFocus}
               onBlur={editorActions.handleEditorBlur}
               onAIGenerated={contentActions.handleAIGenerated}
+              onImportClick={editorActions.onImportClick}
             />
           )}
 

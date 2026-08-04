@@ -20,8 +20,8 @@ import Typography from '@mui/material/Typography';
 
 import type { EnvironmentFieldDefinition } from '@/features/settings/lib/environment/environmentField.helpers';
 import { isNumericType } from '@/features/settings/lib/environment/environmentField.helpers';
+import { t } from '@/shared/i18n';
 import { combineSx } from '@/shared/ui/lib/combineSx';
-import { t } from '@/shared/ui/lib/t';
 
 /* ── public API ───────────────────────────────────────────────────────── */
 
@@ -32,6 +32,8 @@ export interface EnvironmentFieldRowProps {
   value: string;
   /** Whether all editing is disabled. */
   disabled?: boolean;
+  /** Inline validation/save error message for this field, if any. */
+  error?: string | undefined;
   /** Called when the field value changes. */
   onChange: (fieldKey: string, value: string) => void;
   /** Called when the field loses focus (triggers save). */
@@ -48,6 +50,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
   field,
   value,
   disabled = false,
+  error,
   onChange,
   onBlur,
   onRestore,
@@ -70,18 +73,22 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
     onRestore(field.key);
   }, [field.key, onRestore]);
 
+  // `aria-label` is set unconditionally (matches the baseline
+  // `EnvironmentFieldRow.jsx:30-42`) — numeric-only constraints are layered
+  // on top only when `numeric` is true, but every field type gets a label.
   const slotProps = useMemo(
-    () =>
-      numeric
-        ? ({
-            input: {
-              'aria-label': field.label,
+    () => ({
+      input: {
+        'aria-label': field.label,
+        ...(numeric
+          ? {
               min: field.minimum ?? 0,
               ...(field.maximum !== undefined ? { max: field.maximum } : {}),
               step: field.type === 'integer' ? 1 : 'any',
-            },
-          })
-        : undefined,
+            }
+          : {}),
+      },
+    }),
     [field.label, field.maximum, field.minimum, field.type, numeric],
   );
 
@@ -115,6 +122,8 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
           onChange={handleChange}
           onBlur={handleBlur}
           disabled={disabled}
+          error={Boolean(error)}
+          helperText={error}
           fullWidth
           variant="standard"
           type={numeric ? 'number' : 'text'}
@@ -133,7 +142,7 @@ export const EnvironmentFieldRow = memo(function EnvironmentFieldRow({
               color="tertiary"
               onClick={handleRestore}
               disabled={disabled}
-              aria-label={t('shared.ui.settings.environment.restore', 'Restore to default')}
+              aria-label={t('shared.ui.settings.environment.restore', 'Restore {{label}} to default', { label: field.label })}
               sx={styles.restoreButton}
             >
               <RestoreOutlinedIcon fontSize="small" />

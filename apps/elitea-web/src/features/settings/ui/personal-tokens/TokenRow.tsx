@@ -117,7 +117,7 @@ export const ActionsCell = memo(function ActionsCell({
   showPreview,
 }: {
   token: PersonalAccessToken;
-  onDelete: (uuid: string) => void;
+  onDelete: (uuid: string) => Promise<void>;
   onPreview: (token: PersonalAccessToken) => void;
   showPreview: boolean;
 }) {
@@ -129,10 +129,12 @@ export const ActionsCell = memo(function ActionsCell({
     setDeleteModalOpen(true);
   }, []);
 
-  const handleDeleteConfirm = useCallback(() => {
+  const handleDeleteConfirm = useCallback(async () => {
     setIsDeleting(true);
     try {
-      onDelete(token.uuid);
+      await onDelete(token.uuid);
+    } catch {
+      // Error handled by react-query — no toast in shared/ui
     } finally {
       setIsDeleting(false);
       setDeleteModalOpen(false);
@@ -176,7 +178,7 @@ export const ActionsCell = memo(function ActionsCell({
         open={deleteModalOpen}
         tokenName={token.name}
         onClose={() => setDeleteModalOpen(false)}
-        onConfirm={() => handleDeleteConfirm()}
+        onConfirm={() => void handleDeleteConfirm()}
         isLoading={isDeleting}
       />
     </>

@@ -24,6 +24,8 @@ import { ProjectIconDialog } from './ProjectIconDialog';
 export interface ProjectParamsHeaderProps {
   projectId: string;
   projectName: string;
+  /** Whether the user has edit permission — gates the icon-edit affordance. */
+  canEdit: boolean;
   /** Called when the user selects an icon — parent persists via updateProjectInfo. */
   onIconChange?: (iconName: string | null) => void;
 }
@@ -31,6 +33,7 @@ export interface ProjectParamsHeaderProps {
 export function ProjectParamsHeader({
   projectId,
   projectName,
+  canEdit,
   onIconChange,
 }: ProjectParamsHeaderProps) {
   const [iconDialogOpen, setIconDialogOpen] = useState(false);
@@ -43,8 +46,9 @@ export function ProjectParamsHeader({
   const sx = styles();
 
   const handleOpenIconDialog = useCallback(() => {
+    if (!canEdit) return;
     setIconDialogOpen(true);
-  }, []);
+  }, [canEdit]);
 
   const handleCloseIconDialog = useCallback(() => {
     setIconDialogOpen(false);
@@ -66,12 +70,14 @@ export function ProjectParamsHeader({
             projectName={projectName}
             iconUrl={iconMeta?.url ?? null}
           />
-          <IconButton
-            sx={sx.editButton}
-            onClick={handleOpenIconDialog}
-          >
-            <EditIcon sx={sx.editIcon} />
-          </IconButton>
+          {canEdit && (
+            <IconButton
+              sx={sx.editButton}
+              onClick={handleOpenIconDialog}
+            >
+              <EditIcon sx={sx.editIcon} />
+            </IconButton>
+          )}
         </Box>
 
         <Box sx={sx.infoContainer}>

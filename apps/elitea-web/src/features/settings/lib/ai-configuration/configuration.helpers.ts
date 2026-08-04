@@ -118,42 +118,44 @@ function isNonEmptyString(value: unknown): boolean {
 }
 
 /**
- * Extracts a non-empty string field from a config object, trying multiple key names.
+ * Extracts the first non-empty string among a fixed, ordered list of
+ * candidate fields. Mirrors the old app's literal `||` chain
+ * (`configuration.helpers.js:40-52`) field-for-field, so `data.*` fields
+ * are checked interleaved with top-level ones in the *exact* priority order
+ * the baseline used — not "all top-level keys, then all nested keys" (that
+ * reordering was the Finding-8 regression this replaces).
  */
-const extractField = (
-  cfg: Record<string, unknown>,
-  ...keys: Array<keyof (Record<string, unknown> & { data?: Record<string, unknown> } & { settings?: Record<string, unknown> } & { config?: Record<string, unknown> } & { metadata?: Record<string, unknown> })>
-): string | undefined => {
-  // Check top-level + data.* keys
-  const sources: Record<string, unknown>[] = [cfg];
-  const data = getCfgData(cfg);
-  if (data) sources.push(data);
-  for (const source of sources) {
-    for (const key of keys) {
-      if (isNonEmptyString(source[key])) return String(source[key]);
-    }
-  }
-  // Check dedicated nested locations
-  if ((cfg.settings as Record<string, unknown> | undefined)?.title) return String((cfg.settings as Record<string, unknown>).title);
-  if ((cfg.config as Record<string, unknown> | undefined)?.name) return String((cfg.config as Record<string, unknown>).name);
-  const metadata = cfg.metadata as Record<string, unknown> | undefined;
-  if (metadata) {
-    const titleVal = metadata.title;
-    if (isNonEmptyString(titleVal)) return String(titleVal);
-    const nameVal = metadata.name;
-    if (isNonEmptyString(nameVal)) return String(nameVal);
+const firstNonEmptyOf = (...candidates: unknown[]): string | undefined => {
+  for (const candidate of candidates) {
+    if (isNonEmptyString(candidate)) return String(candidate);
   }
   return undefined;
 };
 
 export const getConfigurationDisplayName = (configuration: Record<string, unknown>): string => {
-  const rawName =
-    (configuration.label as string | undefined) ||
-    extractField(configuration, 'name', 'model', 'model_name', 'title', 'elitea_title', 'name') ||
-    (configuration.name as string | undefined) ||
-    (configuration.elitea_title as string | undefined);
+  const data = getCfgData(configuration);
+  const settings = configuration.settings as Record<string, unknown> | undefined;
+  const config = configuration.config as Record<string, unknown> | undefined;
+  const metadata = configuration.metadata as Record<string, unknown> | undefined;
 
-  if (rawName && String(rawName).trim().length > 0) {
+  // Priority order ported verbatim from configuration.helpers.js:40-52:
+  // label, data.name, data.model, data.model_name, title, settings.title,
+  // config.name, elitea_title, name, metadata.title, metadata.name.
+  const rawName = firstNonEmptyOf(
+    configuration.label,
+    data?.name,
+    data?.model,
+    data?.model_name,
+    configuration.title,
+    settings?.title,
+    config?.name,
+    configuration.elitea_title,
+    configuration.name,
+    metadata?.title,
+    metadata?.name,
+  );
+
+  if (rawName && rawName.trim().length > 0) {
     return rawName;
   }
 

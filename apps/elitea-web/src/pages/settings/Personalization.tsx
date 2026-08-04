@@ -8,6 +8,7 @@
  */
 import { memo, useCallback, useMemo, useState } from 'react';
 
+import { useQueryClient } from '@tanstack/react-query';
 import { Form, Formik, type FormikHelpers } from 'formik';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -17,7 +18,7 @@ import Alert from '@mui/material/Alert';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/ui/lib/t';
-import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { getGetCurrentAuthorQueryKey, useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
 import { profileFeature } from '@/features/settings';
@@ -59,6 +60,7 @@ const Personalization = memo(({ projectId }: PersonalizationProps) => {
   const { data: authorResponse, isLoading, isFetching } = useGetCurrentAuthor();
   const authorData = authorResponse?.data as AuthorData | undefined;
   const { modelList, defaultModel } = useDefaultModel({ projectId });
+  const queryClient = useQueryClient();
 
   const initialValues = useMemo<ProfileFormValues>(
     () => serializeProfileFormData(authorData, defaultModel),
@@ -70,18 +72,23 @@ const Personalization = memo(({ projectId }: PersonalizationProps) => {
   const [showErrorToast, setShowErrorToast] = useState(false);
 
   const handleSubmit = useCallback(
-    async (values: ProfileFormValues, _helpers: FormikHelpers<ProfileFormValues>) => {
+    async (values: ProfileFormValues, helpers: FormikHelpers<ProfileFormValues>) => {
       setIsSaving(true);
       try {
-        // Build the payload matching AuthorUpdateRequest shape
-        const rawPayload = deserializeProfileFormData(values);
-        const personalization = rawPayload.personalization;
-
-        const payload: Record<string, unknown> = {
-          personalization,
-        };
+        // Full payload — personalization + the context-management and
+        // summarization settings nested inside it (see
+        // deserializeProfileFormData's doc comment for why they're nested
+        // rather than sibling top-level keys). Sending only `personalization`
+        // silently dropped every Context Management / Summarization edit.
+        const payload = deserializeProfileFormData(values);
 
         await updateAuthorPayload(payload);
+
+        // Refetch the just-saved profile and re-baseline Formik against the
+        // submitted values so `dirty` goes false — otherwise
+        // useFormikAutoSaveOnBlur keeps re-submitting on every later blur.
+        await queryClient.invalidateQueries({ queryKey: getGetCurrentAuthorQueryKey() });
+        helpers.resetForm({ values });
 
         setShowSuccessToast(true);
       } catch {
@@ -90,7 +97,7 @@ const Personalization = memo(({ projectId }: PersonalizationProps) => {
         setIsSaving(false);
       }
     },
-    [],
+    [queryClient],
   );
 
   const handleCloseSuccessToast = useCallback(() => setShowSuccessToast(false), []);
