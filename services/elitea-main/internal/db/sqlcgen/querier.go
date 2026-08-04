@@ -92,6 +92,7 @@ type Querier interface {
 	InsertAgentExecutionBinding(ctx context.Context, arg InsertAgentExecutionBindingParams) error
 	InsertAgentExecutionJob(ctx context.Context, arg InsertAgentExecutionJobParams) (string, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
+	InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error)
 	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)
 	InsertCurrentConfiguration(ctx context.Context, arg InsertCurrentConfigurationParams) (InsertCurrentConfigurationRow, error)
 	InsertCurrentIndexScheduleNotification(ctx context.Context, arg InsertCurrentIndexScheduleNotificationParams) (int64, error)
@@ -169,6 +170,7 @@ type Querier interface {
 	ReplaceCurrentConfiguration(ctx context.Context, arg ReplaceCurrentConfigurationParams) (ReplaceCurrentConfigurationRow, error)
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
+	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	// This is the exact current projects_get_personal_project_id decision tree:
 	// a named personal project wins only when the user has any project-role

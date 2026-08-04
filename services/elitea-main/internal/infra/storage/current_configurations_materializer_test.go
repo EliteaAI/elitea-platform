@@ -162,6 +162,82 @@ func TestCurrentConfigurationsMaterializerRedeemsConfiguredAgentToolsAtClaimTime
 	}
 }
 
+func TestCurrentConfigurationsMaterializerRedeemsAdhocAgentToolsAtClaimTime(t *testing.T) {
+	unsecreter := &currentMaterializationUnsecreterStub{values: map[int32]map[string]string{
+		7: {"PROJECT_NOTE": "project-note"},
+		1: {"AHA_TOKEN": "aha-secret"},
+	}}
+	materializer := newCurrentConfigurationsMaterializerForTest(t, unsecreter)
+	request := &runtimev1.AgentExecutionInputV1{
+		SchemaRevision: "elitea.runtime.agent-execution-input.v1",
+		Llm:            []byte(`{"kwargs":{}}`),
+		ChatHistory:    []byte(`[]`),
+		UserInput:      []byte(`"hello"`),
+		Tools: []byte(`[{
+			"id":3,
+			"type":"aha",
+			"toolkit_name":"aha",
+			"settings":{
+				"aha_configuration":{
+					"configuration_uuid":"configuration-aha",
+					"configuration_project_id":1,
+					"configuration_type":"aha",
+					"__elitea_frozen_configuration_v1":true,
+					"api_key":"{{secret.AHA_TOKEN}}"
+				},
+				"note":"{{secret.PROJECT_NOTE}}"
+			}
+		}]`),
+		Application:            []byte(`{"instructions":"Use the attached tools."}`),
+		InternalTools:          []byte(`[]`),
+		McpTokens:              []byte(`{}`),
+		IgnoredMcpServers:      []byte(`[]`),
+		UserDeclinedMcpServers: []byte(`[]`),
+		HitlDecisions:          []byte(`[]`),
+		Meta:                   []byte(`{}`),
+		ContextSettings:        []byte(`{}`),
+		InvokedSkills:          []byte(`[]`),
+		AppliedSkills:          []byte(`[]`),
+		AttachedSkills:         []byte(`[]`),
+		InputAttachments:       []byte(`[]`),
+		ParallelReconcile:      []byte(`null`),
+		ParallelTerminalErrors: []byte(`[]`),
+	}
+	source, err := proto.MarshalOptions{Deterministic: true}.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := materializer.MaterializeContent(context.Background(), ContentAuthorization{
+		ResourceProjectID: "7",
+		ActorID:           "42",
+		CapabilityID:      executiondomain.AgentAdhocCapability,
+		SemanticRole:      executiondomain.AgentExecutionRequestRole,
+	}, source, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var materialized runtimev1.AgentExecutionInputV1
+	if err := proto.Unmarshal(result, &materialized); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := decodeCurrentMaterializationArray(materialized.GetTools())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := tools[0].(map[string]any)["settings"].(map[string]any)
+	credential := settings["aha_configuration"].(map[string]any)
+	if credential["api_key"] != "aha-secret" || settings["note"] != "project-note" ||
+		strings.Contains(string(result), configurationapp.CurrentFrozenConfigurationMarker) {
+		t.Fatalf("materialized settings=%#v", settings)
+	}
+	if !reflect.DeepEqual(unsecreter.projects, []int32{1, 7}) {
+		t.Fatalf("unsecret project ownership=%v, want [1 7]", unsecreter.projects)
+	}
+	if strings.Contains(string(source), "aha-secret") {
+		t.Fatal("immutable agent input was mutated with plaintext")
+	}
+}
+
 func TestCurrentConfigurationsMaterializerRejectsIncompleteFrozenConfigurationMetadata(t *testing.T) {
 	unsecreter := &currentMaterializationUnsecreterStub{}
 	materializer := newCurrentConfigurationsMaterializerForTest(t, unsecreter)

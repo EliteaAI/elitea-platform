@@ -109,21 +109,24 @@ type CurrentApplicationStartOutcome struct {
 }
 
 type CurrentApplicationStartService struct {
-	resolver   CurrentApplicationResolver
-	freezer    CurrentApplicationVersionFreezer
-	admissions admissionSubmitter
+	resolver      CurrentApplicationResolver
+	adhocResolver CurrentAdhocResolver
+	freezer       CurrentApplicationVersionFreezer
+	admissions    admissionSubmitter
 }
 
 func NewCurrentApplicationStartService(
 	resolver CurrentApplicationResolver,
+	adhocResolver CurrentAdhocResolver,
 	freezer CurrentApplicationVersionFreezer,
 	admissions admissionSubmitter,
 ) (*CurrentApplicationStartService, error) {
-	if resolver == nil || freezer == nil || admissions == nil {
+	if resolver == nil || adhocResolver == nil || freezer == nil || admissions == nil {
 		return nil, errors.New("current application start dependencies are required")
 	}
 	return &CurrentApplicationStartService{
-		resolver: resolver, freezer: freezer, admissions: admissions,
+		resolver: resolver, adhocResolver: adhocResolver,
+		freezer: freezer, admissions: admissions,
 	}, nil
 }
 

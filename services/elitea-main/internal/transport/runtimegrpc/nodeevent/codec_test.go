@@ -161,6 +161,46 @@ func TestCurrentNodeEventEncoderRejectsMalformedFragmentsAndOversizedText(t *tes
 	}
 }
 
+func TestCurrentNodeEventCodecAcceptsProductionSizedToolOutput(t *testing.T) {
+	const outputBytes = 51_979
+	const escapedQuoteCount = 5_385
+	toolOutput := strings.Repeat(`"`, escapedQuoteCount) +
+		strings.Repeat("x", outputBytes-escapedQuoteCount)
+	metadata, err := json.Marshal(map[string]any{
+		"tool_name":        "list_initiatives",
+		"tool_run_id":      "run-production-sized",
+		"tool_inputs":      map[string]any{"max_records": 100},
+		"tool_output":      toolOutput,
+		"metadata":         map[string]any{"toolkit_name": "aha"},
+		"finish_reason":    "stop",
+		"timestamp_start":  "2026-08-03T18:47:20Z",
+		"timestamp_finish": "2026-08-03T18:47:21Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := &runtimev1.NodeEventV1{
+		Type:             "agent_tool_end",
+		Content:          []byte("null"),
+		ResponseMetadata: metadata,
+		References:       []byte(`[]`),
+	}
+	encoded, err := EncodeCurrentJSON(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > MaxCurrentJSONBytes {
+		t.Fatalf("production-sized tool event exceeded browser bound: %d", len(encoded))
+	}
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) >= 64*1024 {
+		t.Fatalf("production-sized NodeEvent leaves no frame headroom: %d", len(wire))
+	}
+}
+
 func assertCurrentFieldNames(t *testing.T, raw []byte) {
 	t.Helper()
 	var fields map[string]json.RawMessage

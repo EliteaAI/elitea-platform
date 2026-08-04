@@ -9,6 +9,7 @@ import (
 	executionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/executions"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 )
 
 type authorizationRow struct {
@@ -209,6 +210,38 @@ func TestPublicAuthorizerRequiresIndexObservationPermission(t *testing.T) {
 	permissions.err = errors.New("inactive principal")
 	if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
 		t.Fatalf("resolver failure error = %v", err)
+	}
+}
+
+func TestPublicAuthorizerRequiresChatPermissionForBothAgentCapabilities(t *testing.T) {
+	ctx := auth.ContextWithAuthenticatedUser(
+		context.Background(),
+		auth.User{ID: "17"},
+		auth.AuthenticationSourceSession,
+	)
+	for _, capabilityID := range []string{
+		executiondomain.AgentApplicationCapability,
+		executiondomain.AgentAdhocCapability,
+	} {
+		store := &authorizationStore{row: authorizationRow{capabilityID: capabilityID}}
+		permissions := &authorizationPermissionResolver{resolution: auth.PermissionResolution{
+			UserID: 17, Permissions: []string{"models.chat.messages.create"},
+		}}
+		authorizer, err := newPostgresPublicAuthorizer(
+			&authorizationStore{row: authorizationRow{active: true}},
+			store,
+			permissions,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); err != nil {
+			t.Fatalf("capability %s permission rejected: %v", capabilityID, err)
+		}
+		permissions.resolution.Permissions = []string{"models.chat.messages.get"}
+		if err := authorizer.AuthorizeExecutionEvents(ctx, "42", "execution-1"); !errors.Is(err, executionapi.ErrExecutionEventsForbidden) {
+			t.Fatalf("capability %s missing permission error = %v", capabilityID, err)
+		}
 	}
 }
 

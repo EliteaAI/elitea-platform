@@ -1,6 +1,7 @@
 package agentexecution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,10 +16,21 @@ import (
 )
 
 type currentStartUseCaseStub struct {
-	request agentexecutionapp.CurrentApplicationStartRequest
-	outcome agentexecutionapp.CurrentApplicationStartOutcome
-	err     error
-	calls   int
+	request      agentexecutionapp.CurrentApplicationStartRequest
+	adhocRequest agentexecutionapp.CurrentAdhocStartRequest
+	outcome      agentexecutionapp.CurrentApplicationStartOutcome
+	err          error
+	calls        int
+	adhocCalls   int
+}
+
+func (stub *currentStartUseCaseStub) StartCurrentAdhoc(
+	_ context.Context,
+	request agentexecutionapp.CurrentAdhocStartRequest,
+) (agentexecutionapp.CurrentApplicationStartOutcome, error) {
+	stub.adhocCalls++
+	stub.adhocRequest = request
+	return stub.outcome, stub.err
 }
 
 func (stub *currentStartUseCaseStub) StartCurrentApplication(
@@ -103,6 +115,26 @@ func TestCurrentApplicationStartRoutePreservesPathRBACAndResponseContract(t *tes
 		body["response_message_id"] != "response-1" ||
 		body["events_url"] != "/api/v2/executions/7/execution-1/events" {
 		t.Fatalf("response=%+v error=%v", body, err)
+	}
+}
+
+func TestCurrentApplicationStartRouteAdmitsBoundedAdhocMainChatTurn(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-adhoc", CommandID: "command-adhoc",
+		ResponseMessageID: "response-adhoc", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAdhocStartRequest(validCurrentAdhocStartBody()))
+
+	if response.Code != http.StatusOK || useCase.calls != 0 || useCase.adhocCalls != 1 ||
+		useCase.adhocRequest.ProjectID != 7 || useCase.adhocRequest.ActorUserID != 11 ||
+		useCase.adhocRequest.TargetParticipantID != 0 ||
+		useCase.adhocRequest.UserInput != "hello from main chat" ||
+		!bytes.Equal(useCase.adhocRequest.LLMSettings, []byte(`{"model_name":"model","model_project_id":7}`)) {
+		t.Fatalf("status=%d app_calls=%d adhoc_calls=%d request=%+v body=%s",
+			response.Code, useCase.calls, useCase.adhocCalls, useCase.adhocRequest, response.Body.String())
 	}
 }
 
@@ -198,6 +230,23 @@ func currentStartRequest(body string) *http.Request {
 	return request
 }
 
+func currentAdhocStartRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/messages/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentAdhocStartContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
 func validCurrentStartBody() string {
 	return `{"payload":{"user_input":"hello"},"project_id":7,"participant_id":21,"conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0","question_id":"ee92ccbd-3312-4c72-b20b-fddf224e7c0e","interaction_uuid":"31df012a-300d-4722-9be2-521d987c63a8","attachments_info":[],"mcp_tokens":{}}`
+}
+
+func validCurrentAdhocStartBody() string {
+	return `{"payload":{"user_input":"hello from main chat"},"project_id":7,"conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0","question_id":"ee92ccbd-3312-4c72-b20b-fddf224e7c0e","interaction_uuid":"31df012a-300d-4722-9be2-521d987c63a8","attachments_info":[],"llm_settings":{"model_name":"model","model_project_id":7},"mcp_tokens":{}}`
 }

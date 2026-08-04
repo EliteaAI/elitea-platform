@@ -4,6 +4,7 @@ http:
       rule: >-
         (PathRegexp(`^/api/v2/elitea_core/test_toolkit_tool/prompt_lib/[1-9][0-9]*$`) && Method(`POST`) && Query(`execution_contract`, `index.ingest.v1`)) ||
         (PathRegexp(`^/api/v2/elitea_core/messages/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.execute.application.v1`)) ||
+        (PathRegexp(`^/api/v2/elitea_core/messages/prompt_lib/[1-9][0-9]*/[^/]+$`) && Method(`POST`) && Query(`execution_contract`, `agent.execute.adhoc.v1`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_cancel/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+/[0-9a-f]{32}$`) && Method(`DELETE`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*$`) && Method(`GET`)) ||
         (PathRegexp(`^/api/v2/elitea_core/index_meta/prompt_lib/[1-9][0-9]*/[1-9][0-9]*/[^/]+$`) && Method(`DELETE`)) ||

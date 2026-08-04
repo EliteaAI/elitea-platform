@@ -358,6 +358,7 @@ class EliteaSdkAgentAdapter:
                 payload,
                 version_details.get("meta"),
                 self._callbacks,
+                memory,
             )
 
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
@@ -396,7 +397,13 @@ class EliteaSdkAgentAdapter:
                 auto_approve_sensitive_actions=payload.auto_approve_sensitive_actions,
                 user_declined_mcp_servers=deepcopy(payload.user_declined_mcp_servers),
             )
-            return _invoke_initial_agent(executor, payload, None, self._callbacks)
+            return _invoke_initial_agent(
+                executor,
+                payload,
+                None,
+                self._callbacks,
+                memory,
+            )
 
     @contextmanager
     def _execution_memory(self):
@@ -458,6 +465,7 @@ def _invoke_initial_agent(
     payload: AgentExecutionPayload,
     application_meta: Any,
     callbacks: list[Any],
+    memory: Any,
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
 
@@ -473,10 +481,49 @@ def _invoke_initial_agent(
         step_limit = application_meta.get("step_limit")
         if isinstance(step_limit, int) and not isinstance(step_limit, bool) and step_limit > 0:
             invoke_config["recursion_limit"] = step_limit
+    _discard_failed_checkpoint(memory, invoke_config)
     result = executor.invoke({"messages": messages}, invoke_config)
     if not isinstance(result, dict):
         raise TypeError("the SDK agent invocation returned a non-object result")
     return result
+
+
+def _discard_failed_checkpoint(memory: Any, config: dict[str, Any]) -> None:
+    """Remove only a checkpoint with an explicit failed-task write.
+
+    HITL, MCP/toolkit authorization, static interrupts and other intentional
+    pauses do not carry ``__error__`` and remain untouched. Main already sends
+    the authoritative persisted chat history for an ordinary next turn, so a
+    failed graph task can be rebuilt after its incomplete checkpoint is gone.
+    """
+
+    get_tuple = getattr(memory, "get_tuple", None)
+    delete_thread = getattr(memory, "delete_thread", None)
+    if not callable(get_tuple) or not callable(delete_thread):
+        return
+    checkpoint = get_tuple(config)
+    if checkpoint is None:
+        return
+    pending_writes = getattr(checkpoint, "pending_writes", ()) or ()
+    if not any(
+        isinstance(write, (tuple, list))
+        and len(write) >= 2
+        and write[1] == "__error__"
+        for write in pending_writes
+    ):
+        return
+    configurable = config.get("configurable")
+    thread_id = (
+        configurable.get("thread_id")
+        if isinstance(configurable, dict)
+        else None
+    )
+    if not isinstance(thread_id, str) or not thread_id:
+        raise DependencyUnavailable(
+            "The durable agent checkpoint identity is unavailable."
+        )
+    delete_thread(thread_id)
+    configurable.pop("checkpoint_id", None)
 
 
 def _current_index_tool_name_compatibility(

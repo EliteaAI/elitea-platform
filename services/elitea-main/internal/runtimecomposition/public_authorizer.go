@@ -11,6 +11,7 @@ import (
 	executionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/execution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 )
 
 type publicAdmissionAuthorizationQuerier interface {
@@ -106,11 +107,11 @@ func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context,
 		return executionapi.ErrExecutionEventsForbidden
 	}
 	switch capabilityID {
-	case "index.ingest.v1":
+	case executiondomain.IndexIngestCapability:
 		if !containsPermission(resolution.Permissions, "models.applications.tool.patch") {
 			return executionapi.ErrExecutionEventsForbidden
 		}
-	case "configuration.validate.v1":
+	case executiondomain.ConfigurationValidationCapability:
 		// Validation can currently be admitted by either create or update.
 		// Until admission persists that originating permission, retain the
 		// current project-member compatibility behavior without guessing a
@@ -119,7 +120,7 @@ func (a *postgresPublicAuthorizer) AuthorizeExecutionEvents(ctx context.Context,
 		if len(resolution.Permissions) == 0 {
 			return executionapi.ErrExecutionEventsForbidden
 		}
-	case "agent.execute.application.v1":
+	case executiondomain.AgentApplicationCapability, executiondomain.AgentAdhocCapability:
 		if !containsPermission(resolution.Permissions, "models.chat.messages.create") {
 			return executionapi.ErrExecutionEventsForbidden
 		}

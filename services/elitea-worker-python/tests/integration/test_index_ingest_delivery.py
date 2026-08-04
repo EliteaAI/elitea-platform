@@ -1748,7 +1748,7 @@ def test_sdk_budget_exhaustion_maps_to_safe_non_retryable_resource_failure(
         )
         assert (
             result.output_frame.runtime_error.safe_message
-            == "The execution input exceeds an approved limit."
+            == "The execution exceeded an approved resource limit."
         )
         assert result.output_frame.runtime_error.retryable is False
         assert canary.encode() not in result.output_frame.SerializeToString(

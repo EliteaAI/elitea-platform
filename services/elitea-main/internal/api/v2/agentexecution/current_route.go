@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 const (
 	CurrentApplicationStartPath       = "/api/v2/elitea_core/messages/prompt_lib/{projectID}/{conversationID}"
 	CurrentApplicationStartContract   = "agent.execute.application.v1"
+	CurrentAdhocStartContract         = "agent.execute.adhoc.v1"
 	CurrentApplicationStartMode       = auth.PermissionModeDefault
 	CurrentApplicationStartPermission = "models.chat.messages.create"
 	maxCurrentApplicationStartBody    = int64(512 * 1024)
@@ -31,6 +33,10 @@ type StartUseCase interface {
 	StartCurrentApplication(
 		context.Context,
 		agentexecutionapp.CurrentApplicationStartRequest,
+	) (agentexecutionapp.CurrentApplicationStartOutcome, error)
+	StartCurrentAdhoc(
+		context.Context,
+		agentexecutionapp.CurrentAdhocStartRequest,
 	) (agentexecutionapp.CurrentApplicationStartOutcome, error)
 }
 
@@ -94,7 +100,8 @@ type currentApplicationStartBody struct {
 
 func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter, request *http.Request) {
 	projectID, ok := positiveCanonicalID(chi.URLParam(request, "projectID"))
-	if !ok || request.URL.Query().Get("execution_contract") != CurrentApplicationStartContract {
+	contract := request.URL.Query().Get("execution_contract")
+	if !ok || (contract != CurrentApplicationStartContract && contract != CurrentAdhocStartContract) {
 		writeError(writer, http.StatusBadRequest, "Invalid agent execution request")
 		return
 	}
@@ -133,24 +140,46 @@ func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter,
 		return
 	}
 	if body.ProjectID != projectID || body.ConversationUUID != conversationID ||
-		body.ParticipantID <= 0 || body.Payload.UserInput == "" ||
-		!emptyJSONArray(body.AttachmentsInfo) || !emptyJSONObject(body.MCPTokens) ||
-		!absentJSON(body.LLMSettings) || !absentJSON(body.UserIDs) {
+		body.Payload.UserInput == "" || !emptyJSONArray(body.AttachmentsInfo) ||
+		!emptyJSONObject(body.MCPTokens) || !absentJSON(body.UserIDs) {
 		writeUnsupported(writer)
 		return
 	}
 
-	outcome, err := handler.useCase.StartCurrentApplication(
-		request.Context(),
-		agentexecutionapp.CurrentApplicationStartRequest{
-			ProjectID: projectID, ActorUserID: actorUserID,
-			ConversationUUID:    conversationID,
-			TargetParticipantID: body.ParticipantID,
-			QuestionID:          body.QuestionID, UserInput: body.Payload.UserInput,
-			InteractionUUID: body.InteractionUUID,
-		},
-	)
+	var outcome agentexecutionapp.CurrentApplicationStartOutcome
+	switch contract {
+	case CurrentApplicationStartContract:
+		if body.ParticipantID <= 0 || !absentJSON(body.LLMSettings) {
+			writeUnsupported(writer)
+			return
+		}
+		outcome, err = handler.useCase.StartCurrentApplication(
+			request.Context(),
+			agentexecutionapp.CurrentApplicationStartRequest{
+				ProjectID: projectID, ActorUserID: actorUserID,
+				ConversationUUID: conversationID, TargetParticipantID: body.ParticipantID,
+				QuestionID: body.QuestionID, UserInput: body.Payload.UserInput,
+				InteractionUUID: body.InteractionUUID,
+			},
+		)
+	case CurrentAdhocStartContract:
+		if body.ParticipantID < 0 || !currentJSONObject(body.LLMSettings) {
+			writeUnsupported(writer)
+			return
+		}
+		outcome, err = handler.useCase.StartCurrentAdhoc(
+			request.Context(),
+			agentexecutionapp.CurrentAdhocStartRequest{
+				ProjectID: projectID, ActorUserID: actorUserID,
+				ConversationUUID: conversationID, TargetParticipantID: body.ParticipantID,
+				QuestionID: body.QuestionID, UserInput: body.Payload.UserInput,
+				InteractionUUID: body.InteractionUUID,
+				LLMSettings:     bytes.Clone(body.LLMSettings),
+			},
+		)
+	}
 	if err != nil {
+		slog.Error("current agent execution start failed", "contract", contract, "err", err)
 		writeStartError(writer, err)
 		return
 	}
@@ -200,6 +229,11 @@ func emptyJSONObject(raw json.RawMessage) bool {
 func absentJSON(raw json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(raw)
 	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
+}
+
+func currentJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return json.Valid(trimmed) && len(trimmed) >= 2 && trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}'
 }
 
 func positiveCanonicalID(raw string) (int64, bool) {

@@ -10,7 +10,12 @@ from typing import Any
 from elitea.runtime.v1 import node_event_pb2
 
 
-MAX_CURRENT_NODE_EVENT_JSON_BYTES = 48 * 1024
+# Keep enough headroom for the containing ExecutionOutputFrameV1 identities,
+# fence and digest beneath the fixed 64 KiB gRPC request ceiling. The browser
+# JSON limit is intentionally larger than the old 48 KiB value because this is
+# data-plane output, while the signed Redis command remains independently
+# bounded at 32 KiB.
+MAX_CURRENT_NODE_EVENT_JSON_BYTES = 60 * 1024
 _MAX_SAFE_STRING_BYTES = 256
 _MAX_JSON_NESTING = 64
 _MAX_EVENT_TYPE_BYTES = 128

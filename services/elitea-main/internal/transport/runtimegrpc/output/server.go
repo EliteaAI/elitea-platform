@@ -856,7 +856,7 @@ func runtimeFailurePolicyFor(code runtimev1.RuntimeErrorCodeV1) (runtimeFailureP
 	case runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_INVALID_INPUT:
 		return runtimeFailurePolicy{Code: "INVALID_INPUT", SafeMessage: "The execution input is invalid."}, true
 	case runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_RESOURCE_EXHAUSTED:
-		return runtimeFailurePolicy{Code: "RESOURCE_EXHAUSTED", SafeMessage: "The execution input exceeds an approved limit."}, true
+		return runtimeFailurePolicy{Code: "RESOURCE_EXHAUSTED", SafeMessage: "The execution exceeded an approved resource limit."}, true
 	case runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEPENDENCY_UNAVAILABLE:
 		return runtimeFailurePolicy{Code: "DEPENDENCY_UNAVAILABLE", SafeMessage: "A required runtime dependency is unavailable.", Retryable: true}, true
 	case runtimev1.RuntimeErrorCodeV1_RUNTIME_ERROR_CODE_V1_DEADLINE_EXCEEDED:

@@ -13,6 +13,11 @@ import (
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
 )
 
+const (
+	currentAgentDefaultMaxTokens          = int64(4_000)
+	currentAgentReasoningDefaultMaxTokens = int64(16_000)
+)
+
 // CurrentApplicationVersionFreezer converts the current saved application
 // version into one immutable admission snapshot. Implementations must keep
 // secret references sealed; plaintext is redeemed only after a worker claim.
@@ -237,6 +242,19 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	if selected.OpenAICompatible != nil {
 		compatible = *selected.OpenAICompatible
 	}
+	if value, exists := settings["max_tokens"]; exists && value != nil {
+		maxTokens, valid := currentAgentJSONInteger(value)
+		if !valid || maxTokens == 0 || maxTokens < -1 || maxTokens > math.MaxInt32 {
+			return ErrUnsupportedCurrentAgentStart
+		}
+		if maxTokens == -1 {
+			maxTokens = currentAgentDefaultMaxTokens
+			if selected.SupportsReasoning != nil && *selected.SupportsReasoning {
+				maxTokens = currentAgentReasoningDefaultMaxTokens
+			}
+		}
+		settings["max_tokens"] = maxTokens
+	}
 	settings["openai_compatible"] = compatible
 	version["llm_settings"] = settings
 	return nil
@@ -310,6 +328,11 @@ func decodeCurrentApplicationVersion(source []byte) (map[string]any, error) {
 }
 
 func positiveCurrentAgentJSONInteger(value any) (int64, bool) {
+	parsed, valid := currentAgentJSONInteger(value)
+	return parsed, valid && parsed > 0 && parsed <= math.MaxInt32
+}
+
+func currentAgentJSONInteger(value any) (int64, bool) {
 	var parsed int64
 	switch typed := value.(type) {
 	case json.Number:
@@ -327,7 +350,7 @@ func positiveCurrentAgentJSONInteger(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
-	return parsed, parsed > 0 && parsed <= math.MaxInt32
+	return parsed, true
 }
 
 var _ CurrentApplicationVersionFreezer = (*CurrentApplicationToolSnapshotService)(nil)

@@ -212,6 +212,12 @@ type ChatMessageItem struct {
 	MessageGroupID int32            `db:"message_group_id" json:"message_group_id"`
 }
 
+type ChatMessagesContext struct {
+	ContextData []byte  `db:"context_data" json:"context_data"`
+	ContextType *string `db:"context_type" json:"context_type"`
+	ID          int32   `db:"id" json:"id"`
+}
+
 type ChatMessagesText struct {
 	ID      int32  `db:"id" json:"id"`
 	Content string `db:"content" json:"content"`
