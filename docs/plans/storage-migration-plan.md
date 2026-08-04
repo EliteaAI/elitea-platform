@@ -431,6 +431,14 @@ note in the same commit message why the successor is not being used yet.
   `PresignPutObject`. It works with a custom `BaseEndpoint` and `UsePathStyle`.
   Note that `ContentType` on `PutObjectInput` is **not** signed, so a presigned
   PUT does not enforce media type — S15 verifies it on commit.
+- **`CompleteMultipartUpload` requires parts in strictly ascending
+  `PartNumber` order — confirmed against real RustFS, which rejects an
+  out-of-order list with `InvalidPartOrder: Part numbers must be strictly
+  increasing`.** Sort the caller's `[]Part` by `Number` before building the
+  request; do not assume the caller already sorted it (S16's future HTTP
+  handler has no reason to guarantee that, and neither does this stage's own
+  conformance suite, S4, which deliberately completes with parts reversed to
+  catch exactly this).
 
 ### Azure backend
 
@@ -568,7 +576,15 @@ returns `ErrNotSupported` from all four multipart methods.
   hand-rolling one** — re-verify the image tag and env var names against that
   file at implementation time.
 - **Azurite**: shared key only. It does not issue user-delegation keys, so run
-  the Azure leg with `AZURE_STORAGE_KEY` set, or case 12 skips.
+  the Azure leg with `AZURE_STORAGE_KEY` set, or the whole leg skips (not just
+  case 12 — every operation needs a credential Azurite accepts, and shared key
+  is the only one it does). **The `mcr.microsoft.com/azure-storage/azurite:latest`
+  image, confirmed as of 2026-08, rejects every request from the pinned
+  `azblob` SDK version with `400 InvalidHeaderValue` / "The API version ... is
+  not supported by Azurite" unless started with `--skipApiVersionCheck`** —
+  confirmed by actually running the SDK against a live container, not
+  documentation. Pass it as a command-line argument to the `azurite-blob`
+  entrypoint.
 - **fake-gcs-server**: listens on 4443 with HTTPS by default — pass `-scheme http`
   or the connection fails regardless of the endpoint path. Set `GCS_ENDPOINT`
   to the full `http://localhost:4443/storage/v1/` form. Case 12 will skip for

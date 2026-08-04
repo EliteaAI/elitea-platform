@@ -94,7 +94,23 @@ jobs:
             (cd "$mod" && go vet ./...)
           done
 
+      # Emulator stack for internal/infra/storage/conformance (S4). --wait
+      # blocks until every service's healthcheck passes (see the compose
+      # file for why each healthcheck is more involved than a bare wget).
+      - name: Start storage emulators
+        run: docker compose -f deploy/docker-compose.storage-test.yml up -d --wait
+
       - name: Run tests (workspace)
+        env:
+          S3_ENDPOINT_URL: "http://127.0.0.1:19000"
+          S3_ACCESS_KEY: "testaccesskey"
+          S3_SECRET_KEY: "testsecretkey"
+          S3_REGION: "us-east-1"
+          S3_FORCE_PATH_STYLE: "true"
+          AZURE_STORAGE_ACCOUNT: "devstoreaccount1"
+          AZURE_STORAGE_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+          AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
+          GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
         run: |
           for mod in $(go list -m -f '{{.Dir}}'); do
             (cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...)
@@ -102,6 +118,10 @@ jobs:
           python3 -m unittest discover \
             -s services/elitea-main/tests/reliability/index_5681 \
             -p 'test_*.py' -v
+
+      - name: Stop storage emulators
+        if: always()
+        run: docker compose -f deploy/docker-compose.storage-test.yml down -v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7

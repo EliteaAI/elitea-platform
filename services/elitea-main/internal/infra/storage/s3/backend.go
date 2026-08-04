@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -591,9 +592,15 @@ func (b *Backend) PresignPart(ctx context.Context, ref storage.ObjectRef, id sto
 	return presigned.URL, nil
 }
 
+// CompleteMultipart requires parts in strictly ascending PartNumber order —
+// S3 (confirmed against real RustFS) rejects an out-of-order list with
+// InvalidPartOrder. Callers are not required to pass parts pre-sorted.
 func (b *Backend) CompleteMultipart(ctx context.Context, ref storage.ObjectRef, id storage.UploadID, parts []storage.Part) (storage.ObjectInfo, error) {
-	completed := make([]types.CompletedPart, len(parts))
-	for i, p := range parts {
+	sorted := append([]storage.Part(nil), parts...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Number < sorted[j].Number })
+
+	completed := make([]types.CompletedPart, len(sorted))
+	for i, p := range sorted {
 		completed[i] = types.CompletedPart{
 			ETag:       aws.String(quoteETag(p.ETag)),
 			PartNumber: aws.Int32(p.Number),
