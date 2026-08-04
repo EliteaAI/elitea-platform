@@ -227,24 +227,27 @@ WITH resolved AS MATERIALIZED (
     WHERE conversation.uuid = $5::uuid
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
       AND application_version.agent_type <> 'pipeline'
-      AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
-      AND NOT EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(
-              CASE
-                  WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
-                  THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
-                  ELSE '[]'::jsonb
-              END
-          ) AS internal_tool(value)
-          WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' <> 'internal_mcp'
-      )
+      AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
       AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
           ''
       ) = ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM configuration AS project_context
+          WHERE project_context.type = 'project_context'
+            AND COALESCE(project_context.data ->> 'enabled', 'true') = 'true'
+            AND COALESCE(project_context.data ->> 'content', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM chat_participant_mapping AS toolkit_mapping
+          JOIN chat_participants AS toolkit_participant
+            ON toolkit_participant.id = toolkit_mapping.participant_id
+           AND toolkit_participant.entity_name = 'toolkit'
+          WHERE toolkit_mapping.conversation_id = conversation.id
+      )
       AND NOT EXISTS (
           SELECT 1
           FROM chat_message_group AS pending_response
@@ -259,21 +262,7 @@ WITH resolved AS MATERIALIZED (
           WHERE historical_group.conversation_id = conversation.id
             AND (
                 historical_item.item_type IN ('attachment_message', 'canvas_message')
-                OR (
-                    historical_item.item_type = 'context_message'
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM chat_messages_context AS historical_context
-                        WHERE historical_context.id = historical_item.id
-                          AND historical_context.context_type = 'support_assistant_context'
-                          AND jsonb_typeof(historical_context.context_data) = 'object'
-                          AND historical_context.context_data ->> 'user_id'
-                              = $1::bigint::text
-                          AND historical_context.context_data ->> 'project_id'
-                              = $6::integer::text
-                          AND historical_context.context_data - 'user_id' - 'project_id' = '{}'::jsonb
-                    )
-                )
+                OR historical_item.item_type = 'context_message'
             )
       )
 ), question_group AS (
@@ -919,24 +908,27 @@ LEFT JOIN LATERAL (
 WHERE conversation.uuid = $4::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
   AND application_version.agent_type <> 'pipeline'
-  AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(
-          CASE
-              WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
-              THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
-              ELSE '[]'::jsonb
-          END
-      ) AS internal_tool(value)
-      WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' <> 'internal_mcp'
-  )
+  AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
   AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
       ''
   ) = ''
+  AND NOT EXISTS (
+      SELECT 1
+      FROM configuration AS project_context
+      WHERE project_context.type = 'project_context'
+        AND COALESCE(project_context.data ->> 'enabled', 'true') = 'true'
+        AND COALESCE(project_context.data ->> 'content', '') <> ''
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM chat_participant_mapping AS toolkit_mapping
+      JOIN chat_participants AS toolkit_participant
+        ON toolkit_participant.id = toolkit_mapping.participant_id
+       AND toolkit_participant.entity_name = 'toolkit'
+      WHERE toolkit_mapping.conversation_id = conversation.id
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM chat_message_group AS pending_response
@@ -966,21 +958,7 @@ WHERE conversation.uuid = $4::uuid
         )
         AND (
             historical_item.item_type IN ('attachment_message', 'canvas_message')
-            OR (
-                historical_item.item_type = 'context_message'
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM chat_messages_context AS historical_context
-                    WHERE historical_context.id = historical_item.id
-                      AND historical_context.context_type = 'support_assistant_context'
-                      AND jsonb_typeof(historical_context.context_data) = 'object'
-                      AND historical_context.context_data ->> 'user_id'
-                          = $1::bigint::text
-                      AND historical_context.context_data ->> 'project_id'
-                          = $5::integer::text
-                      AND historical_context.context_data - 'user_id' - 'project_id' = '{}'::jsonb
-                )
-            )
+            OR historical_item.item_type = 'context_message'
         )
   )
 `
