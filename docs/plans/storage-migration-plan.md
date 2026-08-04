@@ -1598,6 +1598,45 @@ rule in S6, which this stage's Verify command relies on for the same reason.
 cd services/elitea-main && go test ./internal/application/artifactbootstrap/... -race -run TestArtifact -v > /tmp/s13.log 2>&1; rc=$?; cat /tmp/s13.log; test $rc -eq 0 && grep -qc -- '--- PASS' /tmp/s13.log && ! grep -q -- '--- SKIP' /tmp/s13.log
 ```
 
+**Defect found and fixed during implementation, empirically confirmed against a
+real Postgres database:** the first-draft `purgeObjects` returned immediately
+on any `ObjectStore.DeleteBatch` failure (a top-level error, or any
+`result.Failed` entries) without ever calling `Repository.DeleteObjects` for
+the objects that *did* delete in that same call. Confirmed with a
+reproduction test forcing one of two keys to fail: the successfully-deleted
+object's physical bytes were gone, but its `elitea_storage.objects` metadata
+row survived — and unlike the already-documented, already-deferred
+`DeleteBucket`-cascade gap (S12), the bucket here stays active (not
+soft-deleted) on a partial failure, so that orphaned row keeps counting
+toward the project's quota indefinitely, and a retry can never rediscover the
+key because `List` no longer returns it. Fixed by calling
+`Repository.DeleteObjects` with `BatchResult.Deleted` unconditionally before
+inspecting `batchErr`/`Failed`. Regression test:
+`TestArtifactTeardownPreservesMetadataConsistencyOnPartialDeleteFailure`.
+
+**Second defect found and fixed:** `parseProjectID` accepted project-ID
+strings (`"007"`, `"+9001"`, a 19-digit `int64`) that
+`storage.NewBucketRef`'s `projectIDPattern` regex rejects.
+`BootstrapProjectBuckets` would happily create real bucket rows for such an
+ID; `TeardownProjectBuckets` would then permanently fail to build a
+`BucketRef` for the identical string, with no way to ever tear the buckets
+back down through this package. Fixed by having `parseProjectID` delegate to
+`storage.NewBucketRef` for validation instead of duplicating (and drifting
+from) its rule. Regression coverage added to
+`TestArtifactBootstrapRejectsInvalidProjectID`.
+
+Both were caught by a Workflow adversarial-review pass (plan-compliance +
+bug-hunt + test-integrity reviewers) run before committing, not by the
+original test suite — the bug-hunt reviewer reproduced the first defect with
+a mutation test before any fix existed. A third finding from the same pass
+(the required "not called from anywhere yet" comment lived on the
+`Bootstrapper` struct rather than on `BootstrapProjectBuckets` itself, as
+this section asks for by name) was also corrected; a fourth
+(`fakeObjectStore.List` never paginated, leaving `purgeObjects`'s
+continuation-token loop completely untested) was closed by adding
+`pageLimit`/`failKeys` test-only knobs and
+`TestArtifactTeardownPurgesObjectsAcrossMultiplePages`.
+
 ---
 
 ## S14 — Retention ledger and sweeper
