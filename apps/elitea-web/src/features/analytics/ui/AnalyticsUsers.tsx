@@ -24,6 +24,15 @@ import type { EntityTableColumn } from './components/PaginatedEntityTable';
  * `Tool`/`Agent`/`Chat Msg`/`Errors`) have no per-type-breakdown or
  * active-day field anywhere on this type; their headers are kept (COPY
  * parity) with `UNAVAILABLE_METRIC` values rather than fabricated numbers.
+ *
+ * `dateFrom`/`dateTo` are applied client-side against each row's
+ * `last_active_at` (see `isWithinDateRange` below) — the server itself
+ * ignores the date params for this list endpoint (`api/useAnalytics.ts`'s
+ * header), so without this filter the date-range picker would have no
+ * observable effect here either, the same defect this unit fixed on the
+ * Agents/Tools tabs' error-rate display but could NOT fix for those tabs'
+ * date filtering (see `AnalyticsAgents.tsx`/`AnalyticsTools.tsx`'s list-query
+ * doc comments) because those rows carry no per-row timestamp to filter by.
  */
 export interface AnalyticsUsersProps {
   readonly projectId: string | undefined;
@@ -70,6 +79,32 @@ function matchesSearch(row: UserActivity, query: string): boolean {
   return row.email.toLowerCase().includes(query.toLowerCase());
 }
 
+/**
+ * `true` when `lastActiveAt` (a row's `last_active_at`, ISO 8601 with
+ * offset — `UserActivity`'s zod schema) falls within `[from, to]` (also
+ * ISO 8601 — `model/dateRange.ts`'s `toIsoRange` is what produces the
+ * `dateFrom`/`dateTo` props this component receives). Local to this file
+ * rather than imported from `../model/dateRange`: this cluster's file scope
+ * is `ui/AnalyticsUsers.tsx` only, and the comparison itself is too small
+ * to justify reaching outside it.
+ *
+ * Unlike the Agents/Tools tabs (see the doc comments on
+ * `AnalyticsAgents.tsx`/`AnalyticsTools.tsx`'s own list-query call sites),
+ * the Users tab CAN be fixed entirely client-side: `UserActivity` genuinely
+ * carries a per-row timestamp the list response already returns, so
+ * filtering the already-fetched rows down to the picker's range is a real
+ * fix for "the date-range picker has no effect on this tab" — it needs no
+ * backend change. (`useAnalyticsUsersListQuery` still sends `date_from`/
+ * `date_to` on the wire too, for parity with the other list calls, but per
+ * `api/useAnalytics.ts`'s header the server itself ignores it and always
+ * returns the full set — this filter is what actually makes the range
+ * effective.)
+ */
+function isWithinDateRange(lastActiveAt: string, from: string, to: string): boolean {
+  const time = new Date(lastActiveAt).getTime();
+  return time >= new Date(from).getTime() && time <= new Date(to).getTime();
+}
+
 interface SelectedUser {
   readonly userId: string;
   readonly email: string;
@@ -85,7 +120,13 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
   const [cameFromExternal] = useState(() => initialUserId != null);
 
   const { data, isFetching } = useAnalyticsUsersListQuery(projectId, { dateFrom, dateTo });
-  const items = useMemo(() => data?.items ?? [], [data]);
+  // See `isWithinDateRange`'s doc comment: the server ignores `date_from`/
+  // `date_to` for this list endpoint, so this filter is what makes the
+  // date-range picker actually take effect on this tab.
+  const items = useMemo(
+    () => (data?.items ?? []).filter((row) => isWithinDateRange(row.last_active_at, dateFrom, dateTo)),
+    [data, dateFrom, dateTo],
+  );
 
   const handleBack = useCallback(() => {
     if (cameFromExternal && onBackToSource !== undefined) {

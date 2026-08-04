@@ -33,7 +33,7 @@ describe('AnalyticsUsers', () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
         HttpResponse.json({
-          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-01T00:00:00Z' }],
+          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-22T00:00:00Z' }],
         }),
       ),
     );
@@ -51,7 +51,7 @@ describe('AnalyticsUsers', () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
         HttpResponse.json({
-          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-01T00:00:00Z' }],
+          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-22T00:00:00Z' }],
         }),
       ),
     );
@@ -66,11 +66,40 @@ describe('AnalyticsUsers', () => {
     expect(getAllByText('–')).toHaveLength(6);
   });
 
+  it('filters rows client-side to the selected date range using last_active_at (the date-picker-is-inert defect fix)', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [
+            // Inside RANGE (2026-07-20..2026-07-27).
+            { user_id: 'u1', email: 'in-range@example.com', run_count: 6, last_active_at: '2026-07-22T00:00:00Z' },
+            // Before RANGE.
+            { user_id: 'u2', email: 'too-old@example.com', run_count: 3, last_active_at: '2026-07-01T00:00:00Z' },
+            // After RANGE.
+            { user_id: 'u3', email: 'too-new@example.com', run_count: 9, last_active_at: '2026-08-01T00:00:00Z' },
+          ],
+        }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsUsers
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('in-range@example.com')).toBeInTheDocument();
+    expect(queryByText('too-old@example.com')).not.toBeInTheDocument();
+    expect(queryByText('too-new@example.com')).not.toBeInTheDocument();
+    // The subtitle count reflects the filtered set, not the raw response.
+    expect(await findByText('1 users')).toBeInTheDocument();
+  });
+
   it('drills into AnalyticsUserDetailed sending user_id, and clicking Back returns to the list', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () =>
         HttpResponse.json({
-          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-01T00:00:00Z' }],
+          items: [{ user_id: 'u1', email: 'bob@example.com', run_count: 6, last_active_at: '2026-07-22T00:00:00Z' }],
         }),
       ),
       http.get(`${BASE}/elitea_core/analytics_user_detail/prompt_lib/7`, ({ request }) => {

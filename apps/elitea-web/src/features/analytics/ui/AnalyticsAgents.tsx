@@ -41,6 +41,11 @@ export interface AnalyticsAgentsProps {
   readonly dateTo: string;
 }
 
+interface SelectedAgent {
+  readonly applicationId: string;
+  readonly agentName: string;
+}
+
 const contentSx: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: (theme: Theme) => theme.spacing(2) };
 
 const cardSx = (theme: Theme) => ({
@@ -79,8 +84,27 @@ function matchesSearch(row: AgentAnalytics, query: string): boolean {
 
 function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsProps): ReactNode {
   const theme = useTheme();
-  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<SelectedAgent | null>(null);
 
+  // `dateFrom`/`dateTo` ARE sent correctly here — `useAnalyticsAgentsListQuery`
+  // (`api/useAnalytics.ts`) forwards them as `date_from`/`date_to` query
+  // params on every request. The date-range picker is nonetheless cosmetic
+  // for this tab: `internal/api/v2/analytics/handler.go`'s `Agents()`
+  // handler parses `start_date`/`end_date` via `parseParams()` (used to
+  // build the response for `GetUsageSummary`, which powers the
+  // Overview/Health tabs) but never threads that result into
+  // `repo.GetAgentAnalytics(...)`, which takes no date bounds at all — so
+  // this list is the same all-time aggregate regardless of what preset is
+  // selected. OUT OF SCOPE FOR THIS UNIT (a Go handler in a different
+  // repo/monorepo than this frontend worktree): the fix is
+  // `Agents()` passing `params.StartDate`/`params.EndDate` through to
+  // `repo.GetAgentAnalytics(...)`, mirroring how `GetUsageSummary` already
+  // receives them. There is also no client-side compensating fix available
+  // here the way there is for `AnalyticsUsers.tsx`'s `last_active_at`-based
+  // filter: `AgentAnalytics` rows carry no per-row timestamp at all (see
+  // this file's header) — only pre-aggregated `run_count`/`avg_duration_ms`/
+  // `total_tokens`/`error_rate` — so there is nothing on the already-fetched
+  // rows to filter by.
   const { data, isFetching } = useAnalyticsAgentsListQuery(projectId, { dateFrom, dateTo });
   const items = useMemo(() => data?.items ?? [], [data]);
 
@@ -94,13 +118,14 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
     [items],
   );
 
-  const handleBack = useCallback(() => setSelectedApplicationId(null), []);
+  const handleBack = useCallback(() => setSelectedAgent(null), []);
 
-  if (selectedApplicationId !== null) {
+  if (selectedAgent !== null) {
     return (
       <AnalyticsAgentDetailed
         projectId={projectId}
-        applicationId={selectedApplicationId}
+        applicationId={selectedAgent.applicationId}
+        agentName={selectedAgent.agentName}
         dateFrom={dateFrom}
         dateTo={dateTo}
         onBack={handleBack}
@@ -141,11 +166,19 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
       flex: 1,
       render: (row) => {
         const errorRate = row['error_rate'] as number;
+        // `error_rate` is a 0-1 fraction (`AgentAnalytics.error_rate`,
+        // `internal/domain/analytics/types.go:22-29`), not a 0-100
+        // percentage — must be scaled ×100 for display, matching this
+        // feature's other fraction→percent readouts (e.g.
+        // `ModelUsageTable.tsx`'s `share.toFixed(1)}%`). Previously
+        // rendered the raw fraction with a bare `%` suffix, showing every
+        // non-zero error rate 100x too small (a real 20% rate as "0.2%").
+        const errorRatePercent = errorRate * 100;
         return (
           <Typography
             sx={combineSx(cellSx, { color: errorRate > 0 ? theme.vars.palette.status.rejected : undefined })}
           >
-            {errorRate}%
+            {errorRatePercent.toFixed(1)}%
           </Typography>
         );
       },
@@ -224,7 +257,9 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
           rowKey={(row, index) => `${String(row['application_id'])}-${index}`}
           searchPlaceholder={t('analytics.agents.searchPlaceholder', 'Search by agent name')}
           searchFilter={(row, query) => matchesSearch(row as unknown as AgentAnalytics, query)}
-          onRowClick={(row) => setSelectedApplicationId(String(row['application_id']))}
+          onRowClick={(row) =>
+            setSelectedAgent({ applicationId: String(row['application_id']), agentName: String(row['name']) })
+          }
         />
       </Box>
     </Box>

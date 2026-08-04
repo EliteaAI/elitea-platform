@@ -101,7 +101,12 @@ const shareLabelSx = (theme: Theme) => ({
 function ModelUsageTableImpl({ models, totalCalls }: ModelUsageTableProps): ReactNode {
   if (models.length === 0) return null;
 
-  const maxCalls = models[0]?.run_count ?? 1;
+  // `||`, not `??`: a real top-ranked model with `run_count: 0` (every
+  // model unused in the selected date range) must still fall back to `1`
+  // so the share-bar width below is `0 / 1 = 0%`, not `0 / 0 = NaN%`.
+  // Matches the baseline's `models[0]?.calls || 1`
+  // (`apps/elitea-ui/.../ModelUsageTable.jsx:15`).
+  const maxCalls = models[0]?.run_count || 1;
 
   return (
     <Box sx={cardSx}>

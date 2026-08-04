@@ -80,6 +80,23 @@ function AnalyticsToolsImpl({ projectId, dateFrom, dateTo }: AnalyticsToolsProps
   const theme = useTheme();
   const [selectedTool, setSelectedTool] = useState<SelectedTool | null>(null);
 
+  // `dateFrom`/`dateTo` ARE sent correctly here — `useAnalyticsToolsListQuery`
+  // (`api/useAnalytics.ts`) forwards them as `date_from`/`date_to` query
+  // params on every request. The date-range picker is nonetheless cosmetic
+  // for this tab, same defect shape as `AnalyticsAgents.tsx` (see that
+  // file's header comment above its own list-query call for the full
+  // rationale): `internal/api/v2/analytics/handler.go`'s `Tools()` handler
+  // parses `start_date`/`end_date` via `parseParams()` but never threads
+  // that result into `repo.GetToolAnalytics(...)`, which takes no date
+  // bounds at all — only `GetUsageSummary` (Overview/Health) actually
+  // receives them. OUT OF SCOPE FOR THIS UNIT (a Go handler in a different
+  // repo/monorepo than this frontend worktree): the fix is `Tools()`
+  // passing `params.StartDate`/`params.EndDate` through to
+  // `repo.GetToolAnalytics(...)`. No client-side compensating fix is
+  // available either: `ToolAnalytics` rows carry no per-row timestamp (see
+  // this file's header) — only pre-aggregated `run_count`/`avg_duration_ms`/
+  // `error_rate` — so there is nothing on the already-fetched rows to filter
+  // by (contrast `AnalyticsUsers.tsx`, whose rows do carry `last_active_at`).
   const { data, isFetching } = useAnalyticsToolsListQuery(projectId, { dateFrom, dateTo });
   const items = useMemo(() => data?.items ?? [], [data]);
 
@@ -141,11 +158,19 @@ function AnalyticsToolsImpl({ projectId, dateFrom, dateTo }: AnalyticsToolsProps
       flex: 1,
       render: (row) => {
         const errorRate = row['error_rate'] as number;
+        // `error_rate` is a 0-1 fraction (`ToolAnalytics.error_rate`,
+        // `internal/domain/analytics/types.go:31-37`), not a 0-100
+        // percentage — must be scaled ×100 for display, matching this
+        // feature's other fraction→percent readouts (e.g.
+        // `ModelUsageTable.tsx`'s `share.toFixed(1)}%`). Previously
+        // rendered the raw fraction with a bare `%` suffix, showing every
+        // non-zero error rate 100x too small (a real 20% rate as "0.2%").
+        const errorRatePercent = errorRate * 100;
         return (
           <Typography
             sx={combineSx(cellSx, { color: errorRate > 0 ? theme.vars.palette.status.rejected : undefined })}
           >
-            {errorRate}%
+            {errorRatePercent.toFixed(1)}%
           </Typography>
         );
       },

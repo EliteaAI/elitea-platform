@@ -25,10 +25,26 @@ import { EntityListCard } from './components/EntityListCard';
  * the baseline's `total_events`/`avg_duration_ms`/`errors`/`error_rate`
  * card set, none of which exist on the real backend response), daily-usage
  * chart, and the users/tools that interacted with it.
+ *
+ * NOTE(A10-fix, header entity name): the Go handler's `Agents()` detail
+ * branch hardcodes `entity_name: ""` unconditionally
+ * (`services/elitea-main/internal/api/v2/analytics/handler.go:76-88`) — the
+ * same stub `Tools()`/`Users()` return. `AnalyticsToolDetailed`/
+ * `AnalyticsUserDetailed` compensate with a real, already-known-from-the-
+ * list-row fallback (`toolName`/`userEmail`, threaded in by their parent
+ * list screens); `AnalyticsAgents.tsx` now does the same via the optional
+ * `agentName` prop below, set from `AgentAnalytics.name` in its
+ * `onRowClick`. If `entity_name` and `agentName` are both empty (e.g. a
+ * direct/deep-linked mount with no caller-supplied name), the header falls
+ * back to a generic `"Agent {{applicationId}}"` label (`unnamedAgent`)
+ * rather than rendering blank — the same pattern this file's own Users
+ * column already uses for `unnamedUser` a few lines down.
  */
 export interface AnalyticsAgentDetailedProps {
   readonly projectId: string | undefined;
   readonly applicationId: string;
+  /** Real display name already known to the caller (e.g. the list row's `name`), used when the backend's `entity_name` stub is empty. See the NOTE(A10-fix) header comment above. */
+  readonly agentName?: string;
   readonly dateFrom: string;
   readonly dateTo: string;
   readonly onBack: () => void;
@@ -46,6 +62,7 @@ const listsGridSx: SxProps<Theme> = {
 function AnalyticsAgentDetailedImpl({
   projectId,
   applicationId,
+  agentName,
   dateFrom,
   dateTo,
   onBack,
@@ -62,7 +79,15 @@ function AnalyticsAgentDetailedImpl({
   return (
     <Box sx={contentSx}>
       <DetailHeader
-        entityName={data.entity_name}
+        // The Go stub's `entity_name` is always `""` today (see this file's
+        // NOTE(A10-fix) header comment). Prefer a real name, then the
+        // not-yet-wired `agentName` extension point, then a generic
+        // locally-known fallback — never blank.
+        entityName={
+          data.entity_name ||
+          agentName ||
+          t('analytics.agentDetail.unnamedAgent', 'Agent {{id}}', { id: applicationId })
+        }
         onBack={onBack}
       />
       <AnalyticsKpiRow kpis={data.kpis} />

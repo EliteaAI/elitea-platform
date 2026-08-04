@@ -15,6 +15,16 @@ import { AnalyticsAgentDetailed } from './AnalyticsAgentDetailed';
 const BASE = '/api/v2';
 const RANGE = { dateFrom: '2026-07-20T00:00:00.000Z', dateTo: '2026-07-27T00:00:00.000Z' };
 const DETAIL_URL = `${BASE}/elitea_core/analytics_agent_detail/prompt_lib/7`;
+const ZERO_KPIS = {
+  unique_users: 0,
+  total_project_users: 0,
+  ai_active_users: 0,
+  adoption_rate: 0,
+  llm_calls: 0,
+  tool_runs: 0,
+  chat_msgs: 0,
+  agent_runs: 0,
+};
 
 function renderScreen(ui: ReactElement): RenderResult {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -77,6 +87,64 @@ describe('AnalyticsAgentDetailed', () => {
     expect(await findByText('My Agent')).toBeInTheDocument();
     expect(getByText('No user data')).toBeInTheDocument();
     expect(getByText('No tool data')).toBeInTheDocument();
+  });
+
+  it('falls back to a generic "Agent {id}" label — never blank — when the stub entity_name is empty and no agentName is known', async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json({ entity_name: '', kpis: ZERO_KPIS, users: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const { findByText } = renderScreen(
+      <AnalyticsAgentDetailed
+        projectId="7"
+        applicationId="app1"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        onBack={() => {}}
+      />,
+    );
+    expect(await findByText('Agent app1')).toBeInTheDocument();
+  });
+
+  it('prefers the already-known agentName over the generic fallback when the stub entity_name is empty', async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json({ entity_name: '', kpis: ZERO_KPIS, users: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsAgentDetailed
+        projectId="7"
+        applicationId="app1"
+        agentName="Research Agent"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        onBack={() => {}}
+      />,
+    );
+    expect(await findByText('Research Agent')).toBeInTheDocument();
+    expect(queryByText('Agent app1')).not.toBeInTheDocument();
+  });
+
+  it('prefers a real entity_name over agentName and the generic fallback when the backend provides one', async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json({ entity_name: 'Real Agent Name', kpis: ZERO_KPIS, users: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsAgentDetailed
+        projectId="7"
+        applicationId="app1"
+        agentName="Research Agent"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        onBack={() => {}}
+      />,
+    );
+    expect(await findByText('Real Agent Name')).toBeInTheDocument();
+    expect(queryByText('Research Agent')).not.toBeInTheDocument();
   });
 
   it('renders sibling users/tools rows when present', async () => {

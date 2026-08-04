@@ -1,9 +1,11 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
+import { useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
+import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
 import { t } from '@/shared/i18n';
 
@@ -11,7 +13,7 @@ import { useAnalyticsUserDetailQuery } from '../api/useAnalytics';
 import { fmtNum } from '../lib/format';
 import { numField, strField } from '../lib/looseRecord';
 import { AnalyticsKpiRow } from './components/AnalyticsKpiRow';
-import { DailyUsageChart } from './components/DailyUsageChart';
+import { ChartTooltip } from './components/ChartTooltip';
 import { DetailEmpty, DetailLoading } from './components/DetailStatus';
 import { DetailHeader } from './components/DetailHeader';
 
@@ -27,6 +29,25 @@ import { DetailHeader } from './components/DetailHeader';
  * distinct from `AnalyticsAgentDetailed`/`AnalyticsToolDetailed`'s
  * header-table sibling lists, kept as its own inline rendering here rather
  * than forced through `EntityListCard`).
+ *
+ * NOTE(A10-fix, daily-activity chart shape): the local `DailyActivityChart`
+ * below renders this screen's OWN chart contract — `llm`/`tool` on the left
+ * axis, `chat`/`agent` on the right, ported field-for-field/axis-for-axis
+ * from the baseline JSX's inline 4-series `AreaChart` (no `errors` series;
+ * the baseline chart never had one). This is DELIBERATELY NOT the shared
+ * `ui/components/DailyUsageChart` component `AnalyticsAgentDetailed`/
+ * `AnalyticsToolDetailed` use — that component's `events`/`calls`-vs-
+ * `errors` shape matches THEIR baselines, not this screen's. A prior
+ * revision of this file called the shared component here too, which
+ * silently reshaped the baseline's per-type breakdown into that generic
+ * events-vs-errors chart and introduced an `errors` series the baseline
+ * User Detail chart never had (this unit's confirmed finding). Like every
+ * other array on `AnalyticsDetailEnvelope`, `daily_usage` is a
+ * `zod.looseObject({})` the Go handler hardcodes to `[]` today (see
+ * `lib/looseRecord.ts`'s header) — reading `llm`/`tool`/`chat`/`agent`
+ * fields off it is exactly as speculative/forward-compatible as the shared
+ * component reading `events`/`errors` off the same kind of row for its own
+ * screens; neither is backed by a real populated field yet.
  *
  * DROPPED vs. the baseline: the "Models Used" card. Unlike the
  * users/tools/agents siblings (real, if currently-empty,
@@ -91,6 +112,139 @@ const listItemSx = (theme: Theme) => ({
   minWidth: 0,
   '&:last-child': { borderBottom: 'none' },
 });
+
+/** One day's per-event-type counts, as read off `AnalyticsDetailEnvelope.daily_usage`'s loose rows. */
+export interface DailyActivityPoint {
+  readonly date: string;
+  readonly llm: number;
+  readonly tool: number;
+  readonly chat: number;
+  readonly agent: number;
+}
+
+/**
+ * Reads this screen's OWN `llm`/`tool`/`chat`/`agent` per-day breakdown off
+ * `daily_usage` — see the top-of-file NOTE(A10-fix) for why this must not
+ * be the `events`/`errors` shape `ui/components/DailyUsageChart` reads for
+ * its own (Agent/Tool Detailed) callers. Exported as a plain, pure function
+ * so this mapping — the crux of the confirmed finding this fixes — is
+ * directly unit-testable without going through `recharts`' SVG rendering.
+ */
+export function dailyActivityPoints(rows: readonly Readonly<Record<string, unknown>>[]): readonly DailyActivityPoint[] {
+  return rows.map((row) => ({
+    date: strField(row, 'date'),
+    llm: numField(row, 'llm'),
+    tool: numField(row, 'tool'),
+    chat: numField(row, 'chat'),
+    agent: numField(row, 'agent'),
+  }));
+}
+
+interface DailyActivityChartProps {
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+}
+
+/**
+ * User Detail's own daily-activity chart. `llm`+`tool` share the left axis,
+ * `chat`+`agent` share the right — axes, colours, and series ordering are
+ * ported unchanged from the baseline JSX's inline `AreaChart`. No `errors`
+ * series: the baseline User Detail chart never had one.
+ */
+function DailyActivityChart({ rows }: DailyActivityChartProps): ReactNode {
+  const theme = useTheme();
+  const axisStroke = theme.vars.palette.text.primary;
+  const axisTickStyle = { fill: axisStroke, fontSize: theme.typography.labelSmall.fontSize };
+  const points = useMemo(() => dailyActivityPoints(rows), [rows]);
+
+  if (points.length === 0) return null;
+
+  return (
+    <Box sx={cardSx}>
+      <Typography
+        variant="labelMedium"
+        sx={titleSx}
+      >
+        {t('analytics.userDetail.dailyActivityTitle', 'Daily Activity')}
+      </Typography>
+      <Typography
+        variant="bodySmall"
+        sx={subtitleSx}
+      >
+        {t('analytics.userDetail.dailyActivitySubtitle', 'Events by type per day')}
+      </Typography>
+      <Box sx={{ width: '100%', overflow: 'hidden', flex: 1, minHeight: 200 }}>
+        <ResponsiveContainer
+          width="100%"
+          height={220}
+        >
+          <AreaChart data={points}>
+            <XAxis
+              dataKey="date"
+              tick={axisTickStyle}
+              tickFormatter={(value: string) => value.slice(5)}
+              axisLine={{ stroke: axisStroke }}
+              tickLine={{ stroke: axisStroke }}
+            />
+            <YAxis
+              yAxisId="left"
+              tick={axisTickStyle}
+              axisLine={{ stroke: axisStroke }}
+              tickLine={{ stroke: axisStroke }}
+            />
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={axisTickStyle}
+              axisLine={{ stroke: axisStroke }}
+              tickLine={{ stroke: axisStroke }}
+            />
+            <RechartsTooltip content={<ChartTooltip />} />
+            <Area
+              yAxisId="left"
+              type="monotone"
+              dataKey="llm"
+              name={t('analytics.userDetail.seriesLlm', 'LLM')}
+              stroke={theme.vars.palette.status.draft}
+              fill={theme.vars.palette.status.draft}
+              fillOpacity={0.15}
+              strokeWidth={2}
+            />
+            <Area
+              yAxisId="left"
+              type="monotone"
+              dataKey="tool"
+              name={t('analytics.userDetail.seriesTool', 'Tool')}
+              stroke={theme.vars.palette.status.published}
+              fill={theme.vars.palette.status.published}
+              fillOpacity={0.1}
+              strokeWidth={2}
+            />
+            <Area
+              yAxisId="right"
+              type="monotone"
+              dataKey="chat"
+              name={t('analytics.userDetail.seriesChat', 'Chat Msg')}
+              stroke={theme.vars.palette.status.userApproval}
+              fill={theme.vars.palette.status.userApproval}
+              fillOpacity={0.1}
+              strokeWidth={2}
+            />
+            <Area
+              yAxisId="right"
+              type="monotone"
+              dataKey="agent"
+              name={t('analytics.userDetail.seriesAgent', 'Agent')}
+              stroke={theme.vars.palette.status.onModeration}
+              fill={theme.vars.palette.status.onModeration}
+              fillOpacity={0.1}
+              strokeWidth={2}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </Box>
+    </Box>
+  );
+}
 
 interface DotListProps {
   readonly title: string;
@@ -174,13 +328,7 @@ function AnalyticsUserDetailedImpl({
         onBack={onBack}
       />
       <AnalyticsKpiRow kpis={data.kpis} />
-      <DailyUsageChart
-        title={t('analytics.userDetail.dailyActivityTitle', 'Daily Activity')}
-        rows={data.daily_usage}
-        primaryKey="events"
-        primaryLabel={t('analytics.userDetail.seriesEvents', 'Events')}
-        errorsLabel={t('analytics.userDetail.seriesErrors', 'Errors')}
-      />
+      <DailyActivityChart rows={data.daily_usage} />
       <Box sx={listsGridSx}>
         <DotList
           title={t('analytics.userDetail.toolsTitle', 'Tools Used')}

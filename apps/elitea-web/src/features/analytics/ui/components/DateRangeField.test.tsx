@@ -3,6 +3,7 @@ import type { ReactElement } from 'react';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import type { RenderResult } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
@@ -79,5 +80,53 @@ describe('DateRangeField', () => {
         />,
       ),
     ).not.toThrow();
+  });
+
+  /**
+   * Regression coverage for the "Clear button silently no-ops" finding: the
+   * old `onChange={(next) => next !== null && onChange(next)}` handler
+   * discarded the `null` MUI's action bar sends on Clear, so the button was
+   * visible but dead. These two cases pin the fix: the button only appears
+   * when a caller opts in via `onClear`, and clicking it calls `onClear`
+   * (not `onChange`, which has no way to represent "cleared").
+   */
+  it('routes a Clear click to onClear, not onChange, when onClear is supplied', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onClear = vi.fn();
+    const { getByRole } = renderField(
+      <DateRangeField
+        label="From:"
+        value={new Date('2026-07-20T00:00:00.000Z')}
+        onChange={onChange}
+        open
+        onOpen={() => {}}
+        onClose={() => {}}
+        onClear={onClear}
+      />,
+    );
+
+    await user.click(getByRole('button', { name: /clear/i }));
+
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('hides the Clear action entirely when no onClear is supplied', () => {
+    const { queryByRole } = renderField(
+      <DateRangeField
+        label="From:"
+        value={new Date('2026-07-20T00:00:00.000Z')}
+        onChange={vi.fn()}
+        open
+        onOpen={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(queryByRole('button', { name: /clear/i })).toBeNull();
+    // The rest of the action bar (Apply/"OK") is still there — only the
+    // dead Clear affordance is removed.
+    expect(queryByRole('button', { name: /apply/i })).not.toBeNull();
   });
 });

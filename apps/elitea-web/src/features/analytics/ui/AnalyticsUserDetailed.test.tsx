@@ -10,7 +10,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 
 import { server } from '../../../test/setup';
-import { AnalyticsUserDetailed } from './AnalyticsUserDetailed';
+import { AnalyticsUserDetailed, dailyActivityPoints } from './AnalyticsUserDetailed';
 
 const BASE = '/api/v2';
 const RANGE = { dateFrom: '2026-07-20T00:00:00.000Z', dateTo: '2026-07-27T00:00:00.000Z' };
@@ -37,6 +37,23 @@ beforeEach(() => {
 
 afterEach(() => {
   resetGeneratedClient();
+});
+
+describe('dailyActivityPoints', () => {
+  it('reads the llm/tool/chat/agent per-type breakdown, not the generic events/errors shape', () => {
+    const rows = [
+      { date: '2026-07-20', llm: 3, tool: 5, chat: 2, agent: 1, events: 999, errors: 999 },
+      { date: '2026-07-21', llm: 0, tool: 0, chat: 0, agent: 0 },
+    ];
+    expect(dailyActivityPoints(rows)).toEqual([
+      { date: '2026-07-20', llm: 3, tool: 5, chat: 2, agent: 1 },
+      { date: '2026-07-21', llm: 0, tool: 0, chat: 0, agent: 0 },
+    ]);
+  });
+
+  it('defaults every count field to 0 and the date to "" for rows missing them', () => {
+    expect(dailyActivityPoints([{}])).toEqual([{ date: '', llm: 0, tool: 0, chat: 0, agent: 0 }]);
+  });
 });
 
 describe('AnalyticsUserDetailed', () => {
@@ -70,6 +87,56 @@ describe('AnalyticsUserDetailed', () => {
       />,
     );
     expect(await findByText('a@x.com')).toBeInTheDocument();
+  });
+
+  it('renders the user-detail-specific Daily Activity chart (title + "Events by type per day" subtitle) when daily_usage has rows', async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json({
+          entity_name: 'a@x.com',
+          kpis: ZERO_KPIS,
+          agents: [],
+          tools: [],
+          daily_usage: [{ date: '2026-07-20', llm: 3, tool: 5, chat: 2, agent: 1 }],
+        }),
+      ),
+    );
+    const { findByText, getByText } = renderScreen(
+      <AnalyticsUserDetailed
+        projectId="7"
+        userId="u1"
+        userEmail="a@x.com"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        onBack={() => {}}
+      />,
+    );
+    expect(await findByText('Daily Activity')).toBeInTheDocument();
+    // The generic Agent/Tool Detailed chart (`ui/components/DailyUsageChart`)
+    // never renders a subtitle at all — this text only exists on this
+    // screen's own per-type chart, so its presence proves the fix is wired
+    // in, not just that SOME chart with a "Daily Activity" title rendered.
+    expect(getByText('Events by type per day')).toBeInTheDocument();
+  });
+
+  it('renders no Daily Activity chart when daily_usage is empty (matches the shared chart siblings empty behaviour)', async () => {
+    server.use(
+      http.get(DETAIL_URL, () =>
+        HttpResponse.json({ entity_name: 'a@x.com', kpis: ZERO_KPIS, agents: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsUserDetailed
+        projectId="7"
+        userId="u1"
+        userEmail="a@x.com"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+        onBack={() => {}}
+      />,
+    );
+    await findByText('a@x.com');
+    expect(queryByText('Daily Activity')).not.toBeInTheDocument();
   });
 
   it('renders the Tools Used / Agents Used dot-lists (no Models Used card — no backing field)', async () => {

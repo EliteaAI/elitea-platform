@@ -47,6 +47,25 @@ describe('AnalyticsTools', () => {
     expect(await findByText('web_search')).toBeInTheDocument();
   });
 
+  it('renders a real error_rate fraction scaled ×100 as a percentage, not the raw fraction (the 100x display defect fix)', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_tools/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ toolkit_id: 'tk1', tool_name: 'web_search', run_count: 8, avg_duration_ms: 150, error_rate: 0.2 }],
+        }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsTools
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('20.0%')).toBeInTheDocument();
+    expect(queryByText('0.2%')).not.toBeInTheDocument();
+  });
+
   it("drills into AnalyticsToolDetailed sending toolkit_id (the defect fix), not tool_id or tool_name", async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_tools/prompt_lib/7`, () =>

@@ -57,4 +57,26 @@ describe('ModelUsageTable', () => {
     );
     expect(getAllByText('0.0%')).toHaveLength(MODELS.length);
   });
+
+  it('renders a real 0% share-bar width (not NaN%) when the top-ranked model has run_count 0', () => {
+    const zeroRunCountModels: readonly ModelUsage[] = [
+      { model: 'idle-model', prompt_tokens: 0, completion_tokens: 0, total_cost: 0, run_count: 0 },
+    ];
+    const { queryByText } = renderWithTheme(
+      <ModelUsageTable
+        models={zeroRunCountModels}
+        totalCalls={0}
+      />,
+    );
+    expect(queryByText('0.0%')).toBeInTheDocument();
+    // The share-bar's `width: ${(model.run_count / maxCalls) * 100}%` is set
+    // via MUI's `sx` prop, which emotion compiles into an injected
+    // stylesheet (not an inline `style=` attribute) — assert against that
+    // stylesheet directly. Before the `??` -> `||` fix, `maxCalls` was `0`
+    // here (the only/top-ranked model's own `run_count`), so this would
+    // have been `width:NaN%` instead of the real `width:0%`.
+    const styleText = document.head.innerHTML;
+    expect(styleText).not.toContain('NaN');
+    expect(styleText).toContain('width:0%');
+  });
 });

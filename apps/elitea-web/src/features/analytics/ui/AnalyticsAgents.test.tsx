@@ -48,6 +48,25 @@ describe('AnalyticsAgents', () => {
     expect(getByText('Agent Activity')).toBeInTheDocument();
   });
 
+  it('renders a real error_rate fraction scaled ×100 as a percentage, not the raw fraction (the 100x display defect fix)', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ application_id: 'app1', name: 'My Agent', run_count: 12, avg_duration_ms: 300, total_tokens: 5, error_rate: 0.2 }],
+        }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsAgents
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('20.0%')).toBeInTheDocument();
+    expect(queryByText('0.2%')).not.toBeInTheDocument();
+  });
+
   it('renders no chart when there are no agents yet', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () => HttpResponse.json({ items: [] })),
@@ -90,5 +109,31 @@ describe('AnalyticsAgents', () => {
     // The list's own chrome is gone; the detail screen's back button is present.
     expect(queryByText('Agent Activity')).not.toBeInTheDocument();
     expect(await findByRole('button', { name: 'Back' })).toBeInTheDocument();
+  });
+
+  it('threads the row\'s real name into AnalyticsAgentDetailed so the header is never blank against the real backend\'s empty entity_name (regression)', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_agents/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ application_id: 'app1', name: 'My Agent', run_count: 12, avg_duration_ms: 300, total_tokens: 5, error_rate: 0 }],
+        }),
+      ),
+      http.get(`${BASE}/elitea_core/analytics_agent_detail/prompt_lib/7`, () =>
+        // The real backend hardcodes entity_name to "" — see AnalyticsAgentDetailed.tsx's NOTE(A10-fix) comment.
+        HttpResponse.json({ entity_name: '', kpis: {}, users: [], tools: [], daily_usage: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsAgents
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    await user.click(await findByText('My Agent'));
+
+    expect(await findByText('My Agent')).toBeInTheDocument();
+    expect(queryByText('Agent app1')).not.toBeInTheDocument();
   });
 });
