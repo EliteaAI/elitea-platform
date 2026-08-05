@@ -33,9 +33,15 @@ func TestMainWiring(t *testing.T) {
 		{"account.NewFernetVault(", "the Fernet vault is never constructed — {{secret.NAME}} credential references cannot be resolved (BFF.6)"},
 		{"llmproxy.WithLoopBreaker(", "circular-routing guard #2 (spec §2.6) is never armed — a routing loop would run unchecked in production"},
 		{"llmproxy.WithAlertEventPublisher(", "budget.soft_alert is never published to gateway.events.* — the 80% alert would be invisible to subscribers (spec §8.3)"},
+		{"llmproxy.WithStreamGrace(", "the stream-disconnect grace period is never configured — a client that disconnects mid-stream is billed nothing and the hard budget is bypassable (issue #9)"},
+		{"llmproxy.WithStreamDrainLimit(", "abandoned-stream drains are unbounded — a disconnect storm holds unbounded goroutines and provider sockets (issue #9)"},
+		{"shutdownSequence(", "the shutdown sequence is never invoked — stream grace, HTTP drain, billing drain and NATS close would not run in the one order that loses no spend (issue #9)"},
+		{"llmproxy.WithOpsEventPublisher(", "budget.unbilled_stream is never published — a stream the gateway could not bill would be invisible to operators (issue #9)"},
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
 		{"drainForShutdown(", "in-flight billing + persist goroutines must be drained before pool.Close() or spend is dropped / a pool races"},
-		{"srv.Shutdown(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
+		{"grace.StopStreamGrace(", "phase 1 of shutdown is missing — the stream grace would extend the pod's termination window (issue #9)"},
+		{"srv.ShutdownHTTP(", "graceful drain of in-flight SSE streams (§9.5) — without it, deploys truncate live responses"},
+		{"srv.Close(", "the NATS client is never closed — and it MUST close after the billing drain, not inside the HTTP shutdown, or in-flight increments hit a dead connection"},
 	}
 
 	// Parse each non-test .go file in this package dir individually. (Avoids

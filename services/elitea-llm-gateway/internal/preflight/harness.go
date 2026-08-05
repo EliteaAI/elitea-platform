@@ -35,8 +35,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
-	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	natspkg "github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -265,19 +265,21 @@ type FakeNATS struct {
 	mu sync.Mutex
 
 	// Totals maps subject → current authoritative counter value (nano-USD).
-	Totals  map[string]int64
+	Totals map[string]int64
 	// Deltas records every payload sent via PublishDelta (write-behind deltas).
-	Deltas  [][]byte
+	Deltas [][]byte
 	// AlertEvents records every (projectID, envelope) pair sent via
 	// PublishSoftAlertEvent (the gateway.events.* budget.soft_alert surface).
 	AlertEvents []AlertEventRecord
+	// OpsEvents captures PublishOpsEvent (gateway.events.ops.*, operator-only).
+	OpsEvents [][]byte
 	// applied tracks event_ids already applied (idempotency guard).
 	applied map[string]bool
 
 	// Error overrides — nil means success.
-	ReadErr  error
-	IncrErr  error
-	PubErr   error
+	ReadErr error
+	IncrErr error
+	PubErr  error
 
 	breakerState  gobreaker.State
 	stateChangeFn func(from, to gobreaker.State)
@@ -305,6 +307,23 @@ func (n *FakeNATS) PublishSoftAlertEvent(_ context.Context, projectID string, ev
 	defer n.mu.Unlock()
 	n.AlertEvents = append(n.AlertEvents, AlertEventRecord{ProjectID: projectID, Event: append([]byte(nil), event...)})
 	return nil
+}
+
+// PublishOpsEvent records an operator-only event (budget.unbilled_stream,
+// issue #9). Kept in a SEPARATE slice from AlertEvents so a test can assert
+// that the loss record never reaches the tenant-facing project channel.
+func (n *FakeNATS) PublishOpsEvent(_ context.Context, event []byte) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.OpsEvents = append(n.OpsEvents, append([]byte(nil), event...))
+	return nil
+}
+
+// OpsEventCount safely returns the number of captured operator-only events.
+func (n *FakeNATS) OpsEventCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.OpsEvents)
 }
 
 // AlertEventCount safely returns the number of captured soft-alert events.

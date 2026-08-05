@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -892,5 +893,74 @@ func TestCounterValue_NATS212JSONBody(t *testing.T) {
 		if !c.ok && err == nil {
 			t.Errorf("counterValue(%q) = %d, nil; want error", c.data, got)
 		}
+	}
+}
+
+// ── PublishOpsEvent (gateway.events.ops.*) ───────────────────────────────────
+
+// TestPublishOpsEvent_SubjectIsNotTenantVisible is the privacy assertion for
+// the operator-only port. budget.unbilled_stream records which streams the
+// gateway failed to bill; on the per-project subject that elitea-main relays to
+// project members it would be a live oracle for the conditions that produce it.
+// The subject MUST sit outside the gateway.events.project.* tree the EventBus
+// subscribes to.
+func TestPublishOpsEvent_SubjectIsNotTenantVisible(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+
+	if err := c.PublishOpsEvent(context.Background(), []byte(`{"type":"budget.unbilled_stream"}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.published) != 1 {
+		t.Fatalf("published %d messages, want 1", len(fc.published))
+	}
+	got := fc.published[0].subject
+	if got != OpsEventSubject {
+		t.Errorf("subject = %q, want %q", got, OpsEventSubject)
+	}
+	if strings.HasPrefix(got, EventSubjectRoot+".project.") {
+		t.Errorf("subject %q is inside the per-project tree elitea-main relays to tenants — the "+
+			"unbilled-stream record must be operator-only", got)
+	}
+	// A project-scoped wildcard subscription must not match it.
+	if got == eventSubjectForProject("42") {
+		t.Errorf("subject collides with a tenant project subject: %q", got)
+	}
+	if string(fc.published[0].data) != `{"type":"budget.unbilled_stream"}` {
+		t.Errorf("payload altered in transit: %q", fc.published[0].data)
+	}
+	if fc.flushes != 1 {
+		t.Errorf("flushes = %d, want 1 (publish must be flushed so errors surface)", fc.flushes)
+	}
+}
+
+// TestPublishOpsEvent_ErrorsSurface mirrors the soft-alert coverage: a transport
+// or flush failure must be returned, not swallowed.
+func TestPublishOpsEvent_ErrorsSurface(t *testing.T) {
+	if err := (&Client{nc: &fakeConn{publishErr: errFakeTransport}}).
+		PublishOpsEvent(context.Background(), []byte(`{}`)); err == nil {
+		t.Error("expected error from failed publish, got nil")
+	}
+	if err := (&Client{nc: &fakeConn{flushErr: errFakeTransport}}).
+		PublishOpsEvent(context.Background(), []byte(`{}`)); err == nil {
+		t.Error("expected error from failed flush, got nil")
+	}
+}
+
+// TestPublishOpsEvent_ExpiredContextDoesNotEnqueue: core NATS Publish is async
+// and buffered, so an expired context must short-circuit BEFORE the publish or
+// the caller is told "not published" about an event that was in fact delivered.
+func TestPublishOpsEvent_ExpiredContextDoesNotEnqueue(t *testing.T) {
+	fc := &fakeConn{}
+	c := &Client{nc: fc}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	err := c.PublishOpsEvent(ctx, []byte(`{}`))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if len(fc.published) != 0 {
+		t.Errorf("published %d messages on an expired context, want 0", len(fc.published))
 	}
 }

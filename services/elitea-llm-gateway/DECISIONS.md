@@ -6,6 +6,14 @@ records a decision so it is not re-litigated on every PR. Items marked **[human
 decision]** are risk/policy calls an autonomous agent must NOT change without sign-off.
 
 ## Money
+- **Only the TERMINAL stream event carries authoritative usage.** bifrost maps
+  Anthropic's `message_start` to `response.created`, and that event already
+  carries usage (input tokens, `output_tokens: 1`). Accepting usage from any
+  event made a mid-stream disconnect bill "input + 1 token" as authoritative AND
+  suppress the `budget.unbilled_stream` loss event — an invisible underbill
+  across the whole `/llm/v1/messages` dialect, strictly worse than the visible
+  loss issue #9 set out to fix. `responsesUsageFromChunk` therefore accepts
+  usage only from `response.completed` / `.incomplete` / `.failed`.
 - **int64 nano-USD, no float on the money path.** Rationale: float rounding drift
   across the incr → delta → Postgres write-behind hops corrupts billing; integers
   are exact. Prices are per-1M tokens (a per-1k reading is a 1000× overcharge).
@@ -23,6 +31,96 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   bounded by an in-flight reservation. The residual overshoot is accepted for the
   latency win. Revisit if a project can materially exceed budget under burst.
 - Every /llm endpoint is gated + billed uniformly (no per-endpoint exceptions).
+- **[human decision] 2026-08-05 — Streamed spend on client disconnect: bounded
+  grace, authoritative usage only.** *Finding:* streams billed only from the
+  final usage chunk, so any early exit (client disconnect, mid-stream provider
+  error, failed stream setup) left the whole response unbilled — a reachable
+  hard-budget bypass (issue #9). *Decision:* build the streaming provider
+  context with `context.WithoutCancel(r.Context())` and an owned cancel, so the
+  provider stream survives a client disconnect for a bounded grace period
+  (`LLM_STREAM_GRACE_MS`, default 5 s, clamped ≤15 s, 0 = disabled) during which
+  a detached drain may still capture the authoritative usage trailer. If no
+  trailer arrives, **nothing is billed** and a `budget.unbilled_stream` event is
+  emitted on gateway.events.*. *Rationale:* the free-inference lever is only
+  valuable to a client that already received nearly all the output, which is
+  exactly when the trailer is closest — so a short grace covers the exploitable
+  window. An observed-output-bytes estimate was explicitly REJECTED: it would
+  put a `bytes/4` heuristic on the money path (contradicting the reservation-only
+  rule below), over-bill inline-base64 multimodal by orders of magnitude, and
+  fire on clean completions the loop cannot distinguish from disconnects.
+  Out-of-band provider usage lookup was rejected as unavailable in practice
+  (no per-request usage API on Anthropic/Bedrock/Vertex/Ollama/vLLM; OpenAI-only
+  and minutes late). *Accepted cost:* a client that disconnects — including a
+  user pressing Stop — may be billed for up to the grace period of further
+  generation, charged to that project's own provider credential. Concurrent
+  drains are bounded (`LLM_STREAM_DRAIN_MAX_INFLIGHT`) and shutdown cuts them
+  loose so the pod's termination grace is never held hostage to the stream grace
+  (see the two-phase drain entry below). The loss event is operator-only.
+- **[human decision] 2026-08-05 — Drain-pool saturation fails to a SHORT grace,
+  never to "bill nothing"; slots are bounded per project.** *Finding:* the first
+  cut of the above dropped a saturated drain straight to grace=0, destroying a
+  trailer that is usually milliseconds away — reopening the same fail-open hole
+  on a single global counter any one tenant could exhaust (gateway-review).
+  *Decision:* a drain that cannot take a slot gets `SaturatedStreamGrace`
+  (500 ms) instead of zero, and the pool is bounded per project
+  (limit/8, floor 1) as well as globally. The loss event reports
+  `drain_saturated` — and `drain_saturated/<what actually happened>` when the
+  short grace was still not enough — so saturation is alarmable before it costs
+  money. *Rationale:* the resource being protected is a provider socket that is
+  about to close anyway; refusing new streaming admissions instead (fail closed
+  at the gate) turns a billing edge case into an availability event, which is
+  the worse trade at this severity.
+- **[human decision] 2026-08-05 — Shutdown is a THREE-phase sequence over a
+  split server lifecycle.** *Finding (round 2):* the two-phase version below was
+  still wrong in sequence. `srv.Shutdown` closed NATS as its last step, so
+  moving the billing drain after it sent every increment to a dead connection
+  (diverted to the outage-delta path, which recovery only sweeps on a breaker
+  CLOSED transition that never fires while NATS is healthy); the `os.Exit(1)` on
+  a shutdown error then sat between the two, skipping the drains exactly when
+  they matter; and drains spawned after phase 1 were left off the wait group, so
+  every drain on the shutdown path was skipped (reproduced: 0 increments, 5/5).
+  *Decision:* split `Server.Shutdown` into `ShutdownHTTP` (HTTP + core, NATS
+  stays UP) and `Close` (NATS), and run
+  `ShutdownHTTP → StopStreamGrace → DrainBilling → govStore.Drain → Close`.
+  Billing is open and NATS is live throughout the window in which streams
+  actually settle. A failed HTTP shutdown no longer aborts the drains.
+  `terminationGracePeriodSeconds` is raised to 180 so the post-HTTP phases have
+  headroom over the 150 s drain budget.
+  **StopStreamGrace MUST NOT be hoisted above ShutdownHTTP** (round 3): it both
+  sets `drainsClosing` and closes the `drainClosing` channel, so running it
+  first gives every stream disconnecting during the ~150 s HTTP drain `grace=0`
+  and cuts every parked drain — turning disconnect billing OFF for the whole
+  duration of every rolling deploy, i.e. reopening the issue-#9 bypass. That
+  regression shipped once and was invisible to a test whose SSE loop observed
+  the usage chunk before the failing write, so the drain never participated.
+  Drains are detached goroutines, not HTTP requests, so leaving the grace armed
+  does not extend `ShutdownHTTP` at all. `TestShutdownSequence` asserts the
+  ORDER BY EXECUTING it — the previous textual guard compared source positions
+  and could not see the `os.Exit` between two calls.
+- **[human decision] 2026-08-05 — (superseded by the entry above) Shutdown is a
+  two-phase drain, and a refused billing increment is metered.** *Finding:* `drainForShutdown` ran BEFORE
+  `srv.Shutdown`, so `billingClosing` was set while SSE handlers were still
+  live; a drain that had recovered the authoritative trailer had its increment
+  refused and — because usage WAS known — no loss event was emitted either.
+  Reproduced on the deploy path: 231000 nano-USD lost, 0 UpdateUsage calls, 0
+  events. *Decision:* split shutdown into `StopStreamGrace()` (phase 1, before
+  `srv.Shutdown`: drains stop waiting for trailers, billing stays open) and
+  `DrainBilling()` (phase 2, after: waits for drains on their own WaitGroup,
+  THEN closes billing and waits for billing goroutines). Independently, when an
+  increment is refused with usage in hand, publish `budget.unbilled_stream` with
+  reason `billing_refused`. *Rationale:* the two halves of the old
+  `DrainBilling` had opposite timing requirements; and known spend must never
+  disappear into a lone WARN. The metering half stands; only the ordering was
+  superseded. A refused increment is reported as `billing_refused`, which is
+  raised ONLY for a genuine drop — "no gate wired", "no resolvable project" and
+  "zero-priced model" are `billNotBillable` and stay silent, or the one alarm
+  that detects real loss drowns in noise.
+- **[human decision] 2026-08-05 — `budget.unbilled_stream` is operator-only.**
+  It publishes to `gateway.events.ops.budget` via a separate `OpsEventPublisher`
+  port, NOT the per-project subject elitea-main relays to project members.
+  *Rationale:* `budget.soft_alert` is tenant-facing by design, but telling a
+  tenant in real time which of their streams the gateway failed to bill is an
+  oracle for the conditions that produce it.
 
 ## Trust boundary
 - **[human decision] Deny-by-default trusted-proxy model.** `X-Auth-*` identity

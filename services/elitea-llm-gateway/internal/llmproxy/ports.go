@@ -55,6 +55,23 @@ type AlertEventPublisher interface {
 	PublishSoftAlertEvent(ctx context.Context, projectID string, event []byte) error
 }
 
+// OpsEventPublisher publishes operator-only events onto gateway.events.ops.*.
+// *nats.Client satisfies it.
+//
+// It is deliberately a SEPARATE port from AlertEventPublisher, not another
+// method on it: the two have different audiences. budget.soft_alert is
+// tenant-facing by design and rides the per-project subject elitea-main relays
+// to project members; budget.unbilled_stream is a record of billing the gateway
+// could not do, and telling a tenant in real time which of their streams went
+// unbilled is an oracle for the conditions that produce it (gateway-review,
+// issue #9). Operators see it; tenants do not.
+type OpsEventPublisher interface {
+	// PublishOpsEvent publishes the pre-marshalled envelope. Implementations
+	// must bound the operation with the ctx deadline (every NATS op is
+	// bounded — CLAUDE.md).
+	PublishOpsEvent(ctx context.Context, event []byte) error
+}
+
 // CostEstimator resolves per-request LLM cost in int64 nano-USD.
 // *cost.Calculator satisfies it; tests may inject a zero-cost stub.
 type CostEstimator interface {

@@ -21,7 +21,12 @@ resources:
 # in-flight streams on every rolling deploy, so terminationGracePeriodSeconds
 # MUST be >=150 and rise together with the gateway's srv.Shutdown() context
 # (GATEWAY_SHUTDOWN_TIMEOUT).
-terminationGracePeriodSeconds: 150
+# 150s of HTTP drain (GATEWAY_SHUTDOWN_TIMEOUT) PLUS headroom for the phases
+# that run after it: the billing drain, the governance persist drain and the
+# NATS close (see shutdownSequence). With no headroom SIGKILL lands the instant
+# the HTTP drain uses its full budget, and the billing drain never executes —
+# silently dropping the very spend the drain exists to preserve.
+terminationGracePeriodSeconds: 180
 
 # preStop hook (§9.5). The primary drain mechanism is the gateway's own
 # SIGTERM-driven graceful shutdown (GATEWAY_SHUTDOWN_TIMEOUT, >=150s); the
@@ -50,6 +55,18 @@ env:
   # probe again after the open-duration. Mirror config.go defaults.
   LLM_BUDGET_CB_FAILURE_THRESHOLD: "3"
   LLM_BUDGET_CB_OPEN_DURATION_SEC: "10"
+  # Stream-disconnect billing (issue #9, DECISIONS.md 2026-08-05). When a
+  # streaming client vanishes mid-response the gateway keeps the PROVIDER
+  # stream alive this long so the authoritative usage trailer can still arrive
+  # and be billed; if it does not arrive nothing is billed and a
+  # budget.unbilled_stream event is emitted. Clamped to 15000 in code; "0"
+  # disables the mechanism (early exits then bill nothing at all).
+  # The trade-off: a client that hits Stop may be billed for up to this much
+  # further generation, charged to its own project credential.
+  LLM_STREAM_GRACE_MS: "5000"
+  # Ceiling on concurrently-detained streams; each holds a goroutine and an
+  # open provider socket for up to LLM_STREAM_GRACE_MS.
+  LLM_STREAM_DRAIN_MAX_INFLIGHT: "256"
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS

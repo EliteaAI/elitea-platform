@@ -572,6 +572,39 @@ func (c *Client) PublishSoftAlertEvent(ctx context.Context, projectID string, ev
 	return nil
 }
 
+// OpsEventSubject is the operator-only event subject. Events published here are
+// NOT relayed to tenants: elitea-main's natsbus EventBus subscribes per project
+// under gateway.events.project.<id>.events, and this subject deliberately sits
+// outside that tree.
+//
+// Used for budget.unbilled_stream (issue #9): telling a tenant in real time
+// which of their streams the gateway failed to bill is an oracle for the
+// conditions that produce it, so the loss record is operator-facing even though
+// budget.soft_alert on the project subject is not.
+const OpsEventSubject = EventSubjectRoot + ".ops.budget"
+
+// PublishOpsEvent publishes a pre-marshalled envelope onto the operator-only
+// subject. Bounded exactly like PublishSoftAlertEvent. Satisfies
+// llmproxy.OpsEventPublisher.
+func (c *Client) PublishOpsEvent(ctx context.Context, event []byte) error {
+	timeout := OpTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if until := time.Until(dl); until < timeout {
+			timeout = until
+		}
+	}
+	if timeout <= 0 {
+		return context.DeadlineExceeded
+	}
+	if err := c.nc.Publish(OpsEventSubject, event); err != nil {
+		return mapErr(err)
+	}
+	if err := c.nc.FlushTimeout(timeout); err != nil {
+		return mapErr(err)
+	}
+	return nil
+}
+
 // JetStream exposes the underlying JetStream handle for the scheduler's
 // write-behind consumer wiring (§8.6). The gateway itself does not consume.
 func (c *Client) JetStream() jetstream.JetStream { return c.js }

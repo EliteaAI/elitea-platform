@@ -45,6 +45,19 @@ const (
 	// half-open (design §8.5, LLM_BUDGET_CB_OPEN_DURATION_SEC).
 	DefaultCBOpenDuration = 10 * time.Second
 
+	// DefaultStreamGrace / MaxStreamGrace bound how long an early-exiting
+	// stream keeps its provider stream alive waiting for the authoritative
+	// usage trailer (issue #9, LLM_STREAM_GRACE_MS). These MUST equal
+	// llmproxy.DefaultStreamGrace / llmproxy.MaxStreamGrace — the rationale for
+	// the values lives there, and TestStreamGraceConstantsInSync enforces the
+	// pairing so the env default and the handler default cannot drift apart.
+	DefaultStreamGrace = 5 * time.Second
+	MaxStreamGrace     = 15 * time.Second
+
+	// DefaultStreamDrainLimit bounds concurrent abandoned-stream drains
+	// (LLM_STREAM_DRAIN_MAX_INFLIGHT). MUST equal llmproxy.DefaultStreamDrainLimit.
+	DefaultStreamDrainLimit = 256
+
 	// DefaultNATSFailMode is the platform-baseline NATS-failure policy (§8.5,
 	// LLM_BUDGET_NATS_FAIL_MODE). A per-project override on
 	// gateway.project_budget.nats_fail_mode may narrow it.
@@ -135,6 +148,20 @@ type Config struct {
 	TLSKeyFile  string
 	TLSCAFile   string
 
+	// StreamGrace is how long a streamed response whose SSE loop exited early
+	// (client disconnect, mid-stream provider error, failed stream setup) may
+	// keep its PROVIDER stream alive waiting for the authoritative usage
+	// trailer, so the tokens the provider actually produced can be billed
+	// (issue #9, DECISIONS.md 2026-08-05). Read from LLM_STREAM_GRACE_MS,
+	// clamped to [0, llmproxy.MaxStreamGrace]. 0 disables the mechanism: the
+	// provider stream is then torn down with the client request as before and
+	// an early exit bills nothing (the loss is still metered).
+	StreamGrace time.Duration
+	// StreamDrainLimit bounds how many abandoned streams may be drained
+	// concurrently; each holds a goroutine and an open provider socket for up
+	// to StreamGrace. Read from LLM_STREAM_DRAIN_MAX_INFLIGHT.
+	StreamDrainLimit int
+
 	// SelfLLMOrigins are the platform's own /llm origins (comma-separated in
 	// GATEWAY_SELF_LLM_ORIGINS, e.g. "https://dev.elitea.ai/llm/v1,
 	// http://elitea-main:8080/llm/v1"). Any credential api_base matching one
@@ -171,8 +198,33 @@ func FromEnv() Config {
 		TLSCertFile:             os.Getenv("GATEWAY_TLS_CERT_FILE"),
 		TLSKeyFile:              os.Getenv("GATEWAY_TLS_KEY_FILE"),
 		TLSCAFile:               os.Getenv("GATEWAY_TLS_CA_FILE"),
+		StreamGrace:             millisOr("LLM_STREAM_GRACE_MS", DefaultStreamGrace, MaxStreamGrace),
+		StreamDrainLimit:        intOr("LLM_STREAM_DRAIN_MAX_INFLIGHT", DefaultStreamDrainLimit),
 		SelfLLMOrigins:          csvOr("GATEWAY_SELF_LLM_ORIGINS"),
 	}
+}
+
+// millisOr reads an integer number of milliseconds from key and clamps it to
+// [0, max]. Unlike the other *Or helpers it accepts an explicit 0 — for
+// LLM_STREAM_GRACE_MS zero is a meaningful value (disable the stream-grace
+// mechanism), not "unset". A negative or unparsable value falls back to def.
+func millisOr(key string, def, max time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	// Clamp on the INTEGER, before the multiply. n * time.Millisecond overflows
+	// int64 for absurd values and wraps negative, which would sail past a
+	// post-multiply `d > max` check and silently DISABLE the mechanism instead
+	// of capping it.
+	if int64(n) > int64(max/time.Millisecond) {
+		return max
+	}
+	return time.Duration(n) * time.Millisecond
 }
 
 // csvOr splits a comma-separated env var into trimmed, non-empty entries.
