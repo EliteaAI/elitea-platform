@@ -19,9 +19,11 @@
 // design/ADR reserve for soft-alert and governance events.
 //
 // Soft-alert path (design §8.3): the gateway emits an alert event on
-// gateway.events.<...> when accumulated_cost/hard_limit crosses the configured
-// threshold; elitea-main subscribers receive it here. The alert payload
-// contract lives in the events package (events.SoftAlertPayload).
+// gateway.events.project.<id>.events when accumulated_cost/hard_limit crosses
+// the configured threshold (default 80%); elitea-main subscribers receive it
+// here. The alert contract is defined in the gateway
+// (services/elitea-llm-gateway/internal/llmproxy/budget_gate.go); the
+// canonical payload struct for reference is events.SoftAlertPayload.
 //
 // Every operation is bounded: connection Timeout is 1s (matching the gateway's
 // NATS client hardening, design §8.5) and Publish flushes so a failed send

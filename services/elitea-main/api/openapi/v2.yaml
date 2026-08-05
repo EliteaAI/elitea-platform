@@ -2017,6 +2017,21 @@ components:
         NOTE(W2): batch of per-participant settings maps — see items marker.
 
     # ---- Skills / tags / toolkits ---------------------------------------------
+    SkillVersion:
+      type: object
+      required: [name, instructions, tags]
+      properties:
+        id: { type: string }
+        name: { type: string, description: 'The platform ships a single implicit "base" version today (issue #37); real multi-version support is a tracked fast-follow.' }
+        instructions: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+      description: >
+        A skill's content: the instructions an agent follows plus its topical
+        tags. Persisted in skill_versions/skill_version_tag_association
+        (repos/skills.go upsertBaseSkillVersion).
+
     Skill:
       type: object
       required: [id, project_id, name, type, is_default, created_at, updated_at]
@@ -2031,28 +2046,39 @@ components:
           additionalProperties: true
           x-elitea-passthrough: >-
             NOTE(W2): `map[string]any` field on the Skill struct
-            (internal/api/v2/skills/handler.go:21), but with the wired Pg
+            (internal/api/v2/skills/handler.go), but with the wired Pg
             repository it is NEVER populated in any response — the INSERT
             persists only name/description and hardcodes meta '{}'
-            (repos/skills.go:97-105), and the returned Skill is built solely
-            from RETURNING id/name/description/created_at (:102-112), so
-            Config always decodes to its zero value. Declared as a
-            passthrough object (not removed) because the struct field and
-            wire slot are real; see the schema description for the
-            discarded-on-write detail.
+            (repos/skills.go), so Config always decodes to its zero value.
+            Declared as a passthrough object (not removed) because the
+            struct field and wire slot are real; see the schema description
+            for the discarded-on-write detail.
         is_default: { type: boolean }
+        instructions:
+          type: string
+          description: The base version's instructions (also available at version_details.instructions).
+        tags:
+          type: array
+          items: { type: string }
+          description: The base version's tags (also available at version_details.tags).
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/SkillVersion' }
+          description: Always the single base version today — see SkillVersion.name.
+        version_details:
+          allOf: [{ $ref: '#/components/schemas/SkillVersion' }]
+          description: Convenience alias for versions[0].
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
       description: >
-        NOTE(W2): internal/api/v2/skills/handler.go:15-25 (json tags;
-        description/config omitempty). Degenerate constants with the wired
-        Pg repository (repos/skills.go:42-53, 79-92, 102-112, 122-135; DDL
-        migrations/001_initial.sql:128-136 — no updated_at/is_default
-        columns): `config` is never populated in responses, `is_default` is
+        NOTE(W2): `config` is never populated in responses, `is_default` is
         always false, `type` is always the literal "skill", and `updated_at`
-        is always the zero sentinel "0001-01-01T00:00:00Z". Wire shape still
-        matches this schema; typed clients should not rely on those fields
-        carrying data yet.
+        is always the zero sentinel "0001-01-01T00:00:00Z" — the skills
+        table itself has no updated_at/is_default columns
+        (migrations/001_initial.sql). instructions/tags/versions/
+        version_details, in contrast, DO round-trip: they're read from a
+        joined skill_versions + skill_version_tag_association row
+        (repos/skills.go Get/List), not discarded.
 
     SkillsList:
       type: object
@@ -2066,9 +2092,11 @@ components:
         page_size: { type: integer }
         total_pages: { type: integer }
       description: >
-        NOTE(W2): internal/api/v2/skills/handler.go:27-33, returned whole by
-        List (:72-77). Pagination comes from ?page/?page_size (:63-70) — the
-        limit/offset params are accepted for old-SPA parity but not read.
+        Returned whole by List (internal/api/v2/skills/handler.go). Pagination
+        comes from ?page/?page_size; ?query does an ILIKE search over
+        name/description, and ?sort_by (name|created_at)/?sort_order
+        (asc|desc) drive ORDER BY (repos/skills.go List — sort_by is
+        whitelisted, never interpolated raw).
 
     SkillCreateRequest:
       type: object
@@ -2077,26 +2105,40 @@ components:
         description: { type: string }
         type:
           type: string
-          description: Accepted but NOT persisted (repos/skills.go:97-112).
+          description: Accepted but NOT persisted (repos/skills.go).
         config:
           type: object
           additionalProperties: true
           x-elitea-passthrough: >-
             NOTE(W2): decoded into Skill.Config map[string]any
-            (internal/api/v2/skills/handler.go:95-99) but DISCARDED by the
-            wired repository — the INSERT persists only name and description
-            and hardcodes meta '{}' (repos/skills.go:97-105); config never
-            round-trips into the response.
+            (internal/api/v2/skills/handler.go) but DISCARDED by the wired
+            repository — the INSERT persists only name and description and
+            hardcodes meta '{}' (repos/skills.go); config never round-trips
+            into the response.
         is_default:
           type: boolean
-          description: Accepted but NOT persisted (repos/skills.go:97-112).
+          description: Accepted but NOT persisted (repos/skills.go).
+        instructions:
+          type: string
+          description: Flat shape (as sent by updateSkill()); ignored if versions[0].instructions is present.
+        tags:
+          type: array
+          items: { type: string }
+          description: Flat shape (as sent by updateSkill()); ignored if versions[0].tags is present.
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/SkillVersion' }
+          description: >-
+            Shape sent by createSkill(): versions[0].instructions/tags take
+            precedence over the flat instructions/tags fields above when both
+            are present.
       description: >
-        NOTE(W2): decoded into the Skill struct
-        (internal/api/v2/skills/handler.go:95-99), but the wired Pg
-        repository persists ONLY name and description (repos/skills.go:
-        97-105, wired via internal/api/router.go:351 cfg.SkillsRepo);
-        type/config/is_default are silently discarded, and the response
-        Type is hardcoded "skill" (:110-112).
+        Decoded into the Skill struct (internal/api/v2/skills/handler.go).
+        name/description persist onto the skills row; instructions/tags (from
+        either the flat fields or versions[0]) upsert the base skill_versions
+        row and its tag associations in the same transaction
+        (repos/skills.go Create/Update). type/config/is_default remain
+        silently discarded, and the response Type is hardcoded "skill".
 
     Tag:
       type: object
