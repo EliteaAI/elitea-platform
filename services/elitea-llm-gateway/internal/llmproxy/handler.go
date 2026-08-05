@@ -850,10 +850,6 @@ func (h *Handler) streamOpenAI(
 			continue
 		}
 		if chunk.BifrostError != nil {
-			// Observe BEFORE settling: bifrost attaches the provider's
-			// accumulated BilledUsage to this chunk, and dropping it here would
-			// discard real, provider-reported spend.
-			s.observe(chunk)
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Data(string(data))
 			s.settleEarly(lossReasonProviderError)
@@ -938,10 +934,6 @@ func (h *Handler) streamResponses(
 			continue
 		}
 		if chunk.BifrostError != nil {
-			// Observe BEFORE settling: bifrost attaches the provider's
-			// accumulated BilledUsage to this chunk, and dropping it here would
-			// discard real, provider-reported spend.
-			s.observe(chunk)
 			data, _ := json.Marshal(openAIErrorBody(chunk.BifrostError))
 			_ = sw.Event("error", string(data))
 			s.settleEarly(lossReasonProviderError)
@@ -1032,10 +1024,6 @@ func (h *Handler) streamAnthropic(
 			continue
 		}
 		if chunk.BifrostError != nil {
-			// Observe BEFORE settling: bifrost attaches the provider's
-			// accumulated BilledUsage to this chunk, and dropping it here would
-			// discard real, provider-reported spend.
-			s.observe(chunk)
 			// ToAnthropicResponsesStreamError returns a complete
 			// "event: error\ndata: ...\n\n" frame.
 			_ = sw.Raw(anthropic.ToAnthropicResponsesStreamError(chunk.BifrostError))
