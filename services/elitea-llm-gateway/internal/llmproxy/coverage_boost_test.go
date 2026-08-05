@@ -352,8 +352,13 @@ func TestUsageFromImageResponse_UsageNilFallback(t *testing.T) {
 // succeeds.  The call chain is:
 //
 //   checkBudget (call 1) → Allow → handler calls provider →
-//   updateUsage → CheckBudget (call 2, pre-snapshot) → spawnBillingGoroutine →
-//   UpdateUsage → trySoftAlert → CheckBudget (call 3, post-increment)
+//   updateUsage → spawnBillingGoroutine → [detached goroutine:
+//   CheckBudget (call 2, pre-snapshot) → UpdateUsage → trySoftAlert →
+//   CheckBudget (call 3, post-increment)]
+//
+// FIX #27 (github issue #15) moved call 2 off the request goroutine and into
+// the detached billing goroutine — it used to run synchronously in
+// updateUsage, adding up to billingCtxTimeout of client-visible latency.
 //
 // The tests below call h.trySoftAlert directly (package-level access) so the
 // exact verdict returned by each CheckBudget call can be controlled without

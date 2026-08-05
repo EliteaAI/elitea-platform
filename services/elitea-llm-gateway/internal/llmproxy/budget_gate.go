@@ -300,8 +300,7 @@ func (h *Handler) updateUsage(
 		return // nothing to bill
 	}
 
-	preDec, preErr := h.budgetGate.CheckBudget(costCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
-	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD, preDec, preErr)
+	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD)
 }
 
 // updateUsageDirect bills a pre-computed costNano amount (nano-USD) for the
@@ -328,16 +327,19 @@ func (h *Handler) updateUsageDirect(
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
-	defer costCancel()
-
-	preDec, preErr := h.budgetGate.CheckBudget(costCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
-	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano, preDec, preErr)
+	h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano)
 }
 
 // spawnBillingGoroutine is the shared inner billing path: it guards against
 // Add-after-Wait (Fix round-3 #2), spawns the billing goroutine, and runs
 // the soft-alert crossing check after a successful increment.
+//
+// FIX #27 (github issue #15): the pre-increment CheckBudget snapshot (needed
+// only for the soft-alert crossing comparison in trySoftAlert) is read INSIDE
+// the goroutine, after billCtx is created and before UpdateUsage runs. It used
+// to run synchronously on the caller's (request) goroutine, which — despite
+// FIX #18 moving the increment itself off the critical path — still added up
+// to billingCtxTimeout of client-visible latency when the budget store was slow.
 //
 // Callers must have already validated costNano > 0.
 func (h *Handler) spawnBillingGoroutine(
@@ -345,8 +347,6 @@ func (h *Handler) spawnBillingGoroutine(
 	scopeID string,
 	periodStart, periodEnd int64,
 	costNano int64,
-	preDec failmode.Decision,
-	preErr error,
 ) {
 	eventID := uuid.NewString()
 
@@ -370,6 +370,17 @@ func (h *Handler) spawnBillingGoroutine(
 		if costNano > 0 {
 			defer h.addInflight(scopeID, periodStart, -costNano)
 		}
+
+		// FIX #27: pre-increment snapshot, read here (detached goroutine) instead
+		// of on the request goroutine. Used only by the soft-alert crossing check
+		// below; never gates the request (admission already happened in checkBudget).
+		// It gets its OWN timeout budget, separate from billCtx below, so a
+		// slow/degraded read can never shrink the money-critical UpdateUsage
+		// call's deadline (gateway-review: sharing one budget across both would
+		// silently starve UpdateUsage under DB/NATS degradation).
+		alertCtx, alertCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+		preDec, preErr := h.budgetGate.CheckBudget(alertCtx, pid, budgetScopeProject, scopeID, periodStart, 0)
+		alertCancel()
 
 		billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 		defer cancel()
