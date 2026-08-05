@@ -59,6 +59,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -147,7 +148,12 @@ func attachmentMaxImageBytes() int64 {
 
 func attachmentRetentionDays() int32 {
 	if raw := os.Getenv("ARTIFACT_ATTACHMENT_RETENTION_DAYS"); raw != "" {
-		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+		// v > math.MaxInt32 rejected explicitly, not left to int32(v)'s own
+		// silent wraparound — strconv.Atoi's int is architecture-dependent
+		// (64-bit on every platform this service actually runs on), so an
+		// operator-misconfigured value here would otherwise wrap to an
+		// unrelated, possibly negative int32 (CodeQL go/incorrect-integer-conversion).
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 && v <= math.MaxInt32 {
 			return int32(v)
 		}
 	}
@@ -285,12 +291,19 @@ func (h *Handler) writeAttachmentBytes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chunkIndex, err := strconv.Atoi(chunkIndexStr)
-	if err != nil || chunkIndex < 0 {
+	// chunkIndex/totalChunks are int (architecture-dependent, 64-bit here)
+	// but stored — and used in the int32(...) call below — as int32;
+	// math.MaxInt32 is checked directly here rather than relying on the
+	// transitive chunkIndex < totalChunks <= maxAttachmentChunks() bound a
+	// few lines down to keep both safe, so this stays correct even if
+	// those other checks are ever reordered or changed (CodeQL
+	// go/incorrect-integer-conversion).
+	if err != nil || chunkIndex < 0 || chunkIndex > math.MaxInt32 {
 		apierr.Write(w, apierr.BadRequest("Invalid chunk parameters: chunk_index must be a non-negative integer"))
 		return
 	}
 	totalChunks, err := strconv.Atoi(totalChunksStr)
-	if err != nil || totalChunks <= 0 {
+	if err != nil || totalChunks <= 0 || totalChunks > math.MaxInt32 {
 		apierr.Write(w, apierr.BadRequest("Invalid chunk parameters: total_chunks must be a positive integer"))
 		return
 	}
