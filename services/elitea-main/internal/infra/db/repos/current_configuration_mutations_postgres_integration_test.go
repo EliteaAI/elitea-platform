@@ -134,6 +134,14 @@ func prepareCurrentMutationVault(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// Two Exec calls, not one: pgx always uses the extended/prepared query
+	// protocol once placeholder arguments are involved, and Postgres's
+	// extended protocol allows exactly one statement per prepared
+	// statement — a single multi-statement string with $1/$2 args fails
+	// with "cannot insert multiple commands into a prepared statement".
+	// The CREATE TABLEs have no args, so they can stay combined (pgx uses
+	// the simple protocol for an arg-free Exec, which does allow multiple
+	// statements); each parameterized INSERT needs its own call.
 	if _, err := pool.Exec(ctx, `
 CREATE TABLE centry.secrets_key (
     id TEXT PRIMARY KEY,
@@ -142,10 +150,14 @@ CREATE TABLE centry.secrets_key (
 CREATE TABLE centry.secrets_data (
     id TEXT PRIMARY KEY,
     data BYTEA
-);
-INSERT INTO centry.secrets_key (id, data) VALUES ('project-1', $1);
-INSERT INTO centry.secrets_data (id, data) VALUES ('project-1', $2);`, []byte(currentVaultProjectKey), []byte(currentVaultToken)); err != nil {
-		t.Fatalf("prepare current project vault: %v", err)
+);`); err != nil {
+		t.Fatalf("prepare current project vault schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO centry.secrets_key (id, data) VALUES ('project-1', $1)`, []byte(currentVaultProjectKey)); err != nil {
+		t.Fatalf("prepare current project vault key: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO centry.secrets_data (id, data) VALUES ('project-1', $1)`, []byte(currentVaultToken)); err != nil {
+		t.Fatalf("prepare current project vault data: %v", err)
 	}
 }
 

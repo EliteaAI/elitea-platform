@@ -578,6 +578,75 @@ type EliteaRuntimeScheduledOccurrence struct {
 	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
+type EliteaStorageAttachmentChunk struct {
+	ProjectID      int64              `db:"project_id" json:"project_id"`
+	ConversationID string             `db:"conversation_id" json:"conversation_id"`
+	FileID         string             `db:"file_id" json:"file_id"`
+	ChunkIndex     int32              `db:"chunk_index" json:"chunk_index"`
+	TotalChunks    int32              `db:"total_chunks" json:"total_chunks"`
+	FileName       string             `db:"file_name" json:"file_name"`
+	ContentType    string             `db:"content_type" json:"content_type"`
+	Bytes          []byte             `db:"bytes" json:"bytes"`
+	ReceivedAt     pgtype.Timestamptz `db:"received_at" json:"received_at"`
+}
+
+type EliteaStorageBucket struct {
+	ID            int64              `db:"id" json:"id"`
+	ProjectID     int64              `db:"project_id" json:"project_id"`
+	Name          string             `db:"name" json:"name"`
+	DisplayName   string             `db:"display_name" json:"display_name"`
+	BucketType    string             `db:"bucket_type" json:"bucket_type"`
+	IsPinned      bool               `db:"is_pinned" json:"is_pinned"`
+	Tags          []byte             `db:"tags" json:"tags"`
+	RetentionDays *int32             `db:"retention_days" json:"retention_days"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	NotifiedAt    pgtype.Timestamptz `db:"notified_at" json:"notified_at"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+type EliteaStorageObject struct {
+	ID             int64              `db:"id" json:"id"`
+	BucketID       int64              `db:"bucket_id" json:"bucket_id"`
+	Key            string             `db:"key" json:"key"`
+	ByteLength     int64              `db:"byte_length" json:"byte_length"`
+	MediaType      string             `db:"media_type" json:"media_type"`
+	DigestAlg      *string            `db:"digest_alg" json:"digest_alg"`
+	Digest         []byte             `db:"digest" json:"digest"`
+	Classification string             `db:"classification" json:"classification"`
+	ScanState      string             `db:"scan_state" json:"scan_state"`
+	ExpiresAt      pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type EliteaStorageProjectStoragePolicy struct {
+	ProjectID            int64              `db:"project_id" json:"project_id"`
+	MaxObjectBytes       *int64             `db:"max_object_bytes" json:"max_object_bytes"`
+	MaxTotalBytes        *int64             `db:"max_total_bytes" json:"max_total_bytes"`
+	RetentionDefaultDays *int32             `db:"retention_default_days" json:"retention_default_days"`
+	RetentionMaxDays     *int32             `db:"retention_max_days" json:"retention_max_days"`
+	AttachmentBucket     *string            `db:"attachment_bucket" json:"attachment_bucket"`
+	UpdatedAt            pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type EliteaStorageTransferGrant struct {
+	ID          pgtype.UUID        `db:"id" json:"id"`
+	ProjectID   int64              `db:"project_id" json:"project_id"`
+	BucketID    int64              `db:"bucket_id" json:"bucket_id"`
+	Key         string             `db:"key" json:"key"`
+	Method      string             `db:"method" json:"method"`
+	ContentType string             `db:"content_type" json:"content_type"`
+	MaxBytes    int64              `db:"max_bytes" json:"max_bytes"`
+	DigestAlg   *string            `db:"digest_alg" json:"digest_alg"`
+	Digest      []byte             `db:"digest" json:"digest"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	ConsumedAt  pgtype.Timestamptz `db:"consumed_at" json:"consumed_at"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UploadID    *string            `db:"upload_id" json:"upload_id"`
+}
+
 type EliteaTool struct {
 	ID            int32            `db:"id" json:"id"`
 	CreatedAt     pgtype.Timestamp `db:"created_at" json:"created_at"`

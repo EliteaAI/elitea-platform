@@ -32,7 +32,6 @@ func TestCurrentMainRoutePublicRulesMatchPinnedCatalog(t *testing.T) {
 		match   string
 		near    []string
 	}{
-		{"current.artifacts.s3", `^/artifacts/s3/.*$`, "/artifacts/s3/bucket/key", []string{"/x/artifacts/s3/key", "https://evil.example/artifacts/s3/key"}},
 		{"current.admin_ui.assets", `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$`, "/admin/app/assets/main.js", []string{"/admin/app/config.json", "https://evil.example/admin/app/assets/main.js"}},
 		{"current.elitea_core.socket_io", `^/socket\.io/.*$`, "/socket.io/connect", []string{"/socketXio/connect", "https://evil.example/socket.io/connect"}},
 		{"current.elitea_core.robots", `^/robots\.txt$`, "/robots.txt", []string{"/robots.txt/extra", "https://evil.example/robots.txt"}},
@@ -79,7 +78,7 @@ func TestCurrentMainRoutePublicRulesReturnsDetachedCatalog(t *testing.T) {
 	rules[0].Name = "mutated"
 	rules[0].Conditions[0].Pattern = ".*"
 	again := CurrentMainRoutePublicRules()
-	if again[0].Name != "current.artifacts.s3" || again[0].Conditions[0].Pattern != `^/artifacts/s3/.*$` {
+	if again[0].Name != "current.admin_ui.assets" || again[0].Conditions[0].Pattern != `^/admin/app/.*\.(js|css|ico|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|map)$` {
 		t.Fatalf("catalog aliased caller mutation: %+v", again[0])
 	}
 }

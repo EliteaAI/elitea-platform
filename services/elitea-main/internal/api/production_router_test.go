@@ -1416,6 +1416,26 @@ func TestProductionRouterMatchesReviewedRoutePolicy(t *testing.T) {
 		"GET /healthz":  {access: "public health"},
 		"GET /readyz":   {access: "public health"},
 		"GET /startupz": {access: "public health"},
+
+		// Artifacts (S11): all 16 routes are authenticated and RBAC-gated
+		// per configuration.artifacts.artifacts.{view,create,edit,delete} —
+		// see mountArtifactRoutes in router.go.
+		"GET /api/v2/artifacts/buckets/{projectID}":                              {access: "authenticated + view"},
+		"POST /api/v2/artifacts/buckets/{projectID}":                             {access: "authenticated + create"},
+		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}":                     {access: "authenticated + view"},
+		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}":                   {access: "authenticated + edit"},
+		"DELETE /api/v2/artifacts/buckets/{projectID}/{bucket}":                  {access: "authenticated + delete"},
+		"GET /api/v2/artifacts/objects/{projectID}/{bucket}":                     {access: "authenticated + view"},
+		"POST /api/v2/artifacts/objects/{projectID}/{bucket}":                    {access: "authenticated + create"},
+		"POST /api/v2/artifacts/objects/{projectID}/{bucket}:batchDelete":        {access: "authenticated + delete"},
+		"GET /api/v2/artifacts/objects/{projectID}/{bucket}/*":                   {access: "authenticated + view"},
+		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*":                  {access: "authenticated + view"},
+		"DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/*":                {access: "authenticated + delete"},
+		"POST /api/v2/artifacts/grants/{projectID}/{bucket}":                     {access: "authenticated + create"},
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:commit":             {access: "authenticated + create"},
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}/parts/{partNumber}": {access: "authenticated + create"},
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:completeMultipart":  {access: "authenticated + create"},
+		"POST /api/v2/artifacts/grants/{projectID}/{grantID}:abortMultipart":     {access: "authenticated + create"},
 	}
 
 	router := newCompleteProductionRouter("session-secret")
@@ -1487,7 +1507,6 @@ func TestProductionRouterLeavesUnreviewedPrototypeSurfacesUnmounted(t *testing.T
 		"/forward-auth/auth_form/logout",
 		"/forward-auth/auth_oidc/logout",
 		"/forward-auth/auth_oidc/logout_callback",
-		"/artifacts/s3/",
 		"/admin/app/",
 		"/app/application_icon/icon.svg",
 		"/forward-auth/login",

@@ -35,6 +35,7 @@ import (
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
@@ -81,6 +82,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("create database pool: %w", err)
 	}
 	defer pool.Close()
+
+	// Object store. The service does not start without a working one — there
+	// is no filesystem fallback in the target architecture.
+	storageCfg, err := storage.ConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("load storage configuration: %w", err)
+	}
+	objectStore, err := newObjectStore(ctx, storageCfg)
+	if err != nil {
+		return fmt.Errorf("create object store: %w", err)
+	}
+	if err := objectStoreReadinessProbe(ctx, objectStore); err != nil {
+		return fmt.Errorf("object store readiness probe: %w", err)
+	}
+	if err := configureObjectStoreRetentionLifecycle(ctx, objectStore); err != nil {
+		return fmt.Errorf("configure object store retention lifecycle: %w", err)
+	}
 
 	// The unversioned legacy bootstrap exists only for an empty local developer
 	// database. Production shared/tenant histories are owned by elitea-migrate.
@@ -475,6 +493,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ProjectSystemTokenSource:         formGraph,
 			PermissionResolver:               legacyrbac.NewPostgresResolver(pool),
 			Logger:                           logger,
+			ObjectStore:                      objectStore,
 		})
 		if err != nil {
 			return fmt.Errorf("compose optional runtime: %w", err)
@@ -656,19 +675,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
 		CurrentLLMFacade:              currentLLMFacade,
+		ObjectStore:                   objectStore,
 	})
 
-	srv := &http.Server{
-		Addr: publicAddress,
-		// Socket.IO remains unmounted until its legacy connection
-		// authentication, project-membership checks, room authorization, and
-		// per-event permission contract are implemented. Mounting the current
-		// prototype would expose cross-tenant rooms and execution events.
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	// Socket.IO remains unmounted until its legacy connection authentication,
+	// project-membership checks, room authorization, and per-event
+	// permission contract are implemented. Mounting the current prototype
+	// would expose cross-tenant rooms and execution events.
+	srv := newHTTPServer(publicAddress, r)
 
 	slog.Info("starting server", "addr", srv.Addr, "runtime_enabled", runtimeRoot != nil)
 	var runtimeLifecycleRoot runtimeLifecycle
@@ -792,6 +806,40 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// objectStoreReadinessProbe issues one Stat against a sentinel key that is
+// never expected to exist. ErrNotFound therefore means the backend is
+// reachable and authenticated; any other error (access denied, a transport
+// failure) means it is not, and the service should not start.
+func objectStoreReadinessProbe(ctx context.Context, store storage.ObjectStore) error {
+	ref, err := storage.NewObjectRef("1", "elitea-system", "readiness-probe")
+	if err != nil {
+		return err
+	}
+	if _, err := store.Stat(ctx, ref); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+// retentionLifecycleConfigurer is satisfied by s3.Backend and gcs.Backend —
+// see their ConfigureRetentionLifecycle doc comments for why this is a
+// separate, optional step here rather than folded into newObjectStore/New()
+// itself (New() must stay a cheap, non-network-dialing constructor).
+// azure.Backend does not implement it: Azure's own default ~7-day
+// uncommitted-block GC already delivers the same outcome with no explicit
+// call, see azure/backend.go's AbortMultipart doc comment.
+type retentionLifecycleConfigurer interface {
+	ConfigureRetentionLifecycle(ctx context.Context) error
+}
+
+func configureObjectStoreRetentionLifecycle(ctx context.Context, store storage.ObjectStore) error {
+	configurer, ok := store.(retentionLifecycleConfigurer)
+	if !ok {
+		return nil
+	}
+	return configurer.ConfigureRetentionLifecycle(ctx)
 }
 
 type poolChecker struct {

@@ -44,6 +44,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -83,29 +84,47 @@ type RouterConfig struct {
 	OIDCHandler        *v2auth.OIDCHandler
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
-	AppsRepo           applications.Repository
-	SkillsRepo         v2skills.Repository
-	FoldersRepo        v2folders.Repository
-	TagsRepo           v2tags.Repository
-	AnalyticsRepo      v2analytics.Repository
-	ConvsRepo          v2convs.Repository
-	WebhookRepo        webhook.Repository
-	RedisClient        *goredis.Client
-	EventSource        v2events.EventSource
-	Predictor          v2predict.Predictor
-	LLMService         v2predict.LLMService
-	ChatService        v2chat.ChatService
-	PipelineRunner     v2pipelines.Runner
-	ToolTester         v2toolkits.ToolTester
-	MCPSyncer          v2core.MCPToolSyncer
-	Shadow             *shadow.Comparator
-	ShadowMetrics      *shadow.Metrics
-	CutoverTracker     *cutover.Tracker
-	CutoverRouter      *cutover.Router
-	AdminUI            *adminui.Config
-	Storage            storage.Backend
-	BudgetAlertStore   *gateway.BudgetAlertStore
-	SessionSecret      string
+	// ArtifactPermissionResolver overrides the legacyrbac.NewPostgresResolver
+	// built from Pool for the artifact routes only (S11) — tests inject a
+	// resolver here to control RBAC outcomes without a live database. Every
+	// other route keeps using the Pool-backed resolver regardless of this
+	// field.
+	ArtifactPermissionResolver platformauth.PermissionResolver
+	// ArtifactHandler overrides newArtifactHandler's Pool/ObjectStore-backed
+	// construction (S11) — newArtifactHandler always builds real
+	// Postgres-backed repositories from Pool with no injection seam, so a
+	// router-level test proving a genuine 2xx through the full auth/RBAC/
+	// handler chain (as opposed to just "reached past the stub") has no
+	// other way to supply a working fake Repository/ObjectStore pair.
+	ArtifactHandler *v2artifacts.Handler
+	AppsRepo        applications.Repository
+	SkillsRepo      v2skills.Repository
+	FoldersRepo     v2folders.Repository
+	TagsRepo        v2tags.Repository
+	AnalyticsRepo   v2analytics.Repository
+	ConvsRepo       v2convs.Repository
+	WebhookRepo     webhook.Repository
+	RedisClient     *goredis.Client
+	EventSource     v2events.EventSource
+	Predictor       v2predict.Predictor
+	LLMService      v2predict.LLMService
+	ChatService     v2chat.ChatService
+	PipelineRunner  v2pipelines.Runner
+	ToolTester      v2toolkits.ToolTester
+	MCPSyncer       v2core.MCPToolSyncer
+	Shadow          *shadow.Comparator
+	ShadowMetrics   *shadow.Metrics
+	CutoverTracker  *cutover.Tracker
+	CutoverRouter   *cutover.Router
+	AdminUI         *adminui.Config
+	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
+	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
+	// DELETE cascade, but only inside newPrototypeCompatibilityRouter — it is
+	// not on any production request path until S11 mounts the new artifact
+	// routes there.
+	ObjectStore      storage.ObjectStore
+	BudgetAlertStore *gateway.BudgetAlertStore
+	SessionSecret    string
 	// InternalAdminToken is a disabled-by-default transitional control for
 	// shadow/cutover operations, not production workload identity. Empty leaves
 	// those routes unmounted.
@@ -148,6 +167,141 @@ const (
 	runtimeValidationPath = "/configurations/validation/{projectID}/{configurationRevisionID}"
 	runtimeEventsPath     = "/executions/{projectID}/{executionID}/events"
 )
+
+// notImplementedArtifact is the S7 placeholder for every new artifact route
+// this stage registers but does not yet implement — S8, S9, and S15 each
+// replace it at their own paths. It returns the same typed error envelope
+// (components/schemas/Error in api/openapi/v2.yaml) real artifact handlers
+// use for every other error response, rather than a bare 501.
+func notImplementedArtifact(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotImplemented)
+	_, _ = w.Write([]byte(`{"error":{"code":"NotImplemented","message":"pending S8/S9"}}`))
+}
+
+// artifactRepoAdapter satisfies v2artifacts.Repository by embedding both S6
+// repositories — they share no method names, so Go's method promotion does
+// the rest. Neither constructor accepts a nil pool without erroring, unlike
+// most other prototype-router dependencies, so newArtifactHandler below
+// builds this only when cfg.Pool and cfg.ObjectStore are both set.
+type artifactRepoAdapter struct {
+	*dbrepos.ArtifactBucketsRepository
+	*dbrepos.ArtifactObjectsRepository
+	*dbrepos.ArtifactTransferGrantsRepository
+}
+
+// newArtifactHandler builds the S6/S1-backed artifacts.Handler when
+// cfg.Pool and cfg.ObjectStore are both available. ok is false when either
+// is unset or repository construction fails, in which case every artifact
+// route stays on notImplementedArtifact — the same placeholder S7
+// registered for all of them, so a router built without database/storage
+// config (as most tests do) keeps behaving exactly as it did before S8/S9.
+func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
+	if cfg.Pool == nil || cfg.ObjectStore == nil {
+		return nil, false
+	}
+	bucketsRepo, err := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
+	if err != nil {
+		return nil, false
+	}
+	objectsRepo, err := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
+	if err != nil {
+		return nil, false
+	}
+	grantsRepo, err := dbrepos.NewArtifactTransferGrantsRepository(cfg.Pool)
+	if err != nil {
+		return nil, false
+	}
+	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo, grantsRepo}, cfg.ObjectStore), true
+}
+
+// Permission strings from the existing configuration.artifacts.artifacts
+// catalog (S11). edit is easy to miss — legacy uses it for retention and pin
+// changes (PATCH), distinct from create (uploads, bucket/grant creation) and
+// delete (DELETE, :batchDelete).
+const (
+	artifactPermissionView   = "configuration.artifacts.artifacts.view"
+	artifactPermissionCreate = "configuration.artifacts.artifacts.create"
+	artifactPermissionEdit   = "configuration.artifacts.artifacts.edit"
+	artifactPermissionDelete = "configuration.artifacts.artifacts.delete"
+)
+
+// ArtifactDeps is mountArtifactRoutes' dependency bundle. Handler nil means
+// every route falls back to notImplementedArtifact — the same degrade S7-S10
+// already rely on — while Authenticate/Resolver still gate every request, so
+// auth/RBAC enforcement never depends on the storage backend being wired.
+type ArtifactDeps struct {
+	Handler      *v2artifacts.Handler
+	Authenticate func(http.Handler) http.Handler
+	Resolver     platformauth.PermissionResolver
+}
+
+// mountArtifactRoutes registers all 16 artifact routes (13 from S7, plus
+// S16's 3 native-multipart continuation routes) on r, wrapped in
+// deps.Authenticate and per-route RBAC (S11). It is called from both
+// newPrototypeCompatibilityRouter and production_router.go's NewRouter so
+// the oapiserver conformance suite — which walks the prototype router only —
+// and production see an identical route shape. Deliberately NOT nested
+// inside the shadow-wrapped /api/v2 group in the prototype router: the
+// shadow middleware buffers the entire response into a bytes.Buffer and has
+// no Unwrap method, which would defeat ResponseController deadlines and
+// buffer every downloaded object in memory (S12).
+func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
+	view := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionView)
+	create := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionCreate)
+	edit := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionEdit)
+	del := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionDelete)
+
+	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
+	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	if deps.Handler != nil {
+		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
+			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
+		listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject =
+			deps.Handler.ListObjects, deps.Handler.UploadObject, deps.Handler.BatchDeleteObjects, deps.Handler.DownloadObject, deps.Handler.StatObject, deps.Handler.DeleteObject
+		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
+		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
+			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
+	}
+
+	r.Group(func(r chi.Router) {
+		r.Use(deps.Authenticate)
+		r.Route("/api/v2/artifacts", func(r chi.Router) {
+			// Bucket plane — S8.
+			r.With(view).Get("/buckets/{projectID}", listBuckets)
+			r.With(create).Post("/buckets/{projectID}", createBucket)
+			r.With(view).Get("/buckets/{projectID}/{bucket}", getBucket)
+			r.With(edit).Patch("/buckets/{projectID}/{bucket}", updateBucket)
+			r.With(del).Delete("/buckets/{projectID}/{bucket}", deleteBucket)
+
+			// Object plane — S9. The three key-bearing routes use a trailing
+			// chi wildcard, not the spec's literal {key} — see S7/S9 for why.
+			r.With(view).Get("/objects/{projectID}/{bucket}", listObjects)
+			r.With(create).Post("/objects/{projectID}/{bucket}", uploadObject)
+			r.With(del).Post("/objects/{projectID}/{bucket}:batchDelete", batchDeleteObjects)
+			r.With(view).Get("/objects/{projectID}/{bucket}/*", downloadObject)
+			r.With(view).Head("/objects/{projectID}/{bucket}/*", statObject)
+			r.With(del).Delete("/objects/{projectID}/{bucket}/*", deleteObject)
+
+			// Transfer grants — S15. create for both: grant creation is
+			// explicitly create per S11; commit is the write half of the same
+			// grant lifecycle and the plan does not distinguish it.
+			r.With(create).Post("/grants/{projectID}/{bucket}", createTransferGrant)
+			r.With(create).Post("/grants/{projectID}/{grantID}:commit", commitTransferGrant)
+
+			// Native multipart upload continuation — S16. Same permission
+			// tier as the grant routes above: a part presign, a complete, and
+			// an abort are all steps of the same create-time write lifecycle
+			// CreateTransferGrant started, not a distinct RBAC category the
+			// plan introduces.
+			r.With(create).Post("/grants/{projectID}/{grantID}/parts/{partNumber}", presignUploadPart)
+			r.With(create).Post("/grants/{projectID}/{grantID}:completeMultipart", completeMultipartUpload)
+			r.With(create).Post("/grants/{projectID}/{grantID}:abortMultipart", abortMultipartUpload)
+		})
+	})
+}
 
 // newPrototypeCompatibilityRouter preserves the broad prototype registration
 // map for parity work. Production composition deliberately does not call it:
@@ -235,16 +389,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 		})
 	}
 
-	// Preserve the current-main prototype S3 surface for route compatibility.
-	// The reviewed production router mounts its separately permission-scoped
-	// candidate only when the legacy S3 credential contract is composed.
-	s3Handler := v2artifacts.NewS3Handler(cfg.Storage)
-	r.Get("/artifacts/s3/", s3Handler.ListBuckets)
-	r.Get("/artifacts/s3/{bucket}", s3Handler.ListObjects)
-	r.Get("/artifacts/s3/{bucket}/*", s3Handler.GetObject)
-	r.Put("/artifacts/s3/{bucket}/*", s3Handler.PutObject)
-	r.Delete("/artifacts/s3/{bucket}/*", s3Handler.DeleteObject)
-
 	// Static file serving for application icons (root level like pylon)
 	iconDir := os.Getenv("ICON_DATA_DIR")
 	if iconDir == "" {
@@ -256,6 +400,12 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	}
 	r.Handle("/app/application_icon/*", http.StripPrefix("/app/application_icon/", http.FileServer(http.Dir(iconDir))))
 	r.Handle("/app/application_tool_icon/*", http.StripPrefix("/app/application_tool_icon/", http.FileServer(http.Dir(toolIconDir))))
+
+	// S20b: serves what coreHandler.UploadIcon (mounted further below, S9
+	// object-store-backed) writes — public/unauthenticated for the same
+	// reason as the two routes above: a browser <img src="..."> carries no
+	// Authorization header.
+	r.Get("/icons/{projectID}/{filename}", v2core.DownloadIcon(cfg.ObjectStore))
 
 	// The UI loads branding before a browser session exists, so this exact
 	// static bootstrap route must remain public in both current-main and PoV.
@@ -289,6 +439,30 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 		r.ServeHTTP(w, req)
 	})
 
+	// Artifacts (S11): mounted here, outside the shadow-wrapped group below,
+	// on its own Auth-wrapped subrouter so it never inherits shadow's
+	// response buffering.
+	artifactResolver := cfg.ArtifactPermissionResolver
+	if artifactResolver == nil {
+		artifactResolver = permissionResolver
+	}
+	artifactHandler := cfg.ArtifactHandler
+	if artifactHandler == nil {
+		artifactHandler, _ = newArtifactHandler(cfg)
+	}
+	mountArtifactRoutes(r, ArtifactDeps{
+		Handler: artifactHandler,
+		Authenticate: apimw.Auth(apimw.AuthConfig{
+			Client:                    cfg.AuthClient,
+			Validator:                 cfg.AuthValidator,
+			PrincipalValidator:        cfg.PrincipalValidator,
+			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
+			SessionSecret:             cfg.SessionSecret,
+			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
+		}),
+		Resolver: artifactResolver,
+	})
+
 	r.Group(func(r chi.Router) {
 		r.Use(apimw.Auth(apimw.AuthConfig{
 			Client:                    cfg.AuthClient,
@@ -316,6 +490,7 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			coreHandler := v2core.NewHandler(
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
+				v2core.WithObjectStore(cfg.ObjectStore),
 			)
 			if cfg.MCPSyncer != nil {
 				coreHandler.SetMCPSyncer(cfg.MCPSyncer)
@@ -525,7 +700,15 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 
 				// Conversations
 				if cfg.ConvsRepo != nil {
-					convHandler := v2convs.NewHandler(cfg.ConvsRepo)
+					// S20a: chat attachment byte path — WithPool/WithObjectStore/
+					// WithAttachmentStore are no-ops (nil) when cfg.Pool/
+					// cfg.ObjectStore are unset, so AddAttachments' JSON-metadata
+					// branch keeps working exactly as before wherever storage isn't
+					// wired (matching newArtifactHandler's own degrade convention).
+					convHandler := v2convs.NewHandler(cfg.ConvsRepo).
+						WithPool(cfg.Pool).
+						WithObjectStore(cfg.ObjectStore).
+						WithAttachmentStore(newAttachmentStore(cfg.Pool))
 					r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
 					r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
 					r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
@@ -706,23 +889,11 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 			// === Social plugin ===
 			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
 
-			// === Artifacts ===
-			artifactHandler := v2artifacts.NewInMemoryHandler()
-			r.Route("/artifacts", func(r chi.Router) {
-				// Bucket CRUD
-				r.Get("/buckets/default/{projectID}", artifactHandler.ListBuckets)
-				r.Post("/buckets/default/{projectID}", artifactHandler.CreateBucket)
-				r.Put("/buckets/default/{projectID}", artifactHandler.UpdateBucket)
-				r.Patch("/buckets/default/{projectID}", artifactHandler.PatchBucket)
-				r.Delete("/buckets/default/{projectID}", artifactHandler.DeleteBucket)
-				// Artifact CRUD (list + upload + legacy JSON create + delete single + bulk delete)
-				r.Get("/artifacts/default/{projectID}/{bucket}", artifactHandler.ListArtifacts)
-				r.Post("/artifacts/default/{projectID}/{bucket}", artifactHandler.UploadArtifact)
-				r.Delete("/artifacts/default/{projectID}/{bucket}", artifactHandler.DeleteArtifacts)
-				r.Get("/artifact/default/{projectID}/{bucket}", artifactHandler.GetArtifact)
-				r.Post("/artifact/default/{projectID}/{bucket}", artifactHandler.CreateArtifact)
-				r.Delete("/artifact/default/{projectID}/{bucket}", artifactHandler.DeleteArtifact)
-			})
+			// Artifacts are mounted by mountArtifactRoutes below, outside
+			// this /api/v2 group — see S11: the shadow middleware wrapping
+			// this group buffers the whole response and has no Unwrap, which
+			// would break download streaming and ResponseController
+			// deadlines (S12).
 
 			// === Context Manager ===
 			ctxMgrHandler := v2contextmgr.NewHandler(cfg.Pool)
@@ -771,42 +942,6 @@ func newPrototypeCompatibilityRouter(cfg RouterConfig) chi.Router {
 	}
 
 	return r
-}
-
-func mountArtifactS3Routes(
-	r chi.Router,
-	handler *v2artifacts.S3Handler,
-	authenticate func(http.Handler) http.Handler,
-	resolver platformauth.PermissionResolver,
-) {
-	projectID := apimw.ProjectIDFromQuery("project_id")
-	view := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.view",
-	)
-	create := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.create",
-	)
-	deleteObject := apimw.RequireResolvedPermissionsForProject(
-		resolver,
-		platformauth.PermissionModeDefault,
-		projectID,
-		"configuration.artifacts.artifacts.delete",
-	)
-
-	r.Route("/artifacts/s3", func(r chi.Router) {
-		r.Use(authenticate)
-		r.With(view).Get("/", handler.ListBuckets)
-		r.With(view).Get("/{bucket}", handler.ListObjects)
-		r.With(view).Get("/{bucket}/*", handler.GetObject)
-		r.With(create).Put("/{bucket}/*", handler.PutObject)
-		r.With(deleteObject).Delete("/{bucket}/*", handler.DeleteObject)
-	})
 }
 
 func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {

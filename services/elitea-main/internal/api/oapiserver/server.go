@@ -24,10 +24,9 @@ type Server struct {
 	convsRepo     conversations.Repository
 	analyticsRepo analytics.Repository
 
-	predictor    predict.Predictor
-	pipeRunner   predict.PipelineRunner
-	chatSvc      domainconv.ChatService
-	artifactsDir string
+	predictor  predict.Predictor
+	pipeRunner predict.PipelineRunner
+	chatSvc    domainconv.ChatService
 }
 
 type Config struct {
@@ -39,17 +38,12 @@ type Config struct {
 	ConvsRepo     conversations.Repository
 	AnalyticsRepo analytics.Repository
 
-	Predictor    predict.Predictor
-	PipeRunner   predict.PipelineRunner
-	ChatSvc      domainconv.ChatService
-	ArtifactsDir string
+	Predictor  predict.Predictor
+	PipeRunner predict.PipelineRunner
+	ChatSvc    domainconv.ChatService
 }
 
 func New(cfg Config) *Server {
-	artifactsDir := cfg.ArtifactsDir
-	if artifactsDir == "" {
-		artifactsDir = "/data/artifacts"
-	}
 	return &Server{
 		pool:          cfg.Pool,
 		appsRepo:      cfg.AppsRepo,
@@ -61,7 +55,6 @@ func New(cfg Config) *Server {
 		predictor:     cfg.Predictor,
 		pipeRunner:    cfg.PipeRunner,
 		chatSvc:       cfg.ChatSvc,
-		artifactsDir:  artifactsDir,
 	}
 }
 

@@ -753,8 +753,8 @@ func applyPostgresIntegrationMigrations(t *testing.T, pool *pgxpool.Pool) {
 CREATE SCHEMA centry;
 CREATE TABLE centry.project (
     id INTEGER PRIMARY KEY,
-    create_success BOOLEAN NOT NULL,
-    suspended BOOLEAN NOT NULL
+    create_success BOOLEAN NOT NULL DEFAULT TRUE,
+    suspended BOOLEAN NOT NULL DEFAULT FALSE
 );
 INSERT INTO centry.project (id, create_success, suspended)
 VALUES (1, TRUE, FALSE);
@@ -801,7 +801,8 @@ INSERT INTO p_1.configuration (
     1, '00000000-0000-0000-0000-000000000001', 1, 'Integration fixture',
     'integration_fixture', 'openapi', 'credentials', '{}'::jsonb, '{}'::jsonb,
     false, false, NULL, 'user', 1
-);`); err != nil {
+);
+SELECT setval(pg_get_serial_sequence('p_1.configuration', 'id'), (SELECT MAX(id) FROM p_1.configuration));`); err != nil {
 		t.Fatalf("preseed minimum legacy project schemas: %v", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 )
 
 func generateID() string {
@@ -41,6 +43,7 @@ type Handler struct {
 	mcpSyncer          MCPToolSyncer
 	permissionResolver auth.PermissionResolver
 	httpClient         *http.Client
+	store              storage.ObjectStore
 }
 
 type Option func(*Handler)
@@ -58,6 +61,17 @@ func WithHTTPClient(client *http.Client) Option {
 		if client != nil {
 			handler.httpClient = client
 		}
+	}
+}
+
+// WithObjectStore wires S20b's icon byte path (UploadIcon/DeleteIcon) onto
+// the object store instead of ICONS_DATA_DIR. Left nil, UploadIcon reports a
+// clear 500 for a real upload attempt (never for its "no file" no-op) rather
+// than silently falling back to disk; DeleteIcon stays unconditionally 204
+// either way, matching its pre-S20b best-effort semantics.
+func WithObjectStore(store storage.ObjectStore) Option {
+	return func(handler *Handler) {
+		handler.store = store
 	}
 }
 
@@ -1822,54 +1836,45 @@ func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, icons)
 }
 
+// iconBucket is the reserved system bucket every uploaded icon lands in
+// (S20b) — fixed, not per-project-policy-configurable like S20a's
+// attachment_bucket, since nothing in this stage's scope asks for that and
+// icons have no retention/quota requirement distinct from "keep them".
+const iconBucket = "icons"
+
 func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 
 	_ = r.ParseMultipartForm(512 * 1024) // ignore parse errors; FormFile will fail if parsing failed
 	file, header, err := r.FormFile("file")
 	if err != nil {
+		// No file is a legitimate, storage-independent no-op (matches this
+		// handler's pre-S20b behavior exactly) — do not gate it on h.store,
+		// which only a real upload attempt needs.
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": ""})
 		return
 	}
 	defer func() { _ = file.Close() }()
+
+	if h.store == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "icon storage is not configured"})
+		return
+	}
 
 	if !validIconPathSegment(projectID) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
 		return
 	}
 
-	iconsDir := os.Getenv("ICONS_DATA_DIR")
-	if iconsDir == "" {
-		iconsDir = "/data/icons"
-	}
-	if err := os.MkdirAll(iconsDir, 0755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
-		return
-	}
-
-	iconsRoot, err := os.OpenRoot(iconsDir)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
-		return
-	}
-	defer func() { _ = iconsRoot.Close() }()
-
-	if err := iconsRoot.MkdirAll(projectID, 0755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
-		return
-	}
-
 	filename := generateID() + safeIconExtension(header.Filename)
-	relativeName := projectID + "/" + filename
-	dst, err := iconsRoot.OpenFile(relativeName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	ref, err := storage.NewObjectRef(projectID, iconBucket, filename)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid project"})
 		return
 	}
-	defer func() { _ = dst.Close() }()
-	if _, err := io.Copy(dst, file); err != nil {
-		_ = dst.Close()
-		_ = iconsRoot.Remove(relativeName)
+
+	contentType := mime.TypeByExtension(safeIconExtension(header.Filename))
+	if _, err := h.store.Put(r.Context(), ref, file, storage.PutOptions{ContentType: contentType, ContentLength: -1}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to save file"})
 		return
 	}
@@ -1886,12 +1891,75 @@ func (h *Handler) UploadIcon(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DownloadIcon serves an uploaded icon at the exact URL UploadIcon already
+// returns (/icons/{projectID}/{filename}) — before S20b nothing served this
+// path at all (no route, no Traefik rule, no volume: every uploaded icon
+// was unreachable). Deliberately not a *Handler method: this route must be
+// mounted outside the authenticated /elitea_core route group — a browser
+// <img src="..."> request carries no Authorization header — the same
+// public, unauthenticated placement router.go already uses for the
+// unrelated /app/application_icon/* and /app/application_tool_icon/*
+// static file servers.
+func DownloadIcon(store storage.ObjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if store == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		projectID := chi.URLParam(r, "projectID")
+		filename := chi.URLParam(r, "filename")
+		ref, err := storage.NewObjectRef(projectID, iconBucket, filename)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		body, _, err := store.Get(r.Context(), ref, nil)
+		if err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		defer func() { _ = body.Close() }()
+
+		// nosniff + a content type derived only from the allowlisted
+		// extension safeIconExtension itself enforces (never the backend-
+		// reported ObjectInfo.ContentType, which for an object written
+		// before this allowlist existed could still be arbitrary) — an
+		// adversarial-review finding confirmed a stored-XSS path through
+		// this route otherwise: it is public/unauthenticated by design (a
+		// browser <img src> carries no auth header), so anything it serves
+		// with a browser-sniffable or attacker-chosen Content-Type is
+		// script-executable in the app's own origin.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if contentType := mime.TypeByExtension(safeIconExtension(filename)); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, body)
+	}
+}
+
 func validIconPathSegment(value string) bool {
 	return value != "" &&
 		value != "." &&
 		value != ".." &&
 		len(value) <= 255 &&
 		!strings.ContainsAny(value, "/\\\x00")
+}
+
+// allowedIconExtensions is the entire set safeIconExtension can return.
+// S20b's adversarial review confirmed a stored-XSS path: without this
+// allowlist, a caller could upload a "file.html"/"file.svg-with-script"-
+// named part, have it stored and served back by DownloadIcon (a public,
+// unauthenticated route, since a browser <img src> carries no auth header)
+// with a browser-sniffable or attacker-chosen Content-Type, executing
+// script in the app's own origin. Restricting storage to genuine image
+// extensions closes this at the write path, which is more robust than
+// relying on Content-Type alone at the read path (also hardened below).
+var allowedIconExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".svg": true, ".webp": true, ".ico": true, ".bmp": true,
 }
 
 func safeIconExtension(filename string) string {
@@ -1906,16 +1974,17 @@ func safeIconExtension(filename string) string {
 		return defaultExtension
 	}
 
-	extension := filename[lastDot:]
+	extension := strings.ToLower(filename[lastDot:])
 	if len(extension) > 16 {
 		return defaultExtension
 	}
 	for _, char := range extension[1:] {
-		if (char < 'a' || char > 'z') &&
-			(char < 'A' || char > 'Z') &&
-			(char < '0' || char > '9') {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
 			return defaultExtension
 		}
+	}
+	if !allowedIconExtensions[extension] {
+		return defaultExtension
 	}
 	return extension
 }
@@ -1961,14 +2030,13 @@ func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
 			`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
 	}
 
-	// Remove file from disk
-	iconsDir := os.Getenv("ICONS_DATA_DIR")
-	if iconsDir == "" {
-		iconsDir = "/data/icons"
-	}
-	if iconsRoot, err := os.OpenRoot(iconsDir); err == nil {
-		_ = iconsRoot.Remove(projectID + "/" + name) // best-effort remove within the configured root
-		_ = iconsRoot.Close()
+	// Best-effort remove — Delete is documented idempotent (S1 errors.go),
+	// and this handler already returns 204 unconditionally below regardless
+	// of outcome, matching its pre-S20b behavior for a missing/invalid file.
+	if h.store != nil {
+		if ref, err := storage.NewObjectRef(projectID, iconBucket, name); err == nil {
+			_ = h.store.Delete(ctx, ref)
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

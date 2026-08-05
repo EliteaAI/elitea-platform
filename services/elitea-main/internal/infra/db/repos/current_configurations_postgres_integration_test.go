@@ -303,8 +303,16 @@ INSERT INTO centry.social_pins (
 	}
 	typesFilter.ProjectID = 1
 	typesFilter.Section = "credentials"
+	// Two rows seed project 1's credentials section: applyPostgresIntegrationMigrations'
+	// own base fixture ("integration_fixture", type=openapi) and this test's own
+	// prepareCurrentConfigurationsProjectTwo call above ("public_shared_github",
+	// type=github, project_id=1 despite the helper's name — it seeds a shared
+	// row visible to project 1, not project 2). This assertion previously only
+	// expected {"github"}, which never actually ran against real Postgres before
+	// (the whole test errored earlier, at the now-fixed centry.project
+	// create_success NOT NULL violation) — {"github"} alone was stale.
 	projectOneTypes, err := repository.ListDistinctTypes(ctx, typesFilter)
-	if err != nil || !reflect.DeepEqual(projectOneTypes, []string{"github"}) {
+	if err != nil || !reflect.DeepEqual(projectOneTypes, []string{"github", "openapi"}) {
 		t.Fatalf("project-one credential types=%v err=%v", projectOneTypes, err)
 	}
 }
@@ -351,7 +359,8 @@ INSERT INTO p_1.configuration (
     2, '00000000-0000-0000-0000-000000000102', 1, 'Public shared GitHub',
     'public_shared_github', 'github', 'credentials', '{}'::jsonb,
     '{"scope":"public"}'::jsonb, true, true, 'validated', 'system', 1
-);`); err != nil {
+);
+SELECT setval(pg_get_serial_sequence('p_1.configuration', 'id'), (SELECT MAX(id) FROM p_1.configuration));`); err != nil {
 		t.Fatalf("prepare current configuration project two: %v", err)
 	}
 

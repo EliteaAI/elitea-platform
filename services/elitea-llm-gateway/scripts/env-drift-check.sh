@@ -48,7 +48,21 @@ check_target() {
   local code_all code_required
   # NOTE: every grep is `|| true`-guarded — under `set -o pipefail` a grep that
   # matches nothing (exit 1) would otherwise abort the whole script silently.
-  code_all="$({ grep -rhoE '(os\.Getenv|[a-zA-Z0-9]+Or)\("[A-Z][A-Z0-9_]+"' \
+  #
+  # IMPORTANT: these three extraction greps use `-o` WITHOUT `-h` (unlike a
+  # naive "just get the matched text" grep) — `-h` suppresses the filename
+  # prefix grep would otherwise add, and the very next stage in each pipeline
+  # is `grep -v '_test.go'`, which is filtering *by filename* to exclude test
+  # files. With `-h`, that filename has already been stripped before the
+  # filter runs, so `grep -v '_test.go'` silently matches nothing and every
+  # `_test.go`-only env read (e.g. `ELITEA_TEST_DATABASE_URL`, read only in
+  # integration test files) gets misreported as a production FAIL. Keeping
+  # the filename prefix here is safe: each `sed` below uses a greedy `.*`
+  # that consumes the `path/to/file.go:` prefix along with the matched
+  # function-call syntax in one step, leaving just the env var name — a
+  # `filename:` prefix was never part of the intended output, only an
+  # accidental side effect of the pipeline order this fixes.
+  code_all="$({ grep -roE '(os\.Getenv|[a-zA-Z0-9]+Or)\("[A-Z][A-Z0-9_]+"' \
                   "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
               | { grep -v '_test.go' || true; } \
               | sed -E 's/.*\("//; s/"$//' | sort -u)"
@@ -57,12 +71,26 @@ check_target() {
   # var would be misreported as dead chart config. Counted as a read (WARN tier
   # only — the required/defaulted split still comes from the literal form).
   code_all="$(printf '%s\n%s\n' "$code_all" \
-                "$({ grep -rhoE '[A-Za-z0-9]*(Env|ENV)[A-Za-z0-9]* *= *"[A-Z][A-Z0-9_]+"' \
+                "$({ grep -roE '[A-Za-z0-9]*(Env|ENV)[A-Za-z0-9]* *= *"[A-Z][A-Z0-9_]+"' \
                        "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
                    | { grep -v '_test.go' || true; } \
                    | sed -E 's/.*"([A-Z][A-Z0-9_]+)"/\1/')" \
               | sed '/^$/d' | sort -u)"
-  code_required="$({ grep -rhoE 'os\.Getenv\("[A-Z][A-Z0-9_]+"' \
+  # Indirect reads via an injected lookup function: `lookup("SOME_VAR")` where
+  # `lookup func(string) (string, bool)` is a parameter (elitea-main's
+  # storage.ConfigFromEnv is the motivating case — it takes `lookup` so tests
+  # can inject a fake env without touching the process environment). Neither
+  # pattern above matches a bare `lookup(` call, so every var read this way
+  # was misreported as dead chart config. Same WARN-tier-only treatment as the
+  # indirect *Env const pattern above: this regex cannot tell a required call
+  # from an optional one, only that the var is read at all.
+  code_all="$(printf '%s\n%s\n' "$code_all" \
+                "$({ grep -roE 'lookup\("[A-Z][A-Z0-9_]+"' \
+                       "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
+                   | { grep -v '_test.go' || true; } \
+                   | sed -E 's/.*\("//; s/"$//')" \
+              | sed '/^$/d' | sort -u)"
+  code_required="$({ grep -roE 'os\.Getenv\("[A-Z][A-Z0-9_]+"' \
                        "${srcs[@]}" --include='*.go' 2>/dev/null || true; } \
                    | { grep -v '_test.go' || true; } \
                    | sed -E 's/.*\("//; s/"$//' | sort -u)"

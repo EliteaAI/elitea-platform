@@ -19,6 +19,7 @@ import (
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 )
 
 var ErrInvalidProductionAuthRoutes = errors.New("invalid production authentication routes")
@@ -163,6 +164,32 @@ func NewRouter(cfg RouterConfig) chi.Router {
 	if cfg.CurrentLLMFacade != nil {
 		r.Handle("/llm/*", cfg.CurrentLLMFacade)
 	}
+
+	// Artifacts (S11): mounted unconditionally, unlike the cfg.CurrentXxx
+	// routes above. Auth/RBAC gating must not depend on whether the storage
+	// backend happens to be wired — mountArtifactRoutes degrades every route
+	// to notImplementedArtifact when it isn't (see ArtifactDeps), but still
+	// enforces authentication and permission on all of them either way.
+	artifactResolver := cfg.ArtifactPermissionResolver
+	if artifactResolver == nil {
+		artifactResolver = legacyrbac.NewPostgresResolver(cfg.Pool)
+	}
+	artifactHandler := cfg.ArtifactHandler
+	if artifactHandler == nil {
+		artifactHandler, _ = newArtifactHandler(cfg)
+	}
+	mountArtifactRoutes(r, ArtifactDeps{
+		Handler: artifactHandler,
+		Authenticate: apimw.Auth(apimw.AuthConfig{
+			Client:                    cfg.AuthClient,
+			Validator:                 cfg.AuthValidator,
+			PrincipalValidator:        cfg.PrincipalValidator,
+			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
+			SessionSecret:             cfg.SessionSecret,
+			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
+		}),
+		Resolver: artifactResolver,
+	})
 
 	return r
 }

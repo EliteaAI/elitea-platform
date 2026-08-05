@@ -1,0 +1,61 @@
+name: elitea-storage-test
+
+# Emulator stack for internal/infra/storage/conformance. Ephemeral by
+# design: no volumes, no persistence — every service starts empty and the
+# conformance suite provisions its own physical bucket/container at test
+# setup time (see conformance_test.go's setupS3/setupAzure/setupGCS). This
+# file is for CI and local `go test` runs only; it is not the production
+# object-store deployment (see deploy/docker-compose.yml and deploy/helm).
+
+services:
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    ports:
+      - "19000:9000"
+    environment:
+      RUSTFS_ACCESS_KEY: testaccesskey
+      RUSTFS_SECRET_KEY: testsecretkey
+    healthcheck:
+      # Neither this image nor azurite's ships curl — confirmed by actually
+      # execing into both, not assumed — only wget, and wget's exit code
+      # doesn't distinguish "server reachable but responded 4xx" (403 here,
+      # unauthenticated root) from "connection refused": both are exit 1
+      # under this image's busybox wget. Treat a captured
+      # "server returned error" message as reachable; only a message
+      # without it (e.g. "Connection refused") should fail the check.
+      test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    # --skipApiVersionCheck: confirmed necessary as of 2026-08 — this image
+    # rejects every request from the pinned azblob SDK version with
+    # "400 InvalidHeaderValue: API version ... not supported" otherwise.
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--skipApiVersionCheck"]
+    ports:
+      - "10000:10000"
+    healthcheck:
+      # Same reachable-but-4xx caveat as rustfs above: the bare root path
+      # returns 400 (missing query parameters), not 200.
+      test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:10000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  fake-gcs-server:
+    image: docker.io/fsouza/fake-gcs-server:latest
+    # -scheme http: this server listens with HTTPS by default; without this
+    # flag the connection fails regardless of the endpoint path passed to
+    # GCS_ENDPOINT.
+    command: ["-scheme", "http", "-public-host", "127.0.0.1:4443"]
+    ports:
+      - "4443:4443"
+    healthcheck:
+      # Unlike rustfs/azurite, the JSON API's bucket-list endpoint returns
+      # 200 with no auth, so a plain wget exit code is enough here.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4443/storage/v1/b"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

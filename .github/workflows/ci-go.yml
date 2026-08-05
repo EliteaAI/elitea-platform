@@ -11,6 +11,12 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-go.yml"
+      # S17: the env-drift job below checks elitea-main's Go env reads
+      # against this chart, so a chart-only change (no Go diff at all) must
+      # still trigger it — the whole point is catching drift introduced from
+      # either side.
+      - "deploy/helm/elitea-main/**"
+      - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
   push:
     branches:
       - main
@@ -23,6 +29,8 @@ on:
       - "go.work"
       - "go.work.sum"
       - ".github/workflows/ci-go.yml"
+      - "deploy/helm/elitea-main/**"
+      - "services/elitea-llm-gateway/scripts/env-drift-check.sh"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -47,6 +55,26 @@ jobs:
           sqlc generate
           sqlc vet
           git diff --exit-code -- internal/db/sqlcgen
+
+  env-drift:
+    name: Env-drift gate — elitea-main code env reads vs Helm chart
+    runs-on: ubuntu-latest
+    # S17: ci-gateway.yml already runs this same script (no-args form, both
+    # services) but only triggers on services/elitea-llm-gateway/** paths —
+    # an elitea-main-only or chart-only change never touches that workflow at
+    # all, so elitea-main's own coverage was previously never exercised in
+    # practice despite the script's own header claiming otherwise. Runs the
+    # single-target form here instead of duplicating the gateway's own check.
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install yq
+        run: |
+          command -v yq >/dev/null || { sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
+      - name: Check elitea-main env vars are settable by its Helm chart
+        run: |
+          services/elitea-llm-gateway/scripts/env-drift-check.sh \
+            elitea-main deploy/helm/elitea-main deploy/helm/elitea-main/env-drift-allowlist.txt \
+            services/elitea-main/internal services/elitea-main/cmd
 
   lint:
     name: Lint (${{ matrix.service }})
@@ -74,6 +102,27 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Backs ELITEA_TEST_DATABASE_URL below. Without this, every Postgres
+    # integration test across the workspace (internal/infra/db/repos,
+    # internal/runtimecomposition, internal/application/artifactbootstrap,
+    # ...) silently t.Skips — this test job ran green for a long time while
+    # that entire class of test provided zero actual coverage. Each test
+    # provisions its own isolated CREATE DATABASE against this one shared
+    # server instance, so a single service container is enough.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -101,7 +150,24 @@ jobs:
             (cd "$mod" && go vet ./...)
           done
 
+      # Emulator stack for internal/infra/storage/conformance (S4). --wait
+      # blocks until every service's healthcheck passes (see the compose
+      # file for why each healthcheck is more involved than a bare wget).
+      - name: Start storage emulators
+        run: docker compose -f deploy/docker-compose.storage-test.yml up -d --wait
+
       - name: Run tests (workspace)
+        env:
+          S3_ENDPOINT_URL: "http://127.0.0.1:19000"
+          S3_ACCESS_KEY: "testaccesskey"
+          S3_SECRET_KEY: "testsecretkey"
+          S3_REGION: "us-east-1"
+          S3_FORCE_PATH_STYLE: "true"
+          AZURE_STORAGE_ACCOUNT: "devstoreaccount1"
+          AZURE_STORAGE_KEY: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+          AZURE_STORAGE_ENDPOINT: "http://127.0.0.1:10000/devstoreaccount1"
+          GCS_ENDPOINT: "http://127.0.0.1:4443/storage/v1/"
+          ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
         run: |
           for mod in $(go list -m -f '{{.Dir}}'); do
             (cd "$mod" && go test -race -count=1 -coverprofile=coverage.out ./...)
@@ -109,6 +175,10 @@ jobs:
           python3 -m unittest discover \
             -s services/elitea-main/tests/reliability/index_5681 \
             -p 'test_*.py' -v
+
+      - name: Stop storage emulators
+        if: always()
+        run: docker compose -f deploy/docker-compose.storage-test.yml down -v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -151,7 +221,7 @@ jobs:
     # CI validation only — confirms the binaries compile cleanly on every PR/push.
     # Production images are built via Containerfile in publish.yml, not here.
     runs-on: ubuntu-latest
-    needs: [sqlc, lint, test, integration]
+    needs: [sqlc, lint, test, env-drift, integration]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6

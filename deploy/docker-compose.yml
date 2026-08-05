@@ -39,6 +39,44 @@ services:
       timeout: 5s
       retries: 5
 
+  # S3-compatible local object store (see docs/plans/storage-migration-plan.md
+  # S4/S17). Not yet wired into elitea-main's environment — the factory that
+  # reads STORAGE_BACKEND/S3_* and constructs an ObjectStore lands in S5, and
+  # the routes that use it in S11. This service and its bucket only need to
+  # exist ahead of that so `task up` has a working store to point at once
+  # they do.
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: elitea
+      RUSTFS_SECRET_KEY: elitea-dev-secret
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      # Neither this image nor its dependents below ship curl — only wget —
+      # and wget's exit code doesn't distinguish "reachable but responded
+      # 4xx" (403 here, unauthenticated root) from "connection refused."
+      # Treat a captured "server returned error" message as reachable.
+      test: ["CMD-SHELL", "out=$$(wget -q -O /dev/null http://127.0.0.1:9000/ 2>&1); [ $$? -eq 0 ] || echo \"$$out\" | grep -q 'server returned error'"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  rustfs-bucket-init:
+    image: docker.io/minio/mc:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        mc alias set rustfs http://rustfs:9000 elitea elitea-dev-secret &&
+        mc mb --ignore-existing rustfs/elitea-artifacts
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: "no"
+
   model-cache-init:
     profiles: ["full"]
     build:
@@ -155,3 +193,4 @@ volumes:
   postgres_data:
   redis_data:
   pylon_cache:
+  rustfs_data:

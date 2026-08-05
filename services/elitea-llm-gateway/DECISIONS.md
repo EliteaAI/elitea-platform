@@ -62,10 +62,28 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   gate to the handler was the single most critical UNasserted wiring; mutation-verified.
 - ✅ env-drift regex `[a-zA-Z]+Or` → `[a-zA-Z0-9]+Or` (was blind to `uint32Or`, so the
   `LLM_BUDGET_CB_*` vars were silently skipped); CB vars added to values.yaml.
+- ✅ (elitea-platform storage-migration-plan.md S17) env-drift-check.sh's own
+  `_test.go` exclusion was a no-op: `grep -rho` strips filenames before the
+  next stage's `grep -v '_test.go'` filter ever sees them, so every
+  integration-test-only env var (e.g. `ELITEA_TEST_DATABASE_URL`) was
+  misreported as a production FAIL for BOTH services. Fixed by dropping `-h`.
+  Also added detection for elitea-main's `lookup("VAR")`-parameter indirection
+  (storage.ConfigFromEnv's injectable-lookup pattern, distinct from the
+  existing `fooEnv = "VAR"` const-indirection case), which no existing
+  pattern matched — every var read that way was misreported as dead chart
+  config. elitea-main's chart now wires the S17 storage vars (S2/S5/S12) for
+  real and the allowlist was trimmed to match; the check now also runs as
+  its own `env-drift` job in `ci-go.yml` (previously it was only reachable
+  via `ci-gateway.yml`'s path-scoped trigger, which never fires for an
+  elitea-main-only or chart-only change — see the next line).
 
 ## Known follow-ups (not blocking, need a human)
 - Set `secrets.*.optional: false` in a production values overlay so a missing
   Secret fails the pod instead of running degraded (identity HMAC bypassable /
   vault single-level). Left `true` in the base chart for local/dev.
-- elitea-main env-drift is WARN-only (chart sets 7, code reads 30+ via external
-  secrets); tightening it is a separate effort.
+- elitea-main env-drift is still WARN-heavy for vars read via a default
+  (`ELITEA_RUNTIME_ENABLED`, `REDIS_URL`, and ~19 others) with no chart
+  override knob at all — real, now-visible (the two bugs above previously
+  hid most of it), and left as accepted debt: wiring 20+ unrelated knobs
+  into values.yaml was out of scope for the storage-migration work that
+  surfaced this. WARN does not fail CI.

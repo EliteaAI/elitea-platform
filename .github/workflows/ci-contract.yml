@@ -17,9 +17,6 @@ on:
       go_url:
         description: "Go service URL"
         default: "http://elitea-main:8080"
-      legacy_url:
-        description: "Legacy service URL"
-        default: "http://pylon-main:8000"
   schedule:
     - cron: "23 6 * * 1" # Mondays at 06:23 UTC
 
@@ -32,12 +29,32 @@ permissions:
   contents: read
 
 jobs:
-  # ── Always-on gate: compile the contract suite and run it. The suite skips
-  #    cleanly (exit 0) when CONTRACT_AUTH_TOKEN is unset, so this keeps the
-  #    contract fixtures compiling on every PR/push without needing secrets. ──
+  # ── Always-on gate: the legacy-parity fixtures skip cleanly (t.Skip, not a
+  #    whole-process exit — see tests/contract/contract_test.go's TestMain)
+  #    when CONTRACT_AUTH_TOKEN is unset, so this job keeps them compiling on
+  #    every PR/push without needing secrets. S19's self-contained
+  #    TestArtifact* suite has its own, unrelated gate (ELITEA_TEST_DATABASE_URL
+  #    / S3_ENDPOINT_URL) — this job supplies both via the same RustFS +
+  #    Postgres emulator stack ci-go.yml's test job already wires for S4, so
+  #    the artifact conformance suite actually runs here rather than only
+  #    skipping, on every PR that touches the contract package. ──
   compile:
-    name: Compile & Skip-Run
+    name: Compile & Run
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v7
 
@@ -51,10 +68,27 @@ jobs:
           cd services/elitea-main
           go vet ./tests/contract/
 
-      - name: Run contract tests (skips without credentials)
+      # Mirrors ci-go.yml's own S4 emulator wiring — see
+      # deploy/docker-compose.storage-test.yml for why each healthcheck is
+      # more involved than a bare wget.
+      - name: Start storage emulators
+        run: docker compose -f deploy/docker-compose.storage-test.yml up -d --wait
+
+      - name: Run contract tests (legacy-parity fixtures skip without credentials)
+        env:
+          S3_ENDPOINT_URL: "http://127.0.0.1:19000"
+          S3_ACCESS_KEY: "testaccesskey"
+          S3_SECRET_KEY: "testsecretkey"
+          S3_REGION: "us-east-1"
+          S3_FORCE_PATH_STYLE: "true"
+          ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
         run: |
           cd services/elitea-main
-          go test -v -count=1 -timeout=60s ./tests/contract/
+          go test -v -count=1 -timeout=180s ./tests/contract/
+
+      - name: Stop storage emulators
+        if: always()
+        run: docker compose -f deploy/docker-compose.storage-test.yml down -v
 
   # ── Credential-gated live parity run against staging. Only fires on the
   #    weekly schedule or manual dispatch, where staging secrets are available. ──
@@ -74,7 +108,12 @@ jobs:
       - name: Run contract tests
         env:
           CONTRACT_GO_URL: ${{ inputs.go_url || 'http://elitea-main:8080' }}
-          CONTRACT_LEGACY_URL: ${{ inputs.legacy_url || 'http://pylon-main:8000' }}
+          # No override input: diffing against a specific legacy instance is
+          # no longer a meaningful axis to control (see this stage's own
+          # notes in docs/plans/storage-migration-plan.md's S19 section) —
+          # this fixed default is the only legacy deployment that ever
+          # backed it.
+          CONTRACT_LEGACY_URL: "http://pylon-main:8000"
           CONTRACT_AUTH_TOKEN: ${{ secrets.CONTRACT_AUTH_TOKEN }}
           CONTRACT_PROJECT_ID: ${{ secrets.CONTRACT_PROJECT_ID }}
         run: |

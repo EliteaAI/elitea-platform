@@ -34,6 +34,19 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-main.fullname" . }}-config
+          {{- if .Values.secrets }}
+          env:
+            {{- range $name, $ref := .Values.secrets }}
+            # Sensitive vars from Kubernetes Secrets (never plaintext in the
+            # ConfigMap above) — S17, mirrors elitea-llm-gateway's deployment.yaml.
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          {{- end }}
           startupProbe:
             httpGet:
               path: {{ .Values.probes.startup.path }}

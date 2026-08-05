@@ -34,16 +34,36 @@ type Querier interface {
 	CompareAndSwapCurrentConfigurationRenameToolkit(ctx context.Context, arg CompareAndSwapCurrentConfigurationRenameToolkitParams) (int64, error)
 	CompleteScheduledOccurrence(ctx context.Context, arg CompleteScheduledOccurrenceParams) (int64, error)
 	CountActiveRuntimeExecutionsUpTo(ctx context.Context, arg CountActiveRuntimeExecutionsUpToParams) (int64, error)
+	CountArtifactBucketObjects(ctx context.Context, bucketID int64) (int64, error)
+	CountAttachmentChunks(ctx context.Context, arg CountAttachmentChunksParams) (int64, error)
 	CountAuthUserRolesInMode(ctx context.Context, arg CountAuthUserRolesInModeParams) (int64, error)
 	CountCurrentConfigurations(ctx context.Context, arg CountCurrentConfigurationsParams) (int64, error)
 	CountCurrentNotifications(ctx context.Context, arg CountCurrentNotificationsParams) (int64, error)
 	CountCurrentSharedConfigurations(ctx context.Context, arg CountCurrentSharedConfigurationsParams) (int64, error)
+	CreateArtifactBucket(ctx context.Context, arg CreateArtifactBucketParams) (EliteaStorageBucket, error)
+	// id::text/RETURNING id::text: transfer_grants.id is a native uuid column;
+	// casting to text on both sides keeps the Go-side type a plain string,
+	// matching this codebase's established convention (e.g.
+	// InsertArtifactBucketExpiryNotification, S14) rather than pgtype.UUID.
+	// upload_id (S16) is set only when CreateTransferGrant started a native
+	// multipart upload; a normal single-shot grant passes it as NULL.
+	CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
+	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
+	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
+	DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
+	// Reclaims chunk rows for a chunked upload that was abandoned before its
+	// final chunk arrived (browser tab closed, connection lost) — the only
+	// other path that deletes these rows is the completed-merge path
+	// (DeleteAttachmentChunks above), which an abandoned upload never reaches.
+	// Legacy's equivalent is utils/file_utils.py's cleanup_stale_chunks, a
+	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
+	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	// These unqualified names are intentional. Every query is executed inside a
 	// transaction whose local search_path is derived from the authorized project.
@@ -61,6 +81,35 @@ type Querier interface {
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
 	GetAgentExecutionAdmissionByIdempotency(ctx context.Context, arg GetAgentExecutionAdmissionByIdempotencyParams) (GetAgentExecutionAdmissionByIdempotencyRow, error)
 	GetAgentExecutionTerminalNodeEvent(ctx context.Context, arg GetAgentExecutionTerminalNodeEventParams) (GetAgentExecutionTerminalNodeEventRow, error)
+	GetArtifactBucket(ctx context.Context, arg GetArtifactBucketParams) (EliteaStorageBucket, error)
+	// ListExpiredArtifactObjects (below) has no request-bound project scope — it
+	// scans elitea_storage.objects across every project, which only carries
+	// bucket_id, not project_id/name. The retention sweeper (S14) uses this to
+	// resolve the (project_id, bucket name) a physical ObjectRef needs before it
+	// can delete an expired object's bytes from the ObjectStore backend.
+	GetArtifactBucketByID(ctx context.Context, id int64) (EliteaStorageBucket, error)
+	// elitea_storage.buckets has no user-identifying column of its own (S8 never
+	// captured a creating user) — the retention sweeper (S14) resolves a
+	// notification recipient via centry.project.owner_id instead, the only
+	// existing project->user mapping that needs no new schema. See
+	// docs/plans/storage-migration-plan.md S14's note on this open question.
+	GetArtifactBucketOwningProjectUserID(ctx context.Context, id int32) (int32, error)
+	GetArtifactProjectStoragePolicy(ctx context.Context, projectID int64) (EliteaStorageProjectStoragePolicy, error)
+	// Scoped by project_id, not just id: grant IDs are unguessable UUIDs, but
+	// every other artifact route requires a matching {projectID}, and this one
+	// should not be the exception that lets a caller commit a grant belonging
+	// to a project they only guessed the ID for.
+	GetArtifactTransferGrant(ctx context.Context, arg GetArtifactTransferGrantParams) (GetArtifactTransferGrantRow, error)
+	// Unscoped by project_id, unlike GetArtifactTransferGrant above — used only
+	// by S16's multipart continuation endpoints (part presign, complete,
+	// abort), which must distinguish "grant does not exist" (404) from "grant
+	// exists but belongs to a different project" (403 AccessDenied): the
+	// plan's own S16 acceptance criterion ("a part call with another project's
+	// grant returns 403") requires exactly that distinction, which a
+	// project-scoped WHERE clause can't make — a wrong project and a
+	// nonexistent id both return zero rows. See handler.go's
+	// requireOwnedMultipartGrant for where the 403 decision actually happens.
+	GetArtifactTransferGrantByID(ctx context.Context, id string) (GetArtifactTransferGrantByIDRow, error)
 	GetAuthUserByEmailForProvisioning(ctx context.Context, email string) (AuthCoreUser, error)
 	GetAuthUserByProviderForProvisioning(ctx context.Context, providerRef string) (AuthCoreUser, error)
 	GetCurrentActiveAuthUser(ctx context.Context, userID int32) (AuthCoreUser, error)
@@ -79,6 +128,14 @@ type Querier interface {
 	GetDurableIndexResultArtifact(ctx context.Context, arg GetDurableIndexResultArtifactParams) (GetDurableIndexResultArtifactRow, error)
 	GetExpectedAgentExecutionHeader(ctx context.Context, arg GetExpectedAgentExecutionHeaderParams) (GetExpectedAgentExecutionHeaderRow, error)
 	GetExpectedIndexIngestHeader(ctx context.Context, arg GetExpectedIndexIngestHeaderParams) (GetExpectedIndexIngestHeaderRow, error)
+	// S20c: keyed only by the table's actual primary key, no execution_jobs
+	// join — used both by CommitArtifact's duplicate-PK reconciliation (decide
+	// exact-retry vs genuine conflict) and by ResolveArtifact (find the
+	// storage_record_id to resolve a read grant against). Unlike
+	// GetDurableIndexResultArtifact above, this does not re-check
+	// tenant/projection/command identity; ResolveArtifact does that itself
+	// against the row's own execution_id/generation/resource_project_id.
+	GetIndexResultArtifactByPrimaryKey(ctx context.Context, arg GetIndexResultArtifactByPrimaryKeyParams) (GetIndexResultArtifactByPrimaryKeyRow, error)
 	// The project vault row serializes configuration mutations for one project,
 	// so selecting the last indexed revision is sufficient inside the same
 	// transaction. The unique key remains the final integrity fence.
@@ -91,6 +148,7 @@ type Querier interface {
 	HasAuthAdministrationAdminRole(ctx context.Context, userID int32) (bool, error)
 	InsertAgentExecutionBinding(ctx context.Context, arg InsertAgentExecutionBindingParams) error
 	InsertAgentExecutionJob(ctx context.Context, arg InsertAgentExecutionJobParams) (string, error)
+	InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error)
 	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)
@@ -99,6 +157,24 @@ type Querier interface {
 	InsertCurrentIndexTerminalNotification(ctx context.Context, arg InsertCurrentIndexTerminalNotificationParams) (int64, error)
 	InsertIndexIngestExecutionJob(ctx context.Context, arg InsertIndexIngestExecutionJobParams) (string, error)
 	InsertIndexIngestJob(ctx context.Context, arg InsertIndexIngestJobParams) error
+	// S20c: the writer side of elitea_runtime.index_result_artifacts —
+	// GetDurableIndexResultArtifact above is the pre-existing read side
+	// (ArtifactVerifier.VerifyDurable), this is IndexResultArtifactWriter's own
+	// CommitArtifact. No ON CONFLICT: a (artifact_id, immutable_version)
+	// collision is handled in Go (repos.IndexResultArtifactWriter), which
+	// distinguishes a safe exact-content retry from a genuine identity
+	// conflict — a bare ON CONFLICT DO NOTHING can't make that distinction
+	// from the write alone.
+	//
+	// metadata_created_at is set explicitly to the same value as
+	// bytes_verified_at, rather than left to its own DEFAULT clock_timestamp()
+	// — confirmed empirically (a real 23514 violation, not by inspection) that
+	// a client-computed bytes_verified_at is always microseconds earlier than
+	// a server-side DEFAULT evaluated at INSERT time, which the table's own
+	// index_result_artifact_verified_order CHECK (bytes_verified_at >=
+	// metadata_created_at) rejects. Reusing one Go-computed timestamp for both
+	// columns guarantees equality, which satisfies >=.
+	InsertIndexResultArtifact(ctx context.Context, arg InsertIndexResultArtifactParams) (InsertIndexResultArtifactRow, error)
 	InsertRuntimeCommandOutbox(ctx context.Context, arg InsertRuntimeCommandOutboxParams) error
 	InsertRuntimeInputBundle(ctx context.Context, arg InsertRuntimeInputBundleParams) error
 	InsertRuntimeInputBundleEntry(ctx context.Context, arg InsertRuntimeInputBundleEntryParams) error
@@ -109,6 +185,20 @@ type Querier interface {
 	LinkAuthProviderIfMissing(ctx context.Context, arg LinkAuthProviderIfMissingParams) (int64, error)
 	ListActiveCurrentProjectIDs(ctx context.Context, limitRows int32) ([]int32, error)
 	ListActiveIndexIngestTarget(ctx context.Context, arg ListActiveIndexIngestTargetParams) ([]string, error)
+	ListArtifactBuckets(ctx context.Context, projectID int64) ([]EliteaStorageBucket, error)
+	ListArtifactBucketsNeedingExpiryNotice(ctx context.Context, arg ListArtifactBucketsNeedingExpiryNoticeParams) ([]EliteaStorageBucket, error)
+	ListArtifactObjects(ctx context.Context, arg ListArtifactObjectsParams) ([]EliteaStorageObject, error)
+	// Required by S18's per-project byte-usage gauge: the retention sweeper
+	// (S14) needs to enumerate every project that owns at least one non-deleted
+	// bucket before it can call SumArtifactProjectBytes per project. This
+	// service owns no "projects" table of its own (see elitea_storage.buckets'
+	// own project_id column, a bare BIGINT with no local FK) — the set of
+	// known projects is defined operationally as "has at least one bucket."
+	ListArtifactProjectIDsWithBuckets(ctx context.Context) ([]int64, error)
+	// Read by the merge step once CountAttachmentChunks reaches total_chunks —
+	// ORDER BY chunk_index reconstructs the original byte stream regardless of
+	// arrival order, matching legacy's merge_chunks reading 0..total_chunks-1.
+	ListAttachmentChunksOrdered(ctx context.Context, arg ListAttachmentChunksOrderedParams) ([]ListAttachmentChunksOrderedRow, error)
 	ListClaimableScheduledOccurrences(ctx context.Context, arg ListClaimableScheduledOccurrencesParams) ([]ListClaimableScheduledOccurrencesRow, error)
 	// This deliberately projects only the six fields exposed by nested
 	// configuration options. The same bounded query is run first in the current
@@ -138,6 +228,7 @@ type Querier interface {
 	ListCurrentToolkitTypes(ctx context.Context, arg ListCurrentToolkitTypesParams) ([]string, error)
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
+	ListExpiredArtifactObjects(ctx context.Context, arg ListExpiredArtifactObjectsParams) ([]EliteaStorageObject, error)
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	ListPendingAgentExecutionIDs(ctx context.Context, arg ListPendingAgentExecutionIDsParams) ([]string, error)
 	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)
@@ -157,6 +248,15 @@ type Querier interface {
 	LockRuntimeAdmissionPolicy(ctx context.Context, capabilityID string) (int64, error)
 	MarkAgentExecutionDispatched(ctx context.Context, arg MarkAgentExecutionDispatchedParams) (int64, error)
 	MarkAgentExecutionPublished(ctx context.Context, arg MarkAgentExecutionPublishedParams) (int64, error)
+	MarkArtifactBucketNotified(ctx context.Context, id int64) (int64, error)
+	// consumed_at IS NULL in the WHERE clause, not just the SET, is the actual
+	// single-use enforcement: 0 rows affected means either the grant does not
+	// exist or was already consumed. The caller (commitTransferGrant) has
+	// already fetched the row by this point, so 0 rows here unambiguously means
+	// "already consumed" — see repository.go's MarkTransferGrantConsumed.
+	// S16 also uses this to mark an aborted multipart grant terminal — see
+	// AbortMultipartUpload.
+	MarkArtifactTransferGrantConsumed(ctx context.Context, id string) (int64, error)
 	MarkConfigurationLifecycleDead(ctx context.Context, arg MarkConfigurationLifecycleDeadParams) (int64, error)
 	MarkConfigurationLifecycleDelivered(ctx context.Context, arg MarkConfigurationLifecycleDeliveredParams) (int64, error)
 	MarkConfigurationLifecycleRetry(ctx context.Context, arg MarkConfigurationLifecycleRetryParams) (int64, error)
@@ -183,14 +283,32 @@ type Querier interface {
 	ResolveIndexMetaInitialization(ctx context.Context, arg ResolveIndexMetaInitializationParams) (pgtype.Timestamptz, error)
 	ResolveRuntimeExecutionEventCapability(ctx context.Context, arg ResolveRuntimeExecutionEventCapabilityParams) (string, error)
 	ScheduledDatabaseNow(ctx context.Context) (pgtype.Timestamptz, error)
+	SetArtifactBucketPinned(ctx context.Context, arg SetArtifactBucketPinnedParams) (EliteaStorageBucket, error)
 	// Configuration lifecycle internal effects. Unqualified tenant tables are
 	// intentional: every such statement runs inside an authorized project
 	// transaction whose local search_path is p_<project_id>.
 	SetCurrentConfigurationLifecycleStatus(ctx context.Context, arg SetCurrentConfigurationLifecycleStatusParams) (int64, error)
+	SoftDeleteArtifactBucket(ctx context.Context, id int64) (int64, error)
 	StorePreparedAgentExecutionEnvelope(ctx context.Context, arg StorePreparedAgentExecutionEnvelopeParams) (int64, error)
+	SumArtifactBucketBytes(ctx context.Context, bucketID int64) (int64, error)
+	SumArtifactProjectBytes(ctx context.Context, projectID int64) (int64, error)
 	SupersedeScheduledJobRevision(ctx context.Context, arg SupersedeScheduledJobRevisionParams) error
 	TouchProvisionedAuthUser(ctx context.Context, arg TouchProvisionedAuthUserParams) (AuthCoreUser, error)
+	// notified_at resets to NULL on every retention change: a bucket already
+	// notified once for an earlier expires_at must be eligible for a fresh
+	// notification against whatever new expires_at this update just set,
+	// otherwise ListArtifactBucketsNeedingExpiryNotice's `notified_at IS NULL`
+	// filter would permanently exclude it after the first notice.
+	UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error)
+	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
+	UpsertArtifactObject(ctx context.Context, arg UpsertArtifactObjectParams) (EliteaStorageObject, error)
+	// ON CONFLICT DO UPDATE, not DO NOTHING: a retried chunk_index (client
+	// timeout, network retry) must overwrite the previous bytes for that index,
+	// matching legacy's own local-disk behavior (writing to the same filename
+	// twice replaces it) — never double-counted, since the primary key already
+	// de-duplicates by chunk_index.
+	UpsertAttachmentChunk(ctx context.Context, arg UpsertAttachmentChunkParams) error
 	// The project transaction establishes the authorized p_<project_id>
 	// search_path before this statement runs. The public PgVector bootstrap
 	// configuration is never copied into this tenant row: only the current vault
