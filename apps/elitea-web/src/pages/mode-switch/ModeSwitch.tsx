@@ -13,7 +13,7 @@
 import { memo } from 'react';
 
 /** A mode-switch page (dead code — `enableToggle` is `false`). */
-const ModeSwitch = memo(() => {
+export const ModeSwitch = memo(() => {
   const enableToggle = false;
 
   return (
@@ -38,5 +38,3 @@ const ModeSwitch = memo(() => {
 });
 
 ModeSwitch.displayName = 'ModeSwitch';
-
-export default ModeSwitch;

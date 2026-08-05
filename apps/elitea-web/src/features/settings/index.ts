@@ -35,7 +35,9 @@ export type { EnvironmentFieldDefinition } from './lib/environment/environmentFi
 
 import ConfigurationsPanel from './ui/ai-configuration/ConfigurationsPanel';
 import OpenAITemplate from './ui/ai-configuration/OpenAITemplate';
+import ProjectAIConfiguration from './ui/ai-configuration/ProjectAIConfiguration';
 import { useConfigurationsBySection } from './lib/ai-configuration/useConfigurationsBySection';
+import { useModelsQuery } from './api/ai-configuration/api';
 
 /** Users tab (`pages/settings/Users.tsx`). */
 export const usersFeature = { useUsersActions, UsersPageContent };
@@ -59,4 +61,10 @@ export const profileFeature = { useDefaultModel, ProfileFormContent, ProfileVali
 export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, validateFieldValue, EnvironmentFieldRow };
 
 /** AI-configuration tab (`pages/settings/AIConfiguration.tsx`). */
-export const aiConfigurationFeature = { ConfigurationsPanel, OpenAITemplate, useConfigurationsBySection };
+export const aiConfigurationFeature = {
+  ConfigurationsPanel,
+  OpenAITemplate,
+  ProjectAIConfiguration,
+  useConfigurationsBySection,
+  useModelsQuery,
+};

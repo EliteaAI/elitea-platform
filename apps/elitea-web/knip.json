@@ -303,6 +303,14 @@
     "src/features/chat-participants/hooks/chat/useChangeParticipantSettings.ts",
     "src/features/chat-participants/hooks/chat/useMCPParticipantStatusMonitor.ts",
     "src/features/chat-participants/lib/context/ParticipantStatusRunner.tsx",
+    // [#71] Not dead code, and NOT the "superseded C4 residue" the issue's
+    // triage guessed it was: `ParticipantStatusRunner.tsx` (the entry directly
+    // above) imports `deriveParticipantContext`/`deriveParticipantFlags`/
+    // `buildStatusObject` from it at line 30 — the two files are one unit,
+    // split only to stay under the §3.5 file-length budget. It reports as an
+    // unused FILE purely because its sole importer is itself deliberately
+    // unwired and listed here. Delete both together or neither.
+    "src/features/chat-participants/lib/context/ParticipantStatusRunner.helpers.ts",
     "src/features/chat-participants/lib/hooks/useAddNewParticipants.ts",
     "src/features/chat-participants/ui/chat-modal/AddNewUserModal.tsx",
     "src/features/chat-participants/ui/chat-modal/UserSearchSelect.tsx",
@@ -319,7 +327,21 @@
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
-    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx"
+    "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
+    // [#71] A correct, complete port of the baseline's
+    // `ai-configuration/Configuration/ModelCapabilitiesSection.jsx`, held back
+    // by a genuine missing dependency rather than by being dead. Its sibling
+    // `ProjectAIConfiguration.tsx`/`FieldWithCopy.tsx` WERE wired into
+    // `pages/settings/AIConfiguration.tsx` by this same change; this one could
+    // not be, because the baseline feeds it
+    // `getModelCapabilities(options, model.configuration_uid, model.model_name)`
+    // and `options` comes from `useModelOptions` — a hook this app never
+    // ported, along with the per-model selection state
+    // (`ModelConfiguration.jsx`'s own selector) that supplies `model`.
+    // Porting that is real feature work, tracked as the parity follow-up filed
+    // from #71. REMOVE this entry when `useModelOptions` lands and the chips
+    // are rendered.
+    "src/features/settings/ui/ai-configuration/ModelCapabilitiesSection.tsx"
   ],
   "ignoreDependencies": [
     // Genuinely still unused: pinned ahead of a Wave-2 consumer that hasn't
