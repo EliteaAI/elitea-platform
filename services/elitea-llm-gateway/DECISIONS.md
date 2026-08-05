@@ -6,6 +6,23 @@ records a decision so it is not re-litigated on every PR. Items marked **[human
 decision]** are risk/policy calls an autonomous agent must NOT change without sign-off.
 
 ## Money
+- **[human decision] 2026-08-05 — Provider-accumulated usage at a cut IS
+  billable; a provider placeholder is not.** When the gateway cancels a stream
+  itself (grace expired, shutdown, drain-pool saturation) bifrost emits a
+  cancellation chunk carrying `BifrostError.ExtraFields.BilledUsage` — the
+  provider's own count of tokens it had ALREADY PROCESSED, accumulated in place
+  during the stream and attached specifically so a cancelled stream can still be
+  charged (core@v1.7.3 providers/utils/utils.go: "Bill for tokens the provider
+  already processed before the client disconnected"). The gateway bills it when
+  no terminal trailer arrived. *Rationale:* it is a provider-reported measure of
+  work actually done, so it does not touch the no-estimate-on-the-money-path
+  rule; discarding it threw away real spend on every cut stream, which after
+  this change is the common disconnect outcome. *Precedence:* terminal trailer >
+  accumulated-at-cut > nothing (never an estimate). A stream billed this way is
+  NOT reported as a loss. This is why the entry below rejects Anthropic's
+  `message_start` count while accepting this one: an opening placeholder emitted
+  before generation measures nothing, whereas an accumulated count measures work
+  already done.
 - **Only the TERMINAL stream event carries authoritative usage.** bifrost maps
   Anthropic's `message_start` to `response.created`, and that event already
   carries usage (input tokens, `output_tokens: 1`). Accepting usage from any

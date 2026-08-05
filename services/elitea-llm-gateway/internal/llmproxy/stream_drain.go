@@ -258,6 +258,34 @@ func responsesUsageFromChunk(c *schemas.BifrostStreamChunk) (int64, int64, bool)
 	return in, out, true
 }
 
+// billedUsageFromChunk reads the provider-reported usage bifrost attaches to an
+// error or cancellation chunk (BifrostError.ExtraFields.BilledUsage).
+//
+// This is the count of tokens the provider ACTUALLY PROCESSED before the stream
+// was cut — bifrost accumulates it in place during the stream and attaches it
+// precisely so a cancelled stream can still be charged. That makes it
+// authoritative in the sense DECISIONS.md means: a provider-reported measure of
+// work done, not a gateway-side guess.
+//
+// It is deliberately NOT the same thing as the usage on Anthropic's
+// message_start (mapped to response.created), which this module rejects: that
+// is an OPENING PLACEHOLDER emitted before generation (output_tokens: 1) and
+// measures nothing. Work already done is billable; a placeholder is not.
+func billedUsageFromChunk(c *schemas.BifrostStreamChunk) (int64, int64, bool) {
+	if c == nil || c.BifrostError == nil {
+		return 0, 0, false
+	}
+	u := c.BifrostError.ExtraFields.BilledUsage
+	if u == nil {
+		return 0, 0, false
+	}
+	in, out := int64(u.PromptTokens), int64(u.CompletionTokens)
+	if in <= 0 && out <= 0 {
+		return 0, 0, false
+	}
+	return in, out, true
+}
+
 // chatDeltaBytes counts streamed output payload bytes on a chat chunk.
 //
 // OBSERVABILITY ONLY. This number exists so the loss event carries the
@@ -308,17 +336,24 @@ func responsesDeltaBytes(c *schemas.BifrostStreamChunk) int64 {
 // Billing evidence is provider-reported usage and nothing else. Providers emit
 // cumulative counts, so a later usage chunk overrides an earlier one.
 type streamSettler struct {
-	h                *Handler
-	loop             string
-	provider, model  string
-	projectID        string
-	ctx              *schemas.BifrostContext
-	sc               *streamCancel
-	ch               chan *schemas.BifrostStreamChunk
-	usageFrom        usageExtractor
-	deltaFrom        func(*schemas.BifrostStreamChunk) int64
-	in, out          int64
-	gotUsage         bool
+	h               *Handler
+	loop            string
+	provider, model string
+	projectID       string
+	ctx             *schemas.BifrostContext
+	sc              *streamCancel
+	ch              chan *schemas.BifrostStreamChunk
+	usageFrom       usageExtractor
+	deltaFrom       func(*schemas.BifrostStreamChunk) int64
+	in, out         int64
+	gotUsage        bool
+
+	// accIn/accOut hold provider-reported usage accumulated up to the moment
+	// the stream was cut (bifrost's BilledUsage on the cancellation chunk).
+	// Billed only when no terminal trailer arrived — see report().
+	accIn, accOut int64
+	gotAccUsage   bool
+
 	observedOutBytes int64
 	settled          bool
 }
@@ -365,6 +400,15 @@ func (s *streamSettler) observe(c *schemas.BifrostStreamChunk) {
 	}
 	if in, out, ok := s.usageFrom(c); ok {
 		s.in, s.out, s.gotUsage = in, out, true
+	}
+	if in, out, ok := billedUsageFromChunk(c); ok {
+		// Second-precedence evidence: the provider's own count of work it had
+		// already done when the stream was cut. NOT an estimate — bifrost
+		// populates BilledUsage from the accumulating usage handle the provider
+		// maintains, specifically so a cancelled stream can still be charged
+		// ("Bill for tokens the provider already processed before the client
+		// disconnected", core@v1.7.3 providers/utils/utils.go).
+		s.accIn, s.accOut, s.gotAccUsage = in, out, true
 	}
 	if s.deltaFrom != nil {
 		s.observedOutBytes += s.deltaFrom(c)
@@ -564,6 +608,16 @@ func (s *streamSettler) drain(grace time.Duration) string {
 // report settles the stream: bill the provider's numbers, or meter the loss.
 // There is no third option — an estimate never reaches this path.
 func (s *streamSettler) report(reason, outcome string) {
+	// Precedence: the terminal trailer, then the provider's accumulated count
+	// at the cut, then nothing. Never an estimate.
+	if !s.gotUsage && s.gotAccUsage {
+		s.in, s.out = s.accIn, s.accOut
+		s.gotUsage = true
+		s.h.logger.Info(s.loop+": billing provider-accumulated usage for a cut stream",
+			"provider", s.provider, "model", s.model, "project_id", s.projectID,
+			"reason", reason, "drain_outcome", outcome,
+			"input_tokens", s.in, "output_tokens", s.out)
+	}
 	if s.gotUsage {
 		// We recovered the authoritative numbers — but the increment can still
 		// be refused (graceful shutdown already set billingClosing). If that
